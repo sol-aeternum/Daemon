@@ -1,0 +1,19 @@
+[project]
+name = "daemon"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.128.0",
+    "httpx>=0.28.1",
+    "litellm>=1.81.1",
+    "pydantic-settings>=2.12.0",
+    "uvicorn[standard]>=0.40.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+]

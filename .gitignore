@@ -1,0 +1,21 @@
+# Secrets
+.env
+
+# Virtualenvs
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+
+# Test / tooling caches
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# OS/editor
+.DS_Store
+*.swp
+*.swo
