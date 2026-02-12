@@ -13,7 +13,7 @@ import { AgentStatusList } from "../components/AgentStatusList";
 import { OfflineIndicator } from "../components/OfflineIndicator";
 import { RetryButton } from "../components/RetryButton";
 import { useOnlineStatus } from "../hooks/useOnlineStatus";
-import { VoiceInputButton } from "../components/VoiceInputButton";
+import { MicButton } from "../components/MicButton";
 import { TextToSpeechButton } from "../components/TextToSpeechButton";
 import { ThinkingIndicator } from "../components/ThinkingIndicator";
 import { ChatEvent, isChatEvent } from "../lib/events";
@@ -309,7 +309,7 @@ function ChatContent() {
             {error && (
               <RetryButton onRetry={reload} isLoading={isLoading} />
             )}
-            <VoiceInputButton
+            <MicButton
               onTranscript={(text) => handleInputChange({ target: { value: text } } as React.ChangeEvent<HTMLInputElement>)}
               disabled={isLoading || !currentId || !isOnline}
             />
