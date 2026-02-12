@@ -1,8 +1,60 @@
 services:
-  orchestrator:
-    build: .
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     ports:
       - "8000:8000"
-    env_file:
-      - .env
-    restart: unless-stopped
+    environment:
+      - DAEMON_API_KEY=${DAEMON_API_KEY:-sk-test}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - VENICE_API_KEY=${VENICE_API_KEY}
+      - BRAVE_API_KEY=${BRAVE_API_KEY}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
+      - MOCK_LLM=${MOCK_LLM:-false}
+    volumes:
+      - .:/app
+    command: uvicorn orchestrator.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - daemon-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - DAEMON_API_KEY=${DAEMON_API_KEY:-sk-test}
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    command: npm run dev
+    depends_on:
+      - backend
+    networks:
+      - daemon-network
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    ports:
+      - "8080:8080"
+    environment:
+      - OPENAI_API_KEYS=${DAEMON_API_KEY:-sk-test}
+      - OPENAI_API_BASE_URLS=http://backend:8000
+      - ENABLE_OLLAMA_API=false
+    volumes:
+      - open-webui-data:/app/backend/data
+    depends_on:
+      - backend
+    networks:
+      - daemon-network
+
+networks:
+  daemon-network:
+    driver: bridge
+
+volumes:
+  open-webui-data:
