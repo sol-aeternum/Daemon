@@ -1,7 +1,7 @@
 [project]
 name = "daemon"
 version = "0.1.0"
-description = "Add your description here"
+description = "Daemon AI orchestration system"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -9,8 +9,14 @@ dependencies = [
     "httpx>=0.28.1",
     "litellm>=1.81.1",
     "pydantic-settings>=2.12.0",
+    "python-multipart>=0.0.20",
     "uvicorn[standard]>=0.40.0",
 ]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["orchestrator*"]
+exclude = ["backend", "frontend", "data", "tests"]
 
 [dependency-groups]
 dev = [
