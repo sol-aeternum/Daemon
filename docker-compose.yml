@@ -8,7 +8,6 @@ services:
     environment:
       - DAEMON_API_KEY=${DAEMON_API_KEY:-sk-test}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - VENICE_API_KEY=${VENICE_API_KEY}
       - BRAVE_API_KEY=${BRAVE_API_KEY}
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
       - MOCK_LLM=${MOCK_LLM:-false}

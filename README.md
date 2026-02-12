@@ -4,10 +4,10 @@ FastAPI service that streams chat responses over SSE and routes LLM calls via Li
 
 ## Features
 
-- **Multi-Provider LLM Support**: Venice AI (default), OpenRouter, OpenCode Zen, or any custom provider
+- **Multi-Provider LLM Support**: OpenRouter, or any custom provider
 - **OpenAI-Compatible API**: Works with Open WebUI and other OpenAI-compatible frontends
 - **Per-Request Provider Selection**: Override default provider in each chat request
-- **Anonymous Mode**: Venice AI works without API key (privacy-focused, no persistent cloud context)
+- **Flexible Provider Configuration**: Environment-based setup with custom provider support
 - **SSE Streaming**: Real-time token streaming with keepalive pings
 - **Flexible Configuration**: Environment-based provider setup with custom provider support
 
@@ -43,7 +43,7 @@ SSE chat with specific provider:
 curl -N -X POST http://localhost:8000/chat \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer YOUR_KEY' \
-  -d '{"message":"hello","provider":"venice"}'
+  -d '{"message":"hello","provider":"openrouter"}'
 ```
 
 ## Docker
@@ -59,26 +59,10 @@ docker compose up --build
 ### Default Provider
 
 Set `DEFAULT_PROVIDER` in `.env`:
-- `venice` (default) - Privacy-focused, no account required
-- `openrouter` - Multi-provider gateway
-- `opencode_zen` - OpenCode AI
+- `openrouter` (default) - Multi-provider gateway
 - Any custom provider name configured via `PROVIDER_*` vars
 
-### Venice AI (Default)
-
-Venice AI is the default provider. Requires:
-1. Free API key: https://venice.ai/settings/api
-2. Account balance: https://venice.ai/settings/billing (402 error = needs credits)
-
-```env
-DEFAULT_PROVIDER=venice
-VENICE_API_KEY=your-venice-api-key-here
-VENICE_MODEL=venice-uncensored
-```
-
-**Note:** "Anonymous mode" means Venice doesn't store conversation history on their servers, not that you can call their API without authentication or credits.
-
-### OpenRouter
+### OpenRouter (Default)
 
 ```env
 DEFAULT_PROVIDER=openrouter
@@ -124,7 +108,7 @@ Stream chat completion with SSE.
   "conversation_id": "optional-conversation-id",
   "message": "Hello, Daemon!",
   "metadata": {},
-  "provider": "venice"  // optional, defaults to DEFAULT_PROVIDER
+  "provider": "openrouter"  // optional, defaults to DEFAULT_PROVIDER
 }
 ```
 
@@ -137,8 +121,8 @@ List all configured providers and the current default.
 **Response:**
 ```json
 {
-  "providers": ["venice", "openrouter", "opencode_zen"],
-  "default": "venice"
+  "providers": ["openrouter"],
+  "default": "openrouter"
 }
 ```
 
@@ -201,7 +185,7 @@ curl http://localhost:8000/v1/models
 curl -X POST http://localhost:8000/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "venice-uncensored",
+    "model": "openrouter/anthropic/claude-opus-4.5",
     "messages": [{"role": "user", "content": "Say hello"}],
     "stream": false
   }'
@@ -210,7 +194,7 @@ curl -X POST http://localhost:8000/v1/chat/completions \
 curl -N -X POST http://localhost:8000/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "venice-uncensored",
+    "model": "openrouter/anthropic/claude-opus-4.5",
     "messages": [{"role": "user", "content": "Say hello"}],
     "stream": true
   }'

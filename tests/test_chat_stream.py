@@ -28,22 +28,22 @@ async def test_health_endpoint(client):
 async def test_providers_endpoint_mock_mode(client, monkeypatch):
     """Test the providers endpoint in mock mode."""
     monkeypatch.setenv("MOCK_LLM", "true")
-    monkeypatch.setenv("DEFAULT_PROVIDER", "venice")
+    monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
 
     response = await client.get("/providers")
     assert response.status_code == 200
     data = response.json()
     assert "providers" in data
     assert "default" in data
-    assert data["default"] == "venice"
-    assert "venice" in data["providers"]
+    assert data["default"] == "openrouter"
+    assert "openrouter" in data["providers"]
 
 
 @pytest.mark.asyncio
 async def test_chat_stream_emits_done_mock_mode(client, monkeypatch):
     """Test that the chat endpoint emits the done event in mock mode."""
     monkeypatch.setenv("MOCK_LLM", "true")
-    monkeypatch.setenv("DEFAULT_PROVIDER", "venice")
+    monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
 
     response = await client.post(
         "/chat",
@@ -69,8 +69,8 @@ async def test_chat_stream_emits_done_mock_mode(client, monkeypatch):
 async def test_openai_models_endpoint_mock_mode(client, monkeypatch):
     """Test the OpenAI-compatible /v1/models endpoint."""
     monkeypatch.setenv("MOCK_LLM", "true")
-    monkeypatch.setenv("DEFAULT_PROVIDER", "venice")
-    monkeypatch.setenv("VENICE_MODEL", "venice-uncensored")
+    monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_MODEL", "openrouter-uncensored")
 
     response = await client.get("/v1/models")
     assert response.status_code == 200
@@ -92,12 +92,12 @@ async def test_openai_models_endpoint_mock_mode(client, monkeypatch):
 async def test_openai_chat_completions_streaming_mock_mode(client, monkeypatch):
     """Test the OpenAI-compatible streaming chat completions endpoint."""
     monkeypatch.setenv("MOCK_LLM", "true")
-    monkeypatch.setenv("DEFAULT_PROVIDER", "venice")
+    monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
 
     response = await client.post(
         "/v1/chat/completions",
         json={
-            "model": "venice-uncensored",
+            "model": "openrouter-uncensored",
             "messages": [{"role": "user", "content": "Hello"}],
             "stream": True,
         },
@@ -120,12 +120,12 @@ async def test_openai_chat_completions_streaming_mock_mode(client, monkeypatch):
 async def test_openai_chat_completions_non_streaming_mock_mode(client, monkeypatch):
     """Test the OpenAI-compatible non-streaming chat completions endpoint."""
     monkeypatch.setenv("MOCK_LLM", "true")
-    monkeypatch.setenv("DEFAULT_PROVIDER", "venice")
+    monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
 
     response = await client.post(
         "/v1/chat/completions",
         json={
-            "model": "venice-uncensored",
+            "model": "openrouter-uncensored",
             "messages": [{"role": "user", "content": "Hello"}],
             "stream": False,
         },
@@ -154,18 +154,18 @@ async def test_openai_chat_completions_non_streaming_mock_mode(client, monkeypat
 async def test_chat_with_provider_selection_mock_mode(client, monkeypatch):
     """Test that provider can be selected per-request."""
     monkeypatch.setenv("MOCK_LLM", "true")
-    monkeypatch.setenv("DEFAULT_PROVIDER", "venice")
+    monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
 
     # Request with explicit provider
     response = await client.post(
         "/chat",
-        json={"message": "test", "provider": "venice"},
+        json={"message": "test", "provider": "openrouter"},
         headers={"Content-Type": "application/json"},
     )
 
     assert response.status_code == 200
     body = response.text
-    assert "venice" in body  # Should show provider in response
+    assert "openrouter" in body  # Should show provider in response
 
 
 @pytest.mark.asyncio
