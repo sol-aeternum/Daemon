@@ -1,20 +1,19 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useCallback } from "react";
 import { Mic, Square } from "lucide-react";
 import { useStt } from "../hooks/useStt";
 
 interface MicButtonProps {
   onTranscript: (text: string) => void;
+  onPartialTranscript?: (text: string) => void;
   disabled?: boolean;
 }
 
-export function MicButton({ onTranscript, disabled }: MicButtonProps) {
-  const [partialText, setPartialText] = useState("");
-  
+export function MicButton({ onTranscript, onPartialTranscript, disabled }: MicButtonProps) {
   const handlePartial = useCallback((text: string) => {
-    setPartialText(text);
-  }, []);
+    onPartialTranscript?.(text);
+  }, [onPartialTranscript]);
   
   const handleFinal = useCallback((text: string) => {
     setPartialText("");
@@ -52,9 +51,10 @@ export function MicButton({ onTranscript, disabled }: MicButtonProps) {
 
   return (
     <div className="flex items-center gap-2">
-      {partialText && (
-        <span className="text-sm text-muted-foreground">
-          {partialText}...
+      {(isRecording || isConnecting) && (
+        <span className="text-xs text-muted-foreground">
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse mr-1 align-middle" />
+          {isRecording ? "Listening" : "Connecting"}
         </span>
       )}
       {error && (

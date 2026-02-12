@@ -33,6 +33,15 @@ export function useStt(options: UseSttOptions = {}) {
   const stop = useCallback(() => {
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
+
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        message_type: "input_audio_chunk",
+        audio_base_64: "",
+        sample_rate: 16000,
+        commit: true,
+      }));
+    }
     
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.close();
@@ -70,14 +79,20 @@ export function useStt(options: UseSttOptions = {}) {
       streamRef.current = stream;
       
       // Get token
-      const tokenResponse = await fetch("/api/audio/token");
-      if (!tokenResponse.ok) throw new Error("Failed to get audio token");
+      const tokenResponse = await fetch("/api/audio/scribe-token");
+      if (!tokenResponse.ok) throw new Error("Failed to get Scribe token");
       const { token } = await tokenResponse.json();
       
       // Connect to ElevenLabs Scribe
-      const ws = new WebSocket(
-        `wss://api.elevenlabs.io/v1/speech-to-text/realtime?model_id=scribe_v2_realtime`
-      );
+      const wsUrl = new URL("wss://api.elevenlabs.io/v1/speech-to-text/realtime");
+      wsUrl.searchParams.set("model_id", "scribe_v2_realtime");
+      wsUrl.searchParams.set("token", token);
+      wsUrl.searchParams.set("audio_format", "pcm_16000");
+      wsUrl.searchParams.set("sample_rate", "16000");
+      wsUrl.searchParams.set("language_code", language);
+      wsUrl.searchParams.set("commit_strategy", "manual");
+
+      const ws = new WebSocket(wsUrl.toString());
       wsRef.current = ws;
       
       await new Promise<void>((resolve, reject) => {
@@ -86,21 +101,15 @@ export function useStt(options: UseSttOptions = {}) {
         setTimeout(() => reject(new Error("Connection timeout")), 10000);
       });
       
-      // Send session config
-      ws.send(JSON.stringify({
-        type: "session_config",
-        sample_rate: 16000,
-        audio_format: "pcm_16000",
-        language_code: language,
-      }));
-      
       ws.onmessage = (event) => {
         const message = JSON.parse(event.data);
-        
-        if (message.type === "partial_transcript") {
-          onPartialTranscript?.(message.text);
-        } else if (message.type === "committed_transcript") {
-          onTranscript?.(message.text);
+        const msgType = message.message_type || message.type;
+        const text = message.text || message.transcript;
+
+        if (msgType === "partial_transcript" && text) {
+          onPartialTranscript?.(text);
+        } else if (msgType === "committed_transcript" && text) {
+          onTranscript?.(text);
         } else if (message.error) {
           const error = new Error(message.error);
           setState(prev => ({ ...prev, error }));
@@ -110,16 +119,19 @@ export function useStt(options: UseSttOptions = {}) {
       
       ws.onerror = () => {
         const error = new Error("STT WebSocket error");
-        setState(prev => ({ ...prev, error, isRecording: false }));
+        setState(prev => ({ ...prev, error, isRecording: false, isConnecting: false }));
         onError?.(error);
       };
-      
+
       ws.onclose = () => {
-        setState(prev => ({ ...prev, isRecording: false }));
+        setState(prev => ({ ...prev, isRecording: false, isConnecting: false }));
       };
       
       // Setup audio recording
       const audioContext = new AudioContext({ sampleRate: 16000 });
+      if (audioContext.state === "suspended") {
+        await audioContext.resume();
+      }
       audioContextRef.current = audioContext;
       
       const source = audioContext.createMediaStreamSource(stream);
@@ -143,6 +155,7 @@ export function useStt(options: UseSttOptions = {}) {
         ws.send(JSON.stringify({
           message_type: "input_audio_chunk",
           audio_base_64: base64,
+          sample_rate: 16000,
           commit: false,
         }));
       };

@@ -15,10 +15,32 @@ import { RetryButton } from "../components/RetryButton";
 import { useOnlineStatus } from "../hooks/useOnlineStatus";
 import { MicButton } from "../components/MicButton";
 import { TextToSpeechButton } from "../components/TextToSpeechButton";
+import { StreamingTtsMessage } from "../components/StreamingTtsMessage";
+import { useLocalStorage } from "../hooks/useLocalStorage";
 import { ThinkingIndicator } from "../components/ThinkingIndicator";
 import { ChatEvent, isChatEvent } from "../lib/events";
 
 function ChatContent() {
+  type TtsSettings = {
+    enabled: boolean;
+    voice: string;
+    model: string;
+    speed: number;
+    format: string;
+  };
+
+  const DEFAULT_TTS_SETTINGS: TtsSettings = {
+    enabled: true,
+    voice: "Xb7hH8MSUJpSbSDYk0k2",
+    model: "eleven_flash_v2_5",
+    speed: 1.0,
+    format: "mp3",
+  };
+
+  const { value: ttsSettings } = useLocalStorage<TtsSettings>(
+    "tts_settings",
+    DEFAULT_TTS_SETTINGS
+  );
   const [connectionStatus, setConnectionStatus] = useState<"connected" | "disconnected" | "reconnecting">("connected");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -55,7 +77,7 @@ function ChatContent() {
     return `json:${JSON.stringify(event)}`;
   };
 
-  const { messages, input, handleInputChange, handleSubmit, isLoading, error, reload, data } = useChat({
+  const { messages, input, setInput, handleInputChange, handleSubmit, isLoading, error, reload, data } = useChat({
     api: "/api/chat",
     id: currentId || undefined,
     initialMessages: currentConversation?.messages || [],
@@ -292,7 +314,19 @@ function ChatContent() {
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex-1 whitespace-pre-wrap">{formatMessageContent(message.content)}</div>
                         {message.role === "assistant" && message.content && (
-                          <TextToSpeechButton text={formatMessageContent(message.content)} />
+                          isLast && isLoading ? (
+                            <StreamingTtsMessage
+                              messageId={message.id}
+                              text={formatMessageContent(message.content)}
+                              isStreaming={isLast && isLoading}
+                              enabled={Boolean(ttsSettings?.enabled)}
+                              voice={ttsSettings?.voice}
+                              model={ttsSettings?.model}
+                              speed={ttsSettings?.speed}
+                            />
+                          ) : (
+                            <TextToSpeechButton text={formatMessageContent(message.content)} />
+                          )
                         )}
                       </div>
                     </div>
@@ -310,7 +344,8 @@ function ChatContent() {
               <RetryButton onRetry={reload} isLoading={isLoading} />
             )}
             <MicButton
-              onTranscript={(text) => handleInputChange({ target: { value: text } } as React.ChangeEvent<HTMLInputElement>)}
+              onTranscript={(text) => setInput(text)}
+              onPartialTranscript={(text) => setInput(text)}
               disabled={isLoading || !currentId || !isOnline}
             />
             <input
