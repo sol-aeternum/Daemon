@@ -1,3 +1,10 @@
+const API_URLS = [
+  process.env.DAEMON_INTERNAL_API_URL,
+  process.env.NEXT_PUBLIC_API_URL,
+  "http://backend:8000",
+  "http://localhost:8000",
+].filter((url): url is string => Boolean(url));
+
 export async function POST(req: Request) {
   const { messages, id } = await req.json();
 
@@ -12,21 +19,47 @@ export async function POST(req: Request) {
   const lastUserMessage = [...normalizedMessages].reverse().find((m) => m.role === "user");
   const lastUserText = typeof lastUserMessage?.content === "string" ? lastUserMessage.content : "";
 
-  const backendRes = await fetch("http://backend:8000/chat", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.DAEMON_API_KEY || "sk-test"}`,
-    },
-    body: JSON.stringify({
-      message: lastUserText,
-      conversation_id: id || null,
-      messages: normalizedMessages,
-    }),
-  });
+  const authHeader = req.headers.get("authorization");
+  const authToken = authHeader?.replace(/^Bearer\s+/i, "").trim();
+  const authorization = authToken
+    ? `Bearer ${authToken}`
+    : `Bearer ${process.env.DAEMON_API_KEY || "sk-test"}`;
+
+  let backendRes: Response | null = null;
+  let lastError: Error | null = null;
+
+  for (const apiUrl of API_URLS) {
+    try {
+      backendRes = await fetch(`${apiUrl}/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: authorization,
+        },
+        body: JSON.stringify({
+          message: lastUserText,
+          conversation_id: id || null,
+          messages: normalizedMessages,
+        }),
+      });
+      break;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+  }
 
   return createDataStreamResponse({
     execute: async (dataStream) => {
+      if (!backendRes) {
+        dataStream.write(
+          formatDataStreamPart(
+            "text",
+            `Backend error (network): ${lastError?.message || "unknown error"}.`,
+          ),
+        );
+        return;
+      }
+
       if (!backendRes.ok || !backendRes.body) {
         dataStream.write(
           formatDataStreamPart(

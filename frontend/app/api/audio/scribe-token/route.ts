@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
 
     for (const apiUrl of API_URLS) {
       try {
-        const response = await fetch(`${apiUrl}/audio/token`, {
+        const response = await fetch(`${apiUrl}/audio/scribe-token`, {
           headers: {
             Authorization: authorization,
           },
@@ -27,7 +27,7 @@ export async function GET(req: NextRequest) {
         if (!response.ok) {
           const error = await response.text();
           return NextResponse.json(
-            { error: `Failed to get audio token: ${error}` },
+            { error: `Failed to get Scribe token: ${error}` },
             { status: response.status }
           );
         }
@@ -40,12 +40,12 @@ export async function GET(req: NextRequest) {
     }
 
     return NextResponse.json(
-      { error: `Audio token request failed: ${lastError?.message || "Unknown error"}` },
+      { error: `Scribe token request failed: ${lastError?.message || "Unknown error"}` },
       { status: 500 }
     );
   } catch (error) {
     return NextResponse.json(
-      { error: `Audio token request failed: ${error}` },
+      { error: `Scribe token request failed: ${error}` },
       { status: 500 }
     );
   }
