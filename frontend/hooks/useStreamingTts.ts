@@ -14,6 +14,7 @@ interface StreamingTtsOptions {
 interface StreamingTtsState {
   isStreaming: boolean;
   isPlaying: boolean;
+  isConnecting: boolean;
   error: Error | null;
 }
 
@@ -23,6 +24,7 @@ export function useStreamingTts(options: StreamingTtsOptions = {}) {
   const [state, setState] = useState<StreamingTtsState>({
     isStreaming: false,
     isPlaying: false,
+    isConnecting: false,
     error: null,
   });
   
@@ -46,7 +48,7 @@ export function useStreamingTts(options: StreamingTtsOptions = {}) {
     audioQueueRef.current = [];
     isPlayingRef.current = false;
     
-    setState({ isStreaming: false, isPlaying: false, error: null });
+    setState({ isStreaming: false, isPlaying: false, isConnecting: false, error: null });
     onStop?.();
   }, [onStop]);
 
@@ -85,19 +87,19 @@ export function useStreamingTts(options: StreamingTtsOptions = {}) {
     setState((prev) => ({ ...prev, isPlaying: false }));
   }, [playAudioBuffer]);
 
-  const startStreaming = useCallback(async (textStream: AsyncIterable<string>) => {
-    stop(); // Clean up any existing stream
-    
-    setState({ isStreaming: true, isPlaying: false, error: null });
+  const startStreaming = useCallback(async () => {
+    stop();
+
+    setState({ isStreaming: false, isPlaying: false, isConnecting: true, error: null });
     onStart?.();
-    
+
     abortControllerRef.current = new AbortController();
-    const { signal } = abortControllerRef.current;
-    
+
     try {
       // Fetch token for WebSocket auth
+      const storedDaemonKey = localStorage.getItem("daemon_api_key")?.trim();
       const tokenResponse = await fetch("/api/audio/token", {
-        headers: { Authorization: `Bearer ${localStorage.getItem("daemon_api_key") || ""}` },
+        headers: storedDaemonKey ? { Authorization: `Bearer ${storedDaemonKey}` } : undefined,
       });
       
       if (!tokenResponse.ok) {
@@ -126,6 +128,8 @@ export function useStreamingTts(options: StreamingTtsOptions = {}) {
         voice_settings: { stability: 0.5, similarity_boost: 0.75 },
         xi_api_key: token,
       }));
+
+      setState((prev) => ({ ...prev, isStreaming: true, isConnecting: false }));
       
       ws.onmessage = async (event) => {
         const message = JSON.parse(event.data);
@@ -148,7 +152,6 @@ export function useStreamingTts(options: StreamingTtsOptions = {}) {
         }
         
         if (message.isFinal) {
-          // Stream complete
           setState((prev) => ({ ...prev, isStreaming: false }));
         }
       };
@@ -159,46 +162,44 @@ export function useStreamingTts(options: StreamingTtsOptions = {}) {
       };
       
       ws.onclose = () => {
-        setState((prev) => ({ ...prev, isStreaming: false, isPlaying: false }));
+        setState((prev) => ({ ...prev, isStreaming: false, isPlaying: false, isConnecting: false }));
       };
-      
-      // Stream text with sentence boundary buffering
-      const SENTENCE_ENDERS = /[.!?\n]+/;
-      
-      for await (const chunk of textStream) {
-        if (signal.aborted) break;
-        
-        textBufferRef.current += chunk;
-        
-        // Check if we have a complete sentence
-        const match = textBufferRef.current.match(SENTENCE_ENDERS);
-        if (match) {
-          const splitIndex = match.index! + match[0].length;
-          const sentence = textBufferRef.current.slice(0, splitIndex).trim();
-          textBufferRef.current = textBufferRef.current.slice(splitIndex);
-          
-          if (sentence && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ text: sentence + " " }));
-          }
-        }
-      }
-      
-      // Flush remaining buffer
-      if (textBufferRef.current.trim() && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ text: textBufferRef.current.trim() + " " }));
-      }
-      
-      // Signal end of stream
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ text: "" }));
-      }
-      
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
-      setState((prev) => ({ ...prev, error: err, isStreaming: false }));
+      setState((prev) => ({ ...prev, error: err, isStreaming: false, isConnecting: false }));
       onError?.(err);
     }
   }, [voice, model, stop, processAudioQueue, onStart, onError]);
+
+  const sendTextChunk = useCallback((chunk: string) => {
+    if (!chunk) return;
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+
+    textBufferRef.current += chunk;
+    const SENTENCE_ENDERS = /[.!?\n]+/;
+    let match = textBufferRef.current.match(SENTENCE_ENDERS);
+    while (match) {
+      const splitIndex = match.index! + match[0].length;
+      const sentence = textBufferRef.current.slice(0, splitIndex).trim();
+      textBufferRef.current = textBufferRef.current.slice(splitIndex);
+
+      if (sentence) {
+        wsRef.current.send(JSON.stringify({ text: `${sentence} ` }));
+      }
+
+      match = textBufferRef.current.match(SENTENCE_ENDERS);
+    }
+  }, []);
+
+  const flushBuffer = useCallback(() => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    const remaining = textBufferRef.current.trim();
+    if (remaining) {
+      wsRef.current.send(JSON.stringify({ text: `${remaining} ` }));
+      textBufferRef.current = "";
+    }
+    wsRef.current.send(JSON.stringify({ text: "" }));
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -211,5 +212,7 @@ export function useStreamingTts(options: StreamingTtsOptions = {}) {
     ...state,
     startStreaming,
     stop,
+    sendTextChunk,
+    flushBuffer,
   };
 }

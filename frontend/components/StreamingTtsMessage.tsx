@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef, useMemo } from "react";
 import { useStreamingTts } from "../hooks/useStreamingTts";
 import { Volume2, VolumeX } from "lucide-react";
 
@@ -23,47 +23,72 @@ export function StreamingTtsMessage({
   model,
   speed,
 }: StreamingTtsMessageProps) {
-  const { isPlaying, isConnecting, startStreaming, stop, sendTextChunk, flushBuffer } = useStreamingTts({
+  const { isPlaying, isConnecting, startStreaming, stop, sendTextChunk, flushBuffer, isStreaming: isWsStreaming } = useStreamingTts({
     voice,
     model,
     speed,
     onError: (err) => console.error("TTS Error:", err),
   });
 
-  useEffect(() => {
-    if (enabled && isStreaming && !isPlaying && !isConnecting) {
-      startStreaming();
-    }
-  }, [enabled, isStreaming, isPlaying, isConnecting, startStreaming]);
+  const startedRef = useRef(false);
+  const lastSentLengthRef = useRef(0);
+  const formattedText = useMemo(() => text || "", [text]);
 
   useEffect(() => {
-    if (isPlaying && text) {
-      sendTextChunk(text);
-    }
-  }, [text, isPlaying, sendTextChunk]);
+    if (!enabled) return;
+    if (!isStreaming) return;
+    if (startedRef.current || isConnecting || isWsStreaming) return;
+    startStreaming();
+    startedRef.current = true;
+  }, [enabled, isStreaming, isConnecting, isWsStreaming, startStreaming]);
 
   useEffect(() => {
-    if (!isStreaming && isPlaying) {
+    if (!startedRef.current) return;
+    if (!isWsStreaming) return;
+    if (!formattedText) return;
+    const newLength = formattedText.length;
+    const prevLength = lastSentLengthRef.current;
+    if (newLength <= prevLength) return;
+    const delta = formattedText.slice(prevLength);
+    sendTextChunk(delta);
+    lastSentLengthRef.current = newLength;
+  }, [formattedText, isWsStreaming, sendTextChunk]);
+
+  useEffect(() => {
+    if (!startedRef.current) return;
+    if (!isWsStreaming) return;
+    if (!formattedText) return;
+    if (lastSentLengthRef.current >= formattedText.length) return;
+    const delta = formattedText.slice(lastSentLengthRef.current);
+    sendTextChunk(delta);
+    lastSentLengthRef.current = formattedText.length;
+  }, [isWsStreaming, formattedText, sendTextChunk]);
+
+  useEffect(() => {
+    if (!isStreaming && startedRef.current) {
       flushBuffer();
     }
-  }, [isStreaming, isPlaying, flushBuffer]);
+  }, [isStreaming, flushBuffer]);
 
   useEffect(() => {
     return () => {
-      if (isPlaying) {
+      if (startedRef.current) {
         stop();
       }
     };
-  }, [isPlaying, stop]);
+  }, [stop]);
 
   if (!enabled) return null;
 
   const handleClick = () => {
-    if (isPlaying || isConnecting) {
+    if (isPlaying || isConnecting || isWsStreaming) {
       stop();
-    } else {
-      startStreaming();
+      startedRef.current = false;
+      lastSentLengthRef.current = 0;
+      return;
     }
+    startStreaming();
+    startedRef.current = true;
   };
 
   return (
