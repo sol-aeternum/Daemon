@@ -607,6 +607,39 @@ async def get_audio_token(
     }
 
 
+@app.get("/audio/scribe-token")
+async def get_scribe_token(
+    settings: Settings = Depends(get_settings),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> dict[str, Any]:
+    require_api_key(settings, authorization)
+
+    eleven_api_key = os.environ.get("ELEVENLABS_API_KEY")
+    if not eleven_api_key:
+        raise HTTPException(status_code=500, detail="ElevenLabs API key not configured")
+
+    url = "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe"
+    headers = {"xi-api-key": eleven_api_key}
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        response = await client.post(url, headers=headers)
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=502,
+                detail=f"ElevenLabs Scribe token request failed: {response.text}",
+            )
+
+    data = response.json()
+    token = data.get("token")
+    if not token:
+        raise HTTPException(status_code=502, detail="ElevenLabs Scribe token missing")
+
+    return {
+        "token": token,
+        "expires_in": 900,
+    }
+
+
 @app.post("/stt")
 async def speech_to_text(
     audio_file: UploadFile = File(...),
