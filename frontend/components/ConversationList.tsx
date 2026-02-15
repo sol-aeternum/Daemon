@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { Conversation } from "../hooks/useConversationHistory";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useError } from "./ErrorProvider";
@@ -44,8 +45,13 @@ export function ConversationList({
   const [editTitle, setEditTitle] = useState("");
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [newTitle, setNewTitle] = useState("");
+  const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const [isBrowser, setIsBrowser] = useState(false);
+
+  useEffect(() => {
+    setIsBrowser(typeof document !== "undefined");
+  }, []);
 
   const defaultTtsSettings = {
     enabled: true,
@@ -158,9 +164,17 @@ export function ConversationList({
 
         <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center">
           <button
+            ref={menuButtonRef}
             onClick={(e) => {
               e.stopPropagation();
-              setMenuOpenId(menuOpenId === conv.id ? null : conv.id);
+              if (menuOpenId === conv.id) {
+                setMenuOpenId(null);
+                setMenuPosition(null);
+              } else {
+                const rect = e.currentTarget.getBoundingClientRect();
+                setMenuPosition({ top: rect.bottom + 4, left: rect.right - 128 });
+                setMenuOpenId(conv.id);
+              }
             }}
             className={`p-1.5 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-200 transition-all ${
               menuOpenId === conv.id ? "opacity-100 bg-gray-200" : "opacity-0 group-hover:opacity-100"
@@ -169,39 +183,35 @@ export function ConversationList({
             <MoreHorizontal className="w-4 h-4" />
           </button>
 
-          {menuOpenId === conv.id && (
-            <>
-              <div 
-                className="fixed inset-0 z-40"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setMenuOpenId(null);
-                }}
-              />
-              <div className="absolute right-0 top-full mt-1 w-32 bg-white rounded-lg shadow-lg border border-gray-100 py-1 z-50">
+          {menuOpenId === conv.id && menuPosition && isBrowser && createPortal(
+            <div
+              className="fixed w-32 bg-white rounded-lg shadow-lg border border-gray-100 py-1 z-50"
+              style={{ top: menuPosition.top, left: menuPosition.left }}
+              onClick={(e) => e.stopPropagation()}
+            >
               <button
-                onClick={(e) => togglePin(e, conv.id, conv.pinned)}
+                onClick={(e) => { togglePin(e, conv.id, conv.pinned); setMenuOpenId(null); setMenuPosition(null); }}
                 className="w-full px-3 py-2 text-left text-xs text-gray-700 hover:bg-gray-50 flex items-center gap-2"
               >
                 <Pin className="w-3 h-3" />
                 {conv.pinned ? "Unpin" : "Pin"}
               </button>
               <button
-                onClick={(e) => startRename(e, conv)}
+                onClick={(e) => { startRename(e, conv); setMenuOpenId(null); setMenuPosition(null); }}
                 className="w-full px-3 py-2 text-left text-xs text-gray-700 hover:bg-gray-50 flex items-center gap-2"
               >
                 <Edit2 className="w-3 h-3" />
                 Rename
               </button>
               <button
-                onClick={(e) => confirmDelete(e, conv.id)}
+                onClick={(e) => { confirmDelete(e, conv.id); setMenuOpenId(null); setMenuPosition(null); }}
                 className="w-full px-3 py-2 text-left text-xs text-red-600 hover:bg-red-50 flex items-center gap-2"
               >
                 <Trash2 className="w-3 h-3" />
                 Delete
               </button>
-            </div>
-          </>
+            </div>,
+            document.body
           )}
         </div>
       </div>
@@ -511,7 +521,7 @@ export function ConversationList({
             </div>
           </div>
         </div>
-      )}
+        )}
     </div>
   );
 }

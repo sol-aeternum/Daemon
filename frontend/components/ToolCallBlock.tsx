@@ -1,5 +1,5 @@
 import { useState, useRef } from "react";
-import { ChatEvent } from "../lib/events";
+import { ChatEvent, isToolCallEvent, isToolResultEvent } from "../lib/events";
 import { Download, Maximize2, X, Loader2, ChevronRight, Check, Volume2, VolumeX, Play, Pause } from "lucide-react";
 
 export interface ToolExecution {
@@ -12,9 +12,16 @@ interface ToolCallBlockProps {
 }
 
 export function ToolCallBlock({ execution }: ToolCallBlockProps) {
-  const { call, result } = execution;
+  const { call: rawCall, result: rawResult } = execution;
   const [isExpanded, setIsExpanded] = useState(false);
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
+
+  if (!isToolCallEvent(rawCall)) {
+    return null;
+  }
+  const call = rawCall;
+
+  const result = rawResult && isToolResultEvent(rawResult) ? rawResult : null;
 
   // 1. Loading State (Call exists, Result missing)
   if (!result) {
@@ -209,26 +216,17 @@ interface ToolCallLogProps {
 }
 
 export function ToolCallLog({ events }: ToolCallLogProps) {
-  // Group events into executions
   const executions: ToolExecution[] = [];
-  const openCalls: Record<string, number> = {}; // Name -> index in executions
 
-  // Basic grouping strategy: Assume linear pair [Call, Result, Call, Result...]
-  // If we see a result matching the last open call name, we close it.
-  
   events.forEach((event) => {
-    if (event.type === "tool_call") {
+    if (isToolCallEvent(event)) {
       executions.push({ call: event });
-      openCalls[event.name] = executions.length - 1;
-    } else if (event.type === "tool_result") {
-      // Find the last open call with this name
-      // Simple heuristic: attach to the most recent call with same name that has no result
-      // If we had IDs this would be easier.
-      
+    } else if (isToolResultEvent(event)) {
+      const resultEvent = event as ChatEvent & { type: "tool_result"; name: string; result: string };
       let foundIndex = -1;
-      // Search backwards
       for (let i = executions.length - 1; i >= 0; i--) {
-        if (executions[i].call.name === event.name && !executions[i].result) {
+        const execCall = executions[i].call as ChatEvent & { type: "tool_call"; name: string; arguments: Record<string, unknown> };
+        if (execCall.name === resultEvent.name && !executions[i].result) {
           foundIndex = i;
           break;
         }
@@ -237,14 +235,13 @@ export function ToolCallLog({ events }: ToolCallLogProps) {
       if (foundIndex !== -1) {
         executions[foundIndex].result = event;
       } else {
-        // Orphan result? Should not happen in normal flow
         console.warn("Orphan tool result:", event);
       }
     }
   });
 
   const getImagePath = (execution: ToolExecution) => {
-    if (!execution.result) return null;
+    if (!execution.result || !isToolResultEvent(execution.result)) return null;
     try {
       const raw = execution.result.result;
       const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
@@ -256,20 +253,24 @@ export function ToolCallLog({ events }: ToolCallLogProps) {
   };
 
   if (executions.length > 1) {
-    const spawnExecutions = executions.filter((execution) => execution.call.name === "spawn_agent");
+    const spawnExecutions = executions.filter((execution) => 
+      isToolCallEvent(execution.call) && execution.call.name === "spawn_agent"
+    );
     if (spawnExecutions.length > 1) {
       const lastWithImage = [...spawnExecutions].reverse().find((execution) => getImagePath(execution));
       if (lastWithImage) {
         const keep = new Set([lastWithImage]);
         for (let i = executions.length - 1; i >= 0; i -= 1) {
-          if (executions[i].call.name === "spawn_agent" && !keep.has(executions[i])) {
+          const execCall = executions[i].call as ChatEvent & { type: "tool_call"; name: string };
+          if (execCall.name === "spawn_agent" && !keep.has(executions[i])) {
             executions.splice(i, 1);
           }
         }
       } else {
         const lastSpawn = spawnExecutions[spawnExecutions.length - 1];
         for (let i = executions.length - 1; i >= 0; i -= 1) {
-          if (executions[i].call.name === "spawn_agent" && executions[i] !== lastSpawn) {
+          const execCall = executions[i].call as ChatEvent & { type: "tool_call"; name: string };
+          if (execCall.name === "spawn_agent" && executions[i] !== lastSpawn) {
             executions.splice(i, 1);
           }
         }

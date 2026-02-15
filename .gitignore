@@ -42,3 +42,9 @@ data/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Sisyphus / AI agent artifacts
+.sisyphus/
+
+# Backups
+backups/

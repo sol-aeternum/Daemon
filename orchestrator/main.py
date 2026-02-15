@@ -4,8 +4,10 @@ import json
 import hashlib
 import logging
 import os
-import httpx
 import time
+import uuid
+
+import httpx
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -41,7 +43,9 @@ from orchestrator.db import (
     get_app_state,
     init_app_state,
 )
+from orchestrator.routes import conversations, memories, system, users
 from orchestrator.models_cache import fetch_openrouter_models, get_fallback_model
+from orchestrator.model_router import select_model_tier
 
 
 from orchestrator.models import (
@@ -115,6 +119,7 @@ async def health(request: Request) -> dict[str, Any]:
 @app.post("/v1/tools/test")
 async def test_tools(
     request: Request,
+    app_state: AppState = Depends(get_app_state),
     settings: Settings = Depends(get_settings),
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> StreamingResponse:
@@ -126,7 +131,14 @@ async def test_tools(
     model = body.get("model", "llama-3.3-70b")
 
     provider_config = settings.get_provider_config("openrouter")
-    registry = create_default_registry()
+
+    store = app_state.memory_store
+    user_id = uuid.UUID("00000000-0000-0000-0000-000000000001") if store else None
+    registry = create_default_registry(
+        brave_api_key=settings.brave_api_key,
+        memory_store=store,
+        user_id=user_id,
+    )
 
     messages = [
         {
@@ -271,6 +283,13 @@ async def openai_list_models(
         )
 
     return OpenAIModelList(data=models)
+
+
+@app.get("/v1/catalog")
+async def get_model_catalog() -> dict[str, object]:
+    from orchestrator.catalog import get_catalog
+
+    return get_catalog()
 
 
 @app.post("/chat/completions", response_model=None)
@@ -770,26 +789,59 @@ async def chat(
 ) -> StreamingResponse:
     require_api_key(settings, authorization)
 
-    # Initialize persistence with graceful degradation
-    store = None
-    user_id = None
-    conversation_uuid = None
-
-    if app_state and app_state.db_pool:
-        try:
-            from orchestrator.memory.store import MemoryStore
-            from orchestrator.memory.encryption import ContentEncryption
-
-            encryption = ContentEncryption(settings.daemon_encryption_key)
-            store = MemoryStore(app_state.db_pool, encryption)
-
-            # Use default user ID for now
-            user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
-        except Exception:
-            pass  # Graceful degradation
-
     conversation_id = payload.conversation_id or new_conversation_id()
     request_id = new_request_id()
+
+    # Get provider configuration from request or default
+    provider_config = settings.get_provider_config(payload.provider)
+
+    incoming_messages = payload.messages or []
+    last_user_message = None
+    for msg in reversed(incoming_messages):
+        if msg.get("role") == "user" and isinstance(msg.get("content"), str):
+            last_user_message = msg.get("content")
+            break
+    user_message = last_user_message or payload.message
+
+    decision = route_message(user_message, payload.metadata)
+
+    user_model_choice = payload.model or "auto"
+    has_code = "```" in user_message
+    turn_count = len(incoming_messages) if incoming_messages else 0
+
+    model_decision = select_model_tier(
+        message=user_message,
+        turn_count=turn_count,
+        has_code_block=has_code,
+        user_override=user_model_choice,
+    )
+
+    if model_decision.tier == "explicit":
+        selected_model = model_decision.model
+    elif model_decision.tier == "fast":
+        selected_model = settings.auto_fast_model
+    elif model_decision.tier == "reasoning":
+        selected_model = settings.auto_reasoning_model
+    else:
+        selected_model = provider_config.model
+
+    actual_model = selected_model
+    if provider_config.name != "openrouter":
+        for prefix in ["openrouter/", "opencode/"]:
+            if actual_model.startswith(prefix):
+                actual_model = actual_model[len(prefix) :]
+                break
+
+    routing_info = {
+        "model": selected_model,
+        "tier": model_decision.tier,
+        "reason": model_decision.reason,
+    }
+
+    # Initialize persistence with graceful degradation
+    store = app_state.memory_store if app_state else None
+    user_id = uuid.UUID("00000000-0000-0000-0000-000000000001") if store else None
+    conversation_uuid = None
 
     # Create or get conversation if persistence is available
     if store and user_id:
@@ -836,19 +888,6 @@ async def chat(
                 )
         except Exception:
             pass  # Graceful degradation - continue without persistence
-
-    # Get provider configuration from request or default
-    provider_config = settings.get_provider_config(payload.provider)
-
-    incoming_messages = payload.messages or []
-    last_user_message = None
-    for msg in reversed(incoming_messages):
-        if msg.get("role") == "user" and isinstance(msg.get("content"), str):
-            last_user_message = msg.get("content")
-            break
-    user_message = last_user_message or payload.message
-
-    decision = route_message(user_message, payload.metadata)
     history_messages: list[dict[str, Any]] | None = None
     if incoming_messages:
         history_messages = [
@@ -861,6 +900,27 @@ async def chat(
                 msg["content"] = decision.user_message
                 break
 
+    assembled_system_prompt = DAEMON_SYSTEM_PROMPT
+    if store and user_id and conversation_uuid:
+        try:
+            from orchestrator.memory.injection import (
+                assemble_system_prompt,
+                build_memory_context,
+                format_preferences_block,
+            )
+
+            user_settings = await store.get_user_settings(user_id)
+            preferences_block = format_preferences_block(user_settings)
+            memory_context = await build_memory_context(store, conversation_uuid)
+            assembled_system_prompt = await assemble_system_prompt(
+                base_prompt=DAEMON_SYSTEM_PROMPT,
+                memory_context=memory_context,
+                preferences_block=preferences_block,
+                conversation_id=conversation_uuid,
+            )
+        except Exception:
+            logger.warning("Memory injection failed, using base prompt", exc_info=True)
+
     async def is_disconnected() -> bool:
         return await request.is_disconnected()
 
@@ -869,18 +929,26 @@ async def chat(
             async for frame in stream_sse_chat(
                 settings=settings,
                 provider_config=provider_config,
-                system_prompt=DAEMON_SYSTEM_PROMPT,
+                system_prompt=assembled_system_prompt,
                 user_message=decision.user_message,
                 history_messages=history_messages,
                 conversation_id=conversation_id,
                 request_id=request_id,
                 ping_interval_s=settings.stream_ping_interval_s,
                 is_disconnected=is_disconnected,
+                actual_model=actual_model,
+                reported_model=selected_model,
+                routing_info=routing_info,
+                memory_store=store,
+                user_id=user_id,
+                conversation_uuid=conversation_uuid,
+                queue=app_state.redis if app_state else None,
             ):
                 yield frame
         except Exception as e:
             ts = now_rfc3339()
             provider, model = effective_provider_and_model(settings, provider_config)
+            model_for_events = selected_model or actual_model or model
             # Emit a minimal `final` + `error` + `done` sequence to keep the SSE contract stable.
             yield sse(
                 "final",
@@ -902,7 +970,7 @@ async def chat(
                             "output_tokens": 0,
                             "total_tokens": 0,
                         },
-                        "model": model,
+                        "model": model_for_events,
                         "provider": provider,
                         "finish_reason": "error",
                     },
@@ -944,3 +1012,10 @@ async def chat(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# Include memory layer API routes
+app.include_router(conversations.router)
+app.include_router(memories.router)
+app.include_router(system.router)
+app.include_router(users.router)

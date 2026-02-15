@@ -61,23 +61,23 @@ export function MicButton({
         </span>
       )}
 
-      <button
-        type="button"
-        disabled={disabled || isConnecting}
-        onMouseDown={handleMouseDown}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
-        onTouchStart={handleTouchStart}
-        onTouchEnd={handleTouchEnd}
-        title={isRecording ? "Release to stop" : "Hold to speak"}
-        className={`relative z-10 rounded-full p-2 transition-all duration-200 ${
-          isRecording
-            ? "bg-red-500 text-white scale-110 shadow-lg shadow-red-500/50"
-            : isConnecting
-            ? "bg-yellow-500 text-white"
-            : "bg-muted text-muted-foreground hover:bg-muted/80 hover:scale-105"
-        } ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
-      >
+       <button
+         type="button"
+         disabled={disabled || isConnecting}
+         onMouseDown={handleMouseDown}
+         onMouseUp={handleMouseUp}
+         onMouseLeave={handleMouseUp}
+         onTouchStart={handleTouchStart}
+         onTouchEnd={handleTouchEnd}
+         title={isRecording ? "Release to stop" : "Hold to speak"}
+         className={`relative z-10 rounded-full p-2 transition-all duration-200 ${
+           isRecording
+             ? "bg-red-500 text-white scale-110 shadow-lg shadow-red-500/50"
+             : isConnecting
+             ? "bg-yellow-500 text-white"
+             : "bg-gray-600 text-gray-200 hover:bg-gray-500 hover:scale-105"
+         } ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
+       >
         {isRecording ? (
           <Square className="h-4 w-4 fill-current" />
         ) : (

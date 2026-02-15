@@ -1,7 +1,8 @@
 "use client";
 
+import { ChatInputBar } from "../components/ChatInputBar";
 import { useChat } from "@ai-sdk/react";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, Suspense } from "react";
 import { useStt } from "../hooks/useStt";
 import { ErrorProvider, useError } from "../components/ErrorProvider";
 import { ConnectionStatus } from "../components/ConnectionStatus";
@@ -83,9 +84,21 @@ function ChatContent() {
     deleteConversation,
     getCurrentConversation,
     switchConversation,
+    setConversationModel,
+    searchQuery,
+    setSearchQuery,
   } = useConversationHistory();
 
+  const [activeModel, setActiveModel] = useState<string>("gpt-4o");
+  const formRef = useRef<HTMLFormElement>(null);
+
   const currentConversation = getCurrentConversation();
+
+  useEffect(() => {
+    if (currentConversation?.selectedModel) {
+      setActiveModel(currentConversation.selectedModel);
+    }
+  }, [currentConversation]);
 
   // State to store events for past messages
   const [archivedEvents, setArchivedEvents] = useState<Record<string, { events: ChatEvent[]; duration: number; requestId?: string | null }>>({});
@@ -257,12 +270,15 @@ function ChatContent() {
             setIsSidebarOpen(false);
           }}
           onDelete={deleteConversation}
+          onUpdate={updateConversation}
           onNewChat={() => {
             handleNewChat();
             setIsSidebarOpen(false);
           }}
           sttSettings={effectiveSttSettings}
           setSttSettings={setSttSettings}
+          searchQuery={searchQuery}
+          setSearchQuery={setSearchQuery}
         />
       </div>
 
@@ -372,33 +388,30 @@ function ChatContent() {
           )}
         </main>
 
-        <footer className="bg-white border-t p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-          <form onSubmit={handleSubmit} className="flex gap-2">
-            {error && (
-              <RetryButton onRetry={reload} isLoading={isLoading} />
-            )}
-            <MicButton
+        <footer className="bg-gpt-main border-t border-gray-600 p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+          <form ref={formRef} onSubmit={handleSubmit}>
+            <ChatInputBar
+              selectedModel={activeModel}
+              onSelectModel={(modelId) => {
+                setActiveModel(modelId);
+                if (currentId) {
+                  setConversationModel(currentId, modelId);
+                }
+              }}
               isRecording={isRecording}
               isConnecting={isConnecting}
-              start={start}
-              stop={stop}
-              disabled={isLoading || !currentId || !isOnline}
-              error={sttError}
+              startRecording={start}
+              stopRecording={stop}
+              micDisabled={isLoading || !currentId || !isOnline}
+              micError={sttError}
+              onSendMessage={(msg) => {
+                setInput(msg);
+                setTimeout(() => {
+                  formRef.current?.requestSubmit();
+                }, 0);
+              }}
+              isLoading={isLoading}
             />
-            <input
-              value={input}
-              onChange={handleInputChange}
-              placeholder={isOnline ? "Ask anything..." : "You are offline"}
-              className="flex-1 rounded-lg border border-gray-300 px-4 py-3 md:py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 min-h-[44px]"
-              disabled={isLoading || !currentId || !isOnline}
-            />
-            <button
-              type="submit"
-              disabled={isLoading || !input.trim() || !currentId || !isOnline}
-              className="bg-blue-600 text-white px-4 py-2 rounded-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px] min-w-[44px] flex items-center justify-center"
-            >
-              {isLoading ? "..." : "Send"}
-            </button>
           </form>
         </footer>
       </div>
@@ -411,7 +424,9 @@ function ChatContent() {
 export default function ChatPage() {
   return (
     <ErrorProvider>
-      <ChatContent />
+      <Suspense fallback={<div>Loading...</div>}>
+        <ChatContent />
+      </Suspense>
     </ErrorProvider>
   );
 }

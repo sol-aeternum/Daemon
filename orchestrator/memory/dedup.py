@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from orchestrator.memory.store import MemoryStore
-from orchestrator.memory.embedding import embed_text
+from orchestrator.memory.embedding import DEFAULT_MODEL, embed_text
 
 
 @dataclass
@@ -21,7 +21,13 @@ SIMILARITY_SUPERSEDE = 0.75
 
 
 async def deduplicate_facts(
-    store: MemoryStore, user_id: uuid.UUID, facts: list[Any], conversation_id: uuid.UUID
+    store: MemoryStore,
+    user_id: uuid.UUID,
+    facts: list[Any],
+    conversation_id: uuid.UUID | None,
+    *,
+    source_type: str = "extracted",
+    status: str = "pending",
 ) -> DedupResult:
     """Deduplicate extracted facts against existing memories."""
     result = DedupResult()
@@ -44,10 +50,12 @@ async def deduplicate_facts(
                 user_id=user_id,
                 content=fact.content,
                 category=fact.category,
-                source_type="extraction",
+                source_type=source_type,
                 embedding=embedding,
+                embedding_model=DEFAULT_MODEL,
                 source_conversation_id=conversation_id,
                 confidence=fact.confidence,
+                status=status,
             )
             result.new.append(memory)
         else:
@@ -65,11 +73,13 @@ async def deduplicate_facts(
                     old_memory_id=best_match["id"],
                     new_content=fact.content,
                     new_category=fact.category,
-                    new_source_type="extraction",
+                    new_source_type=source_type,
                     user_id=user_id,
                     embedding=embedding,
+                    embedding_model=DEFAULT_MODEL,
                     source_conversation_id=conversation_id,
                     confidence=fact.confidence,
+                    new_status=status,
                 )
                 result.superseded.append(new_memory)
             else:
@@ -78,11 +88,67 @@ async def deduplicate_facts(
                     user_id=user_id,
                     content=fact.content,
                     category=fact.category,
-                    source_type="extraction",
+                    source_type=source_type,
                     embedding=embedding,
+                    embedding_model=DEFAULT_MODEL,
                     source_conversation_id=conversation_id,
                     confidence=fact.confidence,
+                    status=status,
                 )
                 result.new.append(memory)
 
     return result
+
+
+async def dedup_and_store(
+    store: MemoryStore,
+    user_id: uuid.UUID,
+    content: str,
+    source_type: str,
+    category: str,
+    conversation_id: uuid.UUID | None = None,
+    *,
+    status: str = "active",
+) -> uuid.UUID:
+    """Store a single memory with deduplication.
+
+    Returns the memory ID (existing if merged/superseded, new if created).
+    """
+    from dataclasses import dataclass
+
+    @dataclass
+    class SimpleFact:
+        content: str
+        category: str
+        confidence: float = 0.8
+
+    fact = SimpleFact(content=content, category=category)
+    result = await deduplicate_facts(
+        store=store,
+        user_id=user_id,
+        facts=[fact],
+        conversation_id=conversation_id,
+        source_type=source_type,
+        status=status,
+    )
+
+    if result.merged:
+        return result.merged[0]["id"]
+    elif result.superseded:
+        return result.superseded[0]["id"]
+    elif result.new:
+        return result.new[0]["id"]
+    else:
+        # Fallback - create directly
+        embedding = await embed_text(content)
+        memory = await store.insert_memory(
+            user_id=user_id,
+            content=content,
+            category=category,
+            source_type=source_type,
+            embedding=embedding,
+            embedding_model=DEFAULT_MODEL,
+            source_conversation_id=conversation_id,
+            status=status,
+        )
+        return memory["id"]

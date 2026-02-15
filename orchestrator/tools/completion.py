@@ -278,11 +278,6 @@ async def completion_with_tools(
                 content_chunk = getattr(delta, "content", None) or delta.get("content")
                 if content_chunk:
                     content_buffer.append(content_chunk)
-                    yield {
-                        "type": "content",
-                        "content": content_chunk,
-                        "id": str(uuid.uuid4()),
-                    }
 
                 # 3. Handle Tool Calls
                 tool_calls_chunk = getattr(delta, "tool_calls", None) or delta.get(
@@ -449,6 +444,12 @@ async def completion_with_tools(
             # Loop continues to next round
 
         else:
+            if full_content:
+                yield {
+                    "type": "content",
+                    "content": full_content,
+                    "id": str(uuid.uuid4()),
+                }
             last_spawn_result = _extract_last_spawn_result(current_messages)
             last_session_id = None
             last_agent_type = "image"

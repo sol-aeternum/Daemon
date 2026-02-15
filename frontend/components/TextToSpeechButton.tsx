@@ -113,7 +113,7 @@ export function TextToSpeechButton({ text, streamingText }: TextToSpeechButtonPr
           source.connect(audioContext.destination);
           
           await new Promise<void>((resolve) => {
-            source.onended = resolve;
+            source.onended = () => resolve();
             source.start();
           });
         }
@@ -263,15 +263,15 @@ export function TextToSpeechButton({ text, streamingText }: TextToSpeechButtonPr
 
   const label = error ? `TTS: ${error}` : isPlaying ? "Stop TTS" : "Play TTS";
 
-  return (
-    <button
-      type="button"
-      onClick={handleClick}
-      title={label}
-      className={`ml-2 inline-flex items-center gap-1 rounded px-1 py-0.5 text-xs transition-colors ${
-        error ? "text-red-500 hover:text-red-600" : "text-muted-foreground hover:text-foreground"
-      }`}
-    >
+   return (
+     <button
+       type="button"
+       onClick={handleClick}
+       title={label}
+       className={`ml-2 inline-flex items-center gap-1 rounded px-1 py-0.5 text-xs transition-colors ${
+         error ? "text-red-500 hover:text-red-600" : "text-gray-400 hover:text-gray-200"
+       }`}
+     >
       {isPlaying ? <VolumeX className="h-3.5 w-3.5" /> : <Volume2 className="h-3.5 w-3.5" />}
       {isLoading ? "Loading..." : null}
     </button>

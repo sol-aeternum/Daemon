@@ -2,11 +2,51 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 
-// Web Speech API types
 declare global {
   interface Window {
-    webkitSpeechRecognition: typeof SpeechRecognition;
+    SpeechRecognition: new () => SpeechRecognitionType;
+    webkitSpeechRecognition: new () => SpeechRecognitionType;
   }
+}
+
+interface SpeechRecognitionType {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onstart: (() => void) | null;
+  onend: (() => void) | null;
+  onresult: ((event: SpeechRecognitionEventType) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEventType) => void) | null;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+}
+
+interface SpeechRecognitionEventType {
+  resultIndex: number;
+  results: SpeechRecognitionResultListType;
+}
+
+interface SpeechRecognitionErrorEventType {
+  error: string;
+}
+
+interface SpeechRecognitionResultListType {
+  length: number;
+  item(index: number): SpeechRecognitionResultType;
+  [index: number]: SpeechRecognitionResultType;
+}
+
+interface SpeechRecognitionResultType {
+  isFinal: boolean;
+  length: number;
+  item(index: number): SpeechRecognitionAlternativeType;
+  [index: number]: SpeechRecognitionAlternativeType;
+}
+
+interface SpeechRecognitionAlternativeType {
+  transcript: string;
+  confidence: number;
 }
 
 interface UseSpeechRecognitionOptions {
@@ -31,18 +71,17 @@ export function useSpeechRecognition(
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const recognitionRef = useRef<SpeechRecognitionType | null>(null);
 
-  // Check browser support
   const isSupported = typeof window !== "undefined" && 
     ("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
 
   useEffect(() => {
     if (!isSupported) return;
 
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    recognitionRef.current = new SpeechRecognition();
-    const recognition = recognitionRef.current;
+    const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const recognition = new SpeechRecognitionCtor() as SpeechRecognitionType;
+    recognitionRef.current = recognition;
 
     recognition.continuous = true;
     recognition.interimResults = true;
@@ -57,7 +96,7 @@ export function useSpeechRecognition(
       setIsListening(false);
     };
 
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
+    recognition.onresult = (event: SpeechRecognitionEventType) => {
       let interimTranscript = "";
       let finalTranscript = "";
 
@@ -79,7 +118,7 @@ export function useSpeechRecognition(
       }
     };
 
-    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+    recognition.onerror = (event: SpeechRecognitionErrorEventType) => {
       const errorMessage = getErrorMessage(event.error);
       setError(errorMessage);
       setIsListening(false);

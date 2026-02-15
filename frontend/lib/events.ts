@@ -4,6 +4,7 @@ export type ChatEvent = BaseEvent &
   (
     | { type: "text"; content: string }
     | { type: "thinking"; content: string; agent?: string }
+    | { type: "routing"; model: string; tier?: string; reason?: string }
     | { type: "agent_spawn"; agent: string; agentType: string; task: string }
     | { type: "agent_status"; agent: string; status: "pending" | "running" | "completed" | "error"; progress?: number; message?: string }
     | { type: "agent_complete"; agent: string; result: string }
@@ -19,6 +20,7 @@ export function isChatEvent(obj: unknown): obj is ChatEvent {
   const validTypes = [
     "text",
     "thinking",
+    "routing",
     "agent_spawn",
     "agent_status",
     "agent_complete",
@@ -28,4 +30,12 @@ export function isChatEvent(obj: unknown): obj is ChatEvent {
     "pipeline_switch",
   ];
   return typeof event.type === "string" && validTypes.includes(event.type);
+}
+
+export function isToolCallEvent(event: ChatEvent): event is ChatEvent & { type: "tool_call"; name: string; arguments: Record<string, any> } {
+  return event.type === "tool_call";
+}
+
+export function isToolResultEvent(event: ChatEvent): event is ChatEvent & { type: "tool_result"; name: string; result: string } {
+  return event.type === "tool_result";
 }

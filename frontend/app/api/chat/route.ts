@@ -6,7 +6,7 @@ const API_URLS = [
 ].filter((url): url is string => Boolean(url));
 
 export async function POST(req: Request) {
-  const { messages, id } = await req.json();
+  const { messages, id, model } = await req.json();
 
   const { createDataStreamResponse } = await import("ai");
   const { formatDataStreamPart } = await import("@ai-sdk/ui-utils");
@@ -40,6 +40,7 @@ export async function POST(req: Request) {
           message: lastUserText,
           conversation_id: id || null,
           messages: normalizedMessages,
+          model: model || "auto",
         }),
       });
       break;
@@ -122,6 +123,22 @@ export async function POST(req: Request) {
                   {
                     type: "thinking",
                     content: content,
+                    id: payload?.id ?? payload?.data?.id,
+                    request_id: payload?.request_id ?? payload?.data?.request_id,
+                  },
+                ]),
+              );
+            }
+          } else if (eventType === "routing") {
+            const modelId = payload?.data?.model;
+            if (typeof modelId === "string" && modelId.length > 0) {
+              dataStream.write(
+                formatDataStreamPart("data", [
+                  {
+                    type: "routing",
+                    model: modelId,
+                    tier: payload?.data?.tier,
+                    reason: payload?.data?.reason,
                     id: payload?.id ?? payload?.data?.id,
                     request_id: payload?.request_id ?? payload?.data?.request_id,
                   },

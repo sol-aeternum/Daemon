@@ -221,7 +221,10 @@ export const memoryApi = {
 # .env
 DATABASE_URL=postgresql://daemon:daemon@localhost:5432/daemon_memory
 EMBEDDING_MODEL=text-embedding-3-small
-EMBEDDING_PROVIDER=openrouter
+EMBEDDING_PROVIDER=openai
+OPENAI_API_KEY=your-openai-api-key
 MAX_CONTEXT_MESSAGES=50
 SIMILARITY_THRESHOLD=0.7
 ```
+
+**Note:** Embeddings use direct OpenAI API calls via `AsyncOpenAI` client, not OpenRouter. The `OPENAI_API_KEY` environment variable must be set for the memory layer to function.

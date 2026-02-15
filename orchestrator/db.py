@@ -8,6 +8,8 @@ from arq.connections import ArqRedis, RedisSettings, create_pool as arq_create_p
 from fastapi import Request
 
 from orchestrator.config import Settings
+from orchestrator.memory.encryption import ContentEncryption
+from orchestrator.memory.store import MemoryStore
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +19,7 @@ class AppState:
     settings: Settings
     db_pool: asyncpg.Pool | None = field(default=None)
     redis: ArqRedis | None = field(default=None)
+    memory_store: MemoryStore | None = field(default=None)
 
 
 async def init_app_state(settings: Settings) -> AppState:
@@ -36,6 +39,10 @@ async def init_app_state(settings: Settings) -> AppState:
             )
     else:
         logger.info("DATABASE_URL not set — running without DB")
+
+    if state.db_pool is not None:
+        encryption = ContentEncryption(settings.daemon_encryption_key)
+        state.memory_store = MemoryStore(state.db_pool, encryption)
 
     if settings.redis_url:
         try:

@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 import pytest
+import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from orchestrator.config import get_settings
 from orchestrator.main import app
 
 
-@pytest.fixture
-async def client():
+@pytest_asyncio.fixture
+async def client(monkeypatch):
     """Create an async test client."""
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client
+    monkeypatch.setenv("DATABASE_URL", "")
+    monkeypatch.setenv("REDIS_URL", "")
+    get_settings.cache_clear()
+
+    async with app.router.lifespan_context(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            yield client
 
 
 @pytest.mark.asyncio
@@ -21,7 +28,7 @@ async def test_health_endpoint(client):
     """Test the health check endpoint."""
     response = await client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json()["status"] == "ok"
 
 
 @pytest.mark.asyncio
@@ -29,6 +36,7 @@ async def test_providers_endpoint_mock_mode(client, monkeypatch):
     """Test the providers endpoint in mock mode."""
     monkeypatch.setenv("MOCK_LLM", "true")
     monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
+    get_settings.cache_clear()
 
     response = await client.get("/providers")
     assert response.status_code == 200
@@ -44,6 +52,7 @@ async def test_chat_stream_emits_done_mock_mode(client, monkeypatch):
     """Test that the chat endpoint emits the done event in mock mode."""
     monkeypatch.setenv("MOCK_LLM", "true")
     monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
+    get_settings.cache_clear()
 
     response = await client.post(
         "/chat",
@@ -71,6 +80,7 @@ async def test_openai_models_endpoint_mock_mode(client, monkeypatch):
     monkeypatch.setenv("MOCK_LLM", "true")
     monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
     monkeypatch.setenv("OPENROUTER_MODEL", "openrouter-uncensored")
+    get_settings.cache_clear()
 
     response = await client.get("/v1/models")
     assert response.status_code == 200
@@ -93,6 +103,7 @@ async def test_openai_chat_completions_streaming_mock_mode(client, monkeypatch):
     """Test the OpenAI-compatible streaming chat completions endpoint."""
     monkeypatch.setenv("MOCK_LLM", "true")
     monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
+    get_settings.cache_clear()
 
     response = await client.post(
         "/v1/chat/completions",
@@ -121,6 +132,7 @@ async def test_openai_chat_completions_non_streaming_mock_mode(client, monkeypat
     """Test the OpenAI-compatible non-streaming chat completions endpoint."""
     monkeypatch.setenv("MOCK_LLM", "true")
     monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
+    get_settings.cache_clear()
 
     response = await client.post(
         "/v1/chat/completions",
@@ -155,6 +167,7 @@ async def test_chat_with_provider_selection_mock_mode(client, monkeypatch):
     """Test that provider can be selected per-request."""
     monkeypatch.setenv("MOCK_LLM", "true")
     monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
+    get_settings.cache_clear()
 
     # Request with explicit provider
     response = await client.post(
@@ -172,6 +185,7 @@ async def test_chat_with_provider_selection_mock_mode(client, monkeypatch):
 async def test_api_key_authentication(client, monkeypatch):
     """Test that API key authentication works when configured."""
     monkeypatch.setenv("DAEMON_API_KEY", "test-secret-key")
+    get_settings.cache_clear()
 
     # Request without key should fail
     response = await client.get("/health")

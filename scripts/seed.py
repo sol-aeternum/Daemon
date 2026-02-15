@@ -19,13 +19,24 @@ async def seed_default_user():
     try:
         result = await conn.execute(
             """
-            INSERT INTO users (id, email, name, preferences, created_at, updated_at)
-            VALUES ($1::uuid, $2, $3, $4::jsonb, NOW(), NOW())
+            INSERT INTO users (
+                id,
+                email,
+                name,
+                username,
+                preferences,
+                settings,
+                created_at,
+                updated_at
+            )
+            VALUES ($1::uuid, $2, $3, $4, $5::jsonb, $6::jsonb, NOW(), NOW())
             ON CONFLICT (id) DO NOTHING
         """,
             DEFAULT_USER_ID,
             "default@daemon.local",
             "Default User",
+            "default",
+            "{}",
             "{}",
         )
 

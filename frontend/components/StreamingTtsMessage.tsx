@@ -91,13 +91,13 @@ export function StreamingTtsMessage({
     startedRef.current = true;
   };
 
-  return (
-    <button
-      type="button"
-      onClick={handleClick}
-      className="ml-2 inline-flex items-center gap-1 rounded px-1 py-0.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-      title={isPlaying ? "Stop TTS" : isConnecting ? "Connecting..." : "Play TTS"}
-    >
+   return (
+     <button
+       type="button"
+       onClick={handleClick}
+       className="ml-2 inline-flex items-center gap-1 rounded px-1 py-0.5 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+       title={isPlaying ? "Stop TTS" : isConnecting ? "Connecting..." : "Play TTS"}
+     >
       {isConnecting ? (
         <span className="animate-pulse">Connecting...</span>
       ) : isPlaying ? (

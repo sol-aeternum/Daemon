@@ -102,6 +102,7 @@ class ChatRequest(BaseModel):
     message: str
     messages: list[dict[str, Any]] | None = None
     metadata: dict[str, Any] | None = Field(default=None)
+    model: str | None = Field(default=None, description="Model override or auto")
     # Provider selection - uses default if not specified
     # Supported: "openrouter", "opencode_zen", or any custom provider
     provider: str | None = Field(

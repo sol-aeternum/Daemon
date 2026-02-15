@@ -1,4 +1,20 @@
 services:
+  migrate:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://daemon:daemon@postgres:5432/daemon}
+    volumes:
+      - .:/app
+    command: python scripts/migrate.py
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - daemon-network
+    restart: "no"
+
   backend:
     build:
       context: .
@@ -6,14 +22,50 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DAEMON_API_KEY=${DAEMON_API_KEY:-sk-test}
+      - DAEMON_API_KEY=${DAEMON_API_KEY}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
       - BRAVE_API_KEY=${BRAVE_API_KEY}
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
       - MOCK_LLM=${MOCK_LLM:-false}
+      - DATABASE_URL=${DATABASE_URL:-postgresql://daemon:daemon@postgres:5432/daemon}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - DAEMON_ENCRYPTION_KEY=${DAEMON_ENCRYPTION_KEY}
     volumes:
       - .:/app
     command: uvicorn orchestrator.main:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - daemon-network
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      - DAEMON_API_KEY=${DAEMON_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - BRAVE_API_KEY=${BRAVE_API_KEY}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
+      - MOCK_LLM=${MOCK_LLM:-false}
+      - DATABASE_URL=${DATABASE_URL:-postgresql://daemon:daemon@postgres:5432/daemon}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - DAEMON_ENCRYPTION_KEY=${DAEMON_ENCRYPTION_KEY}
+    volumes:
+      - .:/app
+    command: python -m orchestrator.worker.worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks:
       - daemon-network
 
@@ -24,7 +76,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - DAEMON_API_KEY=${DAEMON_API_KEY:-sk-test}
+      - DAEMON_API_KEY=${DAEMON_API_KEY}
       - NEXT_PUBLIC_API_URL=http://localhost:8000
     volumes:
       - ./frontend:/app
@@ -41,7 +93,7 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - OPENAI_API_KEYS=${DAEMON_API_KEY:-sk-test}
+      - OPENAI_API_KEYS=${DAEMON_API_KEY}
       - OPENAI_API_BASE_URLS=http://backend:8000
       - ENABLE_OLLAMA_API=false
     volumes:
@@ -52,13 +104,13 @@ services:
       - daemon-network
 
   postgres:
-    image: pgvector/pgvector:pg15
+    image: pgvector/pgvector:pg16
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-daemon}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-daemon}
       - POSTGRES_DB=${POSTGRES_DB:-daemon}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - daemon_postgres16_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
@@ -89,5 +141,5 @@ networks:
 
 volumes:
   open-webui-data:
-  postgres_data:
+  daemon_postgres16_data:
   redis_data:

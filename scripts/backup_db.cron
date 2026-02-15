@@ -1,0 +1,1 @@
+0 3 * * * /app/scripts/backup_db.py

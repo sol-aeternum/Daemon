@@ -1,0 +1,24 @@
+{
+  "project_memories": [
+    {
+      "content": "Daemon is a multi-agent AI assistant with PostgreSQL memory persistence",
+      "category": "project",
+      "source_type": "bootstrap"
+    },
+    {
+      "content": "Daemon uses FastAPI for the backend API and Next.js for the frontend",
+      "category": "project",
+      "source_type": "bootstrap"
+    },
+    {
+      "content": "The memory layer uses pgvector for vector storage and similarity search",
+      "category": "project",
+      "source_type": "bootstrap"
+    },
+    {
+      "content": "Message extraction runs via ARQ background workers for async processing",
+      "category": "project",
+      "source_type": "bootstrap"
+    }
+  ]
+}

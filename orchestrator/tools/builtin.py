@@ -100,7 +100,9 @@ class CalculateTool(Tool):
             return json.dumps({"error": f"Calculation failed: {str(e)}"})
 
 
-def create_default_registry(brave_api_key: str | None = None):
+def create_default_registry(
+    brave_api_key: str | None = None, memory_store: Any = None, user_id: Any = None
+):
     from orchestrator.tools.registry import ToolRegistry
     from orchestrator.tools.web_search import WebSearchTool
     from orchestrator.tools.http_request import HttpRequestTool
@@ -118,4 +120,11 @@ def create_default_registry(brave_api_key: str | None = None):
     registry.register(ReminderListTool())
     registry.register(SpawnAgentTool())
     registry.register(SpawnMultipleTool())
+
+    if memory_store and user_id:
+        from orchestrator.memory.tools import MemoryReadTool, MemoryWriteTool
+
+        registry.register(MemoryReadTool(memory_store, user_id))
+        registry.register(MemoryWriteTool(memory_store, user_id))
+
     return registry

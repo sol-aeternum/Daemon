@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# pyright: reportMissingImports=false
+
 from functools import lru_cache
 from typing import Any
 
@@ -128,6 +130,13 @@ class Settings(BaseSettings):
     tier_byok_reader_model: str = ""
     tier_byok_embeddings_model: str = ""
 
+    # ===== AUTO-ROUTING MODEL TIERS =====
+    auto_fast_model: str = "openrouter/google/gemini-2.5-flash"
+    auto_fast_temp: float = 0.7
+
+    auto_reasoning_model: str = "openrouter/moonshotai/kimi-k2.5"
+    auto_reasoning_temp: float = 0.7
+
     # ===== PROVIDER CONFIGURATION =====
     # OpenRouter (primary provider)
     openrouter_api_key: str | None = None
@@ -149,6 +158,9 @@ class Settings(BaseSettings):
     database_url: str | None = None
     redis_url: str | None = None
     daemon_encryption_key: str | None = None
+
+    # ===== TITLE GENERATION =====
+    title_model: str = "openrouter/openai/gpt-4o-mini"
 
     def get_tier_config(self, tier: str | None = None) -> TierConfig:
         """Get model configuration for a specific tier.
