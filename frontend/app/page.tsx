@@ -2,6 +2,7 @@
 
 import { useChat } from "@ai-sdk/react";
 import { useState, useRef, useEffect } from "react";
+import { useStt } from "../hooks/useStt";
 import { ErrorProvider, useError } from "../components/ErrorProvider";
 import { ConnectionStatus } from "../components/ConnectionStatus";
 import { ConversationList } from "../components/ConversationList";
@@ -29,6 +30,11 @@ function ChatContent() {
     format: string;
   };
 
+  type SttSettings = {
+    language: string;
+    enablePartials: boolean;
+  };
+
   const DEFAULT_TTS_SETTINGS: TtsSettings = {
     enabled: true,
     voice: "Xb7hH8MSUJpSbSDYk0k2",
@@ -37,10 +43,31 @@ function ChatContent() {
     format: "mp3",
   };
 
+  const DEFAULT_STT_SETTINGS: SttSettings = {
+    language: "en",
+    enablePartials: true,
+  };
+
   const { value: ttsSettings } = useLocalStorage<TtsSettings>(
     "tts_settings",
     DEFAULT_TTS_SETTINGS
   );
+
+  const { value: sttSettings, setValue: setSttSettings } = useLocalStorage<SttSettings>(
+    "stt_settings",
+    DEFAULT_STT_SETTINGS
+  );
+
+  const effectiveSttSettings = sttSettings || DEFAULT_STT_SETTINGS;
+
+  const { isRecording, isConnecting, start, stop, error: sttError } = useStt({
+    onTranscript: (text) => setInput(text),
+    onPartialTranscript: (text) => setInput(text),
+    language: effectiveSttSettings.language,
+    enablePartials: effectiveSttSettings.enablePartials,
+    debounceMs: 100,
+  });
+
   const [connectionStatus, setConnectionStatus] = useState<"connected" | "disconnected" | "reconnecting">("connected");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -234,10 +261,17 @@ function ChatContent() {
             handleNewChat();
             setIsSidebarOpen(false);
           }}
+          sttSettings={effectiveSttSettings}
+          setSttSettings={setSttSettings}
         />
       </div>
 
       <div className="flex-1 flex flex-col w-full min-w-0 relative">
+        {isRecording && (
+          <div className="bg-red-500 text-white px-4 py-2 text-center text-sm font-medium animate-pulse">
+            Recording... Tap mic to stop
+          </div>
+        )}
         <MobileHeader 
           title={currentConversation?.title || "New conversation"} 
           onOpenSidebar={() => setIsSidebarOpen(true)}
@@ -344,9 +378,12 @@ function ChatContent() {
               <RetryButton onRetry={reload} isLoading={isLoading} />
             )}
             <MicButton
-              onTranscript={(text) => setInput(text)}
-              onPartialTranscript={(text) => setInput(text)}
+              isRecording={isRecording}
+              isConnecting={isConnecting}
+              start={start}
+              stop={stop}
               disabled={isLoading || !currentId || !isOnline}
+              error={sttError}
             />
             <input
               value={input}

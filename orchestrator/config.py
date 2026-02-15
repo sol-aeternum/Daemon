@@ -145,6 +145,11 @@ class Settings(BaseSettings):
     # Brave Search API (Web search)
     brave_api_key: str | None = None
 
+    # ===== MEMORY LAYER =====
+    database_url: str | None = None
+    redis_url: str | None = None
+    daemon_encryption_key: str | None = None
+
     def get_tier_config(self, tier: str | None = None) -> TierConfig:
         """Get model configuration for a specific tier.
 

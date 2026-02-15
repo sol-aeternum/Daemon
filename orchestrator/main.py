@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import os
 import httpx
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from pathlib import Path
@@ -31,6 +34,13 @@ from orchestrator.daemon import (
     sse,
     stream_sse_chat,
 )
+from orchestrator.db import (
+    AppState,
+    check_db_health,
+    close_app_state,
+    get_app_state,
+    init_app_state,
+)
 from orchestrator.models_cache import fetch_openrouter_models, get_fallback_model
 
 
@@ -52,8 +62,21 @@ from orchestrator.router import route_message
 from orchestrator.tools.builtin import create_default_registry
 from orchestrator.tools.completion import completion_with_tools
 
+logger = logging.getLogger(__name__)
 
-app = FastAPI(title="daemon-orchestrator")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    settings = get_settings()
+    state = await init_app_state(settings)
+    app.state.app_state = state
+    logger.info("AppState initialised")
+    yield
+    await close_app_state(state)
+    logger.info("AppState shut down")
+
+
+app = FastAPI(title="daemon-orchestrator", lifespan=lifespan)
 
 # Enable CORS for web clients
 app.add_middleware(
@@ -79,8 +102,14 @@ def require_api_key(settings: Settings, authorization: str | None) -> None:
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health(request: Request) -> dict[str, Any]:
+    base: dict[str, Any] = {"status": "ok"}
+    try:
+        state = get_app_state(request)
+        base["services"] = await check_db_health(state)
+    except Exception:
+        pass
+    return base
 
 
 @app.post("/v1/tools/test")
@@ -736,12 +765,77 @@ async def chat(
     payload: ChatRequest,
     request: Request,
     settings: Settings = Depends(get_settings),
+    app_state: AppState = Depends(get_app_state),
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> StreamingResponse:
     require_api_key(settings, authorization)
 
+    # Initialize persistence with graceful degradation
+    store = None
+    user_id = None
+    conversation_uuid = None
+
+    if app_state and app_state.db_pool:
+        try:
+            from orchestrator.memory.store import MemoryStore
+            from orchestrator.memory.encryption import ContentEncryption
+
+            encryption = ContentEncryption(settings.daemon_encryption_key)
+            store = MemoryStore(app_state.db_pool, encryption)
+
+            # Use default user ID for now
+            user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
+        except Exception:
+            pass  # Graceful degradation
+
     conversation_id = payload.conversation_id or new_conversation_id()
     request_id = new_request_id()
+
+    # Create or get conversation if persistence is available
+    if store and user_id:
+        try:
+            # Try to parse conversation_id as UUID
+            try:
+                conv_uuid = uuid.UUID(conversation_id.replace("conv_", ""))
+                existing = await store.get_conversation(conv_uuid)
+                if existing:
+                    conversation_uuid = conv_uuid
+                else:
+                    # Create new conversation
+                    title = (
+                        user_message[:50] + "..."
+                        if len(user_message) > 50
+                        else user_message
+                    )
+                    conv = await store.create_conversation(
+                        user_id=user_id, pipeline=decision.pipeline, title=title
+                    )
+                    conversation_uuid = conv["id"]
+                    conversation_id = f"conv_{conversation_uuid}"
+            except ValueError:
+                # Invalid UUID format, create new
+                title = (
+                    user_message[:50] + "..."
+                    if len(user_message) > 50
+                    else user_message
+                )
+                conv = await store.create_conversation(
+                    user_id=user_id, pipeline=decision.pipeline, title=title
+                )
+                conversation_uuid = conv["id"]
+                conversation_id = f"conv_{conversation_uuid}"
+
+            # Insert user message
+            if conversation_uuid:
+                await store.insert_message(
+                    conversation_id=conversation_uuid,
+                    user_id=user_id,
+                    role="user",
+                    content=user_message,
+                    model=None,
+                )
+        except Exception:
+            pass  # Graceful degradation - continue without persistence
 
     # Get provider configuration from request or default
     provider_config = settings.get_provider_config(payload.provider)

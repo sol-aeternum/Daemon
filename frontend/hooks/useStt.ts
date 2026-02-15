@@ -7,6 +7,8 @@ interface UseSttOptions {
   onPartialTranscript?: (text: string) => void;
   onError?: (error: Error) => void;
   language?: string;
+  enablePartials?: boolean;
+  debounceMs?: number;
 }
 
 interface UseSttState {
@@ -16,7 +18,14 @@ interface UseSttState {
 }
 
 export function useStt(options: UseSttOptions = {}) {
-  const { onTranscript, onPartialTranscript, onError, language = "en" } = options;
+  const { 
+    onTranscript, 
+    onPartialTranscript, 
+    onError, 
+    language = "en",
+    enablePartials = true,
+    debounceMs = 200
+  } = options;
   
   const [state, setState] = useState<UseSttState>({
     isRecording: false,
@@ -29,10 +38,16 @@ export function useStt(options: UseSttOptions = {}) {
   const audioContextRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const stop = useCallback(() => {
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
+
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
 
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
@@ -107,8 +122,14 @@ export function useStt(options: UseSttOptions = {}) {
         const text = message.text || message.transcript;
 
         if (msgType === "partial_transcript" && text) {
-          onPartialTranscript?.(text);
+          if (enablePartials) {
+            if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+            debounceTimerRef.current = setTimeout(() => {
+              onPartialTranscript?.(text);
+            }, debounceMs);
+          }
         } else if (msgType === "committed_transcript" && text) {
+          if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
           onTranscript?.(text);
         } else if (message.error) {
           const error = new Error(message.error);
@@ -171,7 +192,7 @@ export function useStt(options: UseSttOptions = {}) {
       onError?.(err);
       stop();
     }
-  }, [language, onTranscript, onPartialTranscript, onError, stop]);
+  }, [language, onTranscript, onPartialTranscript, onError, stop, enablePartials, debounceMs]);
 
   useEffect(() => {
     return () => stop();

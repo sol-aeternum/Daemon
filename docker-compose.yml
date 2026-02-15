@@ -51,9 +51,43 @@ services:
     networks:
       - daemon-network
 
+  postgres:
+    image: pgvector/pgvector:pg15
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-daemon}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-daemon}
+      - POSTGRES_DB=${POSTGRES_DB:-daemon}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-daemon}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - daemon-network
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - daemon-network
+
 networks:
   daemon-network:
     driver: bridge
 
 volumes:
   open-webui-data:
+  postgres_data:
+  redis_data:
