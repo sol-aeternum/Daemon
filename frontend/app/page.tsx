@@ -89,7 +89,7 @@ function ChatContent() {
     setSearchQuery,
   } = useConversationHistory();
 
-  const [activeModel, setActiveModel] = useState<string>("gpt-4o");
+  const [activeModel, setActiveModel] = useState<string>("auto");
   const formRef = useRef<HTMLFormElement>(null);
 
   const currentConversation = getCurrentConversation();
