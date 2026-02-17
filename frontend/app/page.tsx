@@ -5,6 +5,7 @@ import { useChat } from "@ai-sdk/react";
 import { useState, useRef, useEffect, Suspense } from "react";
 import { useStt } from "../hooks/useStt";
 import { ErrorProvider, useError } from "../components/ErrorProvider";
+import { ErrorBoundary } from "../components/ErrorBoundary";
 import { ConnectionStatus } from "../components/ConnectionStatus";
 import { ConversationList } from "../components/ConversationList";
 import { ToolCallLog } from "../components/ToolCallBlock";
@@ -435,7 +436,9 @@ function ChatContentWrapper() {
 
   return (
     <ErrorProvider>
-      <ChatContent key={currentId || "new"} />
+      <ErrorBoundary>
+        <ChatContent key={currentId || "new"} />
+      </ErrorBoundary>
     </ErrorProvider>
   );
 }
