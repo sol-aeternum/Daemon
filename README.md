@@ -1,209 +1,343 @@
-# Daemon Orchestrator (Phase 1)
+# Daemon — Personal Multi-Agent Assistant
 
-FastAPI service that streams chat responses over SSE and routes LLM calls via LiteLLM.
+A mobile-first AI assistant with multi-model orchestration, persistent memory, and specialized subagents. FastAPI backend + Next.js 16 frontend. Self-hosted with Docker Compose.
+
+**Live:** `https://dmn.solaeternum.xyz` (Pro tier: Kimi K2.5 orchestrator)
+
+---
+
+## What It Is
+
+Daemon is a personal AI assistant that:
+
+- **Responds directly** most of the time (Kimi K2.5 via OpenRouter)
+- **Spawns subagents** when specialized capability is needed (@research, @image, @audio, @code, @reader)
+- **Remembers context** across conversations via PostgreSQL + pgvector memory system
+- **Runs entirely self-hosted** with Docker Compose (cloud LLMs via OpenRouter, data stays local)
+
+### Core Philosophy
+
+> Daemon is the assistant — not a router that delegates everything. It responds directly and only escalates to subagents when the task demands specialized capability.
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Next.js 16 Frontend (PWA)                              │
+│  React 19 + Vercel AI SDK + Tailwind CSS               │
+│  Voice I/O • Markdown • Offline Support                │
+└────────────────────┬────────────────────────────────────┘
+                     │ /api/chat (SSE stream)
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│  FastAPI Backend                                        │
+│                                                         │
+│  ┌─────────────────────────────────────────────────┐   │
+│  │  Orchestrator (Kimi K2.5)                       │   │
+│  │  Streaming SSE • Tool Use • Memory Injection   │   │
+│  └────────────┬────────────────────────────────────┘   │
+│               │                                         │
+│      ┌────────┴────────┐                                │
+│      ▼                 ▼                                │
+│  Subagents         Tools                                │
+│  @research         • web_search (Brave)                │
+│  @image            • http_request                      │
+│  @audio            • calculate                         │
+│  @code             • get_time                          │
+│  @reader           • notifications (ntfy.sh)           │
+│                    • memory_read / memory_write        │
+│                                                         │
+│  ┌─────────────────────────────────────────────────┐   │
+│  │  Memory Layer                                   │   │
+│  │  PostgreSQL + pgvector • Fernet Encryption     │   │
+│  │  Redis + arq (background jobs)                 │   │
+│  └─────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Tech Stack
+
+| Layer | Technology |
+|-------|------------|
+| **Backend** | Python 3.11, FastAPI, LiteLLM, asyncpg, arq |
+| **Frontend** | Next.js 16, React 19, Vercel AI SDK 4, Tailwind CSS |
+| **Database** | PostgreSQL 16 + pgvector extension |
+| **Queue** | Redis 7 + arq (async job processor) |
+| **LLMs** | OpenRouter (88 models), tier-based routing |
+| **Embeddings** | OpenAI text-embedding-3-small |
+| **Voice** | ElevenLabs (TTS, STT Scribe, sound FX) |
+| **Search** | Brave Search API |
+| **Notifications** | ntfy.sh |
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- Docker + Docker Compose
+- OpenRouter API key
+- OpenAI API key (for embeddings)
+- (Optional) Brave Search API key, ElevenLabs API key, ntfy.sh topic
+
+### 1. Clone & Configure
+
+```bash
+git clone https://github.com/sol-aeternum/Daemon.git
+cd Daemon
+
+# Copy and edit environment variables
+cp .env.example .env
+# Edit .env with your API keys
+```
+
+### 2. Start Services
+
+```bash
+docker compose up --build
+```
+
+This starts 5 containers:
+- **frontend**: `http://localhost:3000` (Next.js dev server)
+- **backend**: `http://localhost:8000` (FastAPI)
+- **worker**: Background job processor (arq)
+- **postgres**: PostgreSQL + pgvector
+- **redis**: Redis for job queue
+
+### 3. Access the App
+
+Open `http://localhost:3000` in your browser.
+
+Install as PWA on mobile: Chrome menu → "Add to Home Screen"
+
+---
 
 ## Features
 
-- **Multi-Provider LLM Support**: OpenRouter, or any custom provider
-- **OpenAI-Compatible API**: Works with Open WebUI and other OpenAI-compatible frontends
-- **Per-Request Provider Selection**: Override default provider in each chat request
-- **Flexible Provider Configuration**: Environment-based setup with custom provider support
-- **SSE Streaming**: Real-time token streaming with keepalive pings
-- **Flexible Configuration**: Environment-based provider setup with custom provider support
+### 🤖 Multi-Model Orchestration
 
-## Local dev
+Tier-based configuration with auto-routing:
 
-Prereqs: `uv` installed.
+| Tier | Price | Orchestrator | Subagents | Use Case |
+|------|-------|--------------|-----------|----------|
+| Free | $0 | Kimi K2.5 | None | Basic chat |
+| Starter | $9/mo | Kimi K2.5 | Sonnet, Gemini | Research + code |
+| **Pro** | $19/mo | Kimi K2.5 | Full suite | **Default tier** |
+| Max | $29/mo | Claude 3 Opus | Premium models | Heavy reasoning |
+| BYOK | $9/mo | Kimi K2.5 | User-configured | Custom OpenRouter key |
+
+All model assignments are env-var configurable — swap models without code changes.
+
+### 🧠 Persistent Memory
+
+- **Automatic extraction**: GPT-4o-mini extracts facts from conversations
+- **Semantic search**: pgvector + composite scoring (similarity × recency × confidence)
+- **Encryption at rest**: Fernet-encrypted content, plaintext embeddings for search
+- **Memory tools**: `memory_read` and `memory_write` for explicit recall
+
+### 🎯 Subagent Framework
+
+Spawn specialized agents with `@mention`:
+
+| Subagent | Trigger | Capability |
+|----------|---------|------------|
+| @research | `@research quantum computing` | Brave Search + synthesis |
+| @image | `@image a futuristic city` | Gemini Flash image generation |
+| @audio | `@audio generate rain sounds` | ElevenLabs sound FX |
+| @code | `@code review this function` | Code analysis + suggestions |
+| @reader | `@reader summarize https://...` | Web scraping + summarization |
+
+### 🎙️ Voice I/O
+
+- **TTS**: Streaming ElevenLabs with voice/model selection
+- **STT**: Push-to-talk with Scribe v1
+- **Sound FX**: Generate audio effects via @audio
+
+### 📱 PWA Features
+
+- Offline indicator + service worker caching
+- Mobile-optimized UI (ChatGPT-style interface)
+- Safe area insets for notched devices
+- Installable to home screen
+
+### 💬 Chat Features
+
+- **Streaming responses**: Real-time SSE with typing indicators
+- **Markdown rendering**: Code blocks, tables, links, formatting
+- **Rich content**: Image lightbox, audio player, tool call logs
+- **Conversation management**: Search, pin, rename, delete
+- **Model selector**: Full 88-model catalog with search
+
+---
+
+## API Endpoints
+
+### Chat (SSE Streaming)
+
+```bash
+curl -N -X POST http://localhost:8000/v1/chat \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer YOUR_KEY' \
+  -d '{
+    "message": "What is quantum computing?",
+    "conversation_id": "optional-existing-id"
+  }'
+```
+
+**Events:** `token`, `thinking`, `routing`, `tool_call`, `tool_result`, `final`, `error`, `done`
+
+### OpenAI-Compatible
+
+- `GET /v1/models` — List 88 available models
+- `POST /v1/chat/completions` — Standard chat (streaming/non-streaming)
+
+### Memory & Conversations
+
+- `GET /conversations` — List user's conversations
+- `GET /conversations/{id}` — Get conversation with messages
+- `POST /conversations` — Create new conversation
+- `GET /memories` — List extracted memories
+- `POST /memories/{id}/confirm` — Promote pending memory to active
+
+### System
+
+- `GET /health` — Health check
+- `GET /system/health` — Detailed system status
+- `GET /providers` — List configured LLM providers
+
+---
+
+## Project Structure
+
+```
+Daemon/
+├── orchestrator/           # FastAPI backend
+│   ├── main.py            # API routes, SSE streaming
+│   ├── daemon.py          # Core orchestration loop
+│   ├── config.py          # Tier system, provider config
+│   ├── prompts.py         # System prompts
+│   ├── memory/            # Memory pipeline
+│   │   ├── store.py       # PostgreSQL CRUD
+│   │   ├── extraction.py  # Fact extraction (GPT-4o-mini)
+│   │   ├── retrieval.py   # Semantic search + scoring
+│   │   ├── embedding.py   # text-embedding-3-small
+│   │   └── tools.py       # memory_read/write
+│   ├── agents/            # Subagent implementations
+│   ├── worker/            # arq background jobs
+│   └── routes/            # API route modules
+├── frontend/              # Next.js 16 frontend
+│   ├── app/               # App router (Next.js 13+)
+│   │   ├── page.tsx       # Main chat interface
+│   │   └── api/chat/      # SSE bridge to backend
+│   ├── components/        # React components
+│   │   ├── ChatInputBar.tsx
+│   │   ├── ConversationList.tsx
+│   │   ├── MarkdownMessage.tsx
+│   │   └── ToolCallBlock.tsx
+│   ├── hooks/             # Custom React hooks
+│   └── lib/               # Utilities, types
+├── docs/                  # Documentation
+│   ├── CURRENT_ISSUES.md  # Known bugs (2 remaining)
+│   ├── PROJECT_CONTEXT.md # Detailed architecture
+│   ├── ROADMAP.md         # Phase planning
+│   └── TECHNICAL_SPECS.md # API specs, schemas
+├── migrations/            # PostgreSQL migrations
+├── docker-compose.yml     # 5-service stack
+└── .env.example           # Configuration template
+```
+
+---
+
+## Configuration
+
+Key environment variables (see `.env.example` for full list):
+
+```env
+# Required
+OPENROUTER_API_KEY=sk-or-v1-...
+OPENAI_API_KEY=sk-...              # For embeddings only
+
+# Optional (for full features)
+BRAVE_API_KEY=...                  # @research subagent
+ELEVENLABS_API_KEY=...             # Voice I/O
+NTFY_TOPIC=...                     # Push notifications
+
+# Tier Configuration (all optional, have defaults)
+TIER_FREE_ORCHESTRATOR=openrouter/deepseek/deepseek-chat
+TIER_STARTER_ORCHESTRATOR=openrouter/kimi/k2.5
+TIER_PRO_ORCHESTRATOR=openrouter/kimi/k2.5
+TIER_MAX_ORCHESTRATOR=openrouter/anthropic/claude-3-opus
+```
+
+---
+
+## Development
+
+### Backend Only
 
 ```bash
 cd daemon
 uv run uvicorn orchestrator.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Health check:
+### Frontend Only
+
 ```bash
-curl http://localhost:8000/health
+cd frontend
+npm install
+npm run dev
 ```
 
-List available providers:
-```bash
-curl -H 'Authorization: Bearer YOUR_KEY' http://localhost:8000/providers
-```
-
-SSE chat (streaming):
-```bash
-curl -N -X POST http://localhost:8000/chat \
-  -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer YOUR_KEY' \
-  -d '{"message":"hello"}'
-```
-
-SSE chat with specific provider:
-```bash
-curl -N -X POST http://localhost:8000/chat \
-  -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer YOUR_KEY' \
-  -d '{"message":"hello","provider":"openrouter"}'
-```
-
-## Docker
+### Database Migrations
 
 ```bash
 cd daemon
-cp .env.example .env
-docker compose up --build
+# Create new migration
+alembic revision --autogenerate -m "description"
+
+# Apply migrations
+alembic upgrade head
 ```
 
-## Configuration
+### Background Jobs
 
-### Default Provider
+The worker container runs arq for async tasks:
+- `extract_memories` — Extract facts from completed conversations
+- `generate_title` — Auto-generate conversation titles
+- `generate_summary` — Create conversation summaries
+- `garbage_collect` — Clean up old data
 
-Set `DEFAULT_PROVIDER` in `.env`:
-- `openrouter` (default) - Multi-provider gateway
-- Any custom provider name configured via `PROVIDER_*` vars
+---
 
-### OpenRouter (Default)
+## Documentation
 
-```env
-DEFAULT_PROVIDER=openrouter
-OPENROUTER_API_KEY=your-key-here
-LITELLM_MODEL=openrouter/anthropic/claude-opus-4.5
-```
+| Document | Contents |
+|----------|----------|
+| [PROJECT_CONTEXT.md](docs/PROJECT_CONTEXT.md) | Detailed architecture, current state, decisions |
+| [PROJECT_BRIEF.md](docs/PROJECT_BRIEF.md) | High-level overview, tier system, hardware plans |
+| [CURRENT_ISSUES.md](docs/CURRENT_ISSUES.md) | Known bugs (2 low-priority issues remaining) |
+| [ROADMAP.md](docs/ROADMAP.md) | Phase planning: Phase 1 ✅, Phase 2 ~90%, Phase 3 pending |
+| [TECHNICAL_SPECS.md](docs/TECHNICAL_SPECS.md) | System prompts, schemas, API specifications |
+| [OPEN_QUESTIONS.md](docs/OPEN_QUESTIONS.md) | Unresolved design decisions |
 
-### OpenCode Zen
+---
 
-```env
-DEFAULT_PROVIDER=opencode_zen
-OPENCODE_API_KEY=your-key-here
-OPENCODE_MODEL=opencode/claude-opus-4-5
-```
+## Status
 
-### Custom Providers
+- **Phase 1 (Cloud Orchestration)**: ✅ Complete
+- **Phase 2 (Memory System)**: ✅ ~90% Complete (extraction pipeline operational, minor embedding vendor lock-in)
+- **Phase 3 (Local Pipeline)**: ⏸️ Blocked on RTX 5090 acquisition
 
-Add any OpenAI-compatible provider:
+See [CURRENT_ISSUES.md](docs/CURRENT_ISSUES.md) for remaining work (2 low-priority architectural items).
 
-```env
-PROVIDER_CUSTOM_BASE_URL=https://api.custom-ai.com/v1
-PROVIDER_CUSTOM_API_KEY=your-api-key
-PROVIDER_CUSTOM_MODEL=custom-model-name
-PROVIDER_CUSTOM_REQUIRES_AUTH=true
-```
+---
 
-Then use it:
-```bash
-curl -X POST http://localhost:8000/chat \
-  -H 'Authorization: Bearer YOUR_KEY' \
-  -d '{"message":"hello","provider":"custom"}'
-```
+## License
 
-## API Reference
+MIT — Personal use and modification allowed. Attribution appreciated.
 
-### POST /chat
+---
 
-Stream chat completion with SSE.
-
-**Request:**
-```json
-{
-  "conversation_id": "optional-conversation-id",
-  "message": "Hello, Daemon!",
-  "metadata": {},
-  "provider": "openrouter"  // optional, defaults to DEFAULT_PROVIDER
-}
-```
-
-**Response:** Server-Sent Events stream with `token`, `final`, and `done` events.
-
-### GET /providers
-
-List all configured providers and the current default.
-
-**Response:**
-```json
-{
-  "providers": ["openrouter"],
-  "default": "openrouter"
-}
-```
-
-### GET /health
-
-Health check endpoint.
-
-**Response:** `{"status": "ok"}`
-
-## Environment Variables
-
-See `.env.example` for all available options.
-
-Key variables:
-- `DEFAULT_PROVIDER` - Default LLM provider
-- `DAEMON_API_KEY` - API authentication (optional)
-- `MOCK_LLM` - Use mock responses for testing
-- `REQUEST_TIMEOUT_S` - Request timeout
-- `STREAM_PING_INTERVAL_S` - SSE keepalive interval
-
-## Open WebUI Integration
-
-Daemon provides OpenAI-compatible endpoints for seamless integration with Open WebUI.
-
-### Setup
-
-1. Start Daemon:
-```bash
-cd daemon
-uv run uvicorn orchestrator.main:app --host 0.0.0.0 --port 8000
-```
-
-2. Run Open WebUI with Daemon as the backend:
-```bash
-docker run -d -p 3000:8080 \
-  -e OPENAI_API_BASE_URL="http://host.docker.internal:8000/v1" \
-  -e OPENAI_API_KEY="your-daemon-api-key-or-empty" \
-  -e ENABLE_OLLAMA_API=False \
-  -e ENABLE_OPENAI_API=True \
-  ghcr.io/open-webui/open-webui:main
-```
-
-3. Open http://localhost:3000 and start chatting
-
-**Note:** On Linux, use host network mode or the actual IP instead of `host.docker.internal`.
-
-### OpenAI-Compatible Endpoints
-
-Daemon implements the following OpenAI-compatible endpoints:
-
-- `GET /v1/models` - List available models
-- `POST /v1/chat/completions` - Chat completions (streaming and non-streaming)
-
-**Test the OpenAI endpoint:**
-```bash
-# List models
-curl http://localhost:8000/v1/models
-
-# Chat completion (non-streaming)
-curl -X POST http://localhost:8000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "openrouter/anthropic/claude-opus-4.5",
-    "messages": [{"role": "user", "content": "Say hello"}],
-    "stream": false
-  }'
-
-# Chat completion (streaming)
-curl -N -X POST http://localhost:8000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "openrouter/anthropic/claude-opus-4.5",
-    "messages": [{"role": "user", "content": "Say hello"}],
-    "stream": true
-  }'
-```
-
-## Architecture
-
-- **config.py**: Multi-provider configuration with dynamic provider loading
-- **daemon.py**: LiteLLM streaming integration with provider-specific handling
-- **main.py**: FastAPI endpoints including OpenAI-compatible `/v1/*` routes
-- **models.py**: Pydantic models including OpenAI-compatible request/response types
-- **router.py**: Message routing logic
+Built with [Sisyphus](https://github.com/code-yeongyu/oh-my-opencode) | Self-hosted on Ubuntu + Docker
