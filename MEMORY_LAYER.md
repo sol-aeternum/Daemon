@@ -38,7 +38,7 @@ CREATE TABLE messages (
     image_url TEXT,
     
     -- Vector embedding for semantic search
-    embedding VECTOR(1536) -- OpenAI text-embedding-3-small
+    embedding VECTOR(1536) -- OpenAI text-embedding-3-small with OpenRouter fallback
 );
 
 CREATE INDEX idx_messages_conversation ON messages(conversation_id, created_at);
@@ -221,10 +221,51 @@ export const memoryApi = {
 # .env
 DATABASE_URL=postgresql://daemon:daemon@localhost:5432/daemon_memory
 EMBEDDING_MODEL=text-embedding-3-small
-EMBEDDING_PROVIDER=openai
 OPENAI_API_KEY=your-openai-api-key
+OPENROUTER_API_KEY=your-openrouter-api-key
 MAX_CONTEXT_MESSAGES=50
 SIMILARITY_THRESHOLD=0.7
 ```
 
-**Note:** Embeddings use direct OpenAI API calls via `AsyncOpenAI` client, not OpenRouter. The `OPENAI_API_KEY` environment variable must be set for the memory layer to function.
+**Note:** Embeddings use direct OpenAI API calls via `AsyncOpenAI` client as the primary path, with automatic failover to OpenRouter via LiteLLM. Both `OPENAI_API_KEY` and `OPENROUTER_API_KEY` should be configured for resilient operation.
+
+## Embedding Failover
+
+The embedding pipeline implements a primary/fallback pattern for resilience:
+
+### Primary Path
+- Direct OpenAI API via `AsyncOpenAI` client
+- Model: `text-embedding-3-small`
+- Retry logic: 3 attempts with exponential backoff
+- Latency: ~50-100ms
+
+### Fallback Path
+- OpenRouter via LiteLLM: `openrouter/openai/text-embedding-3-small`
+- Activates on: network errors, auth failures, rate limits, timeouts
+- Same output format: 1536-dimensional float vectors
+- Single attempt (no retry on fallback)
+
+### Observability
+
+Module-level counters track fallback activations:
+
+```python
+from orchestrator.memory.embedding import _fallback_count, _last_fallback_at
+
+print(f"Fallback activations: {_fallback_count}")
+print(f"Last fallback at: {_last_fallback_at}")
+```
+
+Available via `/status` endpoint:
+```json
+{
+  "embedding_fallback_activations": 0,
+  "embedding_last_fallback_at": null
+}
+```
+
+### Logging
+
+- **Warning**: When fallback activates (includes exception details)
+- **Info**: When fallback succeeds
+- **Error**: When both primary and fallback fail
