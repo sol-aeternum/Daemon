@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { Paperclip, Send } from "lucide-react";
 import { ModelSelector } from "./ModelSelector";
 import { MicButton } from "./MicButton";
@@ -16,7 +16,9 @@ interface ChatInputBarProps {
   stopRecording: () => void;
   micDisabled?: boolean;
   micError?: Error | null;
-  onSendMessage: (message: string) => void;
+  input: string;
+  onInputChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
+  onSubmit: (e: React.FormEvent) => void;
   isLoading: boolean;
 }
 
@@ -29,10 +31,11 @@ export function ChatInputBar({
   stopRecording,
   micDisabled,
   micError,
-  onSendMessage,
+  input,
+  onInputChange,
+  onSubmit,
   isLoading,
 }: ChatInputBarProps) {
-  const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -45,19 +48,10 @@ export function ChatInputBar({
     }
   }, [input]);
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
-    }
-  };
-
-  const handleSend = () => {
-    if (!input.trim() || isLoading) return;
-    onSendMessage(input);
-    setInput("");
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
+      onSubmit(e);
     }
   };
 
@@ -67,7 +61,7 @@ export function ChatInputBar({
         <ModelSelector selected={selectedModel} onSelect={onSelectModel} />
       </div>
 
-      <div className="relative flex items-end gap-2 p-3 bg-gpt-input rounded-xl border border-gray-600/50 shadow-lg focus-within:border-gray-500/80 transition-colors">
+      <div className="relative flex items-end gap-2 p-3 bg-white rounded-xl border border-daemon-border-primary shadow-sm focus-within:border-daemon-border-secondary transition-colors">
         <button
           type="button"
           className="p-2 text-gray-400 hover:text-white transition-colors rounded-md hover:bg-gray-700/50"
@@ -79,11 +73,11 @@ export function ChatInputBar({
         <textarea
           ref={textareaRef}
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={onInputChange}
           onKeyDown={handleKeyDown}
           placeholder="Send a message..."
           rows={1}
-          className="flex-1 bg-transparent text-gpt-text-primary placeholder-gray-400 resize-none focus:outline-none py-2 max-h-[200px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-transparent"
+          className="flex-1 bg-transparent text-daemon-text-primary placeholder-daemon-text-muted resize-none focus:outline-none py-2 max-h-[200px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent"
           style={{ minHeight: "24px" }}
         />
 
@@ -98,11 +92,11 @@ export function ChatInputBar({
           />
 
           <button
-            onClick={handleSend}
+            type="submit"
             disabled={!input.trim() || isLoading}
             className={`p-2 rounded-md transition-all duration-200 ${
               input.trim() && !isLoading
-                ? "bg-gpt-accent text-white hover:bg-opacity-90 shadow-sm"
+                ? "bg-daemon-accent text-white hover:bg-daemon-accent-hover shadow-sm"
                 : "bg-transparent text-gray-500 cursor-not-allowed"
             }`}
           >

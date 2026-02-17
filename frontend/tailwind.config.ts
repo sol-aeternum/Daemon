@@ -9,13 +9,19 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        "gpt-main": "#343541",
-        "gpt-sidebar": "#202123",
-        "gpt-input": "#444654",
-        "gpt-accent": "#10a37f",
-        "gpt-text-primary": "#ececf1",
-        "gpt-text-secondary": "#acacbe",
-        "gpt-text-muted": "#8e8ea0",
+        daemon: {
+          "bg-primary": "var(--daemon-bg-primary)",
+          "bg-secondary": "var(--daemon-bg-secondary)",
+          "bg-tertiary": "var(--daemon-bg-tertiary)",
+          "bg-sidebar": "var(--daemon-bg-sidebar)",
+          "text-primary": "var(--daemon-text-primary)",
+          "text-secondary": "var(--daemon-text-secondary)",
+          "text-muted": "var(--daemon-text-muted)",
+          accent: "var(--daemon-accent)",
+          "accent-hover": "var(--daemon-accent-hover)",
+          "border-primary": "var(--daemon-border-primary)",
+          "border-secondary": "var(--daemon-border-secondary)",
+        },
       },
       keyframes: {
         "fade-in": {
@@ -38,7 +44,7 @@ const config: Config = {
       },
     },
   },
-  plugins: [],
+  plugins: [require("@tailwindcss/typography")],
 };
 
 export default config;

@@ -9,6 +9,7 @@ import { ConnectionStatus } from "../components/ConnectionStatus";
 import { ConversationList } from "../components/ConversationList";
 import { ToolCallLog } from "../components/ToolCallBlock";
 import { MobileHeader } from "../components/MobileHeader";
+import ChatSkeleton from "../components/ChatSkeleton";
 import { useConversationHistory } from "../hooks/useConversationHistory";
 import { useAgentStatus } from "../hooks/useAgentStatus";
 import { AgentStatusList } from "../components/AgentStatusList";
@@ -20,6 +21,7 @@ import { TextToSpeechButton } from "../components/TextToSpeechButton";
 import { StreamingTtsMessage } from "../components/StreamingTtsMessage";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { ThinkingIndicator } from "../components/ThinkingIndicator";
+import MarkdownMessage from "../components/MarkdownMessage";
 import { ChatEvent, isChatEvent } from "../lib/events";
 
 function ChatContent() {
@@ -90,7 +92,6 @@ function ChatContent() {
   } = useConversationHistory();
 
   const [activeModel, setActiveModel] = useState<string>("auto");
-  const formRef = useRef<HTMLFormElement>(null);
 
   const currentConversation = getCurrentConversation();
 
@@ -362,7 +363,11 @@ function ChatContent() {
                       }`}
                     >
                       <div className="flex items-start justify-between gap-2">
-                        <div className="flex-1 whitespace-pre-wrap">{formatMessageContent(message.content)}</div>
+                        {message.role === "assistant" ? (
+                          <MarkdownMessage content={message.content} />
+                        ) : (
+                          <div className="flex-1 whitespace-pre-wrap">{formatMessageContent(message.content)}</div>
+                        )}
                         {message.role === "assistant" && message.content && (
                           isLast && isLoading ? (
                             <StreamingTtsMessage
@@ -388,8 +393,8 @@ function ChatContent() {
           )}
         </main>
 
-        <footer className="bg-gpt-main border-t border-gray-600 p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-          <form ref={formRef} onSubmit={handleSubmit}>
+        <footer className="bg-white border-t border-gray-200 p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+          <form onSubmit={handleSubmit}>
             <ChatInputBar
               selectedModel={activeModel}
               onSelectModel={(modelId) => {
@@ -404,12 +409,9 @@ function ChatContent() {
               stopRecording={stop}
               micDisabled={isLoading || !currentId || !isOnline}
               micError={sttError}
-              onSendMessage={(msg) => {
-                setInput(msg);
-                setTimeout(() => {
-                  formRef.current?.requestSubmit();
-                }, 0);
-              }}
+              input={input}
+              onInputChange={handleInputChange}
+              onSubmit={handleSubmit}
               isLoading={isLoading}
             />
           </form>
@@ -421,12 +423,27 @@ function ChatContent() {
   );
 }
 
-export default function ChatPage() {
+function ChatContentWrapper() {
+  const {
+    currentId,
+    isLoaded,
+  } = useConversationHistory();
+
+  if (!isLoaded) {
+    return <div className="flex items-center justify-center h-screen">Loading...</div>;
+  }
+
   return (
     <ErrorProvider>
-      <Suspense fallback={<div>Loading...</div>}>
-        <ChatContent />
-      </Suspense>
+      <ChatContent key={currentId || "new"} />
     </ErrorProvider>
+  );
+}
+
+export default function ChatPage() {
+  return (
+    <Suspense fallback={<ChatSkeleton />}>
+      <ChatContentWrapper />
+    </Suspense>
   );
 }

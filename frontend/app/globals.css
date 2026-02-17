@@ -1,6 +1,29 @@
+@import 'highlight.js/styles/github.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  /* Background colors */
+  --daemon-bg-primary: #f9fafb;      /* Main app background - gray-50 */
+  --daemon-bg-secondary: #ffffff;     /* Cards, elevated surfaces */
+  --daemon-bg-tertiary: #f3f4f6;     /* Input backgrounds - gray-100 */
+  --daemon-bg-sidebar: #f9fafb;      /* Sidebar background */
+  
+  /* Text colors */
+  --daemon-text-primary: #111827;    /* Headings, primary text - gray-900 */
+  --daemon-text-secondary: #4b5563;  /* Body text - gray-600 */
+  --daemon-text-muted: #9ca3af;      /* Placeholder, disabled - gray-400 */
+  
+  /* Accent colors */
+  --daemon-accent: #10a37f;          /* Brand accent (keep teal) */
+  --daemon-accent-hover: #0d8c6d;    /* Accent hover state */
+  
+  /* Border colors */
+  --daemon-border-primary: #e5e7eb;  /* Default borders - gray-200 */
+  --daemon-border-secondary: #d1d5db; /* Focus states - gray-300 */
+}
 
 @layer utilities {
   .animate-fade-in {
