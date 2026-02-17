@@ -159,7 +159,7 @@ async def process_extraction(
                 user_id,
                 facts,
                 conversation_id,
-                status="pending",
+                status="active",
             )
 
             await store.log_extraction(
