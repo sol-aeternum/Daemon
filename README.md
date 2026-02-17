@@ -340,4 +340,4 @@ MIT — Personal use and modification allowed. Attribution appreciated.
 
 ---
 
-Built with [Sisyphus](https://github.com/code-yeongyu/oh-my-opencode) | Self-hosted on Ubuntu + Docker
+Built with [Sisyphus](https://github.com/code-yeongyu/oh-my-opencode) | Self-hosted on CachyOS + Docker
