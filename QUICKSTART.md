@@ -4,7 +4,7 @@
 
 ### 1. Add Required API Keys
 
-Edit `/home/sol/Daemon/.env`:
+Edit `.env`:
 
 ```bash
 # Required - for LLM chat
@@ -24,7 +24,7 @@ NTFY_TOPIC=your_topic_here
 ### 2. Start the App
 
 ```bash
-cd /home/sol/Daemon
+cd /home/sol/daemon
 docker-compose up -d
 ```
 

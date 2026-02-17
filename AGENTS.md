@@ -4,10 +4,9 @@
 Personal multi-agent AI assistant. FastAPI backend orchestrates LLM calls via OpenRouter, spawning subagents (@research, @image, @audio, @code, @reader). Next.js 16 frontend with Vercel AI SDK. PostgreSQL + pgvector for memory. Redis + arq for background jobs.
 
 ## Before You Touch Anything
-1. Read `docs/CURRENT_ISSUES.md` — know what's broken before changing things
-2. Read `docs/PROJECT_CONTEXT.md` — understand what's implemented vs planned
-3. If the task touches memory: read `orchestrator/memory/` and `docs/TECHNICAL_SPECS.md`
-4. If the task touches frontend: read `docs/CURRENT_ISSUES.md` #2-#5 for known state bugs
+1. Read `docs/PROJECT_CONTEXT.md` — understand what's implemented vs planned
+2. If the task touches memory: read `orchestrator/memory/` and `docs/TECHNICAL_SPECS.md`
+3. Check recent commits and code comments for context on current state
 
 ## Rules of Engagement
 - **Ask before making design decisions.** If a task has multiple valid approaches, present options with tradeoffs. Do not pick one autonomously.
@@ -56,11 +55,13 @@ migrations/             # PostgreSQL migrations (13 applied)
 - All message/memory content encrypted at rest via Fernet. Embeddings are plaintext for pgvector.
 - SSE events are typed: token, thinking, routing, tool_call, tool_result, final, error, done.
 - Tier model assignments are env-var configurable. Don't hardcode model strings in logic.
-- Frontend uses `useChat` from Vercel AI SDK — be aware of its state management quirks (see CURRENT_ISSUES.md #2).
+- Frontend uses `useChat` from Vercel AI SDK — ErrorBoundary wraps ChatContent for crash recovery.
 - No test suite yet. If you add tests, use pytest + pytest-asyncio for backend, Playwright for frontend.
 
-## Known Critical Bug
-Extracted memories write `status="pending"` but retrieval filters `status="active"`. The entire automatic memory pipeline runs but output is invisible. See `docs/CURRENT_ISSUES.md` #1.
+## Recent Fixes (as of Feb 2026)
+- ✅ Memory extraction now writes `status="active"` — pipeline is fully operational
+- ✅ Error boundary added to chat view for crash recovery
+- ✅ Embedding failover added (OpenAI primary → OpenRouter fallback)
 
 ## What NOT to Do
 - Don't add Open WebUI references — it's being removed
