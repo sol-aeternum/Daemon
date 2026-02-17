@@ -47,6 +47,15 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
 }
 
 
+// Validate ../../app/landing/page.tsx
+{
+  type __IsExpected<Specific extends AppPageConfig<"/landing">> = Specific
+  const handler = {} as typeof import("../../app/landing/page.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
 // Validate ../../app/page.tsx
 {
   type __IsExpected<Specific extends AppPageConfig<"/">> = Specific
@@ -56,10 +65,55 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
   type __Unused = __Check
 }
 
+// Validate ../../app/api/audio/scribe-token/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/audio/scribe-token">> = Specific
+  const handler = {} as typeof import("../../app/api/audio/scribe-token/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/audio/token/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/audio/token">> = Specific
+  const handler = {} as typeof import("../../app/api/audio/token/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
 // Validate ../../app/api/chat/route.ts
 {
   type __IsExpected<Specific extends RouteHandlerConfig<"/api/chat">> = Specific
   const handler = {} as typeof import("../../app/api/chat/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/sound-effects/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/sound-effects">> = Specific
+  const handler = {} as typeof import("../../app/api/sound-effects/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/stt/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/stt">> = Specific
+  const handler = {} as typeof import("../../app/api/stt/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/tts/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/tts">> = Specific
+  const handler = {} as typeof import("../../app/api/tts/route.js")
   type __Check = __IsExpected<typeof handler>
   // @ts-ignore
   type __Unused = __Check
