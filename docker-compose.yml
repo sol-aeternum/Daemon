@@ -88,21 +88,6 @@ services:
     networks:
       - daemon-network
 
-  open-webui:
-    image: ghcr.io/open-webui/open-webui:main
-    ports:
-      - "8080:8080"
-    environment:
-      - OPENAI_API_KEYS=${DAEMON_API_KEY}
-      - OPENAI_API_BASE_URLS=http://backend:8000
-      - ENABLE_OLLAMA_API=false
-    volumes:
-      - open-webui-data:/app/backend/data
-    depends_on:
-      - backend
-    networks:
-      - daemon-network
-
   postgres:
     image: pgvector/pgvector:pg16
     environment:
@@ -140,6 +125,5 @@ networks:
     driver: bridge
 
 volumes:
-  open-webui-data:
   daemon_postgres16_data:
   redis_data:

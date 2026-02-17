@@ -146,11 +146,6 @@ class Settings(BaseSettings):
 
     # Legacy provider settings (for backward compatibility only)
 
-    # OpenCode Zen (optional)
-    opencode_api_key: str | None = None
-    opencode_base_url: str = "https://opencode.ai/zen/v1"
-    opencode_model: str = "opencode/claude-opus-4.6"
-
     # Brave Search API (Web search)
     brave_api_key: str | None = None
 
@@ -227,16 +222,6 @@ class Settings(BaseSettings):
                 requires_auth=True,
                 timeout_s=self.request_timeout_s,
             )
-        elif name == "opencode_zen":
-            return ProviderConfig(
-                name="opencode_zen",
-                base_url=self.opencode_base_url,
-                api_key=self.opencode_api_key,
-                model=self.opencode_model,
-                requires_auth=True,
-                timeout_s=self.request_timeout_s,
-            )
-
         prefix = f"PROVIDER_{name.upper()}_"
         base_url = getattr(self, f"{prefix.lower()}base_url", "")
         if base_url:
@@ -302,7 +287,7 @@ class Settings(BaseSettings):
 
     def list_available_providers(self) -> list[str]:
         """List all configured providers."""
-        providers = ["openrouter", "opencode_zen"]
+        providers = ["openrouter"]
 
         # Add any custom providers from env vars
         for key in self.model_dump().keys():

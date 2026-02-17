@@ -274,14 +274,6 @@ async def openai_list_models(
         ]
         models.extend(demo_models)
 
-    # Include OpenCode model if configured
-    if settings.opencode_api_key:
-        models.append(
-            OpenAIModelInfo(
-                id=settings.opencode_model, created=timestamp, owned_by="opencode"
-            )
-        )
-
     return OpenAIModelList(data=models)
 
 
@@ -326,8 +318,6 @@ async def openai_chat_completions(
     provider_name = settings.default_provider
     if payload.model.startswith("openrouter/"):
         provider_name = "openrouter"
-    elif payload.model.startswith("opencode"):
-        provider_name = "opencode_zen"
 
     provider_config = settings.get_provider_config(provider_name)
 

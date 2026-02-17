@@ -220,10 +220,6 @@ async def litellm_stream(
         call_params["extra_headers"] = provider_config.extra_headers
 
         # OpenRouter format already includes provider prefix
-    if provider_config.name == "opencode_zen":
-        # OpenCode Zen uses OpenAI adapter
-        call_params["model"] = f"openai/{model_to_use}"
-
     stream = await litellm.acompletion(**call_params)
 
     stream_iter = cast(AsyncIterator[Any], stream)

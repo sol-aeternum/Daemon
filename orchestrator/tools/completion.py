@@ -160,9 +160,6 @@ def _prepare_call_params(
     if provider_config.extra_headers:
         call_params["extra_headers"] = provider_config.extra_headers
 
-    if provider_config.name == "opencode_zen":
-        call_params["model"] = f"openai/{model_to_use}"
-
     return call_params
 
 
