@@ -68,3 +68,44 @@ Extracted memories write `status="pending"` but retrieval filters `status="activ
 - Don't use `gpt-4o` as a default anywhere — backend uses tier-based auto-routing
 - Don't put secrets in code or docs — everything goes through env vars
 - Don't create new Docker services without discussing architecture impact
+
+# Diagnostic Triage Protocol
+
+## Mandatory: TRIAGE.md Maintenance
+
+During ALL task execution, maintain a `TRIAGE.md` file in the project root. Log any error, warning, failure, unexpected behavior, or anomaly encountered — **especially** items outside your current task scope.
+
+### What to log
+- Build errors/warnings (even if you can work around them)
+- Pre-existing bugs you stumble upon
+- Test failures unrelated to your changes
+- Deprecation warnings, version incompatibilities
+- Configuration issues outside your task scope
+- Anything you'd mentally dismiss as "not my problem"
+
+### Format per entry
+```markdown
+## [TIMESTAMP] — [SHORT TITLE]
+- **Severity**: critical | warning | info
+- **Encountered during**: [current TODO/task]
+- **Category**: build-error | runtime-error | deprecation | config | test-failure | dependency | security | other
+- **Blocked current task**: yes | no
+- **What happened**: [1-3 sentences]
+- **Evidence**: [exact error output, file:line refs]
+- **Likely cause**: [assessment with confidence %]
+- **Suggested action**: [what to investigate]
+```
+
+### Rules
+1. Log BEFORE marking any TODO complete
+2. Include actual error messages — don't paraphrase
+3. Do NOT fix triaged items unless they block your current task
+4. If you think "this is pre-existing / not my fault / probably fine" — that's a triage trigger, not a dismissal
+5. If it was worth noting in your thinking, it's worth logging in TRIAGE.md
+
+### On task completion, always report
+```
+Triage: {N} issues ({critical} critical, {warning} warning, {info} info)
+See TRIAGE.md — items requiring attention: [list critical/warning titles]
+```
+If zero issues: "Triage: clean — no anomalies encountered."
