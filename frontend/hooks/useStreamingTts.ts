@@ -108,9 +108,9 @@ export function useStreamingTts(options: StreamingTtsOptions = {}) {
       
       const { token } = await tokenResponse.json();
       
-      // Connect to ElevenLabs WebSocket
+      // Connect to ElevenLabs WebSocket with scoped token
       const ws = new WebSocket(
-        `wss://api.elevenlabs.io/v1/text-to-speech/${voice}/stream-input?model_id=${model}`
+        `wss://api.elevenlabs.io/v1/text-to-speech/${voice}/stream-input?model_id=${model}&single_use_token=${token}`
       );
       wsRef.current = ws;
       
@@ -122,11 +122,10 @@ export function useStreamingTts(options: StreamingTtsOptions = {}) {
         setTimeout(() => reject(new Error("WebSocket connection timeout")), 10000);
       });
       
-      // Send initial config with auth
+      // Send initial config
       ws.send(JSON.stringify({
         text: " ",
         voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-        xi_api_key: token,
       }));
 
       setState((prev) => ({ ...prev, isStreaming: true, isConnecting: false }));

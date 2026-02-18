@@ -85,7 +85,7 @@ app = FastAPI(title="daemon-orchestrator", lifespan=lifespan)
 # Enable CORS for web clients
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_settings().cors_allowed_origins.split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -241,7 +241,7 @@ async def openai_list_models(
             )
 
     except Exception as e:
-        print(f"Warning: Failed to fetch OpenRouter models: {e}")
+        logger.warning(f"Failed to fetch OpenRouter models: {e}")
         # Fallback to demo models when OpenRouter API fails
         demo_models = [
             OpenAIModelInfo(
@@ -627,11 +627,14 @@ async def get_audio_token(
     settings: Settings = Depends(get_settings),
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> dict[str, Any]:
-    """Return ElevenLabs API key for frontend WebSocket streaming.
+    """Return scoped ElevenLabs token for frontend WebSocket streaming.
 
     The frontend uses this token to establish direct WebSocket connections
     to ElevenLabs for real-time TTS streaming, avoiding the latency
     penalty of proxying through the backend.
+
+    Returns a scoped single-use token instead of the raw API key
+    to prevent key exposure in the browser.
     """
     require_api_key(settings, authorization)
 
@@ -639,9 +642,26 @@ async def get_audio_token(
     if not eleven_api_key:
         raise HTTPException(status_code=500, detail="ElevenLabs API key not configured")
 
+    # Generate scoped token for TTS WebSocket
+    url = "https://api.elevenlabs.io/v1/single-use-token/tts_websocket"
+    headers = {"xi-api-key": eleven_api_key}
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        response = await client.post(url, headers=headers)
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=502,
+                detail=f"ElevenLabs TTS token request failed: {response.text}",
+            )
+
+    data = response.json()
+    token = data.get("token")
+    if not token:
+        raise HTTPException(status_code=502, detail="ElevenLabs TTS token missing")
+
     return {
-        "token": eleven_api_key,
-        "expires_in": 300,  # 5 minutes, client should refresh if needed
+        "token": token,
+        "expires_in": 900,  # 15 minutes, scoped token TTL
     }
 
 
@@ -832,6 +852,7 @@ async def chat(
     store = app_state.memory_store if app_state else None
     user_id = uuid.UUID("00000000-0000-0000-0000-000000000001") if store else None
     conversation_uuid = None
+    conversation_exists = False
 
     # Create or get conversation if persistence is available
     if store and user_id:
@@ -842,6 +863,7 @@ async def chat(
                 existing = await store.get_conversation(conv_uuid)
                 if existing:
                     conversation_uuid = conv_uuid
+                    conversation_exists = True
                 else:
                     # Create new conversation
                     title = (
@@ -875,20 +897,41 @@ async def chat(
                     role="user",
                     content=user_message,
                     model=None,
+                    status="complete",
                 )
         except Exception:
             pass  # Graceful degradation - continue without persistence
+
     history_messages: list[dict[str, Any]] | None = None
-    if incoming_messages:
-        history_messages = [
-            {"role": msg.get("role"), "content": msg.get("content")}
-            for msg in incoming_messages
-            if msg.get("role") and msg.get("content") is not None
-        ]
-        for msg in reversed(history_messages):
-            if msg.get("role") == "user":
-                msg["content"] = decision.user_message
-                break
+
+    if conversation_exists and store and conversation_uuid:
+        try:
+            db_messages = await store.get_recent_messages(
+                conversation_uuid,
+                limit=settings.chat_history_limit,
+                exclude_status=["streaming"],
+            )
+            history_messages = [
+                {"role": msg.get("role"), "content": msg.get("content")}
+                for msg in db_messages
+                if msg.get("role")
+                and msg.get("content") is not None
+                and msg.get("role") != "system"
+            ]
+        except Exception:
+            conversation_exists = False
+
+    if not history_messages:
+        if incoming_messages:
+            history_messages = [
+                {"role": msg.get("role"), "content": msg.get("content")}
+                for msg in incoming_messages
+                if msg.get("role") and msg.get("content") is not None
+            ]
+            for msg in reversed(history_messages):
+                if msg.get("role") == "user":
+                    msg["content"] = decision.user_message
+                    break
 
     assembled_system_prompt = DAEMON_SYSTEM_PROMPT
     if store and user_id and conversation_uuid:
@@ -903,7 +946,6 @@ async def chat(
             preferences_block = format_preferences_block(user_settings)
             memory_context = await build_memory_context(store, conversation_uuid)
             assembled_system_prompt = await assemble_system_prompt(
-                base_prompt=DAEMON_SYSTEM_PROMPT,
                 memory_context=memory_context,
                 preferences_block=preferences_block,
                 conversation_id=conversation_uuid,

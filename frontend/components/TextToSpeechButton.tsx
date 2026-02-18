@@ -3,22 +3,7 @@
 import { useRef, useState, useCallback, useEffect } from "react";
 import { Volume2, VolumeX } from "lucide-react";
 import { useLocalStorage } from "../hooks/useLocalStorage";
-
-type TtsSettings = {
-  enabled: boolean;
-  voice: string;
-  model: string;
-  speed: number;
-  format: string;
-};
-
-const DEFAULT_TTS_SETTINGS: TtsSettings = {
-  enabled: true,
-  voice: "Xb7hH8MSUJpSbSDYk0k2",
-  model: "eleven_flash_v2_5",
-  speed: 1.0,
-  format: "mp3",
-};
+import { TtsSettings, DEFAULT_TTS_SETTINGS } from "../lib/constants";
 
 const globalAudioRef = { current: null as HTMLAudioElement | null };
 const globalPlayingTextRef = { current: null as string | null };
@@ -80,7 +65,7 @@ export function TextToSpeechButton({ text, streamingText }: TextToSpeechButtonPr
       const speed = currentSettings.speed ?? DEFAULT_TTS_SETTINGS.speed;
       
       const ws = new WebSocket(
-        `wss://api.elevenlabs.io/v1/text-to-speech/${voice}/stream-input?model_id=${model}`
+        `wss://api.elevenlabs.io/v1/text-to-speech/${voice}/stream-input?model_id=${model}&single_use_token=${token}`
       );
       
       await new Promise<void>((resolve, reject) => {
@@ -92,7 +77,6 @@ export function TextToSpeechButton({ text, streamingText }: TextToSpeechButtonPr
       ws.send(JSON.stringify({
         text: " ",
         voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-        xi_api_key: token,
       }));
       
       const audioContext = new AudioContext();
