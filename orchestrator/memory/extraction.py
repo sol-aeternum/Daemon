@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
+
+logger = logging.getLogger(__name__)
 from dataclasses import dataclass
 from typing import Any
 
@@ -127,7 +130,7 @@ async def extract_facts_from_text(
 
         return facts
     except Exception as e:
-        print(f"Extraction error: {e}")
+        logger.error("Extraction error", exc_info=True)
         return []
 
 

@@ -3,17 +3,7 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
-
-// Simple formatMessageContent that strips image/audio paths
-// This mirrors the logic from page.tsx
-const formatMessageContent = (content: string): string => {
-  if (!content) return '';
-  // Strip image and audio file paths from content
-  return content
-    .replace(/!\[.*?\]\(.*?\.(?:png|jpg|jpeg|gif|webp|mp3|wav|ogg)\)/g, '')
-    .replace(/\[.*?\]\(.*?\.(?:png|jpg|jpeg|gif|webp|mp3|wav|ogg)\)/g, '')
-    .trim();
-};
+import { formatMessageContent } from '../lib/format';
 
 interface MarkdownMessageProps {
   content: string;

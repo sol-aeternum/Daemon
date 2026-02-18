@@ -4,6 +4,7 @@ import { useState, useMemo, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Conversation } from "../hooks/useConversationHistory";
 import { useLocalStorage } from "../hooks/useLocalStorage";
+import SettingsPanel from "./SettingsPanel";
 import { useError } from "./ErrorProvider";
 import { MoreHorizontal, Pin, Trash2, Edit2, MessageSquare, Search } from "lucide-react";
 

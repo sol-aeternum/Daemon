@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     # Request and stream settings
     request_timeout_s: float = 90.0
     stream_ping_interval_s: float = 15.0
+    chat_history_limit: int = 50
 
     # Development fallback: stream a canned response without calling any provider.
     mock_llm: bool = False
@@ -77,6 +78,9 @@ class Settings(BaseSettings):
     tier_free_image_model: str = ""
     tier_free_reader_model: str = ""
     tier_free_embeddings_model: str = ""
+
+    # CORS configuration
+    cors_allowed_origins: str = "http://localhost:3000,http://frontend:3000"
 
     # Tier: STARTER ($9/mo)
     # Kimi K2.5 orchestrator, basic subagents
@@ -108,11 +112,11 @@ class Settings(BaseSettings):
 
     # Tier: MAX ($29/mo)
     # Opus 4.6 orchestrator, premium subagents
-    tier_max_orchestrator_model: str = "openrouter/anthropic/claude-3-opus"
+    tier_max_orchestrator_model: str = "openrouter/anthropic/claude-opus-4.6"
     tier_max_orchestrator_temp: float = 0.7
     tier_max_research_model: str = "openrouter/anthropic/claude-3.5-sonnet"
     tier_max_research_temp: float = 0.5
-    tier_max_code_model: str = "openrouter/anthropic/claude-3-opus"
+    tier_max_code_model: str = "openrouter/anthropic/claude-opus-4.6"
     tier_max_code_temp: float = 0.3
     tier_max_image_model: str = "google/gemini-2.5-flash-image"
     tier_max_image_temp: float = 0.8

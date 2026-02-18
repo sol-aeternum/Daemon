@@ -158,7 +158,7 @@ class MemoryStore:
         tokens_out: int = 0,
         tool_calls: list[Any] | None = None,
         tool_results: list[Any] | None = None,
-        status: str | None = None,
+        status: str = "streaming",
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         encrypted_content = self._enc.encrypt(content)
@@ -213,6 +213,14 @@ class MemoryStore:
             results.append(_normalize_message(d))
         return results
 
+    async def count_messages(self, conversation_id: uuid.UUID) -> int:
+        """Count messages in a conversation without loading content."""
+        row = await self._pool.fetchrow(
+            "SELECT COUNT(*) as count FROM messages WHERE conversation_id = $1",
+            conversation_id,
+        )
+        return row["count"] if row else 0
+
     async def update_message(
         self,
         message_id: uuid.UUID,
@@ -247,12 +255,14 @@ class MemoryStore:
         self,
         conversation_id: uuid.UUID,
         limit: int = 20,
+        exclude_status: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         rows = await self._pool.fetch(
             """
             SELECT * FROM (
                 SELECT * FROM messages
                 WHERE conversation_id = $1
+                  AND ($3::text[] IS NULL OR status IS NULL OR status NOT IN (SELECT unnest($3::text[])))
                 ORDER BY created_at DESC
                 LIMIT $2
             ) sub
@@ -260,6 +270,7 @@ class MemoryStore:
             """,
             conversation_id,
             limit,
+            exclude_status,
         )
         results = []
         for r in rows:
@@ -933,12 +944,6 @@ def _normalize_message(message: dict[str, Any]) -> dict[str, Any]:
 
         if isinstance(value, expected_type):
             return value
-
-        if isinstance(value, (bytes, bytearray)):
-            try:
-                value = value.decode("utf-8")
-            except Exception:
-                return default
 
         if isinstance(value, str):
             try:

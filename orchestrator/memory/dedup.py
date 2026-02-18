@@ -27,7 +27,7 @@ async def deduplicate_facts(
     conversation_id: uuid.UUID | None,
     *,
     source_type: str = "extracted",
-    status: str = "pending",
+    status: str = "active",
 ) -> DedupResult:
     """Deduplicate extracted facts against existing memories."""
     result = DedupResult()

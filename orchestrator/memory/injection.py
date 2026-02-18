@@ -220,7 +220,6 @@ async def build_memory_context(
 
 
 async def assemble_system_prompt(
-    base_prompt: str,
     memory_context: str,
     preferences_block: str | None = None,
     conversation_id: uuid.UUID | None = None,
@@ -236,10 +235,6 @@ async def assemble_system_prompt(
     memory_block = memory_context.strip()
     if memory_block:
         parts.append(memory_block)
-
-    original_prompt = base_prompt.strip()
-    if original_prompt and original_prompt != DAEMON_SYSTEM_PROMPT.strip():
-        parts.append(original_prompt)
 
     assembled = "\n\n".join(part for part in parts if part)
     if "memory tools" not in assembled.lower():

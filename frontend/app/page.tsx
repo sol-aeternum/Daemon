@@ -12,6 +12,8 @@ import { ToolCallLog } from "../components/ToolCallBlock";
 import { MobileHeader } from "../components/MobileHeader";
 import ChatSkeleton from "../components/ChatSkeleton";
 import { useConversationHistory } from "../hooks/useConversationHistory";
+import { ConversationHistoryProvider, useConversationHistoryContext } from "../components/ConversationHistoryProvider";
+import { formatMessageContent } from "../lib/format";
 import { useAgentStatus } from "../hooks/useAgentStatus";
 import { AgentStatusList } from "../components/AgentStatusList";
 import { OfflineIndicator } from "../components/OfflineIndicator";
@@ -24,33 +26,9 @@ import { useLocalStorage } from "../hooks/useLocalStorage";
 import { ThinkingIndicator } from "../components/ThinkingIndicator";
 import MarkdownMessage from "../components/MarkdownMessage";
 import { ChatEvent, isChatEvent } from "../lib/events";
+import { TtsSettings, SttSettings, DEFAULT_TTS_SETTINGS, DEFAULT_STT_SETTINGS } from "../lib/constants";
 
 function ChatContent() {
-  type TtsSettings = {
-    enabled: boolean;
-    voice: string;
-    model: string;
-    speed: number;
-    format: string;
-  };
-
-  type SttSettings = {
-    language: string;
-    enablePartials: boolean;
-  };
-
-  const DEFAULT_TTS_SETTINGS: TtsSettings = {
-    enabled: true,
-    voice: "Xb7hH8MSUJpSbSDYk0k2",
-    model: "eleven_flash_v2_5",
-    speed: 1.0,
-    format: "mp3",
-  };
-
-  const DEFAULT_STT_SETTINGS: SttSettings = {
-    language: "en",
-    enablePartials: true,
-  };
 
   const { value: ttsSettings } = useLocalStorage<TtsSettings>(
     "tts_settings",
@@ -75,6 +53,8 @@ function ChatContent() {
   const [connectionStatus, setConnectionStatus] = useState<"connected" | "disconnected" | "reconnecting">("connected");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const isNearBottomRef = useRef(true);
   const { showError } = useError();
   const { isOnline } = useOnlineStatus();
 
@@ -90,7 +70,7 @@ function ChatContent() {
     setConversationModel,
     searchQuery,
     setSearchQuery,
-  } = useConversationHistory();
+  } = useConversationHistoryContext();
 
   const [activeModel, setActiveModel] = useState<string>("auto");
 
@@ -162,6 +142,34 @@ function ChatContent() {
     prevLoadingRef.current = isLoading;
   }, [isLoading]);
 
+  // Auto-scroll: Track scroll position to respect user's reading position
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const handleScroll = () => {
+      const { scrollTop, clientHeight, scrollHeight } = container;
+      isNearBottomRef.current = scrollHeight - scrollTop - clientHeight < 150;
+    };
+
+    container.addEventListener('scroll', handleScroll);
+    return () => container.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  // Auto-scroll: Scroll to bottom on new messages
+  useEffect(() => {
+    if (isNearBottomRef.current && messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages]);
+
+  // Auto-scroll: Keep viewport at bottom during streaming
+  useEffect(() => {
+    if (isLoading && isNearBottomRef.current && messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: "auto" });
+    }
+  }, [messages, isLoading]);
+
   const handleSelectConversation = async (id: string) => {
     switchConversation(id);
   };
@@ -211,24 +219,6 @@ function ChatContent() {
   const getDurationForMessage = (messageId: string) => {
      return archivedEvents[messageId]?.duration || 0;
   };
-
-  const formatMessageContent = (content: string) => {
-    return content
-      .replace(/!\[.*?\]\(\/generated-images\/.*?\)/g, "")
-      .replace(/\*\*Image:\*\*\s*`\/generated-images\/[^`]+`/gi, "")
-      .replace(/`\/generated-images\/[^`]+`/gi, "")
-      .replace(/\*\*File:\*\*\s*`\/generated-audio\/[^`]+`/gi, "")
-      .replace(/`\/generated-audio\/[^`]+`/gi, "")
-      .replace(/\[.*?\]\(\/generated-audio\/[^)]+\)/gi, "")
-      .replace(/\*\*Audio Details:\*\*[\s\S]*?(?=\n\n|\n[A-Z]|$)/gi, "")
-      .replace(/\*Generated using .*?\*/gi, "")
-      .replace(/The image was generated using[\s\S]*?(\.|$)/gi, "")
-      .replace(/Generated using[\s\S]*?(\.|$)/gi, "")
-      .replace(/^[\s>*]*\*?the image was generated using.*$/gim, "")
-      .replace(/^[\s>*]*\*?generated using.*$/gim, "")
-      .trim();
-  };
-
 
 
 
@@ -310,7 +300,11 @@ function ChatContent() {
             />
             <div className="flex items-center gap-2">
               <span className="text-sm text-gray-500">Cloud</span>
-              <button className="relative inline-flex h-6 w-11 items-center rounded-full bg-gray-200 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
+              <button
+                disabled
+                className="relative inline-flex h-6 w-11 items-center rounded-full bg-gray-200 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 opacity-50 cursor-not-allowed"
+                title="Local pipeline coming soon"
+              >
                 <span className="translate-x-1 inline-block h-4 w-4 transform rounded-full bg-white transition-transform" />
               </button>
               <span className="text-sm text-gray-500">Local</span>
@@ -318,7 +312,7 @@ function ChatContent() {
           </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth">
+        <main ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth">
 
           {messages.length === 0 ? (
             <div className="flex items-center justify-center h-full text-gray-400">
@@ -428,7 +422,7 @@ function ChatContentWrapper() {
   const {
     currentId,
     isLoaded,
-  } = useConversationHistory();
+  } = useConversationHistoryContext();
 
   if (!isLoaded) {
     return <div className="flex items-center justify-center h-screen">Loading...</div>;
@@ -446,7 +440,9 @@ function ChatContentWrapper() {
 export default function ChatPage() {
   return (
     <Suspense fallback={<ChatSkeleton />}>
-      <ChatContentWrapper />
+      <ConversationHistoryProvider>
+        <ChatContentWrapper />
+      </ConversationHistoryProvider>
     </Suspense>
   );
 }

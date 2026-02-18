@@ -88,13 +88,44 @@ class CalculateTool(Tool):
     }
 
     async def execute(self, **kwargs: Any) -> str:
+        import ast
+        import operator
+
         expression = kwargs.get("expression", "")
-        allowed_chars = set("0123456789+-*/().% ")
-        if not all(c in allowed_chars for c in expression):
-            return json.dumps({"error": "Expression contains invalid characters"})
+
+        ALLOWED_NODES = (
+            ast.Expression,
+            ast.BinOp,
+            ast.UnaryOp,
+            ast.Num,
+            ast.Constant,
+            ast.Add,
+            ast.Sub,
+            ast.Mult,
+            ast.Div,
+            ast.Pow,
+            ast.Mod,
+            ast.USub,
+            ast.UAdd,
+            ast.Load,
+        )
 
         try:
-            result = eval(expression, {"__builtins__": {}}, {})
+            tree = ast.parse(expression, mode="eval")
+            for node in ast.walk(tree):
+                if not isinstance(node, ALLOWED_NODES):
+                    return json.dumps(
+                        {"error": f"Disallowed expression: {type(node).__name__}"}
+                    )
+            ops = {
+                ast.Add: operator.add,
+                ast.Sub: operator.sub,
+                ast.Mult: operator.mul,
+                ast.Div: operator.truediv,
+                ast.Pow: operator.pow,
+                ast.Mod: operator.mod,
+            }
+            result = eval(compile(tree, "<string>", "eval"), {"__builtins__": {}}, ops)
             return json.dumps({"expression": expression, "result": result})
         except Exception as e:
             return json.dumps({"error": f"Calculation failed: {str(e)}"})

@@ -4,9 +4,10 @@
 Personal multi-agent AI assistant. FastAPI backend orchestrates LLM calls via OpenRouter, spawning subagents (@research, @image, @audio, @code, @reader). Next.js 16 frontend with Vercel AI SDK. PostgreSQL + pgvector for memory. Redis + arq for background jobs.
 
 ## Before You Touch Anything
-1. Read `docs/PROJECT_CONTEXT.md` — understand what's implemented vs planned
-2. If the task touches memory: read `orchestrator/memory/` and `docs/TECHNICAL_SPECS.md`
-3. Check recent commits and code comments for context on current state
+1. Read `docs/CURRENT_ISSUES.md` — know what's broken before changing things
+2. Read `docs/PROJECT_CONTEXT.md` — understand what's implemented vs planned
+3. If the task touches memory: read `orchestrator/memory/` and `docs/TECHNICAL_SPECS.md`
+4. Check recent commits and code comments for context on current state
 
 ## Rules of Engagement
 - **Ask before making design decisions.** If a task has multiple valid approaches, present options with tradeoffs. Do not pick one autonomously.

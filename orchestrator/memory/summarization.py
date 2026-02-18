@@ -140,8 +140,8 @@ async def should_summarize(
         if idle_time < timedelta(minutes=idle_minutes):
             return False
 
-    # Check token count since last summary
-    messages = await store.get_messages(conversation_id, limit=1000)
-    total_tokens = sum(len(msg.get("content", "")) // 4 for msg in messages)
+    # Check message count since last summary (using SQL COUNT for performance)
+    message_count = await store.count_messages(conversation_id)
+    estimated_tokens = message_count * 375  # ~375 tokens/message average
 
-    return total_tokens >= token_threshold
+    return estimated_tokens >= token_threshold
