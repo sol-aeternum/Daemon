@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, cast
 
 import litellm
 
@@ -99,31 +99,7 @@ def _extract_last_user_message(messages: list[dict[str, Any]]) -> str | None:
     return None
 
 
-def _is_retry_request(text: str) -> bool:
-    lowered = text.lower()
-    if "try again" in lowered or "retry" in lowered or "redo" in lowered:
-        return True
-    if "again" in lowered:
-        return True
-    if "different" in lowered or "another" in lowered or "variation" in lowered:
-        return True
-    # Comparative words that suggest a variation
-    if any(
-        word in lowered
-        for word in [
-            "bigger",
-            "smaller",
-            "larger",
-            "louder",
-            "quieter",
-            "faster",
-            "slower",
-        ]
-    ):
-        return True
-    if "not " in lowered and ("that" in lowered or "this" in lowered):
-        return True
-    return False
+from orchestrator.tools.retry import is_retry_request
 
 
 def _prepare_call_params(
@@ -244,8 +220,9 @@ async def completion_with_tools(
 
         try:
             response_stream = await litellm.acompletion(**call_params)
+            stream_iter = cast(AsyncIterator[Any], response_stream)
 
-            async for chunk in response_stream:
+            async for chunk in stream_iter:
                 choices = getattr(chunk, "choices", None) or chunk.get("choices", [])
                 if not choices:
                     continue
@@ -471,7 +448,7 @@ async def completion_with_tools(
                 tools is not None
                 and last_session_id
                 and last_user_message
-                and _is_retry_request(last_user_message)
+                and is_retry_request(last_user_message)
             ):
                 func_args = json.dumps(
                     {

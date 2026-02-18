@@ -59,19 +59,6 @@ def build_openai_messages_from_history(
     return messages
 
 
-def _is_retry_request(text: str) -> bool:
-    lowered = text.lower()
-    if "try again" in lowered or "retry" in lowered or "redo" in lowered:
-        return True
-    if "again" in lowered:
-        return True
-    if "different" in lowered or "another" in lowered:
-        return True
-    if "not " in lowered and ("that" in lowered or "this" in lowered):
-        return True
-    return False
-
-
 def _extract_session_id_from_result(result: Any) -> str | None:
     parsed = result
     if isinstance(result, str):
@@ -475,71 +462,6 @@ async def stream_sse_chat(
                     user_id=user_id,
                 )
 
-                if _is_retry_request(user_message):
-                    session_id = _spawn_session_by_conversation.get(conversation_id)
-                    if session_id:
-                        executor = ToolExecutor(registry)
-                        func_args = json.dumps(
-                            {
-                                "agent_type": "image",
-                                "task": user_message,
-                                "session_id": session_id,
-                            }
-                        )
-
-                        yield sse(
-                            "tool_call",
-                            make_envelope(
-                                "tool_call",
-                                {
-                                    "name": "spawn_agent",
-                                    "arguments": json.loads(func_args),
-                                },
-                            ),
-                        )
-
-                        result = await executor.execute("spawn_agent", func_args)
-                        updated_session_id = _extract_session_id_from_result(result)
-                        if updated_session_id:
-                            _spawn_session_by_conversation[conversation_id] = (
-                                updated_session_id
-                            )
-
-                        yield sse(
-                            "tool_result",
-                            make_envelope(
-                                "tool_result",
-                                {"name": "spawn_agent", "result": result},
-                            ),
-                        )
-
-                        final_payload = {
-                            "message": {
-                                "id": "msg_assistant_001",
-                                "role": "assistant",
-                                "content": "",
-                                "content_type": "text/plain",
-                            },
-                            "usage": {
-                                "input_tokens": 0,
-                                "output_tokens": 0,
-                                "total_tokens": 0,
-                            },
-                            "model": model_for_events,
-                            "provider": provider,
-                            "finish_reason": "stop",
-                        }
-
-                        yield sse(
-                            "final",
-                            make_envelope("final", final_payload, evt_id="evt_final"),
-                        )
-                        yield sse(
-                            "done",
-                            make_envelope("done", {"ok": True}, evt_id="evt_done"),
-                        )
-                        return
-
                 if memory_store and conversation_uuid and user_id:
                     try:
                         inserted = await memory_store.insert_message(
@@ -628,7 +550,7 @@ async def stream_sse_chat(
                                 ),
                             )
 
-                    elif evt_type == "content":
+                    elif evt_type == "content_delta":
                         content = str(evt.get("content") or "")
                         if content:
                             final_text_parts.append(content)
@@ -645,14 +567,14 @@ async def stream_sse_chat(
                                 ),
                             )
 
+                    elif evt_type == "content_done":
                         finish_reason = "stop"
                         usage = usage or {
-                            "input_tokens": 0,
-                            "output_tokens": 0,
+                            "prompt_tokens": 0,
+                            "completion_tokens": 0,
                             "total_tokens": 0,
                         }
-                        if evt.get("done") is True:
-                            break
+                        break
 
                     elif evt_type == "error":
                         # Surface a stable SSE error event (final/done emitted below).
