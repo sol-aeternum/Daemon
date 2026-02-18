@@ -1,6 +1,6 @@
 # Implementation Roadmap
 
-> Last updated: 2026-02-17
+> Last updated: 2026-02-18
 
 ## Phase 1: Cloud Orchestration — COMPLETE ✅
 **Timeline:** ~10 days (extended from 4 due to Open WebUI → Next.js pivot)
@@ -33,8 +33,8 @@
 
 ---
 
-## Phase 2: Memory System — ~80% COMPLETE 🔧
-**Status:** Infrastructure operational, critical bug in extraction pipeline prevents automatic memories from surfacing.
+## Phase 2: Memory System — COMPLETE ✅
+**Status:** Fully operational. Memory extraction pipeline writes `status="active"` directly.
 
 ### Storage Layer ✅
 - [x] PostgreSQL + pgvector (pg16) with 13 migrations
@@ -43,18 +43,17 @@
 - [x] Conversation CRUD (create, get, list, update, delete)
 - [x] Message persistence (insert on each turn, encrypted content)
 
-### Memory Pipeline — Operational with Bug
-- [x] Embedding pipeline (text-embedding-3-small, 1536d, via OpenAI API)
+### Memory Pipeline ✅
+- [x] Embedding pipeline (text-embedding-3-small, 1536d, via OpenAI API with OpenRouter fallback)
 - [x] Post-response fact extraction (GPT-4o-mini via LiteLLM)
 - [x] Dedup engine: similarity thresholds (0.92 merge, 0.75 supersede)
 - [x] Retrieval: composite scoring (similarity × recency × source_boost × confidence)
 - [x] Injection: builds enhanced system prompt with memories + preferences + token budget
 - [x] Memory tools: memory_read / memory_write integrated into Daemon
-- [ ] **FIX NEEDED:** Extracted memories land as `status="pending"`, retrieval filters by `status="active"` — entire extraction pipeline output is invisible (see CURRENT_ISSUES.md #1)
-- [ ] Auto-promotion or review queue for extracted memories
+- [x] Extracted memories written as `status="active"` — pipeline fully operational
 
 ### Background Jobs ✅
-- [x] extract_memories (extraction → dedup → insert)
+- [x] extract_memories (extraction → dedup → insert with status="active")
 - [x] generate_conversation_title (GPT-4o-mini, first exchange only, respects title_locked)
 - [x] generate_summary (conversation summaries)
 - [x] garbage_collect (cleanup deleted/rejected/inactive, 30-90 day retention)
@@ -67,10 +66,17 @@
 - [x] /users/settings — get, update
 - [x] /system/health — health check
 
+### Frontend Refactoring ✅ (Feb 2026)
+- [x] Extracted useEventArchive hook for event management
+- [x] Extracted AudioPlaybackProvider for audio state
+- [x] Consolidated ConversationHistoryProvider
+- [x] Added SettingsPanel component
+- [x] Added useMediaQuery hook
+- [x] Removed legacy hooks (useSpeechRecognition, useTextToSpeech)
+- [x] Added lib/constants.ts and lib/format.ts utilities
+
 ### Remaining
-- [ ] Memory promotion fix
 - [ ] Memory management UI beyond "Clear All" (view, browse, edit individual memories)
-- [ ] Memory UI for pending review queue (if not auto-promoting)
 
 ---
 
@@ -124,7 +130,7 @@
 | M1 | Chat with orchestrator from mobile | ✅ Complete |
 | M2 | Research + image generation | ✅ Complete |
 | M2.5 | Voice I/O + audio gen + notifications | ✅ Complete |
-| M3 | Memory persistence | 🔧 ~80% (extraction pipeline bug) |
+| M3 | Memory persistence | ✅ Complete |
 | M3.1 | Chat persistence across sessions | ✅ Complete |
 | M4 | Local pipeline | ⏸️ Blocked on 5090 |
 | M5 | Production-ready | Pending Phase 4 hardening |
@@ -135,8 +141,8 @@
 
 | Risk | Status | Mitigation |
 |------|--------|------------|
-| Memory extraction invisible | 🔴 Active bug | Fix status promotion (one-line change or config decision) |
+| ~~Memory extraction invisible~~ | ✅ Fixed | Extraction now writes `status="active"` directly |
 | Conversation switching state corruption | 🟡 UX bug | Key `useChat` on conversation ID |
 | No markdown rendering | 🟡 UX gap | Add react-markdown + rehype |
-| Near-zero test coverage | 🟡 Tech debt | Needs attention before production |
+| Near-zero test coverage | 🟡 Tech debt | Tests added: test_chat_history.py, test_store.py |
 | 5090 acquisition delayed | ⚪ Mitigated | Cloud pipeline fully functional standalone |

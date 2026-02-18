@@ -63,6 +63,12 @@ migrations/             # PostgreSQL migrations (13 applied)
 - ✅ Memory extraction now writes `status="active"` — pipeline is fully operational
 - ✅ Error boundary added to chat view for crash recovery
 - ✅ Embedding failover added (OpenAI primary → OpenRouter fallback)
+- ✅ Retry detection consolidated into orchestrator/tools/retry.py with word-boundary matching
+- ✅ Audio endpoint returns scoped token instead of raw API key (security fix)
+- ✅ Completion streaming adds incremental content_delta for real-time output
+- ✅ Frontend hooks extracted: useEventArchive, AudioPlaybackProvider, ConversationHistoryProvider
+- ✅ SettingsPanel component added for user preferences
+- ✅ Tests added: test_chat_history.py, test_store.py
 
 ## What NOT to Do
 - Don't add Open WebUI references — it's being removed

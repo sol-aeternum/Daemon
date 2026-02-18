@@ -327,10 +327,10 @@ The worker container runs arq for async tasks:
 ## Status
 
 - **Phase 1 (Cloud Orchestration)**: ✅ Complete
-- **Phase 2 (Memory System)**: ✅ ~90% Complete (extraction pipeline operational, minor embedding vendor lock-in)
+- **Phase 2 (Memory System)**: ✅ Complete — extraction pipeline fully operational
 - **Phase 3 (Local Pipeline)**: ⏸️ Blocked on RTX 5090 acquisition
 
-See [CURRENT_ISSUES.md](docs/CURRENT_ISSUES.md) for remaining work (2 low-priority architectural items).
+See [CURRENT_ISSUES.md](docs/CURRENT_ISSUES.md) for remaining work.
 
 ---
 

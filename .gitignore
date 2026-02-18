@@ -28,6 +28,7 @@ htmlcov/
 node_modules.prev.*/
 frontend/node_modules/
 frontend/dist/
+*.tsbuildinfo
 
 # Data directories
 data/

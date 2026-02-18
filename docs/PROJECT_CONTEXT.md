@@ -1,6 +1,6 @@
 # Project Context — Daemon
 
-> Last updated: 2026-02-17
+> Last updated: 2026-02-18
 > Source of truth: codebase audit against `daemon-core` + `daemon-frontend-core` tarballs
 
 ## What Daemon Is
@@ -71,18 +71,18 @@ Auto-routing within tiers: messages are classified as `fast` (→ Gemini Flash) 
 - Tool registry: web_search, http_request, calculate, get_time, notifications (ntfy.sh), reminders, memory_read, memory_write
 - SSE streaming with typed events (token, thinking, routing, tool_call, tool_result, final, error, done)
 
-### Phase 2: Memory System — ~80% Complete
+### Phase 2: Memory System ✅
 - PostgreSQL + pgvector running (13 migrations applied)
 - Redis + arq worker queue operational
 - Encryption at rest via Fernet (messages, memories, extraction log)
 - Conversation CRUD with message persistence (conversations, messages tables)
-- Memory extraction pipeline: GPT-4o-mini extracts facts → embedding → dedup → store
+- Memory extraction pipeline: GPT-4o-mini extracts facts → embedding → dedup → store with `status="active"`
 - Memory retrieval: composite scoring (similarity × recency × source_boost × confidence)
 - Memory injection: builds enhanced system prompt with retrieved memories + user preferences
 - Memory tools: memory_read / memory_write integrated into Daemon's tool system
 - Background jobs: extract_memories, generate_title, generate_summary, garbage_collect
 - API routes: /conversations, /memories, /users/settings, /system/health
-- **Critical gap:** Extracted memories write as `status="pending"` but retrieval filters by `status="active"` — see CURRENT_ISSUES.md
+- Retry detection: orchestrator/tools/retry.py with word-boundary matching
 
 ### Frontend (Work in Progress)
 - Streaming chat via Vercel AI SDK `useChat` with SSE bridge to backend
@@ -146,18 +146,16 @@ Auto-routing within tiers: messages are classified as `fast` (→ Gemini Flash) 
 
 ## Unresolved
 
-- Memory promotion: pending → active pathway (see CURRENT_ISSUES.md #1)
 - Frontend: conversation switching / useChat state management
 - Frontend: no markdown rendering
 - Local pipeline complexity: full orchestration or simple Qwen-only?
 - Memory scope: shared vs separate stores for cloud/local
 - Always-on vs Wake-on-LAN for home server
-- Test coverage: near-zero
+- Test coverage: minimal (test_chat_history.py, test_store.py added)
 
 ## Next Steps
 
-1. Fix memory promotion bug (critical — entire extraction pipeline is running but output is invisible)
-2. Fix conversation switching state management
-3. Add markdown rendering to chat messages
-4. Remove Open WebUI and legacy OpenCode references from codebase
-5. Acquire RTX 5090 TUF, then execute Phase 3
+1. Fix conversation switching state management
+2. Add markdown rendering to chat messages
+3. Remove Open WebUI and legacy OpenCode references from codebase
+4. Acquire RTX 5090 TUF, then execute Phase 3
