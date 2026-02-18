@@ -13,6 +13,8 @@ import { MobileHeader } from "../components/MobileHeader";
 import ChatSkeleton from "../components/ChatSkeleton";
 import { useConversationHistory } from "../hooks/useConversationHistory";
 import { ConversationHistoryProvider, useConversationHistoryContext } from "../components/ConversationHistoryProvider";
+import { AudioPlaybackProvider } from "../components/AudioPlaybackProvider";
+import { useEventArchive } from "../hooks/useEventArchive";
 import { formatMessageContent } from "../lib/format";
 import { useAgentStatus } from "../hooks/useAgentStatus";
 import { AgentStatusList } from "../components/AgentStatusList";
@@ -106,19 +108,7 @@ function ChatContent() {
     onFinish: (message) => {
       setConnectionStatus("connected");
       if (eventsRef.current.length > 0) {
-        const requestId = currentRequestIdRef.current;
-        const archived = requestId
-          ? eventsRef.current.filter((event) => event.request_id === requestId)
-          : [...eventsRef.current];
-        setArchivedEvents(prev => ({
-          ...prev,
-          [message.id]: {
-            events: archived,
-            duration: thinkingDurationRef.current,
-            requestId,
-          }
-        }));
-        lastArchivedEventKeysRef.current = new Set(archived.map(eventKey));
+        archiveCurrentEvents(message.id);
       }
       thinkingDurationRef.current = 0;
     },
@@ -126,6 +116,16 @@ function ChatContent() {
       showError(err.message || "Chat error occurred");
       setConnectionStatus("disconnected");
     },
+  });
+
+  const { 
+    getEventsForMessage, 
+    getDurationForMessage, 
+    archiveCurrentEvents,
+    resetArchive 
+  } = useEventArchive({
+    data: data || [],
+    isLoading,
   });
 
   const prevLoadingRef = useRef(isLoading);
@@ -202,25 +202,6 @@ function ChatContent() {
       currentRequestIdRef.current = latestRequestId;
     }
   }, [events]);
-
-  const getEventsForMessage = (messageId: string, isLastMessage: boolean) => {
-    if (archivedEvents[messageId]) return archivedEvents[messageId].events;
-    if (isLastMessage) {
-      const requestId = currentRequestIdRef.current;
-      if (requestId) {
-        return events.filter((event) => event.request_id === requestId);
-      }
-      const lastArchivedKeys = lastArchivedEventKeysRef.current;
-      return events.filter((event) => !lastArchivedKeys.has(eventKey(event)));
-    }
-    return [];
-  };
-
-  const getDurationForMessage = (messageId: string) => {
-     return archivedEvents[messageId]?.duration || 0;
-  };
-
-
 
 
 
@@ -441,7 +422,9 @@ export default function ChatPage() {
   return (
     <Suspense fallback={<ChatSkeleton />}>
       <ConversationHistoryProvider>
-        <ChatContentWrapper />
+        <AudioPlaybackProvider>
+          <ChatContentWrapper />
+        </AudioPlaybackProvider>
       </ConversationHistoryProvider>
     </Suspense>
   );

@@ -1,12 +1,10 @@
 "use client";
 
-import { useRef, useState, useCallback, useEffect } from "react";
+import { useRef, useState, useCallback } from "react";
 import { Volume2, VolumeX } from "lucide-react";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { TtsSettings, DEFAULT_TTS_SETTINGS } from "../lib/constants";
-
-const globalAudioRef = { current: null as HTMLAudioElement | null };
-const globalPlayingTextRef = { current: null as string | null };
+import { useAudioPlayback } from "./AudioPlaybackProvider";
 
 interface TextToSpeechButtonProps {
   text: string;
@@ -19,35 +17,22 @@ export function TextToSpeechButton({ text, streamingText }: TextToSpeechButtonPr
     DEFAULT_TTS_SETTINGS
   );
   const settings = storedSettings || DEFAULT_TTS_SETTINGS;
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isProcessingRef = useRef(false);
 
-  useEffect(() => {
-    const checkGlobalState = () => {
-      const isThisTextPlaying = globalPlayingTextRef.current === text && globalAudioRef.current !== null;
-      setIsPlaying(isThisTextPlaying);
-    };
-    
-    checkGlobalState();
-    const interval = setInterval(checkGlobalState, 100);
-    return () => clearInterval(interval);
-  }, [text]);
+  // Local state for streaming TTS (AudioContext-based, separate from cached playback)
+  const [isStreamingPlaying, setIsStreamingPlaying] = useState(false);
+  const [isStreamingLoading, setIsStreamingLoading] = useState(false);
+
+  // Use AudioPlaybackProvider context for cached playback coordination
+  const { currentlyPlayingText, isLoading: contextIsLoading, play, stop, isPlaying: checkIsPlaying } = useAudioPlayback();
+  const isCachedPlaying = checkIsPlaying(text);
+
+  // Combined playing state: either cached or streaming
+  const isPlaying = isCachedPlaying || isStreamingPlaying;
+  const isLoading = contextIsLoading || isStreamingLoading;
 
   if (!settings.enabled) return null;
-
-  const stopGlobalAudio = () => {
-    if (globalAudioRef.current) {
-      globalAudioRef.current.pause();
-      globalAudioRef.current.currentTime = 0;
-      globalAudioRef.current.onended = null;
-      globalAudioRef.current.onerror = null;
-      globalAudioRef.current = null;
-    }
-    globalPlayingTextRef.current = null;
-    setIsPlaying(false);
-  };
 
   const playStreaming = useCallback(async () => {
     if (!streamingText) return;
@@ -126,9 +111,9 @@ export function TextToSpeechButton({ text, streamingText }: TextToSpeechButtonPr
       
       ws.onerror = () => setError("Streaming error");
       ws.onclose = () => {
-        setIsPlaying(false);
+        setIsStreamingPlaying(false);
         isProcessingRef.current = false;
-        setIsLoading(false);
+        setIsStreamingLoading(false);
       };
       
       let buffer = "";
@@ -159,9 +144,9 @@ export function TextToSpeechButton({ text, streamingText }: TextToSpeechButtonPr
       
     } catch (err) {
       setError(err instanceof Error ? err.message : "Streaming failed");
-      setIsPlaying(false);
+      setIsStreamingPlaying(false);
       isProcessingRef.current = false;
-      setIsLoading(false);
+      setIsStreamingLoading(false);
     }
   }, [streamingText]);
 
@@ -190,52 +175,27 @@ export function TextToSpeechButton({ text, streamingText }: TextToSpeechButtonPr
       const audioPath = data.audio_url || `${apiUrl}${data.audio_path}`;
       if (!audioPath) throw new Error("Audio URL missing");
 
-      const audio = new Audio(audioPath);
-      globalAudioRef.current = audio;
-      globalPlayingTextRef.current = text;
-      setIsPlaying(true);
-
-      audio.playbackRate = currentSettings.speed ?? DEFAULT_TTS_SETTINGS.speed;
-      audio.onended = () => {
-        if (globalPlayingTextRef.current === text) {
-          globalAudioRef.current = null;
-          globalPlayingTextRef.current = null;
-        }
-        setIsPlaying(false);
-        isProcessingRef.current = false;
-      };
-      audio.onerror = () => {
-        setError("Playback failed");
-        if (globalPlayingTextRef.current === text) {
-          globalAudioRef.current = null;
-          globalPlayingTextRef.current = null;
-        }
-        setIsPlaying(false);
-        isProcessingRef.current = false;
-      };
-      await audio.play();
+      const speed = currentSettings.speed ?? DEFAULT_TTS_SETTINGS.speed;
+      play(text, audioPath, speed);
     } catch (err) {
       setError(err instanceof Error ? err.message : "TTS failed");
-      setIsPlaying(false);
-      isProcessingRef.current = false;
     } finally {
-      setIsLoading(false);
+      isProcessingRef.current = false;
     }
-  }, [text]);
+  }, [text, play]);
 
   const handleClick = async () => {
     if (!text?.trim()) return;
 
     if (isPlaying) {
-      stopGlobalAudio();
+      stop();
       return;
     }
 
-    if (globalAudioRef.current) stopGlobalAudio();
-    if (isLoading || isProcessingRef.current) return;
+    if (currentlyPlayingText) stop();
+    if (contextIsLoading || isProcessingRef.current) return;
 
     isProcessingRef.current = true;
-    setIsLoading(true);
     setError(null);
 
     if (streamingText) {
