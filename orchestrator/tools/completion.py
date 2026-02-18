@@ -275,6 +275,12 @@ async def completion_with_tools(
                 content_chunk = getattr(delta, "content", None) or delta.get("content")
                 if content_chunk:
                     content_buffer.append(content_chunk)
+                    # Yield incremental delta for real-time streaming
+                    yield {
+                        "type": "content_delta",
+                        "content": content_chunk,
+                        "id": str(uuid.uuid4()),
+                    }
 
                 # 3. Handle Tool Calls
                 tool_calls_chunk = getattr(delta, "tool_calls", None) or delta.get(
@@ -443,7 +449,7 @@ async def completion_with_tools(
         else:
             if full_content:
                 yield {
-                    "type": "content",
+                    "type": "content_done",
                     "content": full_content,
                     "id": str(uuid.uuid4()),
                 }
