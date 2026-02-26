@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator, cast
 import litellm
 
 from orchestrator.config import ProviderConfig, Settings
+from orchestrator.guardrails import strip_reasoning_fields_from_message
 from orchestrator.tools.registry import ToolRegistry
 from orchestrator.tools.executor import ToolExecutor
 from orchestrator.tools.parser import extract_tool_calls
@@ -102,6 +103,66 @@ def _extract_last_user_message(messages: list[dict[str, Any]]) -> str | None:
 from orchestrator.tools.retry import is_retry_request
 
 
+def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Deep-merge two dicts without mutating inputs."""
+
+    merged: dict[str, Any] = dict(base)
+    for key, val in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(val, dict):
+            merged[key] = _deep_merge_dict(
+                cast(dict[str, Any], merged[key]), cast(dict[str, Any], val)
+            )
+        else:
+            merged[key] = val
+    return merged
+
+
+def _prefix_match_params(
+    model: str, params_by_prefix: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
+    """Return params for the most specific matching model prefix."""
+
+    if not model or not params_by_prefix:
+        return {}
+
+    for prefix in sorted(params_by_prefix.keys(), key=len, reverse=True):
+        if model.startswith(prefix):
+            params = params_by_prefix.get(prefix)
+            return dict(params) if isinstance(params, dict) else {}
+    return {}
+
+
+def _reasoning_text_from_details(reasoning_details: Any) -> str | None:
+    """Extract human-readable reasoning text from streaming reasoning_details."""
+
+    if not reasoning_details:
+        return None
+
+    parts: list[str] = []
+
+    if isinstance(reasoning_details, list):
+        for item in reasoning_details:
+            text: Any = None
+            if isinstance(item, dict):
+                text = item.get("text") or item.get("summary")
+            else:
+                text = getattr(item, "text", None) or getattr(item, "summary", None)
+            if text:
+                parts.append(str(text))
+    elif isinstance(reasoning_details, dict):
+        text_val = reasoning_details.get("text") or reasoning_details.get("summary")
+        if text_val:
+            parts.append(str(text_val))
+    else:
+        text_val = getattr(reasoning_details, "text", None) or getattr(
+            reasoning_details, "summary", None
+        )
+        if text_val:
+            parts.append(str(text_val))
+
+    return "".join(parts) if parts else None
+
+
 def _prepare_call_params(
     settings: Settings,
     provider_config: ProviderConfig,
@@ -112,9 +173,13 @@ def _prepare_call_params(
 ) -> dict[str, Any]:
     model_to_use = actual_model if actual_model else provider_config.model
 
+    # Guardrail: reasoning is persisted for UX/telemetry, but must never be sent
+    # back to an LLM as part of the prompt/history payload.
+    sanitized_messages = [strip_reasoning_fields_from_message(m) for m in messages]
+
     call_params: dict[str, Any] = {
         "model": model_to_use,
-        "messages": messages,
+        "messages": sanitized_messages,
         "stream": stream,
         "timeout": provider_config.timeout_s,
     }
@@ -135,6 +200,17 @@ def _prepare_call_params(
 
     if provider_config.extra_headers:
         call_params["extra_headers"] = provider_config.extra_headers
+
+    # Merge params into call_params as base -> provider -> model.
+    provider_defaults = _prefix_match_params(
+        model_to_use, getattr(settings, "provider_extra_params", {})
+    )
+    if provider_defaults:
+        call_params = _deep_merge_dict(call_params, provider_defaults)
+
+    model_overrides = getattr(settings, "model_extra_params", {}).get(model_to_use, {})
+    if isinstance(model_overrides, dict) and model_overrides:
+        call_params = _deep_merge_dict(call_params, model_overrides)
 
     return call_params
 
@@ -234,13 +310,25 @@ async def completion_with_tools(
                     continue
 
                 # 1. Handle Thinking/Reasoning (if present)
-                # Some models put it in 'reasoning_content', others in 'thinking'
+                # Some providers emit `reasoning_content` / `thinking`, others stream `reasoning_details`.
                 reasoning = (
                     getattr(delta, "reasoning_content", None)
-                    or delta.get("reasoning_content")
+                    or (
+                        delta.get("reasoning_content")
+                        if isinstance(delta, dict)
+                        else None
+                    )
                     or getattr(delta, "thinking", None)
-                    or delta.get("thinking")
+                    or (delta.get("thinking") if isinstance(delta, dict) else None)
                 )
+                if not reasoning:
+                    reasoning_details = getattr(delta, "reasoning_details", None) or (
+                        delta.get("reasoning_details")
+                        if isinstance(delta, dict)
+                        else None
+                    )
+                    reasoning = _reasoning_text_from_details(reasoning_details)
+
                 if reasoning:
                     yield {
                         "type": "thinking",

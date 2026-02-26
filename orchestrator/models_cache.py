@@ -62,6 +62,11 @@ async def fetch_openrouter_models(
             "owned_by": item.get("owned_by", "openrouter"),
         }
 
+        # Check if model is new (created within last 7 days)
+        created_timestamp = item.get("created", 0)
+        if created_timestamp and (time.time() - created_timestamp) < 604800:
+            model["is_new"] = True
+
         # Include pricing and context length as metadata
         if "pricing" in item:
             model["pricing"] = item["pricing"]

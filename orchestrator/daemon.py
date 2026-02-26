@@ -13,6 +13,7 @@ from typing import Any, cast
 import litellm
 
 from orchestrator.config import ProviderConfig, Settings, TierConfig, ModelSlotConfig
+from orchestrator.guardrails import strip_reasoning_fields_from_message
 
 logger = logging.getLogger(__name__)
 
@@ -184,10 +185,13 @@ async def litellm_stream(
     # Use actual model from request if provided, otherwise fall back to config default
     model_to_use = actual_model if actual_model else provider_config.model
 
+    # Guardrail: never forward persisted reasoning fields into an LLM request.
+    sanitized_messages = [strip_reasoning_fields_from_message(m) for m in messages]
+
     # Prepare LiteLLM call parameters
     call_params: dict[str, Any] = {
         "model": model_to_use,
-        "messages": messages,
+        "messages": sanitized_messages,
         "stream": True,
         "timeout": provider_config.timeout_s,
     }
@@ -248,6 +252,10 @@ async def stream_sse_chat(
     forced_terminal_status: str | None = None
     terminal_reason: str | None = None
 
+    # Reasoning tracking for persistence
+    reasoning_text_parts: list[str] = []
+    stream_start_time = asyncio.get_running_loop().time()
+
     async def _maybe_persist_streaming_message(
         *, force: bool = False, status: str | None = None
     ) -> None:
@@ -263,11 +271,18 @@ async def stream_sse_chat(
                 return
 
         _last_persist_s = now_s
+        reasoning_text = "".join(reasoning_text_parts) if reasoning_text_parts else None
+        reasoning_duration = (
+            max(1, int(now_s - stream_start_time)) if reasoning_text_parts else None
+        )
         try:
             await memory_store.update_message(
                 assistant_message_id,
                 content="".join(final_text_parts),
                 status=status or "streaming",
+                reasoning_text=reasoning_text,
+                reasoning_duration_secs=reasoning_duration,
+                reasoning_model=model_for_events,
             )
         except Exception:
             logger.warning(
@@ -276,6 +291,14 @@ async def stream_sse_chat(
 
     async def _finalize_assistant_message() -> None:
         final_text = "".join(final_text_parts)
+        final_reasoning_text = (
+            "".join(reasoning_text_parts) if reasoning_text_parts else None
+        )
+        final_reasoning_duration = (
+            max(1, int(asyncio.get_running_loop().time() - stream_start_time))
+            if reasoning_text_parts
+            else None
+        )
         tokens_in = int((usage or {}).get("input_tokens", 0))
         tokens_out = int((usage or {}).get("output_tokens", 0))
 
@@ -306,6 +329,9 @@ async def stream_sse_chat(
                     content=final_text,
                     status=final_status,
                     metadata=metadata,
+                    reasoning_text=final_reasoning_text,
+                    reasoning_duration_secs=final_reasoning_duration,
+                    reasoning_model=model_for_events,
                 )
 
                 # Backfill token counters and model if available (update_message does not).
@@ -542,6 +568,8 @@ async def stream_sse_chat(
                     elif evt_type == "thinking":
                         content = str(evt.get("content") or "")
                         if content:
+                            # Accumulate reasoning text for persistence
+                            reasoning_text_parts.append(content)
                             yield sse(
                                 "thinking",
                                 make_envelope(
@@ -631,27 +659,11 @@ async def stream_sse_chat(
         try:
             from orchestrator.worker.jobs import enqueue_with_debounce
 
-            messages_for_jobs: list[dict[str, str]] = []
-            if history_messages:
-                for msg in history_messages:
-                    role = msg.get("role")
-                    content = msg.get("content")
-                    if role in {"user", "assistant"} and content is not None:
-                        messages_for_jobs.append(
-                            {"role": str(role), "content": str(content)}
-                        )
-
-            messages_for_jobs.append({"role": "user", "content": user_message})
-            if final_text:
-                messages_for_jobs.append({"role": "assistant", "content": final_text})
-
-            messages_json = json.dumps(messages_for_jobs)
-
             await enqueue_with_debounce(
                 queue,
                 "extract_memories",
                 f"extract:{conversation_uuid}",
-                args=(str(user_id), str(conversation_uuid), messages_json),
+                args=(str(user_id), str(conversation_uuid)),
             )
 
             # Only generate a title after the first full exchange.

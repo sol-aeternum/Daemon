@@ -2,7 +2,7 @@
 
 import { ChatInputBar } from "../components/ChatInputBar";
 import { useChat } from "@ai-sdk/react";
-import { useState, useRef, useEffect, Suspense } from "react";
+import { useState, useRef, useEffect, Suspense, useMemo } from "react";
 import { useStt } from "../hooks/useStt";
 import { ErrorProvider, useError } from "../components/ErrorProvider";
 import { ErrorBoundary } from "../components/ErrorBoundary";
@@ -28,6 +28,22 @@ import { useLocalStorage } from "../hooks/useLocalStorage";
 import { ThinkingIndicator } from "../components/ThinkingIndicator";
 import MarkdownMessage from "../components/MarkdownMessage";
 import { ChatEvent, isChatEvent } from "../lib/events";
+import { Message } from "ai";
+
+type ReasoningMessage = Message & {
+  reasoning_text?: string;
+  reasoning_duration_secs?: number;
+  reasoning_model?: string;
+};
+
+const getModelName = (modelId: string | undefined): string | undefined => {
+  if (!modelId) return undefined;
+  const parts = modelId.split("/");
+  const shortName = parts[parts.length - 1];
+  return shortName.replace(/-/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+};
+
+const isRoutingEvent = (event: ChatEvent): event is Extract<ChatEvent, { type: "routing" }> => event.type === "routing";
 import { TtsSettings, SttSettings, DEFAULT_TTS_SETTINGS, DEFAULT_STT_SETTINGS } from "../lib/constants";
 
 function ChatContent() {
@@ -105,6 +121,14 @@ function ChatContent() {
     api: "/api/chat",
     id: currentId || undefined,
     initialMessages: currentConversation?.messages || [],
+    fetch: (input, init) => {
+      const body = init?.body ? JSON.parse(init.body as string) : {};
+      body.model = activeModel;
+      return fetch(input, {
+        ...init,
+        body: JSON.stringify(body),
+      });
+    },
     onFinish: (message) => {
       setConnectionStatus("connected");
       if (eventsRef.current.length > 0) {
@@ -127,6 +151,19 @@ function ChatContent() {
     data: data || [],
     isLoading,
   });
+
+  const persistedMessagesById = useMemo(() => {
+    const entries = (currentConversation?.messages || []).reduce<Array<[string, ReasoningMessage]>>(
+      (acc, message) => {
+        if (message.id) {
+          acc.push([message.id, message as ReasoningMessage]);
+        }
+        return acc;
+      },
+      [],
+    );
+    return new Map<string, ReasoningMessage>(entries);
+  }, [currentConversation?.messages]);
 
   const prevLoadingRef = useRef(isLoading);
 
@@ -307,8 +344,26 @@ function ChatContent() {
               {messages.map((message, index) => {
                 const isLast = index === messages.length - 1;
                 const msgEvents = getEventsForMessage(message.id, isLast);
-                const thoughtContent = getThinkingContent(msgEvents);
+                const liveThoughtContent = getThinkingContent(msgEvents);
+                
+                const persistedMessage = persistedMessagesById.get(message.id) as ReasoningMessage | undefined;
+                const reasoningMessage = persistedMessage ?? (message as ReasoningMessage);
+                const persistedReasoning = reasoningMessage.reasoning_text;
+                const rawDuration = typeof reasoningMessage.reasoning_duration_secs === "number"
+                  ? reasoningMessage.reasoning_duration_secs
+                  : undefined;
+                const persistedDuration = rawDuration !== undefined
+                  ? Math.max(1, rawDuration)
+                  : undefined;
+                const fallbackDuration = persistedReasoning && persistedDuration === undefined
+                  ? 1
+                  : persistedDuration;
+                const persistedModel = reasoningMessage.reasoning_model;
+                const routingEvent = msgEvents.find(isRoutingEvent);
+                const routingModel = routingEvent?.model;
+                const thoughtContent = liveThoughtContent || persistedReasoning || "";
                 const thoughtEvent = thoughtContent ? { type: "thinking", content: thoughtContent } as ChatEvent : undefined;
+                const modelName = getModelName(persistedModel || routingModel);
                 
                 return (
                   <div
@@ -320,13 +375,14 @@ function ChatContent() {
                     {/* Render tools and thinking for assistant messages */}
                     {message.role === "assistant" && (
                       <div className="max-w-[85%] md:max-w-[80%] w-full mb-2 space-y-2">
-                         <ThinkingIndicator 
-                           event={thoughtEvent} 
-                           isThinking={isLast && isLoading} 
-                           isFinished={!isLast || !isLoading}
-                           duration={isLast && isLoading ? undefined : getDurationForMessage(message.id)}
-                           onDurationChange={(d) => thinkingDurationRef.current = d} 
-                         />
+                          <ThinkingIndicator 
+                            event={thoughtEvent} 
+                            isThinking={isLast && isLoading} 
+                            isFinished={!isLast || !isLoading}
+                            duration={isLast && isLoading ? undefined : (getDurationForMessage(message.id) > 0 ? getDurationForMessage(message.id) : fallbackDuration)}
+                            modelName={modelName}
+                            onDurationChange={(d) => thinkingDurationRef.current = d} 
+                          />
                          <ToolCallLog events={msgEvents} />
                       </div>
                     )}

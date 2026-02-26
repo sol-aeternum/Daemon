@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
-import math
 import uuid
 
 from orchestrator.memory.store import MemoryStore
@@ -12,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 MAX_RETURNED_MEMORIES = 5
 INITIAL_VECTOR_CANDIDATES = 10
+MIN_FINAL_SCORE = 0.15
 
 
 def _as_float(value: object, default: float) -> float:
@@ -50,13 +50,36 @@ def _source_boost(memory: dict[str, object]) -> float:
     return 1.0
 
 
+def _recency_score(days: float) -> float:
+    if days <= 7:
+        return 1.0
+    if days <= 30:
+        return 0.9
+    if days <= 90:
+        return 0.7
+    return 0.5
+
+
+def _access_boost(memory: dict[str, object]) -> float:
+    access_count_raw = memory.get("access_count")
+    access_count = int(access_count_raw) if isinstance(access_count_raw, int) else 0
+    if access_count <= 0:
+        return 1.0
+    if access_count <= 5:
+        return 1.05
+    if access_count <= 20:
+        return 1.1
+    return 1.15
+
+
 def _score_memory(memory: dict[str, object]) -> float:
     similarity = _as_float(memory.get("similarity"), 0.0)
     recency_days = _days_since_accessed(memory)
-    recency = 1.0 / math.sqrt(recency_days)
+    recency = _recency_score(recency_days)
     source = _source_boost(memory)
     confidence = _as_float(memory.get("confidence"), 1.0)
-    return similarity * recency * source * confidence
+    access = _access_boost(memory)
+    return similarity * recency * source * confidence * access
 
 
 async def retrieve_memories(
@@ -103,20 +126,28 @@ async def retrieve_memories(
         entry = dict(memory)
         similarity = _as_float(entry.get("similarity"), 0.0)
         recency_days = _days_since_accessed(entry)
-        recency_boost = 1.0 / math.sqrt(recency_days)
+        recency_boost = _recency_score(recency_days)
         source_boost = _source_boost(entry)
         confidence = _as_float(entry.get("confidence"), 1.0)
+        access_boost = _access_boost(entry)
         final_score = _score_memory(entry)
 
         entry["similarity"] = similarity
         entry["recency_boost"] = recency_boost
         entry["source_boost"] = source_boost
+        entry["access_boost"] = access_boost
         entry["confidence"] = confidence
         entry["final_score"] = final_score
         scored.append(entry)
 
+    filtered = [
+        item
+        for item in scored
+        if _as_float(item.get("final_score"), 0.0) >= MIN_FINAL_SCORE
+    ]
+
     ranked = sorted(
-        scored,
+        filtered,
         key=lambda item: _as_float(item.get("final_score"), 0.0),
         reverse=True,
     )[:target_limit]

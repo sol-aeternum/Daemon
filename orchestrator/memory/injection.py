@@ -4,6 +4,7 @@ import asyncio
 import uuid
 from typing import cast
 
+from orchestrator.guardrails import strip_reasoning_fields_from_message
 from orchestrator.memory.embedding import embed_text
 from orchestrator.memory.retrieval import retrieve_memories
 from orchestrator.memory.store import MemoryStore
@@ -11,9 +12,8 @@ from orchestrator.prompts import DAEMON_SYSTEM_PROMPT
 
 MAX_MEMORY_ITEMS = 5
 MAX_SUMMARY_ITEMS = 3
-DEFAULT_MAX_TOKENS = 1500
-CHARS_PER_TOKEN = 4
-MAX_SINGLE_MEMORY_CHARS = 800
+DEFAULT_MAX_TOKENS = 2500
+MAX_SINGLE_MEMORY_CHARS = 400
 
 PERSONALITY_PRESETS: dict[str, str] = {
     "default": "",
@@ -80,8 +80,15 @@ def _truncate_to_chars(text: str, limit: int) -> str:
     return text[: limit - 3].rstrip() + "..."
 
 
-def _token_budget_to_chars(max_tokens: int) -> int:
-    return max(1, max_tokens) * CHARS_PER_TOKEN
+def estimate_tokens(text: str) -> int:
+    words = text.split()
+    if not words:
+        return 0
+    total_chars = len(text)
+    average_word_length = total_chars / len(words)
+    if average_word_length > 4:
+        return max(1, total_chars // 3)
+    return max(1, int(len(words) * 1.3))
 
 
 def format_preferences_block(preferences: dict[str, object]) -> str:
@@ -121,7 +128,7 @@ def format_preferences_block(preferences: dict[str, object]) -> str:
     if not lines:
         return ""
 
-    return "[Preferences]\n" + "\n".join(lines)
+    return "Communication preferences:\n" + "\n".join(lines)
 
 
 async def build_memory_context(
@@ -139,6 +146,9 @@ async def build_memory_context(
 
     query_text = ""
     recent_messages = await store.get_recent_messages(conversation_id, limit=20)
+
+    recent_messages = [strip_reasoning_fields_from_message(m) for m in recent_messages]
+
     for message in reversed(recent_messages):
         if str(message.get("role") or "").lower() == "user":
             query_text = _normalize_content(message.get("content"))
@@ -192,29 +202,38 @@ async def build_memory_context(
     if not memory_lines and not summary_lines:
         return ""
 
-    budget_chars = _token_budget_to_chars(max_tokens)
+    effective_token_budget = max(1, max_tokens)
 
     def render(memories: list[str], summary_items: list[str]) -> str:
-        parts = ["[What you know about this user]"]
+        parts = ["About this user:"]
         if memories:
             parts.extend(memories)
         if summary_items:
-            parts.append("[Recent sessions]")
+            parts.append("Recent context:")
             parts.extend(summary_items)
         return "\n".join(parts).strip()
 
+    def truncate_items(items: list[str], item_limit: int) -> list[str]:
+        output: list[str] = []
+        for line in items:
+            if len(line) <= item_limit:
+                output.append(line)
+                continue
+            output.append(_truncate_to_chars(line, item_limit))
+        return output
+
+    memory_lines = truncate_items(memory_lines, MAX_SINGLE_MEMORY_CHARS)
+    summary_lines = truncate_items(summary_lines, MAX_SINGLE_MEMORY_CHARS)
+
     context = render(memory_lines, summary_lines)
 
-    while len(context) > budget_chars and memory_lines:
+    while estimate_tokens(context) > effective_token_budget and memory_lines:
         _ = memory_lines.pop()
         context = render(memory_lines, summary_lines)
 
-    while len(context) > budget_chars and summary_lines:
+    while estimate_tokens(context) > effective_token_budget and summary_lines:
         _ = summary_lines.pop()
         context = render(memory_lines, summary_lines)
-
-    if len(context) > budget_chars:
-        context = _truncate_to_chars(context, budget_chars)
 
     return context
 

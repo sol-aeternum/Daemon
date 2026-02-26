@@ -278,10 +278,36 @@ async def openai_list_models(
 
 
 @app.get("/v1/catalog")
-async def get_model_catalog() -> dict[str, object]:
-    from orchestrator.catalog import get_catalog
+async def get_model_catalog() -> dict[str, Any]:
+    from typing import cast
+    from orchestrator.catalog import FEATURED_MODELS, get_catalog
+    from orchestrator.models_cache import get_cached_models
 
-    return get_catalog()
+    catalog = get_catalog()
+
+    # Add dynamic new models from cache
+    cached = get_cached_models()
+    featured_ids = {fm.id for fm in FEATURED_MODELS}
+
+    # Get models that are new and not already in featured
+    dynamic_new = [
+        {
+            "id": m["id"],
+            "name": m.get("name", m["id"]),
+            "tagline": "Newly added",
+            "badges": ["new"],
+        }
+        for m in cached
+        if m.get("is_new") and m["id"] not in featured_ids
+    ][:2]
+
+    featured = cast(list[Any], catalog["featured"])
+    featured.extend(dynamic_new)
+
+    return {
+        "auto": catalog["auto"],
+        "featured": featured,
+    }
 
 
 @app.post("/chat/completions", response_model=None)
@@ -323,10 +349,11 @@ async def openai_chat_completions(
 
     # Strip provider prefix to get actual model ID
     actual_model = payload.model
-    for prefix in ["openrouter/", "opencode/"]:
-        if actual_model.startswith(prefix):
-            actual_model = actual_model[len(prefix) :]
-            break
+    if provider_name != "openrouter":
+        for prefix in ["openrouter/", "opencode/"]:
+            if actual_model.startswith(prefix):
+                actual_model = actual_model[len(prefix) :]
+                break
     if actual_model == payload.model and actual_model in {"default", "", "kimi"}:
         actual_model = provider_config.model
 
@@ -807,8 +834,10 @@ async def chat(
 
     incoming_messages = payload.messages or []
     last_user_message = None
+    last_user_msg: dict[str, Any] | None = None
     for msg in reversed(incoming_messages):
         if msg.get("role") == "user" and isinstance(msg.get("content"), str):
+            last_user_msg = msg
             last_user_message = msg.get("content")
             break
     user_message = last_user_message or payload.message
@@ -816,6 +845,12 @@ async def chat(
     decision = route_message(user_message, payload.metadata)
 
     user_model_choice = payload.model or "auto"
+    if user_model_choice == "auto" and last_user_msg:
+        msg_model = last_user_msg.get("model")
+        if isinstance(msg_model, str):
+            msg_model = msg_model.strip()
+            if msg_model and msg_model != "auto":
+                user_model_choice = msg_model
     has_code = "```" in user_message
     turn_count = len(incoming_messages) if incoming_messages else 0
 

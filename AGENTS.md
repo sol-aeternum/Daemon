@@ -79,6 +79,8 @@ migrations/             # PostgreSQL migrations (13 applied)
 
 # Diagnostic Triage Protocol
 
+# Diagnostic Triage Protocol
+
 ## Mandatory: TRIAGE.md Maintenance
 
 During ALL task execution, maintain a `TRIAGE.md` file in the project root. Log any error, warning, failure, unexpected behavior, or anomaly encountered — **especially** items outside your current task scope.
@@ -91,10 +93,11 @@ During ALL task execution, maintain a `TRIAGE.md` file in the project root. Log 
 - Configuration issues outside your task scope
 - Anything you'd mentally dismiss as "not my problem"
 
-### Format per entry
+### Entry format
 ```markdown
 ## [TIMESTAMP] — [SHORT TITLE]
 - **Severity**: critical | warning | info
+- **Scope**: project | host | upstream | tooling
 - **Encountered during**: [current TODO/task]
 - **Category**: build-error | runtime-error | deprecation | config | test-failure | dependency | security | other
 - **Blocked current task**: yes | no
@@ -104,16 +107,32 @@ During ALL task execution, maintain a `TRIAGE.md` file in the project root. Log 
 - **Suggested action**: [what to investigate]
 ```
 
+### Scope definitions
+- **project**: Fixable by changing project code/config/tests
+- **host**: Environment/OS/container/permissions issue — not a code fix
+- **upstream**: Third-party dependency issue — track, don't fix
+- **tooling**: Agent/LSP/MCP/dev infrastructure — config fix, not code fix
+
 ### Rules
 1. Log BEFORE marking any TODO complete
 2. Include actual error messages — don't paraphrase
 3. Do NOT fix triaged items unless they block your current task
-4. If you think "this is pre-existing / not my fault / probably fine" — that's a triage trigger, not a dismissal
+4. "Pre-existing / not my fault / probably fine" = triage trigger, not dismissal
 5. If it was worth noting in your thinking, it's worth logging in TRIAGE.md
+6. Check TRIAGE_SUPPRESS below — skip suppressed patterns unless behavior has CHANGED
+7. Check for existing entries before logging — append "seen again" to duplicates
 
 ### On task completion, always report
 ```
 Triage: {N} issues ({critical} critical, {warning} warning, {info} info)
+Scope: {project} project | {host} host | {upstream} upstream | {tooling} tooling
 See TRIAGE.md — items requiring attention: [list critical/warning titles]
 ```
 If zero issues: "Triage: clean — no anomalies encountered."
+
+<!-- TRIAGE_SUPPRESS: Known issues — do not re-log unless behavior has CHANGED -->
+<!-- Add patterns here after running triage review -->
+<!-- Example: -->
+<!-- - __pycache__ PermissionError in container (host ownership mismatch) -->
+<!-- - LiteLLM asyncio.iscoroutinefunction DeprecationWarning on Python 3.14+ -->
+<!-- END TRIAGE_SUPPRESS -->

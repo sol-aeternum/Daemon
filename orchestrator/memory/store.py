@@ -11,7 +11,12 @@ from typing import Any
 import asyncpg
 
 from orchestrator.memory.encryption import ContentEncryption
-from orchestrator.memory.embedding import DEFAULT_MODEL
+from orchestrator.memory.embedding import DEFAULT_MODEL, embed_text
+
+
+def is_explicit_memory(memory: dict[str, Any]) -> bool:
+    """Check if a memory was created explicitly (user_created) vs extracted."""
+    return memory.get("source_type") == "user_created"
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +111,7 @@ class MemoryStore:
         tokens_delta: int = 0,
         pinned: bool | None = None,
         title_locked: bool | None = None,
+        metadata_patch: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         row = await self._pool.fetchrow(
             """
@@ -120,6 +126,10 @@ class MemoryStore:
                 tokens_total     = tokens_total + $5,
                 pinned           = COALESCE($6, pinned),
                 title_locked     = COALESCE($7, title_locked),
+                metadata         = CASE
+                    WHEN $8::jsonb IS NULL THEN metadata
+                    ELSE COALESCE(metadata, '{}'::jsonb) || $8::jsonb
+                END,
                 updated_at       = NOW(),
                 last_activity_at = NOW()
             WHERE id = $1
@@ -132,6 +142,7 @@ class MemoryStore:
             tokens_delta,
             pinned,
             title_locked,
+            json.dumps(metadata_patch) if metadata_patch is not None else None,
         )
         return dict(row) if row else None
 
@@ -160,14 +171,21 @@ class MemoryStore:
         tool_results: list[Any] | None = None,
         status: str = "streaming",
         metadata: dict[str, Any] | None = None,
+        reasoning_text: str | None = None,
+        reasoning_duration_secs: int | None = None,
+        reasoning_model: str | None = None,
     ) -> dict[str, Any]:
         encrypted_content = self._enc.encrypt(content)
+        encrypted_reasoning_text = (
+            self._enc.encrypt(reasoning_text) if reasoning_text is not None else None
+        )
         row = await self._pool.fetchrow(
             """
             INSERT INTO messages
                 (conversation_id, user_id, role, content, model,
-                 tokens_in, tokens_out, tool_calls, tool_results, status, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11::jsonb)
+                 tokens_in, tokens_out, tool_calls, tool_results, status, metadata,
+                 reasoning_text, reasoning_duration_secs, reasoning_model)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11::jsonb, $12, $13, $14)
             RETURNING *
             """,
             conversation_id,
@@ -181,9 +199,14 @@ class MemoryStore:
             json.dumps(tool_results or []),
             status,
             json.dumps(metadata or {}),
+            encrypted_reasoning_text,
+            reasoning_duration_secs,
+            reasoning_model,
         )
         result = dict(row)  # type: ignore[arg-type]
         result["content"] = self._enc.decrypt(result["content"])
+        if result.get("reasoning_text") is not None:
+            result["reasoning_text"] = self._enc.decrypt(result["reasoning_text"])
         return result
 
     async def get_messages(
@@ -210,6 +233,8 @@ class MemoryStore:
         for r in rows:
             d = dict(r)
             d["content"] = self._enc.decrypt(d["content"])
+            if d.get("reasoning_text") is not None:
+                d["reasoning_text"] = self._enc.decrypt(d["reasoning_text"])
             results.append(_normalize_message(d))
         return results
 
@@ -228,15 +253,24 @@ class MemoryStore:
         content: str | None = None,
         status: str | None = None,
         metadata: dict[str, Any] | None = None,
+        reasoning_text: str | None = None,
+        reasoning_duration_secs: int | None = None,
+        reasoning_model: str | None = None,
     ) -> dict[str, Any] | None:
         encrypted_content = self._enc.encrypt(content) if content is not None else None
         metadata_json = json.dumps(metadata) if metadata is not None else None
+        encrypted_reasoning_text = (
+            self._enc.encrypt(reasoning_text) if reasoning_text is not None else None
+        )
         row = await self._pool.fetchrow(
             """
             UPDATE messages
             SET content    = COALESCE($2, content),
                 status     = COALESCE($3, status),
-                metadata   = COALESCE($4::jsonb, metadata)
+                metadata   = COALESCE($4::jsonb, metadata),
+                reasoning_text = COALESCE($5, reasoning_text),
+                reasoning_duration_secs = COALESCE($6, reasoning_duration_secs),
+                reasoning_model = COALESCE($7, reasoning_model)
             WHERE id = $1
             RETURNING *
             """,
@@ -244,11 +278,16 @@ class MemoryStore:
             encrypted_content,
             status,
             metadata_json,
+            encrypted_reasoning_text,
+            reasoning_duration_secs,
+            reasoning_model,
         )
         if not row:
             return None
         result = dict(row)
         result["content"] = self._enc.decrypt(result["content"])
+        if result.get("reasoning_text") is not None:
+            result["reasoning_text"] = self._enc.decrypt(result["reasoning_text"])
         return result
 
     async def get_recent_messages(
@@ -276,6 +315,8 @@ class MemoryStore:
         for r in rows:
             d = dict(r)
             d["content"] = self._enc.decrypt(d["content"])
+            if d.get("reasoning_text") is not None:
+                d["reasoning_text"] = self._enc.decrypt(d["reasoning_text"])
             results.append(_normalize_message(d))
         return results
 
@@ -296,6 +337,7 @@ class MemoryStore:
         local_only: bool = False,
         confidence: float = 1.0,
         status: str = "active",
+        memory_slot: str | None = None,
     ) -> dict[str, Any]:
         encrypted_content = self._enc.encrypt(content)
         embedding_str = _format_vector(embedding) if embedding else None
@@ -303,8 +345,8 @@ class MemoryStore:
             """
             INSERT INTO memories
                 (user_id, content, embedding, embedding_model, category, source_type,
-                 source_conversation_id, local_only, confidence, status)
-            VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10)
+                 source_conversation_id, local_only, confidence, status, memory_slot)
+            VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING *
             """,
             user_id,
@@ -317,6 +359,7 @@ class MemoryStore:
             local_only,
             confidence,
             status,
+            memory_slot,
         )
         result = dict(row)  # type: ignore[arg-type]
         result["content"] = self._enc.decrypt(result["content"])
@@ -339,40 +382,53 @@ class MemoryStore:
         *,
         category: str | None = None,
         status: str | list[str] | None = "active",
+        confirmed: bool | None = None,
         include_local: bool = True,
         created_after: datetime | None = None,
         created_before: datetime | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
-        if status is None:
-            status_list = None
-        elif isinstance(status, str):
-            status_list = [status]
-        else:
-            status_list = status
+        conditions = ["user_id = $1", "($2::bool OR local_only = FALSE)"]
+        params: list[Any] = [user_id, include_local]
 
-        rows = await self._pool.fetch(
-            """
+        if category is not None:
+            params.append(category)
+            conditions.append(f"category = ${len(params)}")
+        if created_after is not None:
+            params.append(created_after)
+            conditions.append(f"created_at >= ${len(params)}::timestamptz")
+        if created_before is not None:
+            params.append(created_before)
+            conditions.append(f"created_at <= ${len(params)}::timestamptz")
+
+        if confirmed is True:
+            conditions.append("valid_to IS NULL")
+        elif confirmed is False:
+            pending_statuses = ["pending", "rejected", "inactive"]
+            params.append(pending_statuses)
+            conditions.append(
+                f"(valid_to IS NOT NULL OR status = ANY(${len(params)}::text[]))"
+            )
+        else:
+            if status is None:
+                status_list = None
+            elif isinstance(status, str):
+                status_list = [status]
+            else:
+                status_list = status
+            if status_list is not None:
+                params.append(status_list)
+                conditions.append(f"status = ANY(${len(params)}::text[])")
+
+        params.extend([limit, offset])
+        query = f"""
             SELECT * FROM memories
-            WHERE user_id = $1
-              AND ($2::text[] IS NULL OR status = ANY($2::text[]))
-              AND ($3::bool OR local_only = FALSE)
-              AND ($4::text IS NULL OR category = $4)
-              AND ($5::timestamptz IS NULL OR created_at >= $5)
-              AND ($6::timestamptz IS NULL OR created_at <= $6)
+            WHERE {" AND ".join(conditions)}
             ORDER BY created_at DESC
-            LIMIT $7 OFFSET $8
-            """,
-            user_id,
-            status_list,
-            include_local,
-            category,
-            created_after,
-            created_before,
-            limit,
-            offset,
-        )
+            LIMIT ${len(params) - 1} OFFSET ${len(params)}
+        """
+        rows = await self._pool.fetch(query, *params)
         results = []
         for r in rows:
             d = dict(r)
@@ -481,6 +537,7 @@ class MemoryStore:
         source_conversation_id: uuid.UUID | None = None,
         confidence: float = 1.0,
         new_status: str = "active",
+        memory_slot: str | None = None,
     ) -> dict[str, Any]:
         """Create a new memory and mark the old one as superseded (transaction)."""
         encrypted_content = self._enc.encrypt(new_content)
@@ -492,8 +549,8 @@ class MemoryStore:
                     """
                     INSERT INTO memories
                         (user_id, content, embedding, embedding_model, category, source_type,
-                         source_conversation_id, confidence, status)
-                    VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9)
+                         source_conversation_id, confidence, status, memory_slot)
+                    VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10)
                     RETURNING *
                     """,
                     user_id,
@@ -505,20 +562,25 @@ class MemoryStore:
                     source_conversation_id,
                     confidence,
                     new_status,
+                    memory_slot,
                 )
-                new_id = new_row["id"]  # type: ignore[index]
 
-                await conn.execute(
+                update_result = await conn.execute(
                     """
                     UPDATE memories
-                    SET status = 'superseded',
-                        superseded_by = $2,
+                    SET valid_to = NOW(),
                         updated_at = NOW()
                     WHERE id = $1
+                      AND user_id = $2
+                      AND valid_to IS NULL
                     """,
                     old_memory_id,
-                    new_id,
+                    user_id,
                 )
+                if update_result != "UPDATE 1":
+                    raise RuntimeError(
+                        "Supersede failed to close source memory in active state"
+                    )
 
         result = dict(new_row)  # type: ignore[arg-type]
         result["content"] = self._enc.decrypt(result["content"])
@@ -548,12 +610,40 @@ class MemoryStore:
             memory_ids,
         )
 
+    async def close_memory(self, memory_id: uuid.UUID) -> bool:
+        exists = await self._pool.fetchval(
+            """
+            SELECT EXISTS(
+                SELECT 1
+                FROM memories
+                WHERE id = $1
+            )
+            """,
+            memory_id,
+        )
+        if not bool(exists):
+            return False
+
+        await self._pool.execute(
+            """
+            UPDATE memories
+            SET valid_to = NOW(),
+                updated_at = NOW()
+            WHERE id = $1
+              AND valid_to IS NULL
+            """,
+            memory_id,
+        )
+        return True
+
     async def delete_memory(self, memory_id: uuid.UUID, *, soft: bool = True) -> bool:
         if soft:
             result = await self._pool.execute(
                 """
                 UPDATE memories
-                SET status = 'deleted', updated_at = NOW()
+                SET status = 'deleted',
+                    valid_to = COALESCE(valid_to, NOW()),
+                    updated_at = NOW()
                 WHERE id = $1
                 """,
                 memory_id,
@@ -574,17 +664,11 @@ class MemoryStore:
         limit: int = 10,
         min_similarity: float = 0.0,
         category: str | None = None,
-        status: str | list[str] | None = "active",
         include_local: bool = False,
+        include_historical: bool = False,
+        memory_slot: str | None = None,
     ) -> list[dict[str, Any]]:
         embedding_str = _format_vector(query_embedding)
-
-        if status is None:
-            status_list = None
-        elif isinstance(status, str):
-            status_list = [status]
-        else:
-            status_list = status
 
         if category:
             rows = await self._pool.fetch(
@@ -593,10 +677,12 @@ class MemoryStore:
                        1 - (embedding <=> $2::vector) AS similarity
                 FROM memories
                 WHERE user_id = $1
-                  AND ($4::text[] IS NULL OR status = ANY($4::text[]))
+                  AND status != 'deleted'
+                  AND ($4::bool OR valid_to IS NULL)
                   AND ($5::bool OR local_only = FALSE)
                   AND embedding IS NOT NULL
                   AND category = $6
+                  AND ($8::text IS NULL OR memory_slot = $8)
                   AND 1 - (embedding <=> $2::vector) >= $3
                 ORDER BY embedding <=> $2::vector
                 LIMIT $7
@@ -604,10 +690,11 @@ class MemoryStore:
                 user_id,
                 embedding_str,
                 min_similarity,
-                status_list,
+                include_historical,
                 include_local,
                 category,
                 limit,
+                memory_slot,
             )
         else:
             rows = await self._pool.fetch(
@@ -616,9 +703,11 @@ class MemoryStore:
                        1 - (embedding <=> $2::vector) AS similarity
                 FROM memories
                 WHERE user_id = $1
-                  AND ($4::text[] IS NULL OR status = ANY($4::text[]))
+                  AND status != 'deleted'
+                  AND ($4::bool OR valid_to IS NULL)
                   AND ($5::bool OR local_only = FALSE)
                   AND embedding IS NOT NULL
+                  AND ($7::text IS NULL OR memory_slot = $7)
                   AND 1 - (embedding <=> $2::vector) >= $3
                 ORDER BY embedding <=> $2::vector
                 LIMIT $6
@@ -626,9 +715,10 @@ class MemoryStore:
                 user_id,
                 embedding_str,
                 min_similarity,
-                status_list,
+                include_historical,
                 include_local,
                 limit,
+                memory_slot,
             )
 
         results = []
@@ -638,6 +728,52 @@ class MemoryStore:
             results.append(d)
         return results
 
+    async def search_memories_by_source(
+        self,
+        user_id: uuid.UUID,
+        text: str,
+        min_similarity: float = 0.0,
+        category: str | None = None,
+        memory_slot: str | None = None,
+        include_historical: bool = False,
+        include_local: bool = True,
+        limit: int = 100,
+        source_types: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Search memories by semantic similarity, filtered by source_type.
+
+        Args:
+            user_id: User ID
+            text: Query text to embed and search
+            min_similarity: Minimum similarity threshold
+            category: Optional category filter
+            memory_slot: Optional memory slot filter
+            include_historical: Include historical (expired) memories
+            include_local: Include local-only memories
+            limit: Maximum results to return
+            source_types: Optional list of source_type values to filter by
+
+        Returns:
+            List of memory dicts filtered by source_type
+        """
+        # Embed the text query
+        embedding = await embed_text(text)
+        # Call search_memories with the same params
+        results = await self.search_memories(
+            user_id,
+            embedding,
+            limit=limit,
+            min_similarity=min_similarity,
+            category=category,
+            include_local=include_local,
+            include_historical=include_historical,
+            memory_slot=memory_slot,
+        )
+        # Filter by source_types if provided
+        if source_types:
+            results = [r for r in results if r.get("source_type") in source_types]
+        return results
+
     async def delete_memories_by_source(
         self,
         source_conversation_id: uuid.UUID,
@@ -645,8 +781,11 @@ class MemoryStore:
         result = await self._pool.execute(
             """
             UPDATE memories
-            SET status = 'deleted', updated_at = NOW()
-            WHERE source_conversation_id = $1 AND status = 'active'
+            SET status = 'deleted',
+                valid_to = COALESCE(valid_to, NOW()),
+                updated_at = NOW()
+            WHERE source_conversation_id = $1
+              AND status != 'deleted'
             """,
             source_conversation_id,
         )
@@ -673,7 +812,9 @@ class MemoryStore:
         result = await self._pool.execute(
             """
             UPDATE memories
-            SET status = 'deleted', updated_at = NOW()
+            SET status = 'deleted',
+                valid_to = COALESCE(valid_to, NOW()),
+                updated_at = NOW()
             WHERE user_id = $1 AND status != 'deleted'
             """,
             user_id,
@@ -694,7 +835,8 @@ class MemoryStore:
             SELECT * FROM memories
             WHERE user_id = $1
               AND category = 'summary'
-              AND status = 'active'
+              AND valid_to IS NULL
+              AND status != 'deleted'
             ORDER BY created_at DESC
             LIMIT $2
             """,
@@ -785,12 +927,13 @@ class MemoryStore:
             )
             embedding_model = mem.get("embedding_model", DEFAULT_MODEL)
             status = mem.get("status", "active")
+            memory_slot = mem.get("memory_slot")
             await self._pool.execute(
                 """
                 INSERT INTO memories
                     (user_id, content, embedding, embedding_model, category, source_type,
-                     local_only, confidence, status)
-                VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9)
+                     local_only, confidence, status, memory_slot)
+                VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10)
                 """,
                 user_id,
                 encrypted_content,
@@ -801,6 +944,7 @@ class MemoryStore:
                 mem.get("local_only", False),
                 mem.get("confidence", 1.0),
                 status,
+                memory_slot,
             )
             inserted += 1
         return inserted

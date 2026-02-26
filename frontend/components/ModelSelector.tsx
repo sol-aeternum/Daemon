@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, Flame, Search, Sparkles, Zap } from "lucide-react";
+import { ChevronDown, Flame, Search, Zap } from "lucide-react";
 
 type CatalogModel = {
   id: string;
@@ -64,9 +64,15 @@ export function ModelSelector({ selected, onSelect }: ModelSelectorProps) {
         selected.split("/").pop() ||
         selected;
 
-  const BadgeIcon = ({ type }: { type: string }) => {
+  const Badge = ({ type }: { type: string }) => {
     if (type === "hot") return <Flame className="w-3 h-3 text-orange-500" />;
-    if (type === "new") return <Sparkles className="w-3 h-3 text-blue-500" />;
+    if (type === "new") {
+      return (
+        <span className="ml-1.5 px-1.5 py-0.5 text-[10px] font-semibold bg-green-100 text-green-700 rounded-full">
+          NEW
+        </span>
+      );
+    }
     return null;
   };
 
@@ -128,7 +134,7 @@ export function ModelSelector({ selected, onSelect }: ModelSelectorProps) {
                 <div className="flex items-center gap-1.5">
                   <span className="text-sm font-medium">{model.name}</span>
                   {model.badges.map((b) => (
-                    <BadgeIcon key={b} type={b} />
+                    <Badge key={b} type={b} />
                   ))}
                 </div>
                 <div className="text-xs text-gray-500 truncate">{model.tagline}</div>

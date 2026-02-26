@@ -112,6 +112,7 @@ async def generate_summary(
 async def should_summarize(
     conversation_id: uuid.UUID,
     last_summary_time: datetime | None,
+    last_summarized_msg_count: int,
     store: MemoryStore,
     settings: dict[str, Any] | None = None,
 ) -> bool:
@@ -131,17 +132,18 @@ async def should_summarize(
         True if should summarize
     """
     settings = settings or {}
-    idle_minutes = settings.get("summary_idle_minutes", 30)
-    token_threshold = settings.get("summary_token_threshold", 15000)
+    idle_minutes = settings.get("summary_idle_minutes", 15)
+    summary_message_delta = settings.get("summary_message_delta", 20)
+    idle_delta = 6
 
-    # Check idle time
-    if last_summary_time:
+    current_msg_count = await store.count_messages(conversation_id)
+    delta = max(0, int(current_msg_count) - int(last_summarized_msg_count))
+    if delta >= int(summary_message_delta):
+        return True
+
+    if delta >= idle_delta and last_summary_time:
         idle_time = datetime.now(timezone.utc) - last_summary_time
-        if idle_time < timedelta(minutes=idle_minutes):
-            return False
+        if idle_time >= timedelta(minutes=idle_minutes):
+            return True
 
-    # Check message count since last summary (using SQL COUNT for performance)
-    message_count = await store.count_messages(conversation_id)
-    estimated_tokens = message_count * 375  # ~375 tokens/message average
-
-    return estimated_tokens >= token_threshold
+    return False

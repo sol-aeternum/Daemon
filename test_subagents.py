@@ -5,6 +5,15 @@ import asyncio
 import sys
 import os
 
+
+if "pytest" in sys.modules:
+    import pytest
+
+    pytest.skip(
+        "Subagent smoke test script; run manually (not under pytest)",
+        allow_module_level=True,
+    )
+
 # Add backend to path
 sys.path.insert(0, "/app")
 

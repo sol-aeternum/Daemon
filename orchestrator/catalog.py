@@ -42,12 +42,42 @@ FEATURED_MODELS: list[CatalogModel] = [
         id="openrouter/meta-llama/llama-4-scout",
         name="Llama 4 Scout",
         tagline="Open source, fast",
+        badges=[],
+    ),
+    CatalogModel(
+        id="openrouter/anthropic/claude-sonnet-4.6",
+        name="Claude Sonnet 4.6",
+        tagline="Fast, efficient reasoning",
         badges=["new"],
+        added_at=time.time(),
+    ),
+    CatalogModel(
+        id="openrouter/google/gemini-3.1-pro-preview",
+        name="Gemini 3.1 Pro Preview",
+        tagline="Latest Gemini preview",
+        badges=["new"],
+        added_at=time.time(),
     ),
 ]
 
 
-NEW_BADGE_TTL_SECONDS = 14 * 86400
+NEW_BADGE_TTL_SECONDS = 7 * 86400
+
+
+def get_model_name(model_id: str) -> str:
+    """Get friendly model name from model ID."""
+    # Try to find in featured models
+    for model in FEATURED_MODELS:
+        if model.id == model_id:
+            return model.name
+    # Fallback: extract from ID
+    # e.g., "openrouter/anthropic/claude-opus-4.6" -> "Claude Opus 4.6"
+    if "/" in model_id:
+        name = model_id.split("/")[-1]
+        # Convert hyphenated to title case
+        name = name.replace("-", " ").title()
+        return name
+    return model_id
 
 
 def get_catalog() -> dict[str, object]:

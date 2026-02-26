@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 WorkerContext = dict[str, object]
 
 
-def _parse_messages(messages_json: object) -> list[ConversationMessage]:
+def _parse_raw_messages(messages_json: object) -> list[dict[str, Any]]:
     parsed: object
     if isinstance(messages_json, str):
         try:
@@ -36,12 +36,42 @@ def _parse_messages(messages_json: object) -> list[ConversationMessage]:
     if not isinstance(parsed, list):
         return []
 
-    parsed_items = cast(list[object], parsed)
+    raw_messages: list[dict[str, Any]] = []
+    for item in cast(list[object], parsed):
+        if isinstance(item, dict):
+            raw_messages.append(item)
+    return raw_messages
 
+
+def _contains_memory_write_marker(value: object) -> bool:
+    if isinstance(value, str):
+        return "memory_write" in value.lower()
+    if isinstance(value, dict):
+        return any(_contains_memory_write_marker(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_contains_memory_write_marker(v) for v in value)
+    return False
+
+
+def _is_memory_write_artifact(message: dict[str, Any]) -> bool:
+    tool_calls = message.get("tool_calls")
+    if _contains_memory_write_marker(tool_calls):
+        return True
+
+    tool_results = message.get("tool_results")
+    if _contains_memory_write_marker(tool_results):
+        return True
+
+    role = str(message.get("role") or "").lower()
+    if role == "tool" and _contains_memory_write_marker(message.get("content")):
+        return True
+
+    return False
+
+
+def _parse_messages(messages_json: object) -> list[ConversationMessage]:
     messages: list[ConversationMessage] = []
-    for item in parsed_items:
-        if not isinstance(item, dict):
-            continue
+    for item in _parse_raw_messages(messages_json):
         role = item.get("role")
         content = item.get("content")
         if role is None or content is None:
@@ -90,7 +120,11 @@ async def extract_memories(
     if not isinstance(store_obj, MemoryStore):
         return {"status": "skipped", "reason": "store_unavailable"}
 
-    messages = _parse_messages(messages_json)
+    raw_messages = _parse_raw_messages(messages_json)
+    filtered_raw_messages = [
+        message for message in raw_messages if not _is_memory_write_artifact(message)
+    ]
+    messages = _parse_messages(filtered_raw_messages)
     text = _messages_to_text(messages)
     if not text:
         return {"status": "skipped", "reason": "no_messages"}

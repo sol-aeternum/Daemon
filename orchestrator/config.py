@@ -148,6 +148,34 @@ class Settings(BaseSettings):
     openrouter_referer: str = "https://daemon.ai"
     openrouter_title: str = "Daemon AI Assistant"
 
+    # Provider-level defaults for model-specific parameters (reasoning/thinking).
+    # Applied by model prefix and overridden by per-model `model_extra_params`.
+    provider_extra_params: dict[str, dict[str, Any]] = Field(
+        default_factory=lambda: {
+            "openrouter/anthropic/": {"reasoning": {"enabled": True}},
+            "openrouter/openai/": {"reasoning_effort": "medium"},
+            "openrouter/google/": {"reasoning": {"max_tokens": 4096}},
+            "anthropic/": {"thinking": {"type": "adaptive", "effort": "medium"}},
+            "openai/responses/": {"reasoning_effort": "medium"},
+        }
+    )
+
+    # Per-model overrides (exact model id -> extra params). Overrides provider defaults.
+    model_extra_params: dict[str, dict[str, Any]] = Field(
+        default_factory=lambda: {
+            # Claude 4.6 Opus/Sonnet: Use reasoning.max_tokens (effort is ignored - they use adaptive)
+            # See: https://openrouter.ai/docs/guides/model-migrations/claude-4-6
+            "openrouter/anthropic/claude-opus-4.6": {
+                "reasoning": {"max_tokens": 16000},
+                "verbosity": "max",
+            },
+            "openrouter/anthropic/claude-sonnet-4.6": {
+                "reasoning": {"max_tokens": 16000},
+                "verbosity": "max",
+            },
+        }
+    )
+
     # Legacy provider settings (for backward compatibility only)
 
     # Brave Search API (Web search)

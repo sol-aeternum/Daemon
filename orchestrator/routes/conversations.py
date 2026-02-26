@@ -26,6 +26,9 @@ class MessageOut(BaseModel):
     tool_results: list[object] = Field(default_factory=list)
     status: str | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
+    reasoning_text: str | None = None
+    reasoning_duration_secs: int | None = None
+    reasoning_model: str | None = None
     created_at: datetime
     updated_at: datetime | None = None
 
@@ -80,6 +83,12 @@ def _normalize_message(message: dict[str, object]) -> dict[str, object]:
         message["tool_results"] = []
     if message.get("metadata") is None:
         message["metadata"] = {}
+    if message.get("reasoning_text") is None:
+        message["reasoning_text"] = None
+    if message.get("reasoning_duration_secs") is None:
+        message["reasoning_duration_secs"] = None
+    if message.get("reasoning_model") is None:
+        message["reasoning_model"] = None
     return message
 
 

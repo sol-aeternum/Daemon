@@ -1,0 +1,1301 @@
+{
+  "run_timestamp": "2026-02-25T08:45:51.415917+00:00",
+  "version": "2.2",
+  "config": {
+    "base_url": "http://localhost:8000",
+    "wait_seconds": 45,
+    "db_wipe": true,
+    "scenarios_filter": null,
+    "decryption_available": true
+  },
+  "scenarios": [
+    {
+      "name": "1: Dense Personal Facts",
+      "expected": 9,
+      "extracted": 14,
+      "tp": 7,
+      "fp": 0,
+      "fn": 2,
+      "precision": 1.0,
+      "recall": 0.7778,
+      "duration_seconds": 75.9,
+      "matches": [
+        {
+          "keywords": [
+            "julian"
+          ],
+          "content": "User's name is Julian",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "user_name",
+          "confidence_warning": "confidence 0.80 < min 0.85",
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "adelaide"
+          ],
+          "content": "User lives in Adelaide",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "user_location",
+          "confidence_warning": "confidence 0.80 < min 0.85",
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "software engineer"
+          ],
+          "content": "User works as a software engineer",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "user_profession",
+          "confidence_warning": "confidence 0.80 < min 0.85",
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "brother",
+            "callan"
+          ],
+          "content": "User's brother is named Callan",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": null,
+          "confidence_warning": "confidence 0.80 < min 0.85",
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "dog",
+            "koda"
+          ],
+          "content": "User's dog is named Koda, a German Shepherd",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": null,
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "typescript"
+          ],
+          "content": "User mainly codes in TypeScript",
+          "category": "fact",
+          "confidence": 0.8500000238418579,
+          "slot": "programming.language.secondary",
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "neovim"
+          ],
+          "content": "User prefers Neovim over VS Code",
+          "category": "preference",
+          "confidence": 0.800000011920929,
+          "slot": "editor.preference",
+          "confidence_warning": null,
+          "category_warning": null
+        }
+      ],
+      "unaccounted": [
+        {
+          "content": "User is 28 years old",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "user_age"
+        },
+        {
+          "content": "User's name is Julian",
+          "category": "fact",
+          "confidence": 0.9200000166893005,
+          "slot": "personal.name"
+        },
+        {
+          "content": "User is 28 years old",
+          "category": "fact",
+          "confidence": 0.9200000166893005,
+          "slot": "personal.age"
+        },
+        {
+          "content": "User lives in Adelaide",
+          "category": "fact",
+          "confidence": 0.9200000166893005,
+          "slot": "location.city"
+        },
+        {
+          "content": "User works as a software engineer",
+          "category": "fact",
+          "confidence": 0.9200000166893005,
+          "slot": "occupation"
+        },
+        {
+          "content": "User has a brother named Callan",
+          "category": "fact",
+          "confidence": 0.8799999952316284,
+          "slot": "relationship.sibling"
+        },
+        {
+          "content": "User's dog Koda is a German Shepherd",
+          "category": "fact",
+          "confidence": 0.8799999952316284,
+          "slot": "pet.dog.breed"
+        }
+      ],
+      "dedup_results": [],
+      "noise_matches": [],
+      "adversarial_fail": false,
+      "memories_raw": [
+        {
+          "id": "cabff17f-9c9c-4bfc-972f-ffb17f45fc49",
+          "content": "User's name is Julian",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "user_name",
+          "source_type": "user_created",
+          "valid_from": "2026-02-25T08:34:18.865531+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:34:18.865531+00:00"
+        },
+        {
+          "id": "fa736d77-0b7c-4d10-9a48-a52b979f9e43",
+          "content": "User is 28 years old",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "user_age",
+          "source_type": "user_created",
+          "valid_from": "2026-02-25T08:34:19.153837+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:34:19.153837+00:00"
+        },
+        {
+          "id": "b3ca0a87-6708-4c0b-8acc-ceb0683eaa01",
+          "content": "User lives in Adelaide",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "user_location",
+          "source_type": "user_created",
+          "valid_from": "2026-02-25T08:34:19.462872+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:34:19.462872+00:00"
+        },
+        {
+          "id": "589e2e64-c817-454c-8e9f-1f386fd9abf3",
+          "content": "User works as a software engineer",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "user_profession",
+          "source_type": "user_created",
+          "valid_from": "2026-02-25T08:34:19.771747+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:34:19.771747+00:00"
+        },
+        {
+          "id": "8e5cf8e3-73f6-42db-bc73-9e2c1beb7853",
+          "content": "User's brother is named Callan",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": null,
+          "source_type": "user_created",
+          "valid_from": "2026-02-25T08:34:33.898493+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:34:33.898493+00:00"
+        },
+        {
+          "id": "a3a1fcda-da31-4fbc-b3e5-73ea41d9028d",
+          "content": "User's dog is named Koda, a German Shepherd",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": null,
+          "source_type": "user_created",
+          "valid_from": "2026-02-25T08:34:36.963842+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:34:36.963842+00:00"
+        },
+        {
+          "id": "469b1f90-98f4-437e-8601-ed572eee583d",
+          "content": "User's name is Julian",
+          "category": "fact",
+          "confidence": 0.9200000166893005,
+          "memory_slot": "personal.name",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:35:00.635855+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:35:00.635855+00:00"
+        },
+        {
+          "id": "5707302d-34a5-4b37-a8fa-b0360c457e3f",
+          "content": "User is 28 years old",
+          "category": "fact",
+          "confidence": 0.9200000166893005,
+          "memory_slot": "personal.age",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:35:00.936864+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:35:00.936864+00:00"
+        },
+        {
+          "id": "58d292da-d2ed-4273-86e2-69438554c1a8",
+          "content": "User lives in Adelaide",
+          "category": "fact",
+          "confidence": 0.9200000166893005,
+          "memory_slot": "location.city",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:35:01.230109+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:35:01.230109+00:00"
+        },
+        {
+          "id": "435c48b8-58c7-4211-bea0-aa53b763ac09",
+          "content": "User works as a software engineer",
+          "category": "fact",
+          "confidence": 0.9200000166893005,
+          "memory_slot": "occupation",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:35:01.546700+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:35:01.546700+00:00"
+        },
+        {
+          "id": "648c5cd2-4300-4e3c-b70e-5a52037a285b",
+          "content": "User has a brother named Callan",
+          "category": "fact",
+          "confidence": 0.8799999952316284,
+          "memory_slot": "relationship.sibling",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:35:01.853747+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:35:01.853747+00:00"
+        },
+        {
+          "id": "a44b36c3-531e-4f02-94ee-7f80974e7edf",
+          "content": "User has a dog named Koda",
+          "category": "fact",
+          "confidence": 0.8799999952316284,
+          "memory_slot": "pet.dog.name",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:35:02.161174+00:00",
+          "valid_to": "2026-02-25T08:35:02.467730+00:00",
+          "access_count": 0,
+          "created_at": "2026-02-25T08:35:02.161174+00:00"
+        },
+        {
+          "id": "b9eb97e0-2e60-415b-841b-4ba3565923e5",
+          "content": "User's dog Koda is a German Shepherd",
+          "category": "fact",
+          "confidence": 0.8799999952316284,
+          "memory_slot": "pet.dog.breed",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:35:02.467730+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:35:02.467730+00:00"
+        },
+        {
+          "id": "45a86ac8-b340-425d-89aa-5fc35728062e",
+          "content": "User mainly codes in Python",
+          "category": "fact",
+          "confidence": 0.8500000238418579,
+          "memory_slot": "programming.language.primary",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:35:02.774568+00:00",
+          "valid_to": "2026-02-25T08:35:02.987210+00:00",
+          "access_count": 0,
+          "created_at": "2026-02-25T08:35:02.774568+00:00"
+        },
+        {
+          "id": "4c91911b-7521-4a83-9c80-2de6f6301f90",
+          "content": "User mainly codes in TypeScript",
+          "category": "fact",
+          "confidence": 0.8500000238418579,
+          "memory_slot": "programming.language.secondary",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:35:02.987210+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:35:02.987210+00:00"
+        },
+        {
+          "id": "c8daefa5-30e8-4c6d-9c6e-1ede0719bfac",
+          "content": "User prefers Neovim over VS Code",
+          "category": "preference",
+          "confidence": 0.800000011920929,
+          "memory_slot": "editor.preference",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:35:03.252304+00:00",
+          "valid_to": null,
+          "access_count": 1,
+          "created_at": "2026-02-25T08:35:03.252304+00:00"
+        }
+      ]
+    },
+    {
+      "name": "2: Ephemeral vs Durable",
+      "expected": 1,
+      "extracted": 1,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "duration_seconds": 88.1,
+      "matches": [
+        {
+          "keywords": [
+            "move",
+            "melbourne"
+          ],
+          "content": "User is planning to move to Melbourne next year",
+          "category": "project",
+          "confidence": 0.6000000238418579,
+          "slot": "location.city.intent",
+          "confidence_warning": null,
+          "category_warning": null
+        }
+      ],
+      "unaccounted": [],
+      "dedup_results": [],
+      "noise_matches": [],
+      "adversarial_fail": false,
+      "memories_raw": [
+        {
+          "id": "caa45b99-89d8-46c8-a2f3-8ea6f7926605",
+          "content": "User is planning to move to Melbourne next year",
+          "category": "project",
+          "confidence": 0.6000000238418579,
+          "memory_slot": "location.city.intent",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:36:29.561714+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:36:29.561714+00:00"
+        }
+      ]
+    },
+    {
+      "name": "3: Corrections and Supersession",
+      "expected": 1,
+      "extracted": 2,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "duration_seconds": 122.3,
+      "matches": [
+        {
+          "keywords": [
+            "tesla",
+            "model 3"
+          ],
+          "content": "User drives a 2023 Tesla Model 3.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": null,
+          "confidence_warning": "confidence 0.80 < min 0.85",
+          "category_warning": null
+        }
+      ],
+      "unaccounted": [
+        {
+          "content": "User drives a 2019 Toyota Corolla",
+          "category": "fact",
+          "confidence": 0.8799999952316284,
+          "slot": "vehicle"
+        }
+      ],
+      "dedup_results": [
+        {
+          "pattern": "Corolla",
+          "content": "User drives a 2019 Toyota Corolla.",
+          "expected_active": false,
+          "actual_active": false,
+          "slot": null,
+          "valid_from": "2026-02-25T08:36:57.920322+00:00",
+          "valid_to": "2026-02-25T08:37:31.949081+00:00",
+          "active_count": 1,
+          "match_count": 2,
+          "pass": false
+        },
+        {
+          "pattern": "Corolla",
+          "content": "User drives a 2019 Toyota Corolla",
+          "expected_active": false,
+          "actual_active": true,
+          "slot": "vehicle",
+          "valid_from": "2026-02-25T08:37:31.945131+00:00",
+          "valid_to": null,
+          "active_count": 1,
+          "match_count": 2,
+          "pass": false
+        },
+        {
+          "pattern": "Tesla",
+          "content": "User drives a 2023 Tesla Model 3.",
+          "expected_active": true,
+          "actual_active": true,
+          "slot": null,
+          "valid_from": "2026-02-25T08:38:08.991744+00:00",
+          "valid_to": null,
+          "active_count": 1,
+          "match_count": 1,
+          "pass": true
+        }
+      ],
+      "noise_matches": [],
+      "adversarial_fail": false,
+      "memories_raw": [
+        {
+          "id": "56b53176-2304-40b7-beb4-159822617e1a",
+          "content": "User drives a 2019 Toyota Corolla.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": null,
+          "source_type": "user_created",
+          "valid_from": "2026-02-25T08:36:57.920322+00:00",
+          "valid_to": "2026-02-25T08:37:31.949081+00:00",
+          "access_count": 0,
+          "created_at": "2026-02-25T08:36:57.920322+00:00"
+        },
+        {
+          "id": "bded0fd3-7fa5-4092-8301-aacf7894c777",
+          "content": "User drives a 2019 Toyota Corolla",
+          "category": "fact",
+          "confidence": 0.8799999952316284,
+          "memory_slot": "vehicle",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:37:31.945131+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:37:31.945131+00:00"
+        },
+        {
+          "id": "27b441db-fc41-402c-8373-55778b2bc8dc",
+          "content": "User drives a 2023 Tesla Model 3.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": null,
+          "source_type": "user_created",
+          "valid_from": "2026-02-25T08:38:08.991744+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:38:08.991744+00:00"
+        }
+      ]
+    },
+    {
+      "name": "4: Projects and Goals",
+      "expected": 3,
+      "extracted": 6,
+      "tp": 2,
+      "fp": 0,
+      "fn": 1,
+      "precision": 1.0,
+      "recall": 0.6667,
+      "duration_seconds": 88.2,
+      "matches": [
+        {
+          "keywords": [
+            "daemon",
+            "ai assistant"
+          ],
+          "content": "User is building an AI assistant called Daemon using FastAPI on the backend and Next.js on the frontend.",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "slot": null,
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "rust"
+          ],
+          "content": "User wants to learn Rust this year as a personal goal.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": null,
+          "confidence_warning": null,
+          "category_warning": "expected category=project"
+        }
+      ],
+      "unaccounted": [
+        {
+          "content": "User's AI assistant Daemon uses Next.js on the frontend",
+          "category": "fact",
+          "confidence": 0.75,
+          "slot": "project.daemon.frontend"
+        },
+        {
+          "content": "User wants to start learning Rust this year",
+          "category": "project",
+          "confidence": 0.699999988079071,
+          "slot": "learning.rust.intent"
+        },
+        {
+          "content": "User is fixing the memory system for Daemon",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "slot": "project.daemon.memory_system"
+        },
+        {
+          "content": "User's extracted memories aren't being promoted to active status properly",
+          "category": "fact",
+          "confidence": 0.8500000238418579,
+          "slot": "project.daemon.memory_system.issue"
+        }
+      ],
+      "dedup_results": [],
+      "noise_matches": [],
+      "adversarial_fail": false,
+      "memories_raw": [
+        {
+          "id": "9d259fcd-85e7-433d-ad91-2c06a92b9195",
+          "content": "User is building an AI assistant called Daemon using FastAPI on the backend and Next.js on the frontend.",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "memory_slot": null,
+          "source_type": "user_created",
+          "valid_from": "2026-02-25T08:39:15.084282+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:39:15.084282+00:00"
+        },
+        {
+          "id": "a8b1b794-4c1e-449e-b8e4-99d565f9c3e7",
+          "content": "User wants to learn Rust this year as a personal goal.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": null,
+          "source_type": "user_created",
+          "valid_from": "2026-02-25T08:39:23.379963+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:39:23.379963+00:00"
+        },
+        {
+          "id": "58646df3-84b5-4680-8588-a1b5017df3da",
+          "content": "User is building an AI assistant called Daemon",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "memory_slot": "project.daemon",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:39:51.939960+00:00",
+          "valid_to": "2026-02-25T08:39:52.154268+00:00",
+          "access_count": 0,
+          "created_at": "2026-02-25T08:39:51.939960+00:00"
+        },
+        {
+          "id": "0bcf3114-d455-4712-8806-be1b8ad12101",
+          "content": "User's AI assistant Daemon uses FastAPI on the backend",
+          "category": "fact",
+          "confidence": 0.75,
+          "memory_slot": "project.daemon.backend",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:39:52.154268+00:00",
+          "valid_to": "2026-02-25T08:39:52.564165+00:00",
+          "access_count": 0,
+          "created_at": "2026-02-25T08:39:52.154268+00:00"
+        },
+        {
+          "id": "73f8d591-7df1-4d7f-bf3c-709227e02958",
+          "content": "User's AI assistant Daemon uses Next.js on the frontend",
+          "category": "fact",
+          "confidence": 0.75,
+          "memory_slot": "project.daemon.frontend",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:39:52.564165+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:39:52.564165+00:00"
+        },
+        {
+          "id": "121892a0-7b0a-45e1-a41b-70c807e82523",
+          "content": "User wants to start learning Rust this year",
+          "category": "project",
+          "confidence": 0.699999988079071,
+          "memory_slot": "learning.rust.intent",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:39:52.795685+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:39:52.795685+00:00"
+        },
+        {
+          "id": "575d8282-625e-4d63-8c07-f6d2b80bf605",
+          "content": "User is fixing the memory system for Daemon",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "memory_slot": "project.daemon.memory_system",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:39:53.075893+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:39:53.075893+00:00"
+        },
+        {
+          "id": "dec01e3a-b5e9-4ac9-a535-4effba7ba90c",
+          "content": "User's extracted memories aren't being promoted to active status properly",
+          "category": "fact",
+          "confidence": 0.8500000238418579,
+          "memory_slot": "project.daemon.memory_system.issue",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:39:53.231896+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:39:53.231896+00:00"
+        }
+      ]
+    },
+    {
+      "name": "5: Hedged Statements",
+      "expected": 6,
+      "extracted": 7,
+      "tp": 5,
+      "fp": 0,
+      "fn": 1,
+      "precision": 1.0,
+      "recall": 0.8333,
+      "duration_seconds": 61.5,
+      "matches": [
+        {
+          "keywords": [
+            "shellfish"
+          ],
+          "content": "User is allergic to shellfish.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": null,
+          "confidence_warning": "confidence 0.80 < min 0.88",
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "lactose"
+          ],
+          "content": "User might be lactose intolerant.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": null,
+          "confidence_warning": "confidence 0.80 > max 0.75 (hedging failed)",
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "girlfriend"
+          ],
+          "content": "User's girlfriend wants a cat",
+          "category": "fact",
+          "confidence": 0.8199999928474426,
+          "slot": "relationship.partner.pet_preference",
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "girlfriend",
+            "cat"
+          ],
+          "content": "User's girlfriend wants a cat",
+          "category": "fact",
+          "confidence": 0.8199999928474426,
+          "slot": "relationship.partner.pet_preference",
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "cat"
+          ],
+          "content": "User is considering getting a cat",
+          "category": "project",
+          "confidence": 0.6000000238418579,
+          "slot": "pet.cat.intent",
+          "confidence_warning": null,
+          "category_warning": null
+        }
+      ],
+      "unaccounted": [
+        {
+          "content": "User is definitely allergic to shellfish",
+          "category": "fact",
+          "confidence": 0.9200000166893005,
+          "slot": "allergy.shellfish"
+        },
+        {
+          "content": "User might be lactose intolerant",
+          "category": "fact",
+          "confidence": 0.6499999761581421,
+          "slot": "allergy.lactose"
+        },
+        {
+          "content": "User has not booked the trip to Japan yet",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "travel.japan.booking_status"
+        }
+      ],
+      "dedup_results": [],
+      "noise_matches": [],
+      "adversarial_fail": false,
+      "memories_raw": [
+        {
+          "id": "969334a5-b942-4d57-b64b-a3201f18d3a8",
+          "content": "User is allergic to shellfish.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": null,
+          "source_type": "user_created",
+          "valid_from": "2026-02-25T08:40:29.122307+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:40:29.122307+00:00"
+        },
+        {
+          "id": "f876351a-1090-465e-8b12-675cb0f1a8c3",
+          "content": "User might be lactose intolerant.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": null,
+          "source_type": "user_created",
+          "valid_from": "2026-02-25T08:40:29.429698+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:40:29.429698+00:00"
+        },
+        {
+          "id": "33f4480d-2b26-47c4-93a5-e01d40fdfd3c",
+          "content": "User is definitely allergic to shellfish",
+          "category": "fact",
+          "confidence": 0.9200000166893005,
+          "memory_slot": "allergy.shellfish",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:41:07.288360+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:41:07.288360+00:00"
+        },
+        {
+          "id": "864b2df5-3da6-4a01-afdb-0a2dbd865b5e",
+          "content": "User might be lactose intolerant",
+          "category": "fact",
+          "confidence": 0.6499999761581421,
+          "memory_slot": "allergy.lactose",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:41:07.572478+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:41:07.572478+00:00"
+        },
+        {
+          "id": "5a5778e8-2b1b-4324-9812-fbb322d27b9f",
+          "content": "User is considering getting a cat",
+          "category": "project",
+          "confidence": 0.6000000238418579,
+          "memory_slot": "pet.cat.intent",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:41:07.851170+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:41:07.851170+00:00"
+        },
+        {
+          "id": "8d8aae7e-f702-4632-b596-914e845160f3",
+          "content": "User has a girlfriend",
+          "category": "fact",
+          "confidence": 0.8799999952316284,
+          "memory_slot": "relationship.partner",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:41:08.079527+00:00",
+          "valid_to": "2026-02-25T08:41:08.499685+00:00",
+          "access_count": 0,
+          "created_at": "2026-02-25T08:41:08.079527+00:00"
+        },
+        {
+          "id": "5e5cb49c-3922-42d9-bf25-78443c591e48",
+          "content": "User's girlfriend wants a cat",
+          "category": "fact",
+          "confidence": 0.8199999928474426,
+          "memory_slot": "relationship.partner.pet_preference",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:41:08.499685+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:41:08.499685+00:00"
+        },
+        {
+          "id": "b10ba779-197f-4cab-b08b-11e3b4fda0d2",
+          "content": "User is planning a trip to Japan in October",
+          "category": "project",
+          "confidence": 0.699999988079071,
+          "memory_slot": "travel.japan.trip",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:41:08.794562+00:00",
+          "valid_to": "2026-02-25T08:41:08.999138+00:00",
+          "access_count": 0,
+          "created_at": "2026-02-25T08:41:08.794562+00:00"
+        },
+        {
+          "id": "d7f77bc8-5843-4f3c-bade-15908e3d901e",
+          "content": "User has not booked the trip to Japan yet",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "travel.japan.booking_status",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:41:08.999138+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:41:08.999138+00:00"
+        }
+      ]
+    },
+    {
+      "name": "6: Realistic Multi-Turn Session",
+      "expected": 7,
+      "extracted": 9,
+      "tp": 5,
+      "fp": 0,
+      "fn": 2,
+      "precision": 1.0,
+      "recall": 0.7143,
+      "duration_seconds": 127.2,
+      "matches": [
+        {
+          "keywords": [
+            "9950x3d"
+          ],
+          "content": "User has high-end hardware, specifically an AMD Ryzen 9 9950X3D and copious RAM",
+          "category": "fact",
+          "confidence": 0.8799999952316284,
+          "slot": "hardware.cpu",
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "be quiet",
+            "light base"
+          ],
+          "content": "User's case for the home server is a Be Quiet Light Base 500",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "slot": "hardware.case",
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "cachyos"
+          ],
+          "content": "User is considering using NixOS or CachyOS as a Linux distribution for their home server",
+          "category": "preference",
+          "confidence": 0.6499999761581421,
+          "slot": "software.linux_distro",
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "arch"
+          ],
+          "content": "User prefers CachyOS because it is Arch-based with better defaults",
+          "category": "preference",
+          "confidence": 0.800000011920929,
+          "slot": "os.preference",
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "birthday",
+            "march"
+          ],
+          "content": "User's birthday is March 15th.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "user_birthday",
+          "confidence_warning": "confidence 0.80 < min 0.88",
+          "category_warning": null
+        }
+      ],
+      "unaccounted": [
+        {
+          "content": "User is waiting on the RTX 5090 TUF for their home server setup",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "slot": "hardware.gpu"
+        },
+        {
+          "content": "User is considering options for a home server",
+          "category": "project",
+          "confidence": 0.6000000238418579,
+          "slot": "project.home_server"
+        },
+        {
+          "content": "User has used Arch before",
+          "category": "fact",
+          "confidence": 0.8500000238418579,
+          "slot": "os.experience.arch"
+        },
+        {
+          "content": "User is comfortable with pacman",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "os.package_manager.comfort"
+        }
+      ],
+      "dedup_results": [],
+      "noise_matches": [],
+      "adversarial_fail": false,
+      "memories_raw": [
+        {
+          "id": "276f6f43-43dd-4904-8b75-b93b7763ba9d",
+          "content": "User has selected the Ryzen 9 9950X3D for their home server setup",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "memory_slot": "hardware.cpu",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:42:12.026270+00:00",
+          "valid_to": "2026-02-25T08:42:12.186783+00:00",
+          "access_count": 0,
+          "created_at": "2026-02-25T08:42:12.026270+00:00"
+        },
+        {
+          "id": "b9aa3187-dd77-4adf-bc7d-bc9081f96bbe",
+          "content": "User has 64GB of DDR5 RAM for their home server setup",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "memory_slot": "hardware.ram",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:42:12.186783+00:00",
+          "valid_to": "2026-02-25T08:42:15.379588+00:00",
+          "access_count": 0,
+          "created_at": "2026-02-25T08:42:12.186783+00:00"
+        },
+        {
+          "id": "f88adab8-b12a-4fda-be21-f660b67761ba",
+          "content": "User is waiting on the RTX 5090 TUF for their home server setup",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "memory_slot": "hardware.gpu",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:42:12.385905+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:42:12.385905+00:00"
+        },
+        {
+          "id": "b8594ce5-1433-4bde-a596-f3e6c69710cb",
+          "content": "User's case for the home server is a Be Quiet Light Base 500",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "memory_slot": "hardware.case",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:42:12.693484+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:42:12.693484+00:00"
+        },
+        {
+          "id": "ee64a758-2e04-477f-9ae1-c1be60eaff1c",
+          "content": "User is considering using NixOS or CachyOS as a Linux distribution for their home server",
+          "category": "preference",
+          "confidence": 0.6499999761581421,
+          "memory_slot": "software.linux_distro",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:42:12.906976+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:42:12.906976+00:00"
+        },
+        {
+          "id": "c74a63ac-4e59-4ff8-83e9-7a61376b0226",
+          "content": "User has high-end hardware, specifically an AMD Ryzen 9 9950X3D and copious RAM",
+          "category": "fact",
+          "confidence": 0.8799999952316284,
+          "memory_slot": "hardware.cpu",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:42:15.379588+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:42:15.379588+00:00"
+        },
+        {
+          "id": "306f0049-273c-44a4-a3e0-ac2acfe06569",
+          "content": "User is considering options for a home server",
+          "category": "project",
+          "confidence": 0.6000000238418579,
+          "memory_slot": "project.home_server",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:42:15.578292+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:42:15.578292+00:00"
+        },
+        {
+          "id": "88308f81-cdf2-4248-a445-71261fe6d405",
+          "content": "User prefers CachyOS because it is Arch-based with better defaults",
+          "category": "preference",
+          "confidence": 0.800000011920929,
+          "memory_slot": "os.preference",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:42:19.836610+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:42:19.836610+00:00"
+        },
+        {
+          "id": "367186e6-d649-4eec-939f-ae849e42c032",
+          "content": "User has used Arch before",
+          "category": "fact",
+          "confidence": 0.8500000238418579,
+          "memory_slot": "os.experience.arch",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:42:20.238459+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:42:20.238459+00:00"
+        },
+        {
+          "id": "a5db151e-3a09-494b-984e-bdb71990a3b5",
+          "content": "User is comfortable with pacman",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "os.package_manager.comfort",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:42:20.448652+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:42:20.448652+00:00"
+        },
+        {
+          "id": "1988d767-30f6-43b6-ab26-98fc0b715984",
+          "content": "User's birthday is March 15th.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "user_birthday",
+          "source_type": "user_created",
+          "valid_from": "2026-02-25T08:42:43.320584+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:42:43.320584+00:00"
+        }
+      ]
+    },
+    {
+      "name": "7: Explicit Memory Instructions",
+      "expected": 3,
+      "extracted": 8,
+      "tp": 3,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "duration_seconds": 76.3,
+      "matches": [
+        {
+          "keywords": [
+            "aws",
+            "123456789012"
+          ],
+          "content": "User's AWS account ID is 123456789012",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": null,
+          "confidence_warning": "confidence 0.80 < min 0.88",
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "ap-southeast-2"
+          ],
+          "content": "User's preferred AWS deployment region is ap-southeast-2",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": null,
+          "confidence_warning": "confidence 0.80 < min 0.85",
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "yaml"
+          ],
+          "content": "User hates YAML and prefers TOML or JSON alternatives.",
+          "category": "preference",
+          "confidence": 0.800000011920929,
+          "slot": null,
+          "confidence_warning": "confidence 0.80 < min 0.88",
+          "category_warning": null
+        }
+      ],
+      "unaccounted": [
+        {
+          "content": "User's AWS account ID is 123456789012",
+          "category": "fact",
+          "confidence": 0.9200000166893005,
+          "slot": "account.aws.id"
+        },
+        {
+          "content": "User always deploys to ap-southeast-2",
+          "category": "fact",
+          "confidence": 0.8799999952316284,
+          "slot": "deployment.region"
+        },
+        {
+          "content": "User hates YAML",
+          "category": "preference",
+          "confidence": 0.8500000238418579,
+          "slot": "preference.file_format"
+        },
+        {
+          "content": "User prefers TOML or JSON alternatives",
+          "category": "preference",
+          "confidence": 0.8500000238418579,
+          "slot": "preference.file_format"
+        },
+        {
+          "content": "User does not want to store any information about their medical details",
+          "category": "correction",
+          "confidence": 0.9200000166893005,
+          "slot": "privacy.medical"
+        }
+      ],
+      "dedup_results": [],
+      "noise_matches": [],
+      "adversarial_fail": false,
+      "memories_raw": [
+        {
+          "id": "690622e3-a03f-433c-9a7f-8d67028c7e7c",
+          "content": "User's AWS account ID is 123456789012",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": null,
+          "source_type": "user_created",
+          "valid_from": "2026-02-25T08:43:50.832641+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:43:50.832641+00:00"
+        },
+        {
+          "id": "0577eeba-ab1f-4a0d-8066-e88021932b7d",
+          "content": "User's preferred AWS deployment region is ap-southeast-2",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": null,
+          "source_type": "user_created",
+          "valid_from": "2026-02-25T08:43:51.153392+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:43:51.153392+00:00"
+        },
+        {
+          "id": "28bb7d55-4c70-43a2-bef4-fed1bb495f26",
+          "content": "User hates YAML and prefers TOML or JSON alternatives.",
+          "category": "preference",
+          "confidence": 0.800000011920929,
+          "memory_slot": null,
+          "source_type": "user_created",
+          "valid_from": "2026-02-25T08:43:57.696550+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:43:57.696550+00:00"
+        },
+        {
+          "id": "a4e5a5c8-dc00-4dd1-ac00-97b6e0515f26",
+          "content": "User's AWS account ID is 123456789012",
+          "category": "fact",
+          "confidence": 0.9200000166893005,
+          "memory_slot": "account.aws.id",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:44:27.708185+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:44:27.708185+00:00"
+        },
+        {
+          "id": "ad853a52-b3a6-4479-baa6-32f67d604b05",
+          "content": "User always deploys to ap-southeast-2",
+          "category": "fact",
+          "confidence": 0.8799999952316284,
+          "memory_slot": "deployment.region",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:44:28.077201+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:44:28.077201+00:00"
+        },
+        {
+          "id": "c2397b40-0c5f-4f53-87fa-963599288174",
+          "content": "User hates YAML",
+          "category": "preference",
+          "confidence": 0.8500000238418579,
+          "memory_slot": "preference.file_format",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:44:28.438943+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:44:28.438943+00:00"
+        },
+        {
+          "id": "c2db1318-b183-4500-a343-471626127f72",
+          "content": "User prefers TOML or JSON alternatives",
+          "category": "preference",
+          "confidence": 0.8500000238418579,
+          "memory_slot": "preference.file_format",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:44:28.796472+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:44:28.796472+00:00"
+        },
+        {
+          "id": "cef182db-4f49-4c22-9182-f1531e21e8a4",
+          "content": "User does not want to store any information about their medical details",
+          "category": "correction",
+          "confidence": 0.9200000166893005,
+          "memory_slot": "privacy.medical",
+          "source_type": "extracted",
+          "valid_from": "2026-02-25T08:44:29.039136+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-02-25T08:44:29.039136+00:00"
+        }
+      ]
+    },
+    {
+      "name": "8: Adversarial Empty",
+      "expected": 0,
+      "extracted": 0,
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "duration_seconds": 60.6,
+      "matches": [],
+      "unaccounted": [],
+      "dedup_results": [],
+      "noise_matches": [],
+      "adversarial_fail": false,
+      "memories_raw": []
+    }
+  ],
+  "totals": {
+    "precision": 1.0,
+    "recall": 0.8,
+    "adversarial_fp": 0,
+    "passed": false
+  }
+}

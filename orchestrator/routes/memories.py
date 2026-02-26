@@ -53,16 +53,10 @@ async def list_memories(
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
 
-    status_filter: str | list[str] | None = None
-    if confirmed is True:
-        status_filter = "active"
-    elif confirmed is False:
-        status_filter = ["pending", "rejected", "inactive"]
-
     memories = await store.list_memories(
         user_id=DEFAULT_USER_ID,
         category=category,
-        status=status_filter,
+        confirmed=confirmed,
         include_local=True,
         limit=limit,
         offset=offset,

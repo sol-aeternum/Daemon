@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -179,6 +181,57 @@ async def test_chat_with_provider_selection_mock_mode(client, monkeypatch):
     assert response.status_code == 200
     body = response.text
     assert "openrouter" in body  # Should show provider in response
+
+
+@pytest.mark.asyncio
+async def test_chat_per_message_model_override_bypasses_auto_routing(
+    client, monkeypatch
+):
+    monkeypatch.setenv("MOCK_LLM", "true")
+    monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
+    get_settings.cache_clear()
+
+    explicit_model = "openrouter/test/explicit-model"
+
+    response = await client.post(
+        "/chat",
+        json={
+            "message": "ignored",
+            "model": "auto",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "debug architecture deep dive",
+                    "model": explicit_model,
+                }
+            ],
+        },
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 200
+
+    routing_events = []
+    for frame in response.text.split("\n\n"):
+        if "event: routing" not in frame:
+            continue
+
+        event_type = None
+        data_text = ""
+        for line in frame.split("\n"):
+            if line.startswith("event:"):
+                event_type = line[6:].strip()
+            elif line.startswith("data:"):
+                data_text += line[5:].strip()
+
+        if event_type == "routing" and data_text:
+            routing_events.append(json.loads(data_text))
+
+    assert routing_events
+    routing = routing_events[0]["data"]
+    assert routing["model"] == explicit_model
+    assert routing["tier"] == "explicit"
+    assert routing["reason"] == f"user_selected:{explicit_model}"
 
 
 @pytest.mark.asyncio

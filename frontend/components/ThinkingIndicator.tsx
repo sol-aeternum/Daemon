@@ -9,10 +9,11 @@ interface ThinkingIndicatorProps {
   isThinking: boolean;
   isFinished?: boolean;
   duration?: number;
+  modelName?: string;
   onDurationChange?: (duration: number) => void;
 }
 
-export function ThinkingIndicator({ event, isThinking, isFinished, duration: initialDuration, onDurationChange }: ThinkingIndicatorProps) {
+export function ThinkingIndicator({ event, isThinking, isFinished, duration: initialDuration, modelName, onDurationChange }: ThinkingIndicatorProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [duration, setDuration] = useState(initialDuration || 0);
   const startTimeRef = useRef<number | null>(null);
@@ -54,6 +55,7 @@ export function ThinkingIndicator({ event, isThinking, isFinished, duration: ini
   return (
     <div className="my-2 rounded-lg overflow-hidden border border-gray-200/50">
       <button
+        type="button"
         onClick={() => setIsExpanded(!isExpanded)}
         className="w-full px-3 py-2 flex items-center gap-2 text-left hover:bg-gray-50 transition-colors group"
       >
@@ -68,7 +70,7 @@ export function ThinkingIndicator({ event, isThinking, isFinished, duration: ini
                </svg>
             )}
             <span className="text-xs font-medium">
-              {isThinking ? "Thinking" : `Thought for ${duration}s`}
+              {modelName ? `${modelName} • Thought for ${duration}s` : `Thought for ${duration}s`}
             </span>
         </div>
         
