@@ -585,3 +585,39 @@
   - Sessions included `ses_3692a29faffeEmONTJ9N98A3QT` and `ses_369039542ffeY3W16oNaa8FdFx`
 - **Likely cause**: intermittent subagent runtime instability/hang in this environment. [~75% confidence]
 - **Suggested action**: retry with alternate agent/backend, shorter scoped prompts, or allow orchestrator direct-fix fallback when two consecutive no-change timeouts occur.
+
+---
+
+## 2026-03-04T13:36:00+10:30 — existing test warning patterns seen again during extraction regression fix
+
+- **Severity**: info
+- **Scope**: upstream
+- **Encountered during**: targeted extraction pipeline pytest validation
+- **Category**: deprecation
+- **Blocked current task**: no
+- **What happened**: Targeted pytest run passed, but previously known warning patterns reappeared (LiteLLM coroutine deprecation + one unawaited AsyncMock warning in dedup test).
+- **Evidence**:
+  - `DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16`
+  - `RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited`
+- **Likely cause**: known upstream dependency warning and existing test mock usage issue. [~85% confidence]
+- **Suggested action**: no change for this fix; keep tracking until upstream/test cleanup is performed.
+
+---
+
+## 2026-03-04T16:45:00+10:30 — Extraction regression root cause identified and resolved
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: extraction pipeline regression remediation
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: Extraction jobs were enqueued with conversation-level IDs, but worker behavior caused unstable/partial extraction. Two concrete failures were found: (1) invalid model category `intent` triggered DB check violations and aborted extraction passes, and (2) long multi-turn deltas were sent as one large text, truncating earlier context and hurting S6 recall.
+- **Evidence**:
+  - Worker log: `extract_memories failed ... CheckViolationError ... failing row contains ... category=intent ... violates constraint "memories_category_check"`
+  - Constraint definition (`migrations/009_update_memories_constraints.sql`): allowed categories are `fact|preference|project|summary|correction`
+  - Benchmark artifacts after fix set in `tests/tests/results/`:
+    - `bench_20260304_162123.json`: `P=1.00 R=0.90 A=0`
+    - `bench_20260304_163148.json`: `P=1.00 R=0.93 A=0`
+    - `bench_20260304_164257.json`: `P=1.00 R=0.87 A=0`
+- **Likely cause**: refactor path lacked category normalization guardrails and chunking semantics equivalent to prior behavior. [~90% confidence]
+- **Suggested action**: keep category normalization (`intent->project`, unknown->fact), keep chunked extraction in worker for long deltas, and keep benchmark Redis extraction-key cleanup enabled between scenarios/runs.
