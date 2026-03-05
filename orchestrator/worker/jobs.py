@@ -114,13 +114,18 @@ async def extract_memories(
     ctx: WorkerContext,
     user_id: str | uuid.UUID,
     conversation_id: str | uuid.UUID,
-    messages_json: object,
+    messages_json: object | None = None,
 ) -> dict[str, object]:
     store_obj = ctx.get("store")
     if not isinstance(store_obj, MemoryStore):
         return {"status": "skipped", "reason": "store_unavailable"}
 
-    raw_messages = _parse_raw_messages(messages_json)
+    raw_messages: list[dict[str, Any]]
+    if messages_json is None:
+        messages = await store_obj.get_messages(_as_uuid(conversation_id), limit=250)
+        raw_messages = [dict(message) for message in messages]
+    else:
+        raw_messages = _parse_raw_messages(messages_json)
     filtered_raw_messages = [
         message for message in raw_messages if not _is_memory_write_artifact(message)
     ]

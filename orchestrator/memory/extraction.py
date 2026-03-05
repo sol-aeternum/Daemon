@@ -23,6 +23,13 @@ HEDGE_OVERRIDE_CONFIDENCE = 0.65
 STRONG_OVERRIDE_CONFIDENCE = 0.92
 CORRECTION_MIN_CONFIDENCE = 0.90
 DEFAULT_EXTRACTED_CONFIDENCE = 0.8
+ALLOWED_CATEGORIES = {"fact", "preference", "project", "summary", "correction"}
+CATEGORY_NORMALIZATION = {
+    "intent": "project",
+    "goal": "project",
+    "plan": "project",
+    "todo": "project",
+}
 
 HEDGE_WORDS_PATTERN = re.compile(
     r"\b(might|maybe|considering|thinking about|possibly|probably|not sure|not confirmed|unconfirmed|suspects)\b",
@@ -93,12 +100,22 @@ class ExtractionOutcome:
 
 
 EXTRACTION_PROMPT = """
-You extract durable user memory facts from a role-labeled transcript.
+You extract every concrete fact about the user from a role-labeled transcript.
+Be exhaustive. Extract MORE rather than fewer facts. Retrieval handles relevance later.
 
 Role awareness:
 - Input contains [User] and [Assistant] markers.
-- Extract ONLY facts about the user.
+- Extract ONLY facts about the user — their identity, preferences, hardware, software, tools, relationships, dates, plans, goals, opinions, and context.
 - NEVER extract general knowledge, technical facts, or assistant-stated world knowledge.
+
+What to extract (non-exhaustive):
+- Identity: name, age, location, birthday, occupation, relationships
+- Technical: programming languages, tools, editors, frameworks, OS, hardware specs, model numbers
+- Preferences: likes, dislikes, choices, opinions, workflow preferences
+- Projects: what they're building, planning, considering, waiting on
+- Corrections: updated facts that replace previous ones
+- Context: networking setup, deployment regions, accounts, configurations
+- Tangential mentions: facts stated in passing ('oh by the way', 'I also want', 'back to the server') are equally important as primary topic facts
 
 Delta context:
 - Existing summary is context only.
@@ -120,10 +137,7 @@ Return JSON object with exactly one key:
 Atomic decomposition rule:
 - Each memory object must contain ONE atomic fact.
 - If one sentence implies multiple facts, split into multiple objects with different slots.
-#XM|
-#DG|Late-conversation extraction reinforcement:
-#DG|- Extract facts from ALL parts of the conversation, including tangential mentions and late-conversation statements.
-#DG|- Facts mentioned in passing ('oh by the way', 'I also want', 'back to the server') are equally important.
+
 Decomposition example:
 Input: "I'm thinking about getting a cat. My girlfriend wants one."
 Output:
@@ -145,26 +159,21 @@ Output: [
 Temporal detail preservation example:
 Input: "We'll probably go to Japan in October"
 Output: [
-  {{"content": "User plans to travel to Japan in October", "category": "intent", "confidence": 0.60, "slot": "travel.japan"}}
+  {{"content": "User plans to travel to Japan in October", "category": "project", "confidence": 0.60, "slot": "travel.japan"}}
 ]
 
-#MW|Hedging and confidence calibration guidance:
-#BN|- "definitely allergic to shellfish" -> around 0.92
-#YV|- "might be lactose intolerant" -> around 0.65
-#VX|- "thinking about moving" -> around 0.60
-#ZB|- Embedded fact example: "Oh by the way, my birthday is March 15th" -> extract with slot personal.birthday, confidence around 0.92
-#PY|- Direct factual statements without hedge words:
-#PY|- "My name is Julian" -> around 0.90
-#PY|- "I live in Adelaide" -> around 0.90
-#PY|- "My birthday is March 15th" -> around 0.92
+Confidence calibration:
+- "definitely allergic to shellfish" -> around 0.92
+- "might be lactose intolerant" -> around 0.65
+- "thinking about moving" -> around 0.60
+- "Oh by the way, my birthday is March 15th" -> confidence around 0.92, slot personal.birthday
+- Direct factual statements ("My name is Julian", "I live in Adelaide") -> around 0.90
 
-Do NOT extract examples:
-- [Assistant]: "The NVIDIA RTX 5090 can draw up to 600W." (general knowledge)
+Do NOT extract:
+- [Assistant]: "The NVIDIA RTX 5090 can draw up to 600W." (general knowledge stated by assistant)
 - [Assistant]: "PostgreSQL uses MVCC." (assistant/domain knowledge)
-- [User]: "Hi" (filler)
-- [User]: "Thanks" (filler)
-- [User]: "What's the weather today?" (ephemeral query)
-- [User]: "The Eiffel Tower is in Paris." (general knowledge)
+- [User]: "Hi" / "Thanks" / "What's the weather today?" (filler/ephemeral)
+- [User]: "The Eiffel Tower is in Paris." (general knowledge, not about user)
 
 Existing summary:
 {summary}
@@ -210,6 +219,14 @@ def _coerce_confidence(value: Any) -> float:
     if parsed > 1.0:
         return 1.0
     return parsed
+
+
+def _normalize_category(value: Any) -> str:
+    raw = str(value or "fact").strip().lower() or "fact"
+    normalized = CATEGORY_NORMALIZATION.get(raw, raw)
+    if normalized not in ALLOWED_CATEGORIES:
+        return "fact"
+    return normalized
 
 
 def validate_fact(fact: ExtractedFact) -> bool:
@@ -321,7 +338,7 @@ async def extract_facts_from_text(
         for item in items:
             if isinstance(item, dict) and "content" in item:
                 content = str(item.get("content") or "").strip()
-                category = str(item.get("category") or "fact").strip() or "fact"
+                category = _normalize_category(item.get("category"))
                 raw_facts.append(
                     ExtractedFact(
                         content=content,

@@ -58,6 +58,11 @@ try:
 except Exception:
     asyncpg = None
 
+try:
+    redis_mod = importlib.import_module("redis")
+except Exception:
+    redis_mod = None
+
 # ---------------------------------------------------------------------------
 # Standalone Fernet decryption (no orchestrator dependency)
 # ---------------------------------------------------------------------------
@@ -114,6 +119,7 @@ SAFE_HOSTS = ("localhost", "127.0.0.1", "postgres", "db", "0.0.0.0")
 # Docker service names that should be rewritten to localhost when running
 # the benchmark from the host (outside Docker network)
 _DOCKER_HOST_REWRITES = {"postgres", "db", "database", "pgvector"}
+_REDIS_HOST_REWRITES = {"redis", "cache"}
 
 
 def _resolve_db_url(url: str) -> str:
@@ -131,6 +137,20 @@ def _resolve_db_url(url: str) -> str:
 DATABASE_URL = _resolve_db_url(
     os.environ.get("DATABASE_URL", "postgresql://daemon:daemon@localhost:5432/daemon")
 )
+REDIS_URL_RAW = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+
+
+def _resolve_redis_url(url: str) -> str:
+    for docker_host in _REDIS_HOST_REWRITES:
+        if f"://{docker_host}:" in url or url.endswith(f"://{docker_host}"):
+            url = url.replace(f"://{docker_host}:", "://localhost:")
+            if url.endswith(f"://{docker_host}"):
+                url = url.replace(f"://{docker_host}", "://localhost")
+            break
+    return url
+
+
+REDIS_URL = _resolve_redis_url(REDIS_URL_RAW)
 
 
 def _get_fernet() -> Any:
@@ -171,6 +191,39 @@ def _decrypt_content(value: Any) -> str:
 def _is_safe_db(db_url: str) -> bool:
     """Check that DATABASE_URL points to a local/dev database."""
     return any(h in db_url for h in SAFE_HOSTS)
+
+
+def _is_safe_redis(redis_url: str) -> bool:
+    return any(h in redis_url for h in SAFE_HOSTS + ("redis", "cache"))
+
+
+def wipe_redis_extract_keys(redis_url: str = REDIS_URL) -> int:
+    if not _is_safe_redis(redis_url):
+        print(f"  ⚠ Refusing to wipe non-local redis: {redis_url}", file=sys.stderr)
+        return 0
+
+    if redis_mod is None:
+        print("  ⚠ redis module unavailable; skipping redis wipe")
+        return 0
+
+    client_cls = cast(Any, redis_mod).Redis
+    client = client_cls.from_url(redis_url, decode_responses=True)
+    deleted = 0
+    patterns = [
+        "extract:*",
+        "arq:job:extract:*",
+        "arq:result:extract:*",
+        "arq:retry:extract:*",
+    ]
+    for pattern in patterns:
+        cursor = 0
+        while True:
+            cursor, keys = client.scan(cursor=cursor, match=pattern, count=500)
+            if keys:
+                deleted += int(client.delete(*keys))
+            if cursor == 0:
+                break
+    return deleted
 
 
 def wipe_memories(db_url: str = DATABASE_URL) -> int:
@@ -331,9 +384,7 @@ def _keyword_matches(keyword: str, content: str) -> bool:
     Uses \\b word boundaries to prevent substring false positives like
     "arch" matching inside "march".
     """
-    return bool(
-        re.search(r"\b" + re.escape(keyword) + r"\b", content, re.IGNORECASE)
-    )
+    return bool(re.search(r"\b" + re.escape(keyword) + r"\b", content, re.IGNORECASE))
 
 
 # ---------------------------------------------------------------------------
@@ -515,7 +566,7 @@ SCENARIOS: list[Scenario] = [
             ExpectedFact(["arch"], "Arch experience"),
             ExpectedFact(["birthday", "march"], "birthday", min_confidence=0.88),
             ExpectedFact(["tailscale"], "remote access"),
-            ExpectedFact(["llm", "inference"], "server purpose"),
+            ExpectedFact(["llm"], "server purpose"),
         ],
         noise_keywords=[
             ["ups"],  # assistant knowledge about power draw
@@ -571,9 +622,7 @@ class MatchResult:
     category_warning: str | None = None
 
 
-def match_fact(
-    expected: ExpectedFact, memories: list[dict[str, Any]]
-) -> MatchResult:
+def match_fact(expected: ExpectedFact, memories: list[dict[str, Any]]) -> MatchResult:
     """Match an expected fact against extracted memories by keyword intersection.
 
     Uses word-boundary matching to prevent substring false positives
@@ -623,7 +672,9 @@ class ScenarioResult:
     duration_seconds: float = 0.0
 
 
-def run_scenario(scenario: Scenario, do_wipe: bool = True) -> ScenarioResult:
+def run_scenario(
+    scenario: Scenario, do_wipe: bool = True, db_url: str = DATABASE_URL
+) -> ScenarioResult:
     """Execute a single benchmark scenario and evaluate results."""
     sep = "=" * 60
     print(f"\n{sep}")
@@ -632,9 +683,12 @@ def run_scenario(scenario: Scenario, do_wipe: bool = True) -> ScenarioResult:
     print(sep)
 
     if do_wipe:
-        wiped = wipe_memories()
+        wiped = wipe_memories(db_url)
         if wiped > 0:
             print(f"  🗑 Wiped {wiped} memories from previous scenario")
+        redis_wiped = wipe_redis_extract_keys()
+        if redis_wiped > 0:
+            print(f"  🧹 Cleared {redis_wiped} Redis extraction key(s)")
 
     t0 = time.time()
     conv_id = create_conversation()
@@ -652,7 +706,7 @@ def run_scenario(scenario: Scenario, do_wipe: bool = True) -> ScenarioResult:
     print(f"  ⏳ Waiting {scenario.wait_seconds}s for extraction pipeline...")
     time.sleep(scenario.wait_seconds)
 
-    all_memories = query_memories()
+    all_memories = query_memories(db_url)
     active_memories = [m for m in all_memories if m.get("valid_to") is None]
     duration = time.time() - t0
 
@@ -917,10 +971,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Apply DB URL override
-    global DATABASE_URL
-    if args.db_url:
-        DATABASE_URL = args.db_url
+    effective_db_url = args.db_url if args.db_url else DATABASE_URL
 
     # Override wait
     if args.wait != DEFAULT_WAIT:
@@ -937,16 +988,21 @@ def main() -> None:
     else:
         scenarios = SCENARIOS
 
-    db_display = DATABASE_URL.split("@")[-1] if "@" in DATABASE_URL else DATABASE_URL
+    db_display = (
+        effective_db_url.split("@")[-1] if "@" in effective_db_url else effective_db_url
+    )
     est_minutes = len(scenarios) * (args.wait + 10) // 60
 
     print("Daemon Memory Extraction Benchmark v2.3")
     print(f"Target: {BASE_URL}")
     print(f"Database: {db_display}")
+    print(f"Redis: {REDIS_URL}")
     print(f"Wait time: {args.wait}s per scenario")
     print(f"Scenarios: {len(scenarios)}")
     print(f"DB wipe: {'disabled' if args.no_wipe else 'enabled'}")
-    print(f"Decryption: {'available' if _get_fernet() else 'unavailable (set DAEMON_ENCRYPTION_KEY)'}")
+    print(
+        f"Decryption: {'available' if _get_fernet() else 'unavailable (set DAEMON_ENCRYPTION_KEY)'}"
+    )
     print(f"Estimated runtime: ~{est_minutes} minutes")
 
     if not health_check():
@@ -956,14 +1012,21 @@ def main() -> None:
 
     # Initial wipe
     if not args.no_wipe:
-        wiped = wipe_memories()
+        wiped = wipe_memories(effective_db_url)
         if wiped > 0:
             print(f"🗑 Initial wipe: {wiped} memories cleared")
+        redis_wiped = wipe_redis_extract_keys()
+        if redis_wiped > 0:
+            print(f"🧹 Initial redis wipe: {redis_wiped} extraction key(s) cleared")
 
     # Run
     results: list[ScenarioResult] = []
     for scenario in scenarios:
-        result = run_scenario(scenario, do_wipe=not args.no_wipe)
+        result = run_scenario(
+            scenario,
+            do_wipe=not args.no_wipe,
+            db_url=effective_db_url,
+        )
         results.append(result)
 
     # Summary

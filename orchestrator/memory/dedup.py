@@ -283,57 +283,113 @@ async def deduplicate_facts(
                 continue
 
             if similarity >= SIMILARITY_MERGE:
-                await store.touch_memory(best_match_id)
-                result.merged.append(best_match)
-                if current_like_slot and fact_slot_family:
-                    closed_ids = await _close_current_related_candidates(
-                        store,
-                        similar,
-                        fact_slot_family,
-                        best_match_id,
+                # Block merge when both have explicit, different slots — sibling facts.
+                best_match_slot = best_match.get("memory_slot")
+                if (
+                    fact_slot is not None
+                    and best_match_slot is not None
+                    and fact_slot != best_match_slot
+                ):
+                    logger.debug(
+                        "Dedup branch=new_sibling (merge blocked) fact=%r slot=%r vs existing slot=%r",
+                        fact.content,
+                        fact_slot,
+                        best_match_slot,
                     )
-                    await _close_active_family_memories(
-                        store,
-                        user_id,
-                        fact_slot_family,
-                        best_match_id,
-                        excluded_ids=closed_ids,
+                    memory = await store.insert_memory(
+                        user_id=user_id,
+                        content=fact.content,
+                        category=fact.category,
+                        source_type=source_type,
+                        embedding=embedding,
+                        embedding_model=DEFAULT_MODEL,
+                        source_conversation_id=conversation_id,
+                        confidence=fact.confidence,
+                        status=status,
+                        memory_slot=fact_slot,
                     )
-                    current_family_keep_ids[fact_slot_family] = best_match_id
+                    result.new.append(memory)
+                else:
+                    await store.touch_memory(best_match_id)
+                    result.merged.append(best_match)
+                    if current_like_slot and fact_slot_family:
+                        closed_ids = await _close_current_related_candidates(
+                            store,
+                            similar,
+                            fact_slot_family,
+                            best_match_id,
+                        )
+                        await _close_active_family_memories(
+                            store,
+                            user_id,
+                            fact_slot_family,
+                            best_match_id,
+                            excluded_ids=closed_ids,
+                        )
+                        current_family_keep_ids[fact_slot_family] = best_match_id
             elif similarity >= supersede_threshold:
-                new_memory = await store.supersede_memory(
-                    old_memory_id=best_match_id,
-                    new_content=fact.content,
-                    new_category=fact.category,
-                    new_source_type=source_type,
-                    user_id=user_id,
-                    embedding=embedding,
-                    embedding_model=DEFAULT_MODEL,
-                    source_conversation_id=conversation_id,
-                    confidence=fact.confidence,
-                    new_status=status,
-                    memory_slot=fact_slot or best_match.get("memory_slot"),
-                )
-                result.superseded.append(new_memory)
+                # Block supersession when both facts have explicit, different slots.
+                # Same-family siblings (e.g. language.python vs language.typescript)
+                # are parallel facts, not updates to the same fact.
+                best_match_slot = best_match.get("memory_slot")
+                if (
+                    fact_slot is not None
+                    and best_match_slot is not None
+                    and fact_slot != best_match_slot
+                ):
+                    logger.debug(
+                        "Dedup branch=new_sibling fact=%r slot=%r vs existing slot=%r — different slots, inserting as new",
+                        fact.content,
+                        fact_slot,
+                        best_match_slot,
+                    )
+                    memory = await store.insert_memory(
+                        user_id=user_id,
+                        content=fact.content,
+                        category=fact.category,
+                        source_type=source_type,
+                        embedding=embedding,
+                        embedding_model=DEFAULT_MODEL,
+                        source_conversation_id=conversation_id,
+                        confidence=fact.confidence,
+                        status=status,
+                        memory_slot=fact_slot,
+                    )
+                    result.new.append(memory)
+                else:
+                    new_memory = await store.supersede_memory(
+                        old_memory_id=best_match_id,
+                        new_content=fact.content,
+                        new_category=fact.category,
+                        new_source_type=source_type,
+                        user_id=user_id,
+                        embedding=embedding,
+                        embedding_model=DEFAULT_MODEL,
+                        source_conversation_id=conversation_id,
+                        confidence=fact.confidence,
+                        new_status=status,
+                        memory_slot=fact_slot or best_match.get("memory_slot"),
+                    )
+                    result.superseded.append(new_memory)
 
-                if current_like_slot and fact_slot_family:
-                    new_id = new_memory.get("id")
-                    closed_ids = await _close_current_related_candidates(
-                        store,
-                        similar,
-                        fact_slot_family,
-                        _as_uuid_or_none(new_id),
-                    )
-                    await _close_active_family_memories(
-                        store,
-                        user_id,
-                        fact_slot_family,
-                        _as_uuid_or_none(new_id),
-                        excluded_ids=closed_ids,
-                    )
-                    normalized_new_id = _as_uuid_or_none(new_id)
-                    if normalized_new_id is not None:
-                        current_family_keep_ids[fact_slot_family] = normalized_new_id
+                    if current_like_slot and fact_slot_family:
+                        new_id = new_memory.get("id")
+                        closed_ids = await _close_current_related_candidates(
+                            store,
+                            similar,
+                            fact_slot_family,
+                            _as_uuid_or_none(new_id),
+                        )
+                        await _close_active_family_memories(
+                            store,
+                            user_id,
+                            fact_slot_family,
+                            _as_uuid_or_none(new_id),
+                            excluded_ids=closed_ids,
+                        )
+                        normalized_new_id = _as_uuid_or_none(new_id)
+                        if normalized_new_id is not None:
+                            current_family_keep_ids[fact_slot_family] = normalized_new_id
             else:
                 memory = await store.insert_memory(
                     user_id=user_id,
