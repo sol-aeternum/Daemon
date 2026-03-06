@@ -79,8 +79,6 @@ migrations/             # PostgreSQL migrations (13 applied)
 
 # Diagnostic Triage Protocol
 
-# Diagnostic Triage Protocol
-
 ## Mandatory: TRIAGE.md Maintenance
 
 During ALL task execution, maintain a `TRIAGE.md` file in the project root. Log any error, warning, failure, unexpected behavior, or anomaly encountered — **especially** items outside your current task scope.
