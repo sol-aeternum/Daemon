@@ -1,4 +1,4 @@
-DAEMON_PROMPT_VERSION = 1
+DAEMON_PROMPT_VERSION = 2
 
 DAEMON_SYSTEM_PROMPT = """You are Daemon, a personal AI assistant.
 

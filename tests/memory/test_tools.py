@@ -4,6 +4,7 @@ import pytest
 import uuid
 from unittest.mock import AsyncMock, patch
 
+from orchestrator.memory.tools import MemoryReadTool, MemoryWriteTool
 
 
 @pytest.mark.asyncio
@@ -11,6 +12,7 @@ async def test_memory_tools_import():
     with patch("orchestrator.memory.dedup.dedup_and_store", new_callable=AsyncMock):
         mock_store = AsyncMock()
         from orchestrator.memory.tools import MemoryReadTool, MemoryWriteTool
+
         user_id = uuid.uuid4()
         tool = MemoryReadTool(mock_store, user_id)
         assert tool.name == "memory_read"
@@ -50,7 +52,9 @@ async def test_memory_read_temporal_mode_calls_list_memories_with_confirmed_true
     user_id = uuid.uuid4()
     tool = MemoryReadTool(mock_store, user_id)
 
-    await tool.execute(mode="temporal", after="2023-01-01T00:00:00Z", before="2023-12-31T23:59:59Z")
+    await tool.execute(
+        mode="temporal", after="2023-01-01T00:00:00Z", before="2023-12-31T23:59:59Z"
+    )
     # Verify list_memories was called with confirmed=True
     mock_store.list_memories.assert_called_once()
     call_args = mock_store.list_memories.call_args
@@ -68,7 +72,12 @@ async def test_memory_read_temporal_mode_with_history_calls_list_memories_with_c
     user_id = uuid.uuid4()
     tool = MemoryReadTool(mock_store, user_id)
 
-    await tool.execute(mode="temporal", history=True, after="2023-01-01T00:00:00Z", before="2023-12-31T23:59:59Z")
+    await tool.execute(
+        mode="temporal",
+        history=True,
+        after="2023-01-01T00:00:00Z",
+        before="2023-12-31T23:59:59Z",
+    )
     # Verify list_memories was called with confirmed=None
     mock_store.list_memories.assert_called_once()
     call_args = mock_store.list_memories.call_args
@@ -82,15 +91,38 @@ async def test_memory_read_history_mode_excludes_deleted_memories():
     mock_store.list_memories = AsyncMock()
     # Return memories with different statuses including deleted
     mock_store.list_memories.return_value = [
-        {"content": "active memory", "status": "active", "category": "fact", "valid_from": None, "valid_to": None},
-        {"content": "deleted memory", "status": "deleted", "category": "fact", "valid_from": None, "valid_to": None},
-        {"content": "closed memory", "status": "closed", "category": "fact", "valid_from": None, "valid_to": None},
+        {
+            "content": "active memory",
+            "status": "active",
+            "category": "fact",
+            "valid_from": None,
+            "valid_to": None,
+        },
+        {
+            "content": "deleted memory",
+            "status": "deleted",
+            "category": "fact",
+            "valid_from": None,
+            "valid_to": None,
+        },
+        {
+            "content": "closed memory",
+            "status": "closed",
+            "category": "fact",
+            "valid_from": None,
+            "valid_to": None,
+        },
     ]
 
     user_id = uuid.uuid4()
     tool = MemoryReadTool(mock_store, user_id)
 
-    result = await tool.execute(mode="temporal", history=True, after="2023-01-01T00:00:00Z", before="2023-12-31T23:59:59Z")
+    result = await tool.execute(
+        mode="temporal",
+        history=True,
+        after="2023-01-01T00:00:00Z",
+        before="2023-12-31T23:59:59Z",
+    )
     # Verify deleted memory is not in the result
     assert "[FACT] [None -> None] active memory" in result
     assert "[FACT] [None -> None] closed memory" in result
@@ -104,27 +136,57 @@ async def test_memory_read_temporal_mode_slot_post_filter_with_increased_limit()
     mock_store.list_memories = AsyncMock()
     # Return memories with different slots
     mock_store.list_memories.return_value = [
-        {"content": "memory 1", "memory_slot": "slot_a", "category": "fact", "valid_from": None, "valid_to": None},
-        {"content": "memory 2", "memory_slot": "slot_b", "category": "fact", "valid_from": None, "valid_to": None},
-        {"content": "memory 3", "memory_slot": "slot_a", "category": "fact", "valid_from": None, "valid_to": None},
-        {"content": "memory 4", "memory_slot": "slot_c", "category": "fact", "valid_from": None, "valid_to": None},
+        {
+            "content": "memory 1",
+            "memory_slot": "slot_a",
+            "category": "fact",
+            "valid_from": None,
+            "valid_to": None,
+        },
+        {
+            "content": "memory 2",
+            "memory_slot": "slot_b",
+            "category": "fact",
+            "valid_from": None,
+            "valid_to": None,
+        },
+        {
+            "content": "memory 3",
+            "memory_slot": "slot_a",
+            "category": "fact",
+            "valid_from": None,
+            "valid_to": None,
+        },
+        {
+            "content": "memory 4",
+            "memory_slot": "slot_c",
+            "category": "fact",
+            "valid_from": None,
+            "valid_to": None,
+        },
     ]
 
     user_id = uuid.uuid4()
     tool = MemoryReadTool(mock_store, user_id)
     limit = 2
-    result = await tool.execute(mode="temporal", slot="slot_a", limit=limit, after="2023-01-01T00:00:00Z", before="2023-12-31T23:59:59Z")
+    result = await tool.execute(
+        mode="temporal",
+        slot="slot_a",
+        limit=limit,
+        after="2023-01-01T00:00:00Z",
+        before="2023-12-31T23:59:59Z",
+    )
     # Verify list_memories was called with increased limit (limit * 4)
     mock_store.list_memories.assert_called_once()
     call_args = mock_store.list_memories.call_args
     assert call_args[1]["limit"] == limit * 4
 
     # Verify only memories with matching slot are in the result
-    assert "[FACT] [None -> None] memory 1" in result
-    assert "[FACT] [None -> None] memory 3" in result
-    assert "[FACT] [None -> None] memory 2" not in result
-    assert "[FACT] [None -> None] memory 4" not in result
-
+    assert "- [FACT] slot=slot_a memory 1" in result
+    assert "- [FACT] slot=slot_a memory 3" in result
+    assert "slot=slot_b memory 2" not in result
+    assert "slot=slot_c memory 4" not in result
+    assert len([line for line in result.splitlines() if line.strip()]) <= limit
 
 
 @pytest.mark.asyncio
@@ -169,7 +231,9 @@ async def test_memory_write_update_calls_close_then_dedup():
         user_id = uuid.uuid4()
         tool = MemoryWriteTool(mock_store, user_id)
 
-        await tool.execute(action="update", memory_id=str(existing_memory_id), content="new content")
+        await tool.execute(
+            action="update", memory_id=str(existing_memory_id), content="new content"
+        )
 
         # Verify close_memory was called
         mock_store.close_memory.assert_called_once()
@@ -200,7 +264,9 @@ async def test_memory_write_update_inherits_category_and_slot():
         user_id = uuid.uuid4()
         tool = MemoryWriteTool(mock_store, user_id)
 
-        await tool.execute(action="update", memory_id=str(existing_memory_id), content="new content")
+        await tool.execute(
+            action="update", memory_id=str(existing_memory_id), content="new content"
+        )
 
         mock_dedup.assert_called_once()
         call_kwargs = mock_dedup.call_args[1]
@@ -227,7 +293,9 @@ async def test_memory_write_update_invalid_memory_id_returns_error():
     user_id = uuid.uuid4()
     tool = MemoryWriteTool(mock_store, user_id)
 
-    result = await tool.execute(action="update", memory_id="not-a-valid-uuid", content="new content")
+    result = await tool.execute(
+        action="update", memory_id="not-a-valid-uuid", content="new content"
+    )
 
     assert result == "Invalid memory_id format"
 
@@ -260,7 +328,9 @@ async def test_memory_write_invalid_category_returns_error():
     user_id = uuid.uuid4()
     tool = MemoryWriteTool(mock_store, user_id)
 
-    result = await tool.execute(action="create", content="test content", category="invalid_category")
+    result = await tool.execute(
+        action="create", content="test content", category="invalid_category"
+    )
 
     assert "Invalid category 'invalid_category'" in result
     assert "Use one of:" in result

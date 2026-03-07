@@ -57,7 +57,6 @@ class MemoryReadTool(Tool):
         limit = kwargs.get("limit", 5)
         history = bool(kwargs.get("history", False))
         slot = kwargs.get("slot")
-        effective_limit = limit * 4 if slot else limit
         after_raw = kwargs.get("after")
         before_raw = kwargs.get("before")
 
@@ -74,7 +73,7 @@ class MemoryReadTool(Tool):
             memories = await self.store.search_memories(
                 user_id=self.user_id,
                 query_embedding=query_embedding,
-                limit=effective_limit,
+                limit=limit,
                 include_local=True,
                 include_historical=history,
                 memory_slot=slot if isinstance(slot, str) and slot.strip() else None,
@@ -102,6 +101,7 @@ class MemoryReadTool(Tool):
         # Slot filtering for temporal mode (semantic handles it via store)
         if mode != "semantic" and isinstance(slot, str) and slot.strip():
             memories = [m for m in memories if m.get("memory_slot") == slot]
+        memories = memories[:limit]
 
         if not memories:
             return "No relevant memories found."
@@ -194,7 +194,7 @@ class MemoryWriteTool(Tool):
                 content=content,
                 source_type="user_created",
                 category=category,
-                conversation_id=old_memory.get("conversation_id"),
+                conversation_id=old_memory.get("source_conversation_id"),
                 slot=slot,
             )
             return f"Memory updated. Old ID: {memory_id}, New ID: {new_memory_id}."
