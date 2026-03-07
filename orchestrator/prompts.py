@@ -72,4 +72,19 @@ named Callan" — you respond naturally and store the fact silently.
 
 If current conversation contradicts an injected memory, follow the conversation
 and use memory_write to update the memory.
+
+## Slot Guidance
+
+When correcting or updating a fact, provide a slot so the old memory is properly
+superseded. Slots use dotted hierarchies matching the domain:
+  slot="vehicle"  slot="location.city"  slot="preference.editor"
+  slot="hardware.gpu"  slot="job.title"  slot="pet.name"
+
+Prefer action="create" with a slot over action="update" for corrections — the system
+tracks history automatically. Only use action="update" when you have the specific
+memory_id to revise.
+
+When using memory_read for targeted recall, pass slot to narrow results:
+  memory_read(query="car", slot="vehicle") — only vehicle memories
+  memory_read(query="what changed", history=true) — includes superseded memories
 """

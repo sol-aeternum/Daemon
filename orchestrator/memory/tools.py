@@ -57,6 +57,7 @@ class MemoryReadTool(Tool):
         limit = kwargs.get("limit", 5)
         history = bool(kwargs.get("history", False))
         slot = kwargs.get("slot")
+        effective_limit = limit * 4 if slot else limit
         after_raw = kwargs.get("after")
         before_raw = kwargs.get("before")
 
@@ -73,9 +74,10 @@ class MemoryReadTool(Tool):
             memories = await self.store.search_memories(
                 user_id=self.user_id,
                 query_embedding=query_embedding,
-                limit=limit,
+                limit=effective_limit,
                 include_local=True,
                 include_historical=history,
+                memory_slot=slot if isinstance(slot, str) and slot.strip() else None,
             )
         else:
             try:
@@ -84,18 +86,21 @@ class MemoryReadTool(Tool):
             except ValueError:
                 return "Invalid 'after' or 'before' timestamp. Use ISO8601."
 
+            effective_limit = limit * 4 if slot else limit
             memories = await self.store.list_memories(
                 user_id=self.user_id,
-                status=None if history else "active",
+                confirmed=None if history else True,
+                status=None,
                 include_local=True,
                 created_after=created_after,
                 created_before=created_before,
-                limit=limit,
+                limit=effective_limit,
             )
 
         if history:
             memories = [m for m in memories if m.get("status") != "deleted"]
-        if isinstance(slot, str) and slot.strip():
+        # Slot filtering for temporal mode (semantic handles it via store)
+        if mode != "semantic" and isinstance(slot, str) and slot.strip():
             memories = [m for m in memories if m.get("memory_slot") == slot]
 
         if not memories:
@@ -161,13 +166,50 @@ class MemoryWriteTool(Tool):
             return f"Memory created (ID: {memory_id})."
 
         elif action == "update":
-            memory_id = uuid.UUID(kwargs.get("memory_id"))
-            content = kwargs.get("content", "")
-            await self.store.update_memory(memory_id, content=content)
-            return f"Memory {memory_id} updated."
+            memory_id_str = kwargs.get("memory_id")
+            if not memory_id_str:
+                return "memory_id is required for update"
+            try:
+                memory_id = uuid.UUID(memory_id_str)
+            except ValueError:
+                return "Invalid memory_id format"
+
+            # Fetch the existing memory
+            old_memory = await self.store.get_memory(memory_id)
+            if not old_memory:
+                return "Memory not found"
+
+            # Inherit category and slot if not provided
+            content = kwargs.get("content", old_memory.get("content", ""))
+            category = kwargs.get("category", old_memory.get("category", "fact"))
+            slot = kwargs.get("slot", old_memory.get("memory_slot"))
+
+            # Close the old memory
+            await self.store.close_memory(memory_id)
+
+            # Insert new memory with fresh embedding
+            new_memory_id = await dedup_and_store(
+                store=self.store,
+                user_id=self.user_id,
+                content=content,
+                source_type="user_created",
+                category=category,
+                conversation_id=old_memory.get("conversation_id"),
+                slot=slot,
+            )
+            return f"Memory updated. Old ID: {memory_id}, New ID: {new_memory_id}."
 
         elif action == "delete":
-            memory_id = uuid.UUID(kwargs.get("memory_id"))
+            memory_id_str = kwargs.get("memory_id")
+            if not memory_id_str:
+                return "memory_id is required for delete"
+            try:
+                memory_id = uuid.UUID(memory_id_str)
+            except ValueError:
+                return "Invalid memory_id format"
+            old_memory = await self.store.get_memory(memory_id)
+            if not old_memory:
+                return "Memory not found"
             await self.store.delete_memory(memory_id, soft=True)
             return f"Memory {memory_id} deleted."
 
