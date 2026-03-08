@@ -245,7 +245,7 @@ async def openai_list_models(
         # Fallback to demo models when OpenRouter API fails
         demo_models = [
             OpenAIModelInfo(
-                id="openrouter/kimi/kimi-k2.5",
+                id="openrouter/moonshotai/kimi-k2.5",
                 object="model",
                 created=int(time.time()),
                 owned_by="openrouter",
@@ -827,6 +827,12 @@ async def chat(
     require_api_key(settings, authorization)
 
     conversation_id = payload.conversation_id or new_conversation_id()
+    # Warn if no conversation_id was provided - should not happen in normal frontend flow
+    if not payload.conversation_id:
+        logger.warning(
+            "No conversation_id provided — creating new conversation. "
+            "This should not happen in normal frontend flow."
+        )
     request_id = new_request_id()
 
     # Get provider configuration from request or default
@@ -939,6 +945,19 @@ async def chat(
 
     history_messages: list[dict[str, Any]] | None = None
 
+    def _to_history_message(msg: dict[str, Any]) -> dict[str, Any]:
+        mapped: dict[str, Any] = {
+            "role": msg.get("role"),
+            "content": msg.get("content"),
+        }
+        if msg.get("reasoning_text"):
+            mapped["reasoning"] = msg.get("reasoning_text")
+        if msg.get("reasoning_duration_secs") is not None:
+            mapped["reasoning_duration_secs"] = msg.get("reasoning_duration_secs")
+        if msg.get("reasoning_model"):
+            mapped["reasoning_model"] = msg.get("reasoning_model")
+        return mapped
+
     if conversation_exists and store and conversation_uuid:
         try:
             db_messages = await store.get_recent_messages(
@@ -947,7 +966,7 @@ async def chat(
                 exclude_status=["streaming"],
             )
             history_messages = [
-                {"role": msg.get("role"), "content": msg.get("content")}
+                _to_history_message(msg)
                 for msg in db_messages
                 if msg.get("role")
                 and msg.get("content") is not None
@@ -959,7 +978,7 @@ async def chat(
     if not history_messages:
         if incoming_messages:
             history_messages = [
-                {"role": msg.get("role"), "content": msg.get("content")}
+                _to_history_message(msg)
                 for msg in incoming_messages
                 if msg.get("role") and msg.get("content") is not None
             ]

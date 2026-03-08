@@ -110,13 +110,13 @@ export async function POST(req: Request) {
           }
 
           if (eventType === "token") {
-            const delta = payload?.data?.delta;
+            const delta = payload?.data?.text ?? payload?.data?.delta ?? payload?.text ?? payload?.delta;
             if (typeof delta === "string" && delta.length > 0) {
               sawToken = true;
               dataStream.write(formatDataStreamPart("text", delta));
             }
           } else if (eventType === "thinking") {
-            const content = payload?.data?.content;
+            const content = payload?.data?.content ?? payload?.content;
             if (typeof content === "string" && content.length > 0) {
               dataStream.write(
                 formatDataStreamPart("data", [
@@ -141,6 +141,18 @@ export async function POST(req: Request) {
                     reason: payload?.data?.reason,
                     id: payload?.id ?? payload?.data?.id,
                     request_id: payload?.request_id ?? payload?.data?.request_id,
+                  },
+                ]),
+              );
+            }
+          } else if (eventType === "conversation") {
+            const conversationId = payload?.data?.conversation_id || payload?.conversation_id;
+            if (conversationId) {
+              dataStream.write(
+                formatDataStreamPart("data", [
+                  {
+                    type: "conversation",
+                    conversation_id: conversationId,
                   },
                 ]),
               );
@@ -170,7 +182,11 @@ export async function POST(req: Request) {
               ]),
             );
           } else if (eventType === "final" && !sawToken) {
-            const content = payload?.data?.message?.content;
+            const content =
+              payload?.data?.text
+              ?? payload?.data?.message?.content
+              ?? payload?.text
+              ?? payload?.message?.content;
             if (typeof content === "string" && content.length > 0) {
               dataStream.write(formatDataStreamPart("text", content));
             }

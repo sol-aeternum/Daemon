@@ -12,6 +12,7 @@ export type ChatEvent = BaseEvent &
     | { type: "tool_call"; name: string; arguments: Record<string, any> }
     | { type: "tool_result"; name: string; result: string }
     | { type: "pipeline_switch"; pipeline: "cloud" | "local" }
+    | { type: "conversation"; conversation_id: string }
   );
 
 export function isChatEvent(obj: unknown): obj is ChatEvent {
@@ -28,6 +29,7 @@ export function isChatEvent(obj: unknown): obj is ChatEvent {
     "tool_call",
     "tool_result",
     "pipeline_switch",
+    "conversation",
   ];
   return typeof event.type === "string" && validTypes.includes(event.type);
 }

@@ -18,6 +18,7 @@ def is_explicit_memory(memory: dict[str, Any]) -> bool:
     """Check if a memory was created explicitly (user_created) vs extracted."""
     return memory.get("source_type") == "user_created"
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -975,6 +976,44 @@ class MemoryStore:
     # Helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _normalize_settings(value: Any) -> dict[str, Any]:
+        if value is None:
+            return {}
+
+        if isinstance(value, dict):
+            return value
+
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return {}
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                logger.warning(
+                    "Invalid JSON in users.settings", extra={"value_type": "str"}
+                )
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+
+        if isinstance(value, (bytes, bytearray)):
+            try:
+                parsed = json.loads(value.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                logger.warning("Invalid bytes JSON in users.settings")
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+
+        try:
+            return dict(value)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Unsupported users.settings payload shape",
+                extra={"value_type": type(value).__name__},
+            )
+            return {}
+
     async def get_user_settings(self, user_id: uuid.UUID) -> dict[str, Any]:
         """Get user settings from database.
 
@@ -987,8 +1026,8 @@ class MemoryStore:
             row = await conn.fetchrow(
                 "SELECT settings FROM users WHERE id = $1", user_id
             )
-            if row and row["settings"]:
-                return dict(row["settings"])
+            if row and row["settings"] is not None:
+                return self._normalize_settings(row["settings"])
             return {}
 
     async def update_user_settings(
@@ -1012,7 +1051,7 @@ class MemoryStore:
             )
             if not row:
                 return settings
-            return dict(row["settings"])
+            return self._normalize_settings(row["settings"])
 
 
 async def load_bootstrap_memories(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 import uuid
@@ -96,22 +96,63 @@ def _extract_delta_text(chunk: Any) -> str:
         )
         if not choices:
             return ""
-        choice0 = choices[0]
-        delta = (
-            choice0.get("delta")
-            if isinstance(choice0, dict)
-            else getattr(choice0, "delta", None)
-        )
+        delta = choices[0].get("delta") if isinstance(choices, list) else None
         if not delta:
             return ""
-        if isinstance(delta, dict):
-            return str(delta.get("content") or "")
-        return str(getattr(delta, "content", "") or "")
+        return delta.get("content", "") or ""
     except Exception:
         return ""
 
 
-def _extract_finish_reason(chunk: Any) -> str | None:
+def _reasoning_text_from_details(reasoning_details: Any) -> str:
+    if not reasoning_details:
+        return ""
+    if isinstance(reasoning_details, list):
+        parts: list[str] = []
+        for item in reasoning_details:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str) and text:
+                    parts.append(text)
+                    continue
+                summary = item.get("summary")
+                if isinstance(summary, str) and summary:
+                    parts.append(summary)
+                    continue
+                if isinstance(summary, list):
+                    for s in summary:
+                        if isinstance(s, str) and s:
+                            parts.append(s)
+                        elif isinstance(s, dict):
+                            s_text = s.get("text")
+                            if isinstance(s_text, str) and s_text:
+                                parts.append(s_text)
+            else:
+                item_text = getattr(item, "text", None)
+                if isinstance(item_text, str) and item_text:
+                    parts.append(item_text)
+                    continue
+                item_summary = getattr(item, "summary", None)
+                if isinstance(item_summary, str) and item_summary:
+                    parts.append(item_summary)
+        return "\n".join(parts).strip()
+    if isinstance(reasoning_details, dict):
+        text = reasoning_details.get("text")
+        if isinstance(text, str) and text:
+            return text
+        summary = reasoning_details.get("summary")
+        if isinstance(summary, str) and summary:
+            return summary
+    text_attr = getattr(reasoning_details, "text", None)
+    if isinstance(text_attr, str) and text_attr:
+        return text_attr
+    summary_attr = getattr(reasoning_details, "summary", None)
+    if isinstance(summary_attr, str) and summary_attr:
+        return summary_attr
+    return ""
+
+
+def _extract_delta_reasoning(chunk: Any) -> str:
     try:
         choices = (
             chunk.get("choices")
@@ -119,115 +160,62 @@ def _extract_finish_reason(chunk: Any) -> str | None:
             else getattr(chunk, "choices", None)
         )
         if not choices:
-            return None
+            return ""
+
         choice0 = choices[0]
         if isinstance(choice0, dict):
-            return choice0.get("finish_reason")
-        return getattr(choice0, "finish_reason", None)
+            delta = choice0.get("delta")
+        else:
+            delta = getattr(choice0, "delta", None)
+        if not delta:
+            return ""
+
+        if isinstance(delta, dict):
+            direct = (
+                delta.get("reasoning_content")
+                or delta.get("reasoning")
+                or delta.get("thinking")
+            )
+            details = delta.get("reasoning_details")
+        else:
+            direct = (
+                getattr(delta, "reasoning_content", None)
+                or getattr(delta, "reasoning", None)
+                or getattr(delta, "thinking", None)
+            )
+            details = getattr(delta, "reasoning_details", None)
+
+        if isinstance(direct, str) and direct:
+            return direct
+
+        return _reasoning_text_from_details(details)
     except Exception:
-        return None
-
-
-def _extract_usage(chunk: Any) -> dict[str, int] | None:
-    usage = (
-        chunk.get("usage") if isinstance(chunk, dict) else getattr(chunk, "usage", None)
-    )
-    if not usage:
-        return None
-    if isinstance(usage, dict):
-        prompt = int(usage.get("prompt_tokens") or 0)
-        completion = int(usage.get("completion_tokens") or 0)
-        total = int(usage.get("total_tokens") or (prompt + completion))
-        return {
-            "input_tokens": prompt,
-            "output_tokens": completion,
-            "total_tokens": total,
-        }
-    return None
-
-
-def _provider_from_model(model: str) -> str:
-    if "/" in model:
-        return model.split("/", 1)[0]
-    return "unknown"
+        return ""
 
 
 def effective_provider_and_model(
-    settings: Settings, provider_config: ProviderConfig | None = None
+    settings: Settings, provider_config: ProviderConfig
 ) -> tuple[str, str]:
-    if settings.mock_llm:
-        return ("mock", "mock")
-
-    if provider_config:
-        return (provider_config.name, provider_config.model)
-
-    # Fallback to settings
-    return (settings.default_provider, "unknown")
-
-
-async def litellm_stream(
-    settings: Settings,
-    provider_config: ProviderConfig,
-    messages: list[dict[str, str]],
-    actual_model: str | None = None,
-) -> AsyncIterator[Any]:
-    if settings.mock_llm:
-        # Emit chunks shaped like OpenAI/LiteLLM streaming responses.
-        yield {"choices": [{"delta": {"content": "(mock) "}, "finish_reason": None}]}
-        yield {"choices": [{"delta": {"content": "hello"}, "finish_reason": None}]}
-        yield {"choices": [{"delta": {"content": " world"}, "finish_reason": None}]}
-        yield {
-            "choices": [{"delta": {}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 0, "completion_tokens": 3, "total_tokens": 3},
-        }
-        return
-
-    # Use actual model from request if provided, otherwise fall back to config default
-    model_to_use = actual_model if actual_model else provider_config.model
-
-    # Guardrail: never forward persisted reasoning fields into an LLM request.
-    sanitized_messages = [strip_reasoning_fields_from_message(m) for m in messages]
-
-    # Prepare LiteLLM call parameters
-    call_params: dict[str, Any] = {
-        "model": model_to_use,
-        "messages": sanitized_messages,
-        "stream": True,
-        "timeout": provider_config.timeout_s,
-    }
-
-    # Add provider-specific configuration
-    if provider_config.base_url:
-        call_params["api_base"] = provider_config.base_url
-
-    if provider_config.api_key:
-        call_params["api_key"] = provider_config.api_key
-    elif provider_config.requires_auth:
-        raise RuntimeError(
-            f"{provider_config.name} requires an API key but none was provided"
-        )
-
-    if provider_config.extra_headers:
-        call_params["extra_headers"] = provider_config.extra_headers
-
-        # OpenRouter format already includes provider prefix
-    stream = await litellm.acompletion(**call_params)
-
-    stream_iter = cast(AsyncIterator[Any], stream)
-    async for chunk in stream_iter:
-        yield chunk
+    provider = provider_config.name or settings.default_provider
+    model = provider_config.model
+    if not model:
+        tier_config = settings.tier_configs.get(settings.tier)
+        if tier_config:
+            model = tier_config.models.get("chat")
+    if not model:
+        model = "gpt-4o-mini"
+    return provider, model
 
 
 async def stream_sse_chat(
-    *,
     settings: Settings,
     provider_config: ProviderConfig,
     system_prompt: str,
     user_message: str,
-    conversation_id: str,
     request_id: str,
-    ping_interval_s: float,
+    conversation_id: str,
     is_disconnected: Any,
+    ping_interval_s: float = 15.0,
     actual_model: str | None = None,
     reported_model: str | None = None,
     routing_info: dict[str, Any] | None = None,
@@ -252,132 +240,6 @@ async def stream_sse_chat(
     forced_terminal_status: str | None = None
     terminal_reason: str | None = None
 
-    # Reasoning tracking for persistence
-    reasoning_text_parts: list[str] = []
-    stream_start_time = asyncio.get_running_loop().time()
-
-    async def _maybe_persist_streaming_message(
-        *, force: bool = False, status: str | None = None
-    ) -> None:
-        nonlocal _last_persist_s
-        if not memory_store or not assistant_message_id:
-            return
-
-        now_s = asyncio.get_running_loop().time()
-        if not force:
-            if _last_persist_s is None:
-                return
-            if (now_s - _last_persist_s) < _persist_interval_s:
-                return
-
-        _last_persist_s = now_s
-        reasoning_text = "".join(reasoning_text_parts) if reasoning_text_parts else None
-        reasoning_duration = (
-            max(1, int(now_s - stream_start_time)) if reasoning_text_parts else None
-        )
-        try:
-            await memory_store.update_message(
-                assistant_message_id,
-                content="".join(final_text_parts),
-                status=status or "streaming",
-                reasoning_text=reasoning_text,
-                reasoning_duration_secs=reasoning_duration,
-                reasoning_model=model_for_events,
-            )
-        except Exception:
-            logger.warning(
-                "Failed to persist streaming assistant message", exc_info=True
-            )
-
-    async def _finalize_assistant_message() -> None:
-        final_text = "".join(final_text_parts)
-        final_reasoning_text = (
-            "".join(reasoning_text_parts) if reasoning_text_parts else None
-        )
-        final_reasoning_duration = (
-            max(1, int(asyncio.get_running_loop().time() - stream_start_time))
-            if reasoning_text_parts
-            else None
-        )
-        tokens_in = int((usage or {}).get("input_tokens", 0))
-        tokens_out = int((usage or {}).get("output_tokens", 0))
-
-        if not (memory_store and conversation_uuid and user_id):
-            return
-
-        final_status: str
-        if forced_terminal_status:
-            final_status = forced_terminal_status
-        else:
-            final_status = "error" if (finish_reason == "error") else "complete"
-
-        metadata: dict[str, Any] = {
-            "request_id": request_id,
-            "provider": provider,
-            "model": model_for_events,
-            "finish_reason": finish_reason or "stop",
-            "usage": usage
-            or {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-        }
-        if terminal_reason:
-            metadata["reason"] = terminal_reason
-
-        if assistant_message_id:
-            try:
-                await memory_store.update_message(
-                    assistant_message_id,
-                    content=final_text,
-                    status=final_status,
-                    metadata=metadata,
-                    reasoning_text=final_reasoning_text,
-                    reasoning_duration_secs=final_reasoning_duration,
-                    reasoning_model=model_for_events,
-                )
-
-                # Backfill token counters and model if available (update_message does not).
-                try:
-                    await memory_store._pool.execute(
-                        """
-                        UPDATE messages
-                        SET tokens_in = $2,
-                            tokens_out = $3,
-                            model = COALESCE($4, model),
-                            updated_at = NOW()
-                        WHERE id = $1
-                        """,
-                        assistant_message_id,
-                        tokens_in,
-                        tokens_out,
-                        actual_model or model,
-                    )
-                except Exception:
-                    logger.warning(
-                        "Failed to backfill assistant token counters", exc_info=True
-                    )
-            except Exception:
-                logger.warning("Failed to finalize assistant message", exc_info=True)
-        elif final_text:
-            try:
-                await memory_store.insert_message(
-                    conversation_id=conversation_uuid,
-                    user_id=user_id,
-                    role="assistant",
-                    content=final_text,
-                    model=actual_model or model,
-                    tokens_in=tokens_in,
-                    tokens_out=tokens_out,
-                    status=final_status,
-                    metadata={
-                        "request_id": request_id,
-                        "provider": provider,
-                        "model": model_for_events,
-                        "finish_reason": finish_reason or "stop",
-                        **({"reason": terminal_reason} if terminal_reason else {}),
-                    },
-                )
-            except Exception:
-                logger.warning("Failed to persist assistant message", exc_info=True)
-
     def make_envelope(
         event_type: str, data: dict[str, Any], *, evt_id: str | None = None
     ) -> dict[str, Any]:
@@ -399,6 +261,16 @@ async def stream_sse_chat(
     else:
         messages = build_openai_messages(system_prompt, user_message)
 
+    if conversation_uuid:
+        yield sse(
+            "conversation",
+            make_envelope(
+                "conversation",
+                {"conversation_id": str(conversation_uuid)},
+                evt_id="evt_conversation",
+            ),
+        )
+
     if routing_info:
         yield sse(
             "routing",
@@ -408,6 +280,12 @@ async def stream_sse_chat(
     # Mock mode uses the simple token stream for deterministic tests.
     try:
         try:
+            first_token_time: float | None = None
+            last_token_time: float | None = None
+            first_reasoning_time: float | None = None
+            last_reasoning_time: float | None = None
+            reasoning_parts: list[str] = []
+
             if settings.mock_llm:
                 if memory_store and conversation_uuid and user_id:
                     try:
@@ -417,277 +295,250 @@ async def stream_sse_chat(
                             role="assistant",
                             content="",
                             model=actual_model or model,
-                            status="streaming",
-                            metadata={
-                                "request_id": request_id,
-                                "provider": provider,
-                                "model": model_for_events,
-                            },
                         )
-                        raw_id = inserted.get("id")
-                        assistant_message_id = (
-                            raw_id
-                            if isinstance(raw_id, uuid.UUID)
-                            else uuid.UUID(str(raw_id))
-                        )
-                        _last_persist_s = asyncio.get_running_loop().time()
-                    except Exception:
-                        logger.warning(
-                            "Failed to create streaming assistant message",
-                            exc_info=True,
-                        )
+                        assistant_message_id = inserted["id"]
+                    except Exception as e:
+                        logger.warning("Failed to insert mock message: %s", e)
 
-                iterator = litellm_stream(
-                    settings, provider_config, messages, actual_model
-                ).__aiter__()
-
-                while True:
+                for token in "Mock response tokens from Daemon":
                     if await is_disconnected():
-                        forced_terminal_status = "error"
-                        terminal_reason = "client_disconnected"
-                        return
+                        break
+                    yield sse(
+                        "token",
+                        make_envelope(
+                            "token",
+                            {"text": token},
+                            evt_id=f"evt_token_{uuid.uuid4().hex}",
+                        ),
+                    )
+                    await asyncio.sleep(0.05)
 
-                    try:
-                        chunk = await asyncio.wait_for(
-                            iterator.__anext__(), timeout=ping_interval_s
-                        )
-                    except asyncio.TimeoutError:
-                        evt_counter += 1
-                        yield sse(
-                            "ping",
-                            make_envelope(
-                                "ping", {}, evt_id=f"evt_ping_{evt_counter:06d}"
-                            ),
-                        )
-                        continue
-                    except StopAsyncIteration:
+                finish_reason = "stop"
+                usage = {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                }
+            else:
+                # Actual LLM streaming
+                model_to_call = actual_model or f"{provider}/{model}"
+                completion_kwargs: dict[str, Any] = {
+                    "model": model_to_call,
+                    "messages": messages,
+                    "stream": True,
+                    "timeout": provider_config.timeout_s,
+                }
+                if provider == "openrouter" and "gemini" in model_to_call.lower():
+                    completion_kwargs["reasoning"] = {"enabled": True}
+
+                response = await litellm.acompletion(**completion_kwargs)
+
+                async for chunk in response:
+                    if await is_disconnected():
+                        forced_terminal_status = "cancelled"
+                        terminal_reason = "Client disconnected during streaming"
                         break
 
-                    delta = _extract_delta_text(chunk)
-                    if delta:
-                        final_text_parts.append(delta)
-                        await _maybe_persist_streaming_message()
+                    now = asyncio.get_event_loop().time()
+                    if first_token_time is None:
+                        first_token_time = now
+                    last_token_time = now
+
+                    delta_text = _extract_delta_text(chunk)
+                    if delta_text:
+                        final_text_parts.append(delta_text)
                         yield sse(
                             "token",
                             make_envelope(
                                 "token",
-                                {"index": 0, "delta": delta, "role": "assistant"},
+                                {"text": delta_text},
+                                evt_id=f"evt_token_{uuid.uuid4().hex}",
                             ),
                         )
 
-                    finish_reason = _extract_finish_reason(chunk) or finish_reason
-                    usage = _extract_usage(chunk) or usage
-            else:
-                from orchestrator.tools.builtin import create_default_registry
-                from orchestrator.tools.completion import completion_with_tools
-                from orchestrator.tools.executor import ToolExecutor
+                        # Periodic persistence of incremental content
+                        if (
+                            memory_store
+                            and conversation_uuid
+                            and user_id
+                            and assistant_message_id
+                        ):
+                            current_time = now
+                            if (
+                                _last_persist_s is None
+                                or (current_time - _last_persist_s)
+                                >= _persist_interval_s
+                            ):
+                                try:
+                                    await memory_store.update_message_content(
+                                        message_id=assistant_message_id,
+                                        content_delta=delta_text,
+                                    )
+                                    _last_persist_s = current_time
+                                except Exception as e:
+                                    logger.warning(
+                                        "Failed to persist incremental content: %s", e
+                                    )
 
-                registry = create_default_registry(
-                    brave_api_key=settings.brave_api_key,
-                    memory_store=memory_store,
-                    user_id=user_id,
-                )
+                    delta_reasoning = _extract_delta_reasoning(chunk)
+                    if delta_reasoning:
+                        if (
+                            not reasoning_parts
+                            or reasoning_parts[-1] != delta_reasoning
+                        ):
+                            reasoning_parts.append(delta_reasoning)
 
-                if memory_store and conversation_uuid and user_id:
-                    try:
-                        inserted = await memory_store.insert_message(
-                            conversation_id=conversation_uuid,
-                            user_id=user_id,
-                            role="assistant",
-                            content="",
-                            model=actual_model or model,
-                            status="streaming",
-                            metadata={
-                                "request_id": request_id,
-                                "provider": provider,
-                                "model": model_for_events,
-                            },
-                        )
-                        raw_id = inserted.get("id")
-                        assistant_message_id = (
-                            raw_id
-                            if isinstance(raw_id, uuid.UUID)
-                            else uuid.UUID(str(raw_id))
-                        )
-                        _last_persist_s = asyncio.get_running_loop().time()
-                    except Exception:
-                        logger.warning(
-                            "Failed to create streaming assistant message",
-                            exc_info=True,
-                        )
-
-                async for evt in completion_with_tools(
-                    settings=settings,
-                    provider_config=provider_config,
-                    messages=messages,
-                    registry=registry,
-                    actual_model=actual_model,
-                ):
-                    if await is_disconnected():
-                        forced_terminal_status = "error"
-                        terminal_reason = "client_disconnected"
-                        return
-
-                    evt_type = evt.get("type")
-                    if evt_type == "tool_executing":
-                        name = str(evt.get("name") or "")
-                        raw_args = evt.get("arguments")
-                        args_obj: Any
-                        if isinstance(raw_args, str):
-                            try:
-                                args_obj = json.loads(raw_args)
-                            except Exception:
-                                args_obj = {"raw": raw_args}
-                        else:
-                            args_obj = raw_args or {}
+                        if first_reasoning_time is None:
+                            first_reasoning_time = now
+                        last_reasoning_time = now
 
                         yield sse(
-                            "tool_call",
+                            "thinking",
                             make_envelope(
-                                "tool_call", {"name": name, "arguments": args_obj}
-                            ),
-                        )
-
-                    elif evt_type == "tool_result":
-                        name = str(evt.get("name") or "")
-                        raw_result = evt.get("result")
-                        result = str(raw_result or "")
-                        if name in {"spawn_agent", "spawn_multiple"}:
-                            session_id = _extract_session_id_from_result(raw_result)
-                            if session_id:
-                                _spawn_session_by_conversation[conversation_id] = (
-                                    session_id
-                                )
-                        yield sse(
-                            "tool_result",
-                            make_envelope(
-                                "tool_result", {"name": name, "result": result}
-                            ),
-                        )
-
-                    elif evt_type == "thinking":
-                        content = str(evt.get("content") or "")
-                        if content:
-                            # Accumulate reasoning text for persistence
-                            reasoning_text_parts.append(content)
-                            yield sse(
                                 "thinking",
-                                make_envelope(
-                                    "thinking",
-                                    {"content": content},
-                                ),
-                            )
-
-                    elif evt_type == "content_delta":
-                        content = str(evt.get("content") or "")
-                        if content:
-                            final_text_parts.append(content)
-                            await _maybe_persist_streaming_message()
-                            yield sse(
-                                "token",
-                                make_envelope(
-                                    "token",
-                                    {
-                                        "index": 0,
-                                        "delta": content,
-                                        "role": "assistant",
-                                    },
-                                ),
-                            )
-
-                    elif evt_type == "content_done":
-                        finish_reason = "stop"
-                        usage = usage or {
-                            "prompt_tokens": 0,
-                            "completion_tokens": 0,
-                            "total_tokens": 0,
-                        }
-                        break
-
-                    elif evt_type == "error":
-                        # Surface a stable SSE error event (final/done emitted below).
-                        yield sse(
-                            "error",
-                            make_envelope(
-                                "error",
-                                {
-                                    "code": "tool_or_model_error",
-                                    "message": str(evt.get("error") or "Unknown error"),
-                                    "retryable": False,
-                                },
+                                {"content": delta_reasoning},
+                                evt_id=f"evt_thinking_{uuid.uuid4().hex}",
                             ),
                         )
-                        finish_reason = "error"
-                        usage = usage or {
-                            "input_tokens": 0,
-                            "output_tokens": 0,
-                            "total_tokens": 0,
-                        }
-                        break
 
-        except Exception:
-            forced_terminal_status = forced_terminal_status or "error"
-            terminal_reason = terminal_reason or "exception"
+                    # Extract finish reason and usage if available
+                    try:
+                        choices = getattr(chunk, "choices", None)
+                        if choices and isinstance(choices, list) and len(choices) > 0:
+                            choice = choices[0]
+                            if (
+                                hasattr(choice, "finish_reason")
+                                and choice.finish_reason
+                            ):
+                                finish_reason = choice.finish_reason
+
+                        usage_data = getattr(chunk, "usage", None)
+                        if usage_data:
+                            usage = {
+                                "prompt_tokens": getattr(
+                                    usage_data, "prompt_tokens", 0
+                                ),
+                                "completion_tokens": getattr(
+                                    usage_data, "completion_tokens", 0
+                                ),
+                                "total_tokens": getattr(usage_data, "total_tokens", 0),
+                            }
+                    except Exception:
+                        pass
+
+        except asyncio.CancelledError:
+            forced_terminal_status = "cancelled"
+            terminal_reason = "Request was cancelled"
             raise
+        except Exception as e:
+            forced_terminal_status = "error"
+            terminal_reason = str(e)
+            logger.error("Streaming error: %s", e, exc_info=True)
+            yield sse(
+                "error",
+                make_envelope("error", {"message": str(e)}, evt_id="evt_error"),
+            )
+            return
 
+        # Final event with complete message and metadata
         final_text = "".join(final_text_parts)
-        final_payload = {
-            "message": {
-                "id": "msg_assistant_001",
-                "role": "assistant",
-                "content": final_text,
-                "content_type": "text/plain",
-            },
-            "usage": usage
-            or {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+        final_data = {
+            "text": final_text,
             "model": model_for_events,
-            "provider": provider,
-            "finish_reason": finish_reason or "stop",
+            "finish_reason": finish_reason or "unknown",
         }
+        if usage:
+            final_data["usage"] = usage
+        if first_token_time is not None and last_token_time is not None:
+            final_data["timing"] = {
+                "first_token_s": first_token_time,
+                "last_token_s": last_token_time,
+            }
 
-        yield sse("final", make_envelope("final", final_payload, evt_id="evt_final"))
-        yield sse("done", make_envelope("done", {"ok": True}, evt_id="evt_done"))
-    finally:
+        yield sse(
+            "final",
+            make_envelope("final", final_data, evt_id="evt_final"),
+        )
+
+        # Persist final message to memory store
         if memory_store and conversation_uuid and user_id:
-            finalize_task = asyncio.create_task(_finalize_assistant_message())
             try:
-                await asyncio.shield(finalize_task)
-            except asyncio.CancelledError:
-                raise
-
-    if queue and conversation_uuid and user_id:
-        try:
-            from orchestrator.worker.jobs import enqueue_with_debounce
-
-            await enqueue_with_debounce(
-                queue,
-                "extract_memories",
-                f"extract:{conversation_uuid}",
-                args=(str(user_id), str(conversation_uuid)),
-            )
-
-            # Only generate a title after the first full exchange.
-            if final_text and finish_reason != "error" and memory_store:
-                try:
-                    msg_count = await memory_store._pool.fetchval(
-                        "SELECT COUNT(*) FROM messages WHERE conversation_id = $1",
-                        conversation_uuid,
+                content = final_text
+                model_name = actual_model or model
+                reasoning_text = "\n".join(reasoning_parts).strip() or None
+                reasoning_duration_secs: int | None = None
+                if (
+                    first_reasoning_time is not None
+                    and last_reasoning_time is not None
+                    and last_reasoning_time >= first_reasoning_time
+                ):
+                    reasoning_duration_secs = max(
+                        1, int(last_reasoning_time - first_reasoning_time)
                     )
-                    if int(msg_count or 0) == 2:
-                        await enqueue_with_debounce(
-                            queue,
-                            "generate_conversation_title_job",
-                            f"title:{conversation_uuid}",
-                            args=(str(conversation_uuid),),
-                        )
-                except Exception:
-                    logger.warning("Failed to enqueue title job", exc_info=True)
+                final_metadata: dict[str, Any] = {}
+                if finish_reason is not None:
+                    final_metadata["finish_reason"] = finish_reason
+                if usage is not None:
+                    final_metadata["usage"] = usage
 
-            await enqueue_with_debounce(
-                queue,
-                "generate_summary_job",
-                f"summary:{conversation_uuid}",
-                args=(str(conversation_uuid),),
-            )
-        except Exception:
-            logger.warning("Failed to enqueue memory jobs", exc_info=True)
+                if assistant_message_id:
+                    # Update existing message
+                    await memory_store.update_message(
+                        message_id=assistant_message_id,
+                        content=content,
+                        reasoning_text=reasoning_text,
+                        reasoning_duration_secs=reasoning_duration_secs,
+                        reasoning_model=model_name,
+                        status="complete",
+                        metadata=final_metadata or None,
+                    )
+                else:
+                    # Insert new message
+                    inserted = await memory_store.insert_message(
+                        conversation_id=conversation_uuid,
+                        user_id=user_id,
+                        role="assistant",
+                        content=content,
+                        model=model_name,
+                        reasoning_text=reasoning_text,
+                        reasoning_duration_secs=reasoning_duration_secs,
+                        reasoning_model=model_name,
+                        status="complete",
+                        metadata=final_metadata or None,
+                    )
+                    assistant_message_id = inserted["id"]
+
+                if queue is not None:
+                    try:
+                        await queue.enqueue_job(
+                            "generate_conversation_title_job",
+                            str(conversation_uuid),
+                            _job_id=f"title:{conversation_uuid}",
+                            _defer_by=timedelta(seconds=30),
+                        )
+                    except Exception as enqueue_error:
+                        logger.warning(
+                            "Failed to enqueue title generation: %s", enqueue_error
+                        )
+            except Exception as e:
+                logger.warning("Failed to persist final message: %s", e)
+
+        # Terminal status event
+        terminal_status = forced_terminal_status or "completed"
+        terminal_data = {"status": terminal_status}
+        if terminal_reason:
+            terminal_data["reason"] = terminal_reason
+
+        yield sse(
+            "done",
+            make_envelope("done", terminal_data, evt_id="evt_done"),
+        )
+
+    except Exception as e:
+        logger.error("Unexpected error in stream_sse_chat: %s", e, exc_info=True)
+        yield sse(
+            "error",
+            make_envelope(
+                "error", {"message": "Internal server error"}, evt_id="evt_error"
+            ),
+        )

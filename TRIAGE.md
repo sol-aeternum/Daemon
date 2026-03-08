@@ -5,6 +5,34 @@
 
 ---
 
+## 2026-03-07T10:42:00Z — TypeScript LSP unavailable in environment
+
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: Validation after stream/remount and settings fixes
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: `lsp_diagnostics` for `frontend/app/page.tsx` could not run because `typescript-language-server` is not installed in this environment.
+- **Evidence**: `Error: LSP server 'typescript' is configured but NOT INSTALLED. Command not found: typescript-language-server`
+- **Likely cause**: Missing global TypeScript language server/tooling in host environment. [~95% confidence]
+- **Suggested action**: Install with `npm install -g typescript-language-server typescript` (or provide workspace-local LSP wiring).
+
+---
+
+## 2026-03-07T10:42:30Z — `uv run pytest` failed due venv permissions
+
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Validation after backend store parsing hardening
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: Running `uv run pytest tests/test_store.py -q` failed before tests executed because uv tried to recreate `.venv` and could not remove `/home/sol/daemon/.venv/CACHEDIR.TAG`.
+- **Evidence**: `error: failed to remove file '/home/sol/daemon/.venv/CACHEDIR.TAG': Permission denied (os error 13)`
+- **Likely cause**: Project `.venv` ownership/permissions mismatch from container/host cross-usage. [~90% confidence]
+- **Suggested action**: Repair ownership/permissions of `.venv` or recreate virtual env with host user before running uv-managed tests.
+
+---
+
 ## 2026-02-20T03:23:07Z — File glob searches timing out / needing recursive pattern
 
 - **Severity**: info
@@ -268,6 +296,38 @@
   ```
 - **Likely cause**: Playwright is configured to use the `chrome` channel, but the Chrome distribution is not installed in this environment. [~90% confidence]
 - **Suggested action**: Install the browser via MCP (`browser_install`) or run `npx playwright install chrome` in the repo.
+
+---
+
+## [2026-03-07T11:47:55Z] — Playwright delegation produced no usable output
+
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: reasoning stream regression verification
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: A delegated Playwright verification task completed under supervised mode but returned no text output/evidence; follow-up continuation request timed out, so UI assertion used stream/code evidence instead of delegated browser evidence.
+- **Evidence**:
+  - Delegation session `ses_3380012f9ffeJdUoy49vTgJ1kN` reported `RESULT: (No text output)`
+  - Follow-up continuation call returned `Poll timeout reached after 600000ms`
+- **Likely cause**: Unstable delegated model/runtime in monitored mode dropped final report payload. [~70% confidence]
+- **Suggested action**: Re-run browser QA with direct local Playwright tooling or a stable agent route when strict visual evidence is required.
+
+---
+
+## [2026-03-07T13:03:00Z] — Frontend lint command fails due Next CLI project-dir parsing
+
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: thinking regressions verification
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: `next lint` failed in this environment with `Invalid project directory provided, no such directory: /home/sol/daemon/frontend/lint` for both `npm --prefix frontend run lint` and `npm run lint` in `frontend`.
+- **Evidence**:
+  - Command output: `Invalid project directory provided, no such directory: /home/sol/daemon/frontend/lint`
+  - `frontend/package.json` script: `"lint": "next lint"`
+- **Likely cause**: Tooling/environment quirk in Next.js 16 lint CLI invocation under this workspace runtime. [~70% confidence]
+- **Suggested action**: Verify lint via alternate invocation (`npx next lint .`) or project-specific Next config; keep this as non-blocking while runtime smoke validations pass.
 
 ---
 
@@ -701,3 +761,93 @@
 - **Likely cause**: Known upstream LiteLLM warning pattern on Python 3.14. [~90% confidence]
 - **Suggested action**: Track/upgrade LiteLLM to a version using `inspect.iscoroutinefunction`.
 - **Seen again**: Matches prior TRIAGE entries for the same warning class.
+
+---
+
+## 2026-03-07T09:42:08Z — ChatContent remount risk on null→UUID URL update
+
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: TODO 10 (final) — conversation-fragmentation-fix review
+- **Category**: runtime-error
+- **Blocked current task**: no
+- **What happened**: The URL-sync effect updates `/?id=...` when a `conversation` SSE event arrives while `currentId` is null, and `ChatContent` is keyed by `currentId || "new"`. When `currentId` flips from null to UUID, React remounts `ChatContent`, which can terminate an in-flight `useChat` stream.
+- **Evidence**:
+  - `frontend/app/page.tsx:253` (`router.replace` on conversation event when `!currentId`)
+  - `frontend/app/page.tsx:493` (`<ChatContent key={currentId || "new"} />`)
+- **Likely cause**: Keyed remount strategy is coupled to URL param transitions, including the transition used for fallback conversation capture, not just deliberate conversation switching. [~95% confidence]
+- **Suggested action**: Keep a stable key during the first null→UUID transition (or decouple `useChat` state from `ChatContent` key) so streaming is not interrupted.
+
+---
+
+## 2026-03-07T09:42:08Z — New-chat precreate flow still has stale-ID send window
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: TODO 10 (final) — conversation-fragmentation-fix review
+- **Category**: runtime-error
+- **Blocked current task**: no
+- **What happened**: `handleNewChat` calls `createConversation()` without awaiting completion. During the async create+push window, sending a message uses the previous `currentId` (or null), so the first message can land in the wrong conversation or trigger backend fallback conversation creation.
+- **Evidence**:
+  - `frontend/app/page.tsx:222` (`createConversation();` not awaited)
+  - `frontend/hooks/useConversationHistory.ts:101` (`router.push` only after create response)
+  - `frontend/app/page.tsx:125` (`body: { id: currentId || null }`)
+  - `frontend/components/ChatInputBar.tsx:96` (submit disable does not depend on `currentId`)
+- **Likely cause**: UI allows submit while navigation/conversation-id update is in flight. [~90% confidence]
+- **Suggested action**: Introduce a "creating conversation" gate (disable submit) and/or await `createConversation()` before allowing first send.
+
+---
+
+## 2026-03-07T09:42:08Z — Conversation polling can overwrite optimistic list state
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: TODO 10 (final) — conversation-fragmentation-fix review
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: Conversation polling and manual refresh replace the full `conversations` array from server data, which can temporarily drop locally optimistic entries (including freshly pre-created conversations) if backend list reads lag.
+- **Evidence**:
+  - `frontend/hooks/useConversationHistory.ts:61` (`setConversations(formattedConversations)` full replace)
+  - `frontend/hooks/useConversationHistory.ts:72` (30s polling)
+  - `frontend/app/page.tsx:262` (`refreshConversations()` after URL update)
+- **Likely cause**: Last-write-wins replacement strategy for list hydration instead of merge/reconciliation by id. [~85% confidence]
+- **Suggested action**: Reconcile by ID (merge server snapshot with optimistic entries) or temporarily suppress refresh until created conversation is confirmed in list payload.
+
+---
+
+## 2026-03-07T09:42:08Z — `stream_sse_chat` call/signature mismatch (`ping_interval_s`)
+
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: TODO 10 (final) — conversation-fragmentation-fix review
+- **Category**: runtime-error
+- **Blocked current task**: no
+- **What happened**: `/chat` route passes `ping_interval_s` into `stream_sse_chat`, but `stream_sse_chat` currently has no `ping_interval_s` parameter in its signature. This would raise `TypeError: got an unexpected keyword argument 'ping_interval_s'` when the call path executes.
+- **Evidence**:
+  - `orchestrator/main.py:1010` (`ping_interval_s=settings.stream_ping_interval_s`)
+  - `orchestrator/daemon.py:121` (function signature lacks `ping_interval_s`)
+- **Likely cause**: Drift between caller and callee after a refactor where ping handling was removed or not threaded through consistently. [~90% confidence]
+- **Suggested action**: Align caller/callee signatures (add `ping_interval_s` param or remove the call argument) and run chat-stream tests immediately.
+## [2026-03-07T20:35:00+10:30] — Invalid OpenRouter Model ID in Runtime Defaults
+
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: Backend `/chat` smoke verification after conversation-fragmentation fixes
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: `/chat` stream emitted `conversation` and `routing` events, then failed with OpenRouter 400 due to invalid model id `openrouter/moonshotai/kimi-k2.5`.
+- **Evidence**: Backend error payload included `BadRequestError ... Requested model: openrouter/moonshotai/kimi-k2.5`.
+- **Likely cause**: Stale model identifiers remained in `orchestrator/config.py` defaults and `orchestrator/catalog.py` featured list after provider namespace changes. [~96% confidence]
+- **Suggested action**: Normalize defaults/catalog/tests to `openrouter/kimi/kimi-k2.5` and re-run `/chat` smoke + log checks.
+
+## [2026-03-07T20:41:00+10:30] — Final Message Persistence Argument Mismatch
+
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: Backend `/chat` smoke verification logs review
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: After `final` SSE emission, backend logged `Failed to persist final message: MemoryStore.insert_message() got an unexpected keyword argument 'finish_reason'`, risking dropped assistant persistence/title side-effects.
+- **Evidence**: Backend logs showed warning exactly: `Failed to persist final message: MemoryStore.insert_message() got an unexpected keyword argument 'finish_reason'`.
+- **Likely cause**: `stream_sse_chat` passed unsupported kwargs (`finish_reason`, `usage`, plus update-call arg mismatch) to `MemoryStore` methods with narrower signatures. [~99% confidence]
+- **Suggested action**: Keep persistence call contract aligned to store signatures: write `finish_reason`/`usage` under `metadata`, use `status="complete"`, and use dict-key access for insert return IDs.

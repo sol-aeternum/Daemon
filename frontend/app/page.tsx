@@ -3,6 +3,7 @@
 import { ChatInputBar } from "../components/ChatInputBar";
 import { useChat } from "@ai-sdk/react";
 import { useState, useRef, useEffect, Suspense, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { useStt } from "../hooks/useStt";
 import { ErrorProvider, useError } from "../components/ErrorProvider";
 import { ErrorBoundary } from "../components/ErrorBoundary";
@@ -75,6 +76,7 @@ function ChatContent() {
   const isNearBottomRef = useRef(true);
   const { showError } = useError();
   const { isOnline } = useOnlineStatus();
+  const router = useRouter();
 
   const {
     conversations,
@@ -88,6 +90,7 @@ function ChatContent() {
     setConversationModel,
     searchQuery,
     setSearchQuery,
+    refreshConversations
   } = useConversationHistoryContext();
 
   const [activeModel, setActiveModel] = useState<string>("auto");
@@ -100,8 +103,13 @@ function ChatContent() {
     }
   }, [currentConversation]);
 
+  useEffect(() => {
+    setThoughtFallbackByMessageId({});
+  }, [currentId]);
+
   // State to store events for past messages
   const [archivedEvents, setArchivedEvents] = useState<Record<string, { events: ChatEvent[]; duration: number; requestId?: string | null }>>({});
+  const [thoughtFallbackByMessageId, setThoughtFallbackByMessageId] = useState<Record<string, string>>({});
   
   // Ref to track current duration for onFinish access
   const thinkingDurationRef = useRef<number>(0);
@@ -117,13 +125,35 @@ function ChatContent() {
     return `json:${JSON.stringify(event)}`;
   };
 
+  const normalizeThinkingText = (content: string): string => {
+    const normalizedNewlines = content.replace(/\r\n/g, "\n");
+    const normalizedParagraphs = normalizedNewlines
+      .split(/\n{2,}/)
+      .map((paragraph) => paragraph.replace(/\s*\n\s*/g, " ").replace(/\s{2,}/g, " ").trim())
+      .filter(Boolean);
+    return normalizedParagraphs.join("\n\n");
+  };
+
+  const getThinkingContent = (msgEvents: ChatEvent[]) => {
+    const rawContent = msgEvents
+      .filter((e) => e.type === "thinking")
+      .map((e) => e.content)
+      .join("");
+    return normalizeThinkingText(rawContent);
+  };
+
   const { messages, input, setInput, handleInputChange, handleSubmit, isLoading, error, reload, data } = useChat({
     api: "/api/chat",
+    body: { id: currentId || null },
     id: currentId || undefined,
     initialMessages: currentConversation?.messages || [],
     fetch: (input, init) => {
       const body = init?.body ? JSON.parse(init.body as string) : {};
       body.model = activeModel;
+      // Preserve id from body option
+      if (body.id === undefined && currentId) {
+        body.id = currentId;
+      }
       return fetch(input, {
         ...init,
         body: JSON.stringify(body),
@@ -131,6 +161,13 @@ function ChatContent() {
     },
     onFinish: (message) => {
       setConnectionStatus("connected");
+      const thoughtAtFinish = getThinkingContent(eventsRef.current);
+      if (thoughtAtFinish.trim().length > 0) {
+        setThoughtFallbackByMessageId((prev) => ({
+          ...prev,
+          [message.id]: thoughtAtFinish,
+        }));
+      }
       if (eventsRef.current.length > 0) {
         archiveCurrentEvents(message.id);
       }
@@ -212,7 +249,7 @@ function ChatContent() {
   };
 
   const handleNewChat = async () => {
-    createConversation();
+    await createConversation();
     setArchivedEvents({});
     thinkingDurationRef.current = 0;
     eventsRef.current = [];
@@ -240,16 +277,31 @@ function ChatContent() {
     }
   }, [events]);
 
-
-
-
-
-  const getThinkingContent = (msgEvents: ChatEvent[]) => {
-    return msgEvents
-      .filter((e) => e.type === "thinking")
-      .map((e) => e.content)
-      .join("");
+  const isConversationDataEvent = (
+    value: unknown,
+  ): value is { type: "conversation"; conversation_id: string } => {
+    if (!value || typeof value !== "object") return false;
+    const candidate = value as { type?: unknown; conversation_id?: unknown };
+    return (
+      candidate.type === "conversation"
+      && typeof candidate.conversation_id === "string"
+    );
   };
+
+  // Capture conversation_id from SSE and update URL (for edge cases)
+  const urlUpdatedRef = useRef(false);
+  useEffect(() => {
+    if (!data || data.length === 0) return;
+    const conversationEvent = data.find(isConversationDataEvent);
+    if (conversationEvent && !currentId && !urlUpdatedRef.current) {
+      urlUpdatedRef.current = true;
+      router.replace(`/?id=${conversationEvent.conversation_id}`);
+      refreshConversations();
+    }
+    if (currentId) {
+      urlUpdatedRef.current = false;
+    }
+  }, [data, currentId]);
 
   const agents = useAgentStatus(events);
 
@@ -361,8 +413,11 @@ function ChatContent() {
                 const persistedModel = reasoningMessage.reasoning_model;
                 const routingEvent = msgEvents.find(isRoutingEvent);
                 const routingModel = routingEvent?.model;
-                const thoughtContent = liveThoughtContent || persistedReasoning || "";
-                const thoughtEvent = thoughtContent ? { type: "thinking", content: thoughtContent } as ChatEvent : undefined;
+                const fallbackThought = thoughtFallbackByMessageId[message.id];
+                const thoughtContent = liveThoughtContent || persistedReasoning || fallbackThought || "";
+                const thoughtEvent: ChatEvent | undefined = thoughtContent
+                  ? { type: "thinking", content: thoughtContent }
+                  : undefined;
                 const modelName = getModelName(persistedModel || routingModel);
                 
                 return (
@@ -468,7 +523,7 @@ function ChatContentWrapper() {
   return (
     <ErrorProvider>
       <ErrorBoundary>
-        <ChatContent key={currentId || "new"} />
+        <ChatContent />
       </ErrorBoundary>
     </ErrorProvider>
   );

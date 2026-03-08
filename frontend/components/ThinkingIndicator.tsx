@@ -47,9 +47,14 @@ export function ThinkingIndicator({ event, isThinking, isFinished, duration: ini
   // For now, if duration is 0 and it's finished, we might want to just show "Thought" without seconds if we can't recover it
   // But let's keep it simple. If 0, it just says "0s".
   
-  if (!isThinking && !event && !isFinished) return null;
+  const hasThinkingContent =
+    event?.type === "thinking"
+    && typeof event.content === "string"
+    && event.content.trim().length > 0;
 
-  const content = event?.type === "thinking" ? event.content : "";
+  if (!isThinking && !hasThinkingContent) return null;
+
+  const content = hasThinkingContent ? event.content : "";
   const agent = event?.type === "thinking" ? event.agent : undefined;
   
   return (
@@ -88,9 +93,9 @@ export function ThinkingIndicator({ event, isThinking, isFinished, duration: ini
 
       {content && isExpanded && (
         <div className="px-3 pb-3 pt-1 bg-gray-50/50 border-t border-gray-100">
-           <div className="text-xs text-gray-600 font-mono whitespace-pre-wrap leading-relaxed">
-             {content}
-           </div>
+          <div className="text-sm text-gray-700 whitespace-pre-wrap break-words leading-relaxed">
+            {content}
+          </div>
         </div>
       )}
     </div>

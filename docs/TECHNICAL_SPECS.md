@@ -38,11 +38,11 @@ All model assignments are env-var overridable. Format: `TIER_{NAME}_{SLOT}_MODEL
 
 ```
 FREE:
-  orchestrator: openrouter/moonshotai/kimi-k2.5
+orchestrator: openrouter/moonshotai/kimi-k2.5
   subagents: none
 
 STARTER ($9/mo):
-  orchestrator: openrouter/moonshotai/kimi-k2.5
+orchestrator: openrouter/moonshotai/kimi-k2.5
   research: openrouter/anthropic/claude-sonnet-4.5
   code: openrouter/anthropic/claude-sonnet-4.5
   image: google/gemini-2.5-flash-image
@@ -61,7 +61,7 @@ MAX ($29/mo):
   embeddings: openrouter/openai/text-embedding-3-large
 
 BYOK ($9/mo):
-  orchestrator: openrouter/moonshotai/kimi-k2.5
+orchestrator: openrouter/moonshotai/kimi-k2.5
   subagents: none (user configures)
 ```
 
