@@ -587,3 +587,108 @@ async def completion_with_tools(
             # No tool calls, we are done
             yield {"type": "done", "done": True, "id": str(uuid.uuid4())}
             return
+
+    synthesis_messages = list(current_messages)
+    synthesis_messages.append(
+        {
+            "role": "system",
+            "content": (
+                "Tool execution rounds are complete. Do not call any more tools. "
+                "Now provide the final user-facing answer using the tool results "
+                "already available in this conversation."
+            ),
+        }
+    )
+
+    synthesis_content_buffer: list[str] = []
+
+    try:
+        synthesis_params = _prepare_call_params(
+            settings,
+            provider_config,
+            synthesis_messages,
+            actual_model,
+            tools=None,
+            stream=True,
+        )
+
+        synthesis_stream = await litellm.acompletion(**synthesis_params)
+        synthesis_iter = cast(AsyncIterator[Any], synthesis_stream)
+
+        async for chunk in synthesis_iter:
+            choices = getattr(chunk, "choices", None) or chunk.get("choices", [])
+            if not choices:
+                continue
+
+            delta = getattr(choices[0], "delta", None) or choices[0].get("delta", {})
+            if not delta:
+                continue
+
+            reasoning = (
+                getattr(delta, "reasoning_content", None)
+                or (delta.get("reasoning_content") if isinstance(delta, dict) else None)
+                or getattr(delta, "thinking", None)
+                or (delta.get("thinking") if isinstance(delta, dict) else None)
+            )
+            if not reasoning:
+                reasoning_details = getattr(delta, "reasoning_details", None) or (
+                    delta.get("reasoning_details") if isinstance(delta, dict) else None
+                )
+                reasoning = _reasoning_text_from_details(reasoning_details)
+
+            if reasoning:
+                yield {
+                    "type": "thinking",
+                    "content": reasoning,
+                    "id": str(uuid.uuid4()),
+                }
+
+            content_chunk = getattr(delta, "content", None) or (
+                delta.get("content") if isinstance(delta, dict) else None
+            )
+            if content_chunk:
+                synthesis_content_buffer.append(content_chunk)
+                yield {
+                    "type": "content_delta",
+                    "content": content_chunk,
+                    "id": str(uuid.uuid4()),
+                }
+
+    except Exception as e:
+        fallback_message = (
+            "I completed the tool runs, but I hit a synthesis error while preparing "
+            f"the final summary: {str(e)}"
+        )
+        yield {
+            "type": "content_delta",
+            "content": fallback_message,
+            "id": str(uuid.uuid4()),
+        }
+        yield {
+            "type": "content_done",
+            "content": fallback_message,
+            "id": str(uuid.uuid4()),
+        }
+        yield {"type": "done", "done": True, "id": str(uuid.uuid4())}
+        return
+
+    synthesis_content = "".join(synthesis_content_buffer).strip()
+    if not synthesis_content:
+        synthesis_content = (
+            "I completed the tool runs and reached the tool-round limit before a "
+            "final synthesis message was generated. Ask me to summarize the most "
+            "recent tool outputs and I will provide a structured report immediately."
+        )
+        yield {
+            "type": "content_delta",
+            "content": synthesis_content,
+            "id": str(uuid.uuid4()),
+        }
+
+    yield {
+        "type": "content_done",
+        "content": synthesis_content,
+        "id": str(uuid.uuid4()),
+    }
+    yield {"type": "done", "done": True, "id": str(uuid.uuid4())}
+    return

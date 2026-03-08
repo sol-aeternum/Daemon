@@ -269,18 +269,18 @@ export function ConversationList({
             
             {unpinnedConversations.length > 0 && (
               <>
-                {Object.entries(groupedUnpinnedConversations).map(([group, convs]) => (
-                  convs.length > 0 && (
-                    <>
+                {Object.entries(groupedUnpinnedConversations).map(([group, convs]) =>
+                  convs.length > 0 ? (
+                    <div key={group}>
                       <div className="px-4 py-2 bg-[var(--color-bg-secondary)]/50 text-xs font-semibold text-[var(--color-text-muted)] uppercase tracking-wider">
                         {group}
                       </div>
                       {convs.map((conv) => (
                         <ConversationItem key={conv.id} conv={conv} />
                       ))}
-                    </>
-                  )
-                ))}
+                    </div>
+                  ) : null
+                )}
               </>
             )}
           </div>

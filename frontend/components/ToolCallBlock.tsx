@@ -23,6 +23,16 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
 
   const result = rawResult && isToolResultEvent(rawResult) ? rawResult : null;
 
+  const resultText = (() => {
+    if (!result) return "";
+    if (typeof result.result === "string") return result.result;
+    try {
+      return JSON.stringify(result.result, null, 2);
+    } catch {
+      return String(result.result);
+    }
+  })();
+
   // 1. Loading State (Call exists, Result missing)
   if (!result) {
     if (call.name === "spawn_agent") {
@@ -46,6 +56,7 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
 
   // 2. Result State
   let isError = false;
+  let errorMessage: string | null = null;
   let imagePath: string | null = null;
   let audioPath: string | null = null;
   let prompt: string | null = null;
@@ -55,6 +66,13 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
     const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
     if (parsed?.error || parsed?.success === false) {
       isError = true;
+      if (typeof parsed?.error === "string") {
+        errorMessage = parsed.error;
+      } else if (typeof parsed?.data?.error === "string") {
+        errorMessage = parsed.data.error;
+      } else {
+        errorMessage = "Tool call failed. Continuing with best available information.";
+      }
     }
 
     const imgPath = parsed?.data?.image_path ?? parsed?.image_path;
@@ -73,10 +91,11 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
       isError = false;
     }
   } catch {
-    const lowerResult = typeof result.result === "string"
-      ? result.result.toLowerCase()
-      : "";
+    const lowerResult = resultText.toLowerCase();
     isError = lowerResult.includes("error") && !lowerResult.includes('"error": null');
+    if (isError) {
+      errorMessage = "Tool call failed. Continuing with best available information.";
+    }
   }
 
   // Image Result UI
@@ -171,39 +190,44 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
   // Standard Tool Result UI
   return (
     <div className={`border rounded-lg my-2 overflow-hidden ${
-      isError ? "bg-[var(--color-status-error-bg)] border-[var(--color-status-error)]/30" : "bg-[var(--color-bg-tertiary)] border-[var(--color-border-primary)]"
+      isError ? "bg-[var(--color-status-warning-bg)]/35 border-[var(--color-status-warning)]/40" : "bg-[var(--color-bg-tertiary)] border-[var(--color-border-primary)]"
     }`}>
       <button
         onClick={() => setIsExpanded(!isExpanded)}
         className={`w-full px-4 py-2 flex items-center justify-between text-left transition-colors ${
-          isError ? "hover:bg-[var(--color-status-error-bg)]/80" : "hover:bg-[var(--color-bg-hover)]"
+          isError ? "hover:bg-[var(--color-status-warning-bg)]/60" : "hover:bg-[var(--color-bg-hover)]"
         }`}
       >
         <div className="flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full ${isError ? "bg-[var(--color-status-error)]" : "bg-[var(--color-status-success)]"}`}></span>
+          <span className={`w-2 h-2 rounded-full ${isError ? "bg-[var(--color-status-warning)]" : "bg-[var(--color-status-success)]"}`}></span>
           <div className="flex flex-col">
-            <span className={`text-sm font-medium ${isError ? "text-[var(--color-status-error)]" : "text-[var(--color-text-secondary)]"}`}>
+            <span className={`text-sm font-medium ${isError ? "text-[var(--color-status-warning)]" : "text-[var(--color-text-secondary)]"}`}>
               {call.name}
             </span>
           </div>
         </div>
         <ChevronRight
           className={`w-4 h-4 transition-transform ${isExpanded ? "rotate-90" : ""} ${
-            isError ? "text-[var(--color-status-error)]" : "text-[var(--color-text-muted)]"
+            isError ? "text-[var(--color-status-warning)]" : "text-[var(--color-text-muted)]"
           }`}
         />
       </button>
       {isExpanded && (
         <div className="px-4 pb-3 space-y-2">
+          {isError && (
+            <div className="text-xs text-[var(--color-status-warning)] bg-[var(--color-status-warning-bg)]/45 border border-[var(--color-status-warning)]/35 rounded p-2">
+              {errorMessage ?? "Tool call failed. Continuing with best available information."}
+            </div>
+          )}
           <div className="text-xs text-[var(--color-text-muted)] font-medium">Input:</div>
           <pre className="text-xs text-[var(--color-text-secondary)] bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)] rounded p-2 overflow-x-auto">
             {JSON.stringify(call.arguments, null, 2)}
           </pre>
           <div className="text-xs text-[var(--color-text-muted)] font-medium">Output:</div>
           <pre className={`text-xs rounded p-2 overflow-x-auto overflow-y-auto max-h-80 whitespace-pre-wrap break-words ${
-            isError ? "text-[var(--color-status-error)] bg-[var(--color-status-error-bg)]" : "text-[var(--color-text-secondary)] bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)]"
+            isError ? "text-[var(--color-text-secondary)] bg-[var(--color-bg-secondary)] border border-[var(--color-status-warning)]/35" : "text-[var(--color-text-secondary)] bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)]"
           }`}>
-            {result.result}
+            {resultText}
           </pre>
         </div>
       )}
@@ -222,7 +246,7 @@ export function ToolCallLog({ events }: ToolCallLogProps) {
     if (isToolCallEvent(event)) {
       executions.push({ call: event });
     } else if (isToolResultEvent(event)) {
-      const resultEvent = event as ChatEvent & { type: "tool_result"; name: string; result: string };
+      const resultEvent = event as ChatEvent & { type: "tool_result"; name: string; result: unknown };
       let foundIndex = -1;
       for (let i = executions.length - 1; i >= 0; i--) {
         const execCall = executions[i].call as ChatEvent & { type: "tool_call"; name: string; arguments: Record<string, unknown> };
@@ -279,11 +303,26 @@ export function ToolCallLog({ events }: ToolCallLogProps) {
   if (executions.length === 0) return null;
 
   return (
-    <div className="space-y-1">
-      {executions.map((execution, idx) => (
-        <ToolCallBlock key={idx} execution={execution} />
-      ))}
-    </div>
+    <ol className="space-y-3">
+      {executions.map((execution, idx) => {
+        const toolName = isToolCallEvent(execution.call) ? execution.call.name : "tool";
+
+        return (
+          <li key={`${toolName}-${idx}`} className="relative pl-8">
+            {idx < executions.length - 1 && (
+              <span className="absolute left-[11px] top-7 bottom-[-14px] w-px bg-[var(--color-border-primary)]" />
+            )}
+            <span className="absolute left-0 top-1.5 flex h-[22px] w-[22px] items-center justify-center rounded-full border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-xs font-semibold text-[var(--color-text-muted)]">
+              {idx + 1}
+            </span>
+            <div className="mb-1 text-[11px] uppercase tracking-[0.08em] text-[var(--color-text-muted)]">
+              Step {idx + 1}{executions.length > 1 ? ` of ${executions.length}` : ""}
+            </div>
+            <ToolCallBlock execution={execution} />
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 

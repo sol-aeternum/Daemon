@@ -8,14 +8,18 @@ from datetime import datetime, timedelta, timezone
 import json
 import logging
 import uuid
-from typing import Any, cast
-
-import litellm
+from typing import Any
+from zoneinfo import ZoneInfo
 
 from orchestrator.config import ProviderConfig, Settings, TierConfig, ModelSlotConfig
 from orchestrator.guardrails import strip_reasoning_fields_from_message
+from orchestrator.tools.builtin import create_default_registry
+from orchestrator.tools.completion import completion_with_tools
 
 logger = logging.getLogger(__name__)
+
+_RUNTIME_DATETIME_MARKER = "<runtime-datetime-context>"
+_RUNTIME_DATETIME_ZONE = ZoneInfo("Australia/Adelaide")
 
 
 def now_rfc3339() -> str:
@@ -58,6 +62,26 @@ def build_openai_messages_from_history(
             continue
         messages.append({"role": str(role), "content": str(content)})
     return messages
+
+
+def with_runtime_datetime_context(
+    system_prompt: str, now_utc: datetime | None = None
+) -> str:
+    current_utc = now_utc or datetime.now(timezone.utc)
+    current_local = current_utc.astimezone(_RUNTIME_DATETIME_ZONE)
+
+    base_prompt = system_prompt
+    if _RUNTIME_DATETIME_MARKER in base_prompt:
+        base_prompt = base_prompt.split(_RUNTIME_DATETIME_MARKER, 1)[0].rstrip()
+
+    runtime_block = (
+        f"{_RUNTIME_DATETIME_MARKER}\n"
+        f"- Current date: {current_local.strftime('%Y-%m-%d')}\n"
+        f"- Current time: {current_local.strftime('%H:%M:%S %Z')}\n"
+        f"- Current UTC datetime: {current_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+        "- Use this as authoritative temporal context for this response."
+    )
+    return f"{base_prompt.rstrip()}\n\n{runtime_block}"
 
 
 def _extract_session_id_from_result(result: Any) -> str | None:
@@ -199,9 +223,8 @@ def effective_provider_and_model(
     provider = provider_config.name or settings.default_provider
     model = provider_config.model
     if not model:
-        tier_config = settings.tier_configs.get(settings.tier)
-        if tier_config:
-            model = tier_config.models.get("chat")
+        tier_config = settings.get_tier_config(settings.default_tier)
+        model = tier_config.orchestrator.model
     if not model:
         model = "gpt-4o-mini"
     return provider, model
@@ -256,10 +279,14 @@ async def stream_sse_chat(
             "data": data,
         }
 
+    effective_system_prompt = with_runtime_datetime_context(system_prompt)
+
     if history_messages:
-        messages = build_openai_messages_from_history(system_prompt, history_messages)
+        messages = build_openai_messages_from_history(
+            effective_system_prompt, history_messages
+        )
     else:
-        messages = build_openai_messages(system_prompt, user_message)
+        messages = build_openai_messages(effective_system_prompt, user_message)
 
     if conversation_uuid:
         yield sse(
@@ -320,32 +347,38 @@ async def stream_sse_chat(
                     "total_tokens": 15,
                 }
             else:
-                # Actual LLM streaming
                 model_to_call = actual_model or f"{provider}/{model}"
-                completion_kwargs: dict[str, Any] = {
-                    "model": model_to_call,
-                    "messages": messages,
-                    "stream": True,
-                    "timeout": provider_config.timeout_s,
-                }
-                if provider == "openrouter" and "gemini" in model_to_call.lower():
-                    completion_kwargs["reasoning"] = {"enabled": True}
+                registry = create_default_registry(
+                    brave_api_key=settings.brave_api_key,
+                    memory_store=memory_store,
+                    user_id=user_id,
+                )
+                pending_tool_calls: list[str] = []
 
-                response = await litellm.acompletion(**completion_kwargs)
-
-                async for chunk in response:
+                async for event in completion_with_tools(
+                    settings=settings,
+                    provider_config=provider_config,
+                    messages=messages,
+                    registry=registry,
+                    actual_model=model_to_call,
+                    max_tool_rounds=4,
+                ):
                     if await is_disconnected():
                         forced_terminal_status = "cancelled"
                         terminal_reason = "Client disconnected during streaming"
                         break
 
                     now = asyncio.get_event_loop().time()
-                    if first_token_time is None:
-                        first_token_time = now
-                    last_token_time = now
+                    event_type = str(event.get("type") or "")
 
-                    delta_text = _extract_delta_text(chunk)
-                    if delta_text:
+                    if event_type == "content_delta":
+                        delta_text = event.get("content")
+                        if not isinstance(delta_text, str) or not delta_text:
+                            continue
+
+                        if first_token_time is None:
+                            first_token_time = now
+                        last_token_time = now
                         final_text_parts.append(delta_text)
                         yield sse(
                             "token",
@@ -380,8 +413,11 @@ async def stream_sse_chat(
                                         "Failed to persist incremental content: %s", e
                                     )
 
-                    delta_reasoning = _extract_delta_reasoning(chunk)
-                    if delta_reasoning:
+                    elif event_type == "thinking":
+                        delta_reasoning = event.get("content")
+                        if not isinstance(delta_reasoning, str) or not delta_reasoning:
+                            continue
+
                         if (
                             not reasoning_parts
                             or reasoning_parts[-1] != delta_reasoning
@@ -400,31 +436,168 @@ async def stream_sse_chat(
                                 evt_id=f"evt_thinking_{uuid.uuid4().hex}",
                             ),
                         )
+                    elif event_type == "tool_executing":
+                        tool_name = str(event.get("name") or "tool")
+                        pending_tool_calls.append(tool_name)
+                        raw_arguments = event.get("arguments")
+                        tool_arguments: Any = raw_arguments
+                        if isinstance(raw_arguments, str):
+                            try:
+                                tool_arguments = json.loads(raw_arguments)
+                            except Exception:
+                                tool_arguments = {"raw": raw_arguments}
 
-                    # Extract finish reason and usage if available
-                    try:
-                        choices = getattr(chunk, "choices", None)
-                        if choices and isinstance(choices, list) and len(choices) > 0:
-                            choice = choices[0]
-                            if (
-                                hasattr(choice, "finish_reason")
-                                and choice.finish_reason
-                            ):
-                                finish_reason = choice.finish_reason
+                        yield sse(
+                            "tool_call",
+                            make_envelope(
+                                "tool_call",
+                                {
+                                    "name": tool_name,
+                                    "arguments": tool_arguments,
+                                },
+                                evt_id=f"evt_tool_call_{uuid.uuid4().hex}",
+                            ),
+                        )
+                    elif event_type == "tool_result":
+                        tool_name = str(event.get("name") or "tool")
+                        if tool_name in pending_tool_calls:
+                            pending_tool_calls.remove(tool_name)
+                        raw_result = event.get("result")
+                        tool_result: Any = raw_result
+                        if isinstance(raw_result, str):
+                            try:
+                                tool_result = json.loads(raw_result)
+                            except Exception:
+                                tool_result = raw_result
 
-                        usage_data = getattr(chunk, "usage", None)
-                        if usage_data:
-                            usage = {
-                                "prompt_tokens": getattr(
-                                    usage_data, "prompt_tokens", 0
+                        yield sse(
+                            "tool_result",
+                            make_envelope(
+                                "tool_result",
+                                {
+                                    "name": tool_name,
+                                    "result": tool_result,
+                                },
+                                evt_id=f"evt_tool_result_{uuid.uuid4().hex}",
+                            ),
+                        )
+                    elif event_type == "error":
+                        error_message = str(
+                            event.get("error") or "Tool execution failed"
+                        )
+                        logger.warning(
+                            "Tool pipeline reported recoverable error: %s",
+                            error_message,
+                        )
+
+                        unresolved_tools = list(pending_tool_calls)
+                        pending_tool_calls.clear()
+                        if unresolved_tools:
+                            for unresolved_name in unresolved_tools:
+                                yield sse(
+                                    "tool_result",
+                                    make_envelope(
+                                        "tool_result",
+                                        {
+                                            "name": unresolved_name,
+                                            "result": {
+                                                "success": False,
+                                                "error": error_message,
+                                                "metadata": {
+                                                    "recoverable": True,
+                                                    "synthetic": True,
+                                                    "reason": "pipeline_error",
+                                                },
+                                            },
+                                        },
+                                        evt_id=f"evt_tool_result_{uuid.uuid4().hex}",
+                                    ),
+                                )
+                        else:
+                            yield sse(
+                                "tool_result",
+                                make_envelope(
+                                    "tool_result",
+                                    {
+                                        "name": "tool_pipeline",
+                                        "result": {
+                                            "success": False,
+                                            "error": error_message,
+                                            "metadata": {
+                                                "recoverable": True,
+                                                "synthetic": True,
+                                                "reason": "pipeline_error",
+                                            },
+                                        },
+                                    },
+                                    evt_id=f"evt_tool_result_{uuid.uuid4().hex}",
                                 ),
-                                "completion_tokens": getattr(
-                                    usage_data, "completion_tokens", 0
+                            )
+
+                        graceful_notice = (
+                            "I hit a tool error and will continue with the best available "
+                            f"information. ({error_message})"
+                        )
+
+                        if first_token_time is None:
+                            first_token_time = now
+                        last_token_time = now
+                        final_text_parts.append(graceful_notice)
+
+                        yield sse(
+                            "token",
+                            make_envelope(
+                                "token",
+                                {"text": graceful_notice},
+                                evt_id=f"evt_token_{uuid.uuid4().hex}",
+                            ),
+                        )
+                        break
+                    elif event_type == "done":
+                        if pending_tool_calls:
+                            unresolved_tools = list(pending_tool_calls)
+                            pending_tool_calls.clear()
+
+                            done_notice = (
+                                "Some tool calls did not finish before the turn ended. "
+                                "I will continue with the best available information."
+                            )
+                            if first_token_time is None:
+                                first_token_time = now
+                            last_token_time = now
+                            final_text_parts.append(done_notice)
+
+                            yield sse(
+                                "token",
+                                make_envelope(
+                                    "token",
+                                    {"text": done_notice},
+                                    evt_id=f"evt_token_{uuid.uuid4().hex}",
                                 ),
-                                "total_tokens": getattr(usage_data, "total_tokens", 0),
-                            }
-                    except Exception:
-                        pass
+                            )
+
+                            for unresolved_name in unresolved_tools:
+                                yield sse(
+                                    "tool_result",
+                                    make_envelope(
+                                        "tool_result",
+                                        {
+                                            "name": unresolved_name,
+                                            "result": {
+                                                "success": False,
+                                                "error": "Tool call did not complete before stream finished.",
+                                                "metadata": {
+                                                    "recoverable": True,
+                                                    "synthetic": True,
+                                                    "reason": "stream_done_with_pending",
+                                                },
+                                            },
+                                        },
+                                        evt_id=f"evt_tool_result_{uuid.uuid4().hex}",
+                                    ),
+                                )
+                        break
+
 
         except asyncio.CancelledError:
             forced_terminal_status = "cancelled"
@@ -440,9 +613,27 @@ async def stream_sse_chat(
             )
             return
 
+
+        # Ensure assistant always provides visible response even when tool failures occur
+        # without explicit error events (e.g., tool_result with failure status then done)
+        if not final_text_parts:
+            fallback_message = (
+                "I encountered issues while executing tools and couldn't complete the request as intended. "
+                "Please try rephrasing your request, or ask me to explain what went wrong."
+            )
+            final_text_parts.append(fallback_message)
+            yield sse(
+                "token",
+                make_envelope(
+                    "token",
+                    {"text": fallback_message},
+                    evt_id=f"evt_token_{uuid.uuid4().hex}",
+                ),
+            )
+
         # Final event with complete message and metadata
         final_text = "".join(final_text_parts)
-        final_data = {
+        final_data: dict[str, Any] = {
             "text": final_text,
             "model": model_for_events,
             "finish_reason": finish_reason or "unknown",

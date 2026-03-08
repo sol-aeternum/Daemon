@@ -9,6 +9,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from orchestrator.config import get_settings
+import orchestrator.daemon as daemon_module
 from orchestrator.main import app
 
 
@@ -74,6 +75,172 @@ async def test_chat_stream_emits_done_mock_mode(client, monkeypatch):
     assert "(mock)" in body
     assert "hello" in body
     assert "world" in body
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_emits_tool_events_via_completion_pipeline(
+    client, monkeypatch
+):
+    monkeypatch.setenv("MOCK_LLM", "false")
+    monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
+    get_settings.cache_clear()
+
+    async def fake_completion_with_tools(*_args, **_kwargs):
+        yield {"type": "thinking", "content": "Planning"}
+        yield {"type": "content_delta", "content": "Starting "}
+        yield {
+            "type": "tool_executing",
+            "name": "spawn_agent",
+            "arguments": '{"agent_type":"research","prompt":"compare devices"}',
+        }
+        yield {
+            "type": "tool_result",
+            "name": "spawn_agent",
+            "result": '{"session_id":"ses_123","agent_type":"research"}',
+        }
+        yield {"type": "content_delta", "content": "Done"}
+        yield {"type": "done"}
+
+    monkeypatch.setattr(
+        daemon_module, "create_default_registry", lambda **_kwargs: object()
+    )
+    monkeypatch.setattr(
+        daemon_module, "completion_with_tools", fake_completion_with_tools
+    )
+
+    response = await client.post(
+        "/chat",
+        json={"message": "spawn research subagent"},
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 200
+    body = response.text
+    assert "event: tool_call" in body
+    assert "event: tool_result" in body
+    assert "spawn_agent" in body
+    assert "event: final" in body
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_handles_tool_pipeline_error_gracefully(client, monkeypatch):
+    monkeypatch.setenv("MOCK_LLM", "false")
+    monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
+    get_settings.cache_clear()
+
+    async def fake_completion_with_tools(*_args, **_kwargs):
+        yield {
+            "type": "tool_executing",
+            "name": "http_request",
+            "arguments": '{"url":"https://example.invalid","method":"GET"}',
+        }
+        yield {
+            "type": "error",
+            "error": "Request failed: [Errno -2] Name or service not known",
+        }
+
+    monkeypatch.setattr(
+        daemon_module, "create_default_registry", lambda **_kwargs: object()
+    )
+    monkeypatch.setattr(
+        daemon_module, "completion_with_tools", fake_completion_with_tools
+    )
+
+    response = await client.post(
+        "/chat",
+        json={"message": "compare devices"},
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 200
+    body = response.text
+    assert "event: tool_call" in body
+    assert "event: tool_result" in body
+    assert "http_request" in body
+    assert '"synthetic":true' in body
+    assert "I hit a tool error and will continue" in body
+    assert "event: final" in body
+    assert "event: done" in body
+    assert "event: error" not in body
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_resolves_pending_tool_calls_before_done(client, monkeypatch):
+    monkeypatch.setenv("MOCK_LLM", "false")
+    monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
+    get_settings.cache_clear()
+
+    async def fake_completion_with_tools(*_args, **_kwargs):
+        yield {
+            "type": "tool_executing",
+            "name": "web_search",
+            "arguments": '{"query":"galaxy s26 ultra vs oneplus 15"}',
+        }
+        yield {"type": "done"}
+
+    monkeypatch.setattr(
+        daemon_module, "create_default_registry", lambda **_kwargs: object()
+    )
+    monkeypatch.setattr(
+        daemon_module, "completion_with_tools", fake_completion_with_tools
+    )
+
+    response = await client.post(
+        "/chat",
+        json={"message": "compare devices"},
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 200
+    body = response.text
+    assert "event: tool_call" in body
+    assert "event: tool_result" in body
+    assert "web_search" in body
+    assert "Tool call did not complete before stream finished" in body
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_provides_fallback_message_when_no_content_after_tools(client, monkeypatch):
+    monkeypatch.setenv("MOCK_LLM", "false")
+    monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
+    get_settings.cache_clear()
+
+    async def fake_completion_with_tools(*_args, **_kwargs):
+        yield {
+            "type": "tool_executing",
+            "name": "http_request",
+            "arguments": '{"url":"https://example.invalid","method":"GET"}',
+        }
+        yield {
+            "type": "tool_result",
+            "name": "http_request",
+            "result": json.dumps({"success": False, "error": "Connection refused"}),
+        }
+        yield {"type": "done"}
+
+    monkeypatch.setattr(
+        daemon_module, "create_default_registry", lambda **_kwargs: object()
+    )
+    monkeypatch.setattr(
+        daemon_module, "completion_with_tools", fake_completion_with_tools
+    )
+
+    response = await client.post(
+        "/chat",
+        json={"message": "fetch data from example.invalid"},
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 200
+    body = response.text
+    assert "event: tool_call" in body
+    assert "event: tool_result" in body
+    assert "http_request" in body
+    assert "event: final" in body
+    assert "event: done" in body
+    assert "event: error" not in body
+    # Should include fallback message since no content_delta was emitted
+    assert "couldn't complete the request" in body or "I encountered issues" in body
 
 
 @pytest.mark.asyncio

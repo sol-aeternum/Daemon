@@ -39,6 +39,41 @@ type ReasoningMessage = Message & {
   reasoning_model?: string;
 };
 
+const getPartContent = (part: unknown): string => {
+  if (typeof part !== "object" || part === null) {
+    return "";
+  }
+
+  const textValue = (part as { text?: unknown }).text;
+  if (typeof textValue === "string") {
+    return textValue;
+  }
+
+  const contentValue = (part as { content?: unknown }).content;
+  if (typeof contentValue === "string") {
+    return contentValue;
+  }
+
+  return "";
+};
+
+const getMessageContent = (message: Message): string => {
+  const rawContent = message.content;
+  if (typeof rawContent === "string" && rawContent.trim().length > 0) {
+    return rawContent;
+  }
+
+  const messageWithParts = message as Message & { parts?: unknown };
+  if (Array.isArray(messageWithParts.parts)) {
+    const combinedParts = messageWithParts.parts.map(getPartContent).join("");
+    if (combinedParts.trim().length > 0) {
+      return combinedParts;
+    }
+  }
+
+  return typeof rawContent === "string" ? rawContent : "";
+};
+
 const getModelName = (modelId: string | undefined): string | undefined => {
   if (!modelId) return undefined;
   const parts = modelId.split("/");
@@ -222,6 +257,8 @@ function ChatContent() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
+  const autoScrollEnabledRef = useRef(true);
+  const lastMessageSignatureRef = useRef("");
   const { showError } = useError();
   const { isOnline } = useOnlineStatus();
   const router = useRouter();
@@ -274,11 +311,30 @@ function ChatContent() {
   };
 
   const normalizeThinkingText = (content: string): string => {
-    const normalizedNewlines = content.replace(/\r\n/g, "\n");
-    const normalizedParagraphs = normalizedNewlines
-      .split(/\n{2,}/)
-      .map((paragraph) => paragraph.replace(/\s*\n\s*/g, " ").replace(/\s{2,}/g, " ").trim())
+    const normalizedNewlines = content.replace(/\r\n/g, "\n").replace(/\t/g, " ");
+    const lines = normalizedNewlines
+      .split("\n")
+      .map((line) => line.trim())
       .filter(Boolean);
+
+    const shortLineRatio = lines.length
+      ? lines.filter((line) => line.split(/\s+/).length <= 2).length / lines.length
+      : 0;
+
+    const looksTokenFragmented = lines.length >= 12 && shortLineRatio > 0.65;
+
+    if (looksTokenFragmented) {
+      return normalizedNewlines
+        .replace(/\s*\n+\s*/g, " ")
+        .replace(/\s{2,}/g, " ")
+        .trim();
+    }
+
+    const normalizedParagraphs = normalizedNewlines
+      .split(/\n{3,}/)
+      .map((paragraph) => paragraph.replace(/[ \t]*\n[ \t]*/g, " ").replace(/\s{2,}/g, " ").trim())
+      .filter(Boolean);
+
     return normalizedParagraphs.join("\n\n");
   };
 
@@ -355,6 +411,7 @@ function ChatContent() {
   useEffect(() => {
     if (isLoading && !prevLoadingRef.current) {
       currentRequestIdRef.current = null;
+      autoScrollEnabledRef.current = true;
       if (eventsRef.current.length > 0) {
          lastArchivedEventKeysRef.current = new Set(
            eventsRef.current.map(eventKey),
@@ -371,25 +428,28 @@ function ChatContent() {
 
     const handleScroll = () => {
       const { scrollTop, clientHeight, scrollHeight } = container;
-      isNearBottomRef.current = scrollHeight - scrollTop - clientHeight < 150;
+      const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+      const isNearBottom = distanceFromBottom < 64;
+      isNearBottomRef.current = isNearBottom;
+      autoScrollEnabledRef.current = isNearBottom;
     };
 
-    container.addEventListener('scroll', handleScroll);
-    return () => container.removeEventListener('scroll', handleScroll);
+    handleScroll();
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    return () => container.removeEventListener("scroll", handleScroll);
   }, []);
 
-  // Auto-scroll: Scroll to bottom on new messages
   useEffect(() => {
-    if (isNearBottomRef.current && messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [messages]);
+    if (!messagesEndRef.current || messages.length === 0) return;
+    if (!autoScrollEnabledRef.current) return;
 
-  // Auto-scroll: Keep viewport at bottom during streaming
-  useEffect(() => {
-    if (isLoading && isNearBottomRef.current && messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: "auto" });
-    }
+    const lastMessage = messages[messages.length - 1];
+    const signature = `${messages.length}:${lastMessage?.id ?? ""}`;
+    const isNewMessage = signature !== lastMessageSignatureRef.current;
+    lastMessageSignatureRef.current = signature;
+
+    const behavior: ScrollBehavior = isLoading && !isNewMessage ? "auto" : "smooth";
+    messagesEndRef.current.scrollIntoView({ behavior });
   }, [messages, isLoading]);
 
   const handleSelectConversation = async (id: string) => {
@@ -517,10 +577,10 @@ function ChatContent() {
           </div>
         </header>
 
-        <main ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth">
+        <main ref={scrollContainerRef} className="flex-1 overflow-y-auto">
 
           {messages.length === 0 && isLoading ? (
-            <div className="flex flex-col space-y-4 p-4 animate-fade-in">
+            <div className="mx-auto w-full max-w-3xl flex flex-col space-y-4 px-4 py-6 animate-fade-in">
               {/* Assistant message skeleton - left aligned */}
               <div className="flex flex-col items-start mb-6">
                 <div className="max-w-[85%] md:max-w-[80%] space-y-3">
@@ -553,13 +613,18 @@ function ChatContent() {
               </div>
             </div>
 ) : messages.length === 0 ? (
-            <WelcomeScreen setInput={setInput} onSubmit={handleSubmit} />
+            <div className="h-full px-4 py-6">
+              <WelcomeScreen setInput={setInput} onSubmit={handleSubmit} />
+            </div>
           ) : (
-<>
+            <div className="mx-auto w-full max-w-3xl px-4 py-6">
               {messages.map((message, index) => {
                 const isLast = index === messages.length - 1;
                 const msgEvents = getEventsForMessage(message.id, isLast);
                 const liveThoughtContent = getThinkingContent(msgEvents);
+                const messageContent = getMessageContent(message);
+                const formattedMessageContent = formatMessageContent(messageContent);
+                const showTts = message.role === "assistant" && formattedMessageContent.trim().length > 0;
                 
                 const persistedMessage = persistedMessagesById.get(message.id) as ReasoningMessage | undefined;
                 const reasoningMessage = persistedMessage ?? (message as ReasoningMessage);
@@ -586,13 +651,11 @@ function ChatContent() {
                 return (
                   <div
                     key={message.id}
-                    className={`flex flex-col mb-6 ${
-                      message.role === "user" ? "items-end" : "items-start"
-                    }`}
+                    className={`mb-8 ${message.role === "user" ? "flex justify-end" : "space-y-3"}`}
                   >
                     {/* Render tools and thinking for assistant messages */}
                     {message.role === "assistant" && (
-                      <div className="max-w-[85%] md:max-w-[80%] w-full mb-2 space-y-2">
+                      <div className="w-full space-y-2">
                           <ThinkingIndicator 
                             event={thoughtEvent} 
                             isThinking={isLast && isLoading} 
@@ -605,46 +668,44 @@ function ChatContent() {
                       </div>
                     )}
 
-                    <div
-                      className={`max-w-[85%] md:max-w-[80%] rounded-lg px-4 py-2 ${
-                        message.role === "user"
-                          ? "bg-[var(--color-accent-primary)] text-white"
-                          : "bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)] shadow-sm"
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        {message.role === "assistant" ? (
-                          <MarkdownMessage content={message.content} />
-                        ) : (
-                          <div className="flex-1 whitespace-pre-wrap">{formatMessageContent(message.content)}</div>
-                        )}
-                        {message.role === "assistant" && message.content && (
-                          isLast && isLoading ? (
-                            <StreamingTtsMessage
-                              messageId={message.id}
-                              text={formatMessageContent(message.content)}
-                              isStreaming={isLast && isLoading}
-                              enabled={Boolean(ttsSettings?.enabled)}
-                              voice={ttsSettings?.voice}
-                              model={ttsSettings?.model}
-                              speed={ttsSettings?.speed}
-                            />
-                          ) : (
-                            <TextToSpeechButton text={formatMessageContent(message.content)} />
-                          )
+                    {message.role === "assistant" ? (
+                      <div className="w-full space-y-2">
+                        <div className="w-full">
+                          <MarkdownMessage content={messageContent} />
+                        </div>
+                        {showTts && (
+                          <div className="flex justify-start">
+                            {isLast && isLoading ? (
+                              <StreamingTtsMessage
+                                messageId={message.id}
+                                text={formattedMessageContent}
+                                isStreaming={isLast && isLoading}
+                                enabled={Boolean(ttsSettings?.enabled)}
+                                voice={ttsSettings?.voice}
+                                model={ttsSettings?.model}
+                                speed={ttsSettings?.speed}
+                              />
+                            ) : (
+                              <TextToSpeechButton text={formattedMessageContent} />
+                            )}
+                          </div>
                         )}
                       </div>
-                    </div>
+                    ) : (
+                      <div className="max-w-[85%] md:max-w-[75%] rounded-2xl border border-[var(--color-accent-active)]/50 bg-[var(--color-accent-primary)] px-4 py-3 text-white shadow-sm">
+                        <div className="whitespace-pre-wrap leading-relaxed font-medium">{formattedMessageContent}</div>
+                      </div>
+                    )}
                   </div>
                 );
               })}
               <div ref={messagesEndRef} />
-            </>
+            </div>
           )}
         </main>
 
         <footer className="bg-[var(--color-bg-secondary)] border-t border-[var(--color-border-primary)] p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-          <form onSubmit={handleSubmit}>
+          <form onSubmit={handleSubmit} className="mx-auto w-full max-w-3xl">
             <ChatInputBar
               selectedModel={activeModel}
               onSelectModel={(modelId) => {

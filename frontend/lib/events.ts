@@ -10,7 +10,7 @@ export type ChatEvent = BaseEvent &
     | { type: "agent_complete"; agent: string; result: string }
     | { type: "image_ready"; url: string; prompt: string }
     | { type: "tool_call"; name: string; arguments: Record<string, any> }
-    | { type: "tool_result"; name: string; result: string }
+    | { type: "tool_result"; name: string; result: any }
     | { type: "pipeline_switch"; pipeline: "cloud" | "local" }
     | { type: "conversation"; conversation_id: string }
   );
@@ -38,6 +38,6 @@ export function isToolCallEvent(event: ChatEvent): event is ChatEvent & { type: 
   return event.type === "tool_call";
 }
 
-export function isToolResultEvent(event: ChatEvent): event is ChatEvent & { type: "tool_result"; name: string; result: string } {
+export function isToolResultEvent(event: ChatEvent): event is ChatEvent & { type: "tool_result"; name: string; result: any } {
   return event.type === "tool_result";
 }

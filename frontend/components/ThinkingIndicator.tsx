@@ -57,11 +57,11 @@ export function ThinkingIndicator({ event, isThinking, isFinished, duration: ini
   const content = hasThinkingContent ? event.content : "";
   
   return (
-    <div className="my-2 rounded-lg overflow-hidden border border-[var(--color-border-primary)]/50">
+    <div className="my-2">
       <button
         type="button"
         onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full px-3 py-2 flex items-center gap-2 text-left hover:bg-[var(--color-bg-tertiary)] transition-colors group"
+        className="group flex w-full items-center gap-2 px-0 py-1.5 text-left transition-colors"
       >
         <div className="flex items-center gap-2 text-[var(--color-text-muted)]">
             {isThinking ? (
@@ -73,8 +73,8 @@ export function ThinkingIndicator({ event, isThinking, isFinished, duration: ini
                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
                </svg>
             )}
-            <span className="text-xs font-medium">
-              {modelName ? `${modelName} • Thought for ${duration}s` : `Thought for ${duration}s`}
+            <span className="text-xs font-medium tracking-wide">
+              {modelName ? `${modelName} • Thinking for ${duration}s` : `Thinking for ${duration}s`}
             </span>
         </div>
         
@@ -91,8 +91,8 @@ export function ThinkingIndicator({ event, isThinking, isFinished, duration: ini
       </button>
 
       {content && isExpanded && (
-        <div className="px-3 pb-3 pt-1 bg-[var(--color-bg-tertiary)]/50 border-t border-[var(--color-border-muted)]">
-          <div className="text-sm text-[var(--color-text-secondary)] whitespace-pre-wrap break-words leading-relaxed">
+        <div className="mt-1 pl-3">
+          <div className="border-l-2 border-[var(--color-border-primary)]/70 pl-3 text-sm leading-relaxed text-[var(--color-text-secondary)] whitespace-normal break-words">
             {content}
           </div>
         </div>

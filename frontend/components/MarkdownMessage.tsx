@@ -13,7 +13,7 @@ export default function MarkdownMessage({ content }: MarkdownMessageProps) {
   const processedContent = formatMessageContent(content);
 
   return (
-    <div className="prose prose-sm max-w-none">
+    <div className="prose prose-sm max-w-none text-[var(--color-text-primary)] prose-headings:text-[var(--color-text-primary)] prose-p:text-[var(--color-text-primary)] prose-strong:text-[var(--color-text-primary)] prose-li:text-[var(--color-text-primary)] prose-code:text-[var(--color-text-primary)] prose-a:text-[var(--color-accent-primary)] hover:prose-a:text-[var(--color-accent-hover)] prose-hr:border-[var(--color-border-primary)] prose-blockquote:text-[var(--color-text-secondary)]">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}

@@ -5,6 +5,202 @@
 
 ---
 
+## [2026-03-08T17:41:00+10:30] - Transient frontend typecheck failure after widening tool_result payload shape
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Fixing React crash for object tool results in chat timeline
+- **Category**: build-error
+- **Blocked current task**: yes
+- **What happened**: After changing `tool_result.result` type to `unknown`, `next build` failed in `frontend/app/page.tsx` where `isChatEvent` is used as a type predicate over `data` values. The predicate requires `ChatEvent` to remain assignable to `JSONValue`.
+- **Evidence**:
+  - `Type error: A type predicate's type must be assignable to its parameter's type.`
+  - At `./app/page.tsx:469:30` with note `Type 'ChatEvent' is not assignable to type 'JSONValue'` due `result: unknown`.
+- **Likely cause**: Overly strict event type update (`unknown`) broke compatibility with AI SDK `JSONValue` data contract [~98% confidence].
+- **Suggested action**: Keep `tool_result.result` JSON-compatible (`any`/serializable) in event type definitions and normalize at render boundaries.
+
+---
+
+## [2026-03-08T17:28:00+10:30] - basedpyright strict typing warnings in `tests/test_chat_stream.py`
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: LSP verification for subagent spawn pipeline fix
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: `lsp_diagnostics` on `tests/test_chat_stream.py` returned numerous basedpyright warnings (unknown/missing parameter types and unknown member types) in existing async pytest patterns.
+- **Evidence**:
+  - Repeated warnings such as `reportUnknownParameterType`, `reportMissingParameterType`, and `reportUnknownMemberType` across many test lines.
+  - Seen again during graceful tool-failure implementation verification (2026-03-08T18:03+10:30).
+  - Seen again during pending-tool finalization guard verification (2026-03-08T18:12+10:30).
+  - Seen again while adding `completion_with_tools` max-round synthesis regression coverage (2026-03-08T18:24+10:30).
+- **Likely cause**: Test module is not fully typed for strict basedpyright settings; this predates current fix and does not block runtime behavior [~95% confidence].
+- **Suggested action**: Add explicit type annotations for pytest fixtures/monkeypatch/client helpers or reduce strictness for test modules.
+
+---
+
+## [2026-03-08T17:08:00+10:30] - Existing `/chat` mock stream test expectation mismatch
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Verification for runtime datetime context injection
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: Running `tests/test_chat_stream.py::test_chat_stream_emits_done_mock_mode` failed on an assertion expecting `"(mock)"` in SSE body; targeted new datetime-context tests still passed.
+- **Evidence**:
+  - `AssertionError: assert '(mock)' in 'event: conversation\n...event: done\n...'`
+  - Same run also logged `WARNING orchestrator.main - No conversation_id provided; title generation disabled`.
+- **Likely cause**: Test assertion drift from current mock stream payload format in `/chat` endpoint, unrelated to datetime-context injection changes [~85% confidence].
+- **Suggested action**: Update the mock stream test to assert stable fields/events (`token/final/done`) and expected payload shape instead of legacy literal marker text.
+
+---
+
+## [2026-03-08T16:47:00+10:30] - TypeScript hints seen again in `frontend/app/page.tsx` during diagnostics
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Chat formatting update verification (thinking/user bubble UI)
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: `lsp_diagnostics` for `frontend/app/page.tsx` reported pre-existing TypeScript hints (unused declarations and deprecated API hints) while validating this UI-only change.
+- **Evidence**:
+  - `(6133)` unused declarations such as `useConversationHistory`, `RetryButton`, `MicButton`, `error`, `currentId`.
+  - `(6385)` deprecated usages including `FormEvent` and `isLoading` references.
+  - Seen again during final verification for streaming-thinking/scroll fix task (2026-03-08T16:59+10:30).
+- **Likely cause**: Existing chat-page technical debt and stale imports/variables unrelated to the current UI style adjustments [~95% confidence].
+- **Suggested action**: Run a focused cleanup pass on `frontend/app/page.tsx` to remove unused symbols and address deprecated APIs.
+
+---
+
+## [2026-03-08T16:29:00+10:30] - Frontend lint script incompatible with Next.js 16 CLI behavior
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Additional verification after ConversationList key fix
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Lint verification commands failed. `npm run lint -- --file components/ConversationList.tsx` returned `unknown option '--file'`, and `npm run lint` returned `Invalid project directory provided, no such directory: /home/sol/daemon/frontend/lint`.
+- **Evidence**:
+  - `next lint --file components/ConversationList.tsx` -> `error: unknown option '--file'`
+  - `next lint` -> `Invalid project directory provided, no such directory: /home/sol/daemon/frontend/lint`
+- **Likely cause**: Legacy `next lint` script no longer aligns with current Next.js 16 CLI semantics in this project setup [~90% confidence].
+- **Suggested action**: Update lint script to a supported command (e.g., direct ESLint invocation) and document the new workflow.
+
+---
+
+## [2026-03-08T16:23:00+10:30] - Transient frontend JSX parse failure after key-fix edit
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: ConversationList key warning remediation verification
+- **Category**: build-error
+- **Blocked current task**: yes
+- **What happened**: A verification build failed with a JSX parse error in `frontend/components/ConversationList.tsx` after updating grouped list rendering to use keyed elements. The unpinned-section fragment was left unclosed.
+- **Evidence**: `x Expected '</', got ')'` at `./components/ConversationList.tsx:283:13` during `next build`.
+- **Likely cause**: Incomplete refactor while replacing mapped fragment with keyed group container [~98% confidence].
+- **Suggested action**: Keep a focused syntax verification pass (`lsp_diagnostics` + `npm run build`) immediately after JSX list refactors.
+
+---
+
+## [2026-03-08T16:09:00+10:30] - Markdown LSP unavailable for diagnostics verification
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Post-fix verification (`lsp_diagnostics` on modified file)
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Running `lsp_diagnostics` on `TRIAGE.md` returned an error because no LSP server is configured for `.md` files in this environment.
+- **Evidence**: `Error: No LSP server configured for extension: .md`.
+- **Likely cause**: Markdown LSP not configured in `oh-my-opencode.json` (expected in this toolchain) [~95% confidence].
+- **Suggested action**: Optional: configure a markdown-capable LSP if markdown diagnostics are desired.
+
+---
+
+## [2026-03-08T16:06:00+10:30] - Reported frontend module-not-found for `next-themes` not reproducible after dependency verification
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Frontend build error triage (`Can't resolve 'next-themes'`)
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: A user-reported Next.js build error showed `Module not found: Can't resolve 'next-themes'` from `frontend/components/AccountWidget.tsx`. In this workspace, `next-themes` is present in `package.json`/lockfiles, installed in `node_modules`, and `npm run build` completed successfully.
+- **Evidence**:
+  - Reported trace: `AccountWidget.tsx -> ConversationList.tsx -> app/page.tsx` with missing `next-themes`.
+  - `npm ls next-themes` => `next-themes@0.4.6` under `frontend/`.
+  - `npm run build` in `frontend/` succeeded (Next.js 16.1.6, compiled and generated static pages).
+- **Likely cause**: Dependency installation drift in the failing environment (e.g., `node_modules` not up to date for `frontend/`) rather than a source-code import defect in this snapshot [~85% confidence].
+- **Suggested action**: Reinstall dependencies in `frontend/` (`npm install` or `bun install`), then restart dev/build process.
+
+---
+
+## [2026-03-08T22:24:52+10:30] - Correction: Kimi canonical OpenRouter ID is moonshotai variant
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Verify model-id remediation correctness
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: External verification showed the prior replacement to `openrouter/kimi/kimi-k2.5` was incorrect. OpenRouter currently resolves Kimi K2.5 under `moonshotai/kimi-k2.5`, so code/docs/tests were corrected back to `openrouter/moonshotai/kimi-k2.5`.
+- **Evidence**:
+  - `https://openrouter.ai/kimi/kimi-k2.5` reports model unavailable.
+  - `https://openrouter.ai/moonshotai/kimi-k2.5` resolves and shows `moonshotai/kimi-k2.5`.
+  - OpenRouter `/api/v1/models` listing contains `"id":"moonshotai/kimi-k2.5"`.
+  - Repo now uses `openrouter/moonshotai/kimi-k2.5` across config/catalog/main/tests/docs.
+- **Likely cause**: Earlier remediation followed an outdated triage inference rather than authoritative OpenRouter slug evidence [~90% confidence].
+- **Suggested action**: Add a startup/model-validation check to assert configured model IDs exist in provider model catalog before deployment.
+
+---
+
+## [2026-03-08T22:11:37+10:30] - Critical triage review: actionable project issue fixed
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Fix actionable critical project-scope issues
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Reviewed all current critical entries and remediated the actionable project-scope issue: stale OpenRouter model id references were replaced with `openrouter/kimi/kimi-k2.5` across runtime defaults, model catalog, fallback response payload, tests, and technical specs.
+- **Evidence**:
+  - `openrouter/moonshotai/kimi-k2.5` now appears only in `TRIAGE.md` historical evidence.
+  - `PYTHONPATH=/home/sol/daemon uv run pytest tests/test_featured_models.py::test_catalog_endpoint_returns_featured -v` passed.
+  - `frontend` build succeeded (`npm run build`, Next.js 16.1.6).
+  - `stream_sse_chat` signature includes `ping_interval_s` and persistence calls use supported `metadata` fields.
+- **Likely cause**: Legacy identifier drift remained in config/docs/tests after provider model path change [~95% confidence].
+- **Suggested action**: Keep model IDs centralized and add a unit test asserting configured featured IDs map to catalog IDs.
+
+---
+
+## [2026-03-08T22:09:39+10:30] - Pytest import path failure in uv run
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: Verify fixes (diagnostics/build/tests) and update triage status
+- **Category**: test-failure
+- **Blocked current task**: yes
+- **What happened**: Running `uv run pytest tests/test_featured_models.py::test_catalog_endpoint_returns_featured -v` failed before test execution because pytest could not import the `orchestrator` package from `tests/conftest.py`.
+- **Evidence**: `ModuleNotFoundError: No module named 'orchestrator'` during `from orchestrator.main import app` in `tests/conftest.py`.
+- **Likely cause**: Python module path is not set for direct pytest invocation in this environment (missing project root in `PYTHONPATH`) [~90% confidence].
+- **Suggested action**: Run pytest with `PYTHONPATH=/home/sol/daemon` or ensure package install/editable mode in test environment setup.
+
+---
+
+## [2026-03-08T22:09:39+10:30] - basedpyright warnings seen again in touched backend files
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Verify fixes (diagnostics/build/tests) and update triage status
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: `lsp_diagnostics` surfaced many existing basedpyright warnings in `orchestrator/main.py`, `orchestrator/config.py`, and `tests/test_featured_models.py` while validating this change.
+- **Evidence**: Warnings include `reportExplicitAny`, `reportCallInDefaultInitializer`, `reportUnusedImport`, and `reportAny` (e.g., `orchestrator/main.py`, `orchestrator/config.py`).
+  - Seen again in `orchestrator/daemon.py` during graceful tool-failure verification (2026-03-08T18:03+10:30).
+  - Seen again in `orchestrator/daemon.py` during pending-tool finalization verification (2026-03-08T18:12+10:30).
+  - Seen again in `orchestrator/tools/completion.py` during max-round synthesis fix verification (2026-03-08T18:24+10:30).
+- **Likely cause**: Pre-existing strict typing/lint debt in backend/test modules, not introduced by the model-id replacement [~95% confidence].
+- **Suggested action**: Schedule a dedicated basedpyright cleanup pass and narrow CI policy for high-signal warnings first.
+
+---
+
+## [2026-03-08T22:11:37+10:30] - Config access command used wrong symbol name
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Verify fixes (diagnostics/build/tests) and update triage status
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: A verification one-liner attempted `from orchestrator.config import settings` and failed because the module exports `get_settings()` instead of a `settings` symbol.
+- **Evidence**: `ImportError: cannot import name 'settings' from 'orchestrator.config'`.
+- **Likely cause**: Verification command used outdated import assumption; module API exposes `get_settings()` factory [~95% confidence].
+- **Suggested action**: Use `from orchestrator.config import get_settings` and call `get_settings()` in ad-hoc checks/scripts.
+
+---
+
 ## 2026-03-08T20:46:08+10:30 — `bun test` fails: no frontend test files detected
 
 - **Severity**: warning
