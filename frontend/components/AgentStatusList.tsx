@@ -32,7 +32,7 @@ export function AgentStatusList({ agents }: AgentStatusListProps) {
           />
         ))}
       </div>
-      <div className="mt-2 bg-gray-800 text-white text-xs px-2 py-1 rounded-full opacity-75 pointer-events-auto">
+      <div className="mt-2 bg-[var(--color-bg-secondary)] text-[var(--color-text-primary)] text-xs px-2 py-1 rounded-full opacity-75 pointer-events-auto">
         {activeAgents.length} active agent{activeAgents.length !== 1 ? 's' : ''}
       </div>
     </div>

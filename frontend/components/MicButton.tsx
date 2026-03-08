@@ -46,7 +46,7 @@ export function MicButton({
   return (
     <div className="flex items-center gap-2 relative">
       {isRecording && (
-        <div className="absolute inset-0 rounded-full animate-ping bg-red-400 opacity-75 pointer-events-none" />
+        <div className="absolute inset-0 rounded-full animate-ping bg-[var(--color-status-error)] opacity-75 pointer-events-none" />
       )}
       
       {(isRecording || isConnecting) && (
@@ -56,7 +56,7 @@ export function MicButton({
       )}
 
       {error && (
-        <span className="absolute -top-8 left-1/2 -translate-x-1/2 whitespace-nowrap text-xs text-red-500 bg-white border border-red-200 px-2 py-1 rounded shadow-sm pointer-events-none">
+        <span className="absolute -top-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded border border-[var(--color-status-error)]/30 bg-[var(--color-bg-secondary)] px-2 py-1 text-xs text-[var(--color-status-error)] shadow-sm pointer-events-none">
           {error.message}
         </span>
       )}
@@ -72,10 +72,10 @@ export function MicButton({
          title={isRecording ? "Release to stop" : "Hold to speak"}
          className={`relative z-10 rounded-full p-2 transition-all duration-200 ${
            isRecording
-             ? "bg-red-500 text-white scale-110 shadow-lg shadow-red-500/50"
+             ? "bg-[var(--color-status-error)] text-white scale-110 shadow-lg"
              : isConnecting
-             ? "bg-yellow-500 text-white"
-             : "bg-gray-600 text-gray-200 hover:bg-gray-500 hover:scale-105"
+             ? "bg-[var(--color-status-warning)] text-white"
+             : "bg-[var(--color-text-muted)] text-[var(--color-text-primary)] hover:bg-[var(--color-text-secondary)] hover:scale-105"
          } ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
        >
         {isRecording ? (

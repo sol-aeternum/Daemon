@@ -1,6 +1,6 @@
 "use client";
 
-import React, { Component, ErrorInfo, ReactNode } from "react";
+import { Component, ErrorInfo, ReactNode } from "react";
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -25,7 +25,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     };
   }
 
-  static getDerivedStateFromError(error: Error): Partial<ErrorBoundaryState> {
+  static getDerivedStateFromError(_error: Error): Partial<ErrorBoundaryState> {
     return { hasError: true };
   }
 
@@ -50,11 +50,10 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
       // Default fallback UI
       return (
         <div className="min-h-screen flex items-center justify-center p-4">
-          <div className="max-w-md w-full bg-white rounded-lg shadow-lg p-6 text-center">
+          <div className="max-w-md w-full bg-[var(--color-bg-secondary)] rounded-lg shadow-lg p-6 text-center">
             <div className="mb-4 flex justify-center">
-              <div className="w-16 h-16 rounded-full bg-red-100 flex items-center justify-center">
+              <div className="w-16 h-16 rounded-full bg-[var(--color-status-error-bg)] flex items-center justify-center">
                 <svg
-                  className="w-8 h-8 text-red-500"
                   fill="none"
                   viewBox="0 0 24 24"
                   stroke="currentColor"
@@ -79,7 +78,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
             </p>
 
             {this.state.error && (
-              <div className="mb-4 p-3 bg-[--daemon-bg-tertiary] rounded text-left">
+              <div className="mb-4 p-3 bg-[var(--color-bg-tertiary)] rounded text-left">
                 <p className="font-mono text-sm text-[--daemon-text-primary] break-words">
                   {this.state.error.message}
                 </p>
@@ -94,8 +93,8 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
             </button>
 
             {this.state.showDetails && this.state.errorInfo && this.state.error?.stack && (
-              <div className="mb-4 p-3 bg-gray-900 rounded text-left overflow-auto max-h-48">
-                <p className="font-mono text-xs text-green-400 whitespace-pre-wrap">
+              <div className="mb-4 p-3 bg-[var(--color-bg-tertiary)] rounded text-left overflow-auto max-h-48">
+                <p className="font-mono text-xs text-[var(--color-text-secondary)] whitespace-pre-wrap">
                   {this.state.error.stack}
                   {"\n\n"}
                   {this.state.errorInfo.componentStack}

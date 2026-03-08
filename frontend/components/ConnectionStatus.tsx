@@ -23,8 +23,8 @@ export function ConnectionStatus({ status, onReconnect }: ConnectionStatusProps)
 
   if (status === "connected") {
     return (
-      <div className="flex items-center gap-2 text-sm text-green-600">
-        <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+      <div className="flex items-center gap-2 text-sm text-[var(--color-status-success)]">
+        <span className="w-2 h-2 rounded-full bg-[var(--color-status-success)]"></span>
         <span>Connected</span>
       </div>
     );
@@ -32,8 +32,8 @@ export function ConnectionStatus({ status, onReconnect }: ConnectionStatusProps)
 
   if (status === "reconnecting") {
     return (
-      <div className="flex items-center gap-2 text-sm text-yellow-600">
-        <span className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse"></span>
+      <div className="flex items-center gap-2 text-sm text-[var(--color-status-warning)]">
+        <span className="w-2 h-2 rounded-full bg-[var(--color-status-warning)] animate-pulse"></span>
         <span>Reconnecting...</span>
       </div>
     );
@@ -41,14 +41,14 @@ export function ConnectionStatus({ status, onReconnect }: ConnectionStatusProps)
 
   return (
     <div className="flex items-center gap-3">
-      <div className="flex items-center gap-2 text-sm text-red-600">
-        <span className="w-2 h-2 bg-red-500 rounded-full"></span>
+      <div className="flex items-center gap-2 text-sm text-[var(--color-status-error)]">
+        <span className="w-2 h-2 rounded-full bg-[var(--color-status-error)]"></span>
         <span>Disconnected</span>
       </div>
       {showReconnect && onReconnect && (
         <button
           onClick={onReconnect}
-          className="text-xs bg-blue-600 text-white px-2 py-1 rounded hover:bg-blue-700 transition-colors"
+          className="min-h-[44px] rounded bg-[var(--color-accent-primary)] px-3 py-1 text-xs text-white transition-colors hover:bg-[var(--color-accent-hover)]"
         >
           Retry
         </button>

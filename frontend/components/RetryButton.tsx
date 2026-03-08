@@ -10,7 +10,7 @@ export function RetryButton({ onRetry, isLoading }: RetryButtonProps) {
     <button
       onClick={onRetry}
       disabled={isLoading}
-      className="p-2 rounded-full bg-red-100 text-red-600 hover:bg-red-200 transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-50"
+      className="p-2 rounded-full bg-[var(--color-status-error-bg)] text-[var(--color-status-error)] hover:bg-[var(--color-status-error-bg)]/80 transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--color-status-error)] disabled:opacity-50"
       title="Retry sending message"
       type="button"
     >

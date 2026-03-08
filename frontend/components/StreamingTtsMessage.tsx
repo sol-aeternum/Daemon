@@ -15,7 +15,6 @@ interface StreamingTtsMessageProps {
 }
 
 export function StreamingTtsMessage({
-  messageId,
   text,
   isStreaming,
   enabled,
@@ -95,7 +94,7 @@ export function StreamingTtsMessage({
      <button
        type="button"
        onClick={handleClick}
-       className="ml-2 inline-flex items-center gap-1 rounded px-1 py-0.5 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+       className="ml-2 inline-flex items-center gap-1 rounded px-1 py-0.5 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] transition-colors"
        title={isPlaying ? "Stop TTS" : isConnecting ? "Connecting..." : "Play TTS"}
      >
       {isConnecting ? (

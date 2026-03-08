@@ -5,6 +5,78 @@
 
 ---
 
+## 2026-03-08T20:46:08+10:30 — `bun test` fails: no frontend test files detected
+
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: Frontend code-quality verification (build/test/lint)
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: Running `bun test` in `frontend/` exits with an error because no files match Bun's default test globs.
+- **Evidence**: `error: 0 test files matching **{.test,.spec,_test_,_spec_}.{js,ts,jsx,tsx} in --cwd="/home/sol/daemon/frontend"`
+- **Likely cause**: No unit test files exist in the frontend tree, or the project uses a different runner (e.g. Playwright / Next experimental test mode) without wiring `bun test` to it. [~85% confidence]
+- **Suggested action**: Either add at least one `*.test.ts(x)` file (or adjust `bun test` patterns), or change the documented frontend test command to the runner actually used (e.g. `bunx playwright test`, `next experimental-test`, etc.).
+
+---
+
+## 2026-03-08T20:46:08+10:30 — `console.log` left in UI component
+
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Frontend code-quality verification (anti-pattern scan)
+- **Category**: lint
+- **Blocked current task**: no
+- **What happened**: UI code contains a `console.log` call that will fire in the browser.
+- **Evidence**: `frontend/components/AccountWidget.tsx:84` contains `console.log("Logout clicked")`
+- **Likely cause**: Debug logging left behind during UI development. [~90% confidence]
+- **Suggested action**: Remove the log, or gate it behind a dev-only flag (e.g. `if (process.env.NODE_ENV !== 'production')`).
+
+---
+
+## 2026-03-08T17:49:00+10:30 — `next dev` lockfile permission denied on alternate port
+
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: TODO 27 route smoke verification
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: `bunx next dev -p 3001 --webpack` started but aborted with lockfile acquisition error (`Permission denied`).
+- **Evidence**: `/tmp/daemon-frontend-dev-3001.log` lines 6-11: `An IO error occurred while attempting to create and acquire the lockfile` / `Permission denied (os error 13)`.
+- **Likely cause**: stale lockfile ownership/permissions from prior process or mixed user contexts. [~75% confidence]
+- **Suggested action**: clear stale Next lock artifacts and normalize ownership in frontend workspace before dev-server workflows.
+
+---
+
+## 2026-03-08T17:44:00+10:30 — Direct `eslint` run fails due flat-config migration
+
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: TODO 27 verification run
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: Running `bunx eslint app components hooks lib --ext .ts,.tsx` failed because ESLint v9 expects `eslint.config.js` and did not detect a flat-config file.
+- **Evidence**: `ESLint couldn't find an eslint.config.(js|mjs|cjs) file`.
+- **Seen again**: 2026-03-08T20:46:08+10:30 during frontend code-quality verification.
+- **Likely cause**: repository still relies on Next lint integration or legacy `.eslintrc` setup while global/local eslint is v9 flat-config mode. [~80% confidence]
+- **Suggested action**: add flat config (`eslint.config.js`) or use project-supported lint command/tooling path.
+
+---
+
+## 2026-03-08T17:31:00+10:30 — `bun run lint` invokes invalid Next CLI path
+
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: TODO 24/27 verification run
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: Running `bun run lint` in `frontend/` executes `next lint` but fails with `Invalid project directory provided, no such directory: /home/sol/daemon/frontend/lint`.
+- **Evidence**: command output: `$ next lint` then `Invalid project directory provided, no such directory: /home/sol/daemon/frontend/lint`.
+- **Seen again**: 2026-03-08T20:46:08+10:30; additionally, `next lint --help` does not list `lint` as a supported command under Next.js `16.1.6` in this environment.
+- **Likely cause**: Next.js CLI/lint command incompatibility with current toolchain (Next 16 + bun invocation), where `lint` is parsed as a directory argument. [~75% confidence]
+- **Suggested action**: switch lint script to explicit eslint command (e.g. `eslint .`) or invoke Next lint with confirmed supported syntax for this Next version.
+
+---
+
 ## 2026-03-07T10:42:00Z — TypeScript LSP unavailable in environment
 
 - **Severity**: warning
@@ -380,6 +452,7 @@
 - **Evidence**: `Error: No LSP server configured for extension: .md`
 - **Likely cause**: The OpenCode LSP configuration does not include a Markdown language server. [~95% confidence]
 - **Suggested action**: Add a Markdown LSP to `oh-my-opencode.json` (or treat Markdown files as exempt from LSP verification requirements).
+- **Seen again**: 2026-03-08T14:33:00+10:30 — `lsp_diagnostics` on `TRIAGE.md` returned `No LSP server configured for extension: .md` during this task's verification pass.
 
 ---
 
@@ -851,3 +924,108 @@
 - **Evidence**: Backend logs showed warning exactly: `Failed to persist final message: MemoryStore.insert_message() got an unexpected keyword argument 'finish_reason'`.
 - **Likely cause**: `stream_sse_chat` passed unsupported kwargs (`finish_reason`, `usage`, plus update-call arg mismatch) to `MemoryStore` methods with narrower signatures. [~99% confidence]
 - **Suggested action**: Keep persistence call contract aligned to store signatures: write `finish_reason`/`usage` under `metadata`, use `status="complete"`, and use dict-key access for insert return IDs.
+
+---
+
+## [2026-03-08T14:12:00+10:30] — Background task retrieval returned "Task not found" (seen again)
+
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: Review project context + exploration for conversation-delete frontend bug
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: Explore background tasks were created successfully but later retrieval via `background_output` returned `Task not found` for both task IDs.
+- **Evidence**:
+  - `Task ID: bg_380e497c` launch succeeded, then `Task not found: bg_380e497c`
+  - `Task ID: bg_0e6221a6` launch succeeded, then `Task not found: bg_0e6221a6`
+- **Likely cause**: Task-tracking/session state inconsistency in background task tooling (known recurring issue). [~80% confidence]
+- **Suggested action**: Investigate background task persistence and retrieval consistency; correlate task IDs with session IDs in task backend logs.
+- **Seen again**: 2026-03-08T14:30:00+10:30 — newly launched explore/librarian tasks (`bg_218c13ef`, `bg_1610b0f8`, `bg_9e47d1b0`, `bg_3a104fe9`, `bg_36c21ef5`, `bg_1f20fd2f`, `bg_29c27c9f`) all returned `Task not found` on `background_output`; fallback used direct code search.
+
+---
+
+## [2026-03-08T14:13:00+10:30] — `/tmp` screenshot/glob access produced host-level file errors
+
+- **Severity**: info
+- **Scope**: host
+- **Encountered during**: Screenshot inspection for conversation-delete UI state
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: One screenshot path became unavailable (`File not found`) and a broad glob scan under `/tmp` emitted multiple permission/no-such-file errors from system-private directories.
+- **Evidence**:
+  - `Error: File not found: /tmp/Spectacle.JCYldh`
+  - `rg: /tmp/systemd-private-...: Permission denied (os error 13)`
+  - `rg: /tmp/.../SingletonCookie: No such file or directory (os error 2)`
+- **Likely cause**: Ephemeral temp files cleaned up and restricted system-managed directories under `/tmp`. [~95% confidence]
+- **Suggested action**: Capture screenshots in stable workspace paths for debugging and avoid broad `/tmp` glob scans; target explicit known directories.
+
+---
+
+## [2026-03-08T14:19:00+10:30] — Frontend lint tooling mismatch (seen again + variant)
+
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: Verification after conversation-delete state-sync fix
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: `npm run lint` again failed with the known Next CLI path parsing error, and direct `npx eslint` execution failed because ESLint v9 expects `eslint.config.*` while the project uses Next-managed lint config.
+- **Evidence**:
+  - `Invalid project directory provided, no such directory: /home/sol/daemon/frontend/lint`
+  - `ESLint couldn't find an eslint.config.(js|mjs|cjs) file.`
+- **Likely cause**: Existing lint command/config drift in this environment (Next 16 lint command behavior + ESLint v9 flat-config expectations). [~85% confidence]
+- **Suggested action**: Update lint workflow to a Next 16-compatible command or add flat-config migration path; keep as non-blocking when typecheck/build pass.
+- **Seen again**: 2026-03-08T14:31:00+10:30 — same lint failures reproduced during this task while verifying `ModelSelector` UI formatting changes.
+
+---
+
+## [2026-03-08T14:22:00+10:30] — Background task cancel also returned "Task not found" (seen again)
+
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Background task cleanup before completing conversation-delete fix
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: Explicit cancellation attempts for prior explore tasks also returned `Task not found`, consistent with earlier retrieval failures.
+- **Evidence**:
+  - `background_cancel(taskId="bg_380e497c")` -> `[ERROR] Task not found: bg_380e497c`
+  - `background_cancel(taskId="bg_0e6221a6")` -> `[ERROR] Task not found: bg_0e6221a6`
+- **Likely cause**: Same background task registry inconsistency noted earlier. [~80% confidence]
+SY|- **Suggested action**: Correlate task lifecycle events (create/get/cancel) and retention in task backend.
+
+---
+
+## 2026-03-08T07:55:00Z — Frontend build failures (pre-existing syntax errors)
+
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: TODO 7 — Create account widget component
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: Frontend build failed with multiple syntax errors in unrelated files. These are pre-existing issues not caused by AccountWidget changes.
+- **Evidence**:
+  - `ChatInputBar.tsx:104` — Unterminated regexp literal
+  - `ConversationList.tsx:338` — Unterminated regexp literal (structural issue with conditional rendering)
+  - `ErrorBoundary.tsx:57` — Duplicate `<svg` tag causing Expression expected error
+- **Likely cause**: Pre-existing syntax errors in codebase, likely from recent refactoring or incomplete edits. [~95% confidence]
+- **Suggested action**: Fix the syntax errors in these three files before the next build. The ConversationList.tsx issue is a structural problem where closing tags are not properly nested within conditionals.
+
+
+## [2026-03-08T08:15:00Z] — Pre-existing TypeScript errors in frontend components
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Build verification for ProfileTab component
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: Running `npx tsc --noEmit` revealed existing TypeScript errors in unrelated frontend files (ChatInputBar.tsx, ConversationList.tsx, ErrorBoundary.tsx) that predate the ProfileTab work.
+- **Evidence**:
+  ```
+  components/ChatInputBar.tsx(59,5): error TS2657: JSX expressions must have one parent element
+  components/ChatInputBar.tsx(104,11): error TS1005: ':' expected
+  components/ConversationList.tsx(269,11): error TS1005: '}' expected
+  components/ErrorBoundary.tsx(58,19): error TS1005: '>' expected
+  ```
+- **Likely cause**: Existing files have syntax/JSX errors unrelated to current task. [~90% confidence]
+- **Suggested action**: Fix these TypeScript errors in a separate maintenance pass; they are pre-existing issues not caused by ProfileTab changes.
+
+---

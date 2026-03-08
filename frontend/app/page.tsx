@@ -28,7 +28,9 @@ import { StreamingTtsMessage } from "../components/StreamingTtsMessage";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { ThinkingIndicator } from "../components/ThinkingIndicator";
 import MarkdownMessage from "../components/MarkdownMessage";
+import { SkeletonBlock } from "../components/ui/Skeleton";
 import { ChatEvent, isChatEvent } from "../lib/events";
+import { Search, Image, Code, MessageSquare, Sparkles } from "lucide-react";
 import { Message } from "ai";
 
 type ReasoningMessage = Message & {
@@ -46,6 +48,152 @@ const getModelName = (modelId: string | undefined): string | undefined => {
 
 const isRoutingEvent = (event: ChatEvent): event is Extract<ChatEvent, { type: "routing" }> => event.type === "routing";
 import { TtsSettings, SttSettings, DEFAULT_TTS_SETTINGS, DEFAULT_STT_SETTINGS } from "../lib/constants";
+
+// =============================================================================
+// WELCOME SCREEN COMPONENT
+// =============================================================================
+
+interface WelcomeScreenProps {
+  setInput: (input: string) => void;
+  onSubmit: (e?: React.FormEvent) => void;
+}
+
+function WelcomeScreen({ setInput, onSubmit }: WelcomeScreenProps) {
+  const [greeting, setGreeting] = useState("Good evening");
+  const [userName, setUserName] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Time-based greeting
+    const hour = new Date().getHours();
+    let timeGreeting = "Good evening";
+    if (hour >= 5 && hour < 12) {
+      timeGreeting = "Good morning";
+    } else if (hour >= 12 && hour < 17) {
+      timeGreeting = "Good afternoon";
+    } else if (hour >= 17 && hour < 22) {
+      timeGreeting = "Good evening";
+    }
+    setGreeting(timeGreeting);
+
+    // Try to get user name from localStorage (could be set in settings)
+    const storedName = localStorage.getItem("user_name");
+    if (storedName) {
+      setUserName(storedName);
+    }
+  }, []);
+
+  const quickActions = [
+    {
+      icon: Search,
+      label: "Research",
+      starter: "I need to research...",
+      gradient: "from-[var(--color-accent-primary)]/20 to-[var(--color-accent-hover)]/10",
+      iconColor: "text-[var(--color-accent-primary)]",
+    },
+    {
+      icon: Image,
+      label: "Create Image",
+      starter: "Create an image of...",
+      gradient: "from-[var(--color-accent-primary)]/20 to-[var(--color-accent-hover)]/10",
+      iconColor: "text-[var(--color-accent-primary)]",
+    },
+    {
+      icon: Code,
+      label: "Write Code",
+      starter: "Write a function that...",
+      gradient: "from-[var(--color-accent-primary)]/20 to-[var(--color-accent-hover)]/10",
+      iconColor: "text-[var(--color-accent-primary)]",
+    },
+    {
+      icon: MessageSquare,
+      label: "Just Chat",
+      starter: "",
+      gradient: "from-[var(--color-accent-primary)]/20 to-[var(--color-accent-hover)]/10",
+      iconColor: "text-[var(--color-accent-primary)]",
+    },
+  ];
+
+  const handleActionClick = (starter: string) => {
+    setInput(starter);
+    // Focus the input after a short delay to allow state update
+    setTimeout(() => {
+      const inputEl = document.querySelector('input[type="text"], textarea') as HTMLElement;
+      inputEl?.focus();
+      // If "Just Chat" was clicked (empty starter), don't submit
+      if (starter) {
+        // Let user continue typing, don't auto-submit
+      }
+    }, 50);
+  };
+
+  return (
+    <div className="flex flex-col items-center justify-center h-full px-4 animate-fade-in">
+      <div className="flex flex-col items-center max-w-2xl w-full space-y-8">
+        {/* Logo / Wordmark */}
+        <div className="flex items-center gap-3 mb-2">
+          <div className="relative">
+            <div className="absolute inset-0 bg-[var(--color-accent-primary)] blur-xl opacity-30 rounded-full" />
+            <div className="relative w-12 h-12 rounded-xl bg-gradient-to-br from-[var(--color-accent-primary)] to-[var(--color-accent-hover)] flex items-center justify-center shadow-lg">
+              <Sparkles className="w-6 h-6 text-white" />
+            </div>
+          </div>
+          <span className="text-3xl font-bold tracking-tight text-[var(--color-text-primary)]">
+            Daemon
+          </span>
+        </div>
+
+        {/* Greeting */}
+        <div className="text-center space-y-2">
+          <h1 className="text-4xl md:text-5xl font-bold text-[var(--color-text-primary)] tracking-tight">
+            {userName ? `${greeting}, ${userName}` : greeting}
+          </h1>
+          <p className="text-lg text-[var(--color-text-muted)]">
+            What would you like to do today?
+          </p>
+        </div>
+
+        {/* Quick Action Chips */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 w-full mt-8">
+          {quickActions.map((action, index) => {
+            const Icon = action.icon;
+            return (
+              <button
+                key={action.label}
+                onClick={() => handleActionClick(action.starter)}
+                className="group relative flex flex-col items-center gap-3 p-4 rounded-2xl bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)] hover:border-[var(--color-accent-primary)] transition-all duration-300 hover:shadow-lg hover:-translate-y-1 overflow-hidden"
+                style={{
+                  animationDelay: `${index * 100}ms`,
+                }}
+              >
+                {/* Gradient background on hover */}
+                <div className={`absolute inset-0 bg-gradient-to-br ${action.gradient} opacity-0 group-hover:opacity-100 transition-opacity duration-300`} />
+                
+                {/* Icon */}
+                <div className="relative z-10 w-10 h-10 rounded-xl bg-[var(--color-bg-tertiary)] group-hover:bg-[var(--color-bg-primary)] flex items-center justify-center transition-colors duration-300">
+                  <Icon className={`w-5 h-5 ${action.iconColor}`} />
+                </div>
+                
+                {/* Label */}
+                <span className="relative z-10 text-sm font-medium text-[var(--color-text-secondary)] group-hover:text-[var(--color-text-primary)] transition-colors duration-300">
+                  {action.label}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Hint text */}
+        <p className="text-sm text-[var(--color-text-muted)] mt-8 text-center">
+          Or type your message below to get started
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// MAIN CHAT CONTENT
+// =============================================================================
 
 function ChatContent() {
 
@@ -310,7 +458,7 @@ function ChatContent() {
   }
 
   return (
-    <div className="flex h-screen bg-gray-50 overflow-hidden">
+    <div className="flex h-screen bg-[var(--color-bg-tertiary)] overflow-hidden">
       {!isOnline && <OfflineIndicator />}
       {isSidebarOpen && (
         <div 
@@ -320,8 +468,8 @@ function ChatContent() {
       )}
 
       <div className={`
-        fixed inset-y-0 left-0 z-50 w-[280px] bg-white transform transition-transform duration-300 ease-in-out shadow-xl md:shadow-none
-        md:relative md:translate-x-0 md:z-0 md:inset-auto md:w-auto
+        fixed inset-y-0 left-0 z-50 w-[260px] bg-[var(--color-bg-secondary)] transform transition-transform duration-300
+        md:relative md:inset-auto md:z-0 md:w-auto md:translate-x-0
         ${isSidebarOpen ? "translate-x-0" : "-translate-x-full"}
       `}>
         <ConversationList
@@ -337,8 +485,6 @@ function ChatContent() {
             handleNewChat();
             setIsSidebarOpen(false);
           }}
-          sttSettings={effectiveSttSettings}
-          setSttSettings={setSttSettings}
           searchQuery={searchQuery}
           setSearchQuery={setSearchQuery}
         />
@@ -346,7 +492,7 @@ function ChatContent() {
 
       <div className="flex-1 flex flex-col w-full min-w-0 relative">
         {isRecording && (
-          <div className="bg-red-500 text-white px-4 py-2 text-center text-sm font-medium animate-pulse">
+          <div className="bg-[var(--color-status-error)] text-white px-4 py-2 text-center text-sm font-medium animate-pulse">
             Recording... Tap mic to stop
           </div>
         )}
@@ -359,7 +505,7 @@ function ChatContent() {
            </div>
         </MobileHeader>
 
-        <header className="hidden md:flex bg-white border-b px-4 py-3 items-center justify-between">
+        <header className="hidden md:flex bg-[var(--color-bg-secondary)] border-b border-[var(--color-border-primary)] px-4 py-3 items-center justify-between">
           <h1 className="text-lg font-semibold">
             {currentConversation?.title || "New conversation"}
           </h1>
@@ -368,31 +514,48 @@ function ChatContent() {
               status={connectionStatus}
               onReconnect={reload}
             />
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-gray-500">Cloud</span>
-              <button
-                disabled
-                className="relative inline-flex h-6 w-11 items-center rounded-full bg-gray-200 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 opacity-50 cursor-not-allowed"
-                title="Local pipeline coming soon"
-              >
-                <span className="translate-x-1 inline-block h-4 w-4 transform rounded-full bg-white transition-transform" />
-              </button>
-              <span className="text-sm text-gray-500">Local</span>
-            </div>
           </div>
         </header>
 
         <main ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth">
 
-          {messages.length === 0 ? (
-            <div className="flex items-center justify-center h-full text-gray-400">
-              <div className="text-center">
-                <p className="text-lg mb-2">Welcome to Daemon</p>
-                <p className="text-sm">Start a conversation or select a previous chat</p>
+          {messages.length === 0 && isLoading ? (
+            <div className="flex flex-col space-y-4 p-4 animate-fade-in">
+              {/* Assistant message skeleton - left aligned */}
+              <div className="flex flex-col items-start mb-6">
+                <div className="max-w-[85%] md:max-w-[80%] space-y-3">
+                  <SkeletonBlock width="60%" height="4rem" className="bg-[var(--color-bg-secondary)]" />
+                </div>
+              </div>
+              {/* User message skeleton - right aligned */}
+              <div className="flex flex-col items-end mb-6">
+                <div className="max-w-[85%] md:max-w-[80%]">
+                  <SkeletonBlock width="80%" height="3rem" className="bg-[var(--color-accent-primary)] opacity-60" />
+                </div>
+              </div>
+              {/* Assistant message skeleton - left aligned */}
+              <div className="flex flex-col items-start mb-6">
+                <div className="max-w-[85%] md:max-w-[80%] space-y-3">
+                  <SkeletonBlock width="50%" height="5rem" className="bg-[var(--color-bg-secondary)]" />
+                </div>
+              </div>
+              {/* User message skeleton - right aligned */}
+              <div className="flex flex-col items-end mb-6">
+                <div className="max-w-[85%] md:max-w-[80%]">
+                  <SkeletonBlock width="70%" height="2.5rem" className="bg-[var(--color-accent-primary)] opacity-60" />
+                </div>
+              </div>
+              {/* Assistant message skeleton - left aligned */}
+              <div className="flex flex-col items-start mb-6">
+                <div className="max-w-[85%] md:max-w-[80%] space-y-3">
+                  <SkeletonBlock width="75%" height="4rem" className="bg-[var(--color-bg-secondary)]" />
+                </div>
               </div>
             </div>
+) : messages.length === 0 ? (
+            <WelcomeScreen setInput={setInput} onSubmit={handleSubmit} />
           ) : (
-            <>
+<>
               {messages.map((message, index) => {
                 const isLast = index === messages.length - 1;
                 const msgEvents = getEventsForMessage(message.id, isLast);
@@ -445,8 +608,8 @@ function ChatContent() {
                     <div
                       className={`max-w-[85%] md:max-w-[80%] rounded-lg px-4 py-2 ${
                         message.role === "user"
-                          ? "bg-blue-600 text-white"
-                          : "bg-white border border-gray-200 shadow-sm"
+                          ? "bg-[var(--color-accent-primary)] text-white"
+                          : "bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)] shadow-sm"
                       }`}
                     >
                       <div className="flex items-start justify-between gap-2">
@@ -480,7 +643,7 @@ function ChatContent() {
           )}
         </main>
 
-        <footer className="bg-white border-t border-gray-200 p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+        <footer className="bg-[var(--color-bg-secondary)] border-t border-[var(--color-border-primary)] p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
           <form onSubmit={handleSubmit}>
             <ChatInputBar
               selectedModel={activeModel}
@@ -500,6 +663,8 @@ function ChatContent() {
               onInputChange={handleInputChange}
               onSubmit={handleSubmit}
               isLoading={isLoading}
+              isLocal={false}
+              onToggleLocal={() => {}}
             />
           </form>
         </footer>

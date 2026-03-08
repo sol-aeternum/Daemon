@@ -53,21 +53,20 @@ export function ThinkingIndicator({ event, isThinking, isFinished, duration: ini
     && event.content.trim().length > 0;
 
   if (!isThinking && !hasThinkingContent) return null;
-
+  
   const content = hasThinkingContent ? event.content : "";
-  const agent = event?.type === "thinking" ? event.agent : undefined;
   
   return (
-    <div className="my-2 rounded-lg overflow-hidden border border-gray-200/50">
+    <div className="my-2 rounded-lg overflow-hidden border border-[var(--color-border-primary)]/50">
       <button
         type="button"
         onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full px-3 py-2 flex items-center gap-2 text-left hover:bg-gray-50 transition-colors group"
+        className="w-full px-3 py-2 flex items-center gap-2 text-left hover:bg-[var(--color-bg-tertiary)] transition-colors group"
       >
-        <div className="flex items-center gap-2 text-gray-500">
+        <div className="flex items-center gap-2 text-[var(--color-text-muted)]">
             {isThinking ? (
                <div className="relative flex items-center justify-center w-4 h-4">
-                 <div className="absolute w-full h-full border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin"></div>
+                 <div className="absolute w-full h-full border-2 border-[var(--color-border-secondary)] border-t-[var(--color-text-secondary)] rounded-full animate-spin"></div>
                </div>
             ) : (
                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -82,7 +81,7 @@ export function ThinkingIndicator({ event, isThinking, isFinished, duration: ini
         <div className="flex-1" />
         
         <svg
-          className={`w-3 h-3 text-gray-400 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+          className={`w-3 h-3 text-[var(--color-text-muted)] transition-transform ${isExpanded ? "rotate-180" : ""}`}
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
@@ -92,8 +91,8 @@ export function ThinkingIndicator({ event, isThinking, isFinished, duration: ini
       </button>
 
       {content && isExpanded && (
-        <div className="px-3 pb-3 pt-1 bg-gray-50/50 border-t border-gray-100">
-          <div className="text-sm text-gray-700 whitespace-pre-wrap break-words leading-relaxed">
+        <div className="px-3 pb-3 pt-1 bg-[var(--color-bg-tertiary)]/50 border-t border-[var(--color-border-muted)]">
+          <div className="text-sm text-[var(--color-text-secondary)] whitespace-pre-wrap break-words leading-relaxed">
             {content}
           </div>
         </div>

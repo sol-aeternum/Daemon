@@ -32,20 +32,20 @@ export default function SettingsPanel({ sttSettings, setSttSettings }: SettingsP
   const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || '';
 
   return (
-    <div className="border-t bg-white">
-      <div className="px-4 py-3 border-b">
+    <div className="border-t border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)]">
+      <div className="px-4 py-3 border-b border-[var(--color-border-primary)]">
         <div className="flex items-center justify-between mb-3">
-          <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
+          <p className="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wide">
             Speech To Text
           </p>
         </div>
         
         {sttSettings && setSttSettings && (
-          <div className="space-y-3 text-xs text-gray-700">
+          <div className="space-y-3 text-xs text-[var(--color-text-secondary)]">
             <div>
-              <label className="block mb-1 text-gray-500">Language</label>
+              <label className="block mb-1 text-[var(--color-text-muted)]">Language</label>
               <select
-                className="w-full rounded-md border border-gray-200 bg-white px-2 py-1"
+                className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-2 py-1"
                 value={sttSettings.language}
                 onChange={(e) =>
                   setSttSettings({
@@ -71,7 +71,7 @@ export default function SettingsPanel({ sttSettings, setSttSettings }: SettingsP
               <input
                 type="checkbox"
                 id="stt-partials"
-                className="h-4 w-4 accent-blue-600"
+                className="h-4 w-4 accent-[var(--color-accent-primary)]"
                 checked={sttSettings.enablePartials}
                 onChange={(e) =>
                   setSttSettings({
@@ -80,7 +80,7 @@ export default function SettingsPanel({ sttSettings, setSttSettings }: SettingsP
                   })
                 }
               />
-              <label htmlFor="stt-partials" className="text-gray-600">
+              <label htmlFor="stt-partials" className="text-[var(--color-text-secondary)]">
                 Show partial results
               </label>
             </div>
@@ -88,18 +88,18 @@ export default function SettingsPanel({ sttSettings, setSttSettings }: SettingsP
         )}
       </div>
 
-      <div className="px-4 py-3 border-b">
+      <div className="px-4 py-3 border-b border-[var(--color-border-primary)]">
         <div className="flex items-center justify-between mb-3">
-          <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
+          <p className="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wide">
             Text To Speech
           </p>
         </div>
 
-        <div className="space-y-3 text-xs text-gray-700">
+        <div className="space-y-3 text-xs text-[var(--color-text-secondary)]">
           <div>
-            <label className="block mb-1 text-gray-500">Voice</label>
+            <label className="block mb-1 text-[var(--color-text-muted)]">Voice</label>
             <select
-              className="w-full rounded-md border border-gray-200 bg-white px-2 py-1"
+              className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-2 py-1"
               value={ttsSettings.voice}
               onChange={(e) => setTtsSettings({ ...ttsSettings, voice: e.target.value })}
             >
@@ -134,9 +134,9 @@ export default function SettingsPanel({ sttSettings, setSttSettings }: SettingsP
           </div>
 
           <div>
-            <label className="block mb-1 text-gray-500">Model</label>
+            <label className="block mb-1 text-[var(--color-text-muted)]">Model</label>
             <select
-              className="w-full rounded-md border border-gray-200 bg-white px-2 py-1"
+              className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-2 py-1"
               value={ttsSettings.model}
               onChange={(e) => setTtsSettings({ ...ttsSettings, model: e.target.value })}
             >
@@ -147,22 +147,22 @@ export default function SettingsPanel({ sttSettings, setSttSettings }: SettingsP
           </div>
 
           <div>
-            <label className="block mb-1 text-gray-500">Speed: {ttsSettings.speed.toFixed(1)}x</label>
+            <label className="block mb-1 text-[var(--color-text-muted)]">Speed: {ttsSettings.speed.toFixed(1)}x</label>
             <input
               type="range"
               min="0.5"
               max="2.0"
               step="0.1"
-              className="w-full accent-blue-600"
+              className="w-full accent-[var(--color-accent-primary)]"
               value={ttsSettings.speed}
               onChange={(e) => setTtsSettings({ ...ttsSettings, speed: parseFloat(e.target.value) })}
             />
           </div>
 
           <div>
-            <label className="block mb-1 text-gray-500">Format</label>
+            <label className="block mb-1 text-[var(--color-text-muted)]">Format</label>
             <select
-              className="w-full rounded-md border border-gray-200 bg-white px-2 py-1"
+              className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-2 py-1"
               value={ttsSettings.format}
               onChange={(e) => setTtsSettings({ ...ttsSettings, format: e.target.value })}
             >
@@ -180,18 +180,18 @@ export default function SettingsPanel({ sttSettings, setSttSettings }: SettingsP
       </div>
 
       <div className="px-4 py-3">
-        <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-3">Memory</p>
+        <p className="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wide mb-3">Memory</p>
         
         {!showDeleteConfirm ? (
           <button
             onClick={() => setShowDeleteConfirm(true)}
-            className="w-full px-3 py-2 text-xs text-red-600 border border-red-200 rounded-md hover:bg-red-50 transition-colors"
+            className="w-full px-3 py-2 text-xs text-[var(--color-status-error)] border border-[var(--color-status-error)]/30 rounded-md hover:bg-[var(--color-status-error-bg)] transition-colors"
           >
             Clear All Memory
           </button>
         ) : (
           <div className="space-y-2">
-            <p className="text-xs text-red-600">Are you sure? This will delete all conversations and memories.</p>
+            <p className="text-xs text-[var(--color-status-error)]">Are you sure? This will delete all conversations and memories.</p>
             <div className="flex gap-2">
               <button
                 onClick={async () => {
@@ -205,13 +205,13 @@ export default function SettingsPanel({ sttSettings, setSttSettings }: SettingsP
                     console.error('Failed to clear memory:', error);
                   }
                 }}
-                className="flex-1 px-3 py-2 text-xs text-white bg-red-600 rounded-md hover:bg-red-700 transition-colors"
+                className="flex-1 px-3 py-2 text-xs text-white bg-[var(--color-status-error)] rounded-md hover:bg-[var(--color-status-error)]/90 transition-colors"
               >
                 Yes, Clear All
               </button>
               <button
                 onClick={() => setShowDeleteConfirm(false)}
-                className="flex-1 px-3 py-2 text-xs text-gray-600 border border-gray-200 rounded-md hover:bg-gray-50 transition-colors"
+                className="flex-1 px-3 py-2 text-xs text-[var(--color-text-secondary)] border border-[var(--color-border-primary)] rounded-md hover:bg-[var(--color-bg-tertiary)] transition-colors"
               >
                 Cancel
               </button>

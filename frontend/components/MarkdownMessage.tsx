@@ -32,7 +32,7 @@ export default function MarkdownMessage({ content }: MarkdownMessageProps) {
             if (isInline) {
               return (
                 <code
-                  className="px-1.5 py-0.5 bg-gray-100 rounded text-sm font-mono"
+                  className="px-1.5 py-0.5 bg-[var(--color-bg-tertiary)] rounded text-sm font-mono"
                   {...props}
                 >
                   {children}
@@ -49,12 +49,12 @@ export default function MarkdownMessage({ content }: MarkdownMessageProps) {
           pre: ({ node, ...props }) => (
             <pre
               {...props}
-              className="overflow-x-auto my-2 p-3 bg-gray-50 rounded-lg border border-gray-200"
+              className="overflow-x-auto my-2 p-3 bg-[var(--color-bg-tertiary)] rounded-lg border border-[var(--color-border-primary)]"
             />
           ),
           table: ({ node, ...props }) => (
             <div className="overflow-x-auto my-2">
-              <table {...props} className="min-w-full divide-y divide-gray-200" />
+              <table {...props} className="min-w-full divide-y divide-[var(--color-border-primary)]" />
             </div>
           ),
         }}

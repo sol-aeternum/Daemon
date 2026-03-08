@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 import { ChatEvent, isToolCallEvent, isToolResultEvent } from "../lib/events";
-import { Download, Maximize2, X, Loader2, ChevronRight, Check, Volume2, VolumeX, Play, Pause } from "lucide-react";
+import { Download, Maximize2, X, Loader2, ChevronRight, Check, Volume2, Play, Pause } from "lucide-react";
 
 export interface ToolExecution {
   call: ChatEvent;
@@ -29,7 +29,7 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
       const agentType = call.arguments?.agent_type;
       const isAudio = agentType === "audio";
       return (
-        <div className="flex items-center gap-2 text-gray-500 text-sm py-2 px-1 animate-pulse">
+        <div className="flex items-center gap-2 text-[var(--color-text-muted)] text-sm py-2 px-1 animate-pulse">
           <Loader2 className="w-4 h-4 animate-spin" />
           <span>{isAudio ? "Creating sound effect..." : "Creating image..."}</span>
         </div>
@@ -37,7 +37,7 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
     }
     // Generic tool loading
     return (
-      <div className="flex items-center gap-2 text-gray-500 text-sm py-2 px-1 animate-pulse">
+      <div className="flex items-center gap-2 text-[var(--color-text-muted)] text-sm py-2 px-1 animate-pulse">
         <Loader2 className="w-4 h-4 animate-spin" />
         <span>Running {call.name}...</span>
       </div>
@@ -84,15 +84,15 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
     return (
       <div className="my-2">
         {prompt && (
-           <div className="text-sm text-gray-500 mb-2 font-medium flex items-center gap-2">
-             <Check className="w-4 h-4 text-green-500" />
+           <div className="text-sm text-[var(--color-text-muted)] mb-2 font-medium flex items-center gap-2">
+          <Check className="w-4 h-4 text-[var(--color-status-success)]" />
              <span>Image created</span>
-             <span className="text-gray-300">•</span>
+             <span className="text-[var(--color-border-secondary)]">•</span>
              <span className="truncate max-w-md" title={prompt}>{prompt}</span>
            </div>
         )}
         
-        <div className="relative group rounded-xl overflow-hidden border border-gray-200 bg-gray-50 shadow-sm max-w-md transition-all hover:shadow-md">
+        <div className="relative group rounded-xl overflow-hidden border border-[var(--color-border-primary)] bg-[var(--color-bg-tertiary)] shadow-sm max-w-md transition-all hover:shadow-md">
           <img
             src={imagePath}
             alt={prompt || "Generated image"}
@@ -145,7 +145,7 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
               <a
                 href={imagePath}
                 download={`image-${Date.now()}.png`}
-                className="flex items-center gap-2 px-4 py-2 bg-white text-black rounded-full font-medium hover:bg-gray-100 transition-colors shadow-lg"
+                className="flex items-center gap-2 px-4 py-2 bg-[var(--color-bg-inverse)] text-[var(--color-text-inverse)] rounded-full font-medium hover:bg-[var(--color-bg-hover)] transition-colors shadow-lg"
                 target="_blank"
                 rel="noopener noreferrer"
               >
@@ -171,37 +171,37 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
   // Standard Tool Result UI
   return (
     <div className={`border rounded-lg my-2 overflow-hidden ${
-      isError ? "bg-red-50 border-red-200" : "bg-gray-50 border-gray-200"
+      isError ? "bg-[var(--color-status-error-bg)] border-[var(--color-status-error)]/30" : "bg-[var(--color-bg-tertiary)] border-[var(--color-border-primary)]"
     }`}>
       <button
         onClick={() => setIsExpanded(!isExpanded)}
         className={`w-full px-4 py-2 flex items-center justify-between text-left transition-colors ${
-          isError ? "hover:bg-red-100" : "hover:bg-gray-100"
+          isError ? "hover:bg-[var(--color-status-error-bg)]/80" : "hover:bg-[var(--color-bg-hover)]"
         }`}
       >
         <div className="flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full ${isError ? "bg-red-500" : "bg-green-500"}`}></span>
+          <span className={`w-2 h-2 rounded-full ${isError ? "bg-[var(--color-status-error)]" : "bg-[var(--color-status-success)]"}`}></span>
           <div className="flex flex-col">
-            <span className={`text-sm font-medium ${isError ? "text-red-800" : "text-gray-700"}`}>
+            <span className={`text-sm font-medium ${isError ? "text-[var(--color-status-error)]" : "text-[var(--color-text-secondary)]"}`}>
               {call.name}
             </span>
           </div>
         </div>
         <ChevronRight
           className={`w-4 h-4 transition-transform ${isExpanded ? "rotate-90" : ""} ${
-            isError ? "text-red-600" : "text-gray-500"
+            isError ? "text-[var(--color-status-error)]" : "text-[var(--color-text-muted)]"
           }`}
         />
       </button>
       {isExpanded && (
         <div className="px-4 pb-3 space-y-2">
-          <div className="text-xs text-gray-500 font-medium">Input:</div>
-          <pre className="text-xs text-gray-600 bg-white border border-gray-200 rounded p-2 overflow-x-auto">
+          <div className="text-xs text-[var(--color-text-muted)] font-medium">Input:</div>
+          <pre className="text-xs text-[var(--color-text-secondary)] bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)] rounded p-2 overflow-x-auto">
             {JSON.stringify(call.arguments, null, 2)}
           </pre>
-          <div className="text-xs text-gray-500 font-medium">Output:</div>
+          <div className="text-xs text-[var(--color-text-muted)] font-medium">Output:</div>
           <pre className={`text-xs rounded p-2 overflow-x-auto overflow-y-auto max-h-80 whitespace-pre-wrap break-words ${
-            isError ? "text-red-700 bg-red-100" : "text-gray-700 bg-white border border-gray-200"
+            isError ? "text-[var(--color-status-error)] bg-[var(--color-status-error-bg)]" : "text-[var(--color-text-secondary)] bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)]"
           }`}>
             {result.result}
           </pre>
@@ -234,8 +234,6 @@ export function ToolCallLog({ events }: ToolCallLogProps) {
 
       if (foundIndex !== -1) {
         executions[foundIndex].result = event;
-      } else {
-        console.warn("Orphan tool result:", event);
       }
     }
   });
@@ -325,15 +323,15 @@ function AudioPlayerBlock({ audioPath, prompt }: AudioPlayerBlockProps) {
   return (
     <div className="my-2">
       {prompt && (
-        <div className="text-sm text-gray-500 mb-2 font-medium flex items-center gap-2">
-          <Check className="w-4 h-4 text-green-500" />
+        <div className="text-sm text-[var(--color-text-muted)] mb-2 font-medium flex items-center gap-2">
+          <Check className="w-4 h-4 text-[var(--color-status-success)]" />
           <span>Sound effect created</span>
-          <span className="text-gray-300">•</span>
+          <span className="text-[var(--color-border-secondary)]">•</span>
           <span className="truncate max-w-md" title={prompt}>{prompt}</span>
         </div>
       )}
 
-      <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl border border-gray-200 max-w-md">
+      <div className="flex items-center gap-3 p-3 bg-[var(--color-bg-tertiary)] rounded-xl border border-[var(--color-border-primary)] max-w-md">
         <audio
           ref={audioRef}
           src={audioPath}
@@ -344,7 +342,7 @@ function AudioPlayerBlock({ audioPath, prompt }: AudioPlayerBlockProps) {
 
         <button
           onClick={handlePlayPause}
-          className="flex-shrink-0 w-10 h-10 flex items-center justify-center bg-blue-500 hover:bg-blue-600 text-white rounded-full transition-colors"
+          className="flex-shrink-0 w-10 h-10 flex items-center justify-center bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-white rounded-full transition-colors"
           title={isPlaying ? "Pause" : "Play"}
         >
           {isPlaying ? (
@@ -356,10 +354,10 @@ function AudioPlayerBlock({ audioPath, prompt }: AudioPlayerBlockProps) {
 
         <div className="flex-1 flex flex-col gap-1">
           <div className="flex items-center gap-2">
-            <Volume2 className="w-4 h-4 text-gray-400" />
-            <div className="flex-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+            <Volume2 className="w-4 h-4 text-[var(--color-text-muted)]" />
+            <div className="flex-1 h-1.5 bg-[var(--color-border-primary)] rounded-full overflow-hidden">
               <div
-                className="h-full bg-blue-500 transition-all duration-100"
+                className="h-full bg-[var(--color-accent-primary)] transition-all duration-100"
                 style={{ width: `${progress}%` }}
               />
             </div>
@@ -369,7 +367,7 @@ function AudioPlayerBlock({ audioPath, prompt }: AudioPlayerBlockProps) {
         <a
           href={audioPath}
           download={`sound-effect-${Date.now()}.mp3`}
-          className="flex-shrink-0 p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
+          className="flex-shrink-0 p-2 text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] rounded-lg transition-colors"
           title="Download"
           target="_blank"
           rel="noopener noreferrer"

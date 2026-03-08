@@ -24,9 +24,9 @@ export function ErrorToast({ message, onClose, duration = 5000 }: ErrorToastProp
 
   return (
     <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50">
-      <div className="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg shadow-lg flex items-center gap-3">
+      <div className="bg-[var(--color-status-error-bg)] border border-[var(--color-status-error)] text-[var(--color-status-error)] px-4 py-3 rounded-lg shadow-lg flex items-center gap-3">
         <svg
-          className="w-5 h-5 text-red-600"
+          className="w-5 h-5 text-[var(--color-status-error)]"
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
@@ -44,7 +44,7 @@ export function ErrorToast({ message, onClose, duration = 5000 }: ErrorToastProp
             setIsVisible(false);
             onClose?.();
           }}
-          className="ml-2 text-red-600 hover:text-red-800"
+          className="ml-2 text-[var(--color-status-error)] hover:text-[var(--color-status-error)]/90"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />

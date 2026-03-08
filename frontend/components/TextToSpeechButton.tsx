@@ -212,9 +212,9 @@ export function TextToSpeechButton({ text, streamingText }: TextToSpeechButtonPr
        type="button"
        onClick={handleClick}
        title={label}
-       className={`ml-2 inline-flex items-center gap-1 rounded px-1 py-0.5 text-xs transition-colors ${
-         error ? "text-red-500 hover:text-red-600" : "text-gray-400 hover:text-gray-200"
-       }`}
+      className={`ml-2 inline-flex items-center gap-1 rounded px-1 py-0.5 text-xs transition-colors ${
+        error ? "text-[var(--color-status-error)] hover:text-[var(--color-status-error)]/90" : "text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"
+      }`}
      >
       {isPlaying ? <VolumeX className="h-3.5 w-3.5" /> : <Volume2 className="h-3.5 w-3.5" />}
       {isLoading ? "Loading..." : null}
