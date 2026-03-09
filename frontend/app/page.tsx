@@ -4,6 +4,8 @@ import { ChatInputBar } from "../components/ChatInputBar";
 import { useChat } from "@ai-sdk/react";
 import { useState, useRef, useEffect, Suspense, useMemo } from "react";
 import { useRouter } from "next/navigation";
+import { Group, Panel, Separator } from "react-resizable-panels";
+import { FilePreview } from "../src/components/FilePreview";
 import { useStt } from "../hooks/useStt";
 import { ErrorProvider, useError } from "../components/ErrorProvider";
 import { ErrorBoundary } from "../components/ErrorBoundary";
@@ -873,6 +875,23 @@ function ChatContent() {
 
   const agents = useAgentStatus(events);
 
+  // Track the latest document download for preview panel
+  const documentDownload = useMemo(() => {
+    // Look through all messages for document downloads
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i];
+      const liveEvents = getEventsForMessage(message.id, i === messages.length - 1);
+      const persistedToolEvents = persistedToolEventsByMessageId.get(message.id) || [];
+      const msgEvents = liveEvents.length > 0 ? liveEvents : persistedToolEvents;
+      const doc = getDocumentDownloadFromEvents(msgEvents);
+      if (doc) return doc;
+    }
+    return undefined;
+  }, [messages, getEventsForMessage, persistedToolEventsByMessageId]);
+
+  // Determine if we should show the preview panel
+  const showPreviewPanel = documentDownload !== undefined;
+
   return (
     <div className="flex h-screen bg-[var(--color-bg-tertiary)] overflow-hidden">
       {!isOnline && <OfflineIndicator />}
@@ -910,7 +929,14 @@ function ChatContent() {
         />
       </div>
 
-      <div className="flex-1 flex flex-col w-full min-w-0 relative">
+      <Group orientation="horizontal" className="flex-1 overflow-hidden">
+        {/* Left Panel - Chat Content */}
+        <Panel
+          defaultSize={showPreviewPanel ? 80 : 100}
+          minSize={50}
+          className="flex flex-col"
+        >
+          <div className="flex-1 flex flex-col w-full min-w-0 relative">
         {isRecording && (
           <div className="bg-[var(--color-status-error)] text-white px-4 py-2 text-center text-sm font-medium animate-pulse">
             Recording... Tap mic to stop
@@ -983,7 +1009,7 @@ function ChatContent() {
                 const liveEvents = getEventsForMessage(message.id, isLast);
                 const persistedToolEvents = persistedToolEventsByMessageId.get(message.id) || [];
                 const msgEvents = liveEvents.length > 0 ? liveEvents : persistedToolEvents;
-                const documentDownload = getDocumentDownloadFromEvents(msgEvents);
+                const documentDownloadForMessage = getDocumentDownloadFromEvents(msgEvents);
                 const liveThoughtContent = getThinkingContent(liveEvents);
                 const messageContent = getMessageContent(message);
                 const formattedMessageContent = formatMessageContent(messageContent);
@@ -1036,14 +1062,14 @@ function ChatContent() {
                         <div className="w-full">
                           <MarkdownMessage content={messageContent} />
                         </div>
-                        {/* Render FileDownloadCard for document files */}
-                        {documentDownload && (
+                        {/* Render FileDownloadCard for document files - only when preview panel is NOT shown */}
+                        {documentDownloadForMessage && !showPreviewPanel && (
                           <div className="mt-4">
                             <FileDownloadCard
-                              filename={documentDownload.filename}
-                              fileUrl={documentDownload.fileUrl}
-                              fileSize={documentDownload.fileSize}
-                              fileType={documentDownload.fileType}
+                              filename={documentDownloadForMessage.filename}
+                              fileUrl={documentDownloadForMessage.fileUrl}
+                              fileSize={documentDownloadForMessage.fileSize}
+                              fileType={documentDownloadForMessage.fileType}
                             />
                           </div>
                         )}
@@ -1106,7 +1132,40 @@ function ChatContent() {
             />
           </form>
         </footer>
-      </div>
+          </div>
+        </Panel>
+
+        {/* Resize Handle - only shown when preview is visible */}
+        {showPreviewPanel && (
+          <Separator className="hidden md:flex w-1 bg-[var(--color-border-primary)] hover:bg-[var(--color-accent-primary)] transition-colors cursor-col-resize items-center justify-center">
+            <div className="w-0.5 h-8 bg-[var(--color-border-secondary)] rounded-full" />
+          </Separator>
+        )}
+
+        {/* Right Panel - File Preview */}
+        {showPreviewPanel && (
+          <Panel
+            defaultSize={20}
+            minSize={20}
+            className="hidden md:flex flex-col bg-[var(--color-bg-secondary)] border-l border-[var(--color-border-primary)]"
+            style={{ minWidth: 300 }}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border-primary)]">
+              <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">Document Preview</h2>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4">
+              {documentDownload && (
+                <FilePreview
+                  fileUrl={documentDownload!.fileUrl}
+                  filename={documentDownload!.filename}
+                  format={documentDownload!.fileType || ""}
+                  fileSize={documentDownload!.fileSize}
+                />
+              )}
+            </div>
+          </Panel>
+        )}
+      </Group>
 
       <AgentStatusList agents={agents} />
     </div>
