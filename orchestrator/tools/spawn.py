@@ -15,6 +15,7 @@ from orchestrator.subagents.base import SubagentType, SubagentManager
 from orchestrator.subagents.research import ResearchSubagent
 from orchestrator.subagents.image import ImageSubagent
 from orchestrator.subagents.audio import AudioSubagent
+from orchestrator.subagents.document import DocumentSubagent
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,32 @@ def _persist_audio_result(result_dict: dict[str, Any]) -> dict[str, Any]:
     return result_dict
 
 
+def _persist_file_result(result_dict: dict[str, Any]) -> dict[str, Any]:
+    """Handle DocumentSubagent results - preserve file path and generation_code.
+    
+    DocumentSubagent already persists files to data/generated_files/ via its
+    _persist_file method. This function ensures generation_code is preserved
+    in metadata for revision flows.
+    """
+    # Check if this is a document result
+    agent_type = result_dict.get("agent_type")
+    if agent_type != "document":
+        return result_dict
+    
+    data = result_dict.get("data")
+    if not isinstance(data, dict):
+        return result_dict
+    
+    # DocumentSubagent already saved the file and returned file_url
+    # Just ensure generation_code is in metadata for revisions
+    generation_code = data.get("generation_code")
+    if generation_code:
+        # Move generation_code to metadata for persistence
+        result_dict["metadata"] = result_dict.get("metadata", {})
+        result_dict["metadata"]["generation_code"] = generation_code
+    
+    return result_dict
+
 # Global subagent manager instance
 _subagent_manager: SubagentManager | None = None
 
@@ -126,6 +153,7 @@ def get_subagent_manager() -> SubagentManager:
         _subagent_manager.register(ResearchSubagent(shared_config))
         _subagent_manager.register(ImageSubagent(shared_config))
         _subagent_manager.register(AudioSubagent(shared_config))
+        _subagent_manager.register(DocumentSubagent(shared_config))
     return _subagent_manager
 
 
@@ -133,7 +161,7 @@ class SpawnAgentTool(Tool):
     """Tool to spawn specialized subagents for complex tasks."""
 
     name = "spawn_agent"
-    description = "Spawn a specialized subagent for research, image generation, sound effect generation, code tasks, or document reading"
+    description = "Spawn a specialized subagent for research, image generation, sound effect generation, code tasks, or document reading or document generation"
     parameters = {
         "type": "object",
         "properties": {
@@ -182,6 +210,7 @@ class SpawnAgentTool(Tool):
         result_dict = result.to_dict()
         result_dict = _persist_image_result(result_dict)
         result_dict = _persist_audio_result(result_dict)
+        result_dict = _persist_file_result(result_dict)
 
         return json.dumps(result_dict)
 
@@ -254,6 +283,7 @@ class SpawnMultipleTool(Tool):
             result_dict = result.to_dict()
             result_dict = _persist_image_result(result_dict)
             result_dict = _persist_audio_result(result_dict)
+            result_dict = _persist_file_result(result_dict)
             results.append(result_dict)
 
         return json.dumps(

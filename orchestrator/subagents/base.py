@@ -19,6 +19,7 @@ class SubagentType(Enum):
     CODE = "code"
     READER = "reader"
     AUDIO = "audio"
+    DOCUMENT = "document"
 
 
 @dataclass

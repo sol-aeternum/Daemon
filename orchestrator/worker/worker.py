@@ -20,6 +20,7 @@ from .jobs import (
     generate_conversation_title_job,
     generate_summary_job,
     generate_title,
+    cleanup_generated_files,
 )
 from .settings import WorkerSettings
 
@@ -70,6 +71,7 @@ worker = Worker(
         ),
         func(generate_summary_job, max_tries=_worker_settings.retry_attempts),
         func(garbage_collect, max_tries=_worker_settings.retry_attempts),
+        func(cleanup_generated_files, max_tries=_worker_settings.retry_attempts),
     ],
     redis_settings=RedisSettings.from_dsn(_worker_settings.redis_url),
     on_startup=on_startup,

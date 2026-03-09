@@ -6,7 +6,8 @@ import json
 import logging
 import uuid
 from collections.abc import Mapping, Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, cast
 
 from arq.connections import ArqRedis
@@ -289,3 +290,33 @@ async def garbage_collect(ctx: WorkerContext) -> dict[str, int]:
 
     deleted = int(result.split()[-1]) if result else 0
     return {"scanned": int(scanned or 0), "deleted": deleted}
+
+
+async def cleanup_generated_files(ctx: WorkerContext) -> dict[str, int]:
+    """Delete generated files older than 24 hours."""
+    from orchestrator.config import get_settings
+
+    settings = get_settings()
+    generated_files_dir = Path(__file__).resolve().parent.parent / "data" / "generated_files"
+    
+    if not generated_files_dir.exists():
+        return {"scanned": 0, "deleted": 0}
+    
+    cutoff = datetime.now() - timedelta(hours=24)
+    deleted = 0
+    scanned = 0
+    
+    for item in generated_files_dir.iterdir():
+        scanned += 1
+        # Only delete files, not directories
+        if item.is_file():
+            try:
+                mtime = datetime.fromtimestamp(item.stat().st_mtime)
+                if mtime < cutoff:
+                    item.unlink()
+                    deleted += 1
+                    logger.info(f"Deleted old generated file: {item.name}")
+            except Exception as e:
+                logger.warning(f"Failed to process {item.name}: {e}")
+    
+    return {"scanned": scanned, "deleted": deleted}

@@ -532,11 +532,13 @@ async def completion_with_tools(
                 }
             last_spawn_result = _extract_last_spawn_result(current_messages)
             last_session_id = None
+            last_generation_code = None
             last_agent_type = "image"
             if isinstance(last_spawn_result, dict):
                 metadata = last_spawn_result.get("metadata")
                 if isinstance(metadata, dict):
                     last_session_id = metadata.get("session_id")
+                    last_generation_code = metadata.get("generation_code")
                 if not last_session_id:
                     last_session_id = last_spawn_result.get("session_id")
                 agent_type = last_spawn_result.get("agent_type")
@@ -550,13 +552,15 @@ async def completion_with_tools(
                 and last_user_message
                 and is_retry_request(last_user_message)
             ):
-                func_args = json.dumps(
-                    {
-                        "agent_type": last_agent_type,
-                        "task": last_user_message,
-                        "session_id": last_session_id,
-                    }
-                )
+                func_args_dict = {
+                    "agent_type": last_agent_type,
+                    "task": last_user_message,
+                    "session_id": last_session_id,
+                }
+                # Pass generation_code for document revisions
+                if last_generation_code:
+                    func_args_dict["context"] = {"original_code": last_generation_code}
+                func_args = json.dumps(func_args_dict)
                 yield {
                     "type": "tool_executing",
                     "name": "spawn_agent",

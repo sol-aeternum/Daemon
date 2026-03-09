@@ -784,6 +784,9 @@ GENERATED_IMAGES_DIR = (
 GENERATED_AUDIO_DIR = (
     Path(__file__).resolve().parent.parent / "data" / "generated_audio"
 )
+GENERATED_FILES_DIR = (
+    Path(__file__).resolve().parent.parent / "data" / "generated_files"
+)
 TTS_CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "tts_cache"
 TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -819,6 +822,29 @@ async def serve_generated_audio(filename: str) -> FileResponse:
         media_type = "audio/wav"
     elif safe_name.endswith(".ogg"):
         media_type = "audio/ogg"
+    return FileResponse(filepath, media_type=media_type)
+
+
+
+@app.get("/generated-files/{filename}")
+async def serve_generated_file(filename: str) -> FileResponse:
+    """Serve a generated document file from disk."""
+    safe_name = Path(filename).name
+    filepath = GENERATED_FILES_DIR / safe_name
+    if not filepath.exists() or not filepath.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    # Determine media type based on extension
+    media_type = "application/octet-stream"  # default
+    if safe_name.endswith(".docx"):
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    elif safe_name.endswith(".csv"):
+        media_type = "text/csv"
+    elif safe_name.endswith(".xlsx"):
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    elif safe_name.endswith(".txt"):
+        media_type = "text/plain"
+    
     return FileResponse(filepath, media_type=media_type)
 
 
