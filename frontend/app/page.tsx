@@ -28,6 +28,7 @@ import { StreamingTtsMessage } from "../components/StreamingTtsMessage";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { ThinkingIndicator } from "../components/ThinkingIndicator";
 import MarkdownMessage from "../components/MarkdownMessage";
+import { FileDownloadCard } from "../components/FileDownloadCard";
 import { SkeletonBlock } from "../components/ui/Skeleton";
 import { ChatEvent, isChatEvent } from "../lib/events";
 import { Search, Image, Code, MessageSquare, Sparkles } from "lucide-react";
@@ -68,6 +69,13 @@ type OutboundAttachment = {
   kind: OutboundAttachmentKind;
   data_url?: string;
   text_content?: string;
+};
+
+type DocumentDownloadInfo = {
+  fileUrl: string;
+  filename: string;
+  fileType?: string;
+  fileSize?: number;
 };
 
 const MAX_ATTACHMENT_TEXT_LENGTH = 8000;
@@ -164,6 +172,49 @@ const getMessageContent = (message: Message): string => {
   }
 
   return typeof rawContent === "string" ? rawContent : "";
+};
+
+const parseToolResultRecord = (value: unknown): Record<string, unknown> | undefined => {
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return toRecord(parsed);
+    } catch {
+      return undefined;
+    }
+  }
+  return toRecord(value);
+};
+
+const getDocumentDownloadFromEvents = (events: ChatEvent[]): DocumentDownloadInfo | undefined => {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (event.type !== "tool_result") continue;
+
+    const parsed = parseToolResultRecord(event.result);
+    if (!parsed) continue;
+
+    const data = toRecord(parsed.data);
+    const fileUrl = getOptionalString(data?.file_url ?? parsed.file_url);
+    if (!fileUrl || !fileUrl.startsWith("/generated-files/")) continue;
+
+    const filename = getOptionalString(data?.filename ?? parsed.filename)
+      || fileUrl.split("/").pop()
+      || "download";
+    const fileType = getOptionalString(data?.format ?? parsed.format);
+
+    const fromDataSize = data?.file_size;
+    const fromRootSize = parsed.file_size;
+    const fileSize = typeof fromDataSize === "number"
+      ? fromDataSize
+      : typeof fromRootSize === "number"
+        ? fromRootSize
+        : undefined;
+
+    return { fileUrl, filename, fileType, fileSize };
+  }
+
+  return undefined;
 };
 
 const getModelName = (modelId: string | undefined): string | undefined => {
@@ -932,6 +983,7 @@ function ChatContent() {
                 const liveEvents = getEventsForMessage(message.id, isLast);
                 const persistedToolEvents = persistedToolEventsByMessageId.get(message.id) || [];
                 const msgEvents = liveEvents.length > 0 ? liveEvents : persistedToolEvents;
+                const documentDownload = getDocumentDownloadFromEvents(msgEvents);
                 const liveThoughtContent = getThinkingContent(liveEvents);
                 const messageContent = getMessageContent(message);
                 const formattedMessageContent = formatMessageContent(messageContent);
@@ -984,6 +1036,17 @@ function ChatContent() {
                         <div className="w-full">
                           <MarkdownMessage content={messageContent} />
                         </div>
+                        {/* Render FileDownloadCard for document files */}
+                        {documentDownload && (
+                          <div className="mt-4">
+                            <FileDownloadCard
+                              filename={documentDownload.filename}
+                              fileUrl={documentDownload.fileUrl}
+                              fileSize={documentDownload.fileSize}
+                              fileType={documentDownload.fileType}
+                            />
+                          </div>
+                        )}
                         {showTts && (
                           <div className="flex justify-start">
                             {isLast && isLoading ? (
