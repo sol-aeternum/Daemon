@@ -22,6 +22,7 @@ export interface ConversationHistoryContextValue {
   deleteConversation: ReturnType<typeof useConversationHistory>["deleteConversation"];
   getCurrentConversation: ReturnType<typeof useConversationHistory>["getCurrentConversation"];
   switchConversation: ReturnType<typeof useConversationHistory>["switchConversation"];
+  fetchConversationById: ReturnType<typeof useConversationHistory>["fetchConversationById"];
   searchQuery: ReturnType<typeof useConversationHistory>["searchQuery"];
   setSearchQuery: ReturnType<typeof useConversationHistory>["setSearchQuery"];
   refreshConversations: ReturnType<typeof useConversationHistory>["refreshConversations"];

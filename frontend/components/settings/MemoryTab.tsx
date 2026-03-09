@@ -33,22 +33,92 @@ export default function MemoryTab() {
   const [actionStatus, setActionStatus] = useState<ActionStatus>('idle');
   const [actionMessage, setActionMessage] = useState('');
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  const apiBaseUrl =
+    process.env.NEXT_PUBLIC_API_URL ||
+    (process.env.NODE_ENV === 'development' ? 'http://localhost:8000' : '');
+
+  const getAuthHeaders = useCallback((): Record<string, string> => {
+    const apiKey = typeof window !== 'undefined' ? localStorage.getItem('daemon_api_key') || '' : '';
+    return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+  }, []);
+
+  const apiCandidates = useCallback(
+    (path: string) => {
+      const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+      const trimmedBase = apiBaseUrl.endsWith('/') ? apiBaseUrl.slice(0, -1) : apiBaseUrl;
+
+      if (!trimmedBase) {
+        return [normalizedPath];
+      }
+
+      return [`${trimmedBase}${normalizedPath}`, normalizedPath];
+    },
+    [apiBaseUrl]
+  );
+
+  const fetchWithFallback = useCallback(
+    async (path: string, init: RequestInit = {}, timeoutMs = 12000) => {
+      const candidates = apiCandidates(path);
+
+      for (let index = 0; index < candidates.length; index += 1) {
+        const candidate = candidates[index];
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => {
+          try {
+            controller.abort(new DOMException('Memory request timed out', 'AbortError'));
+          } catch {
+            controller.abort();
+          }
+        }, timeoutMs);
+
+        try {
+          const response = await fetch(candidate, { ...init, signal: controller.signal });
+          clearTimeout(timeoutId);
+
+          if (response.status === 404 && index < candidates.length - 1) {
+            continue;
+          }
+
+          return response;
+        } catch (error) {
+          clearTimeout(timeoutId);
+          if (index === candidates.length - 1) {
+            throw error;
+          }
+        }
+      }
+
+      throw new Error('Request failed');
+    },
+    [apiCandidates]
+  );
 
   // Fetch memory count on mount
   const fetchMemoryStats = useCallback(async () => {
     try {
-      const response = await fetch('/memories?limit=1');
+      const response = await fetchWithFallback('/memories?limit=1', {
+        headers: getAuthHeaders(),
+      });
       if (!response.ok) {
-        throw new Error('Failed to fetch memories');
+        setActionStatus('error');
+        setActionMessage('Failed to load memories. Please verify API connectivity.');
+        setStats({ total: 0, memories: [] });
+        return;
       }
       const data = await response.json();
       setStats(data);
     } catch (error) {
-      console.error('Error fetching memory stats:', error);
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        setActionStatus('error');
+        setActionMessage('Memory request timed out. Please retry.');
+      } else {
+        setActionStatus('error');
+        setActionMessage('Failed to load memories. Please retry.');
+      }
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [fetchWithFallback, getAuthHeaders]);
 
   useEffect(() => {
     fetchMemoryStats();
@@ -60,12 +130,15 @@ export default function MemoryTab() {
     setActionMessage('');
 
     try {
-      const response = await fetch('/memories?confirm=true', {
+      const response = await fetchWithFallback('/memories?confirm=true', {
         method: 'DELETE',
+        headers: getAuthHeaders(),
       });
 
       if (!response.ok) {
-        throw new Error('Failed to clear memories');
+        setActionStatus('error');
+        setActionMessage('Failed to clear memories. Please verify API connectivity.');
+        return;
       }
 
       const data = await response.json();
@@ -79,9 +152,13 @@ export default function MemoryTab() {
         setActionMessage('');
       }, 5000);
     } catch (error) {
-      console.error('Error clearing memories:', error);
-      setActionStatus('error');
-      setActionMessage('Failed to clear memories. Please try again.');
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        setActionStatus('error');
+        setActionMessage('Clear request timed out. Please retry.');
+      } else {
+        setActionStatus('error');
+        setActionMessage('Failed to clear memories. Please try again.');
+      }
     } finally {
       setShowConfirmDialog(false);
     }

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { SkeletonLine, SkeletonBlock, SkeletonCircle } from '@/components/ui/Skeleton';
 import { User, Save, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 
@@ -34,20 +34,77 @@ export default function ProfileTab() {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [errorMessage, setErrorMessage] = useState('');
 
-  const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || '';
+  const apiBaseUrl =
+    process.env.NEXT_PUBLIC_API_URL ||
+    (process.env.NODE_ENV === 'development' ? 'http://localhost:8000' : '');
+
+  const getAuthHeaders = useCallback((): Record<string, string> => {
+    const apiKey = typeof window !== 'undefined' ? localStorage.getItem('daemon_api_key') || '' : '';
+    return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+  }, []);
+
+  const apiCandidates = useCallback(
+    (path: string) => {
+      const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+      const trimmedBase = apiBaseUrl.endsWith('/') ? apiBaseUrl.slice(0, -1) : apiBaseUrl;
+
+      if (!trimmedBase) {
+        return [normalizedPath];
+      }
+
+      return [`${trimmedBase}${normalizedPath}`, normalizedPath];
+    },
+    [apiBaseUrl]
+  );
+
+  const fetchWithFallback = useCallback(
+    async (path: string, init: RequestInit = {}, timeoutMs = 12000) => {
+      const candidates = apiCandidates(path);
+
+      for (let index = 0; index < candidates.length; index += 1) {
+        const candidate = candidates[index];
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => {
+          try {
+            controller.abort(new DOMException('Settings request timed out', 'AbortError'));
+          } catch {
+            controller.abort();
+          }
+        }, timeoutMs);
+
+        try {
+          const response = await fetch(candidate, { ...init, signal: controller.signal });
+          clearTimeout(timeoutId);
+
+          if (response.status === 404 && index < candidates.length - 1) {
+            continue;
+          }
+
+          return response;
+        } catch (error) {
+          clearTimeout(timeoutId);
+          if (index === candidates.length - 1) {
+            throw error;
+          }
+        }
+      }
+
+      throw new Error('Request failed');
+    },
+    [apiCandidates]
+  );
 
   // Fetch user settings on mount
   useEffect(() => {
     const fetchSettings = async () => {
       try {
-        const response = await fetch(`${apiBaseUrl}/users/me/settings`, {
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('daemon_api_key') || ''}`,
-          },
+        const response = await fetchWithFallback('/users/me/settings', {
+          headers: getAuthHeaders(),
         });
 
         if (!response.ok) {
-          throw new Error('Failed to fetch settings');
+          setErrorMessage('Failed to load settings. Please check API connectivity.');
+          return;
         }
 
         const settings: UserSettings = await response.json();
@@ -57,15 +114,18 @@ export default function ProfileTab() {
           preferences: settings.preferences?.custom_instructions || '',
         });
       } catch (error) {
-        console.error('Error fetching settings:', error);
-        setErrorMessage('Failed to load settings. Please try again.');
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          setErrorMessage('Settings request timed out. Please retry.');
+        } else {
+          setErrorMessage('Failed to load settings. Please try again.');
+        }
       } finally {
         setIsLoading(false);
       }
     };
 
     fetchSettings();
-  }, [apiBaseUrl]);
+  }, [fetchWithFallback]);
 
   // Handle form submission
   const handleSubmit = async (e: { preventDefault: () => void }) => {
@@ -74,11 +134,11 @@ export default function ProfileTab() {
     setErrorMessage('');
 
     try {
-      const response = await fetch(`${apiBaseUrl}/users/me/settings`, {
+      const response = await fetchWithFallback('/users/me/settings', {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('daemon_api_key') || ''}`,
+          ...getAuthHeaders(),
         },
         body: JSON.stringify({
           preferences: {
@@ -86,10 +146,12 @@ export default function ProfileTab() {
             custom_instructions: formData.preferences,
           },
         }),
-      });
+      }, 12000);
 
       if (!response.ok) {
-        throw new Error('Failed to save settings');
+        setSaveStatus('error');
+        setErrorMessage('Failed to save settings. Please verify API key and connectivity.');
+        return;
       }
 
       setSaveStatus('success');
@@ -99,9 +161,12 @@ export default function ProfileTab() {
         setSaveStatus('idle');
       }, 3000);
     } catch (error) {
-      console.error('Error saving settings:', error);
       setSaveStatus('error');
-      setErrorMessage('Failed to save settings. Please try again.');
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        setErrorMessage('Save request timed out. Please retry.');
+      } else {
+        setErrorMessage('Failed to save settings. Please try again.');
+      }
     }
   };
 

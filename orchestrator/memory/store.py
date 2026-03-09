@@ -254,12 +254,18 @@ class MemoryStore:
         content: str | None = None,
         status: str | None = None,
         metadata: dict[str, Any] | None = None,
+        tool_calls: list[Any] | None = None,
+        tool_results: list[Any] | None = None,
         reasoning_text: str | None = None,
         reasoning_duration_secs: int | None = None,
         reasoning_model: str | None = None,
     ) -> dict[str, Any] | None:
         encrypted_content = self._enc.encrypt(content) if content is not None else None
         metadata_json = json.dumps(metadata) if metadata is not None else None
+        tool_calls_json = json.dumps(tool_calls) if tool_calls is not None else None
+        tool_results_json = (
+            json.dumps(tool_results) if tool_results is not None else None
+        )
         encrypted_reasoning_text = (
             self._enc.encrypt(reasoning_text) if reasoning_text is not None else None
         )
@@ -269,9 +275,11 @@ class MemoryStore:
             SET content    = COALESCE($2, content),
                 status     = COALESCE($3, status),
                 metadata   = COALESCE($4::jsonb, metadata),
-                reasoning_text = COALESCE($5, reasoning_text),
-                reasoning_duration_secs = COALESCE($6, reasoning_duration_secs),
-                reasoning_model = COALESCE($7, reasoning_model)
+                tool_calls = COALESCE($5::jsonb, tool_calls),
+                tool_results = COALESCE($6::jsonb, tool_results),
+                reasoning_text = COALESCE($7, reasoning_text),
+                reasoning_duration_secs = COALESCE($8, reasoning_duration_secs),
+                reasoning_model = COALESCE($9, reasoning_model)
             WHERE id = $1
             RETURNING *
             """,
@@ -279,6 +287,8 @@ class MemoryStore:
             encrypted_content,
             status,
             metadata_json,
+            tool_calls_json,
+            tool_results_json,
             encrypted_reasoning_text,
             reasoning_duration_secs,
             reasoning_model,

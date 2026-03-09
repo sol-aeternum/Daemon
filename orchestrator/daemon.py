@@ -43,8 +43,8 @@ def sse(event_type: str, payload: dict[str, Any]) -> str:
 
 
 def build_openai_messages(
-    system_prompt: str, user_message: str
-) -> list[dict[str, str]]:
+    system_prompt: str, user_message: str | list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_message},
@@ -53,14 +53,14 @@ def build_openai_messages(
 
 def build_openai_messages_from_history(
     system_prompt: str, history_messages: list[dict[str, Any]]
-) -> list[dict[str, str]]:
-    messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
     for msg in history_messages:
         role = msg.get("role")
         content = msg.get("content")
         if not role or content is None:
             continue
-        messages.append({"role": str(role), "content": str(content)})
+        messages.append({"role": str(role), "content": content})
     return messages
 
 
@@ -253,6 +253,8 @@ async def stream_sse_chat(
 
     evt_counter = 0
     final_text_parts: list[str] = []
+    persisted_tool_calls: list[dict[str, Any]] = []
+    persisted_tool_results: list[dict[str, Any]] = []
     finish_reason: str | None = None
     usage: dict[str, int] | None = None
 
@@ -447,6 +449,18 @@ async def stream_sse_chat(
                             except Exception:
                                 tool_arguments = {"raw": raw_arguments}
 
+                        normalized_arguments = (
+                            tool_arguments
+                            if isinstance(tool_arguments, dict)
+                            else {"value": tool_arguments}
+                        )
+                        persisted_tool_calls.append(
+                            {
+                                "name": tool_name,
+                                "arguments": normalized_arguments,
+                            }
+                        )
+
                         yield sse(
                             "tool_call",
                             make_envelope(
@@ -469,6 +483,13 @@ async def stream_sse_chat(
                                 tool_result = json.loads(raw_result)
                             except Exception:
                                 tool_result = raw_result
+
+                        persisted_tool_results.append(
+                            {
+                                "name": tool_name,
+                                "result": tool_result,
+                            }
+                        )
 
                         yield sse(
                             "tool_result",
@@ -513,6 +534,20 @@ async def stream_sse_chat(
                                         evt_id=f"evt_tool_result_{uuid.uuid4().hex}",
                                     ),
                                 )
+                                persisted_tool_results.append(
+                                    {
+                                        "name": unresolved_name,
+                                        "result": {
+                                            "success": False,
+                                            "error": error_message,
+                                            "metadata": {
+                                                "recoverable": True,
+                                                "synthetic": True,
+                                                "reason": "pipeline_error",
+                                            },
+                                        },
+                                    }
+                                )
                         else:
                             yield sse(
                                 "tool_result",
@@ -532,6 +567,20 @@ async def stream_sse_chat(
                                     },
                                     evt_id=f"evt_tool_result_{uuid.uuid4().hex}",
                                 ),
+                            )
+                            persisted_tool_results.append(
+                                {
+                                    "name": "tool_pipeline",
+                                    "result": {
+                                        "success": False,
+                                        "error": error_message,
+                                        "metadata": {
+                                            "recoverable": True,
+                                            "synthetic": True,
+                                            "reason": "pipeline_error",
+                                        },
+                                    },
+                                }
                             )
 
                         graceful_notice = (
@@ -596,8 +645,21 @@ async def stream_sse_chat(
                                         evt_id=f"evt_tool_result_{uuid.uuid4().hex}",
                                     ),
                                 )
+                                persisted_tool_results.append(
+                                    {
+                                        "name": unresolved_name,
+                                        "result": {
+                                            "success": False,
+                                            "error": "Tool call did not complete before stream finished.",
+                                            "metadata": {
+                                                "recoverable": True,
+                                                "synthetic": True,
+                                                "reason": "stream_done_with_pending",
+                                            },
+                                        },
+                                    }
+                                )
                         break
-
 
         except asyncio.CancelledError:
             forced_terminal_status = "cancelled"
@@ -612,7 +674,6 @@ async def stream_sse_chat(
                 make_envelope("error", {"message": str(e)}, evt_id="evt_error"),
             )
             return
-
 
         # Ensure assistant always provides visible response even when tool failures occur
         # without explicit error events (e.g., tool_result with failure status then done)
@@ -677,6 +738,8 @@ async def stream_sse_chat(
                     await memory_store.update_message(
                         message_id=assistant_message_id,
                         content=content,
+                        tool_calls=persisted_tool_calls,
+                        tool_results=persisted_tool_results,
                         reasoning_text=reasoning_text,
                         reasoning_duration_secs=reasoning_duration_secs,
                         reasoning_model=model_name,
@@ -691,6 +754,8 @@ async def stream_sse_chat(
                         role="assistant",
                         content=content,
                         model=model_name,
+                        tool_calls=persisted_tool_calls,
+                        tool_results=persisted_tool_results,
                         reasoning_text=reasoning_text,
                         reasoning_duration_secs=reasoning_duration_secs,
                         reasoning_model=model_name,

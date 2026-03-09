@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import { Paperclip, Send } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Paperclip, Send, X } from "lucide-react";
 import { ModelSelector } from "./ModelSelector";
 import { MicButton } from "./MicButton";
 
@@ -23,6 +23,9 @@ interface ChatInputBarProps {
   // Cloud/Local toggle props
   isLocal?: boolean;
   onToggleLocal?: () => void;
+  attachments?: Array<{ id: string; name: string; size: number }>;
+  onAttachFiles?: (files: FileList) => void;
+  onRemoveAttachment?: (id: string) => void;
 }
 
 export function ChatInputBar({
@@ -40,8 +43,13 @@ export function ChatInputBar({
   isLoading,
   isLocal = false,
   onToggleLocal,
+  attachments = [],
+  onAttachFiles,
+  onRemoveAttachment,
 }: ChatInputBarProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -56,15 +64,86 @@ export function ChatInputBar({
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (!input.trim() || isLoading) return;
+      if ((!input.trim() && attachments.length === 0) || isLoading) return;
       onSubmit(e);
+    }
+  };
+
+  const handleAttachmentClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFilesSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const { files } = event.target;
+    if (files && files.length > 0) {
+      onAttachFiles?.(files);
+    }
+    event.target.value = "";
+  };
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const hasDraggedFiles = (event: React.DragEvent<HTMLDivElement>) => {
+    const { types } = event.dataTransfer;
+    return Array.from(types).includes("Files");
+  };
+
+  const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!isDragOver) {
+      setIsDragOver(true);
+    }
+  };
+
+  const handleDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const relatedTarget = event.relatedTarget as Node | null;
+    if (relatedTarget && event.currentTarget.contains(relatedTarget)) {
+      return;
+    }
+    setIsDragOver(false);
+  };
+
+  const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDragOver(false);
+    const { files } = event.dataTransfer;
+    if (files && files.length > 0) {
+      onAttachFiles?.(files);
     }
   };
 
   return (
     <div className="w-full max-w-3xl mx-auto p-4">
       {/* Unified input container */}
-      <div className="relative bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)] rounded-2xl shadow-md hover:shadow-lg focus-within:shadow-lg focus-within:border-[var(--color-border-secondary)] transition-all duration-200">
+      <div
+        onDragOver={handleDragOver}
+        onDragEnter={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className={`relative bg-[var(--color-bg-secondary)] border rounded-2xl shadow-md hover:shadow-lg focus-within:shadow-lg transition-all duration-200 ${
+          isDragOver
+            ? "border-[var(--color-accent-primary)] ring-2 ring-[var(--color-accent-primary)]/25"
+            : "border-[var(--color-border-primary)] focus-within:border-[var(--color-border-secondary)]"
+        }`}
+      >
+        {isDragOver && (
+          <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-2xl bg-[var(--color-bg-tertiary)]/85 backdrop-blur-[1px]">
+            <div className="rounded-lg border border-[var(--color-accent-primary)]/40 bg-[var(--color-bg-secondary)] px-4 py-2 text-sm font-medium text-[var(--color-text-primary)] shadow-sm">
+              Drop files to attach
+            </div>
+          </div>
+        )}
         {/* Top row: Controls */}
         <div className="flex items-center gap-2 px-3 pt-3 pb-2 border-b border-[var(--color-border-muted)]">
           {/* Left: Model selector pill */}
@@ -100,13 +179,36 @@ export function ChatInputBar({
           {/* Attachment button (compact) */}
           <button
             type="button"
+            onClick={handleAttachmentClick}
             aria-label="Attach file"
             className="min-h-[44px] min-w-[44px] rounded-md p-1.5 text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
-            title="Attach file (coming soon)"
+            title="Attach file"
           >
             <Paperclip className="w-4 h-4" />
           </button>
         </div>
+
+        {attachments.length > 0 && (
+          <div className="px-3 pt-2 flex flex-wrap gap-2 border-b border-[var(--color-border-muted)]">
+            {attachments.map((attachment) => (
+              <div
+                key={attachment.id}
+                className="inline-flex items-center gap-2 rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-tertiary)] px-2 py-1 text-xs text-[var(--color-text-secondary)]"
+              >
+                <span className="max-w-[180px] truncate">{attachment.name}</span>
+                <span className="text-[var(--color-text-muted)]">{formatFileSize(attachment.size)}</span>
+                <button
+                  type="button"
+                  onClick={() => onRemoveAttachment?.(attachment.id)}
+                  className="rounded p-0.5 text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+                  aria-label={`Remove ${attachment.name}`}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         
         {/* Bottom row: Input and actions */}
         <div className="flex items-end gap-2 p-3">
@@ -134,9 +236,9 @@ export function ChatInputBar({
             <button
               type="submit"
               aria-label="Send message"
-              disabled={!input.trim() || isLoading}
+              disabled={(!input.trim() && attachments.length === 0) || isLoading}
               className={`min-h-[44px] min-w-[44px] rounded-xl p-2 transition-all duration-200 ${
-                input.trim() && !isLoading
+                (input.trim() || attachments.length > 0) && !isLoading
                   ? "bg-[var(--color-accent-primary)] text-white hover:bg-[var(--color-accent-hover)] shadow-sm"
                   : "bg-transparent text-[var(--color-text-muted)] cursor-not-allowed"
               }`}
@@ -145,6 +247,14 @@ export function ChatInputBar({
             </button>
           </div>
         </div>
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={handleFilesSelected}
+        />
       </div>
       
       {/* Disclaimer */}

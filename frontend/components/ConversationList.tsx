@@ -5,7 +5,19 @@ import { createPortal } from "react-dom";
 import { Conversation } from "../hooks/useConversationHistory";
 import { AccountWidget } from "./AccountWidget";
 import { SkeletonCircle, SkeletonLine } from "./ui/Skeleton";
-import { MoreHorizontal, Pin, Trash2, Edit2, MessageSquare, Search } from "lucide-react";
+import {
+  MoreHorizontal,
+  Pin,
+  Trash2,
+  Edit2,
+  MessageSquare,
+  Search,
+  FolderKanban,
+  GalleryHorizontal,
+  Plus,
+} from "lucide-react";
+
+export type SidebarSection = "home" | "chats" | "projects" | "artifacts";
 
 interface ConversationListProps {
   conversations: Conversation[];
@@ -18,6 +30,9 @@ interface ConversationListProps {
   searchQuery: string;
   setSearchQuery: (query: string) => void;
   isLoading?: boolean;
+  activeSection?: SidebarSection;
+  onNavigate?: (section: SidebarSection) => void;
+  onGoHome?: () => void;
 }
 
 export function ConversationList({
@@ -31,6 +46,9 @@ export function ConversationList({
   searchQuery,
   setSearchQuery,
   isLoading = false,
+  activeSection = "home",
+  onNavigate,
+  onGoHome,
 }: ConversationListProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
@@ -44,14 +62,25 @@ export function ConversationList({
     setIsBrowser(typeof document !== "undefined");
   }, []);
 
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+  const visibleConversations = useMemo(() => {
+    if (!normalizedSearchQuery) {
+      return conversations;
+    }
+
+    return conversations.filter((conversation) =>
+      (conversation.title || "").toLowerCase().includes(normalizedSearchQuery),
+    );
+  }, [conversations, normalizedSearchQuery]);
+
   const pinnedConversations = useMemo(() => 
-    conversations.filter(c => c.pinned), 
-    [conversations]
+    visibleConversations.filter(c => c.pinned), 
+    [visibleConversations]
   );
   
   const unpinnedConversations = useMemo(() => 
-    conversations.filter(c => !c.pinned), 
-    [conversations]
+    visibleConversations.filter(c => !c.pinned), 
+    [visibleConversations]
   );
 
   // Group unpinned conversations by time
@@ -96,6 +125,16 @@ export function ConversationList({
   const handleRename = (id: string, newTitle: string) => {
     onUpdate(id, { title: newTitle, title_locked: true });
     setEditingId(null);
+  };
+
+  const navItems: Array<{ section: SidebarSection; label: string; icon: typeof MessageSquare }> = [
+    { section: "chats", label: "Chats", icon: MessageSquare },
+    { section: "projects", label: "Projects", icon: FolderKanban },
+    { section: "artifacts", label: "Artifacts", icon: GalleryHorizontal },
+  ];
+
+  const handleNavigate = (section: SidebarSection) => {
+    onNavigate?.(section);
   };
 
   const togglePin = (e: React.MouseEvent, id: string, currentPinned: boolean) => {
@@ -213,15 +252,45 @@ export function ConversationList({
 
   return (
     <div className={`w-full md:w-[260px] bg-[var(--color-bg-tertiary)] border-r border-[var(--color-border-primary)] flex flex-col h-full ${className}`}>
-      <div className="p-4 border-b pt-[max(1rem,env(safe-area-inset-top))] space-y-3">
+      <div
+        className="p-4 border-b pt-[max(1rem,env(safe-area-inset-top))] space-y-2"
+        suppressHydrationWarning
+      >
         <button
-          onClick={onNewChat}
-          className="w-full bg-[var(--color-accent-primary)] text-white px-4 py-3 rounded-lg font-medium hover:bg-[var(--color-accent-hover)] transition-colors flex items-center justify-center gap-2 min-h-[44px] touch-manipulation"
+          onClick={onGoHome}
+          className="w-full text-left rounded-lg px-2 py-1 text-xl font-semibold tracking-tight text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
         >
-          <MessageSquare className="w-5 h-5" />
-          New Chat
+          Daemon
         </button>
-        
+
+        <nav className="space-y-1">
+          <button
+            onClick={onNewChat}
+            className="w-full min-h-[40px] rounded-md px-3 py-2 text-sm flex items-center gap-2.5 transition-colors text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+          >
+            <Plus className="w-4 h-4" />
+            <span>New chat</span>
+          </button>
+
+          {navItems.map(({ section, label, icon: Icon }) => {
+            const isActive = activeSection === section;
+            return (
+              <button
+                key={section}
+                onClick={() => handleNavigate(section)}
+                className={`w-full min-h-[40px] rounded-md px-3 py-2 text-sm flex items-center gap-2.5 transition-colors ${
+                  isActive
+                    ? "bg-[var(--color-accent-subtle)] text-[var(--color-text-primary)]"
+                    : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+                }`}
+              >
+                <Icon className="w-4 h-4" />
+                <span>{label}</span>
+              </button>
+            );
+          })}
+        </nav>
+
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--color-text-muted)]" />
           <input
@@ -250,7 +319,7 @@ export function ConversationList({
               </div>
             ))}
           </div>
-        ) : conversations.length === 0 ? (
+        ) : visibleConversations.length === 0 ? (
           <div className="p-4 text-center text-[var(--color-text-muted)] text-sm">
             No conversations found
           </div>

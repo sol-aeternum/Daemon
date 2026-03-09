@@ -5,6 +5,268 @@
 
 ---
 
+## [2026-03-09T17:53:28+10:30] — Existing test warning patterns seen again after fallback voice prompt update
+
+- **Severity**: info
+- **Scope**: upstream
+- **Encountered during**: Run diagnostics and targeted tests for updated fallback style behavior
+- **Category**: deprecation
+- **Blocked current task**: no
+- **What happened**: Targeted tests passed and behavior update compiled, but known LiteLLM deprecation and AsyncMock coroutine warnings repeated.
+- **Evidence**:
+  - `litellm_core_utils/logging_utils.py:273` deprecation warning for `asyncio.iscoroutinefunction`.
+  - Runtime warnings in `orchestrator/memory/injection.py:104,106` and `orchestrator/main.py:1326` during chat history tests.
+- **Likely cause**: Existing upstream warning + test-mock coroutine behavior, unchanged by this patch. [~95% confidence]
+- **Suggested action**: Keep tracked; address AsyncMock handling and monitor LiteLLM upgrades.
+- **Seen again**: duplicate warning family, no behavior change.
+
+## [2026-03-09T17:46:50+10:30] — Existing test warning patterns seen again after provider normalization fix
+
+- **Severity**: info
+- **Scope**: upstream
+- **Encountered during**: Run diagnostics and targeted tests for fallback flow
+- **Category**: deprecation
+- **Blocked current task**: no
+- **What happened**: Targeted tests passed, but known LiteLLM deprecation and AsyncMock runtime warnings repeated.
+- **Evidence**:
+  - LiteLLM deprecation warning in `litellm_core_utils/logging_utils.py:273`.
+  - Runtime warnings in `orchestrator/memory/injection.py:104,106` and `orchestrator/main.py:1322`.
+- **Likely cause**: Existing upstream warning + test-mock coroutine behavior. [~95% confidence]
+- **Suggested action**: Track as known; cleanup AsyncMock usage and monitor LiteLLM updates.
+- **Seen again**: duplicate warning family, no behavior change.
+
+## [2026-03-09T17:45:17+10:30] — Vision fallback model/provider mismatch (fixed)
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Trace fallback model/provider mismatch causing LiteLLM BadRequestError
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: Non-vision model image requests could fail fallback calls with LiteLLM error indicating provider was not inferred for fallback model ID.
+- **Evidence**: User-visible error: `litellm.BadRequestError: LLM Provider NOT provided... model=google/gemini-2.5-flash-image`.
+- **Likely cause**: Tier image fallback model defaults use raw `google/...` IDs while active provider is often OpenRouter; fallback path previously passed model unchanged. [~98% confidence]
+- **Suggested action**: Keep provider-aware normalization in fallback path (`openrouter/...` when provider is OpenRouter, strip prefixes otherwise) and add regression test coverage for fallback model normalization.
+
+## [2026-03-09T17:39:05+10:30] — Existing deprecation/runtime warning patterns seen again in targeted fallback verification
+
+- **Severity**: info
+- **Scope**: upstream
+- **Encountered during**: Run diagnostics and targeted verification for Kimi non-vision image path
+- **Category**: deprecation
+- **Blocked current task**: no
+- **What happened**: Targeted backend tests passed but repeated known warning patterns from LiteLLM deprecation and AsyncMock coroutine handling in test paths.
+- **Evidence**:
+  - `/home/sol/.local/lib/python3.14/site-packages/litellm/litellm_core_utils/logging_utils.py:273` deprecation warning (`asyncio.iscoroutinefunction`).
+  - Runtime warnings again in `orchestrator/memory/injection.py:104,106` and `orchestrator/main.py:1297` during `tests/test_chat_history.py`.
+- **Likely cause**: Existing upstream/library + test-mocking behavior, unchanged by fallback patch. [~95% confidence]
+- **Suggested action**: Keep tracked and address in dedicated warning cleanup.
+- **Seen again**: duplicate of prior warning entries.
+
+## [2026-03-09T17:31:00+10:30] — Pytest invocation without module path fails import resolution
+
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Run diagnostics/build/tests and verify image handling behavior
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: Running `pytest ...` from repo root failed to import project package modules in `tests/conftest.py`.
+- **Evidence**: `ModuleNotFoundError: No module named 'orchestrator'` from `tests/conftest.py:8` when executing `pytest tests/test_chat_stream.py tests/test_completion_with_tools.py tests/test_chat_history.py tests/test_store.py`.
+- **Likely cause**: Python path resolution differs when invoking bare `pytest` in current environment; `python -m pytest` resolves package import correctly. [~95% confidence]
+- **Suggested action**: Standardize test invocation in docs/CI to `python -m pytest ...` (or set `PYTHONPATH=.` consistently).
+
+## [2026-03-09T17:33:00+10:30] — Existing mock-mode stream tests failing with current baseline behavior
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Run diagnostics/build/tests and verify image handling behavior
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: Two tests in `tests/test_chat_stream.py` failed due expectation mismatch for mock response content marker `(mock)`; current emitted mock token stream text does not include that marker.
+- **Evidence**:
+  - `tests/test_chat_stream.py::test_chat_stream_emits_done_mock_mode` failed on `assert "(mock)" in body`.
+  - `tests/test_chat_stream.py::test_openai_chat_completions_non_streaming_mock_mode` failed on `assert "(mock)" in choice["message"]["content"]`.
+- **Likely cause**: Pre-existing mismatch between test expectations and current mock token text (`"Mock response tokens from Daemon"` in `orchestrator/daemon.py`) and/or non-stream collector behavior in mock mode. [~85% confidence]
+- **Suggested action**: Align mock implementation and test expectations (either restore `(mock)` marker in emitted content or update assertions).
+- **Seen again**: Appears unrelated to multimodal attachment implementation.
+
+## [2026-03-09T17:34:00+10:30] — Existing runtime/deprecation warnings seen again in backend tests
+
+- **Severity**: info
+- **Scope**: upstream
+- **Encountered during**: Run diagnostics/build/tests and verify image handling behavior
+- **Category**: deprecation
+- **Blocked current task**: no
+- **What happened**: Backend tests passed but emitted known warning patterns from LiteLLM and AsyncMock-injected settings.
+- **Evidence**:
+  - LiteLLM deprecation warning: `asyncio.iscoroutinefunction` slated for removal in Python 3.16.
+  - Runtime warnings from `orchestrator/memory/injection.py:104,106` and `orchestrator/main.py:1258` about coroutine mocks not awaited during tests.
+- **Likely cause**: Existing test harness/mocking behavior and upstream library warning on Python 3.14. [~90% confidence]
+- **Suggested action**: Keep tracked; fix AsyncMock usage in tests and monitor LiteLLM update.
+- **Seen again**: Matches known historical warning patterns.
+
+## [2026-03-09T17:23:00+10:30] — Existing basedpyright warning debt seen again during multimodal attachment implementation
+
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Run diagnostics/build/tests and verify image handling behavior
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: `lsp_diagnostics` on modified backend files returned many existing basedpyright warnings (`reportExplicitAny`, `reportAny`, `reportUnknown*`, `reportCallInDefaultInitializer`) unrelated to this feature work.
+- **Evidence**:
+  - `orchestrator/main.py` warnings include existing strict-typing debt (`reportExplicitAny`, `reportAny`, and unknown-member type warnings).
+  - `orchestrator/daemon.py` and `orchestrator/tools/completion.py` diagnostics similarly report pre-existing strict typing issues.
+- **Likely cause**: Known baseline strict-typing debt in backend modules with broad dynamic typing patterns. [~95% confidence]
+- **Suggested action**: Keep this as non-blocking; schedule focused basedpyright cleanup across backend modules.
+- **Seen again**: Similar basedpyright warning pattern already present in TRIAGE history.
+
+## [2026-03-09T16:28:21+10:30] — Existing pytest warning patterns seen again after standard-format upload support
+
+- **Severity**: info
+- **Scope**: upstream
+- **Encountered during**: Verify standardized skill markdown upload support
+- **Category**: deprecation
+- **Blocked current task**: no
+- **What happened**: Targeted backend tests passed after upload parser updates, but recurring LiteLLM deprecation and unawaited AsyncMock warnings were emitted.
+- **Evidence**:
+  - `DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16`
+  - `RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited`
+- **Likely cause**: Existing upstream LiteLLM warning + existing async mock setup in chat-history test path. [~90% confidence]
+- **Suggested action**: Track upstream LiteLLM fixes and clean AsyncMock usage in tests.
+- **Seen again**: Same warning classes already tracked in TRIAGE.
+
+---
+
+## [2026-03-09T16:17:29+10:30] — Backend hot-reload crash from invalid FastAPI Form annotation default
+
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: Implement markdown skill upload endpoint
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: Backend crashed during reload after updating `/skills/upload` route signature, making API endpoints temporarily unresponsive.
+- **Evidence**:
+  - `AssertionError: Form default value cannot be set in Annotated for 'overwrite'. Set the default value with = instead.`
+  - Stack trace points to `orchestrator/routes/skills.py` at `@router.post("/upload")`.
+- **Likely cause**: FastAPI disallows `Form(False)` inside `Annotated` metadata for defaults; default must be declared as parameter default (`= False`). [~99% confidence]
+- **Suggested action**: Use `overwrite: Annotated[bool, Form()] = False` in route signature. Applied; backend health and upload endpoint recovered.
+
+---
+
+## [2026-03-09T16:17:29+10:30] — Python bytecode write permission denied during compile check
+
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Verify backend Python module syntax after skills updates
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: `python -m py_compile` failed because environment could not write `.pyc` into `orchestrator/routes/__pycache__`.
+- **Evidence**:
+  - `PermissionError: [Errno 13] Permission denied: 'orchestrator/routes/__pycache__/skills.cpython-314.pyc....tmp'`
+- **Likely cause**: Host/container filesystem ownership mismatch for `__pycache__` in this workspace. [~90% confidence]
+- **Suggested action**: Use non-bytecode syntax validation (`ast.parse`) or correct ownership/permissions for write checks.
+
+---
+
+## [2026-03-09T16:17:29+10:30] — Existing pytest warning patterns seen again after upload feature fix
+
+- **Severity**: info
+- **Scope**: upstream
+- **Encountered during**: Re-run backend chat tests after skills upload endpoint fix
+- **Category**: deprecation
+- **Blocked current task**: no
+- **What happened**: Targeted backend tests passed, but recurring LiteLLM deprecation and AsyncMock runtime warnings were emitted.
+- **Evidence**:
+  - `DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16`
+  - `RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited`
+- **Likely cause**: Known upstream LiteLLM warning and existing test mock patterns in chat-history tests. [~90% confidence]
+- **Suggested action**: Track upstream LiteLLM updates and clean up AsyncMock usage in tests.
+- **Seen again**: Same warning classes already logged in TRIAGE.
+
+---
+
+## [2026-03-09T15:56:03+10:30] — Backend startup crash from TypedDict compatibility in skills store
+
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: Diagnose actual API errors behind settings/chats failures
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: Backend failed to start after skills feature changes. All frontend API calls (`/conversations`, `/users/me/settings`, `/memories`, `/skills`) failed because the server process crashed during import.
+- **Evidence**:
+  - `pydantic.errors.PydanticUserError: Please use typing_extensions.TypedDict instead of typing.TypedDict on Python < 3.12.`
+  - Trace points to `orchestrator/skills_store.py` import path from `orchestrator/routes/skills.py`.
+  - Direct probes before fix failed with connection resets on `http://localhost:8000/*`.
+- **Likely cause**: `TypedDict` imported from `typing` in Python 3.11 is incompatible with Pydantic v2 model generation path. [~99% confidence]
+- **Suggested action**: Use `from typing_extensions import TypedDict` in `skills_store.py` and restart backend. Applied in this task; backend recovered and endpoints returned 200.
+
+---
+
+## [2026-03-09T15:56:03+10:30] — Existing pytest warning patterns seen again after backend recovery
+
+- **Severity**: info
+- **Scope**: upstream
+- **Encountered during**: Verify backend after startup crash fix
+- **Category**: deprecation
+- **Blocked current task**: no
+- **What happened**: Targeted backend tests passed post-fix, but recurring LiteLLM deprecation and AsyncMock runtime warnings were emitted.
+- **Evidence**:
+  - `DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16`
+  - `RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited`
+- **Likely cause**: Known upstream LiteLLM warning and existing async mock patterns in test suite. [~90% confidence]
+- **Suggested action**: Continue tracking upstream LiteLLM updates and clean async mock usage in tests.
+- **Seen again**: Same warning classes already logged previously.
+
+---
+
+## [2026-03-09T15:01:09+10:30] — Existing pytest warning patterns seen again during skills feature verification
+
+- **Severity**: info
+- **Scope**: upstream
+- **Encountered during**: Verify Skills API/routes + settings Skills tab integration
+- **Category**: deprecation
+- **Blocked current task**: no
+- **What happened**: Targeted backend chat tests passed, with recurring LiteLLM deprecation warnings and unawaited AsyncMock runtime warnings from existing chat-history test paths.
+- **Evidence**:
+  - `DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16`
+  - `RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited`
+- **Likely cause**: Known upstream LiteLLM deprecation + existing AsyncMock patterns in tests, unrelated to new Skills implementation. [~90% confidence]
+- **Suggested action**: Keep tracking upstream LiteLLM update and clean up AsyncMock setup in affected tests to reduce warning noise.
+- **Seen again**: Same warning classes already logged previously in TRIAGE.
+
+---
+
+## [2026-03-09T14:12:58+10:30] — Settings Memory tab failed due to frontend-relative API path
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Center settings content across all tabs
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: Memory tab threw `Failed to fetch memories` because it requested `/memories?...` relative to the frontend app instead of the backend API origin.
+- **Evidence**:
+  - Browser error overlay at `components/settings/MemoryTab.tsx:42` with message `Failed to fetch memories`
+  - `fetch('/memories?limit=1')` / `fetch('/memories?confirm=true')` observed in MemoryTab before fix
+- **Likely cause**: Endpoint URL mismatch in frontend component; unlike other settings tabs, MemoryTab was not using `NEXT_PUBLIC_API_URL` + bearer auth headers. [~97% confidence]
+- **Suggested action**: Keep MemoryTab calls on `${NEXT_PUBLIC_API_URL}/memories` with auth headers; verify API-key availability and surface a friendlier error message when unauthorized.
+
+---
+
+## [2026-03-09T11:14:44+10:30] — Next.js prerender blocked by missing Suspense around useSearchParams
+
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: Frontend build verification after adding chats/projects/artifacts pages
+- **Category**: build-error
+- **Blocked current task**: yes
+- **What happened**: `npm run build` failed while prerendering `/artifacts` because `useSearchParams()` (inside shared conversation history hook/provider) was not wrapped in a Suspense boundary on the new page routes.
+- **Evidence**:
+  - `Error occurred prerendering page "/artifacts"`
+  - `useSearchParams() should be wrapped in a suspense boundary at page "/artifacts"`
+- **Likely cause**: New routes used `ConversationHistoryProvider` (which depends on `useSearchParams`) without route-level Suspense wrappers required by Next.js App Router static prerendering. [~98% confidence]
+- **Suggested action**: Wrap route content in `Suspense` for pages using the provider/hook. Applied for `/chats`, `/projects`, and `/artifacts`; subsequent build passed.
+
+---
+
 ## [2026-03-08T17:41:00+10:30] - Transient frontend typecheck failure after widening tool_result payload shape
 - **Severity**: warning
 - **Scope**: project
@@ -1223,5 +1485,39 @@ SY|- **Suggested action**: Correlate task lifecycle events (create/get/cancel) a
   ```
 - **Likely cause**: Existing files have syntax/JSX errors unrelated to current task. [~90% confidence]
 - **Suggested action**: Fix these TypeScript errors in a separate maintenance pass; they are pre-existing issues not caused by ProfileTab changes.
+
+---
+
+## [2026-03-09T10:56:00+10:30] — pytest import path failure without PYTHONPATH (seen again)
+
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: Run diagnostics/tests/build for tool-call and image refresh persistence fix
+- **Category**: test-failure
+- **Blocked current task**: yes
+- **What happened**: Initial pytest invocation failed at collection because `tests/conftest.py` could not import the `orchestrator` package when run without `PYTHONPATH`.
+- **Evidence**:
+  - `ModuleNotFoundError: No module named 'orchestrator'`
+  - `ImportError while loading conftest '/home/sol/daemon/tests/conftest.py'`
+- **Likely cause**: Known shell/env path issue where repo root is not on Python import path for direct `pytest` calls. [~95% confidence]
+- **Suggested action**: Continue running tests with `PYTHONPATH=/home/sol/daemon` (or install package editable) in this environment.
+- **Seen again**: Matches prior TRIAGE entries documenting the same `ModuleNotFoundError` pattern.
+
+---
+
+## [2026-03-09T10:58:00+10:30] — Existing pytest warning patterns seen again during targeted run
+
+- **Severity**: info
+- **Scope**: upstream
+- **Encountered during**: Run diagnostics/tests/build for tool-call and image refresh persistence fix
+- **Category**: deprecation
+- **Blocked current task**: no
+- **What happened**: Targeted backend tests passed, but emitted recurring LiteLLM deprecation warnings and unawaited `AsyncMock` runtime warnings.
+- **Evidence**:
+  - `DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16`
+  - `RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited`
+- **Likely cause**: Known upstream LiteLLM warning + existing async mock patterns in chat-history test path. [~85% confidence]
+- **Suggested action**: Track upstream LiteLLM fix and clean up AsyncMock usage in test fixtures/mocks to reduce warning noise.
+- **Seen again**: Same warning classes already tracked in earlier TRIAGE entries.
 
 ---

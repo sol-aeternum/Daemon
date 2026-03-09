@@ -6,7 +6,7 @@ const API_URLS = [
 ].filter((url): url is string => Boolean(url));
 
 export async function POST(req: Request) {
-  const { messages, id, model } = await req.json();
+  const { messages, id, model, attachments } = await req.json();
 
   const { createDataStreamResponse } = await import("ai");
   const { formatDataStreamPart } = await import("@ai-sdk/ui-utils");
@@ -16,8 +16,34 @@ export async function POST(req: Request) {
     content: m.content,
   }));
 
+  const extractTextContent = (content: unknown): string => {
+    if (typeof content === "string") {
+      return content;
+    }
+    if (Array.isArray(content)) {
+      return content
+        .map((part) => {
+          if (
+            part
+            && typeof part === "object"
+            && "type" in part
+            && (part as { type?: unknown }).type === "text"
+            && "text" in part
+            && typeof (part as { text?: unknown }).text === "string"
+          ) {
+            return (part as { text: string }).text;
+          }
+          return "";
+        })
+        .filter(Boolean)
+        .join("\n")
+        .trim();
+    }
+    return "";
+  };
+
   const lastUserMessage = [...normalizedMessages].reverse().find((m) => m.role === "user");
-  const lastUserText = typeof lastUserMessage?.content === "string" ? lastUserMessage.content : "";
+  const lastUserText = extractTextContent(lastUserMessage?.content);
 
   const authHeader = req.headers.get("authorization");
   const authToken = authHeader?.replace(/^Bearer\s+/i, "").trim();
@@ -41,6 +67,7 @@ export async function POST(req: Request) {
           conversation_id: id || null,
           messages: normalizedMessages,
           model: model || "auto",
+          attachments: Array.isArray(attachments) ? attachments : [],
         }),
       });
       break;

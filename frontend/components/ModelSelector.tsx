@@ -93,7 +93,7 @@ export function ModelSelector({ selected, onSelect }: ModelSelectorProps) {
         className="flex min-h-[44px] items-center gap-1.5 rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2 text-sm transition-colors hover:bg-[var(--color-bg-tertiary)]"
       >
         {selected === "auto" && <Zap className="w-3.5 h-3.5 text-[var(--color-status-warning)]" />}
-        <span className="text-[var(--color-text-secondary)]">{selectedName}</span>
+        <span className="text-[var(--color-text-secondary)] truncate max-w-[120px]">{selectedName}</span>
         <ChevronDown className="w-3 h-3 text-[var(--color-text-muted)]" />
       </button>
 

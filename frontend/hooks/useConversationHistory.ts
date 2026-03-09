@@ -11,6 +11,8 @@ export interface Conversation {
   selectedModel?: string;
   createdAt: string;
   updatedAt: string;
+  messageCount?: number;
+  lastActivityAt?: string | null;
   pinned: boolean;
   title_locked: boolean;
   status: string;
@@ -22,6 +24,8 @@ interface ApiConversation {
   title: string;
   created_at: string;
   updated_at: string;
+  message_count?: number;
+  last_activity_at?: string | null;
   pinned: boolean;
   title_locked: boolean;
   status: string;
@@ -36,12 +40,80 @@ export function useConversationHistory() {
   const searchParams = useSearchParams();
   const currentId = searchParams.get("id");
 
-  const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const apiBaseUrl =
+    process.env.NEXT_PUBLIC_API_URL ||
+    (process.env.NODE_ENV === "development" ? "http://localhost:8000" : "");
+
+  const getAuthHeaders = useCallback((): Record<string, string> => {
+    const apiKey = typeof window !== "undefined" ? localStorage.getItem("daemon_api_key") || "" : "";
+    return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+  }, []);
+
+  const apiCandidates = useCallback(
+    (path: string) => {
+      const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+      const trimmedBase = apiBaseUrl.endsWith("/") ? apiBaseUrl.slice(0, -1) : apiBaseUrl;
+
+      if (!trimmedBase) {
+        return [normalizedPath];
+      }
+
+      return [`${trimmedBase}${normalizedPath}`, normalizedPath];
+    },
+    [apiBaseUrl]
+  );
+
+  const apiFetch = useCallback(
+    async (path: string, init: RequestInit = {}, timeoutMs = 12000) => {
+      const candidates = apiCandidates(path);
+      let lastError: unknown = null;
+
+      for (let index = 0; index < candidates.length; index += 1) {
+        const candidate = candidates[index];
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => {
+          try {
+            controller.abort(new DOMException("Request timed out", "AbortError"));
+          } catch {
+            controller.abort();
+          }
+        }, timeoutMs);
+
+        try {
+          const response = await fetch(candidate, { ...init, signal: controller.signal });
+          clearTimeout(timeoutId);
+
+          if (response.status === 404 && index < candidates.length - 1) {
+            continue;
+          }
+
+          return response;
+        } catch (error) {
+          clearTimeout(timeoutId);
+          lastError = error;
+          if (index === candidates.length - 1) {
+            throw error;
+          }
+        }
+      }
+
+      if (lastError instanceof Error) {
+        throw lastError;
+      }
+      throw new Error("Request failed");
+    },
+    [apiCandidates]
+  );
 
   const fetchConversations = useCallback(async () => {
     try {
-      const response = await fetch(`${apiBaseUrl}/conversations?limit=100`);
-      if (!response.ok) throw new Error("Failed to fetch conversations");
+      const response = await apiFetch("/conversations?limit=100", {
+        headers: getAuthHeaders(),
+      });
+      if (!response.ok) {
+        setConversations([]);
+        return;
+      }
       const data = await response.json();
       const conversationsArray: ApiConversation[] = data.conversations || [];
       
@@ -52,19 +124,24 @@ export function useConversationHistory() {
         selectedModel: conv.metadata?.model || "auto",
         createdAt: conv.created_at,
         updatedAt: conv.updated_at,
+        messageCount: conv.message_count,
+        lastActivityAt: conv.last_activity_at,
         pinned: conv.pinned,
         title_locked: conv.title_locked,
         status: conv.status,
         metadata: conv.metadata || {},
       }));
-      
+
       setConversations(formattedConversations);
-      setIsLoaded(true);
     } catch (error) {
-      console.error("Error fetching conversations:", error);
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
+      setConversations([]);
+    } finally {
       setIsLoaded(true);
     }
-  }, [apiBaseUrl]);
+  }, [apiFetch, getAuthHeaders]);
 
   // Initial fetch and polling
   useEffect(() => {
@@ -75,13 +152,13 @@ export function useConversationHistory() {
 
   const createConversation = useCallback(async () => {
     try {
-      const response = await fetch(`${apiBaseUrl}/conversations`, {
+      const response = await apiFetch("/conversations", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         body: JSON.stringify({ title: "New conversation" }),
       });
       
-      if (!response.ok) throw new Error("Failed to create conversation");
+      if (!response.ok) return null;
       
       const newConv: ApiConversation = await response.json();
       const formattedConv: Conversation = {
@@ -91,6 +168,8 @@ export function useConversationHistory() {
         selectedModel: "auto",
         createdAt: newConv.created_at,
         updatedAt: newConv.updated_at,
+        messageCount: newConv.message_count,
+        lastActivityAt: newConv.last_activity_at,
         pinned: newConv.pinned,
         title_locked: newConv.title_locked,
         status: newConv.status,
@@ -100,11 +179,10 @@ export function useConversationHistory() {
       setConversations((prev) => [formattedConv, ...prev]);
       router.push(`/?id=${newConv.id}`);
       return newConv.id;
-    } catch (error) {
-      console.error("Error creating conversation:", error);
+    } catch {
       return null;
     }
-  }, [apiBaseUrl, router]);
+  }, [apiFetch, getAuthHeaders, router]);
 
   const updateConversation = useCallback(
     async (id: string, updates: Partial<Conversation> & { messages?: Message[] }) => {
@@ -125,18 +203,17 @@ export function useConversationHistory() {
         }
 
         if (Object.keys(payload).length > 0) {
-            await fetch(`${apiBaseUrl}/conversations/${id}`, {
+            await apiFetch(`/conversations/${id}`, {
                 method: "PATCH",
-                headers: { "Content-Type": "application/json" },
+                headers: { "Content-Type": "application/json", ...getAuthHeaders() },
                 body: JSON.stringify(payload),
             });
         }
-      } catch (error) {
-        console.error("Error updating conversation:", error);
+      } catch {
         fetchConversations(); // Revert on error
       }
     },
-    [apiBaseUrl, conversations, fetchConversations]
+    [apiFetch, conversations, fetchConversations, getAuthHeaders]
   );
 
   const setConversationModel = useCallback(
@@ -155,15 +232,57 @@ export function useConversationHistory() {
       }
 
       try {
-        await fetch(`${apiBaseUrl}/conversations/${id}`, {
+        const response = await apiFetch(`/conversations/${id}`, {
           method: "DELETE",
+          headers: getAuthHeaders(),
         });
-      } catch (error) {
-        console.error("Error deleting conversation:", error);
+
+        if (!response.ok) {
+          fetchConversations();
+          return false;
+        }
+
+        return true;
+      } catch {
         fetchConversations(); // Revert on error
+        return false;
       }
     },
-    [apiBaseUrl, currentId, router, fetchConversations]
+    [apiFetch, currentId, router, fetchConversations, getAuthHeaders]
+  );
+
+  const fetchConversationById = useCallback(
+    async (id: string): Promise<Conversation | null> => {
+      try {
+        const response = await apiFetch(`/conversations/${id}`, {
+          headers: getAuthHeaders(),
+        });
+        if (!response.ok) {
+          return null;
+        }
+
+        const data = await response.json();
+        const formattedConv: Conversation = {
+          id: data.id,
+          title: data.title,
+          messages: data.messages || [],
+          selectedModel: data.metadata?.model || "auto",
+          createdAt: data.created_at,
+          updatedAt: data.updated_at,
+          messageCount: data.message_count,
+          lastActivityAt: data.last_activity_at,
+          pinned: data.pinned,
+          title_locked: data.title_locked,
+          status: data.status,
+          metadata: data.metadata || {},
+        };
+
+        return formattedConv;
+      } catch {
+        return null;
+      }
+    },
+    [apiFetch, getAuthHeaders]
   );
 
   const [currentConversation, setCurrentConversation] = useState<Conversation | null>(null);
@@ -175,32 +294,14 @@ export function useConversationHistory() {
     }
 
     const fetchConversationDetails = async () => {
-      try {
-        const response = await fetch(`${apiBaseUrl}/conversations/${currentId}`);
-        if (!response.ok) throw new Error("Failed to fetch conversation details");
-        const data = await response.json();
-        
-        const formattedConv: Conversation = {
-          id: data.id,
-          title: data.title,
-          messages: data.messages || [],
-          selectedModel: data.metadata?.model || "auto",
-          createdAt: data.created_at,
-          updatedAt: data.updated_at,
-          pinned: data.pinned,
-          title_locked: data.title_locked,
-          status: data.status,
-          metadata: data.metadata || {},
-        };
-        
-        setCurrentConversation(formattedConv);
-      } catch (error) {
-        console.error("Error fetching conversation details:", error);
+      const conversation = await fetchConversationById(currentId);
+      if (conversation) {
+        setCurrentConversation(conversation);
       }
     };
 
     fetchConversationDetails();
-  }, [currentId, apiBaseUrl]);
+  }, [currentId, fetchConversationById]);
 
   const getCurrentConversation = useCallback(() => {
     return currentConversation;
@@ -210,12 +311,8 @@ export function useConversationHistory() {
     router.push(`/?id=${id}`);
   }, [router]);
 
-  const filteredConversations = conversations.filter(conv => 
-    conv.title.toLowerCase().includes(searchQuery.toLowerCase())
-  );
-
   return {
-    conversations: filteredConversations,
+    conversations,
     currentId,
     isLoaded,
     createConversation,
@@ -224,6 +321,7 @@ export function useConversationHistory() {
     deleteConversation,
     getCurrentConversation,
     switchConversation,
+    fetchConversationById,
     searchQuery,
     setSearchQuery,
     refreshConversations: fetchConversations

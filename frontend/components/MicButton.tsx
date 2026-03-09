@@ -70,7 +70,7 @@ export function MicButton({
          onTouchStart={handleTouchStart}
          onTouchEnd={handleTouchEnd}
          title={isRecording ? "Release to stop" : "Hold to speak"}
-         className={`relative z-10 rounded-full p-2 transition-all duration-200 ${
+         className={`relative z-10 min-h-[44px] min-w-[44px] rounded-full p-2 transition-all duration-200 ${
            isRecording
              ? "bg-[var(--color-status-error)] text-white scale-110 shadow-lg"
              : isConnecting

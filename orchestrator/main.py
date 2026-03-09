@@ -8,6 +8,7 @@ import time
 import uuid
 
 import httpx
+import litellm
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -43,9 +44,10 @@ from orchestrator.db import (
     get_app_state,
     init_app_state,
 )
-from orchestrator.routes import conversations, memories, system, users
+from orchestrator.routes import conversations, memories, skills, system, users
 from orchestrator.models_cache import fetch_openrouter_models, get_fallback_model
 from orchestrator.model_router import select_model_tier
+from orchestrator.skills_store import build_enabled_skills_block
 
 
 from orchestrator.models import (
@@ -100,6 +102,244 @@ def require_api_key(settings: Settings, authorization: str | None) -> None:
     token = authorization.removeprefix("Bearer ").strip()
     if token != settings.daemon_api_key:
         raise HTTPException(status_code=401, detail="Invalid bearer token")
+
+
+def _extract_text_content(content: Any) -> str:
+    if isinstance(content, dict):
+        direct_text = content.get("text")
+        if isinstance(direct_text, str) and direct_text.strip():
+            return direct_text.strip()
+        nested_content = content.get("content")
+        if isinstance(nested_content, str) and nested_content.strip():
+            return nested_content.strip()
+        if isinstance(direct_text, dict):
+            nested_text = direct_text.get("value") or direct_text.get("content")
+            if isinstance(nested_text, str) and nested_text.strip():
+                return nested_text.strip()
+
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        for part in content:
+            if isinstance(part, str) and part.strip():
+                text_parts.append(part.strip())
+                continue
+
+            if not isinstance(part, dict):
+                continue
+
+            text = part.get("text")
+            if isinstance(text, str) and text.strip():
+                text_parts.append(text.strip())
+                continue
+
+            content_field = part.get("content")
+            if isinstance(content_field, str) and content_field.strip():
+                text_parts.append(content_field.strip())
+                continue
+
+            if isinstance(text, dict):
+                nested_text = text.get("value") or text.get("content")
+                if isinstance(nested_text, str) and nested_text.strip():
+                    text_parts.append(nested_text.strip())
+        return "\n".join(text_parts).strip()
+    return ""
+
+
+def _extract_image_parts(content: Any) -> list[dict[str, Any]]:
+    if not isinstance(content, list):
+        return []
+    image_parts: list[dict[str, Any]] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") != "image_url":
+            continue
+        image_url = part.get("image_url")
+        if not isinstance(image_url, dict):
+            continue
+        url = image_url.get("url")
+        if isinstance(url, str) and url.startswith("data:image/"):
+            image_parts.append({"type": "image_url", "image_url": {"url": url}})
+    return image_parts
+
+
+def _content_has_image(content: Any) -> bool:
+    return len(_extract_image_parts(content)) > 0
+
+
+def _build_user_content_from_attachments(
+    user_text: str,
+    attachments: list[dict[str, Any]],
+) -> str | list[dict[str, Any]]:
+    parts: list[dict[str, Any]] = []
+    text_segments: list[str] = []
+    if user_text.strip():
+        text_segments.append(user_text.strip())
+
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            continue
+
+        kind = attachment.get("kind")
+        name = attachment.get("name")
+        if not isinstance(name, str) or not name:
+            name = "unnamed"
+
+        if kind == "image":
+            data_url = attachment.get("data_url")
+            if isinstance(data_url, str) and data_url.startswith("data:image/"):
+                if text_segments:
+                    parts.append({"type": "text", "text": "\n\n".join(text_segments)})
+                    text_segments = []
+                parts.append({"type": "image_url", "image_url": {"url": data_url}})
+                continue
+
+        if kind == "text":
+            text_content = attachment.get("text_content")
+            if isinstance(text_content, str) and text_content.strip():
+                text_segments.append(f"[Attached file: {name}]\n{text_content.strip()}")
+                continue
+
+        text_segments.append(f"[Attached file: {name}] (binary file attached)")
+
+    if text_segments:
+        parts.append({"type": "text", "text": "\n\n".join(text_segments)})
+
+    if not parts:
+        return user_text
+    if len(parts) == 1 and parts[0].get("type") == "text":
+        text = parts[0].get("text")
+        return text if isinstance(text, str) else user_text
+    return parts
+
+
+def _model_supports_vision(model_id: str) -> bool:
+    lowered = model_id.lower().strip()
+    if not lowered:
+        return False
+
+    positive_tokens = (
+        "gpt-4o",
+        "gpt-4.1",
+        "gpt-4.5",
+        "o1",
+        "o3",
+        "o4",
+        "gemini",
+        "claude-3",
+        "claude-4",
+        "vision",
+        "pixtral",
+        "llava",
+        "qwen-vl",
+    )
+    if any(token in lowered for token in positive_tokens):
+        return True
+
+    negative_tokens = ("embedding", "whisper", "tts", "audio")
+    if any(token in lowered for token in negative_tokens):
+        return False
+
+    return False
+
+
+def _normalize_model_for_provider(
+    model_id: str, provider_config: ProviderConfig
+) -> str:
+    normalized = model_id.strip()
+    if not normalized:
+        return normalized
+
+    if provider_config.name == "openrouter":
+        if normalized.startswith("openrouter/"):
+            return normalized
+        if normalized.startswith("opencode/"):
+            return f"openrouter/{normalized[len('opencode/') :]}"
+        return f"openrouter/{normalized}"
+
+    for prefix in ("openrouter/", "opencode/"):
+        if normalized.startswith(prefix):
+            return normalized[len(prefix) :]
+
+    return normalized
+
+
+def _get_vision_fallback_model(
+    settings: Settings, provider_config: ProviderConfig
+) -> str:
+    tier_config = settings.get_tier_config(settings.default_tier)
+    if tier_config.image_agent and tier_config.image_agent.model:
+        return _normalize_model_for_provider(
+            tier_config.image_agent.model, provider_config
+        )
+    return _normalize_model_for_provider(settings.auto_fast_model, provider_config)
+
+
+async def _summarize_images_for_fallback(
+    *,
+    fallback_model: str,
+    provider_config: ProviderConfig,
+    user_text: str,
+    image_parts: list[dict[str, Any]],
+) -> tuple[str | None, str]:
+    analysis_instruction = (
+        "You are a vision analysis assistant. Analyze all attached images for the user request and "
+        "return a concise summary another text-only model can use. Include only high-confidence details. "
+        "Respond with plain text only."
+    )
+    request_text = user_text.strip() or "Please describe the attached images."
+    analysis_content: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": f"User request:\n{request_text}\n\nProvide a concise factual summary.",
+        }
+    ]
+    analysis_content.extend(image_parts)
+
+    call_params: dict[str, Any] = {
+        "model": fallback_model,
+        "messages": [
+            {"role": "system", "content": analysis_instruction},
+            {"role": "user", "content": analysis_content},
+        ],
+        "stream": False,
+        "timeout": provider_config.timeout_s,
+    }
+
+    if provider_config.base_url:
+        call_params["api_base"] = provider_config.base_url
+    if provider_config.api_key:
+        call_params["api_key"] = provider_config.api_key
+    if provider_config.extra_headers:
+        call_params["extra_headers"] = provider_config.extra_headers
+
+    try:
+        response = await litellm.acompletion(**call_params)
+        choices = getattr(response, "choices", None)
+        if choices is None and isinstance(response, dict):
+            choices = response.get("choices", [])
+        if not choices:
+            return None, fallback_model
+
+        first_choice = choices[0]
+        message = getattr(first_choice, "message", None)
+        if message is None and isinstance(first_choice, dict):
+            message = first_choice.get("message", {})
+        if message is None:
+            message = {}
+
+        content = getattr(message, "content", None)
+        if content is None and isinstance(message, dict):
+            content = message.get("content")
+        summary = _extract_text_content(content)
+        if summary:
+            return summary, fallback_model
+        return None, fallback_model
+    except Exception:
+        logger.warning("Vision fallback analysis failed", exc_info=True)
+        return None, fallback_model
 
 
 # ============== Health & Info Endpoints ==============
@@ -336,7 +576,9 @@ async def openai_chat_completions(
     if not user_messages:
         raise HTTPException(status_code=400, detail="No user message found")
 
-    last_message = user_messages[-1].content
+    last_message = _extract_text_content(user_messages[-1].content)
+    if not last_message:
+        last_message = "Please help with the attached input."
     conversation_id = new_conversation_id()
     request_id = new_request_id()
 
@@ -357,8 +599,21 @@ async def openai_chat_completions(
     if actual_model == payload.model and actual_model in {"default", "", "kimi"}:
         actual_model = provider_config.model
 
-    system_prompts = [m.content for m in payload.messages if m.role == "system"]
+    system_prompts = [
+        _extract_text_content(m.content)
+        for m in payload.messages
+        if m.role == "system" and _extract_text_content(m.content)
+    ]
     system_prompt = system_prompts[-1] if system_prompts else DAEMON_SYSTEM_PROMPT
+    try:
+        skills_block = build_enabled_skills_block()
+    except Exception:
+        logger.warning(
+            "Skills injection failed, continuing without skills", exc_info=True
+        )
+        skills_block = ""
+    if skills_block and skills_block not in system_prompt:
+        system_prompt = f"{system_prompt.rstrip()}\n\n{skills_block}"
 
     if payload.stream:
 
@@ -839,14 +1094,27 @@ async def chat(
     provider_config = settings.get_provider_config(payload.provider)
 
     incoming_messages = payload.messages or []
+    attachments = payload.attachments or []
     last_user_message = None
     last_user_msg: dict[str, Any] | None = None
     for msg in reversed(incoming_messages):
-        if msg.get("role") == "user" and isinstance(msg.get("content"), str):
+        if msg.get("role") == "user":
             last_user_msg = msg
-            last_user_message = msg.get("content")
+            last_user_message = _extract_text_content(msg.get("content"))
             break
-    user_message = last_user_message or payload.message
+    user_message = (last_user_message or payload.message).strip()
+    if not user_message and attachments:
+        user_message = "Please analyze the attached files."
+
+    prepared_user_content: str | list[dict[str, Any]] = user_message
+    if attachments:
+        prepared_user_content = _build_user_content_from_attachments(
+            user_message, attachments
+        )
+    elif last_user_msg and isinstance(last_user_msg.get("content"), list):
+        prepared_user_content = [
+            part for part in last_user_msg.get("content", []) if isinstance(part, dict)
+        ]
 
     decision = route_message(user_message, payload.metadata)
 
@@ -883,11 +1151,60 @@ async def chat(
                 actual_model = actual_model[len(prefix) :]
                 break
 
-    routing_info = {
+    routing_info: dict[str, Any] = {
         "model": selected_model,
         "tier": model_decision.tier,
         "reason": model_decision.reason,
     }
+
+    has_image_input = _content_has_image(prepared_user_content)
+    enforce_direct_vision_voice = False
+    if has_image_input and not _model_supports_vision(selected_model):
+        image_parts = _extract_image_parts(prepared_user_content)
+        if image_parts:
+            fallback_model = _get_vision_fallback_model(settings, provider_config)
+            fallback_summary, fallback_model = await _summarize_images_for_fallback(
+                fallback_model=fallback_model,
+                provider_config=provider_config,
+                user_text=user_message,
+                image_parts=image_parts,
+            )
+            if fallback_summary:
+                summary_block = fallback_summary.strip()
+                if user_message:
+                    user_message = (
+                        f"{user_message}\n\nVisual findings:\n{summary_block}"
+                    ).strip()
+                else:
+                    user_message = f"Visual findings:\n{summary_block}"
+                prepared_user_content = user_message
+                enforce_direct_vision_voice = True
+                routing_info["vision_fallback"] = {
+                    "used": True,
+                    "mode": "summary",
+                    "model": fallback_model,
+                    "summary_available": True,
+                }
+            else:
+                selected_model = fallback_model
+                actual_model = fallback_model
+                if provider_config.name != "openrouter":
+                    for prefix in ["openrouter/", "opencode/"]:
+                        if actual_model.startswith(prefix):
+                            actual_model = actual_model[len(prefix) :]
+                            break
+                routing_info["model"] = selected_model
+                routing_info["vision_fallback"] = {
+                    "used": True,
+                    "mode": "handoff",
+                    "model": fallback_model,
+                    "summary_available": False,
+                }
+    elif has_image_input:
+        routing_info["vision_fallback"] = {
+            "used": False,
+            "model": selected_model,
+        }
 
     # Initialize persistence with graceful degradation
     store = app_state.memory_store if app_state else None
@@ -982,12 +1299,21 @@ async def chat(
                 for msg in incoming_messages
                 if msg.get("role") and msg.get("content") is not None
             ]
-            for msg in reversed(history_messages):
-                if msg.get("role") == "user":
-                    msg["content"] = decision.user_message
-                    break
+
+    if history_messages:
+        for msg in reversed(history_messages):
+            if msg.get("role") == "user":
+                msg["content"] = prepared_user_content
+                break
 
     assembled_system_prompt = DAEMON_SYSTEM_PROMPT
+    try:
+        skills_block = build_enabled_skills_block()
+    except Exception:
+        logger.warning(
+            "Skills injection failed, continuing without skills", exc_info=True
+        )
+        skills_block = ""
     if store and user_id and conversation_uuid:
         try:
             from orchestrator.memory.injection import (
@@ -1007,6 +1333,19 @@ async def chat(
         except Exception:
             logger.warning("Memory injection failed, using base prompt", exc_info=True)
 
+    if skills_block and skills_block not in assembled_system_prompt:
+        assembled_system_prompt = (
+            f"{assembled_system_prompt.rstrip()}\n\n{skills_block}"
+        )
+
+    if enforce_direct_vision_voice:
+        assembled_system_prompt = (
+            f"{assembled_system_prompt.rstrip()}\n\n"
+            "When visual findings are provided in the user message, treat them as your own direct visual observations. "
+            "Do not mention fallback models, intermediary summaries, or that the image was described to you. "
+            "Answer as if you directly viewed the image."
+        )
+
     async def is_disconnected() -> bool:
         return await request.is_disconnected()
 
@@ -1016,7 +1355,7 @@ async def chat(
                 settings=settings,
                 provider_config=provider_config,
                 system_prompt=assembled_system_prompt,
-                user_message=decision.user_message,
+                user_message=user_message,
                 history_messages=history_messages,
                 conversation_id=conversation_id,
                 request_id=request_id,
@@ -1103,5 +1442,6 @@ async def chat(
 # Include memory layer API routes
 app.include_router(conversations.router)
 app.include_router(memories.router)
+app.include_router(skills.router)
 app.include_router(system.router)
 app.include_router(users.router)

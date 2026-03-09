@@ -12,7 +12,7 @@ class OpenAIMessage(BaseModel):
     """OpenAI chat message format."""
 
     role: Literal["system", "user", "assistant"] = "user"
-    content: str
+    content: str | list[dict[str, Any]]
     name: str | None = None
 
 
@@ -101,6 +101,7 @@ class ChatRequest(BaseModel):
     conversation_id: str | None = None
     message: str
     messages: list[dict[str, Any]] | None = None
+    attachments: list[dict[str, Any]] | None = None
     metadata: dict[str, Any] | None = Field(default=None)
     model: str | None = Field(default=None, description="Model override or auto")
     # Provider selection - uses default if not specified

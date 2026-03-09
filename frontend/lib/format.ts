@@ -5,9 +5,11 @@
 export function formatMessageContent(content: string): string {
   return content
     .replace(/!\[.*?\]\(\/generated-images\/.*?\)/g, "")
+    .replace(/^\s*(?:https?:\/\/[^\s]+)?\/generated-images\/[^\s`]+\s*$/gim, "")
     .replace(/\*\*Image:\*\*\s*`\/generated-images\/[^`]+`/gi, "")
     .replace(/`\/generated-images\/[^`]+`/gi, "")
     .replace(/\*\*File:\*\*\s*`\/generated-audio\/[^`]+`/gi, "")
+    .replace(/^\s*(?:https?:\/\/[^\s]+)?\/generated-audio\/[^\s`]+\s*$/gim, "")
     .replace(/`\/generated-audio\/[^`]+`/gi, "")
     .replace(/\[.*?\]\(\/generated-audio\/[^)]+\)/gi, "")
     .replace(/\*\*Audio Details:\*\*[\s\S]*?(?=\n\n|\n[A-Z]|$)/gi, "")

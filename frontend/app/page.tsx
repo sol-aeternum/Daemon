@@ -8,7 +8,7 @@ import { useStt } from "../hooks/useStt";
 import { ErrorProvider, useError } from "../components/ErrorProvider";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { ConnectionStatus } from "../components/ConnectionStatus";
-import { ConversationList } from "../components/ConversationList";
+import { ConversationList, type SidebarSection } from "../components/ConversationList";
 import { ToolCallLog } from "../components/ToolCallBlock";
 import { MobileHeader } from "../components/MobileHeader";
 import ChatSkeleton from "../components/ChatSkeleton";
@@ -37,6 +37,98 @@ type ReasoningMessage = Message & {
   reasoning_text?: string;
   reasoning_duration_secs?: number;
   reasoning_model?: string;
+};
+
+type PersistedToolCall = {
+  name?: unknown;
+  arguments?: unknown;
+  id?: unknown;
+  request_id?: unknown;
+};
+
+type PersistedToolResult = {
+  name?: unknown;
+  result?: unknown;
+  id?: unknown;
+  request_id?: unknown;
+};
+
+type PendingAttachment = {
+  id: string;
+  file: File;
+};
+
+type OutboundAttachmentKind = "image" | "text" | "binary";
+
+type OutboundAttachment = {
+  id: string;
+  name: string;
+  mime_type: string;
+  size: number;
+  kind: OutboundAttachmentKind;
+  data_url?: string;
+  text_content?: string;
+};
+
+const MAX_ATTACHMENT_TEXT_LENGTH = 8000;
+
+const getOptionalString = (value: unknown): string | undefined => {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+};
+
+const toRecord = (value: unknown): Record<string, unknown> | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
+};
+
+const getPersistedToolEvents = (message: Message): ChatEvent[] => {
+  const messageWithTools = message as Message & {
+    tool_calls?: unknown;
+    tool_results?: unknown;
+  };
+
+  const rawToolCalls = Array.isArray(messageWithTools.tool_calls)
+    ? (messageWithTools.tool_calls as PersistedToolCall[])
+    : [];
+  const rawToolResults = Array.isArray(messageWithTools.tool_results)
+    ? (messageWithTools.tool_results as PersistedToolResult[])
+    : [];
+
+  const events: ChatEvent[] = [];
+
+  for (const toolCall of rawToolCalls) {
+    const event: Extract<ChatEvent, { type: "tool_call" }> = {
+      type: "tool_call",
+      name: getOptionalString(toolCall.name) || "tool",
+      arguments: toRecord(toolCall.arguments) || {},
+    };
+
+    const id = getOptionalString(toolCall.id);
+    if (id) event.id = id;
+    const requestId = getOptionalString(toolCall.request_id);
+    if (requestId) event.request_id = requestId;
+
+    events.push(event);
+  }
+
+  for (const toolResult of rawToolResults) {
+    const event: Extract<ChatEvent, { type: "tool_result" }> = {
+      type: "tool_result",
+      name: getOptionalString(toolResult.name) || "tool",
+      result: toolResult.result,
+    };
+
+    const id = getOptionalString(toolResult.id);
+    if (id) event.id = id;
+    const requestId = getOptionalString(toolResult.request_id);
+    if (requestId) event.request_id = requestId;
+
+    events.push(event);
+  }
+
+  return events;
 };
 
 const getPartContent = (part: unknown): string => {
@@ -81,6 +173,38 @@ const getModelName = (modelId: string | undefined): string | undefined => {
   return shortName.replace(/-/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
 };
 
+const isTextLikeFile = (file: File) => {
+  const type = file.type.toLowerCase();
+  if (type.startsWith("text/")) return true;
+  return (
+    type.includes("json")
+    || type.includes("xml")
+    || type.includes("javascript")
+    || type.includes("typescript")
+    || type.includes("markdown")
+    || type.includes("yaml")
+    || type.includes("csv")
+  );
+};
+
+const fileToDataUrl = (file: File): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result === "string" && result.startsWith("data:")) {
+        resolve(result);
+        return;
+      }
+      reject(new Error("Failed to read file as data URL"));
+    };
+    reader.onerror = () => {
+      reject(reader.error || new Error("Failed to read file"));
+    };
+    reader.readAsDataURL(file);
+  });
+};
+
 const isRoutingEvent = (event: ChatEvent): event is Extract<ChatEvent, { type: "routing" }> => event.type === "routing";
 import { TtsSettings, SttSettings, DEFAULT_TTS_SETTINGS, DEFAULT_STT_SETTINGS } from "../lib/constants";
 
@@ -90,7 +214,7 @@ import { TtsSettings, SttSettings, DEFAULT_TTS_SETTINGS, DEFAULT_STT_SETTINGS } 
 
 interface WelcomeScreenProps {
   setInput: (input: string) => void;
-  onSubmit: (e?: React.FormEvent) => void;
+  onSubmit: (e?: { preventDefault?: () => void }) => void;
 }
 
 function WelcomeScreen({ setInput, onSubmit }: WelcomeScreenProps) {
@@ -279,6 +403,7 @@ function ChatContent() {
   } = useConversationHistoryContext();
 
   const [activeModel, setActiveModel] = useState<string>("auto");
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
 
   const currentConversation = getCurrentConversation();
 
@@ -346,7 +471,7 @@ function ChatContent() {
     return normalizeThinkingText(rawContent);
   };
 
-  const { messages, input, setInput, handleInputChange, handleSubmit, isLoading, error, reload, data } = useChat({
+  const { messages, input, setInput, handleInputChange, append, isLoading, error, reload, data } = useChat({
     api: "/api/chat",
     body: { id: currentId || null },
     id: currentId || undefined,
@@ -383,6 +508,155 @@ function ChatContent() {
     },
   });
 
+  const attachmentItems = useMemo(
+    () => pendingAttachments.map((attachment) => ({
+      id: attachment.id,
+      name: attachment.file.name,
+      size: attachment.file.size,
+    })),
+    [pendingAttachments],
+  );
+
+  const handleAttachFiles = (files: FileList) => {
+    const incomingFiles = Array.from(files);
+    setPendingAttachments((prev) => {
+      const next = [...prev];
+      const seen = new Set(prev.map((item) => `${item.file.name}:${item.file.size}:${item.file.lastModified}`));
+
+      for (const file of incomingFiles) {
+        const key = `${file.name}:${file.size}:${file.lastModified}`;
+        if (seen.has(key)) continue;
+        if (next.length >= 6) break;
+        next.push({
+          id: `${file.name}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`,
+          file,
+        });
+        seen.add(key);
+      }
+
+      return next;
+    });
+  };
+
+  const handleRemoveAttachment = (id: string) => {
+    setPendingAttachments((prev) => prev.filter((attachment) => attachment.id !== id));
+  };
+
+  const serializeAttachments = async (attachments: PendingAttachment[]): Promise<OutboundAttachment[]> => {
+    const serialized = await Promise.all(
+      attachments.map(async ({ id, file }) => {
+        const mimeType = file.type || "application/octet-stream";
+
+        if (mimeType.startsWith("image/")) {
+          try {
+            const dataUrl = await fileToDataUrl(file);
+            const imageAttachment: OutboundAttachment = {
+              id,
+              name: file.name,
+              mime_type: mimeType,
+              size: file.size,
+              kind: "image",
+              data_url: dataUrl,
+            };
+            return imageAttachment;
+          } catch {
+            const failedImageAttachment: OutboundAttachment = {
+              id,
+              name: file.name,
+              mime_type: mimeType,
+              size: file.size,
+              kind: "binary",
+            };
+            return failedImageAttachment;
+          }
+        }
+
+        if (isTextLikeFile(file)) {
+          try {
+            const raw = await file.text();
+            const trimmed = raw.trim();
+            const limited = trimmed.length > MAX_ATTACHMENT_TEXT_LENGTH
+              ? `${trimmed.slice(0, MAX_ATTACHMENT_TEXT_LENGTH)}\n... (truncated)`
+              : trimmed;
+            const textAttachment: OutboundAttachment = {
+              id,
+              name: file.name,
+              mime_type: mimeType,
+              size: file.size,
+              kind: "text",
+              text_content: limited || "(empty file)",
+            };
+            return textAttachment;
+          } catch {
+            const failedTextAttachment: OutboundAttachment = {
+              id,
+              name: file.name,
+              mime_type: mimeType,
+              size: file.size,
+              kind: "binary",
+            };
+            return failedTextAttachment;
+          }
+        }
+
+        const binaryAttachment: OutboundAttachment = {
+          id,
+          name: file.name,
+          mime_type: mimeType,
+          size: file.size,
+          kind: "binary",
+        };
+        return binaryAttachment;
+      }),
+    );
+
+    return serialized;
+  };
+
+  const submitChat = async () => {
+    if (isLoading) return;
+
+    const trimmedInput = input.trim();
+    const attachments = pendingAttachments.length > 0
+      ? await serializeAttachments(pendingAttachments)
+      : [];
+    const content = trimmedInput || (attachments.length > 0
+      ? `Attached ${attachments.length} file${attachments.length === 1 ? "" : "s"}.`
+      : "");
+
+    if (!content) return;
+
+    try {
+      await append(
+        {
+          role: "user",
+          content,
+        },
+        {
+          body: {
+            id: currentId || null,
+            model: activeModel,
+            attachments,
+          },
+        },
+      );
+
+      setInput("");
+      setPendingAttachments([]);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to send message";
+      showError(message);
+      setConnectionStatus("disconnected");
+    }
+  };
+
+  const handleSubmit = (e?: { preventDefault?: () => void }) => {
+    if (e && typeof e.preventDefault === "function") {
+      e.preventDefault();
+    }
+    void submitChat();
+  };
+
   const { 
     getEventsForMessage, 
     getDurationForMessage, 
@@ -404,6 +678,19 @@ function ChatContent() {
       [],
     );
     return new Map<string, ReasoningMessage>(entries);
+  }, [currentConversation?.messages]);
+
+  const persistedToolEventsByMessageId = useMemo(() => {
+    const entries = (currentConversation?.messages || []).reduce<Array<[string, ChatEvent[]]>>(
+      (acc, message) => {
+        if (message.id) {
+          acc.push([message.id, getPersistedToolEvents(message)]);
+        }
+        return acc;
+      },
+      [],
+    );
+    return new Map<string, ChatEvent[]>(entries);
   }, [currentConversation?.messages]);
 
   const prevLoadingRef = useRef(isLoading);
@@ -458,11 +745,33 @@ function ChatContent() {
 
   const handleNewChat = async () => {
     await createConversation();
+    setPendingAttachments([]);
     setArchivedEvents({});
     thinkingDurationRef.current = 0;
     eventsRef.current = [];
     lastArchivedEventKeysRef.current = new Set();
     currentRequestIdRef.current = null;
+  };
+
+  const handleSidebarNavigate = (section: SidebarSection) => {
+    if (section === "chats") {
+      router.push("/chats");
+      return;
+    }
+
+    if (section === "projects") {
+      router.push("/projects");
+      return;
+    }
+
+    if (section === "artifacts") {
+      router.push("/artifacts");
+      return;
+    }
+  };
+
+  const handleGoHome = () => {
+    router.push("/");
   };
 
   const events: ChatEvent[] = Array.isArray(data)
@@ -513,10 +822,6 @@ function ChatContent() {
 
   const agents = useAgentStatus(events);
 
-  if (!isLoaded) {
-    return <div className="flex items-center justify-center h-screen">Loading...</div>;
-  }
-
   return (
     <div className="flex h-screen bg-[var(--color-bg-tertiary)] overflow-hidden">
       {!isOnline && <OfflineIndicator />}
@@ -547,6 +852,10 @@ function ChatContent() {
           }}
           searchQuery={searchQuery}
           setSearchQuery={setSearchQuery}
+          isLoading={!isLoaded}
+          activeSection="home"
+          onNavigate={handleSidebarNavigate}
+          onGoHome={handleGoHome}
         />
       </div>
 
@@ -620,8 +929,10 @@ function ChatContent() {
             <div className="mx-auto w-full max-w-3xl px-4 py-6">
               {messages.map((message, index) => {
                 const isLast = index === messages.length - 1;
-                const msgEvents = getEventsForMessage(message.id, isLast);
-                const liveThoughtContent = getThinkingContent(msgEvents);
+                const liveEvents = getEventsForMessage(message.id, isLast);
+                const persistedToolEvents = persistedToolEventsByMessageId.get(message.id) || [];
+                const msgEvents = liveEvents.length > 0 ? liveEvents : persistedToolEvents;
+                const liveThoughtContent = getThinkingContent(liveEvents);
                 const messageContent = getMessageContent(message);
                 const formattedMessageContent = formatMessageContent(messageContent);
                 const showTts = message.role === "assistant" && formattedMessageContent.trim().length > 0;
@@ -724,6 +1035,9 @@ function ChatContent() {
               onInputChange={handleInputChange}
               onSubmit={handleSubmit}
               isLoading={isLoading}
+              attachments={attachmentItems}
+              onAttachFiles={handleAttachFiles}
+              onRemoveAttachment={handleRemoveAttachment}
               isLocal={false}
               onToggleLocal={() => {}}
             />
@@ -737,15 +1051,6 @@ function ChatContent() {
 }
 
 function ChatContentWrapper() {
-  const {
-    currentId,
-    isLoaded,
-  } = useConversationHistoryContext();
-
-  if (!isLoaded) {
-    return <div className="flex items-center justify-center h-screen">Loading...</div>;
-  }
-
   return (
     <ErrorProvider>
       <ErrorBoundary>
