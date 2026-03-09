@@ -5,6 +5,93 @@
 
 ---
 
+## [2026-03-09T22:34:47+10:30] — Integration test mock targeted nonexistent skills_store function
+
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Verification for document filename + skill-limit changes
+- **Category**: test-failure
+- **Blocked current task**: yes
+- **What happened**: The new test for orchestrator skill injection limit initially patched `orchestrator.skills_store.list_enabled_skills`, which does not exist, causing an `AttributeError` and one failing test.
+- **Evidence**: `pytest` failure: `<module 'orchestrator.skills_store' ...> does not have the attribute 'list_enabled_skills'` in `test_orchestrator_skill_injection_limit_remains_2000`.
+- **Likely cause**: Incorrect assumption about skills_store API in test code (actual path uses `list_skills` + `get_skill`). [~100% confidence]
+- **Suggested action**: Keep the test patched against real APIs (`list_skills`, `get_skill`) to validate 2000-char truncation behavior.
+
+## [2026-03-09T21:54:34+10:30] — Frontend lint command incompatibility (seen again)
+
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Verification after generated-files proxy and inline document card fixes
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: `npm run lint` in `frontend/` still fails immediately with Next CLI path parsing error instead of executing lint checks.
+- **Evidence**:
+  - Command: `npm run lint` (workdir `frontend`)
+  - Output: `Invalid project directory provided, no such directory: /home/sol/daemon/frontend/lint`
+- **Likely cause**: Existing Next.js 16 lint workflow mismatch already tracked in TRIAGE (legacy `next lint` script behavior). [~95% confidence]
+- **Suggested action**: Keep using `npm run build` + LSP for verification until lint script is migrated to a Next 16-compatible setup.
+- **Seen again**: Matches prior lint mismatch entries (`next lint` path parsing failure).
+
+## [2026-03-09T21:38:41+10:30] — Document execute lost sandbox output before persistence
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Live DOCX generation debugging after model/interpreter fixes
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: `spawn_agent` returned `Generated file not found` even after code generation and execution succeeded. The output file path from sandbox was no longer present when `DocumentSubagent.execute` validated it.
+- **Evidence**: User runtime output showed `"error": "Generated file not found"` for `agent_type=document`. Code inspection showed `_execute_sandbox` returned `output.{format}` inside `TemporaryDirectory`, then `execute()` checked existence after function return.
+- **Likely cause**: Temp directory lifecycle bug: `_execute_sandbox` returned a path inside `TemporaryDirectory` that was deleted on function exit before persistence stage. [~98% confidence]
+- **Suggested action**: Return a copied persistent temp file from sandbox and clean it after `_persist_file` completes.
+
+## [2026-03-09T21:26:43+10:30] — DOCX sandbox executed with interpreter missing python-docx
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Debugging live document generation failure from user runtime screenshot
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: Document generation code execution failed in sandbox with `ModuleNotFoundError: No module named 'docx'`. The sandbox used `python` directly, which can resolve to a different interpreter than the running service environment.
+- **Evidence**: User runtime output from `spawn_agent` showed `Code execution failed ... from docx import Document ... ModuleNotFoundError: No module named 'docx'`.
+- **Likely cause**: Interpreter mismatch (`python` binary not matching app runtime interpreter), plus potential stale container builds without refreshed dependencies. [~88% confidence]
+- **Suggested action**: Run sandbox with `sys.executable` and keep dependency install/rebuild instructions in error message when `docx` is missing.
+
+## [2026-03-09T21:19:41+10:30] — Document subagent returned OpenRouter HTTP 400 for DOCX request
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Debugging document skill file blocker follow-up and live DOCX generation validation
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: A live `spawn_agent` call with `agent_type="document"` failed with `Client error '400 Bad Request'` from OpenRouter, preventing DOCX generation. Investigation indicated a model identifier mismatch in direct OpenRouter calls.
+- **Evidence**: User-provided runtime output showed `error: "Client error '400 Bad Request' for url 'https://openrouter.ai/api/v1/chat/completions'"` from the document agent path.
+- **Likely cause**: Document subagent used a hyphenated model version string (`...claude-sonnet-4-5`) rather than dot notation used by current OpenRouter IDs (`...claude-sonnet-4.5`). [~85% confidence]
+- **Suggested action**: Keep model ID pinned to `anthropic/claude-sonnet-4.5` for direct OpenRouter API calls and preserve detailed HTTP error body surfacing for faster diagnosis.
+
+## [2026-03-09T20:58:40+10:30] — Pyright warning for private helper import in integration test
+
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Verification for TODO 20 integration test — full generation flow
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: LSP diagnostics reported a private-usage warning because the integration test imports `_persist_file_result` from `orchestrator.tools.spawn`.
+- **Evidence**: `lsp_diagnostics` on `tests/test_document_integration.py` showed `reportPrivateUsage: "_persist_file_result" is private and used outside of the module in which it is declared`.
+- **Likely cause**: Test intentionally validates spawn-level metadata behavior by asserting current private helper behavior. [~90% confidence]
+- **Suggested action**: If warning-free diagnostics are required, cover this behavior through a public API path (e.g., tool invocation flow) or expose a public helper for result post-processing.
+
+## [2026-03-09T20:56:11+10:30] — Document integration test mocked nonexistent file path
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: TODO 20 integration test — full generation flow
+- **Category**: test-failure
+- **Blocked current task**: yes
+- **What happened**: `tests/test_document_integration.py` initially failed because mocks returned `/tmp/output.docx`, but `DocumentSubagent.execute` validates file existence before persistence. The path did not exist, so execute returned failure.
+- **Evidence**: `python -m pytest tests/test_document_integration.py -q` reported two failures with `assert result.success is True` failing and error payload containing `Generated file not found: /tmp/output.docx`.
+- **Likely cause**: Test assumptions diverged from current execution order in `DocumentSubagent.execute` (existence check happens before `_persist_file`). [~98% confidence]
+- **Suggested action**: Keep integration tests returning real temporary file paths from `_execute_sandbox` mocks whenever execute-flow behavior is tested.
+
 ## [2026-03-09T17:53:28+10:30] — Existing test warning patterns seen again after fallback voice prompt update
 
 - **Severity**: info
@@ -368,6 +455,7 @@
 - **Evidence**: `Error: No LSP server configured for extension: .md`.
 - **Likely cause**: Markdown LSP not configured in `oh-my-opencode.json` (expected in this toolchain) [~95% confidence].
 - **Suggested action**: Optional: configure a markdown-capable LSP if markdown diagnostics are desired.
+- **Seen again**: 2026-03-09T21:08:47+10:30 — `lsp_diagnostics` on `data/skills/document-docx.md` and `data/skills/document-csv.md` returned the same `.md` LSP-not-configured error during skill-file blocker verification.
 
 ---
 
@@ -1519,5 +1607,37 @@ SY|- **Suggested action**: Correlate task lifecycle events (create/get/cancel) a
 - **Likely cause**: Known upstream LiteLLM warning + existing async mock patterns in chat-history test path. [~85% confidence]
 - **Suggested action**: Track upstream LiteLLM fix and clean up AsyncMock usage in test fixtures/mocks to reduce warning noise.
 - **Seen again**: Same warning classes already tracked in earlier TRIAGE entries.
+
+---
+
+## [2026-03-09T19:33:10+10:30] — Comment/docstring hook warning triggered while adding DocumentSubagent
+
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: Create `orchestrator/subagents/document.py` (document-generation-subagent TODO 8)
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: The repository hook emitted an immediate warning after file creation because the requested implementation includes many inline comments and docstrings.
+- **Evidence**:
+  - Hook output: `COMMENT/DOCSTRING DETECTED - IMMEDIATE ACTION REQUIRED`
+  - File: `orchestrator/subagents/document.py` (new file created exactly as requested implementation)
+- **Likely cause**: Tooling hook enforces strict comment/docstring policy and flagged the required template content. [~95% confidence]
+- **Suggested action**: Keep as-is for this task because implementation was explicitly mandated; if policy should be strict, align plan templates with hook expectations.
+
+---
+
+## [2026-03-09T19:34:30+10:30] — py_compile blocked by __pycache__ permissions (seen again)
+
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Run diagnostics/build verification for `orchestrator/subagents/document.py`
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: Direct compile verification with `python -m py_compile orchestrator/subagents/document.py` failed because Python could not write bytecode in `orchestrator/subagents/__pycache__`.
+- **Evidence**:
+  - `[Errno 13] Permission denied: 'orchestrator/subagents/__pycache__/document.cpython-314.pyc.139752436077872'`
+- **Likely cause**: Existing workspace ownership/permissions issue for `__pycache__` writes in this environment. [~95% confidence]
+- **Suggested action**: Use non-bytecode compile verification (`compile()`/AST) or fix filesystem ownership for Python cache directories.
+- **Seen again**: Matches prior TRIAGE entries for py_compile permission-denied behavior.
 
 ---
