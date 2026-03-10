@@ -33,7 +33,7 @@ import MarkdownMessage from "../components/MarkdownMessage";
 import { FileDownloadCard } from "../components/FileDownloadCard";
 import { SkeletonBlock } from "../components/ui/Skeleton";
 import { ChatEvent, isChatEvent } from "../lib/events";
-import { Search, Image, Code, MessageSquare, Sparkles } from "lucide-react";
+import { Search, Image, Code, MessageSquare, Sparkles, X, Eye, EyeOff } from "lucide-react";
 import { Message } from "ai";
 
 type ReasoningMessage = Message & {
@@ -431,6 +431,7 @@ function ChatContent() {
 
   const [connectionStatus, setConnectionStatus] = useState<"connected" | "disconnected" | "reconnecting">("connected");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [openedPreviewFileUrl, setOpenedPreviewFileUrl] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
@@ -468,6 +469,7 @@ function ChatContent() {
 
   useEffect(() => {
     setThoughtFallbackByMessageId({});
+    setOpenedPreviewFileUrl(null);
   }, [currentId]);
 
   // State to store events for past messages
@@ -482,6 +484,7 @@ function ChatContent() {
 
   const lastArchivedEventKeysRef = useRef<Set<string>>(new Set());
   const currentRequestIdRef = useRef<string | null>(null);
+  const autoOpenedPreviewFileUrlsRef = useRef<Set<string>>(new Set());
 
   const eventKey = (event: ChatEvent) => {
     if (event.id) return `id:${event.id}`;
@@ -876,21 +879,43 @@ function ChatContent() {
   const agents = useAgentStatus(events);
 
   // Track the latest document download for preview panel
-  const documentDownload = useMemo(() => {
-    // Look through all messages for document downloads
+  const latestDocumentPreview = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       const message = messages[i];
       const liveEvents = getEventsForMessage(message.id, i === messages.length - 1);
       const persistedToolEvents = persistedToolEventsByMessageId.get(message.id) || [];
       const msgEvents = liveEvents.length > 0 ? liveEvents : persistedToolEvents;
       const doc = getDocumentDownloadFromEvents(msgEvents);
-      if (doc) return doc;
+      if (doc) {
+        return {
+          doc,
+          source: liveEvents.length > 0 ? "live" as const : "persisted" as const,
+        };
+      }
     }
     return undefined;
   }, [messages, getEventsForMessage, persistedToolEventsByMessageId]);
 
-  // Determine if we should show the preview panel
-  const showPreviewPanel = documentDownload !== undefined;
+  const documentDownload = latestDocumentPreview?.doc;
+
+  useEffect(() => {
+    if (!documentDownload) {
+      setOpenedPreviewFileUrl(null);
+      return;
+    }
+
+    if (latestDocumentPreview?.source === "live") {
+      const fileUrl = documentDownload.fileUrl;
+      if (!autoOpenedPreviewFileUrlsRef.current.has(fileUrl)) {
+        autoOpenedPreviewFileUrlsRef.current.add(fileUrl);
+        setOpenedPreviewFileUrl(fileUrl);
+      }
+    }
+  }, [documentDownload, latestDocumentPreview]);
+
+  const showPreviewPanel =
+    documentDownload !== undefined
+    && openedPreviewFileUrl === documentDownload.fileUrl;
 
   return (
     <div className="flex h-screen bg-[var(--color-bg-tertiary)] overflow-hidden">
@@ -932,8 +957,8 @@ function ChatContent() {
       <Group orientation="horizontal" className="flex-1 overflow-hidden">
         {/* Left Panel - Chat Content */}
         <Panel
-          defaultSize={showPreviewPanel ? 80 : 100}
-          minSize={50}
+          defaultSize={showPreviewPanel ? 60 : 100}
+          minSize={40}
           className="flex flex-col"
         >
           <div className="flex-1 flex flex-col w-full min-w-0 relative">
@@ -1036,6 +1061,12 @@ function ChatContent() {
                   ? { type: "thinking", content: thoughtContent }
                   : undefined;
                 const modelName = getModelName(persistedModel || routingModel);
+                const isActivePreviewDocument = Boolean(
+                  documentDownloadForMessage
+                  && documentDownload
+                  && documentDownloadForMessage.fileUrl === documentDownload.fileUrl
+                );
+                const isPreviewVisibleForMessage = isActivePreviewDocument && showPreviewPanel;
                 
                 return (
                   <div
@@ -1062,14 +1093,35 @@ function ChatContent() {
                         <div className="w-full">
                           <MarkdownMessage content={messageContent} />
                         </div>
-                        {/* Render FileDownloadCard for document files - only when preview panel is NOT shown */}
-                        {documentDownloadForMessage && !showPreviewPanel && (
-                          <div className="mt-4">
+                        {documentDownloadForMessage && (
+                          <div className="mt-4 w-full">
                             <FileDownloadCard
                               filename={documentDownloadForMessage.filename}
                               fileUrl={documentDownloadForMessage.fileUrl}
                               fileSize={documentDownloadForMessage.fileSize}
                               fileType={documentDownloadForMessage.fileType}
+                              trailingAction={isActivePreviewDocument ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setOpenedPreviewFileUrl((previous) => (
+                                      previous === documentDownloadForMessage.fileUrl
+                                        ? null
+                                        : documentDownloadForMessage.fileUrl
+                                    ));
+                                  }}
+                                  className="inline-flex items-center justify-center w-10 h-10 bg-[var(--color-bg-secondary)] hover:bg-[var(--color-bg-primary)] border border-[var(--color-border-primary)] hover:border-[var(--color-border-secondary)] text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] rounded-lg transition-all focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)]"
+                                  title={isPreviewVisibleForMessage ? "Hide preview pane" : "Show preview pane"}
+                                  aria-label={isPreviewVisibleForMessage ? "Hide preview pane" : "Show preview pane"}
+                                  aria-expanded={isPreviewVisibleForMessage}
+                                >
+                                  {isPreviewVisibleForMessage ? (
+                                    <EyeOff className="w-5 h-5" />
+                                  ) : (
+                                    <Eye className="w-5 h-5" />
+                                  )}
+                                </button>
+                              ) : undefined}
                             />
                           </div>
                         )}
@@ -1145,13 +1197,24 @@ function ChatContent() {
         {/* Right Panel - File Preview */}
         {showPreviewPanel && (
           <Panel
-            defaultSize={20}
-            minSize={20}
+            defaultSize={40}
+            minSize={30}
             className="hidden md:flex flex-col bg-[var(--color-bg-secondary)] border-l border-[var(--color-border-primary)]"
-            style={{ minWidth: 300 }}
+            style={{ minWidth: 420 }}
           >
             <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border-primary)]">
               <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">Document Preview</h2>
+              <button
+                type="button"
+                onClick={() => {
+                  setOpenedPreviewFileUrl(null);
+                }}
+                className="inline-flex items-center justify-center rounded-md p-1.5 text-[var(--color-text-muted)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)] transition-colors"
+                aria-label="Close preview pane"
+                title="Close preview pane"
+              >
+                <X className="h-4 w-4" />
+              </button>
             </div>
             <div className="flex-1 overflow-y-auto p-4">
               {documentDownload && (

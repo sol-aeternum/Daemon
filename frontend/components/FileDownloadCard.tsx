@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { FileText, Table, File, Download } from "lucide-react";
 
 interface FileDownloadCardProps {
@@ -5,6 +6,8 @@ interface FileDownloadCardProps {
   fileUrl: string;
   fileSize?: number;
   fileType?: string;
+  trailingAction?: ReactNode;
+  className?: string;
 }
 
 function formatFileSize(bytes: number): string {
@@ -46,6 +49,8 @@ export function FileDownloadCard({
   fileUrl,
   fileSize,
   fileType,
+  trailingAction,
+  className,
 }: FileDownloadCardProps) {
   const handleDownload = () => {
     const link = document.createElement("a");
@@ -59,13 +64,11 @@ export function FileDownloadCard({
   };
 
   return (
-    <div className="flex items-center gap-4 p-4 bg-[var(--color-bg-tertiary)] rounded-xl border border-[var(--color-border-primary)] max-w-md transition-all hover:shadow-md hover:border-[var(--color-border-secondary)]">
-      {/* File Icon */}
+    <div className={`flex items-center gap-4 p-4 bg-[var(--color-bg-tertiary)] rounded-xl border border-[var(--color-border-primary)] w-full transition-all hover:shadow-md hover:border-[var(--color-border-secondary)] ${className ?? ""}`}>
       <div className="flex-shrink-0 w-12 h-12 flex items-center justify-center bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border-primary)]">
         {getFileIcon(fileType, filename)}
       </div>
 
-      {/* File Info */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-1">
           <span className="text-xs font-medium text-[var(--color-text-muted)] uppercase tracking-wider">
@@ -88,8 +91,8 @@ export function FileDownloadCard({
         </p>
       </div>
 
-      {/* Download Button */}
       <button
+        type="button"
         onClick={handleDownload}
         className="flex-shrink-0 flex items-center gap-2 px-3 py-2 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-white text-sm font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)]"
         title={`Download ${filename}`}
@@ -97,6 +100,8 @@ export function FileDownloadCard({
         <Download className="w-4 h-4" />
         <span className="hidden sm:inline">Download</span>
       </button>
+
+      {trailingAction ? <div className="flex-shrink-0">{trailingAction}</div> : null}
     </div>
   );
 }

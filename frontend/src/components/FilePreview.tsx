@@ -1,8 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { Eye, EyeOff, Loader2, AlertCircle, FileWarning } from "lucide-react";
-import { FileDownloadCard } from "@/components/FileDownloadCard";
+import { Loader2, AlertCircle, FileWarning } from "lucide-react";
 import { CsvPreview, HtmlPreview, PdfPreview, DocxPreview } from "@/src/components/previews";
 import MarkdownRenderer from "@/src/components/MarkdownRenderer";
 
@@ -14,7 +13,7 @@ interface FilePreviewProps {
 }
 
 const MAX_PREVIEW_SIZE = 5 * 1024 * 1024; // 5MB
-const AUTO_EXPAND_SIZE = 100 * 1024; // 100KB
+const PREVIEW_FETCH_TIMEOUT_MS = 20000;
 
 type PreviewContent = {
   type: "text";
@@ -28,13 +27,18 @@ type PreviewContent = {
 } | null;
 
 export function FilePreview({ fileUrl, filename, format, fileSize }: FilePreviewProps) {
-  const [isExpanded, setIsExpanded] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [content, setContent] = useState<PreviewContent>(null);
   const [hasLoaded, setHasLoaded] = useState(false);
 
   const normalizedFormat = format.toLowerCase().trim();
+
+  useEffect(() => {
+    setContent(null);
+    setHasLoaded(false);
+    setError(null);
+  }, [fileUrl, normalizedFormat]);
 
   // Check if file is too large to preview
   const isTooLarge = useMemo(() => {
@@ -47,16 +51,18 @@ export function FilePreview({ fileUrl, filename, format, fileSize }: FilePreview
     return ["csv", "md", "html", "pdf", "docx"].includes(normalizedFormat);
   }, [normalizedFormat]);
 
-  // Auto-expand for small files
-  useEffect(() => {
-    if (fileSize !== undefined && fileSize < AUTO_EXPAND_SIZE && isSupportedFormat && !isTooLarge) {
-      setIsExpanded(true);
-    }
-  }, [fileSize, isSupportedFormat, isTooLarge]);
-
-  // Fetch content when expanded
   const fetchContent = useCallback(async () => {
     if (hasLoaded || !isSupportedFormat || isTooLarge) return;
+
+    const fetchWithTimeout = async (url: string): Promise<Response> => {
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), PREVIEW_FETCH_TIMEOUT_MS);
+      try {
+        return await fetch(url, { signal: controller.signal });
+      } finally {
+        window.clearTimeout(timeoutId);
+      }
+    };
 
     setIsLoading(true);
     setError(null);
@@ -72,7 +78,7 @@ export function FilePreview({ fileUrl, filename, format, fileSize }: FilePreview
 
       // DOCX needs ArrayBuffer
       if (normalizedFormat === "docx") {
-        const response = await fetch(fileUrl);
+        const response = await fetchWithTimeout(fileUrl);
         if (!response.ok) {
           throw new Error(`Failed to fetch file: ${response.status} ${response.statusText}`);
         }
@@ -84,7 +90,7 @@ export function FilePreview({ fileUrl, filename, format, fileSize }: FilePreview
       }
 
       // CSV, MD, HTML need text
-      const response = await fetch(fileUrl);
+      const response = await fetchWithTimeout(fileUrl);
       if (!response.ok) {
         throw new Error(`Failed to fetch file: ${response.status} ${response.statusText}`);
       }
@@ -92,22 +98,21 @@ export function FilePreview({ fileUrl, filename, format, fileSize }: FilePreview
       setContent({ type: "text", content: text });
       setHasLoaded(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load file content");
+      if (err instanceof DOMException && err.name === "AbortError") {
+        setError("Preview request timed out. You can still download the file.");
+      } else {
+        setError(err instanceof Error ? err.message : "Failed to load file content");
+      }
     } finally {
       setIsLoading(false);
     }
   }, [fileUrl, normalizedFormat, isSupportedFormat, isTooLarge, hasLoaded]);
 
-  // Trigger fetch when expanded
   useEffect(() => {
-    if (isExpanded && !hasLoaded && !isTooLarge) {
+    if (!hasLoaded && !isTooLarge) {
       fetchContent();
     }
-  }, [isExpanded, hasLoaded, isTooLarge, fetchContent]);
-
-  const togglePreview = () => {
-    setIsExpanded((prev) => !prev);
-  };
+  }, [hasLoaded, isTooLarge, fetchContent]);
 
   // Render the appropriate preview component
   const renderPreview = () => {
@@ -127,7 +132,7 @@ export function FilePreview({ fileUrl, filename, format, fileSize }: FilePreview
               </span>
             </div>
             <div className="overflow-auto max-h-[340px] p-4">
-              <MarkdownRenderer content={content.content} compact />
+              <MarkdownRenderer content={content.content} compact={false} />
             </div>
           </div>
         ) : null;
@@ -209,49 +214,13 @@ export function FilePreview({ fileUrl, filename, format, fileSize }: FilePreview
     );
   };
 
-  const showToggle = isSupportedFormat && !isTooLarge;
-
   return (
-    <div className="flex flex-col gap-3">
-      {/* Preview Panel */}
-      {isExpanded && (
-        <div className="space-y-3">
-          {isLoading && renderLoading()}
-          {error && renderError()}
-          {!isLoading && !error && renderPreview()}
-          {isTooLarge && renderSizeWarning()}
-          {!isSupportedFormat && renderUnsupported()}
-        </div>
-      )}
-
-      {/* File Download Card with Toggle */}
-      <div className="flex items-center gap-3">
-        <div className="flex-1">
-          <FileDownloadCard
-            filename={filename}
-            fileUrl={fileUrl}
-            fileSize={fileSize}
-            fileType={format}
-          />
-        </div>
-
-        {/* Preview Toggle Button */}
-        {showToggle && (
-          <button
-            onClick={togglePreview}
-            className="flex-shrink-0 flex items-center justify-center w-10 h-10 bg-[var(--color-bg-tertiary)] hover:bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)] hover:border-[var(--color-border-secondary)] text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] rounded-xl transition-all focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-primary)]"
-            title={isExpanded ? "Hide preview" : "Show preview"}
-            aria-expanded={isExpanded}
-            aria-label={isExpanded ? "Hide file preview" : "Show file preview"}
-          >
-            {isExpanded ? (
-              <EyeOff className="w-5 h-5" />
-            ) : (
-              <Eye className="w-5 h-5" />
-            )}
-          </button>
-        )}
-      </div>
+    <div className="space-y-3">
+      {isLoading && renderLoading()}
+      {error && renderError()}
+      {!isLoading && !error && !isTooLarge && isSupportedFormat && renderPreview()}
+      {isTooLarge && renderSizeWarning()}
+      {!isTooLarge && !isSupportedFormat && renderUnsupported()}
     </div>
   );
 }

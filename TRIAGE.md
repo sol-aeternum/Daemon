@@ -5,6 +5,30 @@
 
 ---
 
+## [2026-03-10T19:27:00+10:30] — background task cancel returns error once task already completed
+
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: DOCX preview loading fix follow-up
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: Attempting to cancel a background task after it had already completed returned an error response instead of a no-op success.
+- **Evidence**: `background_cancel(taskId="bg_c1bf6dde")` returned `Cannot cancel task: current status is "completed". Only running or pending tasks can be cancelled.`
+- **Likely cause**: Tool enforces strict state transitions and rejects cancellation for terminal states. [~100% confidence]
+- **Suggested action**: Treat this as expected behavior; check task status first or ignore cancel requests for completed tasks.
+
+## [2026-03-10T19:16:00+10:30] — `sg` command resolves to system utility, not ast-grep CLI
+
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Search-mode investigation for DOCX preview rendering hang
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: The requested `sg` direct search command does not map to ast-grep in this environment; it resolves to a different system command (`group` utility), so AST search had to be performed with the dedicated `ast_grep_search` tool instead.
+- **Evidence**: Command `sg -p 'renderAsync($A, $B, $$$)' frontend --lang tsx` returned `Usage: sg group [[-c] command]`.
+- **Likely cause**: Host PATH maps `sg` to an unrelated binary; ast-grep CLI alias is not installed/exposed as `sg`. [~95% confidence]
+- **Suggested action**: Keep using `ast_grep_search` tool (or install/alias ast-grep CLI as `sg` if shell parity is required).
+
 ## [2026-03-09T22:34:47+10:30] — Integration test mock targeted nonexistent skills_store function
 
 - **Severity**: info
