@@ -44,6 +44,7 @@ class MemoryReembedRequest(BaseModel):
 async def list_memories(
     category: str | None = None,
     confirmed: bool | None = None,
+    search: str | None = None,
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     app_state: AppState = Depends(get_app_state),
@@ -57,6 +58,7 @@ async def list_memories(
         user_id=DEFAULT_USER_ID,
         category=category,
         confirmed=confirmed,
+        search=search,
         include_local=True,
         limit=limit,
         offset=offset,

@@ -394,6 +394,7 @@ class MemoryStore:
         category: str | None = None,
         status: str | list[str] | None = "active",
         confirmed: bool | None = None,
+        search: str | None = None,
         include_local: bool = True,
         created_after: datetime | None = None,
         created_before: datetime | None = None,
@@ -412,6 +413,10 @@ class MemoryStore:
         if created_before is not None:
             params.append(created_before)
             conditions.append(f"created_at <= ${len(params)}::timestamptz")
+
+        if search is not None:
+            params.append(f"%{search}%")
+            conditions.append(f"content ILIKE ${len(params)}")
 
         if confirmed is True:
             conditions.append("valid_to IS NULL")

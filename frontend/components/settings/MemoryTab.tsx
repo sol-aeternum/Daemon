@@ -1,7 +1,11 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { SkeletonLine, SkeletonBlock, SkeletonCircle } from '@/components/ui/Skeleton';
+import { useMemories, Memory } from '@/hooks/useMemories';
+import MemoryFilters from './memory/MemoryFilters';
+import { MemoryCard } from './memory/MemoryCard';
+import { MemoryDetail } from './memory/MemoryDetail';
 import {
   Brain,
   Database,
@@ -12,6 +16,7 @@ import {
   Loader2,
   Clock,
   AlertTriangle,
+  MessageSquare,
 } from 'lucide-react';
 
 interface MemoryStats {
@@ -27,12 +32,38 @@ interface MemoryStats {
 
 type ActionStatus = 'idle' | 'loading' | 'success' | 'error';
 
+type ViewMode = 'list' | 'detail';
+
+interface FilterState {
+  category?: string;
+  source_type?: string;
+  status?: string;
+  search?: string;
+}
+
 export default function MemoryTab() {
   const [stats, setStats] = useState<MemoryStats | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [actionStatus, setActionStatus] = useState<ActionStatus>('idle');
   const [actionMessage, setActionMessage] = useState('');
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+
+  // Memory browser state
+  const [viewMode, setViewMode] = useState<ViewMode>('list');
+  const [selectedMemoryId, setSelectedMemoryId] = useState<string | null>(null);
+  const [filters, setFilters] = useState<FilterState>({ status: 'active' });
+
+  // useMemories hook for memory management
+  const {
+    memories,
+    loading: memoriesLoading,
+    error: memoriesError,
+    fetchMemories,
+    deleteMemory,
+    correctMemory,
+    total: memoriesTotal,
+  } = useMemories();
+
   const apiBaseUrl =
     process.env.NEXT_PUBLIC_API_URL ||
     (process.env.NODE_ENV === 'development' ? 'http://localhost:8000' : '');
@@ -123,6 +154,40 @@ export default function MemoryTab() {
   useEffect(() => {
     fetchMemoryStats();
   }, [fetchMemoryStats]);
+
+  // Handle filter changes from MemoryFilters
+  const handleFilterChange = useCallback((newFilters: FilterState) => {
+    setFilters(newFilters);
+    fetchMemories(newFilters);
+  }, [fetchMemories]);
+
+  // Handle memory selection - go to detail view
+  const handleSelectMemory = useCallback((memoryId: string) => {
+    setSelectedMemoryId(memoryId);
+    setViewMode('detail');
+  }, []);
+
+  // Handle back navigation from detail view
+  const handleBackToList = useCallback(() => {
+    setSelectedMemoryId(null);
+    setViewMode('list');
+  }, []);
+
+  // Handle memory correction
+  const handleCorrectMemory = useCallback(async (id: string, content: string, category?: string) => {
+    await correctMemory(id, content, category);
+  }, [correctMemory]);
+
+  // Handle memory deletion
+  const handleDeleteMemory = useCallback(async (id: string) => {
+    const success = await deleteMemory(id);
+    if (success) {
+      handleBackToList();
+    }
+  }, [deleteMemory, handleBackToList]);
+
+  // Get selected memory object
+  const selectedMemory: Memory | undefined = memories.find(m => m.id === selectedMemoryId);
 
   // Handle clear all memories
   const handleClearMemories = async () => {
@@ -265,23 +330,77 @@ export default function MemoryTab() {
               </div>
             </div>
 
-            {/* Memory Browser Placeholder */}
-            <div className="p-6 bg-bg-secondary rounded-lg border border-border-primary opacity-60">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 rounded-lg bg-bg-tertiary flex items-center justify-center">
-                    <Search className="w-6 h-6 text-text-muted" />
+            {/* Memory Browser */}
+            <div className="bg-bg-secondary rounded-lg border border-border-primary">
+              {/* Header */}
+              <div className="p-4 border-b border-border-primary">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-accent-subtle flex items-center justify-center">
+                      <Search className="w-5 h-5 text-accent-primary" />
+                    </div>
+                    <div>
+                      <h3 className="font-medium text-text-primary">Memory Browser</h3>
+                      <p className="text-xs text-text-muted">
+                        {memoriesTotal > 0
+                          ? `${memoriesTotal} memories found`
+                          : 'View, search, and manage individual memories'}
+                      </p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="font-medium text-text-primary">Memory Browser</p>
-                    <p className="text-sm text-text-muted">
-                      View, search, and manage individual memories
-                    </p>
-                  </div>
+                  <span className="px-3 py-1 text-xs font-medium bg-status-success-bg text-status-success rounded-full">
+                    Ready
+                  </span>
                 </div>
-                <span className="px-3 py-1 text-xs font-medium bg-bg-tertiary text-text-muted rounded-full">
-                  Coming soon
-                </span>
+              </div>
+
+              {/* Filters */}
+              <div className="p-4 border-b border-border-primary bg-bg-tertiary/30">
+                <MemoryFilters onFilterChange={handleFilterChange} />
+              </div>
+
+              {/* Content */}
+              <div className="p-4">
+                {viewMode === 'detail' && selectedMemory ? (
+                  <MemoryDetail
+                    memory={selectedMemory}
+                    onBack={handleBackToList}
+                    onCorrect={handleCorrectMemory}
+                    onDelete={handleDeleteMemory}
+                  />
+                ) : (
+                  <div className="space-y-3">
+                    {memoriesLoading && memories.length === 0 ? (
+                      <div className="space-y-3">
+                        {[1, 2, 3].map((i) => (
+                          <SkeletonBlock key={i} height={80} />
+                        ))}
+                      </div>
+                    ) : memoriesError ? (
+                      <div className="p-4 rounded-lg bg-status-error-bg border border-status-error/20">
+                        <p className="text-sm text-status-error">{memoriesError}</p>
+                      </div>
+                    ) : memories.length === 0 ? (
+                      <div className="py-8 text-center">
+                        <MessageSquare className="w-8 h-8 text-text-muted mx-auto mb-2" />
+                        <p className="text-sm text-text-muted">No memories found</p>
+                        <p className="text-xs text-text-muted mt-1">
+                          Try adjusting your filters or start a conversation
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2 max-h-[400px] overflow-y-auto pr-2">
+                        {memories.map((memory) => (
+                          <MemoryCard
+                            key={memory.id}
+                            memory={memory}
+                            onSelect={handleSelectMemory}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           </div>
