@@ -123,14 +123,40 @@ async def extract_memories(
 
     raw_messages: list[dict[str, Any]]
     if messages_json is None:
-        messages = await store_obj.get_messages(_as_uuid(conversation_id), limit=250)
+        # Get the last extraction time for this conversation
+        last_extraction_time = await store_obj.get_last_extraction_time(
+            _as_uuid(conversation_id)
+        )
+
+        # If there was a previous extraction, only fetch messages newer than that
+        if last_extraction_time is not None:
+            # We need to fetch messages with created_at > last_extraction_time
+            # Since get_messages doesn't support this filter, we'll need to modify the approach
+            # For now, we'll fetch the last 250 messages and filter them
+            all_messages = await store_obj.get_messages(
+                _as_uuid(conversation_id), limit=250
+            )
+            messages = [
+                msg
+                for msg in all_messages
+                if msg.get("created_at") and msg["created_at"] > last_extraction_time
+            ]
+        else:
+            # No previous extraction, fetch all messages
+            messages = await store_obj.get_messages(
+                _as_uuid(conversation_id), limit=250
+            )
         raw_messages = [dict(message) for message in messages]
     else:
         raw_messages = _parse_raw_messages(messages_json)
     filtered_raw_messages = [
         message for message in raw_messages if not _is_memory_write_artifact(message)
     ]
-    messages = _parse_messages(filtered_raw_messages)
+    parsed_messages = _parse_messages(filtered_raw_messages)
+    user_messages = [
+        message for message in parsed_messages if message.get("role") == "user"
+    ]
+    messages = user_messages or parsed_messages
     text = _messages_to_text(messages)
     if not text:
         return {"status": "skipped", "reason": "no_messages"}
@@ -297,15 +323,17 @@ async def cleanup_generated_files(ctx: WorkerContext) -> dict[str, int]:
     from orchestrator.config import get_settings
 
     settings = get_settings()
-    generated_files_dir = Path(__file__).resolve().parent.parent / "data" / "generated_files"
-    
+    generated_files_dir = (
+        Path(__file__).resolve().parent.parent / "data" / "generated_files"
+    )
+
     if not generated_files_dir.exists():
         return {"scanned": 0, "deleted": 0}
-    
+
     cutoff = datetime.now() - timedelta(hours=24)
     deleted = 0
     scanned = 0
-    
+
     for item in generated_files_dir.iterdir():
         scanned += 1
         # Only delete files, not directories
@@ -318,5 +346,5 @@ async def cleanup_generated_files(ctx: WorkerContext) -> dict[str, int]:
                     logger.info(f"Deleted old generated file: {item.name}")
             except Exception as e:
                 logger.warning(f"Failed to process {item.name}: {e}")
-    
+
     return {"scanned": scanned, "deleted": deleted}

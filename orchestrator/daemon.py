@@ -776,6 +776,18 @@ async def stream_sse_chat(
                         logger.warning(
                             "Failed to enqueue title generation: %s", enqueue_error
                         )
+                    try:
+                        await queue.enqueue_job(
+                            "extract_memories",
+                            str(user_id),
+                            str(conversation_uuid),
+                            _job_id=f"extract:{conversation_uuid}",
+                            _defer_by=timedelta(seconds=30),
+                        )
+                    except Exception as extract_error:
+                        logger.warning(
+                            "Failed to enqueue memory extraction: %s", extract_error
+                        )
             except Exception as e:
                 logger.warning("Failed to persist final message: %s", e)
 

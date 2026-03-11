@@ -102,6 +102,8 @@ class ExtractionOutcome:
 EXTRACTION_PROMPT = """
 You extract every concrete fact about the user from a role-labeled transcript.
 Be exhaustive. Extract MORE rather than fewer facts. Retrieval handles relevance later.
+ALWAYS start facts with "User" (e.g., "User is 28", "User lives in Adelaide").
+Facts not starting with "User" will be rejected by validation.
 
 Role awareness:
 - Input contains [User] and [Assistant] markers.
