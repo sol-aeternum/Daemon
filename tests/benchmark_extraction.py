@@ -110,7 +110,7 @@ _load_dotenv()
 # ---------------------------------------------------------------------------
 
 BASE_URL = os.environ.get("DAEMON_URL", "http://localhost:8000")
-DEFAULT_WAIT = 45  # seconds to wait for extraction pipeline
+DEFAULT_WAIT = 50  # seconds to wait for extraction pipeline
 DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001"
 
 # Safety: hosts we'll allow DB wipe on
@@ -848,7 +848,6 @@ def run_scenario(
         f"\n  Score: TP={result.tp} FP={result.fp} FN={result.fn} P={result.precision:.2f} R={result.recall:.2f}"
     )
 
-    delete_conversation(conv_id)
     return result
 
 
