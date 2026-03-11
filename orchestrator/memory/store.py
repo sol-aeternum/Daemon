@@ -6,7 +6,7 @@ import json
 import logging
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 import asyncpg
 
@@ -204,7 +204,7 @@ class MemoryStore:
             reasoning_duration_secs,
             reasoning_model,
         )
-        result = dict(row)  # type: ignore[arg-type]
+        result = cast(dict[str, Any], dict(row))
         result["content"] = self._enc.decrypt(result["content"])
         if result.get("reasoning_text") is not None:
             result["reasoning_text"] = self._enc.decrypt(result["reasoning_text"])
@@ -352,26 +352,45 @@ class MemoryStore:
     ) -> dict[str, Any]:
         encrypted_content = self._enc.encrypt(content)
         embedding_str = _format_vector(embedding) if embedding else None
-        row = await self._pool.fetchrow(
-            """
-            INSERT INTO memories
-                (user_id, content, embedding, embedding_model, category, source_type,
-                 source_conversation_id, local_only, confidence, status, memory_slot)
-            VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11)
-            RETURNING *
-            """,
-            user_id,
-            encrypted_content,
-            embedding_str,
-            embedding_model,
-            category,
-            source_type,
-            source_conversation_id,
-            local_only,
-            confidence,
-            status,
-            memory_slot,
-        )
+
+        async def _insert(
+            conversation_id: uuid.UUID | None,
+        ) -> asyncpg.Record:
+            row = await self._pool.fetchrow(
+                """
+                INSERT INTO memories
+                    (user_id, content, embedding, embedding_model, category, source_type,
+                     source_conversation_id, local_only, confidence, status, memory_slot)
+                VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11)
+                RETURNING *
+                """,
+                user_id,
+                encrypted_content,
+                embedding_str,
+                embedding_model,
+                category,
+                source_type,
+                conversation_id,
+                local_only,
+                confidence,
+                status,
+                memory_slot,
+            )
+            if row is None:
+                raise RuntimeError("insert_memory: insert returned no row")
+            return row
+
+        try:
+            row = await _insert(source_conversation_id)
+        except asyncpg.ForeignKeyViolationError as error:
+            if source_conversation_id is None:
+                raise
+            logger.warning(
+                "insert_memory: source_conversation_id %s missing; retrying without source conversation reference (%s)",
+                source_conversation_id,
+                error,
+            )
+            row = await _insert(None)
         result = dict(row)  # type: ignore[arg-type]
         result["content"] = self._enc.decrypt(result["content"])
         return result
@@ -561,25 +580,44 @@ class MemoryStore:
 
         async with self._pool.acquire() as conn:
             async with conn.transaction():
-                new_row = await conn.fetchrow(
-                    """
-                    INSERT INTO memories
-                        (user_id, content, embedding, embedding_model, category, source_type,
-                         source_conversation_id, confidence, status, memory_slot)
-                    VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10)
-                    RETURNING *
-                    """,
-                    user_id,
-                    encrypted_content,
-                    embedding_str,
-                    embedding_model,
-                    new_category,
-                    new_source_type,
-                    source_conversation_id,
-                    confidence,
-                    new_status,
-                    memory_slot,
-                )
+
+                async def _insert(
+                    conversation_id: uuid.UUID | None,
+                ) -> asyncpg.Record:
+                    row = await conn.fetchrow(
+                        """
+                        INSERT INTO memories
+                            (user_id, content, embedding, embedding_model, category, source_type,
+                             source_conversation_id, confidence, status, memory_slot)
+                        VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10)
+                        RETURNING *
+                        """,
+                        user_id,
+                        encrypted_content,
+                        embedding_str,
+                        embedding_model,
+                        new_category,
+                        new_source_type,
+                        conversation_id,
+                        confidence,
+                        new_status,
+                        memory_slot,
+                    )
+                    if row is None:
+                        raise RuntimeError("supersede_memory: insert returned no row")
+                    return row
+
+                try:
+                    new_row = await _insert(source_conversation_id)
+                except asyncpg.ForeignKeyViolationError as error:
+                    if source_conversation_id is None:
+                        raise
+                    logger.warning(
+                        "supersede_memory: source_conversation_id %s missing; retrying without source conversation reference (%s)",
+                        source_conversation_id,
+                        error,
+                    )
+                    new_row = await _insert(None)
 
                 update_result = await conn.execute(
                     """
@@ -598,7 +636,7 @@ class MemoryStore:
                         "Supersede failed to close source memory in active state"
                     )
 
-        result = dict(new_row)  # type: ignore[arg-type]
+        result = cast(dict[str, Any], dict(new_row))
         result["content"] = self._enc.decrypt(result["content"])
         return result
 
@@ -900,6 +938,21 @@ class MemoryStore:
         result["input_snippet"] = self._enc.decrypt(result["input_snippet"])
         return result
 
+    async def get_last_extraction_time(
+        self,
+        conversation_id: uuid.UUID,
+    ) -> datetime | None:
+        """Get the timestamp of the last extraction for a conversation."""
+        row = await self._pool.fetchrow(
+            """
+            SELECT created_at FROM memory_extraction_log 
+            WHERE conversation_id = $1 
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            conversation_id,
+        )
+        return row["created_at"] if row else None
+
     # ------------------------------------------------------------------
     # Bulk operations
     # ------------------------------------------------------------------
@@ -1036,7 +1089,6 @@ class MemoryStore:
         """
         if not self._pool:
             return {}
-
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT settings FROM users WHERE id = $1", user_id
@@ -1052,7 +1104,6 @@ class MemoryStore:
     ) -> dict[str, Any]:
         if not self._pool:
             return settings
-
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
