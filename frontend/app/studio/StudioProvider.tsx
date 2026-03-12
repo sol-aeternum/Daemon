@@ -1,0 +1,168 @@
+"use client";
+
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import type { StudioGeneration, StudioModel, StudioReferenceImage } from "./types";
+
+const MAX_MODELS = 4;
+const STORAGE_MODELS_KEY = "studio:selectedModels";
+const STORAGE_ASPECT_RATIO_KEY = "studio:aspectRatio";
+
+interface StudioContextValue {
+  availableModels: StudioModel[];
+  selectedModels: string[];
+  prompt: string;
+  referenceImage: StudioReferenceImage | null;
+  aspectRatio: string;
+  resolution: string;
+  generations: StudioGeneration[];
+  isGenerating: boolean;
+  addModel: (modelId: string) => void;
+  removeModel: (modelId: string) => void;
+  setAvailableModels: (models: StudioModel[]) => void;
+  setPrompt: (value: string) => void;
+  setReferenceImage: (value: StudioReferenceImage | null) => void;
+  clearReference: () => void;
+  setAspectRatio: (value: string) => void;
+  setResolution: (value: string) => void;
+  addGeneration: (value: StudioGeneration) => void;
+  upsertGeneration: (value: { id: string } & Partial<StudioGeneration>) => void;
+  clearGallery: () => void;
+  setIsGenerating: (value: boolean) => void;
+}
+
+const StudioContext = createContext<StudioContextValue | null>(null);
+
+export function StudioProvider({ children }: { children: ReactNode }) {
+  const [availableModels, setAvailableModels] = useState<StudioModel[]>([]);
+  const [selectedModels, setSelectedModels] = useState<string[]>([]);
+  const [prompt, setPrompt] = useState<string>("");
+  const [referenceImage, setReferenceImage] = useState<StudioReferenceImage | null>(null);
+  const [aspectRatio, setAspectRatioState] = useState<string>("1:1");
+  const [resolution, setResolution] = useState<string>("1K");
+  const [generations, setGenerations] = useState<StudioGeneration[]>([]);
+  const [isGenerating, setIsGenerating] = useState<boolean>(false);
+
+  useEffect(() => {
+    const storedModels = localStorage.getItem(STORAGE_MODELS_KEY);
+    if (storedModels) {
+      try {
+        const parsed = JSON.parse(storedModels);
+        if (Array.isArray(parsed)) {
+          setSelectedModels(parsed.filter((value): value is string => typeof value === "string").slice(0, MAX_MODELS));
+        }
+      } catch {
+        localStorage.removeItem(STORAGE_MODELS_KEY);
+      }
+    }
+
+    const storedAspectRatio = localStorage.getItem(STORAGE_ASPECT_RATIO_KEY);
+    if (storedAspectRatio && typeof storedAspectRatio === "string") {
+      setAspectRatioState(storedAspectRatio);
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_MODELS_KEY, JSON.stringify(selectedModels));
+  }, [selectedModels]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_ASPECT_RATIO_KEY, aspectRatio);
+  }, [aspectRatio]);
+
+  const addModel = useCallback((modelId: string) => {
+    setSelectedModels((prev) => {
+      if (prev.includes(modelId)) {
+        return prev;
+      }
+      if (prev.length >= MAX_MODELS) {
+        return prev;
+      }
+      return [...prev, modelId];
+    });
+  }, []);
+
+  const removeModel = useCallback((modelId: string) => {
+    setSelectedModels((prev) => prev.filter((value) => value !== modelId));
+  }, []);
+
+  const clearReference = useCallback(() => {
+    setReferenceImage(null);
+  }, []);
+
+  const setAspectRatio = useCallback((value: string) => {
+    setAspectRatioState(value);
+  }, []);
+
+  const addGeneration = useCallback((value: StudioGeneration) => {
+    setGenerations((prev) => [value, ...prev]);
+  }, []);
+
+  const upsertGeneration = useCallback((value: { id: string } & Partial<StudioGeneration>) => {
+    setGenerations((prev) => {
+      const index = prev.findIndex((item) => item.id === value.id);
+      if (index === -1) {
+        return [value as StudioGeneration, ...prev];
+      }
+
+      const copy = [...prev];
+      copy[index] = { ...copy[index], ...value } as StudioGeneration;
+      return copy;
+    });
+  }, []);
+
+  const clearGallery = useCallback(() => {
+    setGenerations([]);
+  }, []);
+
+  const value = useMemo<StudioContextValue>(
+    () => ({
+      selectedModels,
+      prompt,
+      referenceImage,
+      availableModels,
+      aspectRatio,
+      resolution,
+      generations,
+      isGenerating,
+      addModel,
+      removeModel,
+      setAvailableModels,
+      setPrompt,
+      setReferenceImage,
+      clearReference,
+      setAspectRatio,
+      setResolution,
+      addGeneration,
+      upsertGeneration,
+      clearGallery,
+      setIsGenerating,
+    }),
+    [
+      availableModels,
+      selectedModels,
+      prompt,
+      referenceImage,
+      aspectRatio,
+      resolution,
+      generations,
+      isGenerating,
+      addModel,
+      removeModel,
+      clearReference,
+      setAspectRatio,
+      addGeneration,
+      upsertGeneration,
+      clearGallery,
+    ],
+  );
+
+  return <StudioContext.Provider value={value}>{children}</StudioContext.Provider>;
+}
+
+export function useStudio() {
+  const context = useContext(StudioContext);
+  if (!context) {
+    throw new Error("useStudio must be used within a StudioProvider");
+  }
+  return context;
+}

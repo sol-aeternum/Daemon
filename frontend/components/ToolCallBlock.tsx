@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 import { ChatEvent, isToolCallEvent, isToolResultEvent } from "../lib/events";
-import { Download, Maximize2, X, Loader2, ChevronRight, Check, Volume2, Play, Pause } from "lucide-react";
+import { Download, Maximize2, X, Loader2, ChevronRight, Check, Volume2, Play, Pause, Palette } from "lucide-react";
 
 export interface ToolExecution {
   call: ChatEvent;
@@ -100,6 +100,10 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
 
   // Image Result UI
   if (imagePath) {
+    const studioHref = `/studio?image=${encodeURIComponent(imagePath)}${
+      prompt ? `&prompt=${encodeURIComponent(prompt)}` : ""
+    }`;
+
     return (
       <div className="my-2">
         {prompt && (
@@ -120,6 +124,14 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
           />
           
           <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+            <a
+              href={studioHref}
+              className="p-1.5 bg-black/50 hover:bg-black/70 text-white rounded-md backdrop-blur-sm transition-colors"
+              title="Open in Studio"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Palette className="w-4 h-4" />
+            </a>
              <button
               onClick={(e) => {
                 e.stopPropagation();

@@ -14,10 +14,11 @@ import {
   Search,
   FolderKanban,
   GalleryHorizontal,
+  Image as ImageIcon,
   Plus,
 } from "lucide-react";
 
-export type SidebarSection = "home" | "chats" | "projects" | "artifacts";
+export type SidebarSection = "home" | "chats" | "projects" | "artifacts" | "studio";
 
 interface ConversationListProps {
   conversations: Conversation[];
@@ -131,6 +132,7 @@ export function ConversationList({
     { section: "chats", label: "Chats", icon: MessageSquare },
     { section: "projects", label: "Projects", icon: FolderKanban },
     { section: "artifacts", label: "Artifacts", icon: GalleryHorizontal },
+    { section: "studio", label: "Studio", icon: ImageIcon },
   ];
 
   const handleNavigate = (section: SidebarSection) => {
