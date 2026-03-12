@@ -15,6 +15,7 @@ from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
 
 from .jobs import (
+    cleanup_generated_images,
     extract_memories,
     garbage_collect,
     generate_conversation_title_job,
@@ -72,6 +73,7 @@ worker = Worker(
         func(generate_summary_job, max_tries=_worker_settings.retry_attempts),
         func(garbage_collect, max_tries=_worker_settings.retry_attempts),
         func(cleanup_generated_files, max_tries=_worker_settings.retry_attempts),
+        func(cleanup_generated_images, max_tries=_worker_settings.retry_attempts),
     ],
     redis_settings=RedisSettings.from_dsn(_worker_settings.redis_url),
     on_startup=on_startup,

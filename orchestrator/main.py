@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import importlib
 import logging
 import os
 import time
@@ -825,7 +826,6 @@ async def serve_generated_audio(filename: str) -> FileResponse:
     return FileResponse(filepath, media_type=media_type)
 
 
-
 @app.get("/generated-files/{filename}")
 async def serve_generated_file(filename: str) -> FileResponse:
     """Serve a generated document file from disk."""
@@ -833,18 +833,20 @@ async def serve_generated_file(filename: str) -> FileResponse:
     filepath = GENERATED_FILES_DIR / safe_name
     if not filepath.exists() or not filepath.is_file():
         raise HTTPException(status_code=404, detail="File not found")
-    
+
     # Determine media type based on extension
     media_type = "application/octet-stream"  # default
     if safe_name.endswith(".docx"):
-        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        media_type = (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
     elif safe_name.endswith(".csv"):
         media_type = "text/csv"
     elif safe_name.endswith(".xlsx"):
         media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     elif safe_name.endswith(".txt"):
         media_type = "text/plain"
-    
+
     return FileResponse(filepath, media_type=media_type)
 
 
@@ -1466,8 +1468,11 @@ async def chat(
 
 
 # Include memory layer API routes
+image_api_router = importlib.import_module("backend.image_gen.router")
+
 app.include_router(conversations.router)
 app.include_router(memories.router)
 app.include_router(skills.router)
 app.include_router(system.router)
 app.include_router(users.router)
+app.include_router(getattr(image_api_router, "router"))

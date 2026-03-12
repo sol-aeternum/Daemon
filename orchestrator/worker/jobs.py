@@ -348,3 +348,33 @@ async def cleanup_generated_files(ctx: WorkerContext) -> dict[str, int]:
                 logger.warning(f"Failed to process {item.name}: {e}")
 
     return {"scanned": scanned, "deleted": deleted}
+
+
+async def cleanup_generated_images(ctx: WorkerContext) -> dict[str, int]:
+    _ = ctx
+    generated_images_dir = (
+        Path(__file__).resolve().parent.parent.parent / "data" / "generated_images"
+    )
+
+    if not generated_images_dir.exists():
+        return {"scanned": 0, "deleted": 0}
+
+    cutoff = datetime.now() - timedelta(hours=24)
+    deleted = 0
+    scanned = 0
+
+    for item in generated_images_dir.iterdir():
+        scanned += 1
+        if item.is_file():
+            try:
+                mtime = datetime.fromtimestamp(item.stat().st_mtime)
+                if mtime < cutoff:
+                    item.unlink()
+                    deleted += 1
+                    logger.info(f"Deleted old generated image artifact: {item.name}")
+            except Exception as e:
+                logger.warning(
+                    f"Failed to process generated image artifact {item.name}: {e}"
+                )
+
+    return {"scanned": scanned, "deleted": deleted}
