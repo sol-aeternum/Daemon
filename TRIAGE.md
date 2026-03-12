@@ -5,6 +5,62 @@
 
 ---
 
+## [2026-03-12T11:58:00+10:30] — Runtime warnings in existing chat-history tests
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Studio verification (`pytest tests/test_store.py tests/test_chat_history.py -q`)
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: Test suite passed, but runtime warnings were emitted from mocked async call paths (`AsyncMockMixin._execute_mock_call` never awaited) in memory injection and chat history assembly.
+- **Evidence**:
+  - `orchestrator/memory/injection.py:104` RuntimeWarning: coroutine `AsyncMockMixin._execute_mock_call` was never awaited
+  - `orchestrator/memory/injection.py:106` RuntimeWarning: coroutine `AsyncMockMixin._execute_mock_call` was never awaited
+  - `orchestrator/main.py:1354` RuntimeWarning: coroutine `AsyncMockMixin._execute_mock_call` was never awaited
+- **Likely cause**: Existing test mocking setup returns AsyncMock objects where sync formatting paths expect concrete values; unrelated to Studio feature changes. [~85% confidence]
+- **Suggested action**: Harden test fixtures/mocks for settings/preferences injection to avoid leaking unawaited coroutine objects into sync formatting functions.
+
+## [2026-03-12T11:42:00+10:30] — Wave 3 router integration surfaced transient syntax/import/type wiring issues
+
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Studio Wave 3 backend API router and app wiring
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: Static/runtime checks surfaced three transient issues while wiring `/api/images`: router signature ordering produced a temporary syntax error (`non-default follows default`), `main.py` import style for `backend.image_gen.router` triggered unresolved import diagnostics, and ARQ worker function registration flagged a parameter-name/signature mismatch for the new cleanup job.
+- **Evidence**:
+  - LSP + runtime import error around `backend/image_gen/router.py` function signature.
+  - LSP `reportMissingImports` on `orchestrator/main.py` for `backend.image_gen.router`.
+  - LSP `reportArgumentType` in `orchestrator/worker/worker.py` for `cleanup_generated_images` registration.
+- **Likely cause**: Refactor churn while aligning dependency annotations and package/module import paths during incremental edits. [~95% confidence]
+- **Suggested action**: Keep router signature ordering conservative when mixing `Annotated` dependencies and defaults, prefer dynamic module import for non-package-root modules in this workspace layout, and keep new ARQ job signatures identical to existing function contract.
+
+## [2026-03-12T10:46:00+10:30] — Studio kickoff quality warnings caught and fixed
+
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Start plan execution for Studio Wave 1 (catalog + storage)
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: Local quality checks flagged a non-essential module docstring in `backend/image_gen/__init__.py` and a strict-typing warning (`reportAny`) in `backend/image_gen/storage.py`.
+- **Evidence**: Hook output flagged `Comment/docstring detected in code changes`; `lsp_diagnostics` flagged `backend/image_gen/storage.py:62` (`reportAny`).
+- **Likely cause**: Initial scaffolding included descriptive module text and uncast `json.loads` return type. [~99% confidence]
+- **Suggested action**: Keep bootstrap modules minimal and run diagnostics immediately after scaffolding to resolve strict typing issues before broader verification.
+
+## [2026-03-12T10:58:00+10:30] — Frontend lint command mismatch with current tooling
+
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: Verification for Studio page scaffold and provider
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: `npm run lint` failed because `next lint` in the project script is incompatible with current Next.js CLI behavior in this environment (`invalid project directory .../frontend/lint`). Direct ESLint fallback (`npx eslint`) also failed due missing `eslint.config.*` under ESLint 9 flat-config defaults.
+- **Evidence**:
+  - `npm run lint` output: `Invalid project directory provided, no such directory: /home/sol/daemon/frontend/lint`.
+  - `npx eslint app/studio --ext .ts,.tsx` output: `ESLint couldn't find an eslint.config.(js|mjs|cjs) file`.
+- **Likely cause**: Existing repo lint tooling config drift (Next 16 + ESLint 9) unrelated to Studio feature code. [~90% confidence]
+- **Suggested action**: Align lint pipeline by either migrating to flat `eslint.config.*` or pinning supported ESLint/Next lint command path; keep `npm run build` as temporary verification gate.
+
 ## [2026-03-10T19:27:00+10:30] — background task cancel returns error once task already completed
 
 - **Severity**: info
