@@ -1,4 +1,4 @@
-"""@image subagent - image generation via Gemini (OpenRouter)."""
+"""@image subagent - image generation via multiple providers."""
 
 from __future__ import annotations
 
@@ -6,89 +6,385 @@ import base64
 import json
 import logging
 import os
-from typing import Any
+from abc import ABC, abstractmethod
+from typing import Any, Dict, Tuple
+import uuid
 
 import httpx
 
 from orchestrator.subagents.base import BaseSubagent, SubagentResult, SubagentType
+from providers.xai_imagine import XAIImagineClient, XAIImagineError
+from db.video_credits import VideoCreditsDAL
+from config.video_pricing import estimate_cost, get_tier_discount
 
 logger = logging.getLogger(__name__)
 
 
+class ImageProvider(ABC):
+    """Abstract base class for image providers."""
+
+    @abstractmethod
+    async def generate_image(self, prompt: str, size: str) -> Dict[str, Any]:
+        """Generate an image from a prompt.
+
+        Args:
+            prompt: Text description of the image to generate
+            size: Size specification (e.g., "1024x1024")
+
+        Returns:
+            Dictionary with image data including:
+                - url: Image URL
+                - base64: Base64 encoded image data (optional)
+                - width: Image width
+                - height: Image height
+                - provider: Provider name
+        """
+        pass
+
+
+class OpenRouterImageProvider(ImageProvider):
+    """Image provider using Gemini via OpenRouter."""
+
+    def __init__(self, api_key: str, base_url: str, model: str) -> None:
+        """Initialize OpenRouter provider."""
+        self.api_key = api_key
+        self.base_url = base_url
+        self.model = model
+        self.timeout = 120.0
+
+    async def generate_image(self, prompt: str, size: str) -> Dict[str, Any]:
+        """Generate an image using OpenRouter."""
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://daemon.ai",
+            "X-Title": "Daemon AI Assistant",
+        }
+
+        size_map = {
+            "small": "1K",
+            "medium": "2K",
+            "large": "4K",
+        }
+        image_size = size_map.get(size, "1K")
+
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "modalities": ["image", "text"],
+            "image_config": {"image_size": image_size},
+        }
+
+        async with httpx.AsyncClient() as client:
+            endpoint = f"{self.base_url}/chat/completions"
+            response = await client.post(
+                endpoint,
+                headers=headers,
+                json=payload,
+                timeout=self.timeout,
+            )
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise RuntimeError(
+                    "OpenRouter chat completion failed "
+                    f"({exc.response.status_code}) at {endpoint}: {exc.response.text}"
+                ) from exc
+            data = response.json()
+
+            logger.debug(f"[IMAGE DEBUG] Response status: {response.status_code}")
+            logger.debug(f"[IMAGE DEBUG] Response headers: {dict(response.headers)}")
+            logger.debug(f"[IMAGE DEBUG] Full response: {json.dumps(data, indent=2)}")
+
+            if data.get("error"):
+                logger.error(
+                    f"[IMAGE DEBUG] API error in response: {data.get('error')}"
+                )
+                raise RuntimeError(f"API error: {data.get('error')}")
+
+            choices = data.get("choices") or []
+            logger.debug(f"[IMAGE DEBUG] Number of choices: {len(choices)}")
+
+            if not choices:
+                logger.warning("[IMAGE DEBUG] No choices in response")
+                raise RuntimeError("No choices in response")
+
+            message = (choices[0] or {}).get("message") or {}
+            logger.debug(f"[IMAGE DEBUG] Message keys: {list(message.keys())}")
+            logger.debug(f"[IMAGE DEBUG] Full message: {json.dumps(message, indent=2)}")
+
+            images = message.get("images") or []
+            logger.debug(f"[IMAGE DEBUG] Images array length: {len(images)}")
+
+            image_url = ""
+            image_base64 = ""
+
+            if images:
+                image_info = images[0] or {}
+                logger.debug(
+                    f"[IMAGE DEBUG] Image info keys: {list(image_info.keys())}"
+                )
+                logger.debug(
+                    f"[IMAGE DEBUG] Image info: {json.dumps(image_info, indent=2)}"
+                )
+                image_url = (image_info.get("image_url") or {}).get("url") or ""
+            else:
+                content = message.get("content")
+                logger.debug(f"[IMAGE DEBUG] Content field type: {type(content)}")
+
+                if content and isinstance(content, str):
+                    logger.debug(
+                        f"[IMAGE DEBUG] Content is string, length: {len(content)}"
+                    )
+                    if content.startswith("data:image"):
+                        logger.info("[IMAGE DEBUG] Found image data in content field")
+                        image_url = content
+                    elif content.startswith("https://") or content.startswith(
+                        "http://"
+                    ):
+                        logger.info("[IMAGE DEBUG] Found image URL in content field")
+                        image_url = content
+                elif content and isinstance(content, list):
+                    logger.debug(
+                        f"[IMAGE DEBUG] Content is list with {len(content)} items"
+                    )
+                    for part in content:
+                        if isinstance(part, dict):
+                            if part.get("type") == "image_url":
+                                image_url = part.get("image_url", {}).get("url", "")
+                                if image_url:
+                                    logger.info(
+                                        "[IMAGE DEBUG] Found image_url in content list"
+                                    )
+                                    break
+                            elif "image_url" in part:
+                                image_url = part["image_url"]
+                                if image_url:
+                                    logger.info(
+                                        "[IMAGE DEBUG] Found image_url in content part"
+                                    )
+                                    break
+
+            if not image_url:
+                logger.warning(
+                    "[IMAGE DEBUG] No images found in response (checked images array and content field)"
+                )
+                raise RuntimeError("No images found in response")
+
+            if image_url.startswith("data:") and "base64," in image_url:
+                image_base64 = image_url.split("base64,", 1)[1]
+                logger.debug(
+                    f"[IMAGE DEBUG] Extracted base64, length: {len(image_base64)}"
+                )
+
+            width, height = self._parse_size(size)
+
+            return {
+                "url": image_url,
+                "base64": image_base64,
+                "width": width,
+                "height": height,
+                "provider": "openrouter",
+            }
+
+    def _parse_size(self, size: str) -> Tuple[int, int]:
+        """Parse size string to width and height."""
+        size_map = {
+            "small": (1024, 1024),
+            "medium": (2048, 2048),
+            "large": (4096, 4096),
+        }
+
+        if size in size_map:
+            return size_map[size]
+
+        try:
+            width, height = map(int, size.split("x"))
+            return width, height
+        except (ValueError, AttributeError):
+            return 1024, 1024
+
+
+class XAIImageProvider(ImageProvider):
+    """Image provider using xAI Imagine."""
+
+    def __init__(self, api_key: str) -> None:
+        """Initialize xAI provider."""
+        self.client = XAIImagineClient()
+        if api_key:
+            self.client.api_key = api_key
+
+    async def generate_image(self, prompt: str, size: str) -> Dict[str, Any]:
+        """Generate an image using xAI Imagine."""
+        aspect_ratio = self._size_to_aspect_ratio(size)
+
+        try:
+            result = await self.client.generate_image(
+                prompt=prompt, aspect_ratio=aspect_ratio, model="grok-4.1-image"
+            )
+
+            width, height = self._aspect_ratio_to_dimensions(aspect_ratio)
+
+            return {
+                "url": result.url,
+                "base64": "",
+                "width": width,
+                "height": height,
+                "provider": "xai",
+            }
+        except XAIImagineError as e:
+            raise RuntimeError(f"xAI Imagine error: {str(e)}") from e
+
+    def _size_to_aspect_ratio(self, size: str) -> str:
+        """Convert size string to aspect ratio."""
+        size_map = {
+            "small": "1:1",
+            "medium": "1:1",
+            "large": "1:1",
+            "1024x1024": "1:1",
+            "2048x2048": "1:1",
+            "4096x4096": "1:1",
+        }
+
+        if size in size_map:
+            return size_map[size]
+
+        try:
+            width, height = map(int, size.split("x"))
+            ratio = width / height
+            if ratio >= 2.0:
+                return "16:9"
+            elif ratio <= 0.5:
+                return "9:16"
+            elif 1.2 <= ratio < 1.8:
+                return "4:3"
+            elif 0.6 <= ratio < 1.2:
+                return "3:4"
+            else:
+                return "1:1"
+        except (ValueError, AttributeError):
+            return "1:1"
+
+    def _aspect_ratio_to_dimensions(self, aspect_ratio: str) -> Tuple[int, int]:
+        """Convert aspect ratio to width and height."""
+        ratio_map = {
+            "1:1": (1024, 1024),
+            "16:9": (1920, 1080),
+            "9:16": (1080, 1920),
+            "4:3": (1440, 1080),
+            "3:4": (1080, 1440),
+        }
+
+        return ratio_map.get(aspect_ratio, (1024, 1024))
+
+
 class ImageSubagent(BaseSubagent):
-    """Image generation subagent using Gemini via OpenRouter."""
+    """Image generation subagent using multiple providers."""
 
     agent_type = SubagentType.IMAGE
-    description = "Generates images from text prompts using AI (Gemini 2.5 Flash Image via OpenRouter)"
+    description = (
+        "Generates images from text prompts using AI (multiple providers supported)"
+    )
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         """Initialize image subagent."""
         super().__init__(config)
-        self.api_key = config.get("openrouter_api_key") if config else None
-        self.api_key = self.api_key or os.environ.get("OPENROUTER_API_KEY")
-        self.base_url = (
-            (config.get("openrouter_base_url") if config else None)
-            or os.environ.get("OPENROUTER_BASE_URL")
-            or "https://openrouter.ai/api/v1"
-        ).rstrip("/")
-        if self.base_url.endswith("/chat/completions"):
-            self.base_url = self.base_url[: -len("/chat/completions")]
-        if self.base_url.endswith("/images/generations"):
-            self.base_url = self.base_url[: -len("/images/generations")]
-        if "openrouter.ai" in self.base_url and "/api/v1" not in self.base_url:
-            self.base_url = "https://openrouter.ai/api/v1"
-        self.model = (
-            (config.get("image_model") if config else None)
-            or os.environ.get("OPENROUTER_IMAGE_MODEL")
-            or "google/gemini-2.5-flash-image"
-        )
-        self.timeout = 120.0  # Images take longer
+
+        config_dict = config or {}
+        self.provider_name = (
+            os.environ.get("TIER_PRO_IMAGE_PROVIDER")
+            or config_dict.get("image_provider")
+            or "openrouter"
+        ).lower()
+
+        if self.provider_name == "xai":
+            xai_api_key = (
+                config_dict.get("xai_api_key") if config_dict else None
+            ) or os.environ.get("XAI_API_KEY", "")
+            self.provider = XAIImageProvider(xai_api_key)
+        else:
+            openrouter_api_key = (
+                config_dict.get("openrouter_api_key") if config_dict else None
+            ) or os.environ.get("OPENROUTER_API_KEY")
+
+            openrouter_base_url = (
+                config_dict.get("openrouter_base_url") if config_dict else None
+            ) or os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+            openrouter_base_url = openrouter_base_url.rstrip("/")
+
+            if openrouter_base_url.endswith("/chat/completions"):
+                openrouter_base_url = openrouter_base_url[: -len("/chat/completions")]
+            if openrouter_base_url.endswith("/images/generations"):
+                openrouter_base_url = openrouter_base_url[: -len("/images/generations")]
+            if (
+                "openrouter.ai" in openrouter_base_url
+                and "/api/v1" not in openrouter_base_url
+            ):
+                openrouter_base_url = "https://openrouter.ai/api/v1"
+
+            openrouter_model = (
+                config_dict.get("image_model") if config_dict else None
+            ) or os.environ.get(
+                "OPENROUTER_IMAGE_MODEL", "google/gemini-2.5-flash-image"
+            )
+
+            if not openrouter_api_key:
+                raise ValueError("OPENROUTER_API_KEY not configured")
+
+            self.provider = OpenRouterImageProvider(
+                openrouter_api_key, openrouter_base_url, openrouter_model
+            )
 
     async def execute(
         self, task: str, context: dict[str, Any] | None = None
     ) -> SubagentResult:
-        """Execute image generation task.
+        """Execute image or video generation task.
 
         Args:
-            task: The image generation prompt/description
-            context: Optional context (may include size, style preferences)
+            task: The generation prompt/description
+            context: Optional context (may include size, style preferences, mode, duration, user_id, tier)
 
         Returns:
-            SubagentResult with image data (base64) or error
+            SubagentResult with image/video data or error
         """
-        if not self.api_key:
-            return self._create_result(
-                success=False,
-                error="OPENROUTER_API_KEY not configured",
-            )
-
-        # Enhance prompt based on context
         context_payload = context or {}
         task_for_prompt = self._apply_history(task, context_payload)
         enhanced_prompt = self._enhance_prompt(task_for_prompt, context_payload)
+        mode = context_payload.get("mode", "image")
 
-        # Generate image via OpenRouter
+        if mode == "video":
+            return await self._generate_video(enhanced_prompt, context_payload)
+        else:
+            return await self._generate_image(enhanced_prompt, context_payload)
+
+    async def _generate_image(
+        self, prompt: str, context: dict[str, Any]
+    ) -> SubagentResult:
         try:
-            size = (context or {}).get("size", "1024x1024")
-            image_result = await self._generate_image(enhanced_prompt, size)
+            size = context.get("size", "1024x1024")
+            image_result = await self.provider.generate_image(prompt, size)
 
-            image_base64 = image_result.get("image_base64") if image_result else None
-            image_url = image_result.get("image_url") if image_result else None
+            image_base64 = image_result.get("base64", "")
+            image_url = image_result.get("url", "")
+            provider = image_result.get("provider", self.provider_name)
+            width = image_result.get("width", 1024)
+            height = image_result.get("height", 1024)
 
             if image_base64 or image_url:
                 return self._create_result(
                     success=True,
                     data={
-                        "prompt": task,
-                        "enhanced_prompt": enhanced_prompt,
+                        "prompt": prompt,
+                        "enhanced_prompt": prompt,
                         "image_base64": image_base64,
                         "image_url": image_url,
-                        "model": self.model,
+                        "width": width,
+                        "height": height,
                         "format": "png",
                     },
                     metadata={
-                        "provider": "openrouter",
-                        "model": self.model,
+                        "provider": provider,
+                        "size": size,
                     },
                 )
             else:
@@ -103,6 +399,141 @@ class ImageSubagent(BaseSubagent):
                 error=f"Image generation failed: {str(e)}",
             )
 
+    async def _generate_video(
+        self, prompt: str, context: dict[str, Any]
+    ) -> SubagentResult:
+        # Import video-related modules here to avoid circular imports
+        from db.video_credits import VideoCreditsDAL
+        from config.video_pricing import estimate_cost, get_tier_discount
+
+        # Get user ID and tier from context
+        user_id_str = context.get("user_id")
+        tier = context.get("tier", "pro")
+
+        # Get duration from context, default to 5 seconds
+        duration_seconds = context.get("duration", 5)
+
+        # Enforce duration limits per tier
+        if tier.lower() == "pro" and duration_seconds > 10:
+            duration_seconds = 10
+        elif tier.lower() == "max" and duration_seconds > 15:
+            duration_seconds = 15
+        # BYOK tier has no duration limit
+
+        # Get video credits DAL from config
+        db_pool = self.config.get("db_pool") if self.config else None
+        if not db_pool:
+            return self._create_result(
+                success=False,
+                error="Database pool not configured for video credit operations",
+            )
+
+        video_credits_dal = VideoCreditsDAL(db_pool)
+
+        # Convert user_id to UUID
+        try:
+            user_id = uuid.UUID(user_id_str) if user_id_str else None
+        except ValueError:
+            return self._create_result(
+                success=False,
+                error="Invalid user ID format",
+            )
+
+        if not user_id:
+            return self._create_result(
+                success=False,
+                error="User ID is required for video generation",
+            )
+
+        # Validate tier - Free/Starter tiers cannot generate videos
+        if tier.lower() in ["free", "starter"]:
+            return self._create_result(
+                success=False,
+                error="Video generation is not available for Free or Starter tier users. Please upgrade to Pro, Max, or BYOK tier.",
+            )
+
+        # Estimate cost for video generation
+        cost = int(estimate_cost(duration_seconds, tier))
+
+        # Check credit balance
+        balance = await video_credits_dal.get_balance(user_id)
+        if balance < cost:
+            return self._create_result(
+                success=False,
+                error=f"Insufficient video credits. Required: {cost}, Available: {balance}",
+            )
+
+        # Debit credits before generation
+        debit_result = await video_credits_dal.debit_credits(
+            user_id, cost, f"Video generation: {prompt[:50]}...", None
+        )
+
+        if not debit_result.success:
+            return self._create_result(
+                success=False,
+                error=f"Failed to debit video credits: {debit_result.message}",
+            )
+
+        # Store transaction ID for potential refund
+        transaction_id = debit_result.transaction_id
+
+        # Verify we're using xAI provider for video generation
+        if not isinstance(self.provider, XAIImageProvider):
+            # Refund the credits since we can't generate video with this provider
+            await video_credits_dal.credit_credits(
+                user_id,
+                int(cost),
+                "refund",
+                f"Refund for unsupported provider video generation attempt",
+            )
+            return self._create_result(
+                success=False,
+                error="Video generation is only supported with xAI provider",
+            )
+
+        try:
+            # Call xAI video endpoint
+            video_job = await self.provider.client.generate_video(
+                prompt=prompt, duration_seconds=duration_seconds
+            )
+
+            # Poll for completion
+            video_result = await self.provider.client.poll_video_job(video_job.job_id)
+
+            # Return video metadata in result
+            return self._create_result(
+                success=True,
+                data={
+                    "prompt": prompt,
+                    "video_url": video_result.url,
+                    "duration_seconds": duration_seconds,
+                    "format": "mp4",
+                },
+                metadata={
+                    "provider": "xai",
+                    "duration": duration_seconds,
+                    "cost": cost,
+                },
+            )
+        except XAIImagineError as e:
+            # Refund credits on failure
+            if transaction_id:
+                await video_credits_dal.refund_transaction(transaction_id)
+
+            return self._create_result(
+                success=False,
+                error=f"Video generation failed: {str(e)}",
+            )
+        except Exception as e:
+            # Refund credits on unexpected failure
+            if transaction_id:
+                await video_credits_dal.refund_transaction(transaction_id)
+
+            return self._create_result(
+                success=False,
+                error=f"Unexpected error during video generation: {str(e)}",
+            )
+
     def _enhance_prompt(self, task: str, context: dict[str, Any]) -> str:
         """Enhance user prompt with style/size preferences from context."""
         style = context.get("style", "")
@@ -113,7 +544,6 @@ class ImageSubagent(BaseSubagent):
         if style:
             enhanced = f"{enhanced}, style: {style}"
 
-        # Add quality modifiers based on common requests
         quality_keywords = ["high quality", "detailed", "professional"]
         if not any(kw in task.lower() for kw in quality_keywords):
             enhanced = f"high quality, detailed, {enhanced}"
@@ -134,9 +564,10 @@ class ImageSubagent(BaseSubagent):
         last_prompt = ""
         if isinstance(result, dict):
             data = result.get("data") if isinstance(result.get("data"), dict) else {}
-            last_prompt = (
-                data.get("prompt") if isinstance(data.get("prompt"), str) else ""
-            )
+            if isinstance(data, dict):
+                last_prompt = (
+                    data.get("prompt") if isinstance(data.get("prompt"), str) else ""
+                )
 
         previous = last_prompt or last_task
         if not previous:
@@ -162,147 +593,3 @@ class ImageSubagent(BaseSubagent):
             return f"{task}. Previous request: {previous}"
 
         return task
-
-    async def _generate_image(self, prompt: str, size: str) -> dict[str, str] | None:
-        """Generate image via OpenRouter chat completions API.
-
-        Returns:
-            Base64 encoded image data or None if failed
-        """
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://daemon.ai",  # OpenRouter requires this
-            "X-Title": "Daemon AI Assistant",
-        }
-
-        request_model = self.model
-        # OpenRouter API accepts model names with or without openrouter/ prefix
-        # Keep the full name as OpenRouter's gateway handles the routing
-        # Gemini 2.5 Flash Image expects: "google/gemini-2.5-flash-image"
-
-        size_map = {
-            "small": "1K",
-            "medium": "2K",
-            "large": "4K",
-        }
-        image_size = size_map.get(size, "1K")
-        payload: dict[str, Any] = {
-            "model": request_model,
-            "messages": [{"role": "user", "content": prompt}],
-            "modalities": ["image", "text"],
-            "image_config": {"image_size": image_size},
-        }
-
-        async with httpx.AsyncClient() as client:
-            endpoint = f"{self.base_url}/chat/completions"
-            response = await client.post(
-                endpoint,
-                headers=headers,
-                json=payload,
-                timeout=self.timeout,
-            )
-            try:
-                response.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                raise RuntimeError(
-                    "OpenRouter chat completion failed "
-                    f"({exc.response.status_code}) at {endpoint}: {exc.response.text}"
-                ) from exc
-            data = response.json()
-
-            # DEBUG: Log full response structure
-            logger.debug(f"[IMAGE DEBUG] Response status: {response.status_code}")
-            logger.debug(f"[IMAGE DEBUG] Response headers: {dict(response.headers)}")
-            logger.debug(f"[IMAGE DEBUG] Full response: {json.dumps(data, indent=2)}")
-
-            if data.get("error"):
-                logger.error(
-                    f"[IMAGE DEBUG] API error in response: {data.get('error')}"
-                )
-                return None
-
-            choices = data.get("choices") or []
-            logger.debug(f"[IMAGE DEBUG] Number of choices: {len(choices)}")
-
-            if not choices:
-                logger.warning("[IMAGE DEBUG] No choices in response")
-                return None
-
-            message = (choices[0] or {}).get("message") or {}
-            logger.debug(f"[IMAGE DEBUG] Message keys: {list(message.keys())}")
-            logger.debug(f"[IMAGE DEBUG] Full message: {json.dumps(message, indent=2)}")
-
-            images = message.get("images") or []
-            logger.debug(f"[IMAGE DEBUG] Images array length: {len(images)}")
-
-            image_url = ""
-            image_base64 = ""
-
-            if images:
-                # Standard OpenAI-like format with images array
-                image_info = images[0] or {}
-                logger.debug(
-                    f"[IMAGE DEBUG] Image info keys: {list(image_info.keys())}"
-                )
-                logger.debug(
-                    f"[IMAGE DEBUG] Image info: {json.dumps(image_info, indent=2)}"
-                )
-                image_url = (image_info.get("image_url") or {}).get("url") or ""
-            else:
-                # Check if image is in content field (OpenRouter/Gemini format)
-                content = message.get("content")
-                logger.debug(f"[IMAGE DEBUG] Content field type: {type(content)}")
-
-                if content and isinstance(content, str):
-                    logger.debug(
-                        f"[IMAGE DEBUG] Content is string, length: {len(content)}"
-                    )
-                    # Check if content contains image data URL
-                    if content.startswith("data:image"):
-                        logger.info("[IMAGE DEBUG] Found image data in content field")
-                        image_url = content
-                    elif content.startswith("https://") or content.startswith(
-                        "http://"
-                    ):
-                        logger.info("[IMAGE DEBUG] Found image URL in content field")
-                        image_url = content
-                elif content and isinstance(content, list):
-                    # Content might be a list of content parts (OpenAI format)
-                    logger.debug(
-                        f"[IMAGE DEBUG] Content is list with {len(content)} items"
-                    )
-                    for part in content:
-                        if isinstance(part, dict):
-                            if part.get("type") == "image_url":
-                                image_url = part.get("image_url", {}).get("url", "")
-                                if image_url:
-                                    logger.info(
-                                        "[IMAGE DEBUG] Found image_url in content list"
-                                    )
-                                    break
-                            elif "image_url" in part:
-                                image_url = part["image_url"]
-                                if image_url:
-                                    logger.info(
-                                        "[IMAGE DEBUG] Found image_url in content part"
-                                    )
-                                    break
-
-            if not image_url:
-                logger.warning(
-                    "[IMAGE DEBUG] No images found in response (checked images array and content field)"
-                )
-                return None
-
-            # Extract base64 from data URL if present
-            if image_url.startswith("data:") and "base64," in image_url:
-                image_base64 = image_url.split("base64,", 1)[1]
-                logger.debug(
-                    f"[IMAGE DEBUG] Extracted base64, length: {len(image_base64)}"
-                )
-
-            return {
-                "image_base64": image_base64,
-                "image_url": image_url,
-            }
