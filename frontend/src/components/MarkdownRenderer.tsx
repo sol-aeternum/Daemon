@@ -3,12 +3,54 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
+import { InlineArtifact } from '../../components/chat/InlineArtifact';
 
 interface MarkdownRendererProps {
   content: string;
   compact?: boolean;
   className?: string;
 }
+
+const getClassNameValue = (value: unknown): string => {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item)).join(' ');
+  }
+
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  return '';
+};
+
+const isInteractiveHtmlClassName = (className: string): boolean => {
+  const normalized = className.toLowerCase();
+  return normalized.includes('language-html') && normalized.includes('interactive');
+};
+
+const isInteractiveHtmlPreNode = (node: unknown): boolean => {
+  if (!node || typeof node !== 'object') {
+    return false;
+  }
+
+  const maybeChildren = (node as { children?: unknown }).children;
+  if (!Array.isArray(maybeChildren) || maybeChildren.length === 0) {
+    return false;
+  }
+
+  const firstChild = maybeChildren[0];
+  if (!firstChild || typeof firstChild !== 'object') {
+    return false;
+  }
+
+  const properties = (firstChild as { properties?: unknown }).properties;
+  if (!properties || typeof properties !== 'object') {
+    return false;
+  }
+
+  const rawClassName = (properties as { className?: unknown }).className;
+  return isInteractiveHtmlClassName(getClassNameValue(rawClassName));
+};
 
 export default function MarkdownRenderer({
   content,
@@ -50,6 +92,16 @@ export default function MarkdownRenderer({
           code: ({ node, className, children, ...props }) => {
             const match = /language-(\w+)/.exec(className || '');
             const isInline = !match && !className;
+            const normalizedClassName = (className || '').toLowerCase();
+
+            if (isInteractiveHtmlClassName(normalizedClassName)) {
+              return (
+                <InlineArtifact
+                  htmlContent={String(children).trim()}
+                  title="Interactive Artifact"
+                />
+              );
+            }
 
             if (isInline) {
               return (
@@ -68,12 +120,18 @@ export default function MarkdownRenderer({
               </code>
             );
           },
-          pre: ({ node, ...props }) => (
-            <pre
-              {...props}
-              className="overflow-x-auto my-2 p-3 bg-[var(--color-bg-tertiary)] rounded-lg border border-[var(--color-border-primary)]"
-            />
-          ),
+          pre: ({ node, ...props }) => {
+            if (isInteractiveHtmlPreNode(node)) {
+              return <>{props.children}</>;
+            }
+
+            return (
+              <pre
+                {...props}
+                className="overflow-x-auto my-2 p-3 bg-[var(--color-bg-tertiary)] rounded-lg border border-[var(--color-border-primary)]"
+              />
+            );
+          },
           table: ({ node, ...props }) => (
             <div className="overflow-x-auto my-2">
               <table {...props} className="min-w-full divide-y divide-[var(--color-border-primary)]" />

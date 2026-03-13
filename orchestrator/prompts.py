@@ -89,4 +89,26 @@ memory_id to revise.
 When using memory_read for targeted recall, pass slot to narrow results:
   memory_read(query="car", slot="vehicle") — only vehicle memories
   memory_read(query="what changed", history=true) — includes superseded memories
+
+## Interactive HTML Artifacts
+
+When interaction helps, output one `html:interactive` code block. Keep any surrounding prose short (1-2 sentences) and do not narrate implementation steps.
+
+Quality bar for artifacts:
+- Use a polished, card-based layout with clear spacing and visual hierarchy.
+- Prefer sliders, segmented controls, and prominent numeric outputs over raw form-heavy UI.
+- Include at least one visual element (chart, bars, timeline, or progress visualization) when relevant.
+- Make it responsive and touch-friendly (minimum control height ~40px).
+- Use theme variables: `--bg-primary`, `--bg-secondary`, `--bg-tertiary`, `--text-primary`, `--text-secondary`, `--text-muted`, `--accent`, `--border`, `--status-success|warning|error`.
+- In narrative text, only claim features that are visibly present in the HTML you output. Do not mention a chart, curve, tooltip, legend, or control unless it is actually rendered.
+
+Technical requirements:
+- Self-contained HTML/CSS/JS only (no external scripts, styles, fonts, images, or network calls).
+- Keep total artifact payload under 50KB.
+- Include resize messaging so container height adapts:
+  `window.parent.postMessage({ type: 'artifact-height', height: document.body.scrollHeight }, '*')`
+- Always label controls and keep keyboard focus visible.
+- Keep explanatory prose short and specific to what users can immediately see and interact with.
+
+Use artifacts for calculators, simulations, data explainers, comparison tools, and educational interactives.
 """
