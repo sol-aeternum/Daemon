@@ -19,6 +19,12 @@ export interface StudioModel {
   tier_minimum: "free" | "starter" | "pro" | "max" | "byok";
   is_locked?: boolean;
   notes?: string;
+  input_cost_per_million?: number;
+  output_cost_per_million?: number;
+  flat_image_price_usd?: number;
+  first_megapixel_price_usd?: number;
+  additional_megapixel_price_usd?: number;
+  resolution_prices_usd?: Record<string, number>;
 }
 
 export interface StudioGeneration {

@@ -73,7 +73,7 @@ export function ModelSelector() {
   }, [setAvailableModels, userTier]);
 
   const grouped = useMemo(() => {
-    return availableModels.reduce<Record<string, StudioModel[]>>((acc, model) => {
+    const groups = availableModels.reduce<Record<string, StudioModel[]>>((acc, model) => {
       const key = model.provider;
       if (!acc[key]) {
         acc[key] = [];
@@ -81,6 +81,43 @@ export function ModelSelector() {
       acc[key].push(model);
       return acc;
     }, {});
+
+    const getCostScore = (model: StudioModel): number => {
+      if (model.input_cost_per_million != null && model.output_cost_per_million != null) {
+        return model.input_cost_per_million + model.output_cost_per_million;
+      }
+      if (model.flat_image_price_usd != null) {
+        return model.flat_image_price_usd;
+      }
+      if (model.first_megapixel_price_usd != null) {
+        const additional = model.additional_megapixel_price_usd ?? 0;
+        return model.first_megapixel_price_usd + additional * 2;
+      }
+      if (model.resolution_prices_usd) {
+        const prices = Object.values(model.resolution_prices_usd);
+        return prices.length > 0 ? Math.max(...prices) : 0;
+      }
+      return 0;
+    };
+
+    const providerAvgCost: Record<string, number> = {};
+    for (const [provider, models] of Object.entries(groups)) {
+      const totalCost = models.reduce((sum, m) => sum + getCostScore(m), 0);
+      providerAvgCost[provider] = totalCost / models.length;
+    }
+
+    const sortedProviders = Object.keys(groups).sort(
+      (a, b) => (providerAvgCost[a] ?? 0) - (providerAvgCost[b] ?? 0)
+    );
+
+    const sortedGroups: Record<string, StudioModel[]> = {};
+    for (const provider of sortedProviders) {
+      sortedGroups[provider] = groups[provider].sort(
+        (a, b) => getCostScore(a) - getCostScore(b)
+      );
+    }
+
+    return sortedGroups;
   }, [availableModels]);
 
   return (
