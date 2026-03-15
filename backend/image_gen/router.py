@@ -66,10 +66,19 @@ async def get_models(
     if resolved_tier not in _ALLOWED_TIERS:
         raise HTTPException(status_code=400, detail=f"Invalid tier: {resolved_tier}")
 
+    from backend.image_gen.models import IMAGE_MODEL_CATALOG
+
     resolved_tier_literal = cast(TierName, resolved_tier)
-    models = [
-        asdict(model) for model in get_image_models_for_tier(resolved_tier_literal)
-    ]
+    tier_rank = {"free": 0, "starter": 1, "pro": 2, "max": 3, "byok": 4}
+    user_rank = tier_rank.get(resolved_tier_literal, 0)
+
+    models = []
+    for model in IMAGE_MODEL_CATALOG:
+        model_dict = asdict(model)
+        model_rank = tier_rank.get(model.tier_minimum, 3)
+        model_dict["is_locked"] = model_rank > user_rank
+        models.append(model_dict)
+
     return JSONResponse(content={"tier": resolved_tier, "models": models})
 
 

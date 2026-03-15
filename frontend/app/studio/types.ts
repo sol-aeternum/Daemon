@@ -17,6 +17,7 @@ export interface StudioModel {
   supported_resolutions: string[];
   pricing_info: string;
   tier_minimum: "free" | "starter" | "pro" | "max" | "byok";
+  is_locked?: boolean;
   notes?: string;
 }
 

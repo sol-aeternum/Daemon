@@ -107,9 +107,28 @@ class OpenRouterImageProvider(ImageProvider):
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
+                error_detail = exc.response.text
+                try:
+                    error_json = exc.response.json()
+                    if isinstance(error_json, dict):
+                        error_detail = error_json.get("error", error_detail)
+                        if isinstance(error_detail, dict):
+                            error_detail = error_detail.get(
+                                "message", str(error_detail)
+                            )
+                except Exception:
+                    pass  # Keep original text if JSON parsing fails
+
+                logger.error(
+                    f"[IMAGE DEBUG] OpenRouter API error: "
+                    f"Status={exc.response.status_code}, "
+                    f"Endpoint={endpoint}, "
+                    f"Error={error_detail}"
+                )
+
                 raise RuntimeError(
-                    "OpenRouter chat completion failed "
-                    f"({exc.response.status_code}) at {endpoint}: {exc.response.text}"
+                    f"OpenRouter chat completion failed "
+                    f"({exc.response.status_code}): {error_detail}"
                 ) from exc
             data = response.json()
 
@@ -190,7 +209,12 @@ class OpenRouterImageProvider(ImageProvider):
                 logger.warning(
                     "[IMAGE DEBUG] No images found in response (checked images array and content field)"
                 )
-                raise RuntimeError("No images found in response")
+                logger.warning(
+                    f"[IMAGE DEBUG] Full response structure: {json.dumps(data, indent=2)[:2000]}..."
+                )
+                raise RuntimeError(
+                    "No images found in response - provider may have changed response format or model is unavailable"
+                )
 
             if image_url.startswith("data:") and "base64," in image_url:
                 image_base64 = image_url.split("base64,", 1)[1]

@@ -180,18 +180,33 @@ class ImageProvider:
         ]
 
     def _extract_image_b64(self, body: object) -> str:
-        body_dict = _as_object_dict(
-            body, "Image provider response is not a JSON object"
-        )
+        body_dict = _as_object_dict(body, "Image provider response is not a JSON object")
 
         error_obj = body_dict.get("error")
         if error_obj:
-            raise RuntimeError(f"Image provider returned error: {error_obj}")
+            error_message = str(error_obj)
+            if isinstance(error_obj, dict):
+                error_message = error_obj.get("message", str(error_obj))
+                if isinstance(error_message, dict):
+                    error_message = str(error_message)
+            raise RuntimeError(f"Image provider returned error: {error_message}")
 
         choices = _as_object_list(
             body_dict.get("choices"), "No choices found in image provider response"
         )
         if not choices:
+            if "data" in body_dict:
+                data_list = _as_object_list(body_dict.get("data"), "Invalid data field")
+                if data_list:
+                    first_data = _as_object_dict(data_list[0], "Invalid data item")
+                    if "b64_json" in first_data:
+                        return str(first_data["b64_json"])
+                    elif "url" in first_data:
+                        url = str(first_data["url"])
+                        extracted = _extract_b64_from_url(url)
+                        if extracted:
+                            return extracted
+
             raise ValueError("No choices found in image provider response")
 
         first_choice = _as_object_dict(
@@ -209,7 +224,21 @@ class ImageProvider:
         if image_b64:
             return image_b64
 
-        raise ValueError("No image payload found in provider response")
+        if "content" in message:
+            content = message["content"]
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "image":
+                        image_data = item.get("image")
+                        if isinstance(image_data, str):
+                            extracted = _extract_b64_from_url(image_data)
+                            if extracted:
+                                return extracted
+                            return image_data
+
+        raise ValueError(
+            "No image payload found in provider response - provider may have changed response format"
+        )
 
 
 def _to_data_url(reference_image_b64: str) -> str:

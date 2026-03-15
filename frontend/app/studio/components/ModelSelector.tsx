@@ -6,16 +6,17 @@ import type { StudioModel } from "../types";
 
 const DEFAULT_USER_TIER: StudioModel["tier_minimum"] = "starter";
 const TIER_STORAGE_KEY = "daemon_tier";
-const TIER_ORDER: Record<StudioModel["tier_minimum"], number> = {
-  free: 0,
-  starter: 1,
-  pro: 2,
-  max: 3,
-  byok: 4,
+
+const TIER_LABELS: Record<StudioModel["tier_minimum"], string> = {
+  free: "Free",
+  starter: "Starter",
+  pro: "Pro",
+  max: "Max",
+  byok: "BYOK",
 };
 
 function isTierMinimum(value: string): value is StudioModel["tier_minimum"] {
-  return Object.prototype.hasOwnProperty.call(TIER_ORDER, value);
+  return value in TIER_LABELS;
 }
 
 export function ModelSelector() {
@@ -99,9 +100,9 @@ export function ModelSelector() {
           <div key={provider} className="space-y-1">
             <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">{provider}</p>
             {models.map((model) => {
-              const isLocked = TIER_ORDER[model.tier_minimum] > TIER_ORDER[userTier];
+              const isLocked = model.is_locked ?? false;
               const checked = selectedModels.includes(model.id);
-              const disabled = !checked && (isLocked || selectedModels.length >= 4);
+              const disabled = isLocked || (!checked && selectedModels.length >= 4);
 
               return (
                 <label
@@ -111,7 +112,7 @@ export function ModelSelector() {
                       ? "border-[var(--color-accent)] bg-[var(--color-bg-hover)]"
                       : "border-[var(--color-border-primary)]"
                   } ${disabled ? "cursor-not-allowed opacity-60" : "hover:bg-[var(--color-bg-hover)]"}`}
-                  title={isLocked ? `Requires ${model.tier_minimum} tier` : model.pricing_info}
+                  title={isLocked ? `Requires ${TIER_LABELS[model.tier_minimum]} tier` : model.pricing_info}
                 >
                   <input
                     type="checkbox"
@@ -126,10 +127,14 @@ export function ModelSelector() {
                       }
                     }}
                   />
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium text-[var(--color-text-primary)]">{model.name}</p>
                     <p className="text-xs text-[var(--color-text-muted)]">{model.pricing_info}</p>
-                    {isLocked && <p className="text-[10px] text-amber-400">Upgrade to {model.tier_minimum}</p>}
+                    {isLocked && (
+                      <p className="mt-1 text-[10px] text-amber-400">
+                        🔒 Requires {TIER_LABELS[model.tier_minimum]} tier
+                      </p>
+                    )}
                   </div>
                 </label>
               );
