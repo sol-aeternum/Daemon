@@ -1,6 +1,6 @@
 # Project Context — Daemon
 
-> Last updated: 2026-02-18
+> Last updated: 2026-03-14
 > Source of truth: codebase audit against `daemon-core` + `daemon-frontend-core` tarballs
 
 ## What Daemon Is
@@ -50,13 +50,13 @@ Mobile-first personal AI assistant with multi-model orchestration. FastAPI backe
 
 The backend implements a tier-based model configuration system. Tiers are real architecture; specific model assignments are placeholders subject to change as the model landscape evolves. All model assignments are env-var configurable — no code changes required to swap models.
 
-| Tier | Price | Current Orchestrator | Subagents | Notes |
-|------|-------|---------------------|-----------|-------|
-| Free | $0 | Kimi K2.5 | None | Orchestrator only |
-| Starter | $9/mo | Kimi K2.5 | Claude 3.5 Sonnet (research, code), Gemini Flash (image), Gemini Pro (reader) | Basic subagent suite |
-| Pro | $19/mo | Kimi K2.5 | Same as Starter | Full subagent suite (default tier) |
-| Max | $29/mo | Claude 3 Opus | Opus (code), Sonnet (research), Gemini Flash (image), Gemini Pro (reader) | Premium models, large embeddings |
-| BYOK | $9/mo | Kimi K2.5 | User-configured | User's own OpenRouter key |
+| Tier | Price | Current Orchestrator | Subagents | Video | Notes |
+|------|-------|---------------------|-----------|-------|-------|
+| Free | $0 | Kimi K2.5 | None | Blocked | Orchestrator only |
+| Starter | $9/mo | Kimi K2.5 | Claude 3.5 Sonnet (research, code), Gemini Flash (image), Gemini Pro (reader) | Enabled (5s-30s, provider-limited) | Basic subagent suite |
+| Pro | $19/mo | Kimi K2.5 | Same as Starter | Enabled (5s-30s, provider-limited) | Full subagent suite (default tier) |
+| Max | $29/mo | Claude 3 Opus | Opus (code), Sonnet (research), Gemini Flash (image), Gemini Pro (reader) | Enabled (5s-30s, provider-limited) | Premium models, large embeddings |
+| BYOK | $9/mo | Kimi K2.5 | User-configured | Enabled (bypasses credits, uses own XAI_API_KEY) | User's own OpenRouter key |
 
 Auto-routing within tiers: messages are classified as `fast` (→ Gemini Flash) or `reasoning` (→ tier orchestrator) based on complexity heuristics including turn count and code presence.
 
@@ -83,6 +83,18 @@ Auto-routing within tiers: messages are classified as `fast` (→ Gemini Flash) 
 - Background jobs: extract_memories, generate_title, generate_summary, garbage_collect
 - API routes: /conversations, /memories, /users/settings, /system/health
 - Retry detection: orchestrator/tools/retry.py with word-boundary matching
+
+### Video Generation + Credits ✅ (xAI Imagine)
+- xAI Imagine API integration for image and video generation
+- Video generation via @image subagent with mode="video" context
+- Prepaid video credits system with atomic debit/refund operations
+- Credit balance and transaction history API: `/video-credits/*`
+- Tier-based video access: Free blocked, Starter/Pro/Max/BYOK enabled
+- Duration options: 5s/10s/15s/20s/30s (provider-limited, no tier caps)
+- BYOK users bypass credits using their own XAI_API_KEY
+- Auto-refund on failed generations
+- Studio page extended with Image/Video mode toggle
+- Inline video rendering in chat with VideoPlayer component
 
 ### Frontend (Work in Progress)
 - Streaming chat via Vercel AI SDK `useChat` with SSE bridge to backend

@@ -247,6 +247,8 @@ async def stream_sse_chat(
     user_id: Any = None,
     conversation_uuid: uuid.UUID | None = None,
     queue: Any = None,
+    db_pool: Any = None,
+    trusted_spawn_context: dict[str, Any] | None = None,
 ) -> AsyncIterator[str]:
     provider, model = effective_provider_and_model(settings, provider_config)
     model_for_events = reported_model or actual_model or model
@@ -354,6 +356,8 @@ async def stream_sse_chat(
                     brave_api_key=settings.brave_api_key,
                     memory_store=memory_store,
                     user_id=user_id,
+                    db_pool=db_pool,
+                    trusted_spawn_context=trusted_spawn_context,
                 )
                 pending_tool_calls: list[str] = []
 

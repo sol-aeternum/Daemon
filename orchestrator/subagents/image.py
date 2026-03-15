@@ -11,11 +11,14 @@ from typing import Any, Dict, Tuple
 import uuid
 
 import httpx
+from openai import AsyncOpenAI
 
 from orchestrator.subagents.base import BaseSubagent, SubagentResult, SubagentType
 from providers.xai_imagine import XAIImagineClient, XAIImagineError
+from providers.openai_sora import OpenAISoraClient, OpenAISoraError
 from db.video_credits import VideoCreditsDAL
-from config.video_pricing import estimate_cost, get_tier_discount
+from config.video_pricing import estimate_cost
+from orchestrator.config import get_settings, get_sora_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +43,24 @@ class ImageProvider(ABC):
                 - provider: Provider name
         """
         pass
+
+    async def generate_video(
+        self, prompt: str, duration: int, **kwargs
+    ) -> Dict[str, Any]:
+        """Generate a video from a prompt.
+
+        Args:
+            prompt: Text description of the video to generate
+            duration: Duration of the video in seconds
+            **kwargs: Additional provider-specific parameters
+
+        Returns:
+            Dictionary with video data including:
+                - url: Video URL
+                - duration: Video duration in seconds
+                - provider: Provider name
+        """
+        raise NotImplementedError("Video generation not supported by this provider")
 
 
 class OpenRouterImageProvider(ImageProvider):
@@ -205,6 +226,52 @@ class OpenRouterImageProvider(ImageProvider):
             return 1024, 1024
 
 
+class OpenAISoraProvider(ImageProvider):
+    """Video provider using OpenAI Sora."""
+
+    def __init__(self, api_key: str) -> None:
+        """Initialize OpenAI Sora provider."""
+        self.client = OpenAISoraClient()
+        if api_key:
+            self.client.api_key = api_key
+            if self.client.client:
+                self.client.client.api_key = api_key
+
+    async def generate_video(
+        self, prompt: str, duration: int, **kwargs
+    ) -> Dict[str, Any]:
+        """Generate a video using OpenAI Sora."""
+        try:
+            resolution = kwargs.get("resolution") or "720p"
+
+            # Map duration to Sora's supported values
+            if duration <= 5:
+                sora_duration = 5
+            elif duration <= 10:
+                sora_duration = 10
+            else:
+                sora_duration = 15  # Sora's max is 15 seconds for most models
+
+            video_job = await self.client.generate_video(
+                prompt=prompt,
+                duration_seconds=sora_duration,
+                size=resolution,
+            )
+            video_result = await self.client.poll_video_job(video_job.job_id)
+
+            return {
+                "url": video_result.url,
+                "duration": video_result.duration_seconds,
+                "provider": "openai_sora",
+            }
+        except OpenAISoraError as e:
+            raise RuntimeError(f"OpenAI Sora video error: {str(e)}") from e
+
+    async def generate_image(self, prompt: str, size: str) -> Dict[str, Any]:
+        """Generate an image - not supported by Sora provider."""
+        raise NotImplementedError("Image generation not supported by Sora provider")
+
+
 class XAIImageProvider(ImageProvider):
     """Image provider using xAI Imagine."""
 
@@ -234,6 +301,24 @@ class XAIImageProvider(ImageProvider):
             }
         except XAIImagineError as e:
             raise RuntimeError(f"xAI Imagine error: {str(e)}") from e
+
+    async def generate_video(
+        self, prompt: str, duration: int, **kwargs
+    ) -> Dict[str, Any]:
+        """Generate a video using xAI Imagine."""
+        try:
+            video_job = await self.client.generate_video(
+                prompt=prompt, duration_seconds=duration
+            )
+            video_result = await self.client.poll_video_job(video_job.job_id)
+
+            return {
+                "url": video_result.url,
+                "duration": video_result.duration_seconds,
+                "provider": "xai",
+            }
+        except XAIImagineError as e:
+            raise RuntimeError(f"xAI Imagine video error: {str(e)}") from e
 
     def _size_to_aspect_ratio(self, size: str) -> str:
         """Convert size string to aspect ratio."""
@@ -296,12 +381,32 @@ class ImageSubagent(BaseSubagent):
             or config_dict.get("image_provider")
             or "openrouter"
         ).lower()
+        if self.provider_name == "sora":
+            self.provider_name = "openai_sora"
+
+        # For video mode, check if a specific provider is requested
+        self.video_provider_name = (
+            os.environ.get("TIER_PRO_VIDEO_PROVIDER")
+            or config_dict.get("video_provider")
+            or self.provider_name
+        ).lower()
+        if self.video_provider_name == "sora":
+            self.video_provider_name = "openai_sora"
 
         if self.provider_name == "xai":
             xai_api_key = (
                 config_dict.get("xai_api_key") if config_dict else None
             ) or os.environ.get("XAI_API_KEY", "")
             self.provider = XAIImageProvider(xai_api_key)
+        elif self.provider_name == "openai_sora":
+            openai_api_key = (
+                (config_dict.get("openai_sora_api_key") if config_dict else None)
+                or (config_dict.get("openai_api_key") if config_dict else None)
+                or os.environ.get("OPENAI_SORA_API_KEY", "")
+                or get_sora_api_key()
+                or ""
+            )
+            self.provider = OpenAISoraProvider(openai_api_key)
         else:
             openrouter_api_key = (
                 config_dict.get("openrouter_api_key") if config_dict else None
@@ -402,23 +507,30 @@ class ImageSubagent(BaseSubagent):
     async def _generate_video(
         self, prompt: str, context: dict[str, Any]
     ) -> SubagentResult:
-        # Import video-related modules here to avoid circular imports
-        from db.video_credits import VideoCreditsDAL
-        from config.video_pricing import estimate_cost, get_tier_discount
-
         # Get user ID and tier from context
         user_id_str = context.get("user_id")
-        tier = context.get("tier", "pro")
+        tier = context.get("tier", "free").lower()
+
+        # Get tier configuration
+        settings = get_settings()
+        tier_config = settings.get_tier_config(tier)
+
+        # Validate tier - Check if video generation is enabled for this tier
+        if not tier_config.tier_video_enabled:
+            return self._create_result(
+                success=False,
+                error=f"Video generation is not available for {tier.capitalize()} tier users. Please upgrade to a higher tier.",
+            )
 
         # Get duration from context, default to 5 seconds
         duration_seconds = context.get("duration", 5)
 
         # Enforce duration limits per tier
-        if tier.lower() == "pro" and duration_seconds > 10:
-            duration_seconds = 10
-        elif tier.lower() == "max" and duration_seconds > 15:
-            duration_seconds = 15
-        # BYOK tier has no duration limit
+        if (
+            tier_config.tier_video_max_duration is not None
+            and duration_seconds > tier_config.tier_video_max_duration
+        ):
+            duration_seconds = tier_config.tier_video_max_duration
 
         # Get video credits DAL from config
         db_pool = self.config.get("db_pool") if self.config else None
@@ -445,94 +557,126 @@ class ImageSubagent(BaseSubagent):
                 error="User ID is required for video generation",
             )
 
-        # Validate tier - Free/Starter tiers cannot generate videos
-        if tier.lower() in ["free", "starter"]:
-            return self._create_result(
-                success=False,
-                error="Video generation is not available for Free or Starter tier users. Please upgrade to Pro, Max, or BYOK tier.",
-            )
+        # Determine video provider based on context or tier config
+        video_provider_name = self.video_provider_name
+        if context.get("video_provider"):
+            video_provider_name = context["video_provider"].lower()
+        if video_provider_name == "sora":
+            video_provider_name = "openai_sora"
+        if video_provider_name == "openai-sora":
+            video_provider_name = "openai_sora"
 
-        # Estimate cost for video generation
-        cost = int(estimate_cost(duration_seconds, tier))
-
-        # Check credit balance
-        balance = await video_credits_dal.get_balance(user_id)
-        if balance < cost:
-            return self._create_result(
-                success=False,
-                error=f"Insufficient video credits. Required: {cost}, Available: {balance}",
-            )
-
-        # Debit credits before generation
-        debit_result = await video_credits_dal.debit_credits(
-            user_id, cost, f"Video generation: {prompt[:50]}...", None
+        # Calculate cost AFTER determining provider
+        cost_int = estimate_cost(
+            duration_seconds=duration_seconds,
+            tier=tier,
+            provider=video_provider_name,
+            resolution=context.get("resolution"),
         )
 
-        if not debit_result.success:
-            return self._create_result(
-                success=False,
-                error=f"Failed to debit video credits: {debit_result.message}",
+        # BYOK tier uses own API key, skip credit check/debit
+        transaction_id = None
+        if cost_int > 0:
+            balance = await video_credits_dal.get_balance(user_id)
+            if balance < cost_int:
+                return self._create_result(
+                    success=False,
+                    error=f"Insufficient video credits. Required: {cost_int}, Available: {balance}",
+                )
+
+            debit_result = await video_credits_dal.debit_credits(
+                user_id, cost_int, f"Video generation: {prompt[:50]}...", None
             )
 
-        # Store transaction ID for potential refund
-        transaction_id = debit_result.transaction_id
+            if not debit_result.success:
+                return self._create_result(
+                    success=False,
+                    error=f"Failed to debit video credits: {debit_result.message}",
+                )
 
-        # Verify we're using xAI provider for video generation
-        if not isinstance(self.provider, XAIImageProvider):
-            # Refund the credits since we can't generate video with this provider
-            await video_credits_dal.credit_credits(
-                user_id,
-                int(cost),
-                "refund",
-                f"Refund for unsupported provider video generation attempt",
-            )
-            return self._create_result(
-                success=False,
-                error="Video generation is only supported with xAI provider",
-            )
+            transaction_id = debit_result.transaction_id
 
+        # Create appropriate video provider if needed
+        video_provider = self.provider
+        if video_provider_name != self.provider_name:
+            if video_provider_name == "xai":
+                xai_api_key = (
+                    self.config.get("xai_api_key") if self.config else None
+                ) or os.environ.get("XAI_API_KEY", "")
+                video_provider = XAIImageProvider(xai_api_key)
+            elif video_provider_name == "openai_sora":
+                openai_api_key = (
+                    (self.config.get("openai_sora_api_key") if self.config else None)
+                    or (self.config.get("openai_api_key") if self.config else None)
+                    or os.environ.get("OPENAI_SORA_API_KEY", "")
+                    or get_sora_api_key()
+                    or ""
+                )
+                video_provider = OpenAISoraProvider(openai_api_key)
+            else:
+                # Fallback to current provider
+                video_provider = self.provider
+
+        # Check if the selected provider supports video generation
         try:
-            # Call xAI video endpoint
-            video_job = await self.provider.client.generate_video(
-                prompt=prompt, duration_seconds=duration_seconds
+            video_result = await video_provider.generate_video(
+                prompt=prompt,
+                duration=duration_seconds,
+                resolution=context.get("resolution"),
             )
-
-            # Poll for completion
-            video_result = await self.provider.client.poll_video_job(video_job.job_id)
-
-            # Return video metadata in result
-            return self._create_result(
-                success=True,
-                data={
-                    "prompt": prompt,
-                    "video_url": video_result.url,
-                    "duration_seconds": duration_seconds,
-                    "format": "mp4",
-                },
-                metadata={
-                    "provider": "xai",
-                    "duration": duration_seconds,
-                    "cost": cost,
-                },
-            )
-        except XAIImagineError as e:
-            # Refund credits on failure
-            if transaction_id:
+        except NotImplementedError:
+            refund_result = (
                 await video_credits_dal.refund_transaction(transaction_id)
+                if transaction_id
+                else None
+            )
+            return self._create_result(
+                success=False,
+                error=f"Video generation is not supported with {video_provider_name} provider",
+                data={"refunded": bool(refund_result and refund_result.success)},
+                metadata={
+                    "provider": video_provider_name,
+                    "refunded": bool(refund_result and refund_result.success),
+                    "refund_message": refund_result.message if refund_result else None,
+                    "cost": cost_int,
+                },
+            )
+        except Exception as e:
+            # Refund credits on failure
+            refund_result = None
+            if transaction_id:
+                refund_result = await video_credits_dal.refund_transaction(
+                    transaction_id
+                )
 
             return self._create_result(
                 success=False,
                 error=f"Video generation failed: {str(e)}",
+                data={"refunded": bool(refund_result and refund_result.success)},
+                metadata={
+                    "provider": video_provider_name,
+                    "duration": duration_seconds,
+                    "cost": cost_int,
+                    "refunded": bool(refund_result and refund_result.success),
+                    "refund_message": refund_result.message if refund_result else None,
+                },
             )
-        except Exception as e:
-            # Refund credits on unexpected failure
-            if transaction_id:
-                await video_credits_dal.refund_transaction(transaction_id)
 
-            return self._create_result(
-                success=False,
-                error=f"Unexpected error during video generation: {str(e)}",
-            )
+        # Return video metadata in result
+        return self._create_result(
+            success=True,
+            data={
+                "prompt": prompt,
+                "video_url": video_result["url"],
+                "duration_seconds": duration_seconds,
+                "format": "mp4",
+            },
+            metadata={
+                "provider": video_result["provider"],
+                "duration": duration_seconds,
+                "cost": cost_int,
+            },
+        )
 
     def _enhance_prompt(self, task: str, context: dict[str, Any]) -> str:
         """Enhance user prompt with style/size preferences from context."""

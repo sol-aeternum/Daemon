@@ -44,6 +44,16 @@ class TierConfig(BaseSettings):
     reader_agent: ModelSlotConfig | None = None
     embeddings: ModelSlotConfig | None = None
 
+    # Video generation access controls
+    tier_video_enabled: bool = False
+    tier_video_max_duration: int | None = None
+    tier_video_credit_discount: float = 0.0
+
+    # Sora video generation settings
+    video_provider: str = "xai"  # "xai" or "openai_sora"
+    sora_model: str = ""  # e.g., "sora-2", "sora-2-pro"
+    sora_max_resolution: str = ""  # e.g., "720p", "1024p"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -53,6 +63,7 @@ class Settings(BaseSettings):
 
     # If set, the API requires `Authorization: Bearer <DAEMON_API_KEY>`.
     daemon_api_key: str | None = None
+    daemon_admin_api_key: str | None = None
 
     # Default provider to use when none specified in request
     default_provider: str = "openrouter"
@@ -76,6 +87,7 @@ class Settings(BaseSettings):
     tier_free_research_model: str = ""
     tier_free_code_model: str = ""
     tier_free_image_model: str = ""
+    tier_free_image_provider: str = "openrouter"
     tier_free_reader_model: str = ""
     tier_free_embeddings_model: str = ""
 
@@ -92,6 +104,7 @@ class Settings(BaseSettings):
     tier_starter_code_temp: float = 0.3
     tier_starter_image_model: str = "google/gemini-2.5-flash-image"
     tier_starter_image_temp: float = 0.8
+    tier_starter_image_provider: str = "openrouter"
     tier_starter_reader_model: str = "openrouter/google/gemini-2.0-pro-exp"
     tier_starter_reader_temp: float = 0.3
     tier_starter_embeddings_model: str = "openrouter/openai/text-embedding-3-small"
@@ -106,6 +119,7 @@ class Settings(BaseSettings):
     tier_pro_code_temp: float = 0.3
     tier_pro_image_model: str = "google/gemini-2.5-flash-image"
     tier_pro_image_temp: float = 0.8
+    tier_pro_image_provider: str = "openrouter"
     tier_pro_reader_model: str = "openrouter/google/gemini-2.0-pro-exp"
     tier_pro_reader_temp: float = 0.3
     tier_pro_embeddings_model: str = "openrouter/openai/text-embedding-3-small"
@@ -114,12 +128,16 @@ class Settings(BaseSettings):
     # Opus 4.6 orchestrator, premium subagents
     tier_max_orchestrator_model: str = "openrouter/anthropic/claude-opus-4.6"
     tier_max_orchestrator_temp: float = 0.7
+    # Grok alternative for Max-tier orchestrator
+    tier_max_orchestrator_model_grok: str = "x-ai/grok-4"
+    tier_max_orchestrator_model_grok_temp: float = 0.7
     tier_max_research_model: str = "openrouter/anthropic/claude-3.5-sonnet"
     tier_max_research_temp: float = 0.5
     tier_max_code_model: str = "openrouter/anthropic/claude-opus-4.6"
     tier_max_code_temp: float = 0.3
     tier_max_image_model: str = "google/gemini-2.5-flash-image"
     tier_max_image_temp: float = 0.8
+    tier_max_image_provider: str = "openrouter"
     tier_max_reader_model: str = "openrouter/google/gemini-2.0-pro-exp"
     tier_max_reader_temp: float = 0.3
     tier_max_embeddings_model: str = "openrouter/openai/text-embedding-3-large"
@@ -131,12 +149,39 @@ class Settings(BaseSettings):
     tier_byok_research_model: str = ""
     tier_byok_code_model: str = ""
     tier_byok_image_model: str = ""
+    tier_byok_image_provider: str = "openrouter"
     tier_byok_reader_model: str = ""
     tier_byok_embeddings_model: str = ""
+
+    # Sora video generation settings per tier
+    # Default to xai (Grok Imagine) for backward compatibility
+    tier_free_video_provider: str = "xai"
+    tier_free_sora_model: str = ""
+    tier_free_sora_max_resolution: str = ""
+
+    tier_starter_video_provider: str = "xai"
+    tier_starter_sora_model: str = ""
+    tier_starter_sora_max_resolution: str = ""
+
+    tier_pro_video_provider: str = "xai"
+    tier_pro_sora_model: str = "sora-2"
+    tier_pro_sora_max_resolution: str = "720p"
+
+    tier_max_video_provider: str = "xai"
+    tier_max_sora_model: str = "sora-2-pro"
+    tier_max_sora_max_resolution: str = "1024p"
+
+    tier_byok_video_provider: str = "xai"
+    tier_byok_sora_model: str = ""
+    tier_byok_sora_max_resolution: str = ""
 
     # ===== AUTO-ROUTING MODEL TIERS =====
     auto_fast_model: str = "openrouter/google/gemini-2.5-flash"
     auto_fast_temp: float = 0.7
+
+    # Grok alternatives for auto-fast model
+    auto_fast_model_grok: str = "x-ai/grok-4.1-fast"
+    auto_fast_model_grok_temp: float = 0.7
 
     auto_reasoning_model: str = "openrouter/moonshotai/kimi-k2.5"
     auto_reasoning_temp: float = 0.7
@@ -181,6 +226,15 @@ class Settings(BaseSettings):
     # Brave Search API (Web search)
     brave_api_key: str | None = None
 
+    # xAI API (for Imagine image/video generation)
+    xai_api_key: str = ""
+
+    # OpenAI API keys
+    # Used for embeddings via text-embedding-3-small
+    openai_api_key: str | None = None
+    # Optional: separate key for Sora video generation (falls back to openai_api_key if not set)
+    openai_sora_api_key: str | None = None
+
     # ===== MEMORY LAYER =====
     database_url: str | None = None
     redis_url: str | None = None
@@ -211,6 +265,33 @@ class Settings(BaseSettings):
                 temperature=getattr(self, f"{prefix}{slot}_temp", 0.7),
             )
 
+        # Set video access controls based on tier
+        if tier_name == "free":
+            tier_video_enabled = False
+            tier_video_max_duration = 0
+            tier_video_credit_discount = 0.0
+        elif tier_name == "starter":
+            tier_video_enabled = True
+            tier_video_max_duration = None
+            tier_video_credit_discount = 1.0
+        elif tier_name == "pro":
+            tier_video_enabled = True
+            tier_video_max_duration = None
+            tier_video_credit_discount = 1.0
+        elif tier_name == "max":
+            tier_video_enabled = True
+            tier_video_max_duration = None
+            tier_video_credit_discount = 0.8
+        elif tier_name == "byok":
+            tier_video_enabled = True
+            tier_video_max_duration = None
+            tier_video_credit_discount = 0.0
+        else:
+            # Default fallback
+            tier_video_enabled = False
+            tier_video_max_duration = 0
+            tier_video_credit_discount = 0.0
+
         return TierConfig(
             orchestrator=get_slot_config("orchestrator")
             or ModelSlotConfig(
@@ -221,6 +302,12 @@ class Settings(BaseSettings):
             image_agent=get_slot_config("image"),
             reader_agent=get_slot_config("reader"),
             embeddings=get_slot_config("embeddings"),
+            tier_video_enabled=tier_video_enabled,
+            tier_video_max_duration=tier_video_max_duration,
+            tier_video_credit_discount=tier_video_credit_discount,
+            video_provider=getattr(self, f"{prefix}video_provider", "xai"),
+            sora_model=getattr(self, f"{prefix}sora_model", ""),
+            sora_max_resolution=getattr(self, f"{prefix}sora_max_resolution", ""),
         )
 
     def get_provider_config(
@@ -244,7 +331,6 @@ class Settings(BaseSettings):
                 "HTTP-Referer": self.openrouter_referer,
                 "X-Title": self.openrouter_title,
             }
-            # BYOK tier uses user's own API key (passed in request)
             return ProviderConfig(
                 name="openrouter",
                 base_url=self.openrouter_base_url,
@@ -334,3 +420,13 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def get_sora_api_key() -> str | None:
+    """Get API key for Sora video generation.
+
+    Returns:
+        OPENAI_SORA_API_KEY if set, otherwise falls back to OPENAI_API_KEY.
+    """
+    settings = get_settings()
+    return settings.openai_sora_api_key or settings.openai_api_key

@@ -9,6 +9,9 @@ export type ChatEvent = BaseEvent &
     | { type: "agent_status"; agent: string; status: "pending" | "running" | "completed" | "error"; progress?: number; message?: string }
     | { type: "agent_complete"; agent: string; result: string }
     | { type: "image_ready"; url: string; prompt: string }
+    | { type: "video_generating"; request_id: string; estimated_seconds: number }
+    | { type: "video_complete"; request_id: string; url: string; duration: number; resolution: string }
+    | { type: "video_failed"; request_id: string; error: string; refunded: boolean }
     | { type: "tool_call"; name: string; arguments: Record<string, any> }
     | { type: "tool_result"; name: string; result: any }
     | { type: "pipeline_switch"; pipeline: "cloud" | "local" }
@@ -26,6 +29,9 @@ export function isChatEvent(obj: unknown): obj is ChatEvent {
     "agent_status",
     "agent_complete",
     "image_ready",
+    "video_generating",
+    "video_complete",
+    "video_failed",
     "tool_call",
     "tool_result",
     "pipeline_switch",
@@ -40,4 +46,16 @@ export function isToolCallEvent(event: ChatEvent): event is ChatEvent & { type: 
 
 export function isToolResultEvent(event: ChatEvent): event is ChatEvent & { type: "tool_result"; name: string; result: any } {
   return event.type === "tool_result";
+}
+
+export function isVideoGeneratingEvent(event: ChatEvent): event is ChatEvent & { type: "video_generating"; request_id: string; estimated_seconds: number } {
+  return event.type === "video_generating";
+}
+
+export function isVideoCompleteEvent(event: ChatEvent): event is ChatEvent & { type: "video_complete"; request_id: string; url: string; duration: number; resolution: string } {
+  return event.type === "video_complete";
+}
+
+export function isVideoFailedEvent(event: ChatEvent): event is ChatEvent & { type: "video_failed"; request_id: string; error: string; refunded: boolean } {
+  return event.type === "video_failed";
 }

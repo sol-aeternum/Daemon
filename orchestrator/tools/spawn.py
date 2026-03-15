@@ -103,7 +103,7 @@ def _persist_audio_result(result_dict: dict[str, Any]) -> dict[str, Any]:
 
 def _persist_file_result(result_dict: dict[str, Any]) -> dict[str, Any]:
     """Handle DocumentSubagent results - preserve file path and generation_code.
-    
+
     DocumentSubagent already persists files to data/generated_files/ via its
     _persist_file method. This function ensures generation_code is preserved
     in metadata for revision flows.
@@ -112,11 +112,11 @@ def _persist_file_result(result_dict: dict[str, Any]) -> dict[str, Any]:
     agent_type = result_dict.get("agent_type")
     if agent_type != "document":
         return result_dict
-    
+
     data = result_dict.get("data")
     if not isinstance(data, dict):
         return result_dict
-    
+
     # DocumentSubagent already saved the file and returned file_url
     # Just ensure generation_code is in metadata for revisions
     generation_code = data.get("generation_code")
@@ -124,14 +124,15 @@ def _persist_file_result(result_dict: dict[str, Any]) -> dict[str, Any]:
         # Move generation_code to metadata for persistence
         result_dict["metadata"] = result_dict.get("metadata", {})
         result_dict["metadata"]["generation_code"] = generation_code
-    
+
     return result_dict
+
 
 # Global subagent manager instance
 _subagent_manager: SubagentManager | None = None
 
 
-def get_subagent_manager() -> SubagentManager:
+def get_subagent_manager(db_pool: Any | None = None) -> SubagentManager:
     """Get or initialize the global subagent manager."""
     global _subagent_manager
     if _subagent_manager is None:
@@ -147,6 +148,8 @@ def get_subagent_manager() -> SubagentManager:
             "openrouter_api_key": settings.openrouter_api_key,
             "openrouter_base_url": settings.openrouter_base_url,
             "image_model": image_model,
+            "tier_config": tier_config,  # Pass tier config for video generation checks
+            "db_pool": db_pool,
         }
         _subagent_manager = SubagentManager()
         # Register default subagents
@@ -154,6 +157,10 @@ def get_subagent_manager() -> SubagentManager:
         _subagent_manager.register(ImageSubagent(shared_config))
         _subagent_manager.register(AudioSubagent(shared_config))
         _subagent_manager.register(DocumentSubagent(shared_config))
+    elif db_pool is not None:
+        image_agent = _subagent_manager.get(SubagentType.IMAGE)
+        if image_agent is not None:
+            image_agent.config["db_pool"] = db_pool
     return _subagent_manager
 
 
@@ -161,7 +168,7 @@ class SpawnAgentTool(Tool):
     """Tool to spawn specialized subagents for complex tasks."""
 
     name = "spawn_agent"
-    description = "Spawn a specialized subagent for research, image generation, sound effect generation, code tasks, or document reading or document generation"
+    description = "Spawn a specialized subagent for research, image generation, video generation, sound effect generation, code tasks, or document reading or document generation"
     parameters = {
         "type": "object",
         "properties": {
@@ -176,7 +183,21 @@ class SpawnAgentTool(Tool):
             },
             "context": {
                 "type": "object",
-                "description": "Optional additional context for the subagent (e.g., style preferences for images, file paths for readers)",
+                "description": "Optional additional context for the subagent (e.g., style preferences for images, file paths for readers, mode for image/video generation)",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "description": "Generation mode for image agent (image or video)",
+                        "enum": ["image", "video"],
+                        "default": "image",
+                    },
+                    "duration": {
+                        "type": "integer",
+                        "description": "Duration in seconds for video generation (1-15)",
+                        "minimum": 1,
+                        "maximum": 15,
+                    },
+                },
             },
             "session_id": {
                 "type": "string",
@@ -185,6 +206,42 @@ class SpawnAgentTool(Tool):
         },
         "required": ["agent_type", "task"],
     }
+
+    def __init__(
+        self,
+        *,
+        db_pool: Any | None = None,
+        trusted_spawn_context: dict[str, Any] | None = None,
+    ) -> None:
+        self._db_pool = db_pool
+        self._trusted_spawn_context = trusted_spawn_context or {}
+
+    def _apply_trusted_context(
+        self,
+        agent_type: SubagentType,
+        context: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if agent_type != SubagentType.IMAGE:
+            return context
+
+        merged_context: dict[str, Any] = dict(context or {})
+        trusted_video = self._trusted_spawn_context.get("video")
+        if not isinstance(trusted_video, dict):
+            return merged_context
+
+        merged_context["mode"] = "video"
+        for key in (
+            "duration",
+            "tier",
+            "user_id",
+            "source_mode",
+            "reference_image_url",
+            "reference_image_id",
+        ):
+            value = trusted_video.get(key)
+            if value is not None:
+                merged_context[key] = value
+        return merged_context
 
     async def execute(self, **kwargs: Any) -> str:
         """Execute the spawn agent tool."""
@@ -205,7 +262,9 @@ class SpawnAgentTool(Tool):
                 }
             )
 
-        manager = get_subagent_manager()
+        context = self._apply_trusted_context(subagent_type, context)
+
+        manager = get_subagent_manager(db_pool=self._db_pool)
         result = await manager.spawn(subagent_type, task, context, session_id)
         result_dict = result.to_dict()
         result_dict = _persist_image_result(result_dict)
@@ -250,10 +309,46 @@ class SpawnMultipleTool(Tool):
         "required": ["agents"],
     }
 
+    def __init__(
+        self,
+        *,
+        db_pool: Any | None = None,
+        trusted_spawn_context: dict[str, Any] | None = None,
+    ) -> None:
+        self._db_pool = db_pool
+        self._trusted_spawn_context = trusted_spawn_context or {}
+
+    def _apply_trusted_context(
+        self,
+        agent_type: SubagentType,
+        context: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if agent_type != SubagentType.IMAGE:
+            return context
+
+        merged_context: dict[str, Any] = dict(context or {})
+        trusted_video = self._trusted_spawn_context.get("video")
+        if not isinstance(trusted_video, dict):
+            return merged_context
+
+        merged_context["mode"] = "video"
+        for key in (
+            "duration",
+            "tier",
+            "user_id",
+            "source_mode",
+            "reference_image_url",
+            "reference_image_id",
+        ):
+            value = trusted_video.get(key)
+            if value is not None:
+                merged_context[key] = value
+        return merged_context
+
     async def execute(self, **kwargs: Any) -> str:
         """Execute multiple subagents in parallel."""
         agents = kwargs.get("agents", [])
-        manager = get_subagent_manager()
+        manager = get_subagent_manager(db_pool=self._db_pool)
 
         # Convert to tuples for spawn_multiple
         spawns = []
@@ -262,7 +357,9 @@ class SpawnMultipleTool(Tool):
             try:
                 agent_type = SubagentType(agent_type_str.lower())
                 task = agent_spec.get("task", "")
-                context = agent_spec.get("context")
+                context = self._apply_trusted_context(
+                    agent_type, agent_spec.get("context")
+                )
                 session_id = agent_spec.get("session_id")
                 spawns.append((agent_type, task, context, session_id))
             except ValueError:

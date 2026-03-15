@@ -31,6 +31,16 @@
 - [x] PWA manifest + service worker + offline indicator
 - [x] ThinkingIndicator, AgentStatusCard/List, ConnectionStatus
 
+### Video Generation + Credits ✅ (March 2026)
+- [x] xAI Imagine API integration for image and video generation
+- [x] Video generation via @image subagent with mode="video" context
+- [x] Prepaid video credits system with atomic debit/refund operations
+- [x] Credit balance and transaction history API: `/video-credits/*`
+- [x] Tier-based video access: Free blocked, Starter/Pro/Max/BYOK enabled
+- [x] Duration options: 5s/10s/15s/20s/30s (provider-limited, no tier caps)
+- [x] Studio page with Image/Video mode toggle
+- [x] Inline video rendering in chat with VideoPlayer component
+
 ---
 
 ## Phase 2: Memory System — COMPLETE ✅

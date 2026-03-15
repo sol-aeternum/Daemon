@@ -5,7 +5,21 @@ import { Sparkles } from "lucide-react";
 import { useStudio } from "../StudioProvider";
 import { useImageGeneration } from "../hooks/useImageGeneration";
 
-export function PromptInput() {
+interface PromptInputProps {
+  mode?: "image" | "video";
+  onGenerateVideo?: () => Promise<void> | void;
+  videoGenerateDisabled?: boolean;
+  videoGenerateDisabledReason?: string | null;
+  videoButtonLabel?: string;
+}
+
+export function PromptInput({
+  mode = "image",
+  onGenerateVideo,
+  videoGenerateDisabled = false,
+  videoGenerateDisabledReason = null,
+  videoButtonLabel,
+}: PromptInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const { prompt, setPrompt, selectedModels, isGenerating, referenceImage, clearReference } = useStudio();
   const { generate } = useImageGeneration();
@@ -19,7 +33,10 @@ export function PromptInput() {
     node.style.height = `${Math.min(node.scrollHeight, 128)}px`;
   }, [prompt]);
 
-  const disabled = prompt.trim().length === 0 || selectedModels.length === 0 || isGenerating;
+  const disabled =
+    mode === "image"
+      ? prompt.trim().length === 0 || selectedModels.length === 0 || isGenerating
+      : prompt.trim().length === 0 || isGenerating || videoGenerateDisabled;
 
   return (
     <section className="rounded-2xl border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] p-4">
@@ -29,7 +46,7 @@ export function PromptInput() {
         ref={textareaRef}
         value={prompt}
         onChange={(event) => setPrompt(event.target.value)}
-        placeholder="Describe your image..."
+        placeholder={mode === "video" ? "Describe your video..." : "Describe your image..."}
         rows={2}
         className="w-full resize-none rounded-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] px-3 py-2 text-sm text-[var(--color-text-primary)]"
       />
@@ -53,12 +70,22 @@ export function PromptInput() {
         className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] px-4 py-3 text-sm font-semibold text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-bg-hover)] disabled:cursor-not-allowed disabled:opacity-60"
         disabled={disabled}
         onClick={() => {
-          void generate();
+          if (mode === "image") {
+            void generate();
+            return;
+          }
+          if (onGenerateVideo) {
+            void onGenerateVideo();
+          }
         }}
       >
         <Sparkles className="h-4 w-4" />
-        {isGenerating ? "Generating..." : "Generate"}
+        {isGenerating ? "Generating..." : mode === "video" ? (videoButtonLabel ?? "Generate video") : "Generate"}
       </button>
+
+      {mode === "video" && videoGenerateDisabledReason && (
+        <p className="mt-2 text-xs text-[var(--color-status-warning)]">{videoGenerateDisabledReason}</p>
+      )}
     </section>
   );
 }

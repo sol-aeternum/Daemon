@@ -4,7 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useStudio } from "../StudioProvider";
 import type { StudioModel } from "../types";
 
-const USER_TIER = "starter" as const;
+const DEFAULT_USER_TIER: StudioModel["tier_minimum"] = "starter";
+const TIER_STORAGE_KEY = "daemon_tier";
 const TIER_ORDER: Record<StudioModel["tier_minimum"], number> = {
   free: 0,
   starter: 1,
@@ -13,10 +14,26 @@ const TIER_ORDER: Record<StudioModel["tier_minimum"], number> = {
   byok: 4,
 };
 
+function isTierMinimum(value: string): value is StudioModel["tier_minimum"] {
+  return Object.prototype.hasOwnProperty.call(TIER_ORDER, value);
+}
+
 export function ModelSelector() {
   const { availableModels, setAvailableModels, selectedModels, addModel, removeModel } = useStudio();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [userTier, setUserTier] = useState<StudioModel["tier_minimum"]>(DEFAULT_USER_TIER);
+
+  useEffect(() => {
+    const storedTier = localStorage.getItem(TIER_STORAGE_KEY);
+    if (!storedTier) {
+      return;
+    }
+    const normalized = storedTier.toLowerCase();
+    if (isTierMinimum(normalized)) {
+      setUserTier(normalized);
+    }
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -24,7 +41,11 @@ export function ModelSelector() {
       setIsLoading(true);
       setError(null);
       try {
-        const response = await fetch("/api/images/models?tier=max");
+        const response = await fetch(`/api/images/models?tier=${encodeURIComponent(userTier)}`, {
+          headers: {
+            "X-Daemon-Tier": userTier,
+          },
+        });
         if (!response.ok) {
           throw new Error(`Failed to load models (${response.status})`);
         }
@@ -43,14 +64,12 @@ export function ModelSelector() {
       }
     };
 
-    if (availableModels.length === 0) {
-      void load();
-    }
+    void load();
 
     return () => {
       mounted = false;
     };
-  }, [availableModels.length, setAvailableModels]);
+  }, [setAvailableModels, userTier]);
 
   const grouped = useMemo(() => {
     return availableModels.reduce<Record<string, StudioModel[]>>((acc, model) => {
@@ -80,9 +99,9 @@ export function ModelSelector() {
           <div key={provider} className="space-y-1">
             <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">{provider}</p>
             {models.map((model) => {
-              const isLocked = TIER_ORDER[model.tier_minimum] > TIER_ORDER[USER_TIER];
+              const isLocked = TIER_ORDER[model.tier_minimum] > TIER_ORDER[userTier];
               const checked = selectedModels.includes(model.id);
-              const disabled = isLocked || (!checked && selectedModels.length >= 4);
+              const disabled = !checked && (isLocked || selectedModels.length >= 4);
 
               return (
                 <label

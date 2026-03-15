@@ -136,9 +136,33 @@ docker run -d -p 3000:8080 \
   ghcr.io/open-webui/open-webui:main
 ```
 
+## xAI Grok Integration
+
+Daemon supports xAI's Grok models via OpenRouter, including:
+- **Grok 4** — Premium reasoning model for Max tier
+- **Grok 4.1 Fast** — Fast model for auto-routing
+
+### Video Generation (Studio)
+
+Daemon includes a Studio page (`/studio`) for AI-powered media generation:
+
+- **Image Generation**: Create images from text prompts using xAI Imagine API
+- **Video Generation**: Generate videos (5s/10s/15s/20s/30s) from prompts
+- **Video Credits**: Prepaid credit system for video generation
+  - Free tier: Blocked
+  - Starter/Pro/Max: Enabled with credit purchase
+  - BYOK: Bypasses credits using your own `XAI_API_KEY`
+
+Configure video generation:
+```bash
+XAI_API_KEY=your-xai-key  # Required for video generation
+```
+
+See `/studio` in the web UI to access image and video generation tools.
+
 ## Status
 
-Active development. Core orchestration, multi-provider routing, OpenAI-compatible API, and Open WebUI integration are functional. Memory layer and subagent system in progress.
+Active development. Core orchestration, multi-provider routing, OpenAI-compatible API, and Open WebUI integration are functional. Memory layer, subagent system, and video generation in progress.
 
 ## License
 

@@ -132,7 +132,11 @@ class CalculateTool(Tool):
 
 
 def create_default_registry(
-    brave_api_key: str | None = None, memory_store: Any = None, user_id: Any = None
+    brave_api_key: str | None = None,
+    memory_store: Any = None,
+    user_id: Any = None,
+    db_pool: Any = None,
+    trusted_spawn_context: dict[str, Any] | None = None,
 ):
     from orchestrator.tools.registry import ToolRegistry
     from orchestrator.tools.web_search import WebSearchTool
@@ -149,8 +153,12 @@ def create_default_registry(
     registry.register(NotificationSendTool())
     registry.register(ReminderSetTool())
     registry.register(ReminderListTool())
-    registry.register(SpawnAgentTool())
-    registry.register(SpawnMultipleTool())
+    registry.register(
+        SpawnAgentTool(db_pool=db_pool, trusted_spawn_context=trusted_spawn_context)
+    )
+    registry.register(
+        SpawnMultipleTool(db_pool=db_pool, trusted_spawn_context=trusted_spawn_context)
+    )
 
     if memory_store and user_id:
         from orchestrator.memory.tools import MemoryReadTool, MemoryWriteTool

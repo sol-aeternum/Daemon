@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import { ChatEvent, isToolCallEvent, isToolResultEvent } from "../lib/events";
 import { Download, Maximize2, X, Loader2, ChevronRight, Check, Volume2, Play, Pause, Palette } from "lucide-react";
+import { VideoPlayer } from "./VideoPlayer";
 
 export interface ToolExecution {
   call: ChatEvent;
@@ -9,6 +10,31 @@ export interface ToolExecution {
 
 interface ToolCallBlockProps {
   execution: ToolExecution;
+}
+
+type JsonRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is JsonRecord {
+  return typeof value === "object" && value !== null;
+}
+
+function getSpawnMode(call: ChatEvent): string | null {
+  if (!isToolCallEvent(call) || call.name !== "spawn_agent") {
+    return null;
+  }
+
+  const callArgs = call.arguments;
+  if (!isRecord(callArgs)) {
+    return null;
+  }
+
+  const context = callArgs.context;
+  if (!isRecord(context)) {
+    return null;
+  }
+
+  const mode = context.mode;
+  return typeof mode === "string" ? mode : null;
 }
 
 export function ToolCallBlock({ execution }: ToolCallBlockProps) {
@@ -20,6 +46,9 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
     return null;
   }
   const call = rawCall;
+  const spawnMode = getSpawnMode(call);
+  const isVideoRequested = spawnMode === "video";
+  const isAudioRequested = spawnMode === "audio";
 
   const result = rawResult && isToolResultEvent(rawResult) ? rawResult : null;
 
@@ -36,12 +65,16 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
   // 1. Loading State (Call exists, Result missing)
   if (!result) {
     if (call.name === "spawn_agent") {
-      const agentType = call.arguments?.agent_type;
-      const isAudio = agentType === "audio";
       return (
         <div className="flex items-center gap-2 text-[var(--color-text-muted)] text-sm py-2 px-1 animate-pulse">
           <Loader2 className="w-4 h-4 animate-spin" />
-          <span>{isAudio ? "Creating sound effect..." : "Creating image..."}</span>
+          <span>
+            {isVideoRequested
+              ? "Generating video..."
+              : isAudioRequested
+              ? "Creating sound effect..."
+              : "Creating image..."}
+          </span>
         </div>
       );
     }
@@ -59,6 +92,9 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
   let errorMessage: string | null = null;
   let imagePath: string | null = null;
   let audioPath: string | null = null;
+  let videoPath: string | null = null;
+  let videoDuration: number | null = null;
+  let refunded: boolean | null = null;
   let prompt: string | null = null;
   
   try {
@@ -77,6 +113,18 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
 
     const imgPath = parsed?.data?.image_path ?? parsed?.image_path;
     const audPath = parsed?.data?.audio_path ?? parsed?.audio_path;
+    const vidPath = parsed?.data?.video_path ?? parsed?.video_path;
+    const vidUrl = parsed?.data?.video_url ?? parsed?.video_url ?? parsed?.data?.url ?? parsed?.url;
+    const dur = parsed?.data?.duration_seconds ?? parsed?.duration_seconds ?? parsed?.data?.duration ?? parsed?.duration;
+    const refundFlag = parsed?.data?.refunded ?? parsed?.refunded;
+
+    if (typeof dur === "number" && Number.isFinite(dur)) {
+      videoDuration = dur;
+    }
+    if (typeof refundFlag === "boolean") {
+      refunded = refundFlag;
+    }
+
     prompt = parsed?.data?.prompt ?? parsed?.prompt;
 
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -90,12 +138,64 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
       audioPath = `${apiUrl}${audPath}`;
       isError = false;
     }
+
+    if (typeof vidPath === "string" && vidPath.startsWith("/generated-videos/")) {
+      videoPath = `${apiUrl}${vidPath}`;
+      isError = false;
+    }
+
+    if (!videoPath && typeof vidUrl === "string") {
+      if (vidUrl.startsWith("/generated-videos/")) {
+        videoPath = `${apiUrl}${vidUrl}`;
+      } else if (vidUrl.startsWith("http://") || vidUrl.startsWith("https://") || vidUrl.startsWith("data:")) {
+        videoPath = vidUrl;
+      }
+
+      if (videoPath) {
+        isError = false;
+      }
+    }
   } catch {
     const lowerResult = resultText.toLowerCase();
     isError = lowerResult.includes("error") && !lowerResult.includes('"error": null');
     if (isError) {
       errorMessage = "Tool call failed. Continuing with best available information.";
     }
+  }
+
+  // Image Result UI
+  if (videoPath) {
+    return (
+      <div className="my-2 max-w-3xl">
+        <div className="text-sm text-[var(--color-text-muted)] mb-2 font-medium flex items-center gap-2">
+          <Check className="w-4 h-4 text-[var(--color-status-success)]" />
+          <span>Video created</span>
+          {videoDuration !== null && (
+            <>
+              <span className="text-[var(--color-border-secondary)]">•</span>
+              <span>{videoDuration}s</span>
+            </>
+          )}
+        </div>
+        <VideoPlayer src={videoPath} duration={videoDuration ?? undefined} />
+      </div>
+    );
+  }
+
+  if (isVideoRequested && isError) {
+    return (
+      <div className="my-2 rounded-xl border border-[var(--color-status-warning)]/40 bg-[var(--color-status-warning-bg)]/30 p-3 max-w-2xl">
+        <div className="text-sm font-medium text-[var(--color-status-warning)] mb-1">Video generation failed</div>
+        <div className="text-sm text-[var(--color-text-secondary)]">
+          {errorMessage ?? "Video generation failed. Continuing with best available information."}
+        </div>
+        {refunded !== null && (
+          <div className="text-xs text-[var(--color-text-muted)] mt-2">
+            {refunded ? "Credits refunded." : "Refund not confirmed."}
+          </div>
+        )}
+      </div>
+    );
   }
 
   // Image Result UI

@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { ImageCard } from "./ImageCard";
 import { ImageLightbox } from "./ImageLightbox";
+import { VideoCard } from "./VideoCard";
 import { useStudio } from "../StudioProvider";
 import type { StudioGeneration } from "../types";
 
@@ -34,12 +35,16 @@ export function ImageGallery() {
     <>
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {sorted.map((generation) => (
-          <ImageCard
-            key={generation.id}
-            generation={generation}
-            onOpen={setLightboxItem}
-            onUseAsReference={handleUseAsReference}
-          />
+          generation.mediaType === "video" || generation.videoUrl ? (
+            <VideoCard key={generation.id} generation={generation} />
+          ) : (
+            <ImageCard
+              key={generation.id}
+              generation={generation}
+              onOpen={setLightboxItem}
+              onUseAsReference={handleUseAsReference}
+            />
+          )
         ))}
       </section>
 

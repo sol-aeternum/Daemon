@@ -6,7 +6,7 @@ const API_URLS = [
 ].filter((url): url is string => Boolean(url));
 
 export async function POST(req: Request) {
-  const { messages, id, model, attachments } = await req.json();
+  const { messages, id, model, attachments, metadata, provider } = await req.json();
 
   const { createDataStreamResponse } = await import("ai");
   const { formatDataStreamPart } = await import("@ai-sdk/ui-utils");
@@ -46,10 +46,15 @@ export async function POST(req: Request) {
   const lastUserText = extractTextContent(lastUserMessage?.content);
 
   const authHeader = req.headers.get("authorization");
-  const authToken = authHeader?.replace(/^Bearer\s+/i, "").trim();
-  const authorization = authToken
-    ? `Bearer ${authToken}`
-    : `Bearer ${process.env.DAEMON_API_KEY || "sk-test"}`;
+  const hasServerApiKey = Boolean(process.env.DAEMON_API_KEY?.trim());
+  const authorization = authHeader?.trim() || null;
+
+  if (!authorization && hasServerApiKey) {
+    return new Response(JSON.stringify({ error: "Missing bearer token" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
 
   let backendRes: Response | null = null;
   let lastError: Error | null = null;
@@ -60,14 +65,16 @@ export async function POST(req: Request) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: authorization,
+          ...(authorization ? { Authorization: authorization } : {}),
         },
         body: JSON.stringify({
           message: lastUserText,
           conversation_id: id || null,
           messages: normalizedMessages,
           model: model || "auto",
+          provider: provider || null,
           attachments: Array.isArray(attachments) ? attachments : [],
+          metadata: metadata && typeof metadata === "object" ? metadata : null,
         }),
       });
       break;
@@ -208,6 +215,54 @@ export async function POST(req: Request) {
                 },
               ]),
             );
+          } else if (eventType === "video_generating") {
+            const requestId = payload?.data?.request_id ?? payload?.request_id;
+            const estimatedSeconds = payload?.data?.estimated_seconds ?? payload?.estimated_seconds;
+            if (requestId) {
+              dataStream.write(
+                formatDataStreamPart("data", [
+                  {
+                    type: "video_generating",
+                    request_id: requestId,
+                    estimated_seconds: typeof estimatedSeconds === "number" ? estimatedSeconds : 0,
+                    id: payload?.id ?? payload?.data?.id,
+                  },
+                ]),
+              );
+            }
+          } else if (eventType === "video_complete") {
+            const requestId = payload?.data?.request_id ?? payload?.request_id;
+            const url = payload?.data?.url ?? payload?.url;
+            if (requestId && url) {
+              dataStream.write(
+                formatDataStreamPart("data", [
+                  {
+                    type: "video_complete",
+                    request_id: requestId,
+                    url: url,
+                    duration: payload?.data?.duration ?? payload?.duration,
+                    resolution: payload?.data?.resolution ?? payload?.resolution,
+                    id: payload?.id ?? payload?.data?.id,
+                  },
+                ]),
+              );
+            }
+          } else if (eventType === "video_failed") {
+            const requestId = payload?.data?.request_id ?? payload?.request_id;
+            const error = payload?.data?.error ?? payload?.error;
+            if (requestId) {
+              dataStream.write(
+                formatDataStreamPart("data", [
+                  {
+                    type: "video_failed",
+                    request_id: requestId,
+                    error: error || "Video generation failed",
+                    refunded: payload?.data?.refunded ?? payload?.refunded ?? false,
+                    id: payload?.id ?? payload?.data?.id,
+                  },
+                ]),
+              );
+            }
           } else if (eventType === "final" && !sawToken) {
             const content =
               payload?.data?.text

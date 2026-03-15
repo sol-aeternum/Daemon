@@ -8,6 +8,7 @@ from arq.connections import ArqRedis, RedisSettings, create_pool as arq_create_p
 from fastapi import Request
 
 from orchestrator.config import Settings
+from db.video_credits import VideoCreditsDAL
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
 
@@ -20,6 +21,7 @@ class AppState:
     db_pool: asyncpg.Pool | None = field(default=None)
     redis: ArqRedis | None = field(default=None)
     memory_store: MemoryStore | None = field(default=None)
+    video_credits_dal: VideoCreditsDAL | None = field(default=None)
 
 
 async def init_app_state(settings: Settings) -> AppState:
@@ -43,6 +45,7 @@ async def init_app_state(settings: Settings) -> AppState:
     if state.db_pool is not None:
         encryption = ContentEncryption(settings.daemon_encryption_key)
         state.memory_store = MemoryStore(state.db_pool, encryption)
+        state.video_credits_dal = VideoCreditsDAL(state.db_pool)
 
     if settings.redis_url:
         try:

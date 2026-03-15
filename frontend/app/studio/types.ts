@@ -28,10 +28,14 @@ export interface StudioGeneration {
   resolution: string;
   status: StudioGenerationStatus;
   createdAt: string;
+  mediaType?: "image" | "video";
   imageId?: string;
   imageUrl?: string;
+  videoUrl?: string;
+  durationSeconds?: number;
   generationTimeMs?: number;
   costEstimate?: number;
   modelName?: string;
   error?: string;
+  refunded?: boolean;
 }

@@ -45,7 +45,14 @@ from orchestrator.db import (
     get_app_state,
     init_app_state,
 )
-from orchestrator.routes import conversations, memories, skills, system, users
+from orchestrator.routes import (
+    conversations,
+    memories,
+    skills,
+    system,
+    users,
+    video_credits,
+)
 from orchestrator.models_cache import fetch_openrouter_models, get_fallback_model
 from orchestrator.model_router import select_model_tier
 from orchestrator.skills_store import build_enabled_skills_block
@@ -103,6 +110,80 @@ def require_api_key(settings: Settings, authorization: str | None) -> None:
     token = authorization.removeprefix("Bearer ").strip()
     if token != settings.daemon_api_key:
         raise HTTPException(status_code=401, detail="Invalid bearer token")
+
+
+DEFAULT_BILLING_USER_ID = "00000000-0000-0000-0000-000000000001"
+VALID_BILLING_TIERS = {"free", "starter", "pro", "max", "byok"}
+
+
+def _build_trusted_spawn_context(
+    settings: Settings,
+    metadata: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(metadata, dict):
+        return None
+
+    video_meta = metadata.get("video_generation")
+    if not isinstance(video_meta, dict):
+        return None
+
+    tier = settings.default_tier.lower().strip()
+    if tier not in VALID_BILLING_TIERS:
+        return None
+
+    if tier == "byok":
+        return None
+
+    try:
+        user_id = str(uuid.UUID(DEFAULT_BILLING_USER_ID))
+    except ValueError:
+        return None
+
+    duration_raw = video_meta.get("duration")
+    if isinstance(duration_raw, bool):
+        duration = 5
+    elif isinstance(duration_raw, (int, float, str)):
+        try:
+            duration = int(duration_raw)
+        except (TypeError, ValueError):
+            duration = 5
+    else:
+        duration = 5
+    duration = max(duration, 1)
+
+    tier_config = settings.get_tier_config(tier)
+    if tier_config.tier_video_max_duration is not None:
+        duration = min(duration, tier_config.tier_video_max_duration)
+
+    source_mode_raw = video_meta.get("source_mode")
+    source_mode = (
+        source_mode_raw
+        if source_mode_raw in {"text-to-video", "image-to-video"}
+        else "text-to-video"
+    )
+
+    reference_image_url = (
+        video_meta.get("reference_image_url")
+        if isinstance(video_meta.get("reference_image_url"), str)
+        else None
+    )
+    reference_image_id = (
+        video_meta.get("reference_image_id")
+        if isinstance(video_meta.get("reference_image_id"), str)
+        else None
+    )
+
+    return {
+        "video": {
+            "mode": "video",
+            "duration": duration,
+            "tier": tier,
+            "user_id": user_id,
+            "source_mode": source_mode,
+            "reference_image_url": reference_image_url,
+            "reference_image_id": reference_image_id,
+        }
+    }
 
 
 def _extract_text_content(content: Any) -> str:
@@ -1379,6 +1460,9 @@ async def chat(
 
     async def generator():
         try:
+            trusted_spawn_context = _build_trusted_spawn_context(
+                settings, payload.metadata
+            )
             async for frame in stream_sse_chat(
                 settings=settings,
                 provider_config=provider_config,
@@ -1396,6 +1480,8 @@ async def chat(
                 user_id=user_id,
                 conversation_uuid=conversation_uuid,
                 queue=app_state.redis if app_state else None,
+                db_pool=app_state.db_pool if app_state else None,
+                trusted_spawn_context=trusted_spawn_context,
             ):
                 yield frame
         except Exception as e:
@@ -1475,4 +1561,5 @@ app.include_router(memories.router)
 app.include_router(skills.router)
 app.include_router(system.router)
 app.include_router(users.router)
+app.include_router(video_credits.router)
 app.include_router(getattr(image_api_router, "router"))
