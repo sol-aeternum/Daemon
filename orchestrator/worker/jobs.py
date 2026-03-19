@@ -173,11 +173,12 @@ async def extract_memories(
 async def generate_title(
     ctx: WorkerContext,
     conversation_id: str | uuid.UUID,
-    messages_json: object,
+    user_message_text: str,
 ) -> str | None:
-    messages = _parse_messages(messages_json)
-    if not messages:
+    if not user_message_text:
         return None
+
+    messages = [{"role": "user", "content": user_message_text}]
 
     store_obj = ctx.get("store")
     if isinstance(store_obj, MemoryStore):

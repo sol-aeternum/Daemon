@@ -1366,6 +1366,20 @@ async def chat(
                     model=None,
                     status="complete",
                 )
+
+                if not conversation_exists and app_state.queue:
+                    try:
+                        await app_state.queue.enqueue_job(
+                            "generate_title",
+                            str(conversation_uuid),
+                            user_message,
+                            _job_id=f"title:{conversation_uuid}",
+                            _defer_by=0,
+                        )
+                    except Exception as enqueue_error:
+                        logger.warning(
+                            "Failed to enqueue title generation: %s", enqueue_error
+                        )
         except Exception:
             pass  # Graceful degradation - continue without persistence
 
