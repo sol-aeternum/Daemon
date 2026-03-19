@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Next.js build output and caches
+.next/
+out/
+
+# Local build metadata
+tsconfig.tsbuildinfo
+next-env.d.ts.root.*
+
+# Local test/debug outputs
+test-results/
+playwright-report/
+coverage/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

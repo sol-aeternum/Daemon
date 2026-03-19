@@ -1,1 +1,0 @@
-self.__REACT_LOADABLE_MANIFEST='{"src/components/previews/DocxPreview.tsx -> docx-preview":{"id":2274,"files":["static/chunks/274.6175b7a5f0cc14b3.js"]}}';

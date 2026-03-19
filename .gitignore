@@ -25,10 +25,24 @@ htmlcov/
 .next_*/
 .next.prev.*/
 .next.root.*/
+frontend/.next/
+frontend/.next_*/
+frontend/.next.prev.*/
+frontend/.next.root.*/
+frontend/next-env.d.ts.root.*
+node_modules/
 node_modules.prev.*/
 frontend/node_modules/
 frontend/dist/
 *.tsbuildinfo
+
+# Local debug / benchmark artifacts
+test-debug*.js
+test-responsive*.js
+tests/results/
+tests/tests/results/
+=1.12.0
+=1.2.0
 
 # Data directories
 data/

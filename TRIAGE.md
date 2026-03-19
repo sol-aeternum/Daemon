@@ -5,6 +5,22 @@
 
 ---
 
+## [2026-03-19T11:26:00+10:30] — LSP diagnostics unavailable for `.gitignore` files
+
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Gitignore hardening and artifact untracking verification
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: Running `lsp_diagnostics` on `.gitignore` files returned an error because no language server is configured for gitignore/extensionless files in this environment.
+- **Evidence**:
+  - `Error: No LSP server configured for extension:`
+  - Available servers list excluded a gitignore-specific LSP
+- **Likely cause**: Workspace LSP config only includes language servers for code files (TypeScript/Python/etc.), not gitignore syntax. [~99% confidence]
+- **Suggested action**: Use direct file review for `.gitignore` verification or configure a gitignore-capable LSP if lint-style diagnostics are required.
+
+---
+
 ## [2026-03-19T10:50:00+00:00] — GitHub push warning for large tracked build artifact
 
 - **Severity**: warning
