@@ -1,0 +1,227 @@
+{
+  "run_timestamp": "2026-03-11T22:27:41.969201+00:00",
+  "version": "2.3",
+  "config": {
+    "base_url": "http://localhost:8000",
+    "wait_seconds": 90,
+    "db_wipe": true,
+    "scenarios_filter": "6",
+    "decryption_available": true
+  },
+  "scenarios": [
+    {
+      "name": "6: Realistic Multi-Turn Session",
+      "expected": 7,
+      "extracted": 9,
+      "tp": 5,
+      "fp": 0,
+      "fn": 2,
+      "precision": 1.0,
+      "recall": 0.7143,
+      "duration_seconds": 151.0,
+      "matches": [
+        {
+          "keywords": [
+            "cachyos"
+          ],
+          "content": "User prefers CachyOS because it is Arch-based with better defaults",
+          "category": "preference",
+          "confidence": 0.800000011920929,
+          "slot": "software.cachyos.preference",
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "arch"
+          ],
+          "content": "User has used Arch before",
+          "category": "fact",
+          "confidence": 0.8500000238418579,
+          "slot": "software.arch.experience",
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "birthday",
+            "march"
+          ],
+          "content": "User's birthday is March 15th",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "personal.birthday",
+          "confidence_warning": "confidence 0.80 < min 0.88",
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "tailscale"
+          ],
+          "content": "User wants to use Tailscale for remote access",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "slot": "project.server.remote_access.tailscale",
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "llm"
+          ],
+          "content": "User mainly wants to use the server for LLM inference",
+          "category": "project",
+          "confidence": 0.8500000238418579,
+          "slot": "project.server.use_case.llm_inference",
+          "confidence_warning": null,
+          "category_warning": null
+        }
+      ],
+      "unaccounted": [
+        {
+          "content": "User has a girlfriend",
+          "category": "fact",
+          "confidence": 0.8799999952316284,
+          "slot": "relationship.partner"
+        },
+        {
+          "content": "User is comfortable with pacman",
+          "category": "fact",
+          "confidence": 0.8500000238418579,
+          "slot": "software.package_manager.pacman.comfort"
+        },
+        {
+          "content": "User needs a static IP on the local network",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "slot": "project.server.network.static_ip"
+        },
+        {
+          "content": "User may also use the server for Plex",
+          "category": "project",
+          "confidence": 0.75,
+          "slot": "project.server.use_case.plex"
+        }
+      ],
+      "dedup_results": [],
+      "noise_matches": [],
+      "adversarial_fail": false,
+      "memories_raw": [
+        {
+          "id": "f91aa275-9e7e-4734-a882-78e34741ab0a",
+          "content": "User's birthday is March 15th",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "personal.birthday",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T22:25:51.748878+00:00",
+          "valid_to": null,
+          "access_count": 1,
+          "created_at": "2026-03-11T22:25:51.748878+00:00"
+        },
+        {
+          "id": "b46551c5-0adc-4208-8746-4671ec013479",
+          "content": "User has a girlfriend",
+          "category": "fact",
+          "confidence": 0.8799999952316284,
+          "memory_slot": "relationship.partner",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:26:28.480761+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:26:28.480761+00:00"
+        },
+        {
+          "id": "322037cf-1b7e-4fb9-8496-ab55ae253c0d",
+          "content": "User is comfortable with pacman",
+          "category": "fact",
+          "confidence": 0.8500000238418579,
+          "memory_slot": "software.package_manager.pacman.comfort",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:26:28.786917+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:26:28.786917+00:00"
+        },
+        {
+          "id": "f09b9a3e-0e71-4b1c-b7fa-d584b31e52dc",
+          "content": "User wants to use Tailscale for remote access",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "memory_slot": "project.server.remote_access.tailscale",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:26:29.094045+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:26:29.094045+00:00"
+        },
+        {
+          "id": "1a801774-335f-4636-bc71-fa05c04097e3",
+          "content": "User needs a static IP on the local network",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "memory_slot": "project.server.network.static_ip",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:26:29.359398+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:26:29.359398+00:00"
+        },
+        {
+          "id": "7cde865b-1dbb-473c-8d2a-a8867ebb2a6e",
+          "content": "User mainly wants to use the server for LLM inference",
+          "category": "project",
+          "confidence": 0.8500000238418579,
+          "memory_slot": "project.server.use_case.llm_inference",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:26:29.607946+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:26:29.607946+00:00"
+        },
+        {
+          "id": "f9dd34d9-7f2f-4f11-8e00-0f12e9224621",
+          "content": "User may also use the server for Plex",
+          "category": "project",
+          "confidence": 0.75,
+          "memory_slot": "project.server.use_case.plex",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:26:29.888229+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:26:29.888229+00:00"
+        },
+        {
+          "id": "e83a6b37-90a6-4247-85d6-69a11ad4465d",
+          "content": "User has used Arch before",
+          "category": "fact",
+          "confidence": 0.8500000238418579,
+          "memory_slot": "software.arch.experience",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:26:30.104743+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:26:30.104743+00:00"
+        },
+        {
+          "id": "d0f8c5fb-dcd4-430c-891a-c2eb4bc26123",
+          "content": "User prefers CachyOS because it is Arch-based with better defaults",
+          "category": "preference",
+          "confidence": 0.800000011920929,
+          "memory_slot": "software.cachyos.preference",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:26:30.322701+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:26:30.322701+00:00"
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "precision": 1.0,
+    "recall": 0.7143,
+    "adversarial_fp": 0,
+    "passed": false
+  }
+}

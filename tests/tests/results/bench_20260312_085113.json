@@ -1,0 +1,80 @@
+{
+  "run_timestamp": "2026-03-11T22:21:13.266052+00:00",
+  "version": "2.3",
+  "config": {
+    "base_url": "http://localhost:8000",
+    "wait_seconds": 90,
+    "db_wipe": true,
+    "scenarios_filter": "6",
+    "decryption_available": true
+  },
+  "scenarios": [
+    {
+      "name": "6: Realistic Multi-Turn Session",
+      "expected": 7,
+      "extracted": 2,
+      "tp": 1,
+      "fp": 0,
+      "fn": 6,
+      "precision": 1.0,
+      "recall": 0.1429,
+      "duration_seconds": 171.9,
+      "matches": [
+        {
+          "keywords": [
+            "llm"
+          ],
+          "content": "User is considering using a 5090 for LLM inference",
+          "category": "project",
+          "confidence": 0.6000000238418579,
+          "slot": "project.llm_inference",
+          "confidence_warning": null,
+          "category_warning": null
+        }
+      ],
+      "unaccounted": [
+        {
+          "content": "User is considering using a 5090 for Plex",
+          "category": "project",
+          "confidence": 0.6000000238418579,
+          "slot": "project.plex"
+        }
+      ],
+      "dedup_results": [],
+      "noise_matches": [],
+      "adversarial_fail": false,
+      "memories_raw": [
+        {
+          "id": "d7d088f9-5259-42b8-9bc4-fe219cc85791",
+          "content": "User is considering using a 5090 for LLM inference",
+          "category": "project",
+          "confidence": 0.6000000238418579,
+          "memory_slot": "project.llm_inference",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:19:28.886916+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:19:28.886916+00:00"
+        },
+        {
+          "id": "341392df-fcee-467e-86a3-5300556089ed",
+          "content": "User is considering using a 5090 for Plex",
+          "category": "project",
+          "confidence": 0.6000000238418579,
+          "memory_slot": "project.plex",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:19:29.079342+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:19:29.079342+00:00"
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "precision": 1.0,
+    "recall": 0.1429,
+    "adversarial_fp": 0,
+    "passed": false
+  }
+}

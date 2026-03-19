@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from orchestrator.config import ProviderConfig, Settings, TierConfig, ModelSlotConfig
 from orchestrator.guardrails import strip_reasoning_fields_from_message
+from orchestrator.services.fetch.url_extract import extract_urls
 from orchestrator.tools.builtin import create_default_registry
 from orchestrator.tools.completion import completion_with_tools
 
@@ -291,6 +292,17 @@ async def stream_sse_chat(
         )
     else:
         messages = build_openai_messages(effective_system_prompt, user_message)
+
+    extracted_urls = extract_urls(user_message)
+    if extracted_urls:
+        yield sse(
+            "metadata",
+            make_envelope(
+                "metadata",
+                {"urls": extracted_urls},
+                evt_id="evt_metadata",
+            ),
+        )
 
     if conversation_uuid:
         yield sse(

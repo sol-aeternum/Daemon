@@ -1,0 +1,165 @@
+{
+  "run_timestamp": "2026-03-11T22:40:26.578383+00:00",
+  "version": "2.3",
+  "config": {
+    "base_url": "http://localhost:8000",
+    "wait_seconds": 90,
+    "db_wipe": true,
+    "scenarios_filter": "6",
+    "decryption_available": true
+  },
+  "scenarios": [
+    {
+      "name": "6: Realistic Multi-Turn Session",
+      "expected": 7,
+      "extracted": 6,
+      "tp": 1,
+      "fp": 2,
+      "fn": 6,
+      "precision": 0.3333,
+      "recall": 0.1429,
+      "duration_seconds": 148.2,
+      "matches": [
+        {
+          "keywords": [
+            "9950x3d"
+          ],
+          "content": "User's CPU is a 9950X3D",
+          "category": "fact",
+          "confidence": 0.8999999761581421,
+          "slot": "hardware.cpu.model",
+          "confidence_warning": null,
+          "category_warning": null
+        }
+      ],
+      "unaccounted": [
+        {
+          "content": "User is considering the power draw of the RTX 5090",
+          "category": "project",
+          "confidence": 0.699999988079071,
+          "slot": "hardware.gpu.power_draw"
+        },
+        {
+          "content": "User's CPU can draw around 170W-250W under heavy load",
+          "category": "fact",
+          "confidence": 0.8500000238418579,
+          "slot": "hardware.cpu.power_draw"
+        },
+        {
+          "content": "User's total system peak power draw could be in the range of 800W to 1200W",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "hardware.system.power_draw"
+        },
+        {
+          "content": "User is looking for a UPS with a wattage rating of at least 1000W",
+          "category": "project",
+          "confidence": 0.75,
+          "slot": "hardware.ups.specification"
+        },
+        {
+          "content": "User prefers a UPS with pure sine wave output",
+          "category": "preference",
+          "confidence": 0.800000011920929,
+          "slot": "hardware.ups.output_type"
+        }
+      ],
+      "dedup_results": [],
+      "noise_matches": [
+        {
+          "keywords": [
+            "ups"
+          ],
+          "content": "User is looking for a UPS with a wattage rating of at least 1000W"
+        },
+        {
+          "keywords": [
+            "ups"
+          ],
+          "content": "User prefers a UPS with pure sine wave output"
+        }
+      ],
+      "adversarial_fail": false,
+      "memories_raw": [
+        {
+          "id": "5d53d835-0312-456a-8755-158afada2626",
+          "content": "User is considering the power draw of the RTX 5090",
+          "category": "project",
+          "confidence": 0.699999988079071,
+          "memory_slot": "hardware.gpu.power_draw",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:39:10.820171+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:39:10.820171+00:00"
+        },
+        {
+          "id": "ebe96a83-a791-4cb2-896e-ef995ba09316",
+          "content": "User's CPU is a 9950X3D",
+          "category": "fact",
+          "confidence": 0.8999999761581421,
+          "memory_slot": "hardware.cpu.model",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:39:11.064117+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:39:11.064117+00:00"
+        },
+        {
+          "id": "4e0ae906-35e0-40c0-b46e-0d6a9d77a947",
+          "content": "User's CPU can draw around 170W-250W under heavy load",
+          "category": "fact",
+          "confidence": 0.8500000238418579,
+          "memory_slot": "hardware.cpu.power_draw",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:39:11.288413+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:39:11.288413+00:00"
+        },
+        {
+          "id": "629b7bd0-c7e0-4ecf-8f4d-5cc382dff6ef",
+          "content": "User's total system peak power draw could be in the range of 800W to 1200W",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "hardware.system.power_draw",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:39:11.698510+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:39:11.698510+00:00"
+        },
+        {
+          "id": "bf0f3568-b332-42ee-a4b2-01d7a8b42363",
+          "content": "User is looking for a UPS with a wattage rating of at least 1000W",
+          "category": "project",
+          "confidence": 0.75,
+          "memory_slot": "hardware.ups.specification",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:39:11.891525+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:39:11.891525+00:00"
+        },
+        {
+          "id": "2ebe0082-5067-4eeb-bbfe-66c0b764839b",
+          "content": "User prefers a UPS with pure sine wave output",
+          "category": "preference",
+          "confidence": 0.800000011920929,
+          "memory_slot": "hardware.ups.output_type",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:39:12.125039+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:39:12.125039+00:00"
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "precision": 0.3333,
+    "recall": 0.1429,
+    "adversarial_fp": 0,
+    "passed": false
+  }
+}

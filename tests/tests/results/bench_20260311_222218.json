@@ -1,0 +1,279 @@
+{
+  "run_timestamp": "2026-03-11T11:52:18.591507+00:00",
+  "version": "2.3",
+  "config": {
+    "base_url": "http://localhost:8000",
+    "wait_seconds": 45,
+    "db_wipe": true,
+    "scenarios_filter": "1,6",
+    "decryption_available": true
+  },
+  "scenarios": [
+    {
+      "name": "1: Dense Personal Facts",
+      "expected": 9,
+      "extracted": 8,
+      "tp": 9,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "duration_seconds": 95.6,
+      "matches": [
+        {
+          "keywords": [
+            "julian"
+          ],
+          "content": "User's name is Julian",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "user.name",
+          "confidence_warning": "confidence 0.80 < min 0.85",
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "28",
+            "years"
+          ],
+          "content": "User is 28 years old",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "user.age",
+          "confidence_warning": "confidence 0.80 < min 0.85",
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "adelaide"
+          ],
+          "content": "User lives in Adelaide",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "user.location",
+          "confidence_warning": "confidence 0.80 < min 0.85",
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "software engineer"
+          ],
+          "content": "User works as a software engineer",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "user.occupation",
+          "confidence_warning": "confidence 0.80 < min 0.85",
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "brother",
+            "callan"
+          ],
+          "content": "User's brother is named Callan",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "family.brother",
+          "confidence_warning": "confidence 0.80 < min 0.85",
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "dog",
+            "koda"
+          ],
+          "content": "User's dog is named Koda, a German Shepherd",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "pet.dog",
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "python"
+          ],
+          "content": "Julian mainly codes in Python and TypeScript",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "skills.languages",
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "typescript"
+          ],
+          "content": "Julian mainly codes in Python and TypeScript",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "skills.languages",
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "neovim"
+          ],
+          "content": "Prefers Neovim over VS Code but uses both editors",
+          "category": "preference",
+          "confidence": 0.800000011920929,
+          "slot": "preference.editor",
+          "confidence_warning": null,
+          "category_warning": null
+        }
+      ],
+      "unaccounted": [],
+      "dedup_results": [],
+      "noise_matches": [],
+      "adversarial_fail": false,
+      "memories_raw": [
+        {
+          "id": "b97a039e-f427-4edb-bd41-afbd5c2f5cbc",
+          "content": "User's name is Julian",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "user.name",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T11:48:28.110633+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T11:48:28.110633+00:00"
+        },
+        {
+          "id": "e129ba42-d52c-413f-a7a8-0a65ac6fdb1e",
+          "content": "User is 28 years old",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "user.age",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T11:48:42.567966+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T11:48:42.567966+00:00"
+        },
+        {
+          "id": "11f2a81f-533e-4c32-8c6d-7654e8b25bce",
+          "content": "User lives in Adelaide",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "user.location",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T11:48:45.737249+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T11:48:45.737249+00:00"
+        },
+        {
+          "id": "d245475d-a3e2-4279-abb5-e10568e4243c",
+          "content": "User works as a software engineer",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "user.occupation",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T11:48:48.229900+00:00",
+          "valid_to": null,
+          "access_count": 1,
+          "created_at": "2026-03-11T11:48:48.229900+00:00"
+        },
+        {
+          "id": "1805796f-ac5d-4b94-8be4-81e6d190b364",
+          "content": "User's brother is named Callan",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "family.brother",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T11:49:01.263196+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T11:49:01.263196+00:00"
+        },
+        {
+          "id": "a51454ec-4568-4bdc-ab44-7009c3f0a95c",
+          "content": "User's dog is named Koda, a German Shepherd",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "pet.dog",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T11:49:01.501975+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T11:49:01.501975+00:00"
+        },
+        {
+          "id": "7df0c4bc-1cc6-433b-8313-b4c1e5dc4991",
+          "content": "Julian mainly codes in Python and TypeScript",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "skills.languages",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T11:49:09.262546+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T11:49:09.262546+00:00"
+        },
+        {
+          "id": "c59076d9-fbfd-4b59-8a5f-2e321ba299ac",
+          "content": "Prefers Neovim over VS Code but uses both editors",
+          "category": "preference",
+          "confidence": 0.800000011920929,
+          "memory_slot": "preference.editor",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T11:49:09.511107+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T11:49:09.511107+00:00"
+        }
+      ]
+    },
+    {
+      "name": "6: Realistic Multi-Turn Session",
+      "expected": 7,
+      "extracted": 1,
+      "tp": 1,
+      "fp": 0,
+      "fn": 6,
+      "precision": 1.0,
+      "recall": 0.1429,
+      "duration_seconds": 140.6,
+      "matches": [
+        {
+          "keywords": [
+            "birthday",
+            "march"
+          ],
+          "content": "User's birthday is March 15th.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "user.birthday",
+          "confidence_warning": "confidence 0.80 < min 0.88",
+          "category_warning": null
+        }
+      ],
+      "unaccounted": [],
+      "dedup_results": [],
+      "noise_matches": [],
+      "adversarial_fail": false,
+      "memories_raw": [
+        {
+          "id": "b744190f-bfba-4211-8bb4-6cfe71f27ea9",
+          "content": "User's birthday is March 15th.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "user.birthday",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T11:51:14.429621+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T11:51:14.429621+00:00"
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "precision": 1.0,
+    "recall": 0.625,
+    "adversarial_fp": 0,
+    "passed": false
+  }
+}

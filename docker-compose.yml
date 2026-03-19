@@ -122,6 +122,21 @@ services:
     networks:
       - daemon-network
 
+  # Crawl4AI - Internal web scraping service for fetch strategies
+  # Could be shared with future @browser subagent for screenshot capabilities
+  crawl4ai:
+    image: unclecode/crawl4ai:latest
+    mem_limit: 1g
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11235/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - daemon-network
+
 networks:
   daemon-network:
     driver: bridge

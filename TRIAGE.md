@@ -5,6 +5,38 @@
 
 ---
 
+## [2026-03-19T09:15:00+00:00] — YouTube fetch runtime failure due transcript snippet shape mismatch
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Fetch-service YouTube summarization regression diagnosis
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: `web_fetch` failed for YouTube URLs even when URL routing correctly selected `YouTubeTranscriptStrategy`, because transcript formatting assumed dict-style segments while runtime library returned `FetchedTranscriptSnippet` objects.
+- **Evidence**:
+  - `WARNING:orchestrator.services.fetch.strategies.youtube:YouTube transcript fetch failed for https://www.youtube.com/watch?v=VZfW3YTJ5Eg: 'FetchedTranscriptSnippet' object is not subscriptable`
+  - `tool output: {"error": "Failed to fetch content from URL"}`
+- **Likely cause**: `youtube-transcript-api` current return type uses object attributes (`.start`, `.text`) not mapping keys; formatter accessed `segment["start"]` / `segment["text"]`. [~98% confidence]
+- **Suggested action**: Normalize transcript segment access to support both mapping and attribute-based snippet objects; add regression test covering object snippet return type.
+
+---
+
+## [2026-03-19T05:57:00+00:00] — System Python verification misses declared `trafilatura` dependency
+
+- **Severity**: info
+- **Scope**: host
+- **Encountered during**: `[orchestrator/services/fetch/service.py + verification] Run diagnostics and targeted validation for new fetch service — expect clean diagnostics and passing compile/checks`
+- **Category**: dependency
+- **Blocked current task**: no
+- **What happened**: Import verification with the bare `python` interpreter failed while importing the new fetch service because `trafilatura` was unavailable in that interpreter, even though the project declares it as a dependency.
+- **Evidence**:
+  - `ModuleNotFoundError: No module named 'trafilatura'`
+  - `pyproject.toml:19` -> `"trafilatura>=1.12.0",`
+- **Likely cause**: The host `python` executable is not running inside the project's managed dependency environment; `uv run python` or the project venv should be used for runtime verification. [~90% confidence]
+- **Suggested action**: Run Python verification commands through `uv run` (or activate the project environment) so declared dependencies are available consistently.
+
+---
+
 ## [2026-03-15T03:40:00+00:00] — Sora estimate verification command in plan misses required `user_id`
 
 - **Severity**: warning
@@ -287,5 +319,38 @@
   - `GET /api/video-credits/notallowed` -> `400` with `{"error":"Unsupported video credits API path"}` (proxy path validation active)
 - **Likely cause**: Proxy routing is fixed, but backend estimate handling failed in this local runtime (possible missing backend dependency/config/auth context). [~75% confidence]
 - **Suggested action**: Verify backend logs for `/video-credits/estimate`, then run full stack (frontend + backend) to confirm end-to-end estimate response semantics.
+
+---
+
+## [2026-03-19T07:36:00+00:00] — Scope-check diagnostics surface existing basedpyright violations in changed backend files
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: F4 scope fidelity check for `fetch-service`
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: `lsp_diagnostics` on fetch-related changed files reported non-clean diagnostics, including hard errors in `orchestrator/tools/builtin.py`, so verification cannot be considered clean even though this audit task did not modify code.
+- **Evidence**:
+  - `orchestrator/tools/builtin.py`: `error[basedpyright] (reportAttributeAccessIssue) at 101:16: "Num" is not a known attribute of module "ast"`
+  - `orchestrator/tools/builtin.py`: `error[basedpyright] (reportArgumentType) at 129:83` (`eval` locals mapping type mismatch)
+  - `orchestrator/services/fetch/*`: multiple basedpyright warnings (`reportAny`, `reportExplicitAny`, etc.)
+- **Likely cause**: Existing strict basedpyright baseline and legacy typing debt in touched modules; not introduced by this scope-audit pass. [~90% confidence]
+- **Suggested action**: Triage and fix `orchestrator/tools/builtin.py` typing errors first, then re-run LSP verification on fetch-related files for a clean gate.
+
+---
+
+## [2026-03-19T07:37:00+00:00] — Pytest invocation fails due import path setup (`orchestrator` module not found)
+
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: F4 scope fidelity verification command run (`pytest tests/test_fetch_strategies.py tests/test_url_extract.py -q`)
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: Direct pytest execution failed before running tests because Python could not import the project package from the current runtime environment.
+- **Evidence**:
+  - `ImportError while loading conftest '/home/sol/daemon/tests/conftest.py'`
+  - `ModuleNotFoundError: No module named 'orchestrator'`
+- **Likely cause**: Tests were run outside the configured project environment/module path setup (e.g., missing `uv run` or equivalent editable install context). [~90% confidence]
+- **Suggested action**: Re-run tests via project runtime (`uv run pytest ...`) or ensure `PYTHONPATH`/editable install includes repository root.
 
 ---

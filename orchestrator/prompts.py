@@ -14,6 +14,8 @@ You have access to tools that you can call when they help:
 - get_time: Returns the current time (defaults to Australia/Adelaide).
 - calculate: Perform mathematical calculations.
 - web_search: Search the web using Brave Search API.
+- web_fetch: Fetch content from a URL using multiple strategies (direct, Jina, Crawl4AI, Archive.org).
+  For YouTube URLs, prefer web_fetch with extract="transcript".
 - http_request: Make HTTP requests to external APIs.
 - notification_send: Send push notifications via ntfy.sh.
 - reminder_set: Set reminders for later.

@@ -226,6 +226,18 @@ class Settings(BaseSettings):
     # Brave Search API (Web search)
     brave_api_key: str | None = None
 
+    # ===== FETCH SERVICE (Web content fetching) =====
+    # Jina AI API key for web fetching (optional)
+    jina_api_key: str | None = None
+    # Cache TTL for fetched content in seconds (default: 86400 = 24 hours)
+    fetch_cache_ttl_seconds: int = 86400
+    # Minimum content length to consider valid (default: 200 chars)
+    fetch_min_content_length: int = 200
+    # Crawl4AI service URL (default: docker-compose service)
+    crawl4ai_url: str = "http://crawl4ai:11235"
+    # Comma-separated list of blocked domains (default: empty)
+    fetch_blocked_domains: str = ""
+
     # xAI API (for Imagine image/video generation)
     xai_api_key: str = ""
 

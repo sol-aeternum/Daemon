@@ -1,0 +1,509 @@
+{
+  "run_timestamp": "2026-03-11T13:33:07.991722+00:00",
+  "version": "2.3",
+  "config": {
+    "base_url": "http://localhost:8000",
+    "wait_seconds": 90,
+    "db_wipe": true,
+    "scenarios_filter": "1,2,3,4,5,6",
+    "decryption_available": true
+  },
+  "scenarios": [
+    {
+      "name": "1: Dense Personal Facts",
+      "expected": 9,
+      "extracted": 7,
+      "tp": 5,
+      "fp": 0,
+      "fn": 4,
+      "precision": 1.0,
+      "recall": 0.5556,
+      "duration_seconds": 177.2,
+      "matches": [
+        {
+          "keywords": [
+            "julian"
+          ],
+          "content": "Julian",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "user.name",
+          "confidence_warning": "confidence 0.80 < min 0.85",
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "adelaide"
+          ],
+          "content": "Adelaide",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "user.location.city",
+          "confidence_warning": "confidence 0.80 < min 0.85",
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "software engineer"
+          ],
+          "content": "software engineer",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "user.occupation",
+          "confidence_warning": "confidence 0.80 < min 0.85",
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "brother",
+            "callan"
+          ],
+          "content": "User's brother is named Callan",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "brother.name",
+          "confidence_warning": "confidence 0.80 < min 0.85",
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "dog",
+            "koda"
+          ],
+          "content": "User's dog is named Koda",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "pet.name",
+          "confidence_warning": null,
+          "category_warning": null
+        }
+      ],
+      "unaccounted": [
+        {
+          "content": "28",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "user.age"
+        },
+        {
+          "content": "User's dog Koda is a German Shepherd",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "pet.breed"
+        }
+      ],
+      "dedup_results": [],
+      "noise_matches": [],
+      "adversarial_fail": false,
+      "memories_raw": [
+        {
+          "id": "f578d1db-ae91-417f-81fc-cf84ee885fd4",
+          "content": "Julian",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "user.name",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T13:14:38.097854+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T13:14:38.097854+00:00"
+        },
+        {
+          "id": "ae1f585f-4fab-45aa-a8b8-d328d21cceb2",
+          "content": "28",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "user.age",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T13:14:38.330258+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T13:14:38.330258+00:00"
+        },
+        {
+          "id": "06d03b8c-0a69-4ecb-93c9-f873e69b275b",
+          "content": "Adelaide",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "user.location.city",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T13:14:38.561266+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T13:14:38.561266+00:00"
+        },
+        {
+          "id": "a6e0e803-bc5a-46ae-9737-98f7d13133a8",
+          "content": "software engineer",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "user.occupation",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T13:14:38.797035+00:00",
+          "valid_to": null,
+          "access_count": 1,
+          "created_at": "2026-03-11T13:14:38.797035+00:00"
+        },
+        {
+          "id": "940ef121-a44f-488b-a52d-95aba28a0ca2",
+          "content": "User's brother is named Callan",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "brother.name",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T13:15:14.515476+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T13:15:14.515476+00:00"
+        },
+        {
+          "id": "f6834473-4abd-46a1-984a-98224f4891e1",
+          "content": "User's dog is named Koda",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "pet.name",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T13:15:14.821570+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T13:15:14.821570+00:00"
+        },
+        {
+          "id": "c0de3064-3632-4aa6-a58a-ad40b947eec6",
+          "content": "User's dog Koda is a German Shepherd",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "pet.breed",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T13:15:15.333351+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T13:15:15.333351+00:00"
+        }
+      ]
+    },
+    {
+      "name": "2: Ephemeral vs Durable",
+      "expected": 1,
+      "extracted": 1,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "duration_seconds": 177.2,
+      "matches": [
+        {
+          "keywords": [
+            "move",
+            "melbourne"
+          ],
+          "content": "User plans to move to Melbourne next year.",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "slot": "move.melbourne",
+          "confidence_warning": "confidence 0.80 > max 0.8 (hedging failed)",
+          "category_warning": null
+        }
+      ],
+      "unaccounted": [],
+      "dedup_results": [],
+      "noise_matches": [],
+      "adversarial_fail": false,
+      "memories_raw": [
+        {
+          "id": "8a49fdca-10ea-4d3f-9779-d1de37e7836c",
+          "content": "User plans to move to Melbourne next year.",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "memory_slot": "move.melbourne",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T13:18:17.039561+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T13:18:17.039561+00:00"
+        }
+      ]
+    },
+    {
+      "name": "3: Corrections and Supersession",
+      "expected": 1,
+      "extracted": 1,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "duration_seconds": 172.8,
+      "matches": [
+        {
+          "keywords": [
+            "tesla",
+            "model 3"
+          ],
+          "content": "User drives a 2023 Tesla Model 3",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "vehicle",
+          "confidence_warning": "confidence 0.80 < min 0.85",
+          "category_warning": null
+        }
+      ],
+      "unaccounted": [],
+      "dedup_results": [
+        {
+          "pattern": "Corolla",
+          "content": "User drives a 2019 Toyota Corolla",
+          "expected_active": false,
+          "actual_active": false,
+          "slot": "vehicle",
+          "valid_from": "2026-03-11T13:20:15.153008+00:00",
+          "valid_to": "2026-03-11T13:21:29.600099+00:00",
+          "active_count": 0,
+          "match_count": 1,
+          "pass": true
+        },
+        {
+          "pattern": "Tesla",
+          "content": "User drives a 2023 Tesla Model 3",
+          "expected_active": true,
+          "actual_active": true,
+          "slot": "vehicle",
+          "valid_from": "2026-03-11T13:21:29.600099+00:00",
+          "valid_to": null,
+          "active_count": 1,
+          "match_count": 1,
+          "pass": true
+        }
+      ],
+      "noise_matches": [],
+      "adversarial_fail": false,
+      "memories_raw": [
+        {
+          "id": "d97fdbea-0dae-49cc-ad9c-6cb419435ffc",
+          "content": "User drives a 2019 Toyota Corolla",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "vehicle",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T13:20:15.153008+00:00",
+          "valid_to": "2026-03-11T13:21:29.600099+00:00",
+          "access_count": 1,
+          "created_at": "2026-03-11T13:20:15.153008+00:00"
+        },
+        {
+          "id": "db6faafb-9cfa-4e3b-ba8f-e1d026c539fb",
+          "content": "User drives a 2023 Tesla Model 3",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "vehicle",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T13:21:29.600099+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T13:21:29.600099+00:00"
+        }
+      ]
+    },
+    {
+      "name": "4: Projects and Goals",
+      "expected": 3,
+      "extracted": 2,
+      "tp": 2,
+      "fp": 0,
+      "fn": 1,
+      "precision": 1.0,
+      "recall": 0.6667,
+      "duration_seconds": 211.5,
+      "matches": [
+        {
+          "keywords": [
+            "daemon",
+            "ai assistant"
+          ],
+          "content": "User is building an AI assistant called Daemon with a FastAPI backend and Next.js frontend.",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "slot": null,
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "rust"
+          ],
+          "content": "User wants to learn Rust this year as a personal goal.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "personal.rust_learning_goal",
+          "confidence_warning": null,
+          "category_warning": "expected category=project"
+        }
+      ],
+      "unaccounted": [],
+      "dedup_results": [],
+      "noise_matches": [],
+      "adversarial_fail": false,
+      "memories_raw": [
+        {
+          "id": "069e8d07-69dd-4073-bcc0-e1c06fda3d0e",
+          "content": "User is building an AI assistant called Daemon with a FastAPI backend and Next.js frontend.",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "memory_slot": null,
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T13:23:08.874450+00:00",
+          "valid_to": null,
+          "access_count": 2,
+          "created_at": "2026-03-11T13:23:08.874450+00:00"
+        },
+        {
+          "id": "3a7db36a-1abd-4c1e-a5f7-f5060b8f524f",
+          "content": "User wants to learn Rust this year as a personal goal.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "personal.rust_learning_goal",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T13:23:16.040848+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T13:23:16.040848+00:00"
+        }
+      ]
+    },
+    {
+      "name": "5: Hedged Statements",
+      "expected": 6,
+      "extracted": 3,
+      "tp": 5,
+      "fp": 0,
+      "fn": 1,
+      "precision": 1.0,
+      "recall": 0.8333,
+      "duration_seconds": 143.7,
+      "matches": [
+        {
+          "keywords": [
+            "shellfish"
+          ],
+          "content": "User is allergic to shellfish.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "health.allergies",
+          "confidence_warning": "confidence 0.80 < min 0.88",
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "lactose"
+          ],
+          "content": "User suspects they might be lactose intolerant.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "health.intolerances",
+          "confidence_warning": "confidence 0.80 > max 0.75 (hedging failed)",
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "girlfriend"
+          ],
+          "content": "User is considering getting a cat, and their girlfriend wants one.",
+          "category": "preference",
+          "confidence": 0.800000011920929,
+          "slot": null,
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "girlfriend",
+            "cat"
+          ],
+          "content": "User is considering getting a cat, and their girlfriend wants one.",
+          "category": "preference",
+          "confidence": 0.800000011920929,
+          "slot": null,
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "cat"
+          ],
+          "content": "User is considering getting a cat, and their girlfriend wants one.",
+          "category": "preference",
+          "confidence": 0.800000011920929,
+          "slot": null,
+          "confidence_warning": "confidence 0.80 > max 0.8 (hedging failed)",
+          "category_warning": null
+        }
+      ],
+      "unaccounted": [],
+      "dedup_results": [],
+      "noise_matches": [],
+      "adversarial_fail": false,
+      "memories_raw": [
+        {
+          "id": "d6032911-d972-4506-866a-b5dd4fed1f27",
+          "content": "User is allergic to shellfish.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "health.allergies",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T13:26:55.582925+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T13:26:55.582925+00:00"
+        },
+        {
+          "id": "5a53e79d-07ae-4521-8ba7-fb32ec6f4cb2",
+          "content": "User suspects they might be lactose intolerant.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "health.intolerances",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T13:26:55.891473+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T13:26:55.891473+00:00"
+        },
+        {
+          "id": "1c53f248-c2a9-46e3-adbe-09b6e82201f3",
+          "content": "User is considering getting a cat, and their girlfriend wants one.",
+          "category": "preference",
+          "confidence": 0.800000011920929,
+          "memory_slot": null,
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T13:27:13.095321+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T13:27:13.095321+00:00"
+        }
+      ]
+    },
+    {
+      "name": "6: Realistic Multi-Turn Session",
+      "expected": 7,
+      "extracted": 0,
+      "tp": 0,
+      "fp": 0,
+      "fn": 7,
+      "precision": 0.0,
+      "recall": 0.0,
+      "duration_seconds": 248.9,
+      "matches": [],
+      "unaccounted": [],
+      "dedup_results": [],
+      "noise_matches": [],
+      "adversarial_fail": false,
+      "memories_raw": []
+    }
+  ],
+  "totals": {
+    "precision": 1.0,
+    "recall": 0.5185,
+    "adversarial_fp": 0,
+    "passed": false
+  }
+}

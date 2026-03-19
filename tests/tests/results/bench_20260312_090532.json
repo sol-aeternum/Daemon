@@ -1,0 +1,302 @@
+{
+  "run_timestamp": "2026-03-11T22:35:32.612673+00:00",
+  "version": "2.3",
+  "config": {
+    "base_url": "http://localhost:8000",
+    "wait_seconds": 90,
+    "db_wipe": true,
+    "scenarios_filter": "6",
+    "decryption_available": true
+  },
+  "scenarios": [
+    {
+      "name": "6: Realistic Multi-Turn Session",
+      "expected": 7,
+      "extracted": 12,
+      "tp": 3,
+      "fp": 3,
+      "fn": 4,
+      "precision": 0.5,
+      "recall": 0.4286,
+      "duration_seconds": 150.4,
+      "matches": [
+        {
+          "keywords": [
+            "9950x3d"
+          ],
+          "content": "User has an AMD Ryzen 9950X3D CPU",
+          "category": "fact",
+          "confidence": 0.8999999761581421,
+          "slot": "hardware.cpu",
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "birthday",
+            "march"
+          ],
+          "content": "User's birthday is March 15th.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "person.birthday",
+          "confidence_warning": "confidence 0.80 < min 0.88",
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "llm"
+          ],
+          "content": "User's computer system will likely be used for LLM inference and demanding gaming",
+          "category": "fact",
+          "confidence": 0.75,
+          "slot": "project.use_case",
+          "confidence_warning": null,
+          "category_warning": null
+        }
+      ],
+      "unaccounted": [
+        {
+          "content": "User's birthday is March 15th.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "user.birthday"
+        },
+        {
+          "content": "User is building a powerful computer system",
+          "category": "project",
+          "confidence": 0.699999988079071,
+          "slot": "project.computer_build"
+        },
+        {
+          "content": "User's computer system will likely include an NVIDIA RTX 5090 GPU",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "hardware.gpu"
+        },
+        {
+          "content": "User's computer system will require a UPS with at least 1000W-1500W capacity",
+          "category": "fact",
+          "confidence": 0.75,
+          "slot": "hardware.ups_capacity"
+        },
+        {
+          "content": "User's computer system may exceed 1000W peak power draw with multiple monitors",
+          "category": "fact",
+          "confidence": 0.6499999761581421,
+          "slot": "hardware.total_power_draw"
+        },
+        {
+          "content": "User's computer system will include components that add ~50W to 100W for motherboard, RAM, SSDs, and fans",
+          "category": "fact",
+          "confidence": 0.699999988079071,
+          "slot": "hardware.additional_components_power"
+        },
+        {
+          "content": "User's computer system will include monitor(s) that can draw 50W-100W each",
+          "category": "fact",
+          "confidence": 0.699999988079071,
+          "slot": "hardware.monitor_power"
+        },
+        {
+          "content": "User's computer system will require a UPS that provides a 'pure sine wave' output",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "hardware.ups_type"
+        },
+        {
+          "content": "User is considering the power draw of their computer system for UPS sizing",
+          "category": "project",
+          "confidence": 0.6000000238418579,
+          "slot": "project.ups_sizing"
+        }
+      ],
+      "dedup_results": [],
+      "noise_matches": [
+        {
+          "keywords": [
+            "ups"
+          ],
+          "content": "User's computer system will require a UPS with at least 1000W-1500W capacity"
+        },
+        {
+          "keywords": [
+            "ups"
+          ],
+          "content": "User's computer system will require a UPS that provides a 'pure sine wave' output"
+        },
+        {
+          "keywords": [
+            "ups"
+          ],
+          "content": "User is considering the power draw of their computer system for UPS sizing"
+        }
+      ],
+      "adversarial_fail": false,
+      "memories_raw": [
+        {
+          "id": "7b6a7ab1-faa2-4f50-aa4f-95b990a7174f",
+          "content": "User's birthday is March 15th.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "person.birthday",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T22:33:35.820443+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:33:35.820443+00:00"
+        },
+        {
+          "id": "0778ecad-f155-4378-a15d-8528508a8bf6",
+          "content": "User's birthday is March 15th.",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "user.birthday",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T22:33:42.183502+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:33:42.183502+00:00"
+        },
+        {
+          "id": "dd7f04fe-7810-4c9f-aba9-0b383df5907a",
+          "content": "User has an AMD Ryzen 9950X3D CPU",
+          "category": "fact",
+          "confidence": 0.8999999761581421,
+          "memory_slot": "hardware.cpu",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:34:20.688471+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:34:20.688471+00:00"
+        },
+        {
+          "id": "ec8a76f9-cf48-4abd-b938-b3caad2c67a3",
+          "content": "User is building a powerful computer system",
+          "category": "project",
+          "confidence": 0.699999988079071,
+          "memory_slot": "project.computer_build",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:34:20.993860+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:34:20.993860+00:00"
+        },
+        {
+          "id": "36a1a02e-6b13-4a10-b1e1-0f083ab1ac76",
+          "content": "User's computer system will likely include an NVIDIA RTX 5090 GPU",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "hardware.gpu",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:34:21.304822+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:34:21.304822+00:00"
+        },
+        {
+          "id": "035683c0-bc95-4baa-86c1-4a9adf87c033",
+          "content": "User's computer system will require a UPS with at least 1000W-1500W capacity",
+          "category": "fact",
+          "confidence": 0.75,
+          "memory_slot": "hardware.ups_capacity",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:34:21.722714+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:34:21.722714+00:00"
+        },
+        {
+          "id": "53ec4388-bae5-4d50-81c1-74eea4b4bef6",
+          "content": "User's computer system will likely draw a total peak power of ~700W - 950W",
+          "category": "fact",
+          "confidence": 0.699999988079071,
+          "memory_slot": "hardware.total_power_draw",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:34:22.179682+00:00",
+          "valid_to": "2026-03-11T22:34:22.624774+00:00",
+          "access_count": 0,
+          "created_at": "2026-03-11T22:34:22.179682+00:00"
+        },
+        {
+          "id": "9cb9d747-b403-4b93-8087-eab011176552",
+          "content": "User's computer system may exceed 1000W peak power draw with multiple monitors",
+          "category": "fact",
+          "confidence": 0.6499999761581421,
+          "memory_slot": "hardware.total_power_draw",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:34:22.624774+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:34:22.624774+00:00"
+        },
+        {
+          "id": "3dded6f1-9f9c-4282-a5fd-a36fe2eb0a35",
+          "content": "User's computer system will include components that add ~50W to 100W for motherboard, RAM, SSDs, and fans",
+          "category": "fact",
+          "confidence": 0.699999988079071,
+          "memory_slot": "hardware.additional_components_power",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:34:23.011590+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:34:23.011590+00:00"
+        },
+        {
+          "id": "1af390e1-db1c-40b2-9888-c60542371057",
+          "content": "User's computer system will include monitor(s) that can draw 50W-100W each",
+          "category": "fact",
+          "confidence": 0.699999988079071,
+          "memory_slot": "hardware.monitor_power",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:34:23.421835+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:34:23.421835+00:00"
+        },
+        {
+          "id": "b370b69f-9751-4275-a93c-b6a423d9f3be",
+          "content": "User's computer system will require a UPS that provides a 'pure sine wave' output",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "hardware.ups_type",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:34:23.825964+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:34:23.825964+00:00"
+        },
+        {
+          "id": "48aaae90-1942-4dad-a8f7-6e25ff4cf915",
+          "content": "User is considering the power draw of their computer system for UPS sizing",
+          "category": "project",
+          "confidence": 0.6000000238418579,
+          "memory_slot": "project.ups_sizing",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:34:24.050965+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:34:24.050965+00:00"
+        },
+        {
+          "id": "cb3790ba-c28f-4376-9ab4-4e937ca603c3",
+          "content": "User's computer system will likely be used for LLM inference and demanding gaming",
+          "category": "fact",
+          "confidence": 0.75,
+          "memory_slot": "project.use_case",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:34:24.442119+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:34:24.442119+00:00"
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "precision": 0.5,
+    "recall": 0.4286,
+    "adversarial_fp": 0,
+    "passed": false
+  }
+}

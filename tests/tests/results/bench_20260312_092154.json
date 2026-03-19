@@ -1,0 +1,346 @@
+{
+  "run_timestamp": "2026-03-11T22:51:54.134199+00:00",
+  "version": "2.3",
+  "config": {
+    "base_url": "http://localhost:8000",
+    "wait_seconds": 90,
+    "db_wipe": true,
+    "scenarios_filter": "6",
+    "decryption_available": true
+  },
+  "scenarios": [
+    {
+      "name": "6: Realistic Multi-Turn Session",
+      "expected": 7,
+      "extracted": 14,
+      "tp": 7,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "duration_seconds": 193.6,
+      "matches": [
+        {
+          "keywords": [
+            "9950x3d"
+          ],
+          "content": "AMD Ryzen 9 9950X3D",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "slot": "home-server.cpu",
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "be quiet",
+            "light base"
+          ],
+          "content": "Be Quiet Light Base 500",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "slot": "home-server.case",
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "cachyos"
+          ],
+          "content": "User likes that CachyOS is Arch-based with better defaults",
+          "category": "preference",
+          "confidence": 0.75,
+          "slot": "os.preference",
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "arch"
+          ],
+          "content": "User likes that CachyOS is Arch-based with better defaults",
+          "category": "preference",
+          "confidence": 0.75,
+          "slot": "os.preference",
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "birthday",
+            "march"
+          ],
+          "content": "User's birthday is March 15th",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "personal.birthday",
+          "confidence_warning": "confidence 0.80 < min 0.88",
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "tailscale"
+          ],
+          "content": "User wants to use Tailscale for remote access on their server",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "slot": "server.remote_access",
+          "confidence_warning": null,
+          "category_warning": null
+        },
+        {
+          "keywords": [
+            "llm"
+          ],
+          "content": "User mainly wants their server for LLM inference",
+          "category": "project",
+          "confidence": 0.75,
+          "slot": "server.purpose",
+          "confidence_warning": null,
+          "category_warning": null
+        }
+      ],
+      "unaccounted": [
+        {
+          "content": "64 GB DDR5",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "slot": "home-server.ram"
+        },
+        {
+          "content": "NVIDIA GeForce RTX 5090 TUF",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "slot": "home-server.gpu"
+        },
+        {
+          "content": "User has a home server setup",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "slot": "server.setup"
+        },
+        {
+          "content": "User is waiting on a 5090 TUF graphics card",
+          "category": "fact",
+          "confidence": 0.8500000238418579,
+          "slot": "hardware.graphics_card"
+        },
+        {
+          "content": "User is comfortable using pacman",
+          "category": "fact",
+          "confidence": 0.8500000238418579,
+          "slot": "os.package_manager"
+        },
+        {
+          "content": "User has a girlfriend",
+          "category": "fact",
+          "confidence": 0.8799999952316284,
+          "slot": "relationship.partner"
+        },
+        {
+          "content": "User needs a static IP on the local network for their server",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "slot": "server.network_configuration"
+        },
+        {
+          "content": "User may also use their server for Plex",
+          "category": "project",
+          "confidence": 0.699999988079071,
+          "slot": "server.purpose"
+        }
+      ],
+      "dedup_results": [],
+      "noise_matches": [],
+      "adversarial_fail": false,
+      "memories_raw": [
+        {
+          "id": "28709e00-f2f0-4870-b084-d01ccd820a71",
+          "content": "AMD Ryzen 9 9950X3D",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "memory_slot": "home-server.cpu",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T22:49:34.348075+00:00",
+          "valid_to": null,
+          "access_count": 4,
+          "created_at": "2026-03-11T22:49:34.348075+00:00"
+        },
+        {
+          "id": "82459e08-87b7-4f7b-bd3d-9847490054ab",
+          "content": "64 GB DDR5",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "memory_slot": "home-server.ram",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T22:49:34.608700+00:00",
+          "valid_to": null,
+          "access_count": 5,
+          "created_at": "2026-03-11T22:49:34.608700+00:00"
+        },
+        {
+          "id": "4b785fc1-9751-41b2-ab40-abda487b94b4",
+          "content": "NVIDIA GeForce RTX 5090 TUF",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "memory_slot": "home-server.gpu",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T22:49:34.890142+00:00",
+          "valid_to": null,
+          "access_count": 1,
+          "created_at": "2026-03-11T22:49:34.890142+00:00"
+        },
+        {
+          "id": "470efb08-8729-47aa-9b21-e43551178499",
+          "content": "Be Quiet Light Base 500",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "memory_slot": "home-server.case",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T22:49:35.149122+00:00",
+          "valid_to": null,
+          "access_count": 3,
+          "created_at": "2026-03-11T22:49:35.149122+00:00"
+        },
+        {
+          "id": "6d1f9200-055f-4ddf-a36a-e54f668a6b9b",
+          "content": "User's birthday is March 15th",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "personal.birthday",
+          "source_type": "user_created",
+          "valid_from": "2026-03-11T22:50:00.694665+00:00",
+          "valid_to": null,
+          "access_count": 1,
+          "created_at": "2026-03-11T22:50:00.694665+00:00"
+        },
+        {
+          "id": "50a42837-75f1-4fc5-9ae4-cdee546da7ea",
+          "content": "User has a home server setup",
+          "category": "fact",
+          "confidence": 0.800000011920929,
+          "memory_slot": "server.setup",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:50:53.988705+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:50:53.988705+00:00"
+        },
+        {
+          "id": "97fc2aec-2d57-4156-aa05-d522379bb596",
+          "content": "User is waiting on a 5090 TUF graphics card",
+          "category": "fact",
+          "confidence": 0.8500000238418579,
+          "memory_slot": "hardware.graphics_card",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:50:55.749059+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:50:55.749059+00:00"
+        },
+        {
+          "id": "501bb816-994f-46ee-b48e-5994aa6200a4",
+          "content": "User is considering using CachyOS for their server",
+          "category": "preference",
+          "confidence": 0.6499999761581421,
+          "memory_slot": "os.preference",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:50:56.159430+00:00",
+          "valid_to": "2026-03-11T22:50:56.372396+00:00",
+          "access_count": 0,
+          "created_at": "2026-03-11T22:50:56.159430+00:00"
+        },
+        {
+          "id": "90b184b1-a644-4d4e-a3b1-0b9673231599",
+          "content": "User likes that CachyOS is Arch-based with better defaults",
+          "category": "preference",
+          "confidence": 0.75,
+          "memory_slot": "os.preference",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:50:56.372396+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:50:56.372396+00:00"
+        },
+        {
+          "id": "e103025c-25a5-4c13-84bc-403f2410faad",
+          "content": "User is comfortable using pacman",
+          "category": "fact",
+          "confidence": 0.8500000238418579,
+          "memory_slot": "os.package_manager",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:50:56.600159+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:50:56.600159+00:00"
+        },
+        {
+          "id": "9fe18c76-2a60-49dd-8c9d-1687665190e8",
+          "content": "User has a girlfriend",
+          "category": "fact",
+          "confidence": 0.8799999952316284,
+          "memory_slot": "relationship.partner",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:50:57.146053+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:50:57.146053+00:00"
+        },
+        {
+          "id": "2f322234-a5d2-4fe5-bae3-98632843a8d8",
+          "content": "User wants to use Tailscale for remote access on their server",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "memory_slot": "server.remote_access",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:50:57.371749+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:50:57.371749+00:00"
+        },
+        {
+          "id": "f385ade7-34d3-4406-a5ad-4fee59138f42",
+          "content": "User needs a static IP on the local network for their server",
+          "category": "project",
+          "confidence": 0.800000011920929,
+          "memory_slot": "server.network_configuration",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:50:57.626555+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:50:57.626555+00:00"
+        },
+        {
+          "id": "c81b2c12-694e-4be5-8afa-0d3235b0db0f",
+          "content": "User mainly wants their server for LLM inference",
+          "category": "project",
+          "confidence": 0.75,
+          "memory_slot": "server.purpose",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:50:57.880502+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:50:57.880502+00:00"
+        },
+        {
+          "id": "872e4494-861c-4bd7-965c-fe0bdc83df83",
+          "content": "User may also use their server for Plex",
+          "category": "project",
+          "confidence": 0.699999988079071,
+          "memory_slot": "server.purpose",
+          "source_type": "extracted",
+          "valid_from": "2026-03-11T22:50:58.105433+00:00",
+          "valid_to": null,
+          "access_count": 0,
+          "created_at": "2026-03-11T22:50:58.105433+00:00"
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "precision": 1.0,
+    "recall": 1.0,
+    "adversarial_fp": 0,
+    "passed": true
+  }
+}

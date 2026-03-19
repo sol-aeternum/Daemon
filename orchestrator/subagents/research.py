@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from typing import Any
 
 import httpx
 
+from orchestrator.services.fetch.models import FetchResult
+from orchestrator.services.fetch.service import FetchService
 from orchestrator.subagents.base import BaseSubagent, SubagentResult, SubagentType
 
 
@@ -139,14 +140,40 @@ class ResearchSubagent(BaseSubagent):
 
                 web_results = data.get("web", {}).get("results", [])
                 results = []
+                urls_to_fetch = []
                 for result in web_results[:5]:
-                    results.append(
-                        {
-                            "title": result.get("title", "No title"),
-                            "url": result.get("url", ""),
-                            "description": result.get("description", "")[:300],
-                        }
-                    )
+                    result_data = {
+                        "title": result.get("title", "No title"),
+                        "url": result.get("url", ""),
+                        "description": result.get("description", "")[:300],
+                    }
+                    results.append(result_data)
+                    if result_data["url"]:
+                        urls_to_fetch.append(result_data["url"])
+
+                # Fetch full content for top results
+                fetch_service = FetchService()
+                fetch_tasks = [fetch_service.fetch(url) for url in urls_to_fetch[:5]]
+                fetch_results = await asyncio.gather(
+                    *fetch_tasks, return_exceptions=True
+                )
+
+                # Add full content to results
+                for i, fetch_result in enumerate(fetch_results):
+                    if i < len(results):
+                        # Check if fetch was successful and not an exception
+                        if (
+                            not isinstance(fetch_result, Exception)
+                            and fetch_result is not None
+                        ):
+                            # Type check to satisfy LSP - fetch_result is a FetchResult here
+                            if isinstance(fetch_result, FetchResult):
+                                results[i]["full_content"] = fetch_result.content
+                            else:
+                                results[i]["full_content"] = None
+                        else:
+                            # Fallback to snippet if fetch failed
+                            results[i]["full_content"] = None
 
                 return {
                     "query": query,
@@ -199,7 +226,7 @@ class ResearchSubagent(BaseSubagent):
             "",
         ]
 
-        # Add top findings from each search
+        # Add top findings from each search with full content if available
         for search in successful_searches[:3]:
             query = search.get("query", "")
             results = search.get("results", [])
@@ -207,9 +234,22 @@ class ResearchSubagent(BaseSubagent):
                 top_result = results[0]
                 lines.append(f'### From query: "{query}"')
                 lines.append(f"- **{top_result.get('title', 'Untitled')}**")
-                lines.append(
-                    f"  {top_result.get('description', 'No description')[:200]}..."
-                )
+
+                # Use full content if available, otherwise fallback to description
+                full_content = top_result.get("full_content")
+                if full_content:
+                    # Truncate full content to reasonable length for synthesis
+                    content_preview = (
+                        full_content[:500] + "..."
+                        if len(full_content) > 500
+                        else full_content
+                    )
+                    lines.append(f"  {content_preview}")
+                else:
+                    lines.append(
+                        f"  {top_result.get('description', 'No description')[:200]}..."
+                    )
+
                 lines.append(f"  Source: {top_result.get('url', 'Unknown')}")
                 lines.append("")
 

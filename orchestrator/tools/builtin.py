@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from orchestrator.tools.registry import Tool
 from orchestrator.tools.web_search import WebSearchTool
+from orchestrator.tools.web_fetch import WebFetchTool
 
 
 class GetTimeTool(Tool):
@@ -140,6 +141,7 @@ def create_default_registry(
 ):
     from orchestrator.tools.registry import ToolRegistry
     from orchestrator.tools.web_search import WebSearchTool
+    from orchestrator.tools.web_fetch import WebFetchTool
     from orchestrator.tools.http_request import HttpRequestTool
     from orchestrator.tools.notification import NotificationSendTool
     from orchestrator.tools.reminder import ReminderSetTool, ReminderListTool
@@ -149,6 +151,7 @@ def create_default_registry(
     registry.register(GetTimeTool())
     registry.register(CalculateTool())
     registry.register(WebSearchTool(api_key=brave_api_key))
+    registry.register(WebFetchTool())
     registry.register(HttpRequestTool())
     registry.register(NotificationSendTool())
     registry.register(ReminderSetTool())
