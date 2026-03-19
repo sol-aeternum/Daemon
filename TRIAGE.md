@@ -5,6 +5,22 @@
 
 ---
 
+## [2026-03-19T10:50:00+00:00] — GitHub push warning for large tracked build artifact
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Commit and push of completed fetch-service work
+- **Category**: dependency
+- **Blocked current task**: no
+- **What happened**: `git push` succeeded but GitHub warned that a tracked build artifact exceeded the recommended file size threshold, indicating generated frontend artifacts were included in history.
+- **Evidence**:
+  - `remote: warning: File frontend/.next/cache/webpack/server-production/0.pack is 55.08 MB; this is larger than GitHub's recommended maximum file size of 50.00 MB`
+  - `remote: warning: GH001: Large files detected. You may want to try Git Large File Storage - https://git-lfs.github.com.`
+- **Likely cause**: Committed `.next` cache artifacts include large webpack pack files that should not usually be versioned. [~95% confidence]
+- **Suggested action**: Remove generated `.next` artifacts from version control on a follow-up cleanup commit and enforce ignore rules (or adopt Git LFS only if intentional binary tracking is required).
+
+---
+
 ## [2026-03-19T09:15:00+00:00] — YouTube fetch runtime failure due transcript snippet shape mismatch
 
 - **Severity**: warning
