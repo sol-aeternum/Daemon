@@ -3,7 +3,7 @@ from __future__ import annotations
 # pyright: reportMissingImports=false
 
 from functools import lru_cache
-from typing import Any
+from typing import ClassVar
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -31,7 +31,7 @@ class ModelSlotConfig(BaseSettings):
     temperature: float = 0.7
     max_tokens: int | None = None
     # Provider-specific parameters
-    extra_params: dict[str, Any] = Field(default_factory=dict)
+    extra_params: dict[str, object] = Field(default_factory=dict)
 
 
 class TierConfig(BaseSettings):
@@ -56,7 +56,9 @@ class TierConfig(BaseSettings):
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
+        env_file=".env", extra="ignore"
+    )
 
     env: str = "dev"
     log_level: str = "INFO"
@@ -107,7 +109,7 @@ class Settings(BaseSettings):
     tier_starter_image_provider: str = "openrouter"
     tier_starter_reader_model: str = "openrouter/google/gemini-2.0-pro-exp"
     tier_starter_reader_temp: float = 0.3
-    tier_starter_embeddings_model: str = "openrouter/openai/text-embedding-3-small"
+    tier_starter_embeddings_model: str = "voyage-4-large"
 
     # Tier: PRO ($19/mo)
     # Kimi K2.5 orchestrator, full subagent suite
@@ -122,7 +124,7 @@ class Settings(BaseSettings):
     tier_pro_image_provider: str = "openrouter"
     tier_pro_reader_model: str = "openrouter/google/gemini-2.0-pro-exp"
     tier_pro_reader_temp: float = 0.3
-    tier_pro_embeddings_model: str = "openrouter/openai/text-embedding-3-small"
+    tier_pro_embeddings_model: str = "voyage-4-large"
 
     # Tier: MAX ($29/mo)
     # Opus 4.6 orchestrator, premium subagents
@@ -140,7 +142,7 @@ class Settings(BaseSettings):
     tier_max_image_provider: str = "openrouter"
     tier_max_reader_model: str = "openrouter/google/gemini-2.0-pro-exp"
     tier_max_reader_temp: float = 0.3
-    tier_max_embeddings_model: str = "openrouter/openai/text-embedding-3-large"
+    tier_max_embeddings_model: str = "voyage-4-large"
 
     # Tier: BYOK ($9/mo)
     # User brings their own OpenRouter key
@@ -195,7 +197,7 @@ class Settings(BaseSettings):
 
     # Provider-level defaults for model-specific parameters (reasoning/thinking).
     # Applied by model prefix and overridden by per-model `model_extra_params`.
-    provider_extra_params: dict[str, dict[str, Any]] = Field(
+    provider_extra_params: dict[str, dict[str, object]] = Field(
         default_factory=lambda: {
             "openrouter/anthropic/": {"reasoning": {"enabled": True}},
             "openrouter/openai/": {"reasoning_effort": "medium"},
@@ -206,7 +208,7 @@ class Settings(BaseSettings):
     )
 
     # Per-model overrides (exact model id -> extra params). Overrides provider defaults.
-    model_extra_params: dict[str, dict[str, Any]] = Field(
+    model_extra_params: dict[str, dict[str, object]] = Field(
         default_factory=lambda: {
             # Claude 4.6 Opus/Sonnet: Use reasoning.max_tokens (effort is ignored - they use adaptive)
             # See: https://openrouter.ai/docs/guides/model-migrations/claude-4-6
@@ -241,8 +243,30 @@ class Settings(BaseSettings):
     # xAI API (for Imagine image/video generation)
     xai_api_key: str = ""
 
-    # OpenAI API keys
-    # Used for embeddings via text-embedding-3-small
+    voyage_api_key: str | None = None
+    embedding_document_model: str = "voyage-4-large"
+    embedding_query_model: str = "voyage-4-lite"
+    embedding_dimensions: int = 1024
+
+    # ===== DEDUP THRESHOLDS =====
+    # Calibrated from `tests/results/voyage_similarity_analysis.json` for Voyage
+    # embeddings: within-scenario max=0.8374/p95=0.6621, cross-scenario
+    # max=0.8046/p95=0.6080, all-pairs p95=0.6263. Bands: merge >= 0.90,
+    # generic supersede >= 0.82, slot-constrained supersede >= 0.65,
+    # otherwise insert as new memory.
+    dedup_merge_threshold: float = Field(
+        default=0.90,
+        description="Voyage merge floor for near-duplicates, set above the observed within-scenario max",
+    )
+    dedup_supersede_threshold: float = Field(
+        default=0.82,
+        description="Voyage generic supersede floor, raised above the dense cross-scenario similarity band",
+    )
+    dedup_supersede_same_slot_threshold: float = Field(
+        default=0.65,
+        description="Lower Voyage supersede floor for slot-constrained matches before falling back to insert",
+    )
+
     openai_api_key: str | None = None
     # Optional: separate key for Sora video generation (falls back to openai_api_key if not set)
     openai_sora_api_key: str | None = None
@@ -379,7 +403,7 @@ class Settings(BaseSettings):
             timeout_s=self.request_timeout_s,
         )
 
-    def list_available_tiers(self) -> list[dict[str, Any]]:
+    def list_available_tiers(self) -> list[dict[str, str | int]]:
         """List all available tiers with their orchestrator models."""
         tiers = [
             {

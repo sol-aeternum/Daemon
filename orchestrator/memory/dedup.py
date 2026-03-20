@@ -6,10 +6,22 @@ from datetime import datetime, timedelta
 import logging
 from typing import Any
 
+from orchestrator.config import get_settings
+from orchestrator.memory.embedding import embed_documents
 from orchestrator.memory.store import MemoryStore
-from orchestrator.memory.embedding import DEFAULT_MODEL, embed_text
 
 logger = logging.getLogger(__name__)
+
+
+def _document_model() -> str:
+    return get_settings().embedding_document_model
+
+
+def _embedding_text(content: str, slot: str | None) -> str:
+    normalized_content = content.strip()
+    if isinstance(slot, str) and slot.strip():
+        return f"{slot.strip()}: {normalized_content}"
+    return normalized_content
 
 
 @dataclass
@@ -19,11 +31,25 @@ class DedupResult:
     new: list[dict[str, Any]] = field(default_factory=list)
 
 
-# Thresholds per Spec E
-SIMILARITY_MERGE = 0.85
-SIMILARITY_SUPERSEDE = 0.75
-SIMILARITY_SUPERSEDE_SAME_SLOT = 0.60
+# Thresholds per Spec E - now configurable via config.py
+SIMILARITY_MERGE = 0.85  # Deprecated: use get_settings().dedup_merge_threshold
+SIMILARITY_SUPERSEDE = 0.75  # Deprecated: use get_settings().dedup_supersede_threshold
+SIMILARITY_SUPERSEDE_SAME_SLOT = (
+    0.60  # Deprecated: use get_settings().dedup_supersede_same_slot_threshold
+)
 EXPLICIT_SUPPRESSION_WINDOW = timedelta(minutes=5)
+
+
+def _get_merge_threshold() -> float:
+    return get_settings().dedup_merge_threshold
+
+
+def _get_supersede_threshold() -> float:
+    return get_settings().dedup_supersede_threshold
+
+
+def _get_supersede_same_slot_threshold() -> float:
+    return get_settings().dedup_supersede_same_slot_threshold
 
 
 def _slot_family(slot: str | None) -> str | None:
@@ -152,7 +178,10 @@ async def _close_current_related_candidates(
             continue
 
         similarity = float(candidate.get("similarity") or 0.0)
-        if candidate_family is None and similarity >= SIMILARITY_SUPERSEDE_SAME_SLOT:
+        if (
+            candidate_family is None
+            and similarity >= _get_supersede_same_slot_threshold()
+        ):
             await store.close_memory(candidate_id)
             closed_ids.add(candidate_id)
     return closed_ids
@@ -178,10 +207,13 @@ async def deduplicate_facts(
         current_like_slot = _is_current_like_slot(fact_slot)
         if current_like_slot and fact_slot_family:
             current_slot_families.add(fact_slot_family)
-        embedding = await embed_text(fact.content)
+        embedding_input = _embedding_text(fact.content, fact_slot)
+        embedding = (await embed_documents([embedding_input]))[0]
 
         min_similarity = (
-            SIMILARITY_SUPERSEDE_SAME_SLOT if fact_slot_family else SIMILARITY_SUPERSEDE
+            _get_supersede_same_slot_threshold()
+            if fact_slot_family
+            else _get_supersede_threshold()
         )
         if _is_current_slot(fact_slot):
             min_similarity = 0.0
@@ -194,7 +226,7 @@ async def deduplicate_facts(
             memory_slot=None,
         )
         best_match: dict[str, Any] | None = None
-        supersede_threshold = SIMILARITY_SUPERSEDE
+        supersede_threshold = _get_supersede_threshold()
 
         if fact_slot_family:
             slot_matches = [
@@ -209,10 +241,10 @@ async def deduplicate_facts(
                 ]
                 if exact_slot_matches:
                     best_match = exact_slot_matches[0]
-                    supersede_threshold = SIMILARITY_SUPERSEDE_SAME_SLOT
+                    supersede_threshold = _get_supersede_same_slot_threshold()
                 else:
                     best_match = slot_matches[0]
-                    supersede_threshold = SIMILARITY_SUPERSEDE_SAME_SLOT
+                    supersede_threshold = _get_supersede_same_slot_threshold()
             elif similar:
                 active_matches = [m for m in similar if m.get("valid_to") is None]
                 best_match = active_matches[0] if active_matches else similar[0]
@@ -234,7 +266,7 @@ async def deduplicate_facts(
                 category=fact.category,
                 source_type=source_type,
                 embedding=embedding,
-                embedding_model=DEFAULT_MODEL,
+                embedding_model=_document_model(),
                 source_conversation_id=conversation_id,
                 confidence=fact.confidence,
                 status=status,
@@ -269,7 +301,7 @@ async def deduplicate_facts(
                 fact_slot_family,
                 best_match_id,
                 float(similarity),
-                SIMILARITY_MERGE,
+                _get_merge_threshold(),
                 supersede_threshold,
             )
 
@@ -282,7 +314,7 @@ async def deduplicate_facts(
                 result.merged.append(best_match)
                 continue
 
-            if similarity >= SIMILARITY_MERGE:
+            if similarity >= _get_merge_threshold():
                 # Block merge when both have explicit, different slots — sibling facts.
                 best_match_slot = best_match.get("memory_slot")
                 if (
@@ -302,7 +334,7 @@ async def deduplicate_facts(
                         category=fact.category,
                         source_type=source_type,
                         embedding=embedding,
-                        embedding_model=DEFAULT_MODEL,
+                        embedding_model=_document_model(),
                         source_conversation_id=conversation_id,
                         confidence=fact.confidence,
                         status=status,
@@ -349,7 +381,7 @@ async def deduplicate_facts(
                         category=fact.category,
                         source_type=source_type,
                         embedding=embedding,
-                        embedding_model=DEFAULT_MODEL,
+                        embedding_model=_document_model(),
                         source_conversation_id=conversation_id,
                         confidence=fact.confidence,
                         status=status,
@@ -364,7 +396,7 @@ async def deduplicate_facts(
                         new_source_type=source_type,
                         user_id=user_id,
                         embedding=embedding,
-                        embedding_model=DEFAULT_MODEL,
+                        embedding_model=_document_model(),
                         source_conversation_id=conversation_id,
                         confidence=fact.confidence,
                         new_status=status,
@@ -389,7 +421,9 @@ async def deduplicate_facts(
                         )
                         normalized_new_id = _as_uuid_or_none(new_id)
                         if normalized_new_id is not None:
-                            current_family_keep_ids[fact_slot_family] = normalized_new_id
+                            current_family_keep_ids[fact_slot_family] = (
+                                normalized_new_id
+                            )
             else:
                 memory = await store.insert_memory(
                     user_id=user_id,
@@ -397,7 +431,7 @@ async def deduplicate_facts(
                     category=fact.category,
                     source_type=source_type,
                     embedding=embedding,
-                    embedding_model=DEFAULT_MODEL,
+                    embedding_model=_document_model(),
                     source_conversation_id=conversation_id,
                     confidence=fact.confidence,
                     status=status,
@@ -497,14 +531,15 @@ async def dedup_and_store(
         return result.new[0]["id"]
     else:
         # Fallback - create directly
-        embedding = await embed_text(content)
+        embedding_input = _embedding_text(content, slot)
+        embedding = (await embed_documents([embedding_input]))[0]
         memory = await store.insert_memory(
             user_id=user_id,
             content=content,
             category=category,
             source_type=source_type,
             embedding=embedding,
-            embedding_model=DEFAULT_MODEL,
+            embedding_model=_document_model(),
             source_conversation_id=conversation_id,
             status=status,
             memory_slot=slot,

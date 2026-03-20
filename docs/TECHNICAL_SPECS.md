@@ -1,6 +1,6 @@
 # Technical Specifications
 
-> Last updated: 2026-02-17
+> Last updated: 2026-03-19
 
 ## Daemon System Prompt (Actual)
 
@@ -47,7 +47,7 @@ orchestrator: openrouter/moonshotai/kimi-k2.5
   code: openrouter/anthropic/claude-sonnet-4.5
   image: google/gemini-2.5-flash-image
   reader: openrouter/google/gemini-2.0-pro-exp
-  embeddings: openrouter/openai/text-embedding-3-small
+  embeddings: voyage-4-large
 
 PRO ($19/mo) — default tier:
   [same as STARTER]
@@ -58,7 +58,7 @@ MAX ($29/mo):
   code: openrouter/anthropic/claude-opus-4.6
   image: google/gemini-3-pro-image-preview
   reader: openrouter/google/gemini-2.0-pro-exp
-  embeddings: openrouter/openai/text-embedding-3-large
+  embeddings: voyage-4-large
 
 BYOK ($9/mo):
 orchestrator: openrouter/moonshotai/kimi-k2.5
@@ -150,8 +150,8 @@ CREATE TABLE memories (
     content TEXT NOT NULL,  -- encrypted
     category TEXT DEFAULT 'fact',  -- fact | preference | project | correction | summary
     source_type TEXT DEFAULT 'extracted',  -- extracted | manual | tool
-    embedding VECTOR(1536),
-    embedding_model TEXT DEFAULT 'text-embedding-3-small',
+    embedding VECTOR(1024),
+    embedding_model TEXT DEFAULT 'voyage-4-large',
     source_conversation_id UUID REFERENCES conversations(id),
     confidence FLOAT DEFAULT 1.0,
     status TEXT DEFAULT 'active',  -- active | pending | rejected | superseded
@@ -189,19 +189,19 @@ User sends message
     → Enqueues `extract_memories` job (debounced)
     → Worker picks up job
     → GPT-4o-mini extracts facts from conversation text
-    → Each fact gets embedded (text-embedding-3-small, 1536d)
+    → Each fact gets embedded (voyage-4-large, input_type=document, 1024d)
     → Dedup engine compares against existing memories:
-        - similarity ≥ 0.92 → merge (touch existing)
+        - similarity ≥ 0.85 → merge (touch existing)
         - similarity ≥ 0.75 → supersede (create new, mark old)
         - similarity < 0.75 → insert new
-    → Memories stored with status="pending"  ⚠️ BUG: should be "active"
+    → Memories stored with status="active"
 ```
 
 ### Retrieval (Pre-Response)
 
 ```
 User sends message
-    → Query embedded
+    → Query embedded (voyage-4-lite, input_type=query, 1024d)
     → pgvector similarity search (top 10 candidates, status="active")
     → Composite scoring:
         score = similarity × recency_boost × source_boost × confidence
@@ -214,11 +214,18 @@ User sends message
 
 ### Dedup Thresholds
 
+> **Note:** Thresholds are configurable via environment variables in `config.py`. Values below are the Voyage-calibrated defaults (March 2026).
+
 | Similarity | Action |
 |-----------|--------|
-| ≥ 0.92 | Merge — touch existing memory (update last_accessed_at) |
-| ≥ 0.75 | Supersede — create new, mark old as superseded |
-| < 0.75 | New — insert as new memory |
+| ≥ 0.90 | Merge — touch existing memory (update last_accessed_at) |
+| ≥ 0.82 | Supersede — create new, mark old as superseded |
+| ≥ 0.65 | Slot-constrained supersede — for same-slot matches |
+| < 0.65 | New — insert as new memory |
+
+Configurable via env vars: `DEDUP_MERGE_THRESHOLD`, `DEDUP_SUPERSEDE_THRESHOLD`, `DEDUP_SUPERSEDE_SAME_SLOT_THRESHOLD`
+
+> **Calibration Note:** These thresholds were recalibrated for Voyage embeddings (voyage-4-large). The original OpenAI thresholds (0.85/0.75) were too aggressive and caused false dedup triggers. Generic supersede now defaults to 0.82 to clear the observed cross-scenario outlier at 0.8046 in `tests/results/voyage_similarity_analysis.json`. Thresholds must be recalibrated if embedding model changes.
 
 ---
 
@@ -256,7 +263,7 @@ POST   /memories/{id}/confirm            → Confirm/reject pending memory
 DELETE /memories                         → Delete all (requires confirm=true)
 POST   /memories/export                  → Export memories as JSON
 POST   /memories/import                  → Import memories from JSON
-POST   /memories/re-embed                → Re-embed all memories
+POST   /memories/reembed                 → Re-embed all memories
 ```
 
 ### Users
@@ -338,7 +345,13 @@ services:
 # LLM Provider
 OPENROUTER_API_KEY=
 
-# Embeddings (separate from OpenRouter — see CURRENT_ISSUES.md #8)
+# Embeddings
+VOYAGE_API_KEY=
+EMBEDDING_DOCUMENT_MODEL=voyage-4-large
+EMBEDDING_QUERY_MODEL=voyage-4-lite
+EMBEDDING_DIMENSIONS=1024
+
+# OpenAI (used for Sora video provider paths)
 OPENAI_API_KEY=
 
 # External Services

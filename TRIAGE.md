@@ -5,6 +5,123 @@
 
 ---
 
+## [2026-03-21T05:54:00+10:30] — Scenario 3 dedup check regressed: Corolla remained active after Tesla correction
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: `[benchmark verification] run Scenario 3 + Scenario 1 after raising supersede threshold to 0.82 — expect threshold fix without supersession regressions`
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: `tests/benchmark_extraction.py --scenarios 3,1 --json` completed, but Scenario 3 dedup validation failed because `2019 Toyota Corolla` remained active when the scenario expected it to be superseded by the corrected Tesla fact.
+- **Evidence**:
+  - Output: `✗ DEDUP: '2019 Toyota Corolla' active=True, expected active=False`
+  - Saved result: `tests/results/bench_20260321_055345.json` (`dedup_results[0].pass=false`)
+  - Related slots in result: Corolla `vehicle.model`, Tesla `vehicle`
+- **Likely cause**: Correction extraction produced a broader slot (`vehicle`) while older fact used `vehicle.model`; current supersession path appears sensitive to slot-family/slot-shape mismatch in this pattern rather than the 0.82 threshold itself. [~80% confidence]
+- **Suggested action**: Investigate supersession logic for same-family slot variants (`vehicle.model` vs `vehicle`) and add a regression test covering this exact correction path.
+- **Seen again**: 2026-03-21T05:57:00+10:30 rerun of Scenario 3 passed (`tests/results/bench_20260321_055733.json`) with both facts extracted as slot `vehicle`, indicating behavior is likely extraction-slot variability rather than deterministic threshold breakage.
+
+---
+
+## [2026-03-20T18:54:00+10:30] — Benchmark health check fails when run inside `daemon-worker-1`
+
+- **Severity**: info
+- **Scope**: host
+- **Encountered during**: `[benchmark verification] run extraction benchmark inside Docker worker for threshold recalibration — expect full benchmark metrics`
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Running `python tests/benchmark_extraction.py --json` inside `daemon-worker-1` failed the benchmark health check (`is Daemon running?`) because the script targets `http://localhost:8000`, which resolves to the worker container itself rather than the backend service.
+- **Evidence**:
+  - `docker exec daemon-worker-1 python tests/benchmark_extraction.py --json`
+  - Output: `❌ Health check failed — is Daemon running?`
+- **Likely cause**: Container-local networking mismatch; benchmark default base URL assumes host context (`localhost:8000`) instead of Docker service hostname (`backend:8000`) when executed inside the worker container. [~95% confidence]
+- **Suggested action**: Run benchmark from host shell (as done) or add a container-aware base URL override when running inside compose services.
+
+---
+
+## [2026-03-20T17:53:18+10:30] — `glob` tool unavailable because `rg` binary is missing
+
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: `[repo docs/config] Read project context and threshold inputs to understand existing dedup settings — expect clear empirical basis for update`
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: Attempting to list `.sisyphus/notepads/voyage-threshold-recalibration/*.md` with the `glob` tool failed before search execution because the tool could not spawn `/usr/bin/rg` in this environment.
+- **Evidence**:
+  - `Error: ENOENT: no such file or directory, posix_spawn '/usr/bin/rg'`
+- **Likely cause**: The workspace tooling wrapper for `glob` depends on `ripgrep`, but `rg` is not installed or not available at the expected path on this host. [~95% confidence]
+- **Suggested action**: Restore `rg` availability for agent search tools or document an alternate supported file-discovery path for this environment.
+
+---
+
+## [2026-03-20T17:59:34+10:30] — Supersede threshold `0.80` still admits the known `0.8046` false-positive pair
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: `[verification/notepads] Run diagnostics/build checks, triage anomalies, and append findings to voyage-threshold-recalibration notes — expect clean validation and recorded rationale`
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: The requested default `dedup_supersede_threshold=0.80` was applied, but reviewing the diagnostic data against current dedup logic shows the known cross-scenario false-positive pair (`adelaide` ↔ `move melbourne`, similarity `0.8046`) still sits above the inclusive supersede comparison and would remain in the supersede band.
+- **Evidence**:
+  - `tests/results/voyage_similarity_analysis.json:106` -> `"similarity": 0.8046`
+  - `orchestrator/memory/dedup.py:354` -> `elif similarity >= supersede_threshold:`
+  - `orchestrator/config.py:260` -> `default=0.80`
+- **Likely cause**: Threshold recalibration alone cannot exclude that edge case unless the supersede cutoff moves above `0.8046` or the comparison semantics/slot logic become more selective. [~95% confidence]
+- **Suggested action**: Re-run the benchmark with `0.80`, then decide whether to raise generic supersede slightly above `0.8046` or tighten the supersede decision rule beyond a pure similarity cutoff.
+- **Seen again**: 2026-03-20T18:53:00+10:30 during host-run benchmark verification after slot-aware matcher update; cross-scenario max in `tests/results/voyage_similarity_analysis.json` remains `0.8046`, still above configured `dedup_supersede_threshold=0.80`.
+
+---
+
+## [2026-03-20T14:11:00+10:30] — Chat history tests emit unawaited AsyncMock runtime warnings in memory injection path
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: `[verification] [HOW] to run targeted latency check plus diagnostics/tests — expect title update starts within ~2-3s and no regressions`
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: `uv run pytest tests/test_chat_history.py -q` passed (`5 passed`) but emitted repeated runtime warnings that AsyncMock coroutines were never awaited while executing memory injection preference formatting code.
+- **Evidence**:
+  - `/home/sol/daemon/orchestrator/memory/injection.py:104 RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited`
+  - `/home/sol/daemon/orchestrator/memory/injection.py:106 RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited`
+  - `/home/sol/daemon/orchestrator/main.py:1458 RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited`
+- **Likely cause**: Existing test double setup in chat history tests returns AsyncMock values where sync-style data is expected in injection formatting paths. [~80% confidence]
+- **Suggested action**: Audit the affected tests/mocks to ensure awaited async call chains are modeled correctly and warnings are eliminated.
+
+---
+
+## [2026-03-20T14:08:00+10:30] — `tests/test_chat_stream.py` mock-mode assertions failing in baseline
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: `[verification] [HOW] to run targeted latency check plus diagnostics/tests — expect title update starts within ~2-3s and no regressions`
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: Running `uv run pytest tests/test_chat_stream.py -q` produced 2 failing assertions expecting `"(mock)"` in mock-mode output, while the stream payload/content did not include that marker.
+- **Evidence**:
+  - `FAILED tests/test_chat_stream.py::test_chat_stream_emits_done_mock_mode` (`assert "(mock)" in body`)
+  - `FAILED tests/test_chat_stream.py::test_openai_chat_completions_non_streaming_mock_mode` (`assert "(mock)" in ''`)
+  - Command summary: `2 failed, 11 passed`
+- **Likely cause**: Existing mismatch between test expectations and current mock response formatting in chat stream code, unrelated to title enqueue timing changes. [~80% confidence]
+- **Suggested action**: Update mock-mode fixtures/assertions or restore expected mock marker semantics, then re-run stream suite.
+
+---
+
+## [2026-03-20T14:09:00+10:30] — Frontend `typecheck` npm script missing
+
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: `[verification] [HOW] to run targeted latency check plus diagnostics/tests — expect title update starts within ~2-3s and no regressions`
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Verification command `npm --prefix frontend run typecheck` failed because `package.json` has no `typecheck` script.
+- **Evidence**:
+  - `npm error Missing script: "typecheck"`
+  - `npm error To see a list of scripts, run: npm run`
+- **Likely cause**: Frontend package scripts do not define a standalone typecheck target; type checking currently runs as part of `next build`. [~95% confidence]
+- **Suggested action**: Add an explicit `typecheck` script (for example `tsc --noEmit` or Next-supported equivalent) to make CI/local verification clearer.
+
+---
+
 ## [2026-03-19T11:26:00+10:30] — LSP diagnostics unavailable for `.gitignore` files
 
 - **Severity**: info
@@ -220,6 +337,7 @@
   - `Invalid project directory provided, no such directory: /home/sol/daemon/frontend/lint`
 - **Likely cause**: Project lint script is outdated for the current Next.js CLI behavior/version and should use the supported linting entrypoint for this setup. [~85% confidence]
 - **Suggested action**: Update `frontend/package.json` lint script to the supported command for Next.js 16 in this repo, then re-run lint in CI/local checks.
+- **Seen again**: 2026-03-19T23:56:58+10:30 during frontend verification for YouTube embed/TTS bugfix (`npm run lint` still resolves `next lint` as invalid project directory `/home/sol/daemon/frontend/lint`).
 
 ---
 
@@ -236,6 +354,7 @@
   - `PermissionError: [Errno 13] Permission denied: 'orchestrator/__pycache__/config.cpython-314.pyc.140261654692848'`
 - **Likely cause**: Host/container filesystem ownership mismatch for `__pycache__` directories in development environment. [~90% confidence]
 - **Suggested action**: Use non-bytecode syntax validation (`ast.parse`) or correct ownership/permissions for cache directories. Does not affect runtime behavior or implementation correctness.
+- **Seen again**: 2026-03-20T19:01:00+10:30 during post-fix syntax verification for matcher/embedding updates; `uv run python -m py_compile ...` failed with the same `Permission denied` on `orchestrator/memory/__pycache__/dedup...pyc`, then AST parse validation succeeded.
 
 ---
 
@@ -334,6 +453,9 @@
   - `DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction() instead`
 - **Likely cause**: Upstream LiteLLM still uses deprecated asyncio API on newer Python versions. [~95% confidence]
 - **Suggested action**: Track LiteLLM upgrade/fix upstream or patch around the warning if Python 3.16 compatibility becomes urgent.
+- **Seen again**: 2026-03-19T23:32:00+10:30 during memory migration regression suite (`75 passed`) with repeated warning from `litellm_core_utils/logging_utils.py:273`.
+- **Seen again**: 2026-03-19T23:48:27+10:30 during post-fix targeted regression (`37 passed`) with same deprecation warning source.
+- **Seen again**: 2026-03-20T18:58:00+10:30 during targeted dedup regression (`14 passed`) after embedding-input update; same warning source and message persisted.
 
 ---
 
@@ -384,5 +506,88 @@
   - `ModuleNotFoundError: No module named 'orchestrator'`
 - **Likely cause**: Tests were run outside the configured project environment/module path setup (e.g., missing `uv run` or equivalent editable install context). [~90% confidence]
 - **Suggested action**: Re-run tests via project runtime (`uv run pytest ...`) or ensure `PYTHONPATH`/editable install includes repository root.
+
+---
+
+## [2026-03-19T23:10:11+10:30] — Voyage SDK import requires transitive `numpy` at test collection
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: `tests/test_embeddings.py tests/memory/test_embedding.py tests/test_dedup_slot_fallback.py tests/test_dedup_bitemporal.py tests/memory/test_tools.py tests/memory/test_retrieval.py + verification commands`
+- **Category**: dependency
+- **Blocked current task**: yes
+- **What happened**: `uv run pytest` failed at collection after embedding migration because importing `voyageai` raised `ModuleNotFoundError: No module named 'numpy'` from `voyageai/util.py`.
+- **Evidence**:
+  - `orchestrator/memory/embedding.py:11 import voyageai`
+  - `.venv/lib/python3.14/site-packages/voyageai/util.py:8: import numpy as np`
+  - `E ModuleNotFoundError: No module named 'numpy'`
+- **Likely cause**: `numpy` is required transitively by the installed `voyageai` package in this environment but was not present in the project dependency set. [~95% confidence]
+- **Suggested action**: Add `numpy` to `pyproject.toml` runtime dependencies and re-run tests in the managed environment.
+
+---
+
+## [2026-03-19T23:17:00+10:30] — Voyage Python SDK incompatible with Python 3.14 + current pydantic stack
+
+- **Severity**: warning
+- **Scope**: upstream
+- **Encountered during**: `tests/test_embeddings.py tests/memory/test_embedding.py tests/test_dedup_slot_fallback.py tests/test_dedup_bitemporal.py tests/memory/test_tools.py tests/memory/test_retrieval.py + verification commands`
+- **Category**: dependency
+- **Blocked current task**: yes
+- **What happened**: After installing `numpy`, test collection still failed on `import voyageai` with a pydantic v1 schema constraint error (`min_items` unenforced) under Python 3.14.
+- **Evidence**:
+  - `.venv/lib/python3.14/site-packages/voyageai/object/multimodal_embeddings.py:89 class MultimodalInput(BaseModel)`
+  - `ValueError: On field "content" the following field constraints are set but not enforced: min_items`
+  - `UserWarning: Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater`
+- **Likely cause**: Current `voyageai` SDK release imports pydantic v1 model definitions that are not compatible with this Python/pydantic runtime combination. [~90% confidence]
+- **Suggested action**: Use direct Voyage REST calls in production code until the SDK publishes a Python 3.14/pydantic-v2-compatible release.
+
+---
+
+## [2026-03-19T23:18:30+10:30] — Existing dedup test emits unawaited AsyncMock warning
+
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: `tests/test_dedup_bitemporal.py` verification run
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: The targeted suite passed but pytest emitted a runtime warning that an `AsyncMock` coroutine was not awaited in `tests/test_dedup_bitemporal.py:130`.
+- **Evidence**:
+  - `RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited`
+  - `tests/test_dedup_bitemporal.py::test_dedup_same_slot_mid_similarity_supersedes`
+- **Likely cause**: Pre-existing test double behavior in this module; warning is not introduced by the embedding migration change set. [~80% confidence]
+- **Suggested action**: Audit AsyncMock setup in that test to ensure all mocked async call paths are awaited.
+- **Seen again**: 2026-03-19T23:32:00+10:30 during broader regression run (`tests/test_dedup_bitemporal.py::test_dedup_same_slot_mid_similarity_supersedes`).
+
+---
+
+## [2026-03-20T13:49:07+10:30] — LSP diagnostics unavailable for SQL and `.example` files
+
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: 1024d embedding migration verification (`lsp_diagnostics` sweep)
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: `lsp_diagnostics` returned extension support errors for SQL migration files and `.env.example`, so those files could not be validated with LSP.
+- **Evidence**:
+  - `Error: No LSP server configured for extension: .sql`
+  - `Error: No LSP server configured for extension: .example`
+- **Likely cause**: Workspace LSP configuration includes code-language servers but not SQL or dotenv-example syntax. [~99% confidence]
+- **Suggested action**: Keep manual review for SQL/env examples or configure SQL/dotenv-capable language servers.
+
+---
+
+## [2026-03-20T13:49:07+10:30] — Migration runner requires explicit `DATABASE_URL` in local shell
+
+- **Severity**: info
+- **Scope**: host
+- **Encountered during**: 1024d migration verification via `uv run python scripts/migrate.py`
+- **Category**: config
+- **Blocked current task**: yes
+- **What happened**: Initial migration verification attempt failed immediately with `DATABASE_URL not set`; re-running with explicit `DATABASE_URL=postgresql://daemon:daemon@localhost:5432/daemon` succeeded and applied `019_voyage_embedding_migration.sql`.
+- **Evidence**:
+  - `❌ DATABASE_URL not set`
+  - `▶️  Applying 019_voyage_embedding_migration.sql... ✓`
+- **Likely cause**: Current shell session did not export DB env vars even though compose services were running. [~95% confidence]
+- **Suggested action**: Source `.env` or pass `DATABASE_URL` explicitly for local migration commands.
 
 ---

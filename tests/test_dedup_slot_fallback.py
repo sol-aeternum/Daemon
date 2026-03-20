@@ -58,14 +58,13 @@ class TestDedupSlotFallback:
             content="User's name is Julian", category="fact", slot="personal.name"
         )
 
-        # Mock embed_text at the module level where it's imported
-        mock_embedding = [0.1] * 1536  # Mock 1536-dim embedding
+        mock_embedding = [0.1] * 1024
 
         with patch(
-            "orchestrator.memory.dedup.embed_text",
+            "orchestrator.memory.dedup.embed_documents",
             new_callable=AsyncMock,
-            return_value=mock_embedding,
-        ):
+            return_value=[mock_embedding],
+        ) as mock_embed_documents:
             # Call deduplicate_facts
             result = await deduplicate_facts(
                 store=mock_store,
@@ -80,6 +79,9 @@ class TestDedupSlotFallback:
             )
             assert len(result.new) == 0, f"Expected 0 new, got {len(result.new)}"
             assert len(result.superseded) == 0
+            mock_embed_documents.assert_awaited_once_with(
+                ["personal.name: User's name is Julian"]
+            )
 
     @pytest.mark.asyncio
     async def test_slotted_fact_creates_new_when_no_match(self):
@@ -110,14 +112,13 @@ class TestDedupSlotFallback:
             content="User's name is Julian", category="fact", slot="personal.name"
         )
 
-        # Mock embed_text at the module level where it's imported
-        mock_embedding = [0.1] * 1536  # Mock 1536-dim embedding
+        mock_embedding = [0.1] * 1024
 
         with patch(
-            "orchestrator.memory.dedup.embed_text",
+            "orchestrator.memory.dedup.embed_documents",
             new_callable=AsyncMock,
-            return_value=mock_embedding,
-        ):
+            return_value=[mock_embedding],
+        ) as mock_embed_documents:
             # Call deduplicate_facts
             result = await deduplicate_facts(
                 store=mock_store,
@@ -130,3 +131,6 @@ class TestDedupSlotFallback:
             assert len(result.new) == 1, f"Expected 1 new, got {len(result.new)}"
             assert len(result.merged) == 0
             assert len(result.superseded) == 0
+            mock_embed_documents.assert_awaited_once_with(
+                ["personal.name: User's name is Julian"]
+            )

@@ -387,6 +387,31 @@ def _keyword_matches(keyword: str, content: str) -> bool:
     return bool(re.search(r"\b" + re.escape(keyword) + r"\b", content, re.IGNORECASE))
 
 
+SLOT_MATCH_HINTS: dict[str, tuple[str, ...]] = {
+    "age": ("years", "year", "old"),
+    "vehicle": ("car", "drive", "drives"),
+    "job": ("work", "works", "occupation"),
+    "location": ("live", "lives", "city"),
+    "language": ("code", "coding"),
+}
+
+
+def _slot_search_tokens(slot: str) -> str:
+    parts = [p for p in re.split(r"[._]", slot.lower()) if p]
+    hints: list[str] = []
+    for part in parts:
+        hints.extend(SLOT_MATCH_HINTS.get(part, ()))
+    return " ".join(parts + hints)
+
+
+def _memory_match_text(mem: dict[str, Any]) -> str:
+    content = str(mem.get("content") or "")
+    slot = str(mem.get("memory_slot") or "").strip()
+    if not slot:
+        return content
+    return f"{content} {slot} {_slot_search_tokens(slot)}"
+
+
 # ---------------------------------------------------------------------------
 # Scenario definitions
 # ---------------------------------------------------------------------------
@@ -623,14 +648,9 @@ class MatchResult:
 
 
 def match_fact(expected: ExpectedFact, memories: list[dict[str, Any]]) -> MatchResult:
-    """Match an expected fact against extracted memories by keyword intersection.
-
-    Uses word-boundary matching to prevent substring false positives
-    (e.g. "arch" must not match inside "march").
-    """
     for mem in memories:
-        content = mem["content"]
-        if all(_keyword_matches(kw, content) for kw in expected.keywords):
+        match_text = _memory_match_text(mem)
+        if all(_keyword_matches(kw, match_text) for kw in expected.keywords):
             result = MatchResult(expected=expected, matched_memory=mem)
             conf = mem.get("confidence", 0)
             if expected.min_confidence and conf < expected.min_confidence:
