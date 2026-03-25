@@ -339,3 +339,85 @@ async def test_get_memories_unavailable_store(client, monkeypatch) -> None:
     response = await client.get("/memories")
 
     assert response.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_reembed_memories_returns_detailed_counts(client, monkeypatch) -> None:
+    mock_store = AsyncMock()
+    memory_a = create_mock_memory(content="alpha")
+    memory_b = create_mock_memory(content=" ")
+    memory_c = create_mock_memory(content="gamma")
+    mock_store.export_memories = AsyncMock(return_value=[memory_a, memory_b, memory_c])
+    mock_store.update_memory_embedding = AsyncMock(return_value=True)
+
+    mock_app_state = create_mock_app_state(mock_store)
+    set_app_state(mock_app_state)
+
+    vector_a = [0.1] * 1024
+    vector_c = [0.2] * 1024
+    with patch(
+        "orchestrator.routes.memories.embed_documents",
+        new_callable=AsyncMock,
+        return_value=[vector_a, vector_c],
+    ):
+        response = await client.post(
+            "/memories/reembed",
+            json={"status": "active", "batch_size": 2},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["requested"] == 3
+    assert data["found"] == 3
+    assert data["updated"] == 2
+    assert data["skipped_empty"] == 1
+    assert data["missing_ids"] == 0
+    assert data["status"] == "active"
+    assert mock_store.update_memory_embedding.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_reembed_memories_with_memory_ids_tracks_missing_ids(
+    client, monkeypatch
+) -> None:
+    mock_store = AsyncMock()
+    existing_id = uuid.uuid4()
+    missing_id = uuid.uuid4()
+    existing_memory = create_mock_memory(memory_id=existing_id, content="one")
+    mock_store.get_memory = AsyncMock(side_effect=[existing_memory, None])
+    mock_store.update_memory_embedding = AsyncMock(return_value=True)
+
+    mock_app_state = create_mock_app_state(mock_store)
+    set_app_state(mock_app_state)
+
+    vector = [0.3] * 1024
+    with patch(
+        "orchestrator.routes.memories.embed_documents",
+        new_callable=AsyncMock,
+        return_value=[vector],
+    ):
+        response = await client.post(
+            "/memories/reembed",
+            json={"memory_ids": [str(existing_id), str(missing_id)]},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["requested"] == 2
+    assert data["found"] == 1
+    assert data["updated"] == 1
+    assert data["missing_ids"] == 1
+
+
+@pytest.mark.asyncio
+async def test_reembed_memories_rejects_unknown_status(client, monkeypatch) -> None:
+    mock_store = AsyncMock()
+    mock_app_state = create_mock_app_state(mock_store)
+    set_app_state(mock_app_state)
+
+    response = await client.post(
+        "/memories/reembed",
+        json={"status": "unknown_status"},
+    )
+
+    assert response.status_code == 422

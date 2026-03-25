@@ -9,5 +9,5 @@ from orchestrator.memory.retrieval import retrieve_memories
 async def test_retrieve_memories_empty():
     mock_store = AsyncMock()
     mock_store.search_memories.return_value = []
-    result = await retrieve_memories(mock_store, [0.1] * 1536)
+    result = await retrieve_memories(mock_store, [0.1] * 1024)
     assert result == []

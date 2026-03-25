@@ -10,8 +10,9 @@ from typing import Any, cast
 
 import asyncpg
 
+from orchestrator.config import get_settings
 from orchestrator.memory.encryption import ContentEncryption
-from orchestrator.memory.embedding import DEFAULT_MODEL, embed_text
+from orchestrator.memory.embedding import embed_query
 
 
 def is_explicit_memory(memory: dict[str, Any]) -> bool:
@@ -20,6 +21,10 @@ def is_explicit_memory(memory: dict[str, Any]) -> bool:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _default_embedding_model() -> str:
+    return get_settings().embedding_document_model
 
 
 class MemoryStore:
@@ -65,6 +70,37 @@ class MemoryStore:
             conversation_id,
         )
         return dict(row) if row else None
+
+    async def get_completed_council_session(
+        self,
+        conversation_id: uuid.UUID,
+    ) -> dict[str, Any] | None:
+        """Get the most recent completed council session for a conversation."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, conversation_id, prompt, config, rounds, 
+                       audit_findings, token_costs, created_at, updated_at
+                FROM council_sessions
+                WHERE conversation_id = $1
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                conversation_id,
+            )
+            if row:
+                return {
+                    "id": str(row["id"]),
+                    "conversation_id": str(row["conversation_id"]),
+                    "prompt": row["prompt"],
+                    "config": row["config"],
+                    "rounds": row["rounds"],
+                    "audit_findings": row["audit_findings"],
+                    "token_costs": row["token_costs"],
+                    "created_at": row["created_at"].isoformat(),
+                    "updated_at": row["updated_at"].isoformat(),
+                }
+            return None
 
     async def list_conversations(
         self,
@@ -343,7 +379,7 @@ class MemoryStore:
         source_type: str,
         *,
         embedding: list[float] | None = None,
-        embedding_model: str = DEFAULT_MODEL,
+        embedding_model: str | None = None,
         source_conversation_id: uuid.UUID | None = None,
         local_only: bool = False,
         confidence: float = 1.0,
@@ -352,6 +388,7 @@ class MemoryStore:
     ) -> dict[str, Any]:
         encrypted_content = self._enc.encrypt(content)
         embedding_str = _format_vector(embedding) if embedding else None
+        effective_embedding_model = embedding_model or _default_embedding_model()
 
         async def _insert(
             conversation_id: uuid.UUID | None,
@@ -367,7 +404,7 @@ class MemoryStore:
                 user_id,
                 encrypted_content,
                 embedding_str,
-                embedding_model,
+                effective_embedding_model,
                 category,
                 source_type,
                 conversation_id,
@@ -507,9 +544,10 @@ class MemoryStore:
         memory_id: uuid.UUID,
         embedding: list[float],
         *,
-        embedding_model: str = DEFAULT_MODEL,
+        embedding_model: str | None = None,
     ) -> bool:
         embedding_str = _format_vector(embedding)
+        effective_embedding_model = embedding_model or _default_embedding_model()
         result = await self._pool.execute(
             """
             UPDATE memories
@@ -520,7 +558,7 @@ class MemoryStore:
             """,
             memory_id,
             embedding_str,
-            embedding_model,
+            effective_embedding_model,
         )
         return result == "UPDATE 1"
 
@@ -568,7 +606,7 @@ class MemoryStore:
         user_id: uuid.UUID,
         *,
         embedding: list[float] | None = None,
-        embedding_model: str = DEFAULT_MODEL,
+        embedding_model: str | None = None,
         source_conversation_id: uuid.UUID | None = None,
         confidence: float = 1.0,
         new_status: str = "active",
@@ -577,6 +615,7 @@ class MemoryStore:
         """Create a new memory and mark the old one as superseded (transaction)."""
         encrypted_content = self._enc.encrypt(new_content)
         embedding_str = _format_vector(embedding) if embedding else None
+        effective_embedding_model = embedding_model or _default_embedding_model()
 
         async with self._pool.acquire() as conn:
             async with conn.transaction():
@@ -595,7 +634,7 @@ class MemoryStore:
                         user_id,
                         encrypted_content,
                         embedding_str,
-                        embedding_model,
+                        effective_embedding_model,
                         new_category,
                         new_source_type,
                         conversation_id,
@@ -811,7 +850,7 @@ class MemoryStore:
             List of memory dicts filtered by source_type
         """
         # Embed the text query
-        embedding = await embed_text(text)
+        embedding = await embed_query(text)
         # Call search_memories with the same params
         results = await self.search_memories(
             user_id,
@@ -994,7 +1033,7 @@ class MemoryStore:
             embedding_str = (
                 _format_vector(mem["embedding"]) if mem.get("embedding") else None
             )
-            embedding_model = mem.get("embedding_model", DEFAULT_MODEL)
+            embedding_model = mem.get("embedding_model") or _default_embedding_model()
             status = mem.get("status", "active")
             memory_slot = mem.get("memory_slot")
             await self._pool.execute(

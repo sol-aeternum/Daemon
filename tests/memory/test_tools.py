@@ -22,7 +22,7 @@ async def test_memory_tools_import():
 async def test_memory_read_semantic_mode_passes_memory_slot():
     """Test that semantic mode passes memory_slot to search_memories."""
     with patch(
-        "orchestrator.memory.tools.embed_text", new_callable=AsyncMock
+        "orchestrator.memory.tools.embed_query", new_callable=AsyncMock
     ) as mock_embed:
         mock_embed.return_value = [0.1, 0.2, 0.3]
 

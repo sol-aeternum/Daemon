@@ -5,7 +5,7 @@ import uuid
 from typing import cast
 
 from orchestrator.guardrails import strip_reasoning_fields_from_message
-from orchestrator.memory.embedding import embed_text
+from orchestrator.memory.embedding import embed_query
 from orchestrator.memory.retrieval import retrieve_memories
 from orchestrator.memory.store import MemoryStore
 from orchestrator.prompts import DAEMON_SYSTEM_PROMPT
@@ -166,7 +166,7 @@ async def build_memory_context(
     if query_text:
         try:
             query_embedding = await asyncio.wait_for(
-                embed_text(query_text), timeout=8.0
+                embed_query(query_text), timeout=8.0
             )
             retrieved = await retrieve_memories(
                 store=store,

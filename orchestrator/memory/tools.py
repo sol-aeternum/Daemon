@@ -9,7 +9,7 @@ from typing import Any
 
 from orchestrator.memory.store import MemoryStore
 from orchestrator.memory.dedup import dedup_and_store
-from orchestrator.memory.embedding import embed_text
+from orchestrator.memory.embedding import embed_query
 from orchestrator.tools.registry import Tool
 
 
@@ -69,7 +69,7 @@ class MemoryReadTool(Tool):
             return datetime.fromisoformat(normalized)
 
         if mode == "semantic":
-            query_embedding = await embed_text(query)
+            query_embedding = await embed_query(query)
             memories = await self.store.search_memories(
                 user_id=self.user_id,
                 query_embedding=query_embedding,
