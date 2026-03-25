@@ -783,17 +783,6 @@ async def stream_sse_chat(
                 if queue is not None:
                     try:
                         await queue.enqueue_job(
-                            "generate_conversation_title_job",
-                            str(conversation_uuid),
-                            _job_id=f"title:{conversation_uuid}",
-                            _defer_by=timedelta(seconds=30),
-                        )
-                    except Exception as enqueue_error:
-                        logger.warning(
-                            "Failed to enqueue title generation: %s", enqueue_error
-                        )
-                    try:
-                        await queue.enqueue_job(
                             "extract_memories",
                             str(user_id),
                             str(conversation_uuid),

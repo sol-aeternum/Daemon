@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends
 
 from orchestrator.db import get_app_state, AppState
-from orchestrator.memory.embedding import _fallback_count, _last_fallback_at
+from orchestrator.memory.embedding import _last_retry_at, _retry_count
 
 router = APIRouter(prefix="/status", tags=["system"])
 
@@ -22,6 +22,6 @@ async def get_status(app_state: AppState = Depends(get_app_state)):
         "db_healthy": db_healthy,
         "redis_healthy": redis_healthy,
         "memory_enabled": app_state.memory_store is not None,
-        "embedding_fallback_activations": _fallback_count,
-        "embedding_last_fallback_at": _last_fallback_at,
+        "embedding_retry_activations": _retry_count,
+        "embedding_last_retry_at": _last_retry_at,
     }

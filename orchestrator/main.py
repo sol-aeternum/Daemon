@@ -29,6 +29,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
+from orchestrator.council.sse import stream_council, stream_council_interview_response
 from orchestrator.config import ProviderConfig, Settings, get_settings
 from orchestrator.daemon import (
     effective_provider_and_model,
@@ -357,6 +358,173 @@ def _get_vision_fallback_model(
             tier_config.image_agent.model, provider_config
         )
     return _normalize_model_for_provider(settings.auto_fast_model, provider_config)
+
+
+def _extract_council_config_response(message: str) -> dict[str, Any] | None:
+    raw = message.strip()
+    lowered = raw.lower()
+    if not lowered.startswith("/council config:"):
+        return None
+
+    payload = raw.split(":", 1)[1].strip()
+    if not payload:
+        return {}
+
+    if payload.startswith("{"):
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    result: dict[str, Any] = {}
+    for item in [part.strip() for part in payload.split(",") if part.strip()]:
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        key = key.strip().lower()
+        value = value.strip()
+
+        if key == "preset":
+            result["preset_name"] = value.lower()
+            continue
+
+        if key == "rounds":
+            try:
+                result["round_count"] = int(value)
+            except ValueError:
+                continue
+            continue
+
+        if key == "audit":
+            result["audit_enabled"] = value.lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+
+    return result
+
+
+def _extract_latest_council_prompt(messages: list[dict[str, Any]]) -> str | None:
+    for msg in reversed(messages):
+        if msg.get("role") != "user":
+            continue
+        content = _extract_text_content(msg.get("content")).strip()
+        if not content:
+            continue
+
+        lowered = content.lower()
+        if lowered.startswith("/council config:"):
+            continue
+        if lowered.startswith("/council"):
+            prompt = content[len("/council") :].strip()
+            if prompt.startswith("--default"):
+                prompt = prompt[len("--default") :].strip()
+            return prompt or None
+
+    return None
+
+
+def _parse_sse_frame(frame: str) -> tuple[str | None, dict[str, Any] | None]:
+    event_type: str | None = None
+    payload_raw: str | None = None
+
+    for line in frame.splitlines():
+        if line.startswith("event: "):
+            event_type = line[len("event: ") :].strip()
+        elif line.startswith("data: "):
+            payload_raw = line[len("data: ") :].strip()
+
+    if payload_raw is None:
+        return event_type, None
+
+    try:
+        payload = json.loads(payload_raw)
+    except json.JSONDecodeError:
+        return event_type, None
+
+    if isinstance(payload, dict):
+        return event_type, payload
+
+    return event_type, None
+
+
+def _extract_council_event_for_persistence(frame: str) -> dict[str, Any] | None:
+    event_type, payload = _parse_sse_frame(frame)
+    if payload is None:
+        return None
+
+    supported_types = {
+        "council_interview",
+        "council_progress",
+        "council_output",
+        "council_done",
+        "council_error",
+    }
+    if event_type not in supported_types:
+        return None
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        data = {}
+
+    event: dict[str, Any] = {"type": event_type}
+    for key in (
+        "roster",
+        "presets",
+        "rounds_options",
+        "audit_default",
+        "stage",
+        "current_round",
+        "total_rounds",
+        "models_complete",
+        "models_total",
+        "section",
+        "content",
+        "metadata",
+        "session_id",
+        "total_tokens",
+        "total_cost_usd",
+        "models_used",
+        "error",
+    ):
+        if key in data:
+            event[key] = data[key]
+
+    event_id = payload.get("id")
+    if isinstance(event_id, str) and event_id:
+        event["id"] = event_id
+
+    request_id = payload.get("request_id")
+    if isinstance(request_id, str) and request_id:
+        event["request_id"] = request_id
+
+    return event
+
+
+def _build_council_assistant_content(council_events: list[dict[str, Any]]) -> str:
+    sections: list[str] = []
+    for event in council_events:
+        if event.get("type") == "council_output":
+            content = event.get("content")
+            if isinstance(content, str) and content.strip():
+                sections.append(content.strip())
+
+    if sections:
+        return "\n\n".join(sections)
+
+    for event in reversed(council_events):
+        if event.get("type") == "council_error":
+            error = event.get("error")
+            if isinstance(error, str) and error.strip():
+                return f"Council error: {error.strip()}"
+
+    if any(event.get("type") == "council_interview" for event in council_events):
+        return "Council configuration requested."
+
+    return "Council run completed."
 
 
 async def _summarize_images_for_fallback(
@@ -1215,6 +1383,20 @@ async def chat(
     if not user_message and attachments:
         user_message = "Please analyze the attached files."
 
+    council_config_response = _extract_council_config_response(user_message)
+    is_council_config_response = council_config_response is not None
+    is_council_command = (
+        user_message.lstrip().startswith("/council") and not is_council_config_response
+    )
+
+    if is_council_config_response and council_config_response is not None:
+        interview_prompt = _extract_latest_council_prompt(incoming_messages)
+        if interview_prompt:
+            council_config_response = {
+                **council_config_response,
+                "_prompt": interview_prompt,
+            }
+
     prepared_user_content: str | list[dict[str, Any]] = user_message
     if attachments:
         prepared_user_content = _build_user_content_from_attachments(
@@ -1367,9 +1549,9 @@ async def chat(
                     status="complete",
                 )
 
-                if not conversation_exists and app_state.queue:
+                if not conversation_exists and app_state.redis:
                     try:
-                        await app_state.queue.enqueue_job(
+                        await app_state.redis.enqueue_job(
                             "generate_title",
                             str(conversation_uuid),
                             user_message,
@@ -1474,6 +1656,145 @@ async def chat(
 
     async def generator():
         try:
+            if is_council_config_response:
+                persisted_council_events: list[dict[str, Any]] = []
+                if conversation_uuid:
+                    yield sse(
+                        "conversation",
+                        {
+                            "type": "conversation",
+                            "id": "evt_conversation",
+                            "ts": now_rfc3339(),
+                            "conversation_id": conversation_id,
+                            "request_id": request_id,
+                            "data": {"conversation_id": str(conversation_uuid)},
+                        },
+                    )
+
+                async for frame in stream_council_interview_response(
+                    user_message=user_message,
+                    conversation_id=conversation_id,
+                    request_id=request_id,
+                    stored_config=council_config_response,
+                ):
+                    parsed_event = _extract_council_event_for_persistence(frame)
+                    if parsed_event is not None:
+                        persisted_council_events.append(parsed_event)
+                    yield frame
+
+                if store and conversation_uuid and user_id and persisted_council_events:
+                    try:
+                        await store.insert_message(
+                            conversation_id=conversation_uuid,
+                            user_id=user_id,
+                            role="assistant",
+                            content=_build_council_assistant_content(
+                                persisted_council_events
+                            ),
+                            model="council",
+                            tool_results=[
+                                {
+                                    "name": "council_events",
+                                    "result": {
+                                        "events": persisted_council_events,
+                                    },
+                                    "request_id": request_id,
+                                }
+                            ],
+                            metadata={
+                                "request_id": request_id,
+                                "council_events": persisted_council_events,
+                            },
+                            status="complete",
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Failed to persist council interview response output",
+                            exc_info=True,
+                        )
+
+                yield sse(
+                    "done",
+                    {
+                        "type": "done",
+                        "id": "evt_done",
+                        "ts": now_rfc3339(),
+                        "conversation_id": conversation_id,
+                        "request_id": request_id,
+                        "data": {"status": "completed"},
+                    },
+                )
+                return
+
+            if is_council_command:
+                persisted_council_events: list[dict[str, Any]] = []
+                if conversation_uuid:
+                    yield sse(
+                        "conversation",
+                        {
+                            "type": "conversation",
+                            "id": "evt_conversation",
+                            "ts": now_rfc3339(),
+                            "conversation_id": conversation_id,
+                            "request_id": request_id,
+                            "data": {"conversation_id": str(conversation_uuid)},
+                        },
+                    )
+
+                async for frame in stream_council(
+                    user_message=user_message,
+                    conversation_id=conversation_id,
+                    request_id=request_id,
+                ):
+                    parsed_event = _extract_council_event_for_persistence(frame)
+                    if parsed_event is not None:
+                        persisted_council_events.append(parsed_event)
+                    yield frame
+
+                if store and conversation_uuid and user_id and persisted_council_events:
+                    try:
+                        await store.insert_message(
+                            conversation_id=conversation_uuid,
+                            user_id=user_id,
+                            role="assistant",
+                            content=_build_council_assistant_content(
+                                persisted_council_events
+                            ),
+                            model="council",
+                            tool_results=[
+                                {
+                                    "name": "council_events",
+                                    "result": {
+                                        "events": persisted_council_events,
+                                    },
+                                    "request_id": request_id,
+                                }
+                            ],
+                            metadata={
+                                "request_id": request_id,
+                                "council_events": persisted_council_events,
+                            },
+                            status="complete",
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Failed to persist council command output",
+                            exc_info=True,
+                        )
+
+                yield sse(
+                    "done",
+                    {
+                        "type": "done",
+                        "id": "evt_done",
+                        "ts": now_rfc3339(),
+                        "conversation_id": conversation_id,
+                        "request_id": request_id,
+                        "data": {"status": "completed"},
+                    },
+                )
+                return
+
             trusted_spawn_context = _build_trusted_spawn_context(
                 settings, payload.metadata
             )

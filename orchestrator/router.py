@@ -10,6 +10,7 @@ class RoutingDecision:
     local_requested: bool
     user_message: str
     reason: str
+    command: str | None = None
 
 
 def route_message(message: str, metadata: dict[str, Any] | None) -> RoutingDecision:
@@ -18,8 +19,17 @@ def route_message(message: str, metadata: dict[str, Any] | None) -> RoutingDecis
     local_requested = False
     user_message = raw
     reason = "default_cloud"
+    command = None
 
-    if stripped.startswith("/local"):
+    if stripped.startswith("/council"):
+        command = "council"
+        user_message = (
+            stripped[len("/council") :].lstrip()
+            if len(stripped) > len("/council")
+            else ""
+        )
+        reason = "council_command"
+    elif stripped.startswith("/local"):
         local_requested = True
         user_message = stripped[len("/local") :].lstrip()
         reason = "local_flag_prefix"
@@ -28,5 +38,10 @@ def route_message(message: str, metadata: dict[str, Any] | None) -> RoutingDecis
         user_message = raw
         reason = "local_flag_metadata"
 
-    # Phase 1: always route to cloud; record local intent for later.
-    return RoutingDecision(pipeline="cloud", local_requested=local_requested, user_message=user_message, reason=reason)
+    return RoutingDecision(
+        pipeline="cloud",
+        local_requested=local_requested,
+        user_message=user_message,
+        reason=reason,
+        command=command,
+    )

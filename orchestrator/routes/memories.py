@@ -5,8 +5,9 @@ from pydantic import BaseModel
 import uuid
 from typing import Any, Literal
 
+from orchestrator.config import get_settings
 from orchestrator.db import get_app_state, AppState
-from orchestrator.memory.embedding import DEFAULT_MODEL, embed_batch
+from orchestrator.memory.embedding import embed_documents
 
 router = APIRouter(prefix="/memories", tags=["memories"])
 
@@ -35,7 +36,14 @@ class MemoryImportRequest(BaseModel):
 
 
 class MemoryReembedRequest(BaseModel):
-    status: str = "active"
+    status: Literal[
+        "active",
+        "pending",
+        "superseded",
+        "inactive",
+        "rejected",
+        "deleted",
+    ] = "active"
     memory_ids: list[uuid.UUID] | None = None
     batch_size: int = 50
 
@@ -102,35 +110,68 @@ async def reembed_memories(
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
 
+    missing_ids = 0
     if data.memory_ids:
-        memories = []
+        memories: list[dict[str, Any]] = []
         for memory_id in data.memory_ids:
             memory = await store.get_memory(memory_id)
             if memory:
                 memories.append(memory)
+            else:
+                missing_ids += 1
     else:
         memories = await store.export_memories(DEFAULT_USER_ID, status=data.status)
 
+    requested = len(data.memory_ids) if data.memory_ids else len(memories)
     if not memories:
-        return {"updated": 0}
+        return {
+            "requested": requested,
+            "found": 0,
+            "updated": 0,
+            "skipped_empty": 0,
+            "missing_ids": missing_ids,
+            "status": data.status,
+        }
 
     batch_size = max(1, min(data.batch_size, 200))
     updated = 0
+    skipped_empty = 0
+
+    document_model = get_settings().embedding_document_model
 
     for idx in range(0, len(memories), batch_size):
         batch = memories[idx : idx + batch_size]
-        texts = [mem.get("content", "") for mem in batch]
-        embeddings = await embed_batch(texts, model=DEFAULT_MODEL)
+        valid_batch: list[dict[str, Any]] = []
+        valid_texts: list[str] = []
+        for mem in batch:
+            text = str(mem.get("content") or "").strip()
+            if not text:
+                skipped_empty += 1
+                continue
+            valid_batch.append(mem)
+            valid_texts.append(text)
 
-        for mem, embedding in zip(batch, embeddings):
+        if not valid_texts:
+            continue
+
+        embeddings = await embed_documents(valid_texts)
+
+        for mem, embedding in zip(valid_batch, embeddings):
             await store.update_memory_embedding(
                 mem["id"],
                 embedding,
-                embedding_model=DEFAULT_MODEL,
+                embedding_model=document_model,
             )
             updated += 1
 
-    return {"updated": updated}
+    return {
+        "requested": requested,
+        "found": len(memories),
+        "updated": updated,
+        "skipped_empty": skipped_empty,
+        "missing_ids": missing_ids,
+        "status": data.status,
+    }
 
 
 @router.delete("")
