@@ -32,8 +32,10 @@ async def test_dedup_slot_supersedes_with_similarity_threshold() -> None:
         "valid_to": None,
     }
 
-    with patch("orchestrator.memory.dedup.embed_text", new_callable=AsyncMock) as embed:
-        embed.return_value = [0.01, 0.02]
+    with patch(
+        "orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock
+    ) as embed:
+        embed.return_value = [[0.01, 0.02]]
         result = await deduplicate_facts(
             store,
             uuid.uuid4(),
@@ -59,8 +61,10 @@ async def test_dedup_slot_merges_when_similarity_is_high() -> None:
         }
     ]
 
-    with patch("orchestrator.memory.dedup.embed_text", new_callable=AsyncMock) as embed:
-        embed.return_value = [0.01, 0.02]
+    with patch(
+        "orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock
+    ) as embed:
+        embed.return_value = [[0.01, 0.02]]
         result = await deduplicate_facts(
             store,
             uuid.uuid4(),
@@ -86,8 +90,10 @@ async def test_dedup_without_slot_falls_back_to_similarity() -> None:
         }
     ]
 
-    with patch("orchestrator.memory.dedup.embed_text", new_callable=AsyncMock) as embed:
-        embed.return_value = [0.2, 0.3]
+    with patch(
+        "orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock
+    ) as embed:
+        embed.return_value = [[0.2, 0.3]]
         result = await deduplicate_facts(
             store,
             uuid.uuid4(),
@@ -116,9 +122,17 @@ async def test_dedup_same_slot_mid_similarity_supersedes() -> None:
         "memory_slot": "vehicle",
         "valid_to": None,
     }
+    store.supersede_memory.return_value = {
+        "id": uuid.uuid4(),
+        "content": "User rents a bike",
+        "memory_slot": "vehicle",
+        "valid_to": None,
+    }
 
-    with patch("orchestrator.memory.dedup.embed_text", new_callable=AsyncMock) as embed:
-        embed.return_value = [0.4, 0.5]
+    with patch(
+        "orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock
+    ) as embed:
+        embed.return_value = [[0.4, 0.5]]
         result = await deduplicate_facts(
             store,
             uuid.uuid4(),
@@ -149,8 +163,10 @@ async def test_dedup_same_slot_very_low_similarity_inserts_new_active() -> None:
         "valid_to": None,
     }
 
-    with patch("orchestrator.memory.dedup.embed_text", new_callable=AsyncMock) as embed:
-        embed.return_value = [0.4, 0.5]
+    with patch(
+        "orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock
+    ) as embed:
+        embed.return_value = [[0.4, 0.5]]
         result = await deduplicate_facts(
             store,
             uuid.uuid4(),
@@ -172,8 +188,10 @@ async def test_dedup_queries_include_historical() -> None:
         "content": "User has shellfish allergy",
     }
 
-    with patch("orchestrator.memory.dedup.embed_text", new_callable=AsyncMock) as embed:
-        embed.return_value = [0.9, 0.8]
+    with patch(
+        "orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock
+    ) as embed:
+        embed.return_value = [[0.9, 0.8]]
         await deduplicate_facts(
             store,
             uuid.uuid4(),
@@ -187,8 +205,10 @@ async def test_dedup_queries_include_historical() -> None:
 @pytest.mark.asyncio
 async def test_memory_write_slot_passthrough_to_dedup() -> None:
     store = AsyncMock()
-    with patch("orchestrator.memory.dedup.embed_text", new_callable=AsyncMock) as embed:
-        embed.return_value = [0.1, 0.2]
+    with patch(
+        "orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock
+    ) as embed:
+        embed.return_value = [[0.1, 0.2]]
         store.search_memories.return_value = []
         created_id = uuid.uuid4()
         store.insert_memory.return_value = {"id": created_id}
@@ -231,8 +251,10 @@ async def test_current_vehicle_closes_other_active_vehicle_family() -> None:
         {"id": keep_id, "memory_slot": "vehicle.current"},
     ]
 
-    with patch("orchestrator.memory.dedup.embed_text", new_callable=AsyncMock) as embed:
-        embed.return_value = [0.3, 0.7]
+    with patch(
+        "orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock
+    ) as embed:
+        embed.return_value = [[0.3, 0.7]]
         result = await deduplicate_facts(
             store,
             uuid.uuid4(),
@@ -268,8 +290,10 @@ async def test_current_vehicle_closes_high_similarity_no_slot_memory() -> None:
         {"id": keep_id, "memory_slot": "vehicle.current"},
     ]
 
-    with patch("orchestrator.memory.dedup.embed_text", new_callable=AsyncMock) as embed:
-        embed.return_value = [0.3, 0.7]
+    with patch(
+        "orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock
+    ) as embed:
+        embed.return_value = [[0.3, 0.7]]
         result = await deduplicate_facts(
             store,
             uuid.uuid4(),
@@ -298,8 +322,10 @@ async def test_extracted_does_not_supersede_user_created_same_conversation() -> 
         }
     ]
 
-    with patch("orchestrator.memory.dedup.embed_text", new_callable=AsyncMock) as embed:
-        embed.return_value = [0.5, 0.6]
+    with patch(
+        "orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock
+    ) as embed:
+        embed.return_value = [[0.5, 0.6]]
         result = await deduplicate_facts(
             store,
             uuid.uuid4(),
@@ -329,8 +355,10 @@ async def test_extracted_does_not_supersede_recent_user_created_within_window() 
         }
     ]
 
-    with patch("orchestrator.memory.dedup.embed_text", new_callable=AsyncMock) as embed:
-        embed.return_value = [0.2, 0.3]
+    with patch(
+        "orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock
+    ) as embed:
+        embed.return_value = [[0.2, 0.3]]
         result = await deduplicate_facts(
             store,
             uuid.uuid4(),
@@ -366,8 +394,10 @@ async def test_extracted_can_supersede_user_created_outside_window() -> None:
         "valid_to": None,
     }
 
-    with patch("orchestrator.memory.dedup.embed_text", new_callable=AsyncMock) as embed:
-        embed.return_value = [0.2, 0.3]
+    with patch(
+        "orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock
+    ) as embed:
+        embed.return_value = [[0.2, 0.3]]
         result = await deduplicate_facts(
             store,
             uuid.uuid4(),
