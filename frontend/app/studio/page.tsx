@@ -21,7 +21,8 @@ const VIDEO_ENABLED_TIERS = ["starter", "pro", "max", "byok"] as const;
 
 type StudioMode = "image" | "video";
 type VideoSourceMode = "text-to-video" | "image-to-video";
-type VideoProvider = "xai" | "openai_sora";
+type VideoProvider = "xai" | "kling";
+type KlingModel = "kling-v3-pro" | "kling-o3-pro";
 type VideoTier = (typeof VALID_VIDEO_TIERS)[number];
 type VideoEnabledTier = (typeof VIDEO_ENABLED_TIERS)[number];
 
@@ -179,9 +180,12 @@ function VideoModeControls({
   const [duration, setDuration] = useState<number>(5);
   const [sourceMode, setSourceMode] = useState<VideoSourceMode>("text-to-video");
   const [videoProvider, setVideoProvider] = useState<VideoProvider>("xai");
+  const [klingModel, setKlingModel] = useState<KlingModel>("kling-o3-pro");
+  const [audioEnabled, setAudioEnabled] = useState<boolean>(false);
   const [isEstimating, setIsEstimating] = useState(false);
   const [estimateError, setEstimateError] = useState<string | null>(null);
   const [estimate, setEstimate] = useState<{ required: number; balance: number; sufficient: boolean } | null>(null);
+  const isKlingSelected = videoProvider === "kling";
 
   const apiBaseUrl = useMemo(() => getApiBaseUrl(), []);
 
@@ -200,6 +204,10 @@ function VideoModeControls({
       user_id: userId,
       provider: videoProvider,
     });
+    if (videoProvider === "kling") {
+      query.set("kling_model", klingModel);
+      query.set("audio_enabled", String(audioEnabled));
+    }
     const proxyPath = `/api/video-credits/estimate?${query.toString()}`;
     const directPath = `/video-credits/estimate?${query.toString()}`;
     const candidates = apiBaseUrl
@@ -241,7 +249,7 @@ function VideoModeControls({
     }
 
     setIsEstimating(false);
-  }, [apiBaseUrl, duration, tier, userId, videoProvider]);
+  }, [apiBaseUrl, duration, tier, userId, videoProvider, klingModel, audioEnabled]);
 
   useEffect(() => {
     void loadEstimate();
@@ -269,8 +277,10 @@ function VideoModeControls({
       userId,
       provider: videoProvider,
       estimatedCredits: estimate?.required,
+      klingModel: videoProvider === "kling" ? klingModel : undefined,
+      audioEnabled: videoProvider === "kling" ? audioEnabled : undefined,
     });
-  }, [duration, estimate?.required, generateVideo, sourceMode, tier, userId, videoProvider]);
+  }, [duration, estimate?.required, generateVideo, sourceMode, tier, userId, videoProvider, klingModel, audioEnabled]);
 
   return (
     <div className="space-y-4">
@@ -312,8 +322,8 @@ function VideoModeControls({
             <p className="mb-2 text-xs font-medium text-[var(--color-text-secondary)]">Provider</p>
             <div className="grid grid-cols-2 gap-2">
               {([
-                { id: "xai", label: "xAI Grok" },
-                { id: "openai_sora", label: "OpenAI Sora" },
+                { id: "xai", label: "Grok Imagine" },
+                { id: "kling", label: "Kling 3.0" },
               ] as const).map((option) => (
                 <button
                   key={option.id}
@@ -330,6 +340,52 @@ function VideoModeControls({
               ))}
             </div>
           </div>
+
+          {isKlingSelected && (
+            <>
+              <div>
+                <p className="mb-2 text-xs font-medium text-[var(--color-text-secondary)]">Model</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { id: "kling-o3-pro", label: "O3 Pro" },
+                    { id: "kling-v3-pro", label: "V3 Pro" },
+                  ].map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => setKlingModel(option.id as KlingModel)}
+                      className={`rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
+                        klingModel === option.id
+                          ? "border-[var(--color-accent-primary)] bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]"
+                          : "border-[var(--color-border-primary)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-medium text-[var(--color-text-secondary)]">Include audio</p>
+                <button
+                  type="button"
+                  onClick={() => setAudioEnabled(!audioEnabled)}
+                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                    audioEnabled
+                      ? "bg-[var(--color-accent-primary)]"
+                      : "bg-[var(--color-border-primary)]"
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                      audioEnabled ? "translate-x-5" : "translate-x-1"
+                    }`}
+                  />
+                </button>
+              </div>
+            </>
+          )}
 
           <div>
             <div className="mb-2 flex items-center justify-between">
@@ -402,7 +458,7 @@ function VideoModeControls({
           <div className="rounded-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] px-3 py-2">
             <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">Provider</p>
             <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
-              {videoProvider === "openai_sora" ? "OpenAI Sora 2" : "xAI Grok Imagine 3"}
+              {videoProvider === "kling" ? "Kling 3.0" : "xAI Grok Imagine 3"}
             </p>
           </div>
         </div>

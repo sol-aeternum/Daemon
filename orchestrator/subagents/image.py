@@ -15,10 +15,9 @@ from openai import AsyncOpenAI
 
 from orchestrator.subagents.base import BaseSubagent, SubagentResult, SubagentType
 from providers.xai_imagine import XAIImagineClient, XAIImagineError
-from providers.openai_sora import OpenAISoraClient, OpenAISoraError
 from db.video_credits import VideoCreditsDAL
 from config.video_pricing import estimate_cost
-from orchestrator.config import get_settings, get_sora_api_key
+from orchestrator.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -250,52 +249,6 @@ class OpenRouterImageProvider(ImageProvider):
             return 1024, 1024
 
 
-class OpenAISoraProvider(ImageProvider):
-    """Video provider using OpenAI Sora."""
-
-    def __init__(self, api_key: str) -> None:
-        """Initialize OpenAI Sora provider."""
-        self.client = OpenAISoraClient()
-        if api_key:
-            self.client.api_key = api_key
-            if self.client.client:
-                self.client.client.api_key = api_key
-
-    async def generate_video(
-        self, prompt: str, duration: int, **kwargs
-    ) -> Dict[str, Any]:
-        """Generate a video using OpenAI Sora."""
-        try:
-            resolution = kwargs.get("resolution") or "720p"
-
-            # Map duration to Sora's supported values
-            if duration <= 5:
-                sora_duration = 5
-            elif duration <= 10:
-                sora_duration = 10
-            else:
-                sora_duration = 15  # Sora's max is 15 seconds for most models
-
-            video_job = await self.client.generate_video(
-                prompt=prompt,
-                duration_seconds=sora_duration,
-                size=resolution,
-            )
-            video_result = await self.client.poll_video_job(video_job.job_id)
-
-            return {
-                "url": video_result.url,
-                "duration": video_result.duration_seconds,
-                "provider": "openai_sora",
-            }
-        except OpenAISoraError as e:
-            raise RuntimeError(f"OpenAI Sora video error: {str(e)}") from e
-
-    async def generate_image(self, prompt: str, size: str) -> Dict[str, Any]:
-        """Generate an image - not supported by Sora provider."""
-        raise NotImplementedError("Image generation not supported by Sora provider")
-
-
 class XAIImageProvider(ImageProvider):
     """Image provider using xAI Imagine."""
 
@@ -343,6 +296,58 @@ class XAIImageProvider(ImageProvider):
             }
         except XAIImagineError as e:
             raise RuntimeError(f"xAI Imagine video error: {str(e)}") from e
+
+
+class FalKlingProvider(ImageProvider):
+    """Video provider using fal.ai Kling."""
+
+    def __init__(self, api_key: str) -> None:
+        """Initialize fal.ai Kling provider."""
+        from providers.fal_kling import FalKlingClient, FalKlingError
+
+        self.client = FalKlingClient()
+        if api_key:
+            self.client.api_key = api_key
+
+    async def generate_image(self, prompt: str, size: str) -> Dict[str, Any]:
+        """Generate an image using fal.ai Kling.
+
+        Raises:
+            NotImplementedError: Kling is video-only provider
+        """
+        raise NotImplementedError(
+            "Image generation not supported by fal.ai Kling provider"
+        )
+
+    async def generate_video(
+        self, prompt: str, duration: int, **kwargs
+    ) -> Dict[str, Any]:
+        """Generate a video using fal.ai Kling."""
+        try:
+            # Extract additional parameters from kwargs
+            source_image_url = kwargs.get("source_image_url")
+            kling_model = kwargs.get("kling_model", "o3-pro")
+            audio_enabled = kwargs.get("audio_enabled", False)
+
+            # Generate the video
+            video_job = await self.client.generate_video(
+                prompt=prompt,
+                duration_seconds=duration,
+                source_image_url=source_image_url,
+                kling_model=kling_model,
+                audio_enabled=audio_enabled,
+            )
+
+            # Poll for completion
+            video_result = await self.client.poll_video_job(video_job)
+
+            return {
+                "url": video_result.url,
+                "duration": video_result.duration_seconds,
+                "provider": "fal",
+            }
+        except FalKlingError as e:
+            raise RuntimeError(f"fal.ai Kling video error: {str(e)}") from e
 
     def _size_to_aspect_ratio(self, size: str) -> str:
         """Convert size string to aspect ratio."""
@@ -405,32 +410,25 @@ class ImageSubagent(BaseSubagent):
             or config_dict.get("image_provider")
             or "openrouter"
         ).lower()
-        if self.provider_name == "sora":
-            self.provider_name = "openai_sora"
 
         # For video mode, check if a specific provider is requested
+        # Try to get tier-specific video provider, fallback to PRO tier, then to image provider
+        tier = os.environ.get("DEFAULT_TIER", "pro").upper()
+        tier_video_provider_env = f"TIER_{tier}_VIDEO_PROVIDER"
+
         self.video_provider_name = (
-            os.environ.get("TIER_PRO_VIDEO_PROVIDER")
+            os.environ.get(tier_video_provider_env)
+            or os.environ.get("TIER_PRO_VIDEO_PROVIDER")
             or config_dict.get("video_provider")
             or self.provider_name
         ).lower()
-        if self.video_provider_name == "sora":
-            self.video_provider_name = "openai_sora"
 
         if self.provider_name == "xai":
             xai_api_key = (
                 config_dict.get("xai_api_key") if config_dict else None
             ) or os.environ.get("XAI_API_KEY", "")
             self.provider = XAIImageProvider(xai_api_key)
-        elif self.provider_name == "openai_sora":
-            openai_api_key = (
-                (config_dict.get("openai_sora_api_key") if config_dict else None)
-                or (config_dict.get("openai_api_key") if config_dict else None)
-                or os.environ.get("OPENAI_SORA_API_KEY", "")
-                or get_sora_api_key()
-                or ""
-            )
-            self.provider = OpenAISoraProvider(openai_api_key)
+
         else:
             openrouter_api_key = (
                 config_dict.get("openrouter_api_key") if config_dict else None
@@ -585,10 +583,6 @@ class ImageSubagent(BaseSubagent):
         video_provider_name = self.video_provider_name
         if context.get("video_provider"):
             video_provider_name = context["video_provider"].lower()
-        if video_provider_name == "sora":
-            video_provider_name = "openai_sora"
-        if video_provider_name == "openai-sora":
-            video_provider_name = "openai_sora"
 
         # Calculate cost AFTER determining provider
         cost_int = estimate_cost(
@@ -596,6 +590,8 @@ class ImageSubagent(BaseSubagent):
             tier=tier,
             provider=video_provider_name,
             resolution=context.get("resolution"),
+            kling_model=context.get("kling_model", "o3-pro"),
+            audio_enabled=context.get("audio_enabled", False),
         )
 
         # BYOK tier uses own API key, skip credit check/debit
@@ -628,25 +624,32 @@ class ImageSubagent(BaseSubagent):
                     self.config.get("xai_api_key") if self.config else None
                 ) or os.environ.get("XAI_API_KEY", "")
                 video_provider = XAIImageProvider(xai_api_key)
-            elif video_provider_name == "openai_sora":
-                openai_api_key = (
-                    (self.config.get("openai_sora_api_key") if self.config else None)
-                    or (self.config.get("openai_api_key") if self.config else None)
-                    or os.environ.get("OPENAI_SORA_API_KEY", "")
-                    or get_sora_api_key()
-                    or ""
-                )
-                video_provider = OpenAISoraProvider(openai_api_key)
+            elif video_provider_name == "fal":
+                fal_api_key = (
+                    self.config.get("fal_api_key") if self.config else None
+                ) or os.environ.get("FAL_KEY", "")
+                video_provider = FalKlingProvider(fal_api_key)
             else:
                 # Fallback to current provider
                 video_provider = self.provider
 
         # Check if the selected provider supports video generation
         try:
+            # Prepare kwargs for video generation
+            video_kwargs = {
+                "resolution": context.get("resolution"),
+            }
+
+            # Add fal-specific parameters if using fal provider
+            if video_provider_name == "fal":
+                video_kwargs["source_image_url"] = context.get("source_image_url")
+                video_kwargs["kling_model"] = context.get("kling_model", "o3-pro")
+                video_kwargs["audio_enabled"] = context.get("audio_enabled", False)
+
             video_result = await video_provider.generate_video(
                 prompt=prompt,
                 duration=duration_seconds,
-                resolution=context.get("resolution"),
+                **video_kwargs,
             )
         except NotImplementedError:
             refund_result = (

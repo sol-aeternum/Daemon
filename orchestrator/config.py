@@ -49,11 +49,6 @@ class TierConfig(BaseSettings):
     tier_video_max_duration: int | None = None
     tier_video_credit_discount: float = 0.0
 
-    # Sora video generation settings
-    video_provider: str = "xai"  # "xai" or "openai_sora"
-    sora_model: str = ""  # e.g., "sora-2", "sora-2-pro"
-    sora_max_resolution: str = ""  # e.g., "720p", "1024p"
-
 
 class Settings(BaseSettings):
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
@@ -90,6 +85,7 @@ class Settings(BaseSettings):
     tier_free_code_model: str = ""
     tier_free_image_model: str = ""
     tier_free_image_provider: str = "openrouter"
+    tier_free_video_provider: str = "fal"
     tier_free_reader_model: str = ""
     tier_free_embeddings_model: str = ""
 
@@ -107,6 +103,7 @@ class Settings(BaseSettings):
     tier_starter_image_model: str = "google/gemini-2.5-flash-image"
     tier_starter_image_temp: float = 0.8
     tier_starter_image_provider: str = "openrouter"
+    tier_starter_video_provider: str = "fal"
     tier_starter_reader_model: str = "openrouter/google/gemini-2.0-pro-exp"
     tier_starter_reader_temp: float = 0.3
     tier_starter_embeddings_model: str = "voyage-4-large"
@@ -122,6 +119,7 @@ class Settings(BaseSettings):
     tier_pro_image_model: str = "google/gemini-2.5-flash-image"
     tier_pro_image_temp: float = 0.8
     tier_pro_image_provider: str = "openrouter"
+    tier_pro_video_provider: str = "fal"
     tier_pro_reader_model: str = "openrouter/google/gemini-2.0-pro-exp"
     tier_pro_reader_temp: float = 0.3
     tier_pro_embeddings_model: str = "voyage-4-large"
@@ -140,6 +138,7 @@ class Settings(BaseSettings):
     tier_max_image_model: str = "google/gemini-2.5-flash-image"
     tier_max_image_temp: float = 0.8
     tier_max_image_provider: str = "openrouter"
+    tier_max_video_provider: str = "fal"
     tier_max_reader_model: str = "openrouter/google/gemini-2.0-pro-exp"
     tier_max_reader_temp: float = 0.3
     tier_max_embeddings_model: str = "voyage-4-large"
@@ -152,30 +151,9 @@ class Settings(BaseSettings):
     tier_byok_code_model: str = ""
     tier_byok_image_model: str = ""
     tier_byok_image_provider: str = "openrouter"
+    tier_byok_video_provider: str = "fal"
     tier_byok_reader_model: str = ""
     tier_byok_embeddings_model: str = ""
-
-    # Sora video generation settings per tier
-    # Default to xai (Grok Imagine) for backward compatibility
-    tier_free_video_provider: str = "xai"
-    tier_free_sora_model: str = ""
-    tier_free_sora_max_resolution: str = ""
-
-    tier_starter_video_provider: str = "xai"
-    tier_starter_sora_model: str = ""
-    tier_starter_sora_max_resolution: str = ""
-
-    tier_pro_video_provider: str = "xai"
-    tier_pro_sora_model: str = "sora-2"
-    tier_pro_sora_max_resolution: str = "720p"
-
-    tier_max_video_provider: str = "xai"
-    tier_max_sora_model: str = "sora-2-pro"
-    tier_max_sora_max_resolution: str = "1024p"
-
-    tier_byok_video_provider: str = "xai"
-    tier_byok_sora_model: str = ""
-    tier_byok_sora_max_resolution: str = ""
 
     # ===== AUTO-ROUTING MODEL TIERS =====
     auto_fast_model: str = "openrouter/google/gemini-2.5-flash"
@@ -268,8 +246,6 @@ class Settings(BaseSettings):
     )
 
     openai_api_key: str | None = None
-    # Optional: separate key for Sora video generation (falls back to openai_api_key if not set)
-    openai_sora_api_key: str | None = None
 
     # ===== MEMORY LAYER =====
     database_url: str | None = None
@@ -341,9 +317,6 @@ class Settings(BaseSettings):
             tier_video_enabled=tier_video_enabled,
             tier_video_max_duration=tier_video_max_duration,
             tier_video_credit_discount=tier_video_credit_discount,
-            video_provider=getattr(self, f"{prefix}video_provider", "xai"),
-            sora_model=getattr(self, f"{prefix}sora_model", ""),
-            sora_max_resolution=getattr(self, f"{prefix}sora_max_resolution", ""),
         )
 
     def get_provider_config(
@@ -456,13 +429,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-
-
-def get_sora_api_key() -> str | None:
-    """Get API key for Sora video generation.
-
-    Returns:
-        OPENAI_SORA_API_KEY if set, otherwise falls back to OPENAI_API_KEY.
-    """
-    settings = get_settings()
-    return settings.openai_sora_api_key or settings.openai_api_key

@@ -6,11 +6,6 @@ Pricing: $0.05/second (1 credit = $0.05)
 - 15s = 15 credits ($0.75)
 - 20s = 20 credits ($1.00)
 - 30s = 30 credits ($1.50)
-
-Sora Pricing:
-- sora-2: $0.10/sec → 2 credits/sec
-- sora-2-pro: $0.30/sec → 6 credits/sec (Pro tier)
-- sora-2-pro: $0.50/sec → 10 credits/sec (Max tier)
 """
 
 from __future__ import annotations
@@ -22,11 +17,6 @@ DURATION_10S = 10
 DURATION_15S = 15
 DURATION_20S = 20
 DURATION_30S = 30
-
-# Sora pricing constants (credits per second)
-SORA_2_CREDITS_PER_SECOND = 2
-SORA_2_PRO_CREDITS_PER_SECOND_PRO_TIER = 6
-SORA_2_PRO_CREDITS_PER_SECOND_MAX_TIER = 10
 
 
 class VideoPricingConfig(BaseSettings):
@@ -70,43 +60,56 @@ def estimate_cost(
     tier: str = "pro",
     provider: str = "xai",
     resolution: str | None = None,
+    kling_model: str = "o3-pro",
+    audio_enabled: bool = False,
 ) -> int:
+    """Estimate video generation cost in credits.
+
+    Args:
+        duration_seconds: Video duration in seconds
+        tier: User tier (free, starter, pro, max, byok)
+        provider: Video provider (xai, fal)
+        resolution: Optional resolution parameter
+        kling_model: Kling model type (o3-pro, v3-pro) for fal provider
+        audio_enabled: Whether audio is enabled for fal provider
+
+    Returns:
+        Estimated cost in credits
+    """
     config = get_pricing_config()
 
     _ = resolution
 
-    if duration_seconds == 5:
-        base_cost = config.cost_5s
-    elif duration_seconds == 10:
-        base_cost = config.cost_10s
-    elif duration_seconds == 15:
-        base_cost = config.cost_15s
-    elif duration_seconds == 20:
-        base_cost = config.cost_20s
-    elif duration_seconds == 30:
-        base_cost = config.cost_30s
-    else:
-        base_cost = duration_seconds * config.credits_per_second
-
-    provider_name = provider.lower()
-    is_sora = provider_name in ("sora", "openai_sora")
-
-    if is_sora:
-        # Sora uses per-second pricing (tier already included in pricing)
-        if tier.lower() == "max":
-            # Max tier = sora-2-pro at $0.50/sec = 10 credits/sec
-            base_cost = duration_seconds * SORA_2_PRO_CREDITS_PER_SECOND_MAX_TIER
-        elif tier.lower() == "pro":
-            # Pro tier = sora-2-pro at $0.30/sec = 6 credits/sec
-            base_cost = duration_seconds * SORA_2_PRO_CREDITS_PER_SECOND_PRO_TIER
+    if provider.lower() == "fal":
+        # Calculate per-second credits based on model and audio settings
+        if kling_model == "v3-pro":
+            if audio_enabled:
+                credits_per_second = int(0.196 * 20)  # Voice control: $0.196/sec
+            else:
+                credits_per_second = int(0.112 * 20)  # Standard: $0.112/sec
         else:
-            # Default/fallback = sora-2 at $0.10/sec = 2 credits/sec
-            base_cost = duration_seconds * SORA_2_CREDITS_PER_SECOND
-        # Sora pricing already includes tier - no additional discount
-        return int(base_cost)
+            if audio_enabled:
+                credits_per_second = int(0.14 * 20)  # O3 Pro with audio: $0.14/sec
+            else:
+                credits_per_second = int(0.112 * 20)  # O3 Pro without audio: $0.112/sec
 
-    # xAI uses duration-based pricing (already calculated above)
-    # Apply tier discount for xAI
+        base_cost = duration_seconds * credits_per_second
+    else:
+        # xAI uses fixed duration-based pricing
+        if duration_seconds == 5:
+            base_cost = config.cost_5s
+        elif duration_seconds == 10:
+            base_cost = config.cost_10s
+        elif duration_seconds == 15:
+            base_cost = config.cost_15s
+        elif duration_seconds == 20:
+            base_cost = config.cost_20s
+        elif duration_seconds == 30:
+            base_cost = config.cost_30s
+        else:
+            base_cost = duration_seconds * config.credits_per_second
+
+    # Apply tier discount
     tier_name = tier.lower()
     if tier_name == "pro":
         discount = config.tier_pro_discount

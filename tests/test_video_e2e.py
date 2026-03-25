@@ -29,12 +29,7 @@ from providers.xai_imagine import (
     XAIImagineClient,
 )
 
-from orchestrator.subagents.image import XAIImageProvider, OpenAISoraProvider
-from providers.openai_sora import (
-    VideoJob as SoraVideoJob,
-    VideoResult as SoraVideoResult,
-    OpenAISoraClient,
-)
+from orchestrator.subagents.image import XAIImageProvider
 
 
 # Fake DB state and helpers (reused from test_video_credits.py)
@@ -279,12 +274,12 @@ async def test_video_e2e_success_path(
 
     # Mock the provider to use our mock client
     # We need to directly replace the provider that will be selected by the subagent
-    # The subagent will create a new OpenAISoraProvider when video_provider="sora" is in context
-    sora_provider = OpenAISoraProvider("test-openai-key")
-    sora_provider.client = mock_client
+    # The subagent will create a new XAIImageProvider when video_provider="xai" is in context
+    xai_provider = XAIImageProvider("test-key")
+    xai_provider.client = mock_client
     # Override the provider selection logic to return our mock
     original_provider = subagent.provider
-    subagent.provider = sora_provider
+    subagent.provider = xai_provider
 
     # Step 3: Request video generation
     context = {
@@ -597,14 +592,7 @@ async def test_video_e2e_max_tier_all_durations(
             duration_seconds=15,
         )
     )
-    mock_client.poll_video_job = AsyncMock(
-        return_value=VideoResult(
-            job_id="test-job-max",
-            status="done",
-            url="https://cdn.example.com/video.mp4",
-            duration_seconds=15,
-            prompt="test prompt",
-        )
+
     )
 
     subagent.provider = XAIImageProvider("test-key")
@@ -624,172 +612,63 @@ async def test_video_e2e_max_tier_all_durations(
     cost = estimate_cost(15, "max")
     assert final_balance == 2000 - cost
 
-
-# Test 9: Sora provider success path - grant credits, request video, verify debit, mock success
-@pytest.mark.asyncio
-async def test_video_e2e_sora_success_path(
-    test_user_id: uuid.UUID,
-    fake_db_state: FakeDbState,
-    fake_pool: FakePool,
-    mock_config: dict[str, Any],
-) -> None:
-    """Test successful Sora video generation flow with credit debit."""
-    # Step 1: Grant credits to user
-    fake_db_state.balances[test_user_id] = 1500  # Sora is more expensive
-    video_credits_dal = VideoCreditsDAL(fake_pool)
-
-    initial_balance = await video_credits_dal.get_balance(test_user_id)
-    assert initial_balance == 1500, "Initial balance should be 1500"
-
-    # Step 2: Create subagent and mock Sora provider
-    subagent = ImageSubagent(config=mock_config)
-
-    # Mock the Sora provider client
-    mock_client = AsyncMock(spec=OpenAISoraClient)
-    mock_client.generate_video = AsyncMock(
-        return_value=SoraVideoJob(
-            job_id="test-sora-job-123",
-            prompt="test prompt",
-            duration_seconds=5,
-        )
-    )
-    mock_client.poll_video_job = AsyncMock(
-        return_value=SoraVideoResult(
-            job_id="test-sora-job-123",
-            status="completed",
-            url="https://cdn.example.com/sora-video.mp4",
-            duration_seconds=5,
-            prompt="test prompt",
-            source_image_url=None,
-        )
-    )
-
-    # We need to patch the provider creation logic to return our mock
-    # The subagent will create a new OpenAISoraProvider when video_provider="sora" is in context
-    # So we'll directly set the provider to our mock instead of letting it create a new one
-    sora_provider = OpenAISoraProvider("test-openai-key")
-    sora_provider.client = mock_client
-
-    # Patch the provider creation by directly setting it
-    context = {
-        "user_id": str(test_user_id),
-        "tier": "pro",
-        "duration": 5,
-        "mode": "video",
-        "video_provider": "sora",  # This will trigger provider creation
-    }
-
-    # Instead of letting the subagent create a new provider, we'll set our mock directly
-    # by temporarily changing the video_provider_name to match the current provider
-    subagent.provider_name = "sora"  # Make the base provider name match
-    subagent.video_provider_name = "sora"  # Make the video provider name match
-    subagent.provider = sora_provider  # Set our mock provider
-
-    # Step 3: Request video generation with Sora provider
-    # The context is defined above to ensure our mock is used
-    result = await subagent.execute("generate a video of mountains", context)
-
-    # Step 4: Verify success
-    assert result.success is True, f"Expected success, got error: {result.error}"
-    assert result.data is not None
-    assert "video_url" in result.data
-    assert result.data["video_url"] == "https://cdn.example.com/sora-video.mp4"
-
-    # Step 5: Verify debit happened with Sora pricing
-    final_balance = await video_credits_dal.get_balance(test_user_id)
-    cost = estimate_cost(5, "pro", "sora")  # Sora provider
-    assert final_balance == initial_balance - cost, (
-        f"Balance should be debited: {initial_balance} - {cost} = {final_balance}"
-    )
+     )
+ 
+ 
+     initial_balance = await video_credits_dal.get_balance(test_user_id)
+     assert initial_balance == 1500
+ 
+     # Step 2: Create subagent and mock provider to fail
+     subagent = ImageSubagent(config=mock_config)
+ 
+     mock_client = AsyncMock(spec=XAIImagineClient)
+     mock_client.generate_video = AsyncMock(
+         return_value=VideoJob(
+             job_id="test-xai-job-fail",
+             prompt="test prompt",
+             duration_seconds=5,
+         )
+     )
+     from providers.xai_imagine import XAIImagineError
+ 
+     mock_client.poll_video_job = AsyncMock(
+         side_effect=XAIImagineError("XAI video generation failed")
+     )
+ 
+     # Mock the provider to use our mock client
+     # We need to directly replace the provider that will be selected by the subagent
+     # The subagent will create a new XAIImageProvider when video_provider="xai" is in context
+     xai_provider = XAIImageProvider("test-key")
+     xai_provider.client = mock_client
+     # Override the provider selection logic to return our mock
+     original_provider = subagent.provider
+     subagent.provider = xai_provider
+ 
+     # Step 3: Request video generation with XAI provider
+     context = {
+         "user_id": str(test_user_id),
+         "tier": "pro",
+         "duration": 5,
+         "mode": "video",
+         "video_provider": "xai",  # Explicitly select xAI provider
+     }
+     result = await subagent.execute("generate a video of mountains", context)
+ 
+     # Step 4: Verify failure
+     assert result.success is False, "Expected failure"
+     assert result.error is not None
+ 
+     # Step 5: Verify refund happened
+     final_balance = await video_credits_dal.get_balance(test_user_id)
+     assert final_balance == initial_balance, (
+         f"Balance should be refunded: {initial_balance} == {final_balance}"
+     )
+ 
+ 
+ 
 
 
-# Test 10: Sora provider failure path - grant credits, request video, mock failure, verify refund
-@pytest.mark.asyncio
-async def test_video_e2e_sora_failure_path_with_refund(
-    test_user_id: uuid.UUID,
-    fake_db_state: FakeDbState,
-    fake_pool: FakePool,
-    mock_config: dict[str, Any],
-) -> None:
-    """Test Sora video generation failure triggers refund."""
-    # Step 1: Grant credits
-    fake_db_state.balances[test_user_id] = 1500  # Sora is more expensive
-    video_credits_dal = VideoCreditsDAL(fake_pool)
 
-    initial_balance = await video_credits_dal.get_balance(test_user_id)
-    assert initial_balance == 1500
-
-    # Step 2: Create subagent and mock Sora provider to fail
-    subagent = ImageSubagent(config=mock_config)
-
-    mock_client = AsyncMock(spec=OpenAISoraClient)
-    mock_client.generate_video = AsyncMock(
-        return_value=SoraVideoJob(
-            job_id="test-sora-job-fail",
-            prompt="test prompt",
-            duration_seconds=5,
-        )
-    )
-    from providers.openai_sora import OpenAISoraError
-
-    mock_client.poll_video_job = AsyncMock(
-        side_effect=OpenAISoraError("Sora video generation failed")
-    )
-
-    # Mock the provider to use our mock client
-    # We need to directly replace the provider that will be selected by the subagent
-    # The subagent will create a new OpenAISoraProvider when video_provider="sora" is in context
-    sora_provider = OpenAISoraProvider("test-openai-key")
-    sora_provider.client = mock_client
-    # Override the provider selection logic to return our mock
-    original_provider = subagent.provider
-    subagent.provider = sora_provider
-
-    # Step 3: Request video generation with Sora provider
-    context = {
-        "user_id": str(test_user_id),
-        "tier": "pro",
-        "duration": 5,
-        "mode": "video",
-        "video_provider": "sora",  # Explicitly select Sora provider
-    }
-    result = await subagent.execute("generate a video of mountains", context)
-
-    # Step 4: Verify failure
-    assert result.success is False, "Expected failure"
-    assert result.error is not None
-
-    # Step 5: Verify refund happened
-    final_balance = await video_credits_dal.get_balance(test_user_id)
-    assert final_balance == initial_balance, (
-        f"Balance should be refunded: {initial_balance} == {final_balance}"
-    )
-
-
-# Test 11: Provider selection logic - xai vs sora
-@pytest.mark.asyncio
-async def test_video_e2e_provider_selection(
-    test_user_id: uuid.UUID,
-    fake_db_state: FakeDbState,
-    fake_pool: FakePool,
-    mock_config: dict[str, Any],
-) -> None:
-    """Test provider selection logic works correctly."""
-    # Grant credits
-    fake_db_state.balances[test_user_id] = 1500
-    video_credits_dal = VideoCreditsDAL(fake_pool)
-
-    # Test 1: Default provider (should be xai based on mock_config)
-    subagent = ImageSubagent(config=mock_config)
-
-    # Mock xAI client
-    mock_xai_client = AsyncMock(spec=XAIImagineClient)
-    mock_xai_client.generate_video = AsyncMock(
-        return_value=VideoJob(
-            job_id="test-xai-job",
-            prompt="test prompt",
-            duration_seconds=5,
-        )
     )
     mock_xai_client.poll_video_job = AsyncMock(
         return_value=VideoResult(
@@ -814,137 +693,9 @@ async def test_video_e2e_provider_selection(
     result_xai = await subagent.execute("generate a video", context_xai)
 
     assert result_xai.success is True
-    assert result_xai.data is not None
-    assert result_xai.data["video_url"] == "https://cdn.example.com/xai-video.mp4"
-
-    # Test 2: Override to Sora provider
-    # Mock Sora client
-    mock_sora_client = AsyncMock(spec=OpenAISoraClient)
-    mock_sora_client.generate_video = AsyncMock(
-        return_value=SoraVideoJob(
-            job_id="test-sora-job",
-            prompt="test prompt",
-            duration_seconds=5,
-        )
-    )
-    mock_sora_client.poll_video_job = AsyncMock(
-        return_value=SoraVideoResult(
-            job_id="test-sora-job",
-            status="completed",
-            url="https://cdn.example.com/sora-video.mp4",
-            duration_seconds=5,
-            prompt="test prompt",
-            source_image_url=None,
-        )
-    )
-
-    # Create new subagent for Sora
-    subagent_sora = ImageSubagent(config=mock_config)
-    # Mock the provider to use our mock client
-    # We need to directly replace the provider that will be selected by the subagent
-    # The subagent will create a new OpenAISoraProvider when video_provider="sora" is in context
-    sora_provider = OpenAISoraProvider("test-openai-key")
-    sora_provider.client = mock_sora_client
-    # Override the provider selection logic to return our mock
-    subagent_sora.provider_name = "sora"  # Make the base provider name match
-    subagent_sora.video_provider_name = (
-        "sora"  # Make the video provider name match
-    )
-    subagent_sora.provider = sora_provider
-
-    context_sora = {
-        "user_id": str(test_user_id),
-        "tier": "pro",
-        "duration": 5,
-        "mode": "video",
-        "video_provider": "sora",  # Explicitly select Sora provider
-    }
-    result_sora = await subagent_sora.execute("generate a video", context_sora)
-
-    assert result_sora.success is True
-    assert result_sora.data is not None
-    assert result_sora.data["video_url"] == "https://cdn.example.com/sora-video.mp4"
+     assert result_xai.data is not None
+     assert result_xai.data["video_url"] == "https://cdn.example.com/xai-video.mp4"
 
 
-# Test 12: Cost estimation with provider parameter
-@pytest.mark.asyncio
-async def test_video_e2e_cost_estimation_with_provider(
-    test_user_id: uuid.UUID,
-    fake_db_state: FakeDbState,
-    fake_pool: FakePool,
-    mock_config: dict[str, Any],
-) -> None:
-    """Test cost estimation works correctly with different providers."""
-    from config.video_pricing import estimate_cost
 
-    # Grant credits
-    fake_db_state.balances[test_user_id] = 2000
-    video_credits_dal = VideoCreditsDAL(fake_pool)
 
-    # Test xAI cost estimation
-    xai_cost_pro = estimate_cost(10, "pro", "xai")
-    xai_cost_max = estimate_cost(10, "max", "xai")
-
-    # Test Sora cost estimation
-    sora_cost_pro = estimate_cost(10, "pro", "sora")
-    sora_cost_max = estimate_cost(10, "max", "sora")
-
-    # Sora should be more expensive than xAI
-    assert sora_cost_pro > xai_cost_pro
-    assert sora_cost_max > xai_cost_max
-
-    # Max tier should have discount for xAI but not for Sora (already tier-based priced)
-    assert xai_cost_max < xai_cost_pro  # Discount for xAI
-    # Sora pricing already includes tier in the base price
-
-    # Test actual debit with Sora
-    initial_balance = await video_credits_dal.get_balance(test_user_id)
-
-    subagent = ImageSubagent(config=mock_config)
-
-    # Mock Sora client
-    mock_client = AsyncMock(spec=OpenAISoraClient)
-    mock_client.generate_video = AsyncMock(
-        return_value=SoraVideoJob(
-            job_id="test-cost-job",
-            prompt="test prompt",
-            duration_seconds=10,
-        )
-    )
-    mock_client.poll_video_job = AsyncMock(
-        return_value=SoraVideoResult(
-            job_id="test-cost-job",
-            status="completed",
-            url="https://cdn.example.com/cost-video.mp4",
-            duration_seconds=10,
-            prompt="test prompt",
-            source_image_url=None,
-        )
-    )
-
-    # Mock the provider to use our mock client
-    # We need to directly replace the provider that will be selected by the subagent
-    # The subagent will create a new OpenAISoraProvider when video_provider="sora" is in context
-    sora_provider = OpenAISoraProvider("test-openai-key")
-    sora_provider.client = mock_client
-    # Override the provider selection logic to return our mock
-    subagent.provider_name = "sora"
-    subagent.video_provider_name = "sora"
-    subagent.provider = sora_provider
-
-    context = {
-        "user_id": str(test_user_id),
-        "tier": "pro",
-        "duration": 10,
-        "mode": "video",
-        "video_provider": "sora",
-    }
-    result = await subagent.execute("generate a video", context)
-
-    assert result.success is True
-
-    final_balance = await video_credits_dal.get_balance(test_user_id)
-    expected_cost = sora_cost_pro
-    assert final_balance == initial_balance - expected_cost, (
-        f"Balance should be debited by Sora cost: {initial_balance} - {expected_cost} = {final_balance}"
-    )

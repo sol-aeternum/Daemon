@@ -29,6 +29,7 @@ services:
       - BRAVE_API_KEY=${BRAVE_API_KEY}
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
       - XAI_API_KEY=${XAI_API_KEY}
+      - FAL_KEY=${FAL_KEY}
       - MOCK_LLM=${MOCK_LLM:-false}
       - DATABASE_URL=${DATABASE_URL:-postgresql://daemon:daemon@postgres:5432/daemon}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
@@ -56,6 +57,7 @@ services:
       - BRAVE_API_KEY=${BRAVE_API_KEY}
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
       - XAI_API_KEY=${XAI_API_KEY}
+      - FAL_KEY=${FAL_KEY}
       - MOCK_LLM=${MOCK_LLM:-false}
       - DATABASE_URL=${DATABASE_URL:-postgresql://daemon:daemon@postgres:5432/daemon}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}

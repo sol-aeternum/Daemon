@@ -15,6 +15,7 @@
 - **Evidence**: `ImportError while loading conftest '/home/sol/daemon/tests/conftest.py'. ... tests/conftest.py:8: in <module> from orchestrator.config import get_settings E ModuleNotFoundError: No module named 'orchestrator'`; bootstrap happens later at `tests/conftest.py:13`-`tests/conftest.py:15`.
 - **Likely cause**: Import-order regression in `tests/conftest.py`; the path fix executes after the failing import (confidence 98%).
 - **Suggested action**: Move the `PROJECT_ROOT`/`sys.path.insert()` bootstrap above `from orchestrator.config import get_settings`, or standardize test execution through `python -m pytest`/`uv run pytest` and document it.
+- **Seen again**: 2026-03-25T21:28:23Z during provider-swap Oracle review when `pytest tests/test_video_pricing.py tests/test_fal_kling.py tests/test_kling_e2e.py` failed before collection with the same `ModuleNotFoundError: No module named 'orchestrator'` until `PYTHONPATH=/home/sol/daemon` was injected.
 
 ## [2026-03-24T12:54:00Z] — Host Python missing required `trafilatura` dependency
 - **Severity**: warning
@@ -125,5 +126,93 @@
 - **Evidence**: Code review of orchestrator/main.py lines 1657-1796 showing StreamingResponse usage with proper headers and async generator yielding frames directly.
 - **Likely cause**: None - verification passed successfully
 - **Suggested action**: None - task completed successfully
+
+## [2026-03-25T21:28:23Z] — Studio video requests are rebilled to default tier and default user
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: [provider swap oracle review] Review complete provider swap for completeness — expect full Kling swap audit across providers/, image subagent, config, studio frontend, and tests
+- **Category**: security
+- **Blocked current task**: no
+- **What happened**: The Studio frontend sends `tier`, `user_id`, `provider`, `reference_image_url`, `kling_model`, and `audio_enabled` inside `metadata.video_generation`, but the backend rebuilds a trusted context that discards most of those fields and hardcodes the billing user/tier. That means actual video runs can be charged/executed against the server default tier and `00000000-0000-0000-0000-000000000001`, not the active Studio selection.
+- **Evidence**: `frontend/app/studio/hooks/useVideoGeneration.ts:227`-`frontend/app/studio/hooks/useVideoGeneration.ts:237` sends `tier`, `user_id`, `provider`, `reference_image_url`, `kling_model`, and `audio_enabled`; `orchestrator/main.py:116`-`orchestrator/main.py:186` uses `DEFAULT_BILLING_USER_ID`, `settings.default_tier`, and only forwards `mode`, `duration`, `tier`, `user_id`, `source_mode`, `reference_image_url`, and `reference_image_id`; `orchestrator/tools/spawn.py:232`-`orchestrator/tools/spawn.py:244` propagates the same reduced field set.
+- **Likely cause**: The trusted metadata bridge was added as a narrow allowlist and never updated for the Kling provider swap or per-user Studio billing flow (confidence 99%).
+- **Suggested action**: Validate and forward the actual Studio `tier`, `user_id`, `provider`, `source_image_url`, `kling_model`, and `audio_enabled` values into `trusted_spawn_context` instead of substituting server defaults.
+
+## [2026-03-25T21:28:23Z] — Frontend Kling identifiers do not match backend provider/model contract
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: [provider swap oracle review] Review complete provider swap for completeness — expect full Kling swap audit across providers/, image subagent, config, studio frontend, and tests
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: The Studio UI uses provider value `kling` and model values `kling-o3-pro` / `kling-v3-pro`, while the backend estimate route and fal client expect provider `fal` and model IDs `o3-pro` / `v3-pro`. As written, Kling estimates return `Invalid provider`, and even if the model reached the client it would fall back to O3 because the identifier is not recognized.
+- **Evidence**: `frontend/app/studio/page.tsx:24`-`frontend/app/studio/page.tsx:25` defines `VideoProvider = "xai" | "kling"` and `KlingModel = "kling-v3-pro" | "kling-o3-pro"`; `orchestrator/routes/video_credits.py:158`-`orchestrator/routes/video_credits.py:181` only accepts providers `{"xai", "fal"}`; `providers/fal_kling.py:95`-`providers/fal_kling.py:96` falls back to `o3-pro` for any model not in `["o3-pro", "v3-pro"]`.
+- **Likely cause**: Presentation-layer labels leaked into the request contract without a normalization layer between frontend state and backend provider IDs (confidence 99%).
+- **Suggested action**: Normalize Studio selections before sending them (`kling` → `fal`, `kling-o3-pro` → `o3-pro`, `kling-v3-pro` → `v3-pro`) or update the backend contract consistently end-to-end.
+
+## [2026-03-25T21:28:23Z] — Kling credit estimation undercharges and ignores some pricing distinctions
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: [provider swap oracle review] Review complete provider swap for completeness — expect full Kling swap audit across providers/, image subagent, config, studio frontend, and tests
+- **Category**: runtime-error
+- **Blocked current task**: no
+- **What happened**: Kling pricing is truncated too early, so O3 audio-on and audio-off both charge the same 10 credits for 5 seconds, and V3 audio is flattened to 15 credits for 5 seconds. The code also treats `audio_enabled=True` on `v3-pro` as the higher 0.196/sec voice-control path even though there is no separate voice-control parameter.
+- **Evidence**: `config/video_pricing.py:83`-`config/video_pricing.py:96` uses `int(0.112 * 20)`, `int(0.14 * 20)`, and `int(0.196 * 20)` before multiplying by duration; `python -c 'from config.video_pricing import estimate_cost; ...'` returned `o3-no-audio 10`, `o3-audio 10`, `v3-no-audio 10`, `v3-audio 15` for 5-second Pro-tier runs.
+- **Likely cause**: Credit conversion was implemented with premature integer truncation and an incomplete pricing model that collapsed `audio_enabled` and voice-control into one branch (confidence 98%).
+- **Suggested action**: Rework Kling pricing to preserve fractional credit math until the end, explicitly model V3 audio vs voice-control, and update tests to match the intended price table.
+
+## [2026-03-25T21:28:23Z] — Image-to-video source image is dropped before provider dispatch
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: [provider swap oracle review] Review complete provider swap for completeness — expect full Kling swap audit across providers/, image subagent, config, studio frontend, and tests
+- **Category**: runtime-error
+- **Blocked current task**: no
+- **What happened**: The Studio flow stores the uploaded reference image under `reference_image_url`, but the image subagent only forwards `source_image_url` to the provider. Because there is no translation between those keys, image-to-video requests lose the source image before the Kling client is called.
+- **Evidence**: `frontend/app/studio/hooks/useVideoGeneration.ts:234` sends `reference_image_url`; `orchestrator/main.py:166`-`orchestrator/main.py:185` and `orchestrator/tools/spawn.py:233`-`orchestrator/tools/spawn.py:244` preserve `reference_image_url`; `orchestrator/subagents/image.py:645` reads `context.get("source_image_url")` and `providers/fal_kling.py:106`-`providers/fal_kling.py:107` only uses `source_image_url` / `image_url`.
+- **Likely cause**: The earlier Studio reference-image naming was never reconciled with the provider-facing `source_image_url` contract during the swap (confidence 99%).
+- **Suggested action**: Standardize on one key name across frontend metadata, trusted context, spawn tools, and provider dispatch, or add an explicit translation at the backend boundary.
+
+## [2026-03-25T21:28:23Z] — Fal Kling provider still depends on ambient `FAL_KEY` despite accepting an injected key
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: [provider swap oracle review] Review complete provider swap for completeness — expect full Kling swap audit across providers/, image subagent, config, studio frontend, and tests
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: `FalKlingProvider` accepts an API key argument, but it instantiates `FalKlingClient()` before applying that key, so the constructor still crashes unless `FAL_KEY` exists in the environment. The client also stores `self.api_key` only for presence checks and never passes it to `fal_client.submit_async()` / `result_async()`.
+- **Evidence**: `orchestrator/subagents/image.py:627`-`orchestrator/subagents/image.py:631` passes `fal_api_key` into `FalKlingProvider`; `orchestrator/subagents/image.py:304`-`orchestrator/subagents/image.py:310` creates `FalKlingClient()` before assigning `self.client.api_key = api_key`; `providers/fal_kling.py:50`-`providers/fal_kling.py:52` raises `FalKlingError("FAL_KEY not configured")`; targeted tests failed with `providers.fal_kling.FalKlingError: FAL_KEY not configured` in `tests/test_kling_e2e.py`.
+- **Likely cause**: The provider wrapper was adapted from env-only configuration and the injected-key path was never completed (confidence 98%).
+- **Suggested action**: Support constructor-based key injection all the way through the client, or clearly remove the unused injected-key path and require/configure env-only auth consistently.
+
+## [2026-03-25T21:28:23Z] — XAI image helper methods were moved off `XAIImageProvider`
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: [provider swap oracle review] Review complete provider swap for completeness — expect full Kling swap audit across providers/, image subagent, config, studio frontend, and tests
+- **Category**: runtime-error
+- **Blocked current task**: no
+- **What happened**: `XAIImageProvider.generate_image()` still calls `_size_to_aspect_ratio()` and `_aspect_ratio_to_dimensions()`, but those helpers now only exist on `FalKlingProvider`. Any xAI image generation path that reaches those calls will raise `AttributeError`.
+- **Evidence**: `orchestrator/subagents/image.py:263` calls `self._size_to_aspect_ratio(size)` and `orchestrator/subagents/image.py:270` calls `self._aspect_ratio_to_dimensions(aspect_ratio)`; the only definitions are `orchestrator/subagents/image.py:352` and `orchestrator/subagents/image.py:382` inside `FalKlingProvider`; `lsp_diagnostics` reported `Cannot access attribute "_size_to_aspect_ratio" for class "XAIImageProvider"` and `Cannot access attribute "_aspect_ratio_to_dimensions" for class "XAIImageProvider"`.
+- **Likely cause**: Shared size/aspect helpers were left behind during provider-class refactoring instead of being kept on `XAIImageProvider` or lifted to a common base/helper (confidence 99%).
+- **Suggested action**: Move the aspect-ratio helpers to a shared utility/base class or restore them on `XAIImageProvider`.
+
+## [2026-03-25T21:28:23Z] — Specialized video SSE events are defined in frontend but never emitted by backend
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: [provider swap oracle review] Review complete provider swap for completeness — expect full Kling swap audit across providers/, image subagent, config, studio frontend, and tests
+- **Category**: runtime-error
+- **Blocked current task**: no
+- **What happened**: The frontend bridge and event types expect `video_generating`, `video_complete`, and `video_failed`, but the backend streaming path only emits generic `tool_call` / `tool_result` envelopes for media generation. The Studio hook currently works only because it has a `tool_result` fallback parser, not because the dedicated video SSE contract is implemented.
+- **Evidence**: `frontend/lib/events.ts:12`-`frontend/lib/events.ts:14` and `frontend/app/api/chat/route.ts:225`-`frontend/app/api/chat/route.ts:272` handle `video_*` events; repo search across `orchestrator/` returned no `sse("video_generating"`, `sse("video_complete"`, or `sse("video_failed"` matches; `orchestrator/daemon.py:457`-`orchestrator/daemon.py:520` only emits `tool_call` and `tool_result` during tool execution.
+- **Likely cause**: Frontend event support was added ahead of backend emission wiring, and Kling integration reused the generic tool-result path instead of implementing the dedicated SSE events (confidence 97%).
+- **Suggested action**: Either emit the documented `video_*` events from the backend media path or remove the unused contract and rely consistently on typed `tool_result` payloads.
+
+## [2026-03-25T21:28:23Z] — Residual Sora references remain in docs and cached artifacts
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: [provider swap oracle review] Review complete provider swap for completeness — expect full Kling swap audit across providers/, image subagent, config, studio frontend, and tests
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: Source code no longer references Sora, but project docs and cached bytecode still do. That means the provider swap is not fully scrubbed from the repository state.
+- **Evidence**: `AGENTS.md:23` still lists `OpenAI (Sora)`; `docs/PROJECT_CONTEXT.md:132` still says `OpenAI (Sora video)`; `docs/TECHNICAL_SPECS.md:354` still says `OpenAI (used for Sora video provider paths)`; `providers/__pycache__/` still contains `openai_sora.cpython-311.pyc` and `openai_sora.cpython-314.pyc`.
+- **Likely cause**: The swap removed runtime source paths but did not fully update documentation or clean generated artifacts (confidence 96%).
+- **Suggested action**: Update the stale docs and remove committed/stale `openai_sora` bytecode artifacts from the repository.
 
 ---

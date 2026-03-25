@@ -5,7 +5,8 @@ import { useStudio } from "../StudioProvider";
 
 type VideoSourceMode = "text-to-video" | "image-to-video";
 type VideoTier = "starter" | "pro" | "max" | "byok";
-type VideoProvider = "xai" | "openai_sora";
+type VideoProvider = "xai" | "kling";
+type KlingModel = "kling-v3-pro" | "kling-o3-pro";
 
 interface GenerateVideoOptions {
   duration: number;
@@ -14,6 +15,8 @@ interface GenerateVideoOptions {
   userId: string;
   provider?: VideoProvider;
   estimatedCredits?: number;
+  klingModel?: KlingModel;
+  audioEnabled?: boolean;
 }
 
 type JsonObject = Record<string, unknown>;
@@ -158,7 +161,7 @@ export function useVideoGeneration() {
   const inFlightRef = useRef(false);
 
   const generateVideo = useCallback(
-    async ({ duration, sourceMode, tier, userId, provider, estimatedCredits }: GenerateVideoOptions) => {
+    async ({ duration, sourceMode, tier, userId, provider, estimatedCredits, klingModel, audioEnabled }: GenerateVideoOptions) => {
       if (inFlightRef.current) {
         return;
       }
@@ -173,11 +176,14 @@ export function useVideoGeneration() {
       const referenceImageUrl = referenceImage?.url;
       const referenceImageId = referenceImage?.id;
 
+        const modelId = provider === "kling" ? klingModel ?? "kling-o3-pro" : "xai-grok-imagine-3-video";
+        const modelName = provider === "kling" ? "Kling 3.0" : "xAI Grok Imagine 3";
+
         upsertGeneration({
           id: generationId,
           mediaType: "video",
-          modelId: provider === "openai_sora" ? "openai-sora" : "xai-grok-imagine-3-video",
-          modelName: provider === "openai_sora" ? "OpenAI Sora" : "xAI Grok Imagine 3",
+          modelId,
+          modelName,
         prompt: trimmedPrompt,
         aspectRatio: "16:9",
         resolution: "video",
@@ -227,6 +233,8 @@ export function useVideoGeneration() {
                   provider,
                   reference_image_url: referenceImageUrl,
                   reference_image_id: referenceImageId,
+                  kling_model: provider === "kling" ? klingModel : undefined,
+                  audio_enabled: provider === "kling" ? audioEnabled : undefined,
                 },
               },
             }),

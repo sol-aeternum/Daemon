@@ -155,14 +155,14 @@ async def grant_credits(
 
 
 VALID_TIERS = {"free", "starter", "pro", "max", "byok"}
-VALID_VIDEO_PROVIDERS = {"xai", "openai_sora", "sora"}
+VALID_VIDEO_PROVIDERS = {"xai", "fal"}
 
 
 @router.get("/estimate", response_model=EstimateResponse)
 async def estimate_video_cost(
     duration: int = Query(..., description="Video duration in seconds", ge=1),
     tier: str = Query(..., description="User tier (free, starter, pro, max, or byok)"),
-    provider: str = Query("xai", description="Video provider (xai or openai_sora)"),
+    provider: str = Query("xai", description="Video provider (xai)"),
     resolution: str | None = Query(None, description="Requested output resolution"),
     user_id: uuid.UUID = Query(..., description="User ID"),
     app_state: AppState = Depends(get_app_state),
@@ -179,8 +179,6 @@ async def estimate_video_cost(
     provider_name = provider.lower().strip()
     if provider_name not in VALID_VIDEO_PROVIDERS:
         raise HTTPException(status_code=400, detail="Invalid provider")
-    if provider_name == "sora":
-        provider_name = "openai_sora"
 
     if app_state.video_credits_dal is None:
         raise HTTPException(status_code=503, detail="Video credits service unavailable")
