@@ -40,7 +40,7 @@ Commercial LLM products lock you into a single provider, a single model, and the
 
 **Multi-provider routing over single-provider lock-in.** LiteLLM abstracts provider differences. Any OpenAI-compatible endpoint can be added via environment variables. Default provider is configurable per-deployment; per-request overrides allow model selection at query time.
 
-**Persistent memory via pgvector.** Conversations are embedded and stored in PostgreSQL with vector similarity search. This enables context retrieval across sessions — the system remembers prior interactions without relying on provider-side memory (which you don't control and can't inspect). See [MEMORY_LAYER.md](MEMORY_LAYER.md) for implementation details.
+**Persistent memory via pgvector.** Conversations are embedded and stored in PostgreSQL with vector similarity search. The memory pipeline uses Voyage AI asymmetric embeddings (`voyage-4-large` for document writes, `voyage-4-lite` for query reads) in a shared 1024d embedding space. This enables context retrieval across sessions without relying on provider-side memory. See [MEMORY_LAYER.md](MEMORY_LAYER.md) for implementation details.
 
 **Subagent spawning for task decomposition.** Complex requests can be broken into subtasks handled by specialised agents, each potentially using different models optimised for their task type. The orchestrator manages coordination and result synthesis.
 

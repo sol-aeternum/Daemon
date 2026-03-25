@@ -20,7 +20,7 @@ Personal multi-agent AI assistant. FastAPI backend orchestrates LLM calls via Op
 - **Backend:** Python 3.11+, FastAPI, LiteLLM, asyncpg, arq, cryptography (Fernet)
 - **Frontend:** Next.js 16, React 19, Vercel AI SDK 4, Tailwind CSS 3, lucide-react
 - **Infra:** Docker Compose — backend, worker, frontend, postgres (pgvector), redis
-- **External:** OpenRouter (LLMs), OpenAI (embeddings), Brave Search, ElevenLabs, ntfy.sh
+- **External:** OpenRouter (LLMs), Voyage AI (embeddings), OpenAI (Sora), Brave Search, ElevenLabs, ntfy.sh
 
 ## Structure
 ```
@@ -35,7 +35,7 @@ orchestrator/           # FastAPI backend
     dedup.py            # Embedding similarity dedup
     retrieval.py        # Composite scoring retrieval
     injection.py        # System prompt assembly with memory context
-    embedding.py        # text-embedding-3-small via OpenAI
+    embedding.py        # Voyage AI asymmetric embeddings (doc/query)
     encryption.py       # Fernet encrypt/decrypt
     tools.py            # memory_read / memory_write tool implementations
   worker/               # arq background jobs
@@ -62,7 +62,7 @@ migrations/             # PostgreSQL migrations (13 applied)
 ## Recent Fixes (as of Feb 2026)
 - ✅ Memory extraction now writes `status="active"` — pipeline is fully operational
 - ✅ Error boundary added to chat view for crash recovery
-- ✅ Embedding failover added (OpenAI primary → OpenRouter fallback)
+- ✅ Voyage embedding service added (voyage-4-large docs / voyage-4-lite queries)
 - ✅ Retry detection consolidated into orchestrator/tools/retry.py with word-boundary matching
 - ✅ Audio endpoint returns scoped token instead of raw API key (security fix)
 - ✅ Completion streaming adds incremental content_delta for real-time output

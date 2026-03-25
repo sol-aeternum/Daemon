@@ -103,6 +103,6 @@
 | RAM | Kingston Fury Beast Black 64GB 6000 CL36 @ $1299 | Hardware decision |
 | Case | Be Quiet Light Base 500 non-LX | Hardware decision |
 | Memory encryption | Fernet at rest | Phase 2 |
-| Embeddings | text-embedding-3-small (1536d) | Phase 2 |
+| Embeddings | voyage-4-large (documents) + voyage-4-lite (queries), 1024d vectors | Phase 2 |
 | Chat persistence | Backend PostgreSQL + frontend API integration | Phase 2 |
 | Tier architecture | 5 tiers (free/starter/pro/max/byok), env-var model slots | Phase 2 |

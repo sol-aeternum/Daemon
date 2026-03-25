@@ -38,7 +38,7 @@ CREATE TABLE messages (
     image_url TEXT,
     
     -- Vector embedding for semantic search
-    embedding VECTOR(1536) -- OpenAI text-embedding-3-small with OpenRouter fallback
+    embedding VECTOR(1024) -- Voyage embeddings in shared document/query space
 );
 
 CREATE INDEX idx_messages_conversation ON messages(conversation_id, created_at);
@@ -56,7 +56,7 @@ CREATE TABLE memory_snapshots (
     relevance_score FLOAT,
     
     -- Vector for similarity search
-    embedding VECTOR(1536)
+    embedding VECTOR(1024)
 );
 
 CREATE INDEX idx_snapshots_conversation ON memory_snapshots(conversation_id);
@@ -220,52 +220,47 @@ export const memoryApi = {
 ```bash
 # .env
 DATABASE_URL=postgresql://daemon:daemon@localhost:5432/daemon_memory
-EMBEDDING_MODEL=text-embedding-3-small
-OPENAI_API_KEY=your-openai-api-key
-OPENROUTER_API_KEY=your-openrouter-api-key
+EMBEDDING_DOCUMENT_MODEL=voyage-4-large
+EMBEDDING_QUERY_MODEL=voyage-4-lite
+VOYAGE_API_KEY=your-voyage-api-key
+EMBEDDING_DIMENSIONS=1024
 MAX_CONTEXT_MESSAGES=50
-SIMILARITY_THRESHOLD=0.7
 ```
 
-**Note:** Embeddings use direct OpenAI API calls via `AsyncOpenAI` client as the primary path, with automatic failover to OpenRouter via LiteLLM. Both `OPENAI_API_KEY` and `OPENROUTER_API_KEY` should be configured for resilient operation.
+**Note:** Embeddings use direct Voyage API calls with `input_type="document"` for memory writes and `input_type="query"` for retrieval reads.
 
-## Embedding Failover
+## Embedding Retry Strategy
 
-The embedding pipeline implements a primary/fallback pattern for resilience:
+The embedding pipeline implements retry-with-backoff on direct Voyage requests:
 
-### Primary Path
-- Direct OpenAI API via `AsyncOpenAI` client
-- Model: `text-embedding-3-small`
+### Request Path
+- Direct Voyage API via `httpx` POST to `/v1/embeddings`
+- Document model: `voyage-4-large`
+- Query model: `voyage-4-lite`
 - Retry logic: 3 attempts with exponential backoff
-- Latency: ~50-100ms
-
-### Fallback Path
-- OpenRouter via LiteLLM: `openrouter/openai/text-embedding-3-small`
-- Activates on: network errors, auth failures, rate limits, timeouts
-- Same output format: 1536-dimensional float vectors
-- Single attempt (no retry on fallback)
+- Output vectors: 1024-dimensional float vectors
 
 ### Observability
 
-Module-level counters track fallback activations:
+Module-level counters track retry activations:
 
 ```python
-from orchestrator.memory.embedding import _fallback_count, _last_fallback_at
+from orchestrator.memory.embedding import _retry_count, _last_retry_at
 
-print(f"Fallback activations: {_fallback_count}")
-print(f"Last fallback at: {_last_fallback_at}")
+print(f"Retry activations: {_retry_count}")
+print(f"Last retry at: {_last_retry_at}")
 ```
 
 Available via `/status` endpoint:
 ```json
 {
-  "embedding_fallback_activations": 0,
-  "embedding_last_fallback_at": null
+  "embedding_retry_activations": 0,
+  "embedding_last_retry_at": null
 }
 ```
 
 ### Logging
 
-- **Warning**: When fallback activates (includes exception details)
-- **Info**: When fallback succeeds
-- **Error**: When both primary and fallback fail
+- **Info**: When embedding generation succeeds (model/input_type/chunks/tokens)
+- **Warning**: On transient request failures before retry backoff
+- **Error**: When all retry attempts fail and embedding request is rejected

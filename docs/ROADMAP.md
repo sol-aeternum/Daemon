@@ -54,9 +54,9 @@
 - [x] Message persistence (insert on each turn, encrypted content)
 
 ### Memory Pipeline ✅
-- [x] Embedding pipeline (text-embedding-3-small, 1536d, via OpenAI API with OpenRouter fallback)
+- [x] Embedding pipeline (voyage-4-large for documents, voyage-4-lite for queries, direct Voyage API)
 - [x] Post-response fact extraction (GPT-4o-mini via LiteLLM)
-- [x] Dedup engine: similarity thresholds (0.92 merge, 0.75 supersede)
+- [x] Dedup engine: similarity thresholds (0.85 merge, 0.75 supersede)
 - [x] Retrieval: composite scoring (similarity × recency × source_boost × confidence)
 - [x] Injection: builds enhanced system prompt with memories + preferences + token budget
 - [x] Memory tools: memory_read / memory_write integrated into Daemon
@@ -72,7 +72,7 @@
 ### API Routes ✅
 - [x] /conversations — list, get, create, update (PATCH), delete
 - [x] /conversations/{id}/messages — message history
-- [x] /memories — list, create, update, confirm, export, import, re-embed, delete-all
+- [x] /memories — list, create, update, confirm, export, import, reembed, delete-all
 - [x] /users/settings — get, update
 - [x] /system/health — health check
 

@@ -1,6 +1,6 @@
 # Project Context — Daemon
 
-> Last updated: 2026-03-14
+> Last updated: 2026-03-19
 > Source of truth: codebase audit against `daemon-core` + `daemon-frontend-core` tarballs
 
 ## What Daemon Is
@@ -129,13 +129,13 @@ Auto-routing within tiers: messages are classified as `fast` (→ Gemini Flash) 
 
 **Frontend:** Next.js 16, React 19, Vercel AI SDK 4, @ai-sdk/react, @ai-sdk/openai, lucide-react, next-pwa
 
-**External APIs:** OpenRouter (LLMs), OpenAI (embeddings only — separate API key), Brave Search, ElevenLabs (TTS/STT/SFX), ntfy.sh (push notifications)
+**External APIs:** OpenRouter (LLMs), Voyage AI (embeddings), OpenAI (Sora video), Brave Search, ElevenLabs (TTS/STT/SFX), ntfy.sh (push notifications)
 
 ### Database Schema (13 migrations)
 - `users` — single default user (multi-user scaffolded)
 - `conversations` — id, user_id, title, pipeline, pinned, title_locked, status, metadata
 - `messages` — conversation_id, role, content (encrypted), model, status, metadata
-- `memories` — content (encrypted), embedding (1536d), category, source_type, confidence, status, source_conversation_id
+- `memories` — content (encrypted), embedding (1024d), category, source_type, confidence, status, source_conversation_id
 - `extraction_log` — tracks extraction runs per conversation
 
 ## Decisions Made
@@ -150,7 +150,7 @@ Auto-routing within tiers: messages are classified as `fast` (→ Gemini Flash) 
 | Voice I/O | ElevenLabs | TTS, STT (Scribe), sound FX |
 | Notifications | ntfy.sh | Simple, self-hostable |
 | Memory encryption | Fernet (at rest) | Content + messages encrypted, embeddings plaintext for pgvector |
-| Embeddings | text-embedding-3-small (1536d) via OpenAI API | Separate from OpenRouter |
+| Embeddings | voyage-4-large documents + voyage-4-lite queries (1024d vectors) via Voyage API | Shared embedding space with asymmetric query/document input types |
 | Local LLM | Qwen 2.5 72B Q5_K_M | 32GB VRAM enables Q5, no CPU offload |
 | Local image gen | FLUX Dev | Privacy, no guardrails |
 | Local search | SearXNG | No Google/Bing dependency |
