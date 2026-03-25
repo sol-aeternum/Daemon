@@ -110,6 +110,13 @@ export async function POST(req: Request) {
       let buffer = "";
       let sawToken = false;
 
+      const ensureAssistantMessageStarted = () => {
+        if (!sawToken) {
+          sawToken = true;
+          dataStream.write(formatDataStreamPart("text", "."));
+        }
+      };
+
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -263,6 +270,66 @@ export async function POST(req: Request) {
                 ]),
               );
             }
+          } else if (eventType === "council_interview") {
+            ensureAssistantMessageStarted();
+            dataStream.write(
+              formatDataStreamPart("data", [
+                {
+                  type: "council_interview",
+                  ...payload?.data,
+                  id: payload?.id ?? payload?.data?.id,
+                  request_id: payload?.request_id ?? payload?.data?.request_id,
+                },
+              ]),
+            );
+          } else if (eventType === "council_progress") {
+            ensureAssistantMessageStarted();
+            dataStream.write(
+              formatDataStreamPart("data", [
+                {
+                  type: "council_progress",
+                  ...payload?.data,
+                  id: payload?.id ?? payload?.data?.id,
+                  request_id: payload?.request_id ?? payload?.data?.request_id,
+                },
+              ]),
+            );
+          } else if (eventType === "council_output") {
+            ensureAssistantMessageStarted();
+            dataStream.write(
+              formatDataStreamPart("data", [
+                {
+                  type: "council_output",
+                  ...payload?.data,
+                  id: payload?.id ?? payload?.data?.id,
+                  request_id: payload?.request_id ?? payload?.data?.request_id,
+                },
+              ]),
+            );
+          } else if (eventType === "council_done") {
+            ensureAssistantMessageStarted();
+            dataStream.write(
+              formatDataStreamPart("data", [
+                {
+                  type: "council_done",
+                  ...payload?.data,
+                  id: payload?.id ?? payload?.data?.id,
+                  request_id: payload?.request_id ?? payload?.data?.request_id,
+                },
+              ]),
+            );
+          } else if (eventType === "council_error") {
+            ensureAssistantMessageStarted();
+            dataStream.write(
+              formatDataStreamPart("data", [
+                {
+                  type: "council_error",
+                  ...payload?.data,
+                  id: payload?.id ?? payload?.data?.id,
+                  request_id: payload?.request_id ?? payload?.data?.request_id,
+                },
+              ]),
+            );
           } else if (eventType === "final" && !sawToken) {
             const content =
               payload?.data?.text

@@ -65,14 +65,21 @@ export function ConversationList({
 
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
   const visibleConversations = useMemo(() => {
+    const filteredConversations = conversations.filter((conversation) => {
+      if (conversation.id === currentId) return true;
+      if (conversation.messageCount && conversation.messageCount > 0) return true;
+      if (conversation.title && conversation.title !== "New conversation") return true;
+      return false;
+    });
+    
     if (!normalizedSearchQuery) {
-      return conversations;
+      return filteredConversations;
     }
 
-    return conversations.filter((conversation) =>
+    return filteredConversations.filter((conversation) =>
       (conversation.title || "").toLowerCase().includes(normalizedSearchQuery),
     );
-  }, [conversations, normalizedSearchQuery]);
+  }, [conversations, normalizedSearchQuery, currentId]);
 
   const pinnedConversations = useMemo(() => 
     visibleConversations.filter(c => c.pinned), 

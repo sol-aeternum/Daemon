@@ -61,10 +61,14 @@ export function useEventArchive({ data, isLoading }: UseEventArchiveOptions): Us
   const lastArchivedEventKeysRef = useRef<Set<string>>(new Set());
   const currentRequestIdRef = useRef<string | null>(null);
   
-  // Extract and filter events from data
-  const events: ChatEvent[] = Array.isArray(data)
-    ? (data.filter((x): x is ChatEvent => isChatEvent(x)) as ChatEvent[])
+  const flattenedData: unknown[] = Array.isArray(data)
+    ? data.flatMap((entry) => (Array.isArray(entry) ? entry : [entry]))
     : [];
+
+  // Extract and filter events from data
+  const events: ChatEvent[] = flattenedData.filter(
+    (x): x is ChatEvent => isChatEvent(x)
+  );
 
   // Sync events to ref and track request_id
   useEffect(() => {

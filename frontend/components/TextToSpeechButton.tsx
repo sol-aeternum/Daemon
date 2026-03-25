@@ -17,6 +17,7 @@ export function TextToSpeechButton({ text, streamingText }: TextToSpeechButtonPr
     DEFAULT_TTS_SETTINGS
   );
   const settings = storedSettings || DEFAULT_TTS_SETTINGS;
+  const ttsEnabled = settings.enabled !== false;
   const [error, setError] = useState<string | null>(null);
   const isProcessingRef = useRef(false);
 
@@ -32,7 +33,7 @@ export function TextToSpeechButton({ text, streamingText }: TextToSpeechButtonPr
   const isPlaying = isCachedPlaying || isStreamingPlaying;
   const isLoading = contextIsLoading || isStreamingLoading;
 
-  if (!settings.enabled) return null;
+  if (!ttsEnabled) return null;
 
   const playStreaming = useCallback(async () => {
     if (!streamingText) return;

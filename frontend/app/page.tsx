@@ -32,8 +32,11 @@ import { ThinkingIndicator } from "../components/ThinkingIndicator";
 import MarkdownMessage from "../components/MarkdownMessage";
 import { FileDownloadCard } from "../components/FileDownloadCard";
 import { SkeletonBlock } from "../components/ui/Skeleton";
-import { ChatEvent, isChatEvent } from "../lib/events";
+import { ChatEvent, isChatEvent, isCouncilEvent, isCouncilInterviewEvent, isCouncilProgressEvent, isCouncilOutputEvent, isCouncilDoneEvent } from "../lib/events";
 import { Search, Image, Code, MessageSquare, Sparkles, X, Eye, EyeOff } from "lucide-react";
+import { CouncilInterviewCard } from "../components/council/CouncilInterviewCard";
+import { CouncilProgress } from "../components/council/CouncilProgress";
+import { CouncilOutputViewer } from "../components/council/CouncilOutputViewer";
 import { Message } from "ai";
 
 type ReasoningMessage = Message & {
@@ -97,6 +100,7 @@ const getPersistedToolEvents = (message: Message): ChatEvent[] => {
   const messageWithTools = message as Message & {
     tool_calls?: unknown;
     tool_results?: unknown;
+    metadata?: unknown;
   };
 
   const rawToolCalls = Array.isArray(messageWithTools.tool_calls)
@@ -105,8 +109,24 @@ const getPersistedToolEvents = (message: Message): ChatEvent[] => {
   const rawToolResults = Array.isArray(messageWithTools.tool_results)
     ? (messageWithTools.tool_results as PersistedToolResult[])
     : [];
+  const metadata = toRecord(messageWithTools.metadata) || {};
+  const metadataCouncilEvents = Array.isArray(metadata.council_events)
+    ? metadata.council_events
+    : [];
 
   const events: ChatEvent[] = [];
+  const seenEventKeys = new Set<string>();
+
+  const pushEvent = (event: ChatEvent) => {
+    const key = event.id
+      ? `id:${event.id}`
+      : `json:${JSON.stringify(event)}`;
+    if (seenEventKeys.has(key)) {
+      return;
+    }
+    seenEventKeys.add(key);
+    events.push(event);
+  };
 
   for (const toolCall of rawToolCalls) {
     const event: Extract<ChatEvent, { type: "tool_call" }> = {
@@ -120,7 +140,7 @@ const getPersistedToolEvents = (message: Message): ChatEvent[] => {
     const requestId = getOptionalString(toolCall.request_id);
     if (requestId) event.request_id = requestId;
 
-    events.push(event);
+    pushEvent(event);
   }
 
   for (const toolResult of rawToolResults) {
@@ -135,7 +155,28 @@ const getPersistedToolEvents = (message: Message): ChatEvent[] => {
     const requestId = getOptionalString(toolResult.request_id);
     if (requestId) event.request_id = requestId;
 
-    events.push(event);
+    pushEvent(event);
+  }
+
+  for (const candidate of metadataCouncilEvents) {
+    if (isChatEvent(candidate)) {
+      pushEvent(candidate);
+    }
+  }
+
+  for (const toolResult of rawToolResults) {
+    if (getOptionalString(toolResult.name) !== "council_events") {
+      continue;
+    }
+    const resultRecord = toRecord(toolResult.result);
+    const resultEvents = Array.isArray(resultRecord?.events)
+      ? resultRecord?.events
+      : [];
+    for (const candidate of resultEvents) {
+      if (isChatEvent(candidate)) {
+        pushEvent(candidate);
+      }
+    }
   }
 
   return events;
@@ -260,6 +301,29 @@ const fileToDataUrl = (file: File): Promise<string> => {
 
 const isRoutingEvent = (event: ChatEvent): event is Extract<ChatEvent, { type: "routing" }> => event.type === "routing";
 import { TtsSettings, SttSettings, DEFAULT_TTS_SETTINGS, DEFAULT_STT_SETTINGS } from "../lib/constants";
+
+const hasCouncilEvents = (events: ChatEvent[]): boolean => {
+  return events.some(isCouncilEvent);
+};
+
+const getCouncilInterviewEvent = (events: ChatEvent[]): ChatEvent | undefined => {
+  return events.find(isCouncilInterviewEvent);
+};
+
+const getLatestCouncilProgressEvent = (events: ChatEvent[]): ChatEvent | undefined => {
+  const progressEvents = events.filter(isCouncilProgressEvent);
+  return progressEvents[progressEvents.length - 1];
+};
+
+const getCouncilOutputEvents = (events: ChatEvent[]): ChatEvent[] => {
+  return events.filter((e) => isCouncilOutputEvent(e) || isCouncilDoneEvent(e));
+};
+
+const shouldShowCouncilProgress = (events: ChatEvent[]): boolean => {
+  const hasProgress = events.some(isCouncilProgressEvent);
+  const hasError = events.some((e) => e.type === "council_error");
+  return hasProgress && !hasError;
+};
 
 // =============================================================================
 // WELCOME SCREEN COMPONENT
@@ -484,7 +548,14 @@ function ChatContent() {
 
   const lastArchivedEventKeysRef = useRef<Set<string>>(new Set());
   const currentRequestIdRef = useRef<string | null>(null);
+  const latestConversationIdRef = useRef<string | null>(currentId);
   const autoOpenedPreviewFileUrlsRef = useRef<Set<string>>(new Set());
+  const titleRefreshTimeoutsRef = useRef<number[]>([]);
+  const scheduledTitleRefreshConversationIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    latestConversationIdRef.current = currentId;
+  }, [currentId]);
 
   const eventKey = (event: ChatEvent) => {
     if (event.id) return `id:${event.id}`;
@@ -527,17 +598,17 @@ function ChatContent() {
     return normalizeThinkingText(rawContent);
   };
 
-  const { messages, input, setInput, handleInputChange, append, isLoading, error, reload, data } = useChat({
+  const { messages, input, setInput, handleInputChange, append, setMessages, isLoading, error, reload, data } = useChat({
     api: "/api/chat",
-    body: { id: currentId || null },
+    body: { id: currentId || latestConversationIdRef.current || null },
     id: currentId || undefined,
     initialMessages: currentConversation?.messages || [],
     fetch: (input, init) => {
       const body = init?.body ? JSON.parse(init.body as string) : {};
       body.model = activeModel;
       // Preserve id from body option
-      if (body.id === undefined && currentId) {
-        body.id = currentId;
+      if (body.id === undefined) {
+        body.id = currentId || latestConversationIdRef.current || null;
       }
       return fetch(input, {
         ...init,
@@ -563,6 +634,19 @@ function ChatContent() {
       setConnectionStatus("disconnected");
     },
   });
+
+  useEffect(() => {
+    if (isLoading) {
+      return;
+    }
+    if (!currentConversation?.messages || currentConversation.messages.length === 0) {
+      return;
+    }
+    if (messages.length !== 0) {
+      return;
+    }
+    setMessages(currentConversation.messages);
+  }, [currentConversation?.messages, isLoading, messages.length, setMessages]);
 
   const attachmentItems = useMemo(
     () => pendingAttachments.map((attachment) => ({
@@ -670,7 +754,7 @@ function ChatContent() {
   };
 
   const submitChat = async () => {
-    if (isLoading) return;
+    if (isLoading && messages.length > 0) return;
 
     const trimmedInput = input.trim();
     const attachments = pendingAttachments.length > 0
@@ -690,7 +774,7 @@ function ChatContent() {
         },
         {
           body: {
-            id: currentId || null,
+            id: currentId || latestConversationIdRef.current || null,
             model: activeModel,
             attachments,
           },
@@ -795,6 +879,8 @@ function ChatContent() {
     messagesEndRef.current.scrollIntoView({ behavior });
   }, [messages, isLoading]);
 
+  const inputIsBusy = isLoading && messages.length > 0;
+
   const handleSelectConversation = async (id: string) => {
     switchConversation(id);
   };
@@ -824,16 +910,27 @@ function ChatContent() {
       router.push("/artifacts");
       return;
     }
+
+    if (section === "studio") {
+      router.push("/studio");
+      return;
+    }
   };
 
   const handleGoHome = () => {
     router.push("/");
   };
 
-  const events: ChatEvent[] = Array.isArray(data)
-    ? (data.filter((x): x is ChatEvent => isChatEvent(x)) as ChatEvent[])
-    : [];
-    
+  const flattenedData = useMemo(() => {
+    if (!Array.isArray(data)) {
+      return [] as unknown[];
+    }
+
+    return data.flatMap((entry) => (Array.isArray(entry) ? entry : [entry]));
+  }, [data]);
+
+  const events: ChatEvent[] = flattenedData.filter((x): x is ChatEvent => isChatEvent(x));
+
   // Update ref whenever events change
   useEffect(() => {
     eventsRef.current = events;
@@ -861,20 +958,72 @@ function ChatContent() {
     );
   };
 
+  const isCouncilDataEvent = (value: unknown): boolean => {
+    if (!value || typeof value !== "object") return false;
+    const candidate = value as { type?: unknown };
+    return (
+      candidate.type === "council_interview"
+      || candidate.type === "council_progress"
+      || candidate.type === "council_output"
+      || candidate.type === "council_done"
+      || candidate.type === "council_error"
+    );
+  };
+
+  const isCouncilDoneDataEvent = (value: unknown): boolean => {
+    if (!value || typeof value !== "object") return false;
+    return (value as { type?: unknown }).type === "council_done";
+  };
+
   // Capture conversation_id from SSE and update URL (for edge cases)
   const urlUpdatedRef = useRef(false);
   useEffect(() => {
-    if (!data || data.length === 0) return;
-    const conversationEvent = data.find(isConversationDataEvent);
-    if (conversationEvent && !currentId && !urlUpdatedRef.current) {
-      urlUpdatedRef.current = true;
-      router.replace(`/?id=${conversationEvent.conversation_id}`);
-      refreshConversations();
+    return () => {
+      for (const timeoutId of titleRefreshTimeoutsRef.current) {
+        window.clearTimeout(timeoutId);
+      }
+      titleRefreshTimeoutsRef.current = [];
+    };
+  }, []);
+
+  useEffect(() => {
+    if (flattenedData.length === 0) return;
+    const conversationEvent = flattenedData.find(isConversationDataEvent);
+    if (!conversationEvent) {
+      if (currentId) {
+        urlUpdatedRef.current = false;
+      }
+      return;
     }
+
+    const conversationId = conversationEvent.conversation_id;
+    latestConversationIdRef.current = conversationId;
+    const hasCouncilEvent = flattenedData.some(isCouncilDataEvent);
+    const hasCouncilDoneEvent = flattenedData.some(isCouncilDoneDataEvent);
+    const shouldSyncConversationState = !hasCouncilEvent || hasCouncilDoneEvent;
+
+    if (!currentId && !urlUpdatedRef.current) {
+      urlUpdatedRef.current = true;
+      router.replace(`/?id=${conversationId}`);
+    }
+
+    if (shouldSyncConversationState && !scheduledTitleRefreshConversationIdsRef.current.has(conversationId)) {
+      scheduledTitleRefreshConversationIdsRef.current.add(conversationId);
+      for (const delayMs of [2000, 5000]) {
+        const timeoutId = window.setTimeout(() => {
+          titleRefreshTimeoutsRef.current = titleRefreshTimeoutsRef.current.filter(
+            (id) => id !== timeoutId,
+          );
+          void refreshConversations();
+        }, delayMs);
+        titleRefreshTimeoutsRef.current.push(timeoutId);
+      }
+    }
+
     if (currentId) {
       urlUpdatedRef.current = false;
     }
-  }, [data, currentId]);
+  }, [flattenedData, currentId, refreshConversations, router]);
 
   const agents = useAgentStatus(events);
 
@@ -1038,8 +1187,14 @@ function ChatContent() {
                 const liveThoughtContent = getThinkingContent(liveEvents);
                 const messageContent = getMessageContent(message);
                 const formattedMessageContent = formatMessageContent(messageContent);
-                const showTts = message.role === "assistant" && formattedMessageContent.trim().length > 0;
-                
+                const showTts = message.role === "assistant" && formattedMessageContent.trim().length > 0 && !hasCouncilEvents(msgEvents);
+
+                const councilEventsInMessage = hasCouncilEvents(msgEvents);
+                const councilInterviewEvent = getCouncilInterviewEvent(msgEvents);
+                const councilProgressEvent = getLatestCouncilProgressEvent(msgEvents);
+                const councilOutputEvents = getCouncilOutputEvents(msgEvents);
+                const councilProgressVisible = shouldShowCouncilProgress(msgEvents);
+
                 const persistedMessage = persistedMessagesById.get(message.id) as ReasoningMessage | undefined;
                 const reasoningMessage = persistedMessage ?? (message as ReasoningMessage);
                 const persistedReasoning = reasoningMessage.reasoning_text;
@@ -1067,28 +1222,65 @@ function ChatContent() {
                   && documentDownloadForMessage.fileUrl === documentDownload.fileUrl
                 );
                 const isPreviewVisibleForMessage = isActivePreviewDocument && showPreviewPanel;
-                
+
                 return (
                   <div
                     key={message.id}
                     className={`mb-8 ${message.role === "user" ? "flex justify-end" : "space-y-3"}`}
                   >
-                    {/* Render tools and thinking for assistant messages */}
-                    {message.role === "assistant" && (
+                    
+                    {message.role === "assistant" && !councilEventsInMessage && (
                       <div className="w-full space-y-2">
-                          <ThinkingIndicator 
-                            event={thoughtEvent} 
-                            isThinking={isLast && isLoading} 
+                          <ThinkingIndicator
+                            event={thoughtEvent}
+                            isThinking={isLast && isLoading}
                             isFinished={!isLast || !isLoading}
                             duration={isLast && isLoading ? undefined : (getDurationForMessage(message.id) > 0 ? getDurationForMessage(message.id) : fallbackDuration)}
                             modelName={modelName}
-                            onDurationChange={(d) => thinkingDurationRef.current = d} 
+                            onDurationChange={(d) => thinkingDurationRef.current = d}
                           />
                          <ToolCallLog events={msgEvents} />
                       </div>
                     )}
 
-                    {message.role === "assistant" ? (
+
+                    {councilEventsInMessage && (
+                      <div className="w-full space-y-4">
+
+                        {councilInterviewEvent && (
+                          <CouncilInterviewCard
+                            event={councilInterviewEvent}
+                            onSendConfig={(config) => {
+                              append(
+                                {
+                                  role: "user",
+                                  content: `/council config: preset=${config.preset}, rounds=${config.rounds}, audit=${config.audit}`,
+                                },
+                                {
+                                  body: {
+                                    id: currentId || latestConversationIdRef.current || null,
+                                    model: activeModel,
+                                  },
+                                }
+                              );
+                            }}
+                          />
+                        )}
+
+
+                        {councilProgressEvent && councilProgressVisible && (
+                          <CouncilProgress event={councilProgressEvent as { type: "council_progress"; stage: string; current_round: number; total_rounds: number; models_complete: number; models_total: number }} />
+                        )}
+
+
+                        {councilOutputEvents.length > 0 && (
+                          <CouncilOutputViewer events={councilOutputEvents} />
+                        )}
+                      </div>
+                    )}
+
+
+                    {message.role === "assistant" && !councilEventsInMessage ? (
                       <div className="w-full space-y-2">
                         <div className="w-full">
                           <MarkdownMessage content={messageContent} />
@@ -1133,6 +1325,7 @@ function ChatContent() {
                                 text={formattedMessageContent}
                                 isStreaming={isLast && isLoading}
                                 enabled={Boolean(ttsSettings?.enabled)}
+                                autoStart={Boolean(ttsSettings?.enabled && ttsSettings?.autoPlay)}
                                 voice={ttsSettings?.voice}
                                 model={ttsSettings?.model}
                                 speed={ttsSettings?.speed}
@@ -1143,11 +1336,11 @@ function ChatContent() {
                           </div>
                         )}
                       </div>
-                    ) : (
+                    ) : message.role === "user" ? (
                       <div className="max-w-[85%] md:max-w-[75%] rounded-2xl border border-[var(--color-accent-active)]/50 bg-[var(--color-accent-primary)] px-4 py-3 text-white shadow-sm">
                         <div className="whitespace-pre-wrap leading-relaxed font-medium">{formattedMessageContent}</div>
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 );
               })}
@@ -1170,12 +1363,12 @@ function ChatContent() {
               isConnecting={isConnecting}
               startRecording={start}
               stopRecording={stop}
-              micDisabled={isLoading || !currentId || !isOnline}
+              micDisabled={inputIsBusy || !currentId || !isOnline}
               micError={sttError}
               input={input}
               onInputChange={handleInputChange}
               onSubmit={handleSubmit}
-              isLoading={isLoading}
+              isLoading={inputIsBusy}
               attachments={attachmentItems}
               onAttachFiles={handleAttachFiles}
               onRemoveAttachment={handleRemoveAttachment}

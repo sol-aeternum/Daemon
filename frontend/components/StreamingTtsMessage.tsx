@@ -9,6 +9,7 @@ interface StreamingTtsMessageProps {
   text: string;
   isStreaming: boolean;
   enabled: boolean;
+  autoStart?: boolean;
   voice?: string;
   model?: string;
   speed?: number;
@@ -18,6 +19,7 @@ export function StreamingTtsMessage({
   text,
   isStreaming,
   enabled,
+  autoStart = false,
   voice,
   model,
   speed,
@@ -35,11 +37,12 @@ export function StreamingTtsMessage({
 
   useEffect(() => {
     if (!enabled) return;
+    if (!autoStart) return;
     if (!isStreaming) return;
     if (startedRef.current || isConnecting || isWsStreaming) return;
     startStreaming();
     startedRef.current = true;
-  }, [enabled, isStreaming, isConnecting, isWsStreaming, startStreaming]);
+  }, [enabled, autoStart, isStreaming, isConnecting, isWsStreaming, startStreaming]);
 
   useEffect(() => {
     if (!startedRef.current) return;

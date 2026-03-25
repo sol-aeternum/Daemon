@@ -157,7 +157,6 @@ export default function VoiceTab() {
           </div>
 
           <div className="space-y-5 pl-4 border-l-2 border-[var(--color-border-primary)]">
-            {/* TTS Enabled Toggle */}
             <div className="flex items-center justify-between p-4 bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border-primary)]">
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded-md bg-[var(--color-accent-subtle)] flex items-center justify-center">
@@ -165,10 +164,39 @@ export default function VoiceTab() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-[var(--color-text-primary)]">
-                    Enable Text-to-Speech
+                    Auto-play AI responses
                   </label>
                   <p className="text-xs text-[var(--color-text-muted)]">
-                    Automatically read AI responses aloud
+                    Read assistant replies aloud while they stream
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => updateTtsSetting('autoPlay', !ttsSettings.autoPlay)}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)]/50 ${
+                  ttsSettings.autoPlay ? 'bg-[var(--color-accent-primary)]' : 'bg-[var(--color-bg-tertiary)]'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    ttsSettings.autoPlay ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between p-4 bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border-primary)]">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-md bg-[var(--color-accent-subtle)] flex items-center justify-center">
+                  <Volume2 className="w-4 h-4 text-[var(--color-accent-primary)]" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                    Enable Text-to-Speech controls
+                  </label>
+                  <p className="text-xs text-[var(--color-text-muted)]">
+                    Show per-message play buttons and voice controls
                   </p>
                 </div>
               </div>

@@ -49,6 +49,7 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
   const spawnMode = getSpawnMode(call);
   const isVideoRequested = spawnMode === "video";
   const isAudioRequested = spawnMode === "audio";
+  const isSpawnVideoCall = call.name === "spawn_agent" && isVideoRequested;
 
   const result = rawResult && isToolResultEvent(rawResult) ? rawResult : null;
 
@@ -113,8 +114,10 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
 
     const imgPath = parsed?.data?.image_path ?? parsed?.image_path;
     const audPath = parsed?.data?.audio_path ?? parsed?.audio_path;
-    const vidPath = parsed?.data?.video_path ?? parsed?.video_path;
-    const vidUrl = parsed?.data?.video_url ?? parsed?.video_url ?? parsed?.data?.url ?? parsed?.url;
+    const vidPath = isSpawnVideoCall ? (parsed?.data?.video_path ?? parsed?.video_path) : undefined;
+    const vidUrl = isSpawnVideoCall
+      ? (parsed?.data?.video_url ?? parsed?.video_url ?? parsed?.data?.url ?? parsed?.url)
+      : undefined;
     const dur = parsed?.data?.duration_seconds ?? parsed?.duration_seconds ?? parsed?.data?.duration ?? parsed?.duration;
     const refundFlag = parsed?.data?.refunded ?? parsed?.refunded;
 
