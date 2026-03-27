@@ -1,0 +1,207 @@
+Daemon Memory Extraction Benchmark v2.3
+Target: http://localhost:8000
+Database: localhost:5432/daemon
+Redis: redis://localhost:6379
+Wait time: 30s per scenario
+Scenarios: 8
+DB wipe: enabled
+Decryption: available
+Estimated runtime: ~5 minutes
+Health check: OK
+🗑 Initial wipe: 10 memories cleared
+🧹 Initial redis wipe: 2 extraction key(s) cleared
+
+============================================================
+  Scenario: 1: Dense Personal Facts
+  Straightforward biographical and preference statements
+============================================================
+  → [1/3] My name is Julian, I'm 28 and I live in Adelaide. I work as a software...
+  → [2/3] I have a brother named Callan and a dog named Koda — she's a German Sh...
+  → [3/3] I mainly code in Python and TypeScript. I prefer Neovim over VS Code b...
+  ⏳ Waiting 30s for extraction pipeline...
+  ✓ ['julian'] → 'Julian' (cat=fact, conf=0.80)  ⚠ confidence 0.80 < min 0.85
+  ✓ ['28', 'years'] → '28' (cat=fact, conf=0.80)  ⚠ confidence 0.80 < min 0.85
+  ✓ ['adelaide'] → 'Adelaide' (cat=fact, conf=0.80)  ⚠ confidence 0.80 < min 0.85
+  ✓ ['software engineer'] → 'software engineer' (cat=fact, conf=0.80)  ⚠ confidence 0.80 < min 0.85
+  ✓ ['brother', 'callan'] → 'User has a brother named Callan.' (cat=fact, conf=0.80)  ⚠ confidence 0.80 < min 0.85
+  ✓ ['dog', 'koda'] → 'User has a dog named Koda, a German Shepherd.' (cat=fact, conf=0.80)
+  ✓ ['python'] → 'User mainly codes in Python' (cat=fact, conf=0.85)
+  ✓ ['typescript'] → 'User mainly codes in TypeScript' (cat=fact, conf=0.85)
+  ✓ ['neovim'] → 'User prefers Neovim over VS Code' (cat=preference, conf=0.80)
+  ? 1 unaccounted extraction(s):
+    → 'User uses both Neovim and VS Code' (cat=fact, conf=0.80, slot=editor.usage)
+
+  Score: TP=9 FP=0 FN=0 P=1.00 R=1.00
+
+============================================================
+  Scenario: 2: Ephemeral vs Durable
+  Should skip transient questions, extract only durable intent
+============================================================
+  🗑 Wiped 10 memories from previous scenario
+  🧹 Cleared 1 Redis extraction key(s)
+  → [1/4] What's the weather like in Melbourne today?
+  → [2/4] Can you convert 150 USD to AUD for me?
+  → [3/4] Actually I'm planning to move to Melbourne next year, that's why I'm c...
+  → [4/4] What time is it in Tokyo right now?
+  ⏳ Waiting 30s for extraction pipeline...
+  ✓ ['move', 'melbourne'] → 'User is planning to move to Melbourne next year' (cat=project, conf=0.60)
+  ? 1 unaccounted extraction(s):
+    → 'User is curious about the weather in Melbourne' (cat=preference, conf=0.70, slot=preference.weather.melbourne)
+
+  Score: TP=1 FP=0 FN=0 P=1.00 R=1.00
+
+============================================================
+  Scenario: 3: Corrections and Supersession
+  Tests correction category and dedup supersession
+============================================================
+  🗑 Wiped 2 memories from previous scenario
+  🧹 Cleared 1 Redis extraction key(s)
+  → [1/2] I drive a 2019 Toyota Corolla.
+  ⏳ Waiting 60s for extraction to fire between messages...
+  → [2/2] Actually I sold the Corolla last month. I drive a 2023 Tesla Model 3 n...
+  ⏳ Waiting 30s for extraction pipeline...
+  ✓ ['tesla', 'model 3'] → '2023 Tesla Model 3' (cat=fact, conf=0.80)  ⚠ confidence 0.80 < min 0.85
+  ? 1 unaccounted extraction(s):
+    → '2019 Toyota Corolla' (cat=fact, conf=0.80, slot=vehicle.model)
+  ✗ DEDUP: '2019 Toyota Corolla' active=True, expected active=False
+  ✓ DEDUP: '2023 Tesla Model 3' active=True, expected active=True
+
+  Score: TP=1 FP=0 FN=0 P=1.00 R=1.00
+
+============================================================
+  Scenario: 4: Projects and Goals
+  Tests project/goal extraction and category accuracy
+============================================================
+  🗑 Wiped 2 memories from previous scenario
+  🧹 Cleared 1 Redis extraction key(s)
+  → [1/3] I'm building an AI assistant called Daemon. It uses FastAPI on the bac...
+  → [2/3] I also want to start learning Rust this year. Not for Daemon, just as ...
+  → [3/3] For Daemon I need to fix the memory system — extracted memories aren't...
+  ⏳ Waiting 30s for extraction pipeline...
+  ✓ ['daemon', 'ai assistant'] → 'User is building an AI assistant named Daemon, using FastAPI on the backend and Next.js on the frontend.' (cat=project, conf=0.80)
+  ✓ ['rust'] → 'User wants to learn Rust this year as a personal goal.' (cat=fact, conf=0.80)  ⚠ expected category=project
+  ✓ ['memories', 'active'] → 'User's extracted memories for Daemon aren't being promoted to active status properly' (cat=fact, conf=0.80)
+  ? 1 unaccounted extraction(s):
+    → 'User needs to fix the memory system for Daemon' (cat=project, conf=0.85, slot=project.daemon.memory_system)
+
+  Score: TP=3 FP=0 FN=0 P=1.00 R=1.00
+
+============================================================
+  Scenario: 5: Hedged Statements
+  Tests confidence calibration between definite and speculative
+============================================================
+  🗑 Wiped 4 memories from previous scenario
+  🧹 Cleared 1 Redis extraction key(s)
+  → [1/3] I'm definitely allergic to shellfish. I might also be lactose intolera...
+  → [2/3] I'm thinking about maybe getting a cat but I'm not sure yet. My girlfr...
+  → [3/3] We'll probably go to Japan in October. Nothing booked yet.
+  ⏳ Waiting 30s for extraction pipeline...
+  ✓ ['shellfish'] → 'User has a confirmed allergy to shellfish.' (cat=fact, conf=0.80)  ⚠ confidence 0.80 < min 0.88
+  ✓ ['lactose'] → 'User suspects they might be lactose intolerant, but it is not confirmed.' (cat=fact, conf=0.80)  ⚠ confidence 0.80 > max 0.75 (hedging failed)
+  ✓ ['girlfriend'] → 'User has a girlfriend' (cat=fact, conf=0.88)
+  ✓ ['girlfriend', 'cat'] → 'User's girlfriend wants a cat' (cat=fact, conf=0.82)
+  ✓ ['cat'] → 'User is considering getting a cat' (cat=project, conf=0.60)
+  ✓ ['japan', 'october'] → 'User plans to travel to Japan in October' (cat=project, conf=0.60)
+
+  Score: TP=6 FP=0 FN=0 P=1.00 R=1.00
+
+============================================================
+  Scenario: 6: Realistic Multi-Turn Session
+  Interleaved signal and noise in natural conversation
+============================================================
+  🗑 Wiped 6 memories from previous scenario
+  🧹 Cleared 1 Redis extraction key(s)
+  → [1/7] Hey, can you help me think through my home server setup?
+  → [2/7] So I've got the 9950X3D picked out, 64 gigs of DDR5, and I'm waiting o...
+  → [3/7] What's a good Linux distro for this kind of thing? I was thinking NixO...
+  → [4/7] Yeah let's go with CachyOS. I like that it's Arch-based but with bette...
+  → [5/7] Oh by the way, my birthday is March 15th. My girlfriend always asks me...
+  → [6/7] Anyway back to the server — I want Tailscale for remote access, and I'...
+  → [7/7] How much power does a 5090 draw under load? I want to make sure my UPS...
+  ⏳ Waiting 30s for extraction pipeline...
+  ✓ ['9950x3d'] → 'User has selected a 9950X3D processor for their home server' (cat=fact, conf=0.90)
+  ✓ ['be quiet', 'light base'] → 'User's home server case is a Be Quiet Light Base 500' (cat=fact, conf=0.90)
+  ✓ ['cachyos'] → 'User is considering using CachyOS for their home server' (cat=preference, conf=0.65)
+  ✓ ['arch'] → 'User likes that CachyOS is Arch-based with better defaults' (cat=preference, conf=0.75)
+  ✓ ['birthday', 'march'] → 'User's birthday is March 15th.' (cat=fact, conf=0.80)  ⚠ confidence 0.80 < min 0.88
+  ✗ MISSING: ['tailscale']
+  ✗ MISSING: ['llm']
+  ? 8 unaccounted extraction(s):
+    → 'User has a home server setup' (cat=fact, conf=0.80, slot=setup.home_server)
+    → 'User has 64 gigs of DDR5 RAM for their home server' (cat=fact, conf=0.90, slot=hardware.ram)
+    → 'User is waiting on a 5090 TUF graphics card' (cat=fact, conf=0.85, slot=hardware.graphics_card)
+    → 'User has used Arch Linux before' (cat=fact, conf=0.85, slot=software.linux_experience)
+    → 'User is comfortable with the pacman package manager' (cat=fact, conf=0.85, slot=software.package_manager)
+    → 'User has a girlfriend' (cat=fact, conf=0.88, slot=relationship.partner)
+    → 'User's girlfriend asks them what they want for their birthday' (cat=fact, conf=0.80, slot=relationship.partner.birthday_inquiry)
+    → 'User does not know what to tell their girlfriend when asked what they want' (cat=fact, conf=0.75, slot=relationship.partner.birthday_preference)
+
+  Score: TP=5 FP=0 FN=2 P=1.00 R=0.71
+
+============================================================
+  Scenario: 7: Explicit Memory Instructions
+  Tests 'remember this' style explicit storage requests
+============================================================
+  🗑 Wiped 13 memories from previous scenario
+  🧹 Cleared 1 Redis extraction key(s)
+  → [1/3] For future reference: my AWS account ID is 123456789012 and I always d...
+  → [2/3] Remember that I hate YAML. Always suggest TOML or JSON alternatives.
+  → [3/3] Don't store anything about my medical stuff — that's private.
+  ⏳ Waiting 30s for extraction pipeline...
+  ✓ ['aws', '123456789012'] → '123456789012' (cat=fact, conf=0.80)  ⚠ confidence 0.80 < min 0.88
+  ✓ ['ap-southeast-2'] → 'ap-southeast-2' (cat=fact, conf=0.80)  ⚠ confidence 0.80 < min 0.85
+  ✓ ['yaml'] → 'User hates YAML; prefer TOML or JSON alternatives.' (cat=preference, conf=0.80)  ⚠ confidence 0.80 < min 0.88
+  ? 1 unaccounted extraction(s):
+    → 'User does not want any medical information stored.' (cat=preference, conf=0.80, slot=privacy.medical_information)
+
+  Score: TP=3 FP=0 FN=0 P=1.00 R=1.00
+
+============================================================
+  Scenario: 8: Adversarial Empty
+  Zero memories should be extracted
+============================================================
+  🗑 Wiped 4 memories from previous scenario
+  🧹 Cleared 1 Redis extraction key(s)
+  → [1/5] lol
+  → [2/5] ok
+  → [3/5] .
+  → [4/5] Can you just tell me a joke?
+  → [5/5] hahaha that's good. anyway, I'm heading to bed. Talk tomorrow!
+  ⏳ Waiting 30s for extraction pipeline...
+  ✗ ADVERSARIAL FAIL: 1 memories extracted from noise
+    → 'User appreciates jokes and a lighthearted tone.' (cat=preference, conf=0.80)
+
+  Score: TP=0 FP=1 FN=0 P=0.00 R=1.00
+                      Memory Extraction Benchmark Results                       
+┏━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━┳━━━━┳━━━━┳━━━━┳━━━━━━━━━━━┳━━━━━━━━┓
+┃ Scenario          ┃ Expected ┃ Extracted ┃ TP ┃ FP ┃ FN ┃ Precision ┃ Recall ┃
+┡━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━╇━━━━╇━━━━╇━━━━╇━━━━━━━━━━━╇━━━━━━━━┩
+│ 1: Dense Personal │        9 │        10 │  9 │  0 │  0 │      1.00 │   1.00 │
+│ Facts             │          │           │    │    │    │           │        │
+│ 2: Ephemeral vs   │        1 │         2 │  1 │  0 │  0 │      1.00 │   1.00 │
+│ Durable           │          │           │    │    │    │           │        │
+│ 3: Corrections    │        1 │         2 │  1 │  0 │  0 │      1.00 │   1.00 │
+│ and Supersession  │          │           │    │    │    │           │        │
+│ 4: Projects and   │        3 │         4 │  3 │  0 │  0 │      1.00 │   1.00 │
+│ Goals             │          │           │    │    │    │           │        │
+│ 5: Hedged         │        6 │         6 │  6 │  0 │  0 │      1.00 │   1.00 │
+│ Statements        │          │           │    │    │    │           │        │
+│ 6: Realistic      │        7 │        13 │  5 │  0 │  2 │      1.00 │   0.71 │
+│ Multi-Turn        │          │           │    │    │    │           │        │
+│ Session           │          │           │    │    │    │           │        │
+│ 7: Explicit       │        3 │         4 │  3 │  0 │  0 │      1.00 │   1.00 │
+│ Memory            │          │           │    │    │    │           │        │
+│ Instructions      │          │           │    │    │    │           │        │
+│ 8: Adversarial    │        0 │         1 │  0 │  1 │  0 │      0.00 │   1.00 │
+│ Empty             │          │           │    │    │    │           │        │
+├───────────────────┼──────────┼───────────┼────┼────┼────┼───────────┼────────┤
+│ TOTAL             │       30 │        42 │ 28 │  1 │  2 │      0.97 │   0.93 │
+└───────────────────┴──────────┴───────────┴────┴────┴────┴───────────┴────────┘
+
+  ✓ Precision ≥ 0.90
+  ✓ Recall ≥ 0.90
+  ✗ Adversarial = 0 extractions
+
+  ❌ BENCHMARK FAILED — see details above
+
+  Results saved to tests/results/bench_20260326_085146.json

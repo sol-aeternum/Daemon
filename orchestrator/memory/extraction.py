@@ -264,7 +264,7 @@ def validate_fact(fact: ExtractedFact) -> bool:
 
 async def extract_facts_from_text(
     text: str,
-    model: str = "openrouter/openai/gpt-4o-mini",
+    model: str = "openrouter/openai/gpt-5.4-nano",
     *,
     summary: str | None = None,
     retry_hint: str | None = None,
@@ -393,7 +393,7 @@ async def process_extraction(
     if conversation:
         summary = conversation.get("summary")
 
-    model = "openrouter/openai/gpt-4o-mini"
+    model = "openrouter/openai/gpt-5.4-nano"
     outcome = await extract_facts_from_text(text, model=model, summary=summary)
     retry_used = False
 
