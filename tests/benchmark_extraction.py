@@ -112,6 +112,11 @@ _load_dotenv()
 BASE_URL = os.environ.get("DAEMON_URL", "http://localhost:8000")
 DEFAULT_WAIT = 50  # seconds to wait for extraction pipeline
 DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001"
+# Fresh benchmark user per run (isolated from stale test data)
+import uuid as _uuid
+def _fresh_benchmark_user() -> str:
+    """Generate a fresh isolated benchmark user ID."""
+    return str(_uuid.uuid4())
 
 # Safety: hosts we'll allow DB wipe on
 SAFE_HOSTS = ("localhost", "127.0.0.1", "postgres", "db", "0.0.0.0")
@@ -225,6 +230,32 @@ def wipe_redis_extract_keys(redis_url: str = REDIS_URL) -> int:
                 break
     return deleted
 
+def flush_redis_db(redis_url: str = REDIS_URL) -> bool:
+    """Flush the entire Redis database to clear all ARQ jobs and state.
+    
+    This is more aggressive than wipe_redis_extract_keys() - it clears the entire
+    Redis DB to ensure no queued extraction jobs from previous runs can complete
+    during the benchmark.
+    
+    Refuses to flush non-local Redis as a safety measure.
+    """
+    if not _is_safe_redis(redis_url):
+        print(f"  ⚠ Refusing to flush non-local redis: {redis_url}", file=sys.stderr)
+        return False
+    
+    if redis_mod is None:
+        print("  ⚠ redis module unavailable; skipping redis flush")
+        return False
+    
+    try:
+        client_cls = cast(Any, redis_mod).Redis
+        client = client_cls.from_url(redis_url, decode_responses=True)
+        client.flushdb()
+        return True
+    except Exception as e:
+        print(f"  ⚠ Redis flush failed: {e}", file=sys.stderr)
+        return False
+
 
 def wipe_memories(db_url: str = DATABASE_URL) -> int:
     """Delete all memories and extraction_log entries. Returns count deleted.
@@ -248,6 +279,9 @@ def wipe_memories(db_url: str = DATABASE_URL) -> int:
         cur = conn.cursor()
         cur.execute("SELECT count(*) FROM memories")
         (count,) = cur.fetchone()
+        # Clean all messages and conversations for full isolation
+        cur.execute("DELETE FROM messages")
+        cur.execute("DELETE FROM conversations")
         for tbl in log_tables:
             try:
                 cur.execute(f"DELETE FROM {tbl}")
@@ -267,6 +301,9 @@ def wipe_memories(db_url: str = DATABASE_URL) -> int:
         conn = await asyncpg_mod.connect(db_url)
         try:
             count = await conn.fetchval("SELECT count(*) FROM memories")
+            # Clean all messages and conversations for full isolation
+            await conn.execute("DELETE FROM messages")
+            await conn.execute("DELETE FROM conversations")
             for tbl in log_tables:
                 try:
                     await conn.execute(f"DELETE FROM {tbl}")
@@ -281,17 +318,35 @@ def wipe_memories(db_url: str = DATABASE_URL) -> int:
     return asyncio.run(_wipe_with_asyncpg())
 
 
-def query_memories(db_url: str = DATABASE_URL) -> list[dict[str, Any]]:
-    """Fetch all memories ordered by creation time.
+def query_memories(db_url: str = DATABASE_URL, conversation_id: str | None = None) -> list[dict[str, Any]]:
+    """Fetch memories ordered by creation time.
 
     Returns both active and closed memories for supersession verification.
+    If conversation_id is provided, only returns memories from that conversation.
     """
-    query = """
-        SELECT id, content, category, confidence, memory_slot,
-               source_type, valid_from, valid_to, access_count, created_at
-        FROM memories
-        ORDER BY created_at
-    """
+    if conversation_id:
+        query = """
+            SELECT id, user_id, content, category, confidence, memory_slot,
+                   source_type, valid_from, valid_to, access_count, created_at, source_conversation_id
+            FROM memories
+            WHERE source_conversation_id = %s
+            ORDER BY created_at
+        """
+        query_async = """
+            SELECT id, user_id, content, category, confidence, memory_slot,
+                   source_type, valid_from, valid_to, access_count, created_at, source_conversation_id
+            FROM memories
+            WHERE source_conversation_id = $1
+            ORDER BY created_at
+        """
+    else:
+        query = """
+            SELECT id, user_id, content, category, confidence, memory_slot,
+                   source_type, valid_from, valid_to, access_count, created_at, source_conversation_id
+            FROM memories
+            ORDER BY created_at
+        """
+        query_async = query
 
     def _process_row(d: dict[str, Any]) -> dict[str, Any]:
         for key in ("valid_from", "valid_to", "created_at"):
@@ -306,7 +361,10 @@ def query_memories(db_url: str = DATABASE_URL) -> list[dict[str, Any]]:
         psycopg2_mod = cast(Any, psycopg2)
         conn = psycopg2_mod.connect(db_url)
         cur = conn.cursor()
-        cur.execute(query)
+        if conversation_id:
+            cur.execute(query, (conversation_id,))
+        else:
+            cur.execute(query)
         cols = [desc[0] for desc in cur.description]
         rows = [_process_row(dict(zip(cols, row))) for row in cur.fetchall()]
         cur.close()
@@ -320,7 +378,10 @@ def query_memories(db_url: str = DATABASE_URL) -> list[dict[str, Any]]:
         asyncpg_mod = cast(Any, asyncpg)
         conn = await asyncpg_mod.connect(db_url)
         try:
-            records = await conn.fetch(query)
+            if conversation_id:
+                records = await conn.fetch(query_async, conversation_id)
+            else:
+                records = await conn.fetch(query_async)
             return [_process_row(dict(rec)) for rec in records]
         finally:
             await conn.close()
@@ -344,21 +405,56 @@ def health_check() -> bool:
         return False
 
 
-def create_conversation() -> str:
-    """Create a new conversation, return its ID."""
-    r = client.post("/conversations", json={"title": "Benchmark"})
+def create_conversation(user_id: str | None = None) -> str:
+    """Create a new conversation for the given user, return its ID."""
+    # If user_id provided, ensure user exists in DB (bypasses API, creates directly)
+    if user_id:
+        _ensure_benchmark_user(user_id)
+    payload = {"title": "Benchmark"}
+    if user_id:
+        payload["user_id"] = user_id
+    r = client.post("/conversations", json=payload)
     r.raise_for_status()
     return r.json()["id"]
 
 
-def send_message(conversation_id: str, content: str) -> None:
+def _ensure_benchmark_user(user_id: str) -> None:
+    """Ensure benchmark user exists in DB, creating if necessary."""
+    import asyncpg
+    db_url = _resolve_db_url(os.environ.get("DATABASE_URL", DATABASE_URL))
+    
+    async def _create():
+        conn = await asyncpg.connect(dsn=db_url)
+        try:
+            # Try to insert, ignore if already exists
+            await conn.execute(
+                """
+                INSERT INTO users (id, email, name, username, preferences, created_at, updated_at)
+                VALUES ($1::uuid, $2, $3, $4, $5, NOW(), NOW())
+                ON CONFLICT (id) DO NOTHING
+                """,
+                user_id,
+                f"benchmark-{user_id[:8]}@daemon.test",
+                "Benchmark User",
+                f"bench_{user_id[:8]}",
+                "{}",
+            )
+        finally:
+            await conn.close()
+    
+    import asyncio
+    asyncio.run(_create())
+
+
+def send_message(conversation_id: str, content: str, user_id: str) -> None:
     """Send a user message and consume the full SSE stream."""
     r = client.post(
         "/chat",
         json={
             "conversation_id": conversation_id,
             "message": content,
-            "user_id": DEFAULT_USER_ID,
+            "user_id": user_id,
+            "disable_memory_write": True,  # Disable tool side-effects for benchmark isolation
         },
         headers={"Accept": "text/event-stream"},
     )
@@ -706,17 +802,24 @@ def run_scenario(
         wiped = wipe_memories(db_url)
         if wiped > 0:
             print(f"  🗑 Wiped {wiped} memories from previous scenario")
+        flushed = flush_redis_db()
+        if flushed:
+            print(f"  🧹 Redis DB flushed")
         redis_wiped = wipe_redis_extract_keys()
         if redis_wiped > 0:
             print(f"  🧹 Cleared {redis_wiped} Redis extraction key(s)")
 
+    # Generate fresh isolated benchmark user for this scenario
+    benchmark_user = _fresh_benchmark_user()
+    print(f"  👤 Benchmark user: {benchmark_user}")
+    
     t0 = time.time()
-    conv_id = create_conversation()
+    conv_id = create_conversation(benchmark_user)
 
     for i, msg in enumerate(scenario.messages):
         preview = msg[:70] + ("..." if len(msg) > 70 else "")
         print(f"  → [{i + 1}/{len(scenario.messages)}] {preview}")
-        send_message(conv_id, msg)
+        send_message(conv_id, msg, benchmark_user)
         if scenario.inter_message_wait and i < len(scenario.messages) - 1:
             print(
                 f"  ⏳ Waiting {scenario.inter_message_wait}s for extraction to fire between messages..."
@@ -726,14 +829,28 @@ def run_scenario(
     print(f"  ⏳ Waiting {scenario.wait_seconds}s for extraction pipeline...")
     time.sleep(scenario.wait_seconds)
 
-    all_memories = query_memories(db_url)
+    all_memories = query_memories(db_url, conversation_id=conv_id)
     active_memories = [m for m in all_memories if m.get("valid_to") is None]
+    
+    # Separate extracted memories (from extraction pipeline) from user_created (tool side-effects)
+    extracted_memories = [m for m in active_memories if m.get("source_type") == "extracted"]
+    user_created_memories = [m for m in active_memories if m.get("source_type") == "user_created"]
+    
+    # Debug: show user_created memories if any
+    if user_created_memories:
+        print(f"  📋 {len(user_created_memories)} user_created memory(ies) - not scored:")
+        for mem in user_created_memories:
+            print(f"    → '{mem['content'][:60]}...' (source_type={mem.get('source_type')})")
+    
+    # Use only extracted memories for scoring
+    scoring_memories = extracted_memories
+    
     duration = time.time() - t0
 
     result = ScenarioResult(
         name=scenario.name,
         expected_count=len(scenario.expected),
-        extracted_count=len(active_memories),
+        extracted_count=len(scoring_memories),
         memories_raw=all_memories,
         duration_seconds=round(duration, 1),
     )
@@ -741,7 +858,7 @@ def run_scenario(
     # ── Match expected facts ──────────────────────────────────────────────
     matched_ids: set[str] = set()
     for ef in scenario.expected:
-        mr = match_fact(ef, active_memories)
+        mr = match_fact(ef, scoring_memories)
         if mr.matched_memory:
             result.tp += 1
             matched_ids.add(mr.matched_memory.get("id", ""))
@@ -772,7 +889,7 @@ def run_scenario(
 
     # ── Noise detection (word-boundary matching) ──────────────────────────
     for noise_kws in scenario.noise_keywords:
-        for mem in active_memories:
+        for mem in scoring_memories:
             if all(_keyword_matches(kw, mem["content"]) for kw in noise_kws):
                 result.fp += 1
                 print(f"  ✗ NOISE: '{mem['content']}' matched {noise_kws}")
@@ -781,19 +898,19 @@ def run_scenario(
                 )
 
     # ── Adversarial check ─────────────────────────────────────────────────
-    if scenario.is_adversarial and active_memories:
+    if scenario.is_adversarial and scoring_memories:
         result.adversarial_fail = True
-        result.fp = len(active_memories)
+        result.fp = len(scoring_memories)
         print(
-            f"  ✗ ADVERSARIAL FAIL: {len(active_memories)} memories extracted from noise"
+            f"  ✗ ADVERSARIAL FAIL: {len(scoring_memories)} memories extracted from noise"
         )
-        for mem in active_memories:
+        for mem in scoring_memories:
             print(
                 f"    → '{mem['content']}' (cat={mem['category']}, conf={mem['confidence']:.2f})"
             )
 
     # ── Unaccounted extractions ───────────────────────────────────────────
-    unaccounted = [m for m in active_memories if m.get("id") not in matched_ids]
+    unaccounted = [m for m in scoring_memories if m.get("id") not in matched_ids]
     if unaccounted and not scenario.is_adversarial:
         print(f"  ? {len(unaccounted)} unaccounted extraction(s):")
         for mem in unaccounted:
@@ -1034,6 +1151,9 @@ def main() -> None:
         wiped = wipe_memories(effective_db_url)
         if wiped > 0:
             print(f"🗑 Initial wipe: {wiped} memories cleared")
+        flushed = flush_redis_db()
+        if flushed:
+            print(f"  🧹 Redis DB flushed")
         redis_wiped = wipe_redis_extract_keys()
         if redis_wiped > 0:
             print(f"🧹 Initial redis wipe: {redis_wiped} extraction key(s) cleared")

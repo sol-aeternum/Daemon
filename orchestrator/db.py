@@ -29,10 +29,15 @@ async def init_app_state(settings: Settings) -> AppState:
 
     if settings.database_url:
         try:
+
+            async def init_connection(conn):
+                await conn.execute("SET ivfflat.probes = 10")
+
             state.db_pool = await asyncpg.create_pool(
                 dsn=settings.database_url,
                 min_size=5,
                 max_size=20,
+                init=init_connection,
             )
             logger.info("PostgreSQL pool created")
         except Exception:

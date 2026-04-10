@@ -71,4 +71,4 @@ async def test_extract_memories_filters_memory_write_artifacts() -> None:
 
     assert "memory_write" not in extracted_text.lower()
     assert "user: I live in Adelaide" in extracted_text
-    assert "assistant: Anything else?" in extracted_text
+    # Note: assistant content is no longer extracted when user messages exist

@@ -1,218 +1,335 @@
-# Triage Log
+# TRIAGE.md
 
-> Auto-generated diagnostic capture. Items here were encountered during task
-> execution but fall outside the immediate task scope. Review and action as needed.
-
----
-
-## [2026-03-24T12:52:00Z] — Pytest import path bootstrap broken in conftest
-- **Severity**: warning
-- **Scope**: project
-- **Encountered during**: [orchestrator/council/*.py and orchestrator/commands/council.py] Read tool loop and emission flow to assess safety checklist — expect evidence for each required finding
-- **Category**: test-failure
-- **Blocked current task**: no
-- **What happened**: Running `pytest tests/council/test_integration.py tests/council/test_sse_integration.py tests/test_completion_with_tools.py -q` failed before collection. `tests/conftest.py` imports `orchestrator.config` before adding the project root to `sys.path`, so plain `pytest` crashes with `ModuleNotFoundError`.
-- **Evidence**: `ImportError while loading conftest '/home/sol/daemon/tests/conftest.py'. ... tests/conftest.py:8: in <module> from orchestrator.config import get_settings E ModuleNotFoundError: No module named 'orchestrator'`; bootstrap happens later at `tests/conftest.py:13`-`tests/conftest.py:15`.
-- **Likely cause**: Import-order regression in `tests/conftest.py`; the path fix executes after the failing import (confidence 98%).
-- **Suggested action**: Move the `PROJECT_ROOT`/`sys.path.insert()` bootstrap above `from orchestrator.config import get_settings`, or standardize test execution through `python -m pytest`/`uv run pytest` and document it.
-- **Seen again**: 2026-03-25T21:28:23Z during provider-swap Oracle review when `pytest tests/test_video_pricing.py tests/test_fal_kling.py tests/test_kling_e2e.py` failed before collection with the same `ModuleNotFoundError: No module named 'orchestrator'` until `PYTHONPATH=/home/sol/daemon` was injected.
-
-## [2026-03-24T12:54:00Z] — Host Python missing required `trafilatura` dependency
-- **Severity**: warning
+## 2026-04-06 — LongMemEval Re-ingestion Blocked (TODO 5)
+- **Severity**: critical
 - **Scope**: host
-- **Encountered during**: [orchestrator/council/*.py and orchestrator/commands/council.py] Read tool loop and emission flow to assess safety checklist — expect evidence for each required finding
-- **Category**: dependency
-- **Blocked current task**: no
-- **What happened**: After forcing `PYTHONPATH` to continue test collection, pytest still failed because the active Python environment does not have `trafilatura` installed. The dependency is declared in `pyproject.toml`, so this is an environment mismatch rather than missing project metadata.
-- **Evidence**: `orchestrator/services/fetch/extract.py:7: import trafilatura` -> `ModuleNotFoundError: No module named 'trafilatura'`; dependency declared at `pyproject.toml:19`.
-- **Likely cause**: Tests were run outside the provisioned project environment (`uv`/virtualenv), so declared runtime dependencies were unavailable (confidence 90%).
-- **Suggested action**: Run verification via `uv run pytest ...` or sync/install project dependencies into the active interpreter before using plain `pytest`.
+- **Encountered during**: TODO 5 execution - Re-ingest LongMemEval with revised extraction
+- **Category**: config
+- **Blocked current task**: yes
+- **What happened**: Database service not available in current environment. The ingestion script requires PostgreSQL at host `postgres:5432` but no database service is running or accessible from the current shell context.
+- **Evidence**: 
+  - `socket.gaierror: [Errno -2] Name or service not known` when trying to connect to postgres:5432
+  - `psql: command not found` - no postgres client available
+  - No Docker containers running postgres
+- **Likely cause**: This is a development/host environment without the full Daemon stack running (postgres, redis, backend services).
+- **Suggested action**: TODO 5 requires a full Daemon environment with PostgreSQL running. Options:
+  1. Run in Docker Compose environment with postgres service
+  2. Run against a cloud-hosted PostgreSQL instance
+  3. Start local postgres: `docker run -d -p 5432:5432 -e POSTGRES_USER=daemon -e POSTGRES_PASSWORD=daemon -e POSTGRES_DB=daemon postgres:15`
 
-## [2026-03-24T12:54:30Z] — LiteLLM emits Python 3.14 deprecation warnings during test collection
-- **Severity**: info
-- **Scope**: upstream
-- **Encountered during**: [orchestrator/council/*.py and orchestrator/commands/council.py] Read tool loop and emission flow to assess safety checklist — expect evidence for each required finding
-- **Category**: deprecation
-- **Blocked current task**: no
-- **What happened**: Test collection emitted repeated deprecation warnings from LiteLLM because it still calls `asyncio.iscoroutinefunction`, which Python 3.14 marks for removal in 3.16.
-- **Evidence**: `/home/sol/.local/lib/python3.14/site-packages/litellm/litellm_core_utils/logging_utils.py:273: DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction() instead` (15 warnings).
-- **Likely cause**: LiteLLM has not yet updated this compatibility path for newer Python versions (confidence 95%).
-- **Suggested action**: Track LiteLLM release notes for a compatibility fix or pin/document a supported Python version for local testing. Seen again under `uv run pytest` on 2026-03-24.
-
-## [2026-03-24T12:56:30Z] — `run_council()` never persists captured progress events
+## 2026-04-08 20:33 — FAL_KEY Compose Warning During QA Startup Check
 - **Severity**: warning
 - **Scope**: project
-- **Encountered during**: [orchestrator/council/*.py and orchestrator/commands/council.py] Read tool loop and emission flow to assess safety checklist — expect evidence for each required finding
-- **Category**: test-failure
-- **Blocked current task**: no
-- **What happened**: Targeted council tests fail because `run_council()` initializes `progress_events = []` but never appends the emitted events. Output metadata therefore exposes an empty list even though progress was captured and emitted live.
-- **Evidence**: `tests/council/test_integration.py::TestCouncilRegressionFixes::test_run_council_metadata_and_progress` failed with `assert []`; code shows `progress_events: list[dict[str, Any]] = []` at `orchestrator/commands/council.py:144` and only `session.metadata["progress_events"] = progress_events` at `orchestrator/commands/council.py:317`, with no `append()` in `capture_progress()`.
-- **Likely cause**: Regression during progressive-emission refactor left the metadata buffer disconnected from the callback path (confidence 99%).
-- **Suggested action**: Append each event inside `capture_progress()` before `emit_progress()` so metadata and fallback SSE rendering stay consistent.
-
-## [2026-03-24T12:57:00Z] — `council_done` reports zero token totals from output metadata
-- **Severity**: warning
-- **Scope**: project
-- **Encountered during**: [orchestrator/council/*.py and orchestrator/commands/council.py] Read tool loop and emission flow to assess safety checklist — expect evidence for each required finding
-- **Category**: test-failure
-- **Blocked current task**: no
-- **What happened**: The SSE emitter looks for `metadata["token_costs"]`, but rendered council output stores totals at the top level of `metadata` (`total_tokens`, `total_cost_usd`, `models_used`). As a result, `council_done` emits zeros for totals in tests and likely in production.
-- **Evidence**: `tests/council/test_integration.py::TestCouncilRegressionFixes::test_sse_emits_progress_and_raw_sections` failed with `assert 0 == 42`; `orchestrator/council/output.py:112`-`orchestrator/council/output.py:123` writes totals directly into `metadata`, while `orchestrator/council/sse.py:273`-`orchestrator/council/sse.py:285` reads `token_costs = metadata.get("token_costs", {})`.
-- **Likely cause**: Contract drift between output renderer and SSE emitter after token-cost metadata was flattened (confidence 98%).
-- **Suggested action**: Either nest `token_costs` again in `CouncilOutputRenderer`, or update `_emit_council_output_events()` to read the flattened fields.
-
-## [2026-03-24T12:57:30Z] — Council dataclasses still use deprecated `datetime.utcnow()`
-- **Severity**: info
-- **Scope**: project
-- **Encountered during**: [orchestrator/council/*.py and orchestrator/commands/council.py] Read tool loop and emission flow to assess safety checklist — expect evidence for each required finding
-- **Category**: deprecation
-- **Blocked current task**: no
-- **What happened**: `uv run pytest` emitted deprecation warnings from council dataclass defaults that still call `datetime.utcnow()`, which Python 3.14 schedules for removal.
-- **Evidence**: Test run showed `<string>:12: DeprecationWarning: datetime.datetime.utcnow() is deprecated ...` and `<string>:7: DeprecationWarning: datetime.datetime.utcnow() is deprecated ...`; affected defaults are in `orchestrator/council/models.py:80`, `orchestrator/council/models.py:96`, and `orchestrator/council/models.py:97`.
-- **Likely cause**: Legacy naive-UTC defaults were never migrated to timezone-aware `datetime.now(datetime.UTC)` (confidence 95%).
-- **Suggested action**: Replace `datetime.utcnow` defaults/usages with timezone-aware UTC timestamps before Python 3.16.
-
-## [2026-03-24T12:59:00Z] — Council Round 1 exposes side-effecting tools to model outputs
-- **Severity**: critical
-- **Scope**: project
-- **Encountered during**: [orchestrator/council/*.py and orchestrator/commands/council.py] Read tool loop and emission flow to assess safety checklist — expect evidence for each required finding
-- **Category**: security
-- **Blocked current task**: no
-- **What happened**: Council Round 1 uses the global default tool registry rather than a read-only council-specific subset. That means the model can emit structured calls for `notification_send`, `reminder_set`, `spawn_agent`, and `spawn_multiple`, causing real side effects or recursive spend amplification.
-- **Evidence**: `orchestrator/council/engine.py:34`-`orchestrator/council/engine.py:39` calls `create_default_registry()` and returns all schemas; `orchestrator/tools/builtin.py:151`-`orchestrator/tools/builtin.py:164` registers `NotificationSendTool`, `ReminderSetTool`, `ReminderListTool`, `SpawnAgentTool`, and `SpawnMultipleTool`; `orchestrator/council/prompts.py:111` only mentions search, so these tools are exposed without council-specific guardrails.
-- **Likely cause**: The council integration reused the general orchestrator tool registry for convenience instead of whitelisting read-only retrieval tools (confidence 99%).
-- **Suggested action**: Replace `create_default_registry()` with a council-specific registry limited to safe, read-only tools such as `web_search`, `web_fetch`, `http_request`, `get_time`, and `calculate`.
-
-## [2026-03-24T12:59:30Z] — Council execution has no session-level token or cost budget cap
-- **Severity**: critical
-- **Scope**: project
-- **Encountered during**: [orchestrator/council/*.py and orchestrator/commands/council.py] Read tool loop and emission flow to assess safety checklist — expect evidence for each required finding
-- **Category**: performance
-- **Blocked current task**: no
-- **What happened**: Council accumulates usage only after each model call completes and never aborts when session spend grows too large. With four debate models, up to five tool rounds per model, additional debate rounds, and optional audit, there is no enforcement of the requested 500k-token / $10 ceiling.
-- **Evidence**: `orchestrator/council/tools.py:318`-`orchestrator/council/tools.py:391` loops until `max_tool_rounds=5` without any usage threshold checks; `orchestrator/commands/council.py:252`-`orchestrator/commands/council.py:316` totals usage only after rounds complete and stores it in `session.token_costs`; no grep hits for council-side budget/cap constants.
-- **Likely cause**: Usage accounting was added for reporting, but no kill-switch was added for enforcement (confidence 98%).
-- **Suggested action**: Add a council session budget object checked after every model/tool round, aborting further rounds once either token or dollar limits are exceeded.
-
-## [2026-03-24T13:00:00Z] — `stream_council()` can violate progressive SSE ordering and duplicate final sections
-- **Severity**: warning
-- **Scope**: project
-- **Encountered during**: [orchestrator/council/*.py and orchestrator/commands/council.py] Read tool loop and emission flow to assess safety checklist — expect evidence for each required finding
-- **Category**: runtime-error
-- **Blocked current task**: no
-- **What happened**: The council SSE wrapper has two separate `if result_type == "council_output"` blocks, so final sections can be emitted twice. It also stops draining `progress_queue` as soon as `result_task.done()` becomes true, which can drop the last live progress event before output begins.
-- **Evidence**: Duplicate output branches at `orchestrator/council/sse.py:405`-`orchestrator/council/sse.py:414` and `orchestrator/council/sse.py:454`-`orchestrator/council/sse.py:463`; queue drain loop exits at `orchestrator/council/sse.py:359`-`orchestrator/council/sse.py:365` without a final `while progress_queue:` flush after task completion.
-- **Likely cause**: Progressive-emission refactor left duplicated tail handling and omitted a final queue flush (confidence 99%).
-- **Suggested action**: Deduplicate the terminal result handling and flush any queued progress events once the task completes before emitting output/done events.
-
-## [2026-03-24T13:01:30Z] — Council modules carry extensive basedpyright warnings
-- **Severity**: info
-- **Scope**: project
-- **Encountered during**: [orchestrator/council/*.py and orchestrator/commands/council.py] Read tool loop and emission flow to assess safety checklist — expect evidence for each required finding
-- **Category**: other
-- **Blocked current task**: no
-- **What happened**: LSP diagnostics reported no parser/runtime errors, but `orchestrator/council/engine.py`, `orchestrator/commands/council.py`, and `orchestrator/council/sse.py` carry many basedpyright warnings around `Any`, partially unknown dicts, deprecated imports, and unused placeholders.
-- **Evidence**: `lsp_diagnostics` returned large warning sets including `reportExplicitAny`, `reportUnknownVariableType`, `reportDeprecated`, and `reportUnusedVariable` in `orchestrator/council/engine.py`, `orchestrator/commands/council.py`, and `orchestrator/council/sse.py`; `orchestrator/council/tools.py` was clean.
-- **Likely cause**: Council integration code was added faster than type coverage and static cleanup kept pace (confidence 92%).
-- **Suggested action**: Schedule a follow-up typing/cleanup pass for the council package after the functional safety regressions are addressed.
-
-## [2026-03-24T12:38:55.642Z] — SSE Flush Verification for Council Endpoint
-- **Severity**: info
-- **Scope**: project
-- **Encountered during**: Verify SSE flush is immediate (no buffering) for council endpoint
-- **Category**: verification
-- **Blocked current task**: no
-- **What happened**: Verified that council endpoint in orchestrator/main.py uses StreamingResponse correctly for immediate flushing. No Content-Length header is set (would require buffering), and Transfer-Encoding: chunked is used by default.
-- **Evidence**: Code review of orchestrator/main.py lines 1657-1796 showing StreamingResponse usage with proper headers and async generator yielding frames directly.
-- **Likely cause**: None - verification passed successfully
-- **Suggested action**: None - task completed successfully
-
-## [2026-03-25T21:28:23Z] — Studio video requests are rebilled to default tier and default user
-- **Severity**: critical
-- **Scope**: project
-- **Encountered during**: [provider swap oracle review] Review complete provider swap for completeness — expect full Kling swap audit across providers/, image subagent, config, studio frontend, and tests
-- **Category**: security
-- **Blocked current task**: no
-- **What happened**: The Studio frontend sends `tier`, `user_id`, `provider`, `reference_image_url`, `kling_model`, and `audio_enabled` inside `metadata.video_generation`, but the backend rebuilds a trusted context that discards most of those fields and hardcodes the billing user/tier. That means actual video runs can be charged/executed against the server default tier and `00000000-0000-0000-0000-000000000001`, not the active Studio selection.
-- **Evidence**: `frontend/app/studio/hooks/useVideoGeneration.ts:227`-`frontend/app/studio/hooks/useVideoGeneration.ts:237` sends `tier`, `user_id`, `provider`, `reference_image_url`, `kling_model`, and `audio_enabled`; `orchestrator/main.py:116`-`orchestrator/main.py:186` uses `DEFAULT_BILLING_USER_ID`, `settings.default_tier`, and only forwards `mode`, `duration`, `tier`, `user_id`, `source_mode`, `reference_image_url`, and `reference_image_id`; `orchestrator/tools/spawn.py:232`-`orchestrator/tools/spawn.py:244` propagates the same reduced field set.
-- **Likely cause**: The trusted metadata bridge was added as a narrow allowlist and never updated for the Kling provider swap or per-user Studio billing flow (confidence 99%).
-- **Suggested action**: Validate and forward the actual Studio `tier`, `user_id`, `provider`, `source_image_url`, `kling_model`, and `audio_enabled` values into `trusted_spawn_context` instead of substituting server defaults.
-
-## [2026-03-25T21:28:23Z] — Frontend Kling identifiers do not match backend provider/model contract
-- **Severity**: warning
-- **Scope**: project
-- **Encountered during**: [provider swap oracle review] Review complete provider swap for completeness — expect full Kling swap audit across providers/, image subagent, config, studio frontend, and tests
+- **Encountered during**: F3 manual QA - service status check
 - **Category**: config
 - **Blocked current task**: no
-- **What happened**: The Studio UI uses provider value `kling` and model values `kling-o3-pro` / `kling-v3-pro`, while the backend estimate route and fal client expect provider `fal` and model IDs `o3-pro` / `v3-pro`. As written, Kling estimates return `Invalid provider`, and even if the model reached the client it would fall back to O3 because the identifier is not recognized.
-- **Evidence**: `frontend/app/studio/page.tsx:24`-`frontend/app/studio/page.tsx:25` defines `VideoProvider = "xai" | "kling"` and `KlingModel = "kling-v3-pro" | "kling-o3-pro"`; `orchestrator/routes/video_credits.py:158`-`orchestrator/routes/video_credits.py:181` only accepts providers `{"xai", "fal"}`; `providers/fal_kling.py:95`-`providers/fal_kling.py:96` falls back to `o3-pro` for any model not in `["o3-pro", "v3-pro"]`.
-- **Likely cause**: Presentation-layer labels leaked into the request contract without a normalization layer between frontend state and backend provider IDs (confidence 99%).
-- **Suggested action**: Normalize Studio selections before sending them (`kling` → `fal`, `kling-o3-pro` → `o3-pro`, `kling-v3-pro` → `v3-pro`) or update the backend contract consistently end-to-end.
+- **What happened**: `docker compose ps` emitted startup warnings because `FAL_KEY` is unset in the current environment, even though the core backend/frontend/postgres/redis/worker stack is running.
+- **Evidence**:
+  - `time="2026-04-08T20:33:09+09:30" level=warning msg="The \"FAL_KEY\" variable is not set. Defaulting to a blank string."`
+- **Likely cause**: Docker Compose references `FAL_KEY` for Kling/fal.ai video configuration, but the local `.env` for this stack does not define it (confidence 95%).
+- **Suggested action**: Decide whether `FAL_KEY` should be required only for Studio/video flows; if optional, suppress or scope the compose warning. If required for this environment, add it to the active env file.
 
-## [2026-03-25T21:28:23Z] — Kling credit estimation undercharges and ignores some pricing distinctions
-- **Severity**: critical
-- **Scope**: project
-- **Encountered during**: [provider swap oracle review] Review complete provider swap for completeness — expect full Kling swap audit across providers/, image subagent, config, studio frontend, and tests
-- **Category**: runtime-error
-- **Blocked current task**: no
-- **What happened**: Kling pricing is truncated too early, so O3 audio-on and audio-off both charge the same 10 credits for 5 seconds, and V3 audio is flattened to 15 credits for 5 seconds. The code also treats `audio_enabled=True` on `v3-pro` as the higher 0.196/sec voice-control path even though there is no separate voice-control parameter.
-- **Evidence**: `config/video_pricing.py:83`-`config/video_pricing.py:96` uses `int(0.112 * 20)`, `int(0.14 * 20)`, and `int(0.196 * 20)` before multiplying by duration; `python -c 'from config.video_pricing import estimate_cost; ...'` returned `o3-no-audio 10`, `o3-audio 10`, `v3-no-audio 10`, `v3-audio 15` for 5-second Pro-tier runs.
-- **Likely cause**: Credit conversion was implemented with premature integer truncation and an incomplete pricing model that collapsed `audio_enabled` and voice-control into one branch (confidence 98%).
-- **Suggested action**: Rework Kling pricing to preserve fractional credit math until the end, explicitly model V3 audio vs voice-control, and update tests to match the intended price table.
-
-## [2026-03-25T21:28:23Z] — Image-to-video source image is dropped before provider dispatch
+## 2026-04-08 20:35 — Frontend Lint Script Broken Under Next 16
 - **Severity**: warning
 - **Scope**: project
-- **Encountered during**: [provider swap oracle review] Review complete provider swap for completeness — expect full Kling swap audit across providers/, image subagent, config, studio frontend, and tests
-- **Category**: runtime-error
+- **Encountered during**: F2 Code Quality Review - project quality checks
+- **Category**: build-error
 - **Blocked current task**: no
-- **What happened**: The Studio flow stores the uploaded reference image under `reference_image_url`, but the image subagent only forwards `source_image_url` to the provider. Because there is no translation between those keys, image-to-video requests lose the source image before the Kling client is called.
-- **Evidence**: `frontend/app/studio/hooks/useVideoGeneration.ts:234` sends `reference_image_url`; `orchestrator/main.py:166`-`orchestrator/main.py:185` and `orchestrator/tools/spawn.py:233`-`orchestrator/tools/spawn.py:244` preserve `reference_image_url`; `orchestrator/subagents/image.py:645` reads `context.get("source_image_url")` and `providers/fal_kling.py:106`-`providers/fal_kling.py:107` only uses `source_image_url` / `image_url`.
-- **Likely cause**: The earlier Studio reference-image naming was never reconciled with the provider-facing `source_image_url` contract during the swap (confidence 99%).
-- **Suggested action**: Standardize on one key name across frontend metadata, trusted context, spawn tools, and provider dispatch, or add an explicit translation at the backend boundary.
+- **What happened**: The configured frontend lint command fails immediately instead of running ESLint. `npm --prefix frontend run lint` invokes `next lint`, which Next interpreted as a directory argument and rejected.
+- **Evidence**:
+  - `> daemon-frontend@0.1.0 lint`
+  - `> next lint`
+  - `Invalid project directory provided, no such directory: /home/sol/daemon/frontend/lint`
+- **Seen again**: 2026-04-10 during F2 rerun on current repository state.
+- **Likely cause**: The project still uses the legacy `next lint` script shape, which is not behaving correctly under the current Next.js 16 CLI/runtime in this workspace (confidence 90%).
+- **Suggested action**: Replace the frontend lint script with a supported ESLint invocation for Next 16 (for example an explicit `eslint` command/config) and re-run F2.
 
-## [2026-03-25T21:28:23Z] — Fal Kling provider still depends on ambient `FAL_KEY` despite accepting an injected key
+## 2026-04-08 20:35 — Frontend Standalone TSC Fails on Missing .next Type Artifacts
 - **Severity**: warning
 - **Scope**: project
-- **Encountered during**: [provider swap oracle review] Review complete provider swap for completeness — expect full Kling swap audit across providers/, image subagent, config, studio frontend, and tests
+- **Encountered during**: F2 Code Quality Review - project quality checks
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: Running `npx --prefix frontend tsc --noEmit -p frontend/tsconfig.json` failed because the tsconfig includes `.next/types/**/*.ts`, but TypeScript could not find many referenced generated files.
+- **Evidence**:
+  - `error TS6053: File '/home/sol/daemon/frontend/.next/types/app/api/chat/route.ts' not found.`
+  - `The file is in the program because: Matched by include pattern '.next/types/**/*.ts' in 'frontend/tsconfig.json'`
+  - Similar TS6053 errors were emitted for multiple `.next/types/app/**` entries.
+- **Likely cause**: The frontend tsconfig assumes Next-generated `.next/types` artifacts exist with stable paths, but the standalone `tsc --noEmit` invocation sees stale or mismatched generated references in `.next/types` (confidence 85%).
+- **Suggested action**: Adjust the typecheck workflow so generated Next types are recreated/cleaned before `tsc`, or rely on the framework-supported typecheck command rather than raw `tsc` against `.next/types` includes.
+
+## 2026-04-08 20:35 — Pytest Collection Collision for Retrieval Quality Scripts
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: F2 Code Quality Review - project quality checks
 - **Category**: test-failure
 - **Blocked current task**: no
-- **What happened**: `FalKlingProvider` accepts an API key argument, but it instantiates `FalKlingClient()` before applying that key, so the constructor still crashes unless `FAL_KEY` exists in the environment. The client also stores `self.api_key` only for presence checks and never passes it to `fal_client.submit_async()` / `result_async()`.
-- **Evidence**: `orchestrator/subagents/image.py:627`-`orchestrator/subagents/image.py:631` passes `fal_api_key` into `FalKlingProvider`; `orchestrator/subagents/image.py:304`-`orchestrator/subagents/image.py:310` creates `FalKlingClient()` before assigning `self.client.api_key = api_key`; `providers/fal_kling.py:50`-`providers/fal_kling.py:52` raises `FalKlingError("FAL_KEY not configured")`; targeted tests failed with `providers.fal_kling.FalKlingError: FAL_KEY not configured` in `tests/test_kling_e2e.py`.
-- **Likely cause**: The provider wrapper was adapted from env-only configuration and the injected-key path was never completed (confidence 98%).
-- **Suggested action**: Support constructor-based key injection all the way through the client, or clearly remove the unused injected-key path and require/configure env-only auth consistently.
+- **What happened**: Pytest failed during collection because two files resolve to the same module name `test_retrieval_quality`, causing an import mismatch between the root-level script and the copy under `scripts/`.
+- **Evidence**:
+  - `import file mismatch:`
+  - `imported module 'test_retrieval_quality' has this __file__ attribute: /home/sol/daemon/scripts/test_retrieval_quality.py`
+  - `which is not the same as the test file we want to collect: /home/sol/daemon/test_retrieval_quality.py`
+- **Likely cause**: The branch introduced duplicate test-like filenames in importable locations, and pytest's default discovery/import rules are colliding on the shared basename (confidence 98%).
+- **Suggested action**: Rename or exclude one of the files from pytest discovery, then rerun the suite.
 
-## [2026-03-25T21:28:23Z] — XAI image helper methods were moved off `XAIImageProvider`
-- **Severity**: warning
+## 2026-04-08 20:35 — tests/test_video_e2e.py Has Syntax Error
+- **Severity**: critical
 - **Scope**: project
-- **Encountered during**: [provider swap oracle review] Review complete provider swap for completeness — expect full Kling swap audit across providers/, image subagent, config, studio frontend, and tests
-- **Category**: runtime-error
+- **Encountered during**: F2 Code Quality Review - project quality checks
+- **Category**: test-failure
 - **Blocked current task**: no
-- **What happened**: `XAIImageProvider.generate_image()` still calls `_size_to_aspect_ratio()` and `_aspect_ratio_to_dimensions()`, but those helpers now only exist on `FalKlingProvider`. Any xAI image generation path that reaches those calls will raise `AttributeError`.
-- **Evidence**: `orchestrator/subagents/image.py:263` calls `self._size_to_aspect_ratio(size)` and `orchestrator/subagents/image.py:270` calls `self._aspect_ratio_to_dimensions(aspect_ratio)`; the only definitions are `orchestrator/subagents/image.py:352` and `orchestrator/subagents/image.py:382` inside `FalKlingProvider`; `lsp_diagnostics` reported `Cannot access attribute "_size_to_aspect_ratio" for class "XAIImageProvider"` and `Cannot access attribute "_aspect_ratio_to_dimensions" for class "XAIImageProvider"`.
-- **Likely cause**: Shared size/aspect helpers were left behind during provider-class refactoring instead of being kept on `XAIImageProvider` or lifted to a common base/helper (confidence 99%).
-- **Suggested action**: Move the aspect-ratio helpers to a shared utility/base class or restore them on `XAIImageProvider`.
+- **What happened**: Pytest could not import `tests/test_video_e2e.py` because the file contains an unmatched closing parenthesis.
+- **Evidence**:
+  - `E File "/home/sol/daemon/tests/test_video_e2e.py", line 596`
+  - `E   )`
+  - `E   ^`
+  - `E SyntaxError: unmatched ')'`
+- **Seen again**: 2026-04-10 during F2 rerun on current repository state.
+- **Likely cause**: A malformed edit left the test file syntactically invalid (confidence 99%).
+- **Suggested action**: Fix the unmatched parenthesis in `tests/test_video_e2e.py:596` before relying on project-wide pytest results.
 
-## [2026-03-25T21:28:23Z] — Specialized video SSE events are defined in frontend but never emitted by backend
-- **Severity**: warning
-- **Scope**: project
-- **Encountered during**: [provider swap oracle review] Review complete provider swap for completeness — expect full Kling swap audit across providers/, image subagent, config, studio frontend, and tests
-- **Category**: runtime-error
-- **Blocked current task**: no
-- **What happened**: The frontend bridge and event types expect `video_generating`, `video_complete`, and `video_failed`, but the backend streaming path only emits generic `tool_call` / `tool_result` envelopes for media generation. The Studio hook currently works only because it has a `tool_result` fallback parser, not because the dedicated video SSE contract is implemented.
-- **Evidence**: `frontend/lib/events.ts:12`-`frontend/lib/events.ts:14` and `frontend/app/api/chat/route.ts:225`-`frontend/app/api/chat/route.ts:272` handle `video_*` events; repo search across `orchestrator/` returned no `sse("video_generating"`, `sse("video_complete"`, or `sse("video_failed"` matches; `orchestrator/daemon.py:457`-`orchestrator/daemon.py:520` only emits `tool_call` and `tool_result` during tool execution.
-- **Likely cause**: Frontend event support was added ahead of backend emission wiring, and Kling integration reused the generic tool-result path instead of implementing the dedicated SSE events (confidence 97%).
-- **Suggested action**: Either emit the documented `video_*` events from the backend media path or remove the unused contract and rely consistently on typed `tool_result` payloads.
-
-## [2026-03-25T21:28:23Z] — Residual Sora references remain in docs and cached artifacts
+## 2026-04-08 20:35 — Python 3.14 Deprecation Warnings From litellm/arq During Pytest
 - **Severity**: info
-- **Scope**: project
-- **Encountered during**: [provider swap oracle review] Review complete provider swap for completeness — expect full Kling swap audit across providers/, image subagent, config, studio frontend, and tests
-- **Category**: other
+- **Scope**: upstream
+- **Encountered during**: F2 Code Quality Review - project quality checks
+- **Category**: deprecation
 - **Blocked current task**: no
-- **What happened**: Source code no longer references Sora, but project docs and cached bytecode still do. That means the provider swap is not fully scrubbed from the repository state.
-- **Evidence**: `AGENTS.md:23` still lists `OpenAI (Sora)`; `docs/PROJECT_CONTEXT.md:132` still says `OpenAI (Sora video)`; `docs/TECHNICAL_SPECS.md:354` still says `OpenAI (used for Sora video provider paths)`; `providers/__pycache__/` still contains `openai_sora.cpython-311.pyc` and `openai_sora.cpython-314.pyc`.
-- **Likely cause**: The swap removed runtime source paths but did not fully update documentation or clean generated artifacts (confidence 96%).
-- **Suggested action**: Update the stale docs and remove committed/stale `openai_sora` bytecode artifacts from the repository.
+- **What happened**: Pytest emitted repeated deprecation warnings from third-party dependencies that still call `asyncio.iscoroutinefunction`, which is deprecated on Python 3.14 and scheduled for removal in Python 3.16.
+- **Evidence**:
+  - `/home/sol/daemon/.venv/lib/python3.14/site-packages/litellm/litellm_core_utils/logging_utils.py:273: DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction() instead`
+  - `/home/sol/daemon/.venv/lib/python3.14/site-packages/arq/cron.py:178: DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction() instead`
+- **Likely cause**: Current pinned versions of LiteLLM and arq are not yet updated for Python 3.14's coroutine-inspection deprecation path (confidence 95%).
+- **Suggested action**: Track dependency updates or pin compatible versions before Python 3.16 removes the deprecated API.
 
----
+## 2026-04-08 20:35 — Biome LSP Missing for Frontend/Test Diagnostics
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: F2 Code Quality Review - LSP diagnostics on changed files
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: LSP diagnostics for the changed test/frontend area could not run because the configured Biome language server is not installed in this environment.
+- **Evidence**:
+  - `Error: LSP server 'biome' is configured but NOT INSTALLED.`
+  - `Command not found: biome`
+- **Likely cause**: Workspace tooling expects Biome for TS/JS diagnostics, but the binary is absent from the host environment (confidence 98%).
+- **Suggested action**: Install `@biomejs/biome` or remove the unused Biome LSP configuration so changed TS/JS/test files can be statically checked reliably.
+
+## 2026-04-08 20:38 — Summary Worker Calls `should_summarize` With Wrong Arity
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: F3 manual QA - endpoint and job path audit
+- **Category**: runtime-error
+- **Blocked current task**: no
+- **What happened**: The summary worker job appears to call `should_summarize()` with parameters in the wrong shape, which would raise before summary generation can run on the live path.
+- **Evidence**:
+  - `orchestrator/worker/jobs.py:291` → `if not await should_summarize(conv_id, last_summary_time, store, settings):`
+  - `orchestrator/memory/summarization.py:112-117` → `async def should_summarize(conversation_id, last_summary_time, last_summarized_msg_count, store, settings=None)`
+- **Likely cause**: The summarization helper signature changed to include `last_summarized_msg_count`, but the worker callsite was not updated (confidence 99%).
+- **Suggested action**: Update the summary job to pass the stored `last_summarized_message_count` (or equivalent) before relying on summary generation in production/manual QA.
+
+## 2026-04-08 20:52 — Extraction Benchmark Did Not Complete Within 15 Minutes
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: F3 manual QA - extraction benchmark clean-path check
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: The live extraction benchmark command `python tests/benchmark_extraction.py --json` did not finish before a 900000 ms timeout. This prevented using the full benchmark as-is for manual QA.
+- **Evidence**:
+  - Bash metadata: `terminated command after exceeding timeout 900000 ms`
+- **Likely cause**: The benchmark's per-scenario waits plus live API extraction latency make the full suite too slow for the current environment/configuration (confidence 75%).
+- **Suggested action**: Profile the benchmark runtime, reduce per-scenario wait/poll settings for local QA, or provide a smaller smoke-benchmark mode for verification tasks.
+
+## 2026-04-08 20:58 — Memories Table Rejects `qa_manual` Source Type
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: F3 manual QA - trust signal runtime checks
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Inserting a manual QA memory directly through `MemoryStore.insert_memory()` failed because `source_type='qa_manual'` violates the database check constraint on `memories.source_type`.
+- **Evidence**:
+  - `asyncpg.exceptions.CheckViolationError: new row for relation "memories" violates check constraint "memories_source_type_check"`
+  - `DETAIL: Failing row contains (..., fact, qa_manual, ..., preference.music.genre, l1, ..., 0.5, null).`
+- **Likely cause**: The schema allows only a fixed enum-like set of source types and does not include a generic/manual QA value (confidence 95%).
+- **Suggested action**: Document the allowed source_type values for operational scripts, or expose them in code/constants so QA/admin tooling can avoid invalid inserts.
+
+## 2026-04-08 21:01 — Extraction Benchmark Smoke Run Failed on Scenario 1
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: F3 manual QA - extraction benchmark clean-path smoke run
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: A live smoke run of `tests/benchmark_extraction.py` against scenario 1 completed but extracted zero memories, yielding recall 0.00 for dense personal facts.
+- **Evidence**:
+  - `Scenario: 1: Dense Personal Facts`
+  - `Score: TP=0 FP=0 FN=9 P=0.00 R=0.00`
+  - JSON totals: `"passed": false`, `"recall": 0.0`
+- **Likely cause**: The 10-second smoke-run wait may be shorter than the extraction job's deferred execution window, or the live extraction queue/path is not producing memories fast enough for the benchmark harness (confidence 70%).
+- **Suggested action**: Re-run with the production benchmark wait budget / extraction defer timing, then investigate worker enqueue/dequeue timing if recall remains zero.
+
+## 2026-04-08 21:04 — Markdown LSP Diagnostics Unavailable
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: F3 manual QA - changed-file diagnostics verification
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: `lsp_diagnostics` could not validate the changed markdown files because no markdown LSP server is configured in this environment.
+- **Evidence**:
+  - `Error: No LSP server configured for extension: .md`
+- **Likely cause**: The local Oh My OpenCode LSP configuration only registers code-language servers, not Markdown (confidence 99%).
+- **Suggested action**: Add a markdown-capable LSP if markdown diagnostics are expected as part of verification workflows.
+
+## 2026-04-08 11:12 — `dedup.py` References Missing Trust Helper
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: F4 scope fidelity check - LSP diagnostics on changed files
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: Static diagnostics report an undefined symbol inside the new trust-signal path in `orchestrator/memory/dedup.py`, indicating the explicit negative-signal hook cannot resolve its helper.
+- **Evidence**:
+  - `orchestrator/memory/dedup.py:497` → `error[basedpyright] (reportUndefinedVariable): "_lazy_import_trust_signals" is not defined`
+- **Likely cause**: Trust-signal integration was added in `dedup.py` without defining or importing the lazy loader used elsewhere (confidence 98%).
+- **Suggested action**: Add the missing helper/import in `orchestrator/memory/dedup.py` or route the call through an existing trust-signals import path, then rerun diagnostics.
+
+## 2026-04-08 11:12 — Biome LSP Missing for Changed Test/JSON Files
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: F4 scope fidelity check - diagnostics verification
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Diagnostics for `tests/` could not complete because the configured Biome language server is not installed in this environment.
+- **Evidence**:
+  - `Error: LSP server 'biome' is configured but NOT INSTALLED.`
+  - `Command not found: biome`
+- **Seen again**: 2026-04-10 during F4 scope fidelity rerun on current repository state.
+- **Likely cause**: Local/tooling environment is missing the configured Biome binary required for JS/TS/JSON diagnostics (confidence 99%).
+- **Suggested action**: Install `@biomejs/biome` or adjust tooling configuration before relying on LSP cleanliness for frontend/test files.
+
+## 2026-04-10 00:00 — Pre-existing BasedPyright Errors Outside Changed Tier2 Files
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: F4 scope fidelity rerun - changed-file diagnostics verification
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: Directory-level Python diagnostics surfaced existing basedpyright errors in unrelated orchestrator files while verifying the changed files. The current Tier2 scope check did not modify these files, but the repository is not globally diagnostics-clean.
+- **Evidence**:
+  - `orchestrator/subagents/audio.py:137` → `error[basedpyright] (reportArgumentType)`
+  - `orchestrator/subagents/base.py:187` → `error[basedpyright] (reportArgumentType)`
+  - `orchestrator/subagents/image.py:263` → `error[basedpyright] (reportAttributeAccessIssue)`
+  - `orchestrator/subagents/image.py:270` → `error[basedpyright] (reportAttributeAccessIssue)`
+  - `orchestrator/subagents/image.py:349` → `error[basedpyright] (reportUndefinedVariable)`
+  - `orchestrator/tools/reminder.py:25` → `error[basedpyright] (reportMissingTypeArgument)`
+- **Likely cause**: Pre-existing type-check debt in unrelated subagent/tooling modules surfaced because directory diagnostics scan the whole orchestrator tree rather than only the Tier2-touched files (confidence 92%).
+- **Suggested action**: Clean up the unrelated basedpyright errors or limit diagnostics verification to the actual changed files when running future review waves.
+
+## 2026-04-10 15:15 — compileall Cannot Write __pycache__ Files
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: F2 Code Quality Review rerun - build verification
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: `uv run python -m compileall orchestrator tests` could not write bytecode because multiple `__pycache__` directories are not writable from the current shell.
+- **Evidence**:
+  - `PermissionError: [Errno 13] Permission denied: 'orchestrator/__pycache__/__init__.cpython-314.pyc...'`
+  - Repeated `PermissionError` lines across `orchestrator/**/__pycache__`
+- **Likely cause**: Existing cache directories are owned by a different user/container context in this workspace (confidence 95%).
+- **Suggested action**: Fix ownership/permissions for Python cache directories or run verification in a clean writable environment before relying on compileall.
+
+## 2026-04-10 15:15 — Session Alignment Diagnostic Script Breaks Pytest Discovery
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: F2 Code Quality Review rerun - targeted branch blocker verification
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: The new file `scripts/test_session_memory_alignment.py` is discovered by pytest as a test module, but its top-level async test function is not marked for pytest-asyncio execution, so collection/execution fails immediately.
+- **Evidence**:
+  - `scripts/test_session_memory_alignment.py::test_alignment - Failed: async def functions are not natively supported.`
+  - `scripts/test_session_memory_alignment.py:67` defines `async def test_alignment()`
+- **Likely cause**: A diagnostic helper script was added with a `test_*.py` name and pytest-compatible function name, so it is unintentionally participating in the suite (confidence 99%).
+- **Suggested action**: Rename or exclude the script from pytest discovery, or convert it into a proper marked async test.
+
+## 2026-04-10 15:15 — Retrieval Scoring Contract and Tests Diverged
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: F2 Code Quality Review rerun - targeted branch blocker verification
+- **Category**: test-failure
+- **Blocked current task**: yes
+- **What happened**: The changed retrieval scoring logic now multiplies in `trust_score` with a default of `0.5`, but the changed/related tests still assert the older formulas without trust, producing deterministic failures in both hybrid and base scoring checks.
+- **Evidence**:
+  - `tests/test_hybrid_search.py:24` → expected `0.760000...`, got `0.67`
+  - `tests/test_retrieval.py:49` → expected `0.784080...`, got `0.392040...`
+  - `orchestrator/memory/retrieval.py:97-99` defaults `trust_score` to `0.5`
+  - `orchestrator/memory/retrieval.py:110-117` includes `trust` in `_hybrid_score(...)`
+- **Likely cause**: Trust-scoring behavior was added in the branch without bringing the branch's test expectations and helper signatures into agreement (confidence 96%).
+- **Suggested action**: Decide the intended scoring contract, then align `orchestrator/memory/retrieval.py`, `tests/test_hybrid_search.py`, and `tests/test_retrieval.py` to the same formula.
+
+## 2026-04-10 15:15 — Memory-Write Filtering Drops Legitimate Assistant Context
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: F2 Code Quality Review rerun - targeted branch blocker verification
+- **Category**: test-failure
+- **Blocked current task**: yes
+- **What happened**: After stripping `memory_write` artifacts, the extraction job keeps only user-role messages when any remain, so legitimate assistant follow-up context is discarded from the extraction text.
+- **Evidence**:
+  - `tests/test_jobs_extraction_filtering.py:74` expected `assistant: Anything else?` in extracted text
+  - `orchestrator/worker/jobs.py:168-171` reduces `parsed_messages` to `user_messages or parsed_messages`
+  - Observed extracted text: `user: I live in Adelaide`
+- **Likely cause**: The branch added an over-aggressive fallback that narrows extraction input to user messages instead of preserving non-artifact assistant context (confidence 97%).
+- **Suggested action**: Preserve filtered assistant messages in the extraction text unless there is a more specific reason to exclude them.
+
+## 2026-04-10 15:15 — Mock LLM Path No Longer Emits Expected Mock Content
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: F2 Code Quality Review rerun - targeted branch blocker verification
+- **Category**: test-failure
+- **Blocked current task**: yes
+- **What happened**: The changed mock streaming path emits `Mock response tokens from Daemon` character-by-character and leaves the OpenAI-compatible non-streaming content empty, so the mock-mode API tests no longer observe the expected `(mock)` payload.
+- **Evidence**:
+  - `tests/test_chat_stream.py:75` → `assert "(mock)" in body` failed
+  - `tests/test_chat_stream.py:331` → `assert "(mock)" in choice["message"]["content"]` failed
+  - `orchestrator/daemon.py:352-379` defines the mock branch and streams `"Mock response tokens from Daemon"`
+- **Likely cause**: The branch rewired mock-mode streaming behavior without preserving the previously expected mock content contract used by the API tests (confidence 94%).
+- **Suggested action**: Restore the expected mock content contract or update both streaming and non-streaming tests/handlers consistently.
+
+## 2026-04-10 15:15 — evaluate_fix_section.py Checked In as Incomplete Python
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: F2 Code Quality Review rerun - changed-file diagnostics verification
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: The new helper file `tests/longmemeval/evaluate_fix_section.py` contains unresolved names throughout and is not statically valid as checked in.
+- **Evidence**:
+  - `tests/longmemeval/evaluate_fix_section.py:2` → `error[basedpyright] (reportUndefinedVariable): "Path" is not defined`
+  - `tests/longmemeval/evaluate_fix_section.py:8` → `"get_settings" is not defined`
+  - `tests/longmemeval/evaluate_fix_section.py:47` → `"evaluate_single" is not defined`
+  - `tests/longmemeval/evaluate_fix_section.py:71` → `"score_accuracy" is not defined`
+- **Likely cause**: A partial extraction/refactor snippet was committed as a standalone file without the imports and surrounding implementation it depends on (confidence 98%).
+- **Suggested action**: Delete the scratch file, finish it, or merge the intended logic back into `tests/longmemeval/evaluate.py` before relying on changed-file diagnostics.
+
+## 2026-04-09 15:23 — Live Extraction Path Still Does Not Persist Conversation Summaries
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: F3 manual QA - summary generation/incremental update integration
+- **Category**: runtime-error
+- **Blocked current task**: no
+- **What happened**: A fresh live QA conversation never populated `summary` or `summary_updated_at` after two `/chat` turns and two extraction-log rows. The current running backend/worker still is not completing the extraction-to-summary handoff on the real runtime path.
+- **Evidence**:
+  - Manual QA result: `{"conversation_id":"bb8a201e-f3e3-4d94-bb95-5415d20b043f","first_summary":null,"second_summary":null,"first_summary_updated_at":null,"second_summary_updated_at":null,"second_extraction_logs":2,"pass_initial_summary":false,"pass_incremental_update":false,"passed":false}`
+  - `/status` immediately after repro: `{"status":"healthy","db_healthy":true,"redis_healthy":true,"memory_enabled":true,"embedding_retry_activations":0,"embedding_last_retry_at":null}`
+- **Likely cause**: The live extraction path is still failing inside the best-effort summary update step after extraction, likely due to a swallowed exception or runtime mismatch in `orchestrator.memory.summary.generate_or_update_summary()` or its invocation path (confidence 85%).
+- **Suggested action**: Reproduce with backend logs attached, then instrument the post-extraction summary call so failures are surfaced instead of silently ignored; verify `summary` and `summary_updated_at` are written after the first extraction and updated after the second.
+
+## 2026-04-10 22:51 — Extraction Model Committed State Violates Plan Guardrail
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: Task 1 prerequisite verification - implicit-preference-extraction plan
+- **Category**: config
+- **Blocked current task**: yes
+- **What happened**: Plan implicit-preference-extraction.md (line 60, Must Have section) explicitly requires keeping the extraction model as gpt-4o-mini. The committed HEAD state (git commit 8dfb3047 "feat(memory): swap extraction model to gpt-5.4-nano") has gpt-5.4-nano in extraction.py. The working tree has uncommitted changes reverting to gpt-4o-mini, but those are not committed.
+- **Evidence**:
+  - orchestrator/memory/extraction.py (committed, git show HEAD:340): `model: str = "openrouter/openai/gpt-5.4-nano"`
+  - orchestrator/memory/extraction.py (committed, git show HEAD:472): `model = "openrouter/openai/gpt-5.4-nano"`
+  - orchestrator/memory/extraction.py (working tree:340): `model: str = "openrouter/openai/gpt-4o-mini"` (diff shows reverting)
+  - orchestrator/memory/extraction.py (working tree:472): `model = "openrouter/openai/gpt-4o-mini"` (diff shows reverting)
+  - git diff orchestrator/memory/extraction.py confirms: -gpt-5.4-nano +gpt-4o-mini on lines 340 and 472
+- **Likely cause**: Commit 8dfb3047 (2026-03-27) intentionally swapped extraction to gpt-5.4-nano after SCORECARD showed it passing all benchmark gates (P=1.00, R=0.90, A=1.00). Uncommitted changes then reverted to gpt-4o-mini, possibly to align with the implicit-preference-extraction plan's guardrail.
+- **Suggested action**: Clarify the extraction model policy: if gpt-5.4-nano is the intended production model (better benchmark scores), update the plan guardrail to reflect that. If gpt-4o-mini is required by the plan, the committed 8dfb3047 change should be reverted or the plan guardrail explicitly amended before proceeding to Task 2.

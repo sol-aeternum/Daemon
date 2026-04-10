@@ -109,6 +109,14 @@ class ChatRequest(BaseModel):
     provider: str | None = Field(
         default=None, description="LLM provider to use (default: openrouter)"
     )
+    # Optional user ID for benchmark isolation - uses default if not specified
+    user_id: str | None = Field(
+        default=None, description="User ID for persistence isolation (default: default user)"
+    )
+    # Benchmark mode: disable memory_write tool to isolate extraction pipeline
+    disable_memory_write: bool | None = Field(
+        default=None, description="Disable memory_write tool for benchmark isolation (default: None/false)"
+    )
 
 
 class TtsRequest(BaseModel):

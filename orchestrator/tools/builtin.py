@@ -90,7 +90,6 @@ class CalculateTool(Tool):
 
     async def execute(self, **kwargs: Any) -> str:
         import ast
-        import operator
 
         expression = kwargs.get("expression", "")
 
@@ -98,7 +97,6 @@ class CalculateTool(Tool):
             ast.Expression,
             ast.BinOp,
             ast.UnaryOp,
-            ast.Num,
             ast.Constant,
             ast.Add,
             ast.Sub,
@@ -118,15 +116,7 @@ class CalculateTool(Tool):
                     return json.dumps(
                         {"error": f"Disallowed expression: {type(node).__name__}"}
                     )
-            ops = {
-                ast.Add: operator.add,
-                ast.Sub: operator.sub,
-                ast.Mult: operator.mul,
-                ast.Div: operator.truediv,
-                ast.Pow: operator.pow,
-                ast.Mod: operator.mod,
-            }
-            result = eval(compile(tree, "<string>", "eval"), {"__builtins__": {}}, ops)
+            result = eval(compile(tree, "<string>", "eval"), {"__builtins__": {}}, {})
             return json.dumps({"expression": expression, "result": result})
         except Exception as e:
             return json.dumps({"error": f"Calculation failed: {str(e)}"})
@@ -138,6 +128,7 @@ def create_default_registry(
     user_id: Any = None,
     db_pool: Any = None,
     trusted_spawn_context: dict[str, Any] | None = None,
+    disable_memory_write: bool = False,
 ):
     from orchestrator.tools.registry import ToolRegistry
     from orchestrator.tools.web_search import WebSearchTool
@@ -165,8 +156,13 @@ def create_default_registry(
 
     if memory_store and user_id:
         from orchestrator.memory.tools import MemoryReadTool, MemoryWriteTool
+        from orchestrator.tools.memory_promote import MemoryPromoteTool
+        from orchestrator.tools.memory_demote import MemoryDemoteTool
 
         registry.register(MemoryReadTool(memory_store, user_id))
-        registry.register(MemoryWriteTool(memory_store, user_id))
+        if not disable_memory_write:
+            registry.register(MemoryWriteTool(memory_store, user_id))
+        registry.register(MemoryPromoteTool(memory_store, user_id))
+        registry.register(MemoryDemoteTool(memory_store, user_id))
 
     return registry

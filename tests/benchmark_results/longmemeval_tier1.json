@@ -1,0 +1,44 @@
+{
+  "metadata": {
+    "date": "2026-04-05",
+    "model": "gpt-4o",
+    "embedding_model": "voyage-4-large",
+    "retrieval_config": "Tier 1 (L0 injection, BM25 hybrid, contradiction detection)",
+    "questions_run": 50,
+    "memory_count": 525,
+    "conversation_count": 75,
+    "ingestion_success_rate": "789/2436 (32.4%)",
+    "note": "IE category only. Clean state re-ingestion. Evaluation uses store.search_memories (vector-only baseline path)."
+  },
+  "results": {
+    "total_questions": 50,
+    "answered": 50,
+    "abstained": 0,
+    "refusals": 49,
+    "informative_answers": 1,
+    "correct": 0,
+    "abstention_rate": 0.0,
+    "answer_rate": 1.0,
+    "accuracy_answered": 0.0,
+    "accuracy_all": 0.0
+  },
+  "category_breakdown": {
+    "IE": {
+      "total": 50,
+      "answered": 50,
+      "abstained": 0,
+      "correct": 0
+    }
+  },
+  "diagnosis": "Answer rate improved from 30% to 100%. However, 49/50 answers are refusals ('cannot answer based on available information'), suggesting retrieved memories are not relevant to questions. Evaluation uses store.search_memories which bypasses retrieve_memories() that has BM25 hybrid. This is a baseline retrieval path test, not Tier-1 retrieval test.",
+  "tier1_features": {
+    "l0_injection": "Not exercised - evaluate.py uses store.search_memories directly",
+    "bm25_hybrid": "Not exercised - evaluate.py uses store.search_memories (vector-only)",
+    "contradiction_detection": "Not exercised in evaluation path"
+  },
+  "baseline_comparison": {
+    "baseline_answer_rate": 0.30,
+    "tier1_answer_rate": 1.0,
+    "improvement": "Answer rate +70%, but accuracy remains 0% due to irrelevant retrieval"
+  }
+}

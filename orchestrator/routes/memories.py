@@ -274,3 +274,60 @@ async def confirm_memory(
     confirmed = data.status == "confirmed"
     await store.confirm_memory(memory_id, confirmed=confirmed)
     return {"status": data.status}
+
+
+class ConsolidateRequest(BaseModel):
+    user_id: uuid.UUID | None = None
+
+
+@router.post("/consolidate")
+async def consolidate_memories_endpoint(
+    data: ConsolidateRequest | None = None,
+    app_state: AppState = Depends(get_app_state),
+):
+    """Manually trigger memory consolidation for a user or all users.
+
+    This endpoint enqueues a consolidation job that will:
+    - Find clusters of related L1 memories
+    - Synthesize them into summary memories
+    - Demote source memories to tier L2 (not deleted)
+
+    If no user_id is provided, processes all users with eligible memories.
+
+    Returns immediately with job status; actual consolidation runs async.
+    """
+    if app_state.redis is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Redis unavailable - cannot enqueue consolidation job"
+        )
+
+    target_user_id = data.user_id if data else None
+
+    try:
+        # Enqueue the consolidation job
+        job = await app_state.redis.enqueue_job(
+            "consolidate_memories",
+            str(target_user_id) if target_user_id else None,
+            _job_id=f"consolidate:{target_user_id or 'all'}:{uuid.uuid4().hex[:8]}",
+        )
+
+        # Handle None return from enqueue_job
+        if job is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to enqueue consolidation job: returned None"
+            )
+
+        return {
+            "status": "enqueued",
+            "job_id": job.job_id,
+            "user_id": str(target_user_id) if target_user_id else "all",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to enqueue consolidation job: {e}"
+        )

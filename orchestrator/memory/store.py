@@ -149,6 +149,7 @@ class MemoryStore:
         pinned: bool | None = None,
         title_locked: bool | None = None,
         metadata_patch: dict[str, Any] | None = None,
+        last_retrieved_memory_ids: list[uuid.UUID] | None = None,
     ) -> dict[str, Any] | None:
         row = await self._pool.fetchrow(
             """
@@ -167,6 +168,7 @@ class MemoryStore:
                     WHEN $8::jsonb IS NULL THEN metadata
                     ELSE COALESCE(metadata, '{}'::jsonb) || $8::jsonb
                 END,
+                last_retrieved_memory_ids = COALESCE($9, last_retrieved_memory_ids),
                 updated_at       = NOW(),
                 last_activity_at = NOW()
             WHERE id = $1
@@ -180,6 +182,7 @@ class MemoryStore:
             pinned,
             title_locked,
             json.dumps(metadata_patch) if metadata_patch is not None else None,
+            json.dumps([str(m) for m in last_retrieved_memory_ids]) if last_retrieved_memory_ids else None,
         )
         return dict(row) if row else None
 
@@ -251,21 +254,40 @@ class MemoryStore:
         conversation_id: uuid.UUID,
         limit: int = 100,
         offset: int = 0,
+        created_after: datetime | None = None,
     ) -> list[dict[str, Any]]:
-        rows = await self._pool.fetch(
-            """
-            SELECT * FROM (
-                SELECT * FROM messages
-                WHERE conversation_id = $1
-                ORDER BY created_at DESC
-                LIMIT $2 OFFSET $3
-            ) sub
-            ORDER BY created_at ASC
-            """,
-            conversation_id,
-            limit,
-            offset,
-        )
+        # Build query with optional created_after filter
+        if created_after is not None:
+            rows = await self._pool.fetch(
+                """
+                SELECT * FROM (
+                    SELECT * FROM messages
+                    WHERE conversation_id = $1 AND created_at > $4
+                    ORDER BY created_at DESC
+                    LIMIT $2 OFFSET $3
+                ) sub
+                ORDER BY created_at ASC
+                """,
+                conversation_id,
+                limit,
+                offset,
+                created_after,
+            )
+        else:
+            rows = await self._pool.fetch(
+                """
+                SELECT * FROM (
+                    SELECT * FROM messages
+                    WHERE conversation_id = $1
+                    ORDER BY created_at DESC
+                    LIMIT $2 OFFSET $3
+                ) sub
+                ORDER BY created_at ASC
+                """,
+                conversation_id,
+                limit,
+                offset,
+            )
         results = []
         for r in rows:
             d = dict(r)
@@ -396,9 +418,9 @@ class MemoryStore:
             row = await self._pool.fetchrow(
                 """
                 INSERT INTO memories
-                    (user_id, content, embedding, embedding_model, category, source_type,
+                    (user_id, content, content_tsv, embedding, embedding_model, category, source_type,
                      source_conversation_id, local_only, confidence, status, memory_slot)
-                VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11)
+                VALUES ($1, $2, to_tsvector('english', $12), $3::vector, $4, $5, $6, $7, $8, $9, $10, $11)
                 RETURNING *
                 """,
                 user_id,
@@ -412,6 +434,7 @@ class MemoryStore:
                 confidence,
                 status,
                 memory_slot,
+                content,  # plaintext for tsvector computation
             )
             if row is None:
                 raise RuntimeError("insert_memory: insert returned no row")
@@ -524,6 +547,7 @@ class MemoryStore:
             SET content    = $2,
                 embedding  = COALESCE($3::vector, embedding),
                 confidence = COALESCE($4, confidence),
+                content_tsv = to_tsvector('english', $5),
                 updated_at = NOW()
             WHERE id = $1
             RETURNING *
@@ -532,6 +556,7 @@ class MemoryStore:
             encrypted_content,
             embedding_str,
             confidence,
+            content,
         )
         if not row:
             return None
@@ -597,6 +622,43 @@ class MemoryStore:
         status = "active" if confirmed else "rejected"
         return await self.update_memory_status(memory_id, status)
 
+    async def update_memory_tier(
+        self,
+        memory_id: uuid.UUID,
+        tier: str,
+    ) -> bool:
+        """Update the tier of a memory (l0, l1, or l2)."""
+        if tier not in ("l0", "l1", "l2"):
+            raise ValueError(f"Invalid tier: {tier}. Must be one of: l0, l1, l2")
+        result = await self._pool.execute(
+            """
+            UPDATE memories
+            SET tier = $2, updated_at = NOW()
+            WHERE id = $1
+            """,
+            memory_id,
+            tier,
+        )
+        return result == "UPDATE 1"
+
+    async def update_memory_metadata(
+        self,
+        memory_id: uuid.UUID,
+        metadata: dict[str, Any],
+    ) -> bool:
+        """Update metadata fields on a memory (merged/patched with existing)."""
+        result = await self._pool.execute(
+            """
+            UPDATE memories
+            SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb,
+                updated_at = NOW()
+            WHERE id = $1
+            """,
+            memory_id,
+            json.dumps(metadata),
+        )
+        return result == "UPDATE 1"
+
     async def supersede_memory(
         self,
         old_memory_id: uuid.UUID,
@@ -611,11 +673,13 @@ class MemoryStore:
         confidence: float = 1.0,
         new_status: str = "active",
         memory_slot: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create a new memory and mark the old one as superseded (transaction)."""
         encrypted_content = self._enc.encrypt(new_content)
         embedding_str = _format_vector(embedding) if embedding else None
         effective_embedding_model = embedding_model or _default_embedding_model()
+        metadata_json = json.dumps(metadata) if metadata is not None else None
 
         async with self._pool.acquire() as conn:
             async with conn.transaction():
@@ -627,8 +691,8 @@ class MemoryStore:
                         """
                         INSERT INTO memories
                             (user_id, content, embedding, embedding_model, category, source_type,
-                             source_conversation_id, confidence, status, memory_slot)
-                        VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10)
+                             source_conversation_id, confidence, status, memory_slot, metadata, content_tsv)
+                        VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11, to_tsvector('english', $12))
                         RETURNING *
                         """,
                         user_id,
@@ -641,6 +705,8 @@ class MemoryStore:
                         confidence,
                         new_status,
                         memory_slot,
+                        metadata_json,
+                        new_content,
                     )
                     if row is None:
                         raise RuntimeError("supersede_memory: insert returned no row")
@@ -771,6 +837,7 @@ class MemoryStore:
                 FROM memories
                 WHERE user_id = $1
                   AND status != 'deleted'
+                  AND tier != 'l0'
                   AND ($4::bool OR valid_to IS NULL)
                   AND ($5::bool OR local_only = FALSE)
                   AND embedding IS NOT NULL
@@ -797,6 +864,7 @@ class MemoryStore:
                 FROM memories
                 WHERE user_id = $1
                   AND status != 'deleted'
+                  AND tier != 'l0'
                   AND ($4::bool OR valid_to IS NULL)
                   AND ($5::bool OR local_only = FALSE)
                   AND embedding IS NOT NULL
@@ -812,6 +880,80 @@ class MemoryStore:
                 include_local,
                 limit,
                 memory_slot,
+            )
+
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["content"] = self._enc.decrypt(d["content"])
+            results.append(d)
+        return results
+
+    async def search_memories_bm25(
+        self,
+        user_id: uuid.UUID,
+        query: str,
+        *,
+        limit: int = 10,
+        category: str | None = None,
+        include_local: bool = False,
+        include_historical: bool = False,
+        memory_slot: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Search memories using BM25 full-text search.
+
+        Uses PostgreSQL ts_rank on content_tsv with plainto_tsquery for
+        natural language query parsing.
+        """
+        # By design: L0 memories are always injected, but they must remain
+        # directly searchable via BM25 for explicit recall queries.
+        if category:
+            rows = await self._pool.fetch(
+                """
+                SELECT *,
+                       ts_rank(content_tsv, plainto_tsquery('english', $2)) AS bm25_score
+                FROM memories
+                WHERE user_id = $1
+                  AND status != 'deleted'
+                  AND ($3::bool OR valid_to IS NULL)
+                  AND ($4::bool OR local_only = FALSE)
+                  AND content_tsv IS NOT NULL
+                  AND content_tsv @@ plainto_tsquery('english', $2)
+                  AND category = $5
+                  AND ($7::text IS NULL OR memory_slot = $7)
+                ORDER BY bm25_score DESC
+                LIMIT $6
+                """,
+                user_id,
+                query,
+                include_historical,
+                include_local,
+                category,
+                limit,
+                memory_slot,
+            )
+        else:
+            rows = await self._pool.fetch(
+                """
+                SELECT *,
+                       ts_rank(content_tsv, plainto_tsquery('english', $2)) AS bm25_score
+                FROM memories
+                WHERE user_id = $1
+                  AND status != 'deleted'
+                  AND ($3::bool OR valid_to IS NULL)
+                  AND ($4::bool OR local_only = FALSE)
+                  AND content_tsv IS NOT NULL
+                  AND content_tsv @@ plainto_tsquery('english', $2)
+                  AND ($5::text IS NULL OR memory_slot = $5)
+                ORDER BY bm25_score DESC
+                LIMIT $6
+                """,
+                user_id,
+                query,
+                include_historical,
+                include_local,
+                memory_slot,
+                limit,
             )
 
         results = []
@@ -917,6 +1059,33 @@ class MemoryStore:
     # ------------------------------------------------------------------
     # Summary operations
     # ------------------------------------------------------------------
+
+    async def get_l0_memories(
+        self,
+        user_id: uuid.UUID,
+    ) -> list[dict[str, Any]]:
+        """Get all L0 (frozen) memories for a user.
+
+        L0 memories are always injected into every prompt without
+        embedding-based retrieval. They bypass the normal memory pipeline.
+        """
+        rows = await self._pool.fetch(
+            """
+            SELECT * FROM memories
+            WHERE user_id = $1
+              AND tier = 'l0'
+              AND status = 'active'
+              AND valid_to IS NULL
+            ORDER BY created_at ASC
+            """,
+            user_id,
+        )
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["content"] = self._enc.decrypt(d["content"])
+            results.append(d)
+        return results
 
     async def get_recent_summaries(
         self,

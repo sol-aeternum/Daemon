@@ -1,0 +1,28 @@
+{
+  "test_type": "variance_test_with_fixes",
+  "date": "2026-04-05",
+  "model": "gpt-5.4-nano",
+  "fixes_applied": ["correction_prompt", "adversarial_filter"],
+  "runs": [
+    {
+      "run_id": "bench_20260405_163712",
+      "P": 0.89, "R": 0.83, "A": 3,
+      "S3": {"FP": 0, "FN": 1, "extracted": "Corolla"},
+      "S8": {"FP": 3, "extracted": 3}
+    },
+    {
+      "run_id": "bench_20260405_165107", 
+      "P": 0.96, "R": 0.87, "A": 1,
+      "S3": {"FP": 0, "FN": 1, "extracted": "Corolla"},
+      "S8": {"FP": 1, "extracted": 1}
+    },
+    {
+      "run_id": "bench_20260405_170602",
+      "P": 0.96, "R": 0.87, "A": 1,
+      "S3": {"FP": 0, "FN": 1, "extracted": "Corolla"},
+      "S8": {"FP": 1, "extracted": 1}
+    }
+  ],
+  "median": {"P": 0.96, "R": 0.87, "A": 1},
+  "conclusion": "S3 (corrections) consistently fails - extracts Corolla instead of Tesla. S8 fluctuates 1-3 FPs. Original A=0 was non-deterministic. P=1.00, R=0.93 unachievable with current model."
+}

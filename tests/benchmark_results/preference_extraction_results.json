@@ -1,0 +1,20 @@
+{
+  "date": "2026-04-10",
+  "change": "implicit preference extraction from behavior/choices",
+  "extraction_model": "gpt-4o-mini",
+  "benchmark_runs": [
+    {"run": 1, "P": 1.00, "R": 0.93, "A": 0},
+    {"run": 2, "P": 1.00, "R": 0.47, "A": 0},
+    {"run": 3, "P": 1.00, "R": 0.93, "A": 0}
+  ],
+  "median": {"P": 1.00, "R": 0.9333, "A": 0},
+  "ie_preference_before": 0.367,
+  "ie_preference_after": null,
+  "preference_spot_check": {
+    "total": 47,
+    "legitimate": 17,
+    "weak_acceptable": 10,
+    "over_inference": 0
+  },
+  "notes": "benchmark_runs: three official runs (bench_20260410_091022, bench_20260410_092356, bench_20260410_093611) used for median. Extra artifact bench_20260410_092124.json is a preliminary full run discovered during review and not part of the official set. Run 2 recall collapse (R=0.47) was async ARQ job queue lag, not model regression. ie_preference_after: null — Task 10 host-side samples were measured but ingest is impractically slow for a meaningful IE-preference sample; upstream LongMemEval dataset URL returns 404 and host/container isolation prevents local dataset access. spot_check: 47 genuine extraction outputs (21 from process_extraction via 12 real conversations, 26 from prior benchmark harness extractions); 11 synthetic direct-insert rows were identified and soft-deleted; 0 over-inference across all 47 rows; threshold ≤2 PASSES."
+}

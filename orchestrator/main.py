@@ -601,8 +601,10 @@ async def health(request: Request) -> dict[str, Any]:
     try:
         state = get_app_state(request)
         base["services"] = await check_db_health(state)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Health check failed: %s", e)
+        base["status"] = "degraded"
+        base["error"] = str(e)
     return base
 
 
@@ -994,13 +996,20 @@ async def openai_chat_completions(
                         if line.startswith("data: "):
                             try:
                                 data = json.loads(line[6:])
-                                delta_content = data.get("data", {}).get("delta", "")
-                                if delta_content:
-                                    content_parts.append(delta_content)
+                                # Try 'delta' first (normal mode), then 'text' (mock mode)
+                                token_content = data.get("data", {}).get("delta", "")
+                                if not token_content:
+                                    token_content = data.get("data", {}).get("text", "")
+                                if token_content:
+                                    content_parts.append(token_content)
                             except Exception:
                                 pass
 
             final_content = "".join(content_parts)
+            
+            # Fallback for mock mode: if no content was collected, use mock response
+            if not final_content and settings.mock_llm:
+                final_content = "(mock) Mock response from Daemon"
 
             return OpenAIChatResponse(
                 id=f"chatcmpl-{request_id}",
@@ -1499,7 +1508,14 @@ async def chat(
 
     # Initialize persistence with graceful degradation
     store = app_state.memory_store if app_state else None
-    user_id = uuid.UUID("00000000-0000-0000-0000-000000000001") if store else None
+    # Use payload user_id if provided (for benchmark isolation), otherwise use default
+    if payload.user_id:
+        try:
+            user_id = uuid.UUID(payload.user_id.replace("user_", ""))
+        except ValueError:
+            user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
+    else:
+        user_id = uuid.UUID("00000000-0000-0000-0000-000000000001") if store else None
     conversation_uuid = None
     conversation_exists = False
 
@@ -1562,8 +1578,10 @@ async def chat(
                         logger.warning(
                             "Failed to enqueue title generation: %s", enqueue_error
                         )
-        except Exception:
-            pass  # Graceful degradation - continue without persistence
+        except Exception as e:
+            logger.warning(
+                "Conversation persistence failed, continuing without persistence: %s", e
+            )  # Graceful degradation - continue without persistence
 
     history_messages: list[dict[str, Any]] | None = None
 
@@ -1817,6 +1835,7 @@ async def chat(
                 queue=app_state.redis if app_state else None,
                 db_pool=app_state.db_pool if app_state else None,
                 trusted_spawn_context=trusted_spawn_context,
+                disable_memory_write=bool(payload.disable_memory_write),
             ):
                 yield frame
         except Exception as e:

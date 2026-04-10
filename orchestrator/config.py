@@ -255,6 +255,10 @@ class Settings(BaseSettings):
     # ===== TITLE GENERATION =====
     title_model: str = "openrouter/openai/gpt-4o-mini"
 
+    # ===== MEMORY CONSOLIDATION =====
+    consolidation_enabled: bool = True
+    consolidation_interval_days: int = 7
+
     def get_tier_config(self, tier: str | None = None) -> TierConfig:
         """Get model configuration for a specific tier.
 

@@ -6,11 +6,27 @@ from datetime import datetime, timedelta
 import logging
 from typing import Any
 
+import asyncpg
+import litellm
+
 from orchestrator.config import get_settings
 from orchestrator.memory.embedding import embed_documents
 from orchestrator.memory.store import MemoryStore
 
 logger = logging.getLogger(__name__)
+
+# Dynamic import for trust signals to avoid circular imports
+_trust_signals = None
+
+def _lazy_import_trust_signals():
+    global _trust_signals
+    if _trust_signals is None:
+        import importlib
+        try:
+            _trust_signals = importlib.import_module("orchestrator.memory.trust_signals")
+        except ImportError:
+            pass
+    return _trust_signals
 
 
 def _document_model() -> str:
@@ -123,6 +139,63 @@ def _is_protected_explicit_match(
 
     now = datetime.now(tz=created_at.tzinfo)
     return now - created_at <= EXPLICIT_SUPPRESSION_WINDOW
+
+
+async def check_contradiction(
+    existing_content: str,
+    new_content: str,
+) -> tuple[bool, str]:
+    """Check if two facts contradict each other using kimi 2.5.
+
+    Returns (contradiction_detected, explanation).
+    Contradiction detection is ADVISORY - callers should proceed regardless.
+    LLM failures result in (False, "").
+    """
+    try:
+        response = await litellm.acompletion(
+            # Intentionally pinned here for stable contradiction judgments until
+            # this advisory helper gets a dedicated configurable model slot.
+            model="openrouter/moonshotai/kimi-k2.5",
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"Do these two facts contradict each other? "
+                        f"Fact A: {existing_content}. Fact B: {new_content}. "
+                        f"Reply YES or NO with a one-sentence explanation."
+                    ),
+                }
+            ],
+            temperature=0.1,
+            max_tokens=50,
+        )
+        response_data: Any = response
+        model_dump = getattr(response, "model_dump", None)
+        if callable(model_dump):
+            response_data = model_dump()
+        else:
+            dict_method = getattr(response, "dict", None)
+            if callable(dict_method):
+                response_data = dict_method()
+
+        content = None
+        if isinstance(response_data, dict):
+            choices = response_data.get("choices")
+            if isinstance(choices, list) and choices:
+                message = (
+                    choices[0].get("message") if isinstance(choices[0], dict) else None
+                )
+                if isinstance(message, dict):
+                    content = message.get("content")
+
+        if not isinstance(content, str) or not content:
+            return False, ""
+
+        contradiction_detected = content.lower().startswith("yes")
+        explanation = content.strip() if contradiction_detected else ""
+        return contradiction_detected, explanation
+    except Exception:
+        return False, ""
 
 
 async def _close_active_family_memories(
@@ -389,20 +462,60 @@ async def deduplicate_facts(
                     )
                     result.new.append(memory)
                 else:
-                    new_memory = await store.supersede_memory(
-                        old_memory_id=best_match_id,
-                        new_content=fact.content,
-                        new_category=fact.category,
-                        new_source_type=source_type,
-                        user_id=user_id,
-                        embedding=embedding,
-                        embedding_model=_document_model(),
-                        source_conversation_id=conversation_id,
-                        confidence=fact.confidence,
-                        new_status=status,
-                        memory_slot=fact_slot or best_match.get("memory_slot"),
+                    existing_content = best_match.get("content", "")
+                    contradiction_detected, explanation = await check_contradiction(
+                        existing_content, fact.content
                     )
+                    metadata = None
+                    if contradiction_detected:
+                        metadata = {
+                            "contradiction_detected": True,
+                            "contradiction_explanation": explanation,
+                        }
+                    supersede_kwargs: dict[str, Any] = {
+                        "old_memory_id": best_match_id,
+                        "new_content": fact.content,
+                        "new_category": fact.category,
+                        "new_source_type": source_type,
+                        "user_id": user_id,
+                        "embedding": embedding,
+                        "embedding_model": _document_model(),
+                        "source_conversation_id": conversation_id,
+                        "confidence": fact.confidence,
+                        "new_status": status,
+                        "memory_slot": fact_slot or best_match.get("memory_slot"),
+                    }
+
+                    try:
+                        new_memory = await store.supersede_memory(
+                            **supersede_kwargs,
+                            metadata=metadata,
+                        )
+                    except asyncpg.UndefinedColumnError as error:
+                        if metadata is None:
+                            raise
+                        logger.warning(
+                            "Dedup contradiction metadata unavailable; retrying supersede without metadata (%s)",
+                            error,
+                        )
+                        contradiction_detected, explanation = False, ""
+                        new_memory = await store.supersede_memory(
+                            **supersede_kwargs,
+                            metadata=None,
+                        )
                     result.superseded.append(new_memory)
+
+                    # Apply explicit negative trust signal for superseded memory
+                    try:
+                        ts_module = _lazy_import_trust_signals()
+                        if ts_module and best_match.get("id"):
+                            superseded_id = uuid.UUID(str(best_match.get("id")))
+                            await ts_module.apply_explicit_negative_signal(
+                                superseded_memory_id=superseded_id,
+                                store=store,
+                            )
+                    except Exception:
+                        pass  # Trust signals are best-effort
 
                     if current_like_slot and fact_slot_family:
                         new_id = new_memory.get("id")

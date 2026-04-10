@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime
 from typing import Any
 
 from orchestrator.memory.store import MemoryStore
-from orchestrator.memory.dedup import dedup_and_store
-from orchestrator.memory.embedding import embed_query
+from orchestrator.memory.dedup import dedup_and_store, check_contradiction
+from orchestrator.memory.embedding import embed_query, embed_documents
 from orchestrator.tools.registry import Tool
+
+logger = logging.getLogger(__name__)
 
 
 class MemoryReadTool(Tool):
@@ -144,6 +147,55 @@ class MemoryWriteTool(Tool):
         self.store = store
         self.user_id = user_id
 
+    async def _check_and_set_contradiction(
+        self,
+        memory_id: uuid.UUID,
+        content: str,
+        slot: str | None,
+    ) -> None:
+        """Check for contradiction with same-slot memories and update metadata if found.
+
+        Contradiction detection is advisory - failures are logged but don't block.
+        """
+        if not isinstance(slot, str) or not slot.strip():
+            return
+
+        try:
+            embedding_input = f"{slot.strip()}: {content.strip()}"
+            embedding = (await embed_documents([embedding_input]))[0]
+            candidates = await self.store.search_memories(
+                user_id=self.user_id,
+                query_embedding=embedding,
+                limit=10,
+                min_similarity=0.5,
+                memory_slot=slot,
+            )
+            for candidate in candidates:
+                if candidate.get("id") == memory_id:
+                    continue
+                if candidate.get("valid_to") is not None:
+                    continue
+                existing_content = candidate.get("content", "")
+                if not existing_content:
+                    continue
+                contradiction_detected, explanation = await check_contradiction(
+                    existing_content, content
+                )
+                if contradiction_detected:
+                    _ = await self.store.update_memory_metadata(
+                        memory_id,
+                        {
+                            "contradiction_detected": True,
+                            "contradiction_explanation": explanation,
+                        },
+                    )
+                    break
+        except Exception as error:
+            logger.warning(
+                "Failed to annotate contradiction metadata: %s",
+                error,
+            )
+
     async def execute(self, **kwargs: Any) -> str:
         action = kwargs.get("action")
 
@@ -154,6 +206,7 @@ class MemoryWriteTool(Tool):
             if category not in self.allowed_categories:
                 allowed = ", ".join(sorted(self.allowed_categories))
                 return f"Invalid category '{category}'. Use one of: {allowed}."
+            effective_slot = slot if isinstance(slot, str) else None
             memory_id = await dedup_and_store(
                 store=self.store,
                 user_id=self.user_id,
@@ -161,8 +214,9 @@ class MemoryWriteTool(Tool):
                 source_type="user_created",
                 category=category,
                 conversation_id=None,
-                slot=slot if isinstance(slot, str) else None,
+                slot=effective_slot,
             )
+            await self._check_and_set_contradiction(memory_id, content, effective_slot)
             return f"Memory created (ID: {memory_id})."
 
         elif action == "update":
@@ -197,6 +251,7 @@ class MemoryWriteTool(Tool):
                 conversation_id=old_memory.get("source_conversation_id"),
                 slot=slot,
             )
+            await self._check_and_set_contradiction(new_memory_id, content, slot)
             return f"Memory updated. Old ID: {memory_id}, New ID: {new_memory_id}."
 
         elif action == "delete":

@@ -94,6 +94,7 @@ def _normalize_message(message: dict[str, object]) -> dict[str, object]:
 
 class ConversationCreate(BaseModel):
     title: str | None = None
+    user_id: str | None = None  # Optional user ID for benchmark isolation
 
 
 @router.post("", response_model=ConversationOut, status_code=201)
@@ -106,8 +107,16 @@ async def create_conversation(
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
 
+    # Use payload user_id if provided (for benchmark isolation), otherwise default
+    user_id = DEFAULT_USER_ID
+    if conversation.user_id:
+        try:
+            user_id = uuid.UUID(conversation.user_id.replace("user_", ""))
+        except ValueError:
+            user_id = DEFAULT_USER_ID
+    
     new_conv = await store.create_conversation(
-        user_id=DEFAULT_USER_ID,
+        user_id=user_id,
         title=conversation.title or "New conversation",
         pipeline="cloud",
     )

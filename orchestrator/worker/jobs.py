@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, TypedDict
 
 from arq.connections import ArqRedis
 from arq.jobs import Job
@@ -22,6 +22,18 @@ logger = logging.getLogger(__name__)
 
 
 WorkerContext = dict[str, object]
+
+
+class ConsolidationResults(TypedDict):
+    """Typed results dict for consolidate_memories job."""
+    status: str
+    clusters_found: int
+    clusters_processed: int
+    memories_created: int
+    memories_demoted: int
+    errors: list[str]
+    users_processed: int
+    error_count: int
 
 
 def _parse_raw_messages(messages_json: object) -> list[dict[str, Any]]:
@@ -379,3 +391,165 @@ async def cleanup_generated_images(ctx: WorkerContext) -> dict[str, int]:
                 )
 
     return {"scanned": scanned, "deleted": deleted}
+
+
+async def consolidate_memories(
+    ctx: WorkerContext,
+    user_id: str | uuid.UUID | None = None,
+) -> ConsolidationResults:
+    """Run memory consolidation for a user or all users.
+
+    Finds clusters of related L1 memories and consolidates them into
+    summary memories. Source memories are demoted to L2 (not deleted).
+
+    This job is interruptible - each cluster is processed independently,
+    so partial failures don't lose progress on other clusters.
+
+    Args:
+        ctx: Worker context with store and settings
+        user_id: Optional specific user to consolidate. If None, processes
+                 all users with eligible memories.
+
+    Returns:
+        ConsolidationResults with counts and status
+    """
+    from orchestrator.memory.consolidation import find_memory_clusters, consolidate_cluster, MemoryCluster
+
+    store_obj = ctx.get("store")
+    settings_obj = ctx.get("settings")
+
+    if not isinstance(store_obj, MemoryStore):
+        return ConsolidationResults(
+            status="skipped",
+            clusters_found=0,
+            clusters_processed=0,
+            memories_created=0,
+            memories_demoted=0,
+            errors=["store_unavailable"],
+            users_processed=0,
+            error_count=1,
+        )
+
+    if not isinstance(settings_obj, Settings):
+        return ConsolidationResults(
+            status="skipped",
+            clusters_found=0,
+            clusters_processed=0,
+            memories_created=0,
+            memories_demoted=0,
+            errors=["settings_unavailable"],
+            users_processed=0,
+            error_count=1,
+        )
+
+    # Check if consolidation is enabled
+    if not settings_obj.consolidation_enabled:
+        logger.info("Memory consolidation is disabled via config")
+        return ConsolidationResults(
+            status="skipped",
+            clusters_found=0,
+            clusters_processed=0,
+            memories_created=0,
+            memories_demoted=0,
+            errors=["consolidation_disabled"],
+            users_processed=0,
+            error_count=1,
+        )
+
+    store = store_obj
+    results: ConsolidationResults = {
+        "status": "ok",
+        "clusters_found": 0,
+        "clusters_processed": 0,
+        "memories_created": 0,
+        "memories_demoted": 0,
+        "errors": [],
+        "users_processed": 0,
+        "error_count": 0,
+    }
+
+    # Get list of users to process
+    user_ids: list[uuid.UUID] = []
+
+    if user_id is not None:
+        # Single user mode (manual trigger)
+        try:
+            user_ids = [_as_uuid(user_id)]
+        except ValueError as e:
+            results["status"] = "error"
+            results["errors"].append(f"invalid_user_id: {e}")
+            results["error_count"] = 1
+            return results
+    else:
+        # Periodic job - find all users with eligible L1 memories
+        rows = await store._pool.fetch(
+            """
+            SELECT DISTINCT user_id
+            FROM memories
+            WHERE status = 'active'
+              AND tier = 'l1'
+              AND embedding IS NOT NULL
+            """
+        )
+        user_ids = [row["user_id"] for row in rows]
+        logger.info(f"Found {len(user_ids)} users with eligible memories for consolidation")
+
+    # Process each user
+    for uid in user_ids:
+        try:
+            # Find clusters for this user
+            clusters = await find_memory_clusters(uid, store)
+            results["clusters_found"] += len(clusters)
+
+            # Process each cluster independently (interruptible)
+            for cluster in clusters:
+                try:
+                    # Validate cluster
+                    if not isinstance(cluster, MemoryCluster):
+                        logger.warning(f"Invalid cluster type for user {uid}: {type(cluster)}")
+                        continue
+
+                    if len(cluster) < 3:
+                        logger.debug(f"Cluster too small, skipping: {len(cluster)} members")
+                        continue
+
+                    # Consolidate this cluster
+                    created = await consolidate_cluster(cluster, store, uid)
+
+                    if created:
+                        results["clusters_processed"] += 1
+                        results["memories_created"] += len(created)
+                        results["memories_demoted"] += len(cluster.members)
+                        logger.info(
+                            f"Consolidated cluster for user {uid}: "
+                            f"created {len(created)} summaries from {len(cluster.members)} sources"
+                        )
+                    else:
+                        logger.warning(f"Consolidation produced no memories for cluster in user {uid}")
+
+                except Exception as e:
+                    # Log error but continue with other clusters (interruptible design)
+                    error_msg = f"Cluster consolidation failed for user {uid}: {e}"
+                    logger.warning(error_msg, exc_info=True)
+                    results["errors"].append(error_msg)
+                    # Continue processing other clusters - don't lose progress
+
+            results["users_processed"] += 1
+
+        except Exception as e:
+            error_msg = f"User consolidation failed for {uid}: {e}"
+            logger.warning(error_msg, exc_info=True)
+            results["errors"].append(error_msg)
+            # Continue with next user - job is interruptible
+
+    # Summary logging
+    logger.info(
+        f"Consolidation complete: {results['clusters_processed']}/{results['clusters_found']} "
+        f"clusters processed, {results['memories_created']} memories created, "
+        f"{results['memories_demoted']} sources demoted, {len(results['errors'])} errors"
+    )
+
+    # Update error count for cleaner response
+    results["error_count"] = len(results["errors"])
+
+    return results

@@ -17,6 +17,22 @@ from orchestrator.services.fetch.url_extract import extract_urls
 from orchestrator.tools.builtin import create_default_registry
 from orchestrator.tools.completion import completion_with_tools
 
+
+# Import trust functions for signal application
+_trust_module_imported = False
+_trust_signals_module = None
+
+def _lazy_import_trust_signals():
+    global _trust_module_imported, _trust_signals_module
+    if not _trust_module_imported:
+        try:
+            import importlib
+            _trust_signals_module = importlib.import_module("orchestrator.memory.trust_signals")
+        except ImportError:
+            pass
+        _trust_module_imported = True
+    return _trust_signals_module
+
 logger = logging.getLogger(__name__)
 
 _RUNTIME_DATETIME_MARKER = "<runtime-datetime-context>"
@@ -250,6 +266,7 @@ async def stream_sse_chat(
     queue: Any = None,
     db_pool: Any = None,
     trusted_spawn_context: dict[str, Any] | None = None,
+    disable_memory_write: bool = False,
 ) -> AsyncIterator[str]:
     provider, model = effective_provider_and_model(settings, provider_config)
     model_for_events = reported_model or actual_model or model
@@ -267,6 +284,9 @@ async def stream_sse_chat(
 
     forced_terminal_status: str | None = None
     terminal_reason: str | None = None
+
+    # Track if memory_write (correction) occurred during this response
+    memory_write_occurred = False
 
     def make_envelope(
         event_type: str, data: dict[str, Any], *, evt_id: str | None = None
@@ -343,7 +363,8 @@ async def stream_sse_chat(
                     except Exception as e:
                         logger.warning("Failed to insert mock message: %s", e)
 
-                for token in "Mock response tokens from Daemon":
+                mock_response = "(mock) Mock response from Daemon"
+                for token in mock_response:
                     if await is_disconnected():
                         break
                     yield sse(
@@ -370,6 +391,7 @@ async def stream_sse_chat(
                     user_id=user_id,
                     db_pool=db_pool,
                     trusted_spawn_context=trusted_spawn_context,
+                    disable_memory_write=disable_memory_write,
                 )
                 pending_tool_calls: list[str] = []
 
@@ -457,6 +479,9 @@ async def stream_sse_chat(
                     elif event_type == "tool_executing":
                         tool_name = str(event.get("name") or "tool")
                         pending_tool_calls.append(tool_name)
+                        # Track if memory_write occurred (for trust signal)
+                        if tool_name == "memory_write":
+                            memory_write_occurred = True
                         raw_arguments = event.get("arguments")
                         tool_arguments: Any = raw_arguments
                         if isinstance(raw_arguments, str):
@@ -780,13 +805,27 @@ async def stream_sse_chat(
                     )
                     assistant_message_id = inserted["id"]
 
+                # Apply implicit positive trust signal (boost previous turn's memories if no correction)
+                try:
+                    ts_module = _lazy_import_trust_signals()
+                    if ts_module and conversation_uuid:
+                        await ts_module.apply_implicit_positive_signal(
+                            conversation_id=conversation_uuid,
+                            store=memory_store,
+                            user_id=user_id,
+                            correction_occurred=memory_write_occurred,
+                        )
+                except Exception as trust_error:
+                    logger.debug(f"Trust signal application skipped: {trust_error}")
+
                 if queue is not None:
                     try:
+                        import time
                         await queue.enqueue_job(
                             "extract_memories",
                             str(user_id),
                             str(conversation_uuid),
-                            _job_id=f"extract:{conversation_uuid}",
+                            _job_id=f"extract:{conversation_uuid}:{int(time.time())}",
                             _defer_by=timedelta(seconds=30),
                         )
                     except Exception as extract_error:

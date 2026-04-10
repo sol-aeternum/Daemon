@@ -2,18 +2,33 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from typing import cast
+from typing import Any, cast
 
 from orchestrator.guardrails import strip_reasoning_fields_from_message
 from orchestrator.memory.embedding import embed_query
 from orchestrator.memory.retrieval import retrieve_memories
 from orchestrator.memory.store import MemoryStore
+
+# Dynamic import for trust signals to avoid circular imports
+_trust_signals = None
+
+def _lazy_import_trust_signals():
+    global _trust_signals
+    if _trust_signals is None:
+        import importlib
+        try:
+            _trust_signals = importlib.import_module("orchestrator.memory.trust_signals")
+        except ImportError:
+            pass
+    return _trust_signals
 from orchestrator.prompts import DAEMON_SYSTEM_PROMPT
 
 MAX_MEMORY_ITEMS = 5
 MAX_SUMMARY_ITEMS = 3
 DEFAULT_MAX_TOKENS = 2500
 MAX_SINGLE_MEMORY_CHARS = 400
+L0_TOKEN_BUDGET = 200
+MAX_L0_CHARS = 600
 
 PERSONALITY_PRESETS: dict[str, str] = {
     "default": "",
@@ -80,6 +95,19 @@ def _truncate_to_chars(text: str, limit: int) -> str:
     return text[: limit - 3].rstrip() + "..."
 
 
+def _format_l0_block(l0_memories: list[dict[str, object]]) -> str:
+    if not l0_memories:
+        return ""
+    lines = ["[FROZEN MEMORIES]"]
+    for memory in l0_memories:
+        text = _truncate_to_chars(
+            _normalize_content(memory.get("content")), MAX_L0_CHARS
+        )
+        if text:
+            lines.append(f"- {text}")
+    return "\n".join(lines)
+
+
 def estimate_tokens(text: str) -> int:
     words = text.split()
     if not words:
@@ -144,6 +172,17 @@ async def build_memory_context(
     if not isinstance(user_id, uuid.UUID):
         return ""
 
+    l0_memories = await store.get_l0_memories(user_id)
+    l0_block = _format_l0_block(l0_memories)
+
+    if estimate_tokens(l0_block) > L0_TOKEN_BUDGET:
+        l0_lines = l0_block.split("\n")
+        while (
+            estimate_tokens("\n".join(l0_lines)) > L0_TOKEN_BUDGET and len(l0_lines) > 1
+        ):
+            l0_lines.pop()
+        l0_block = "\n".join(l0_lines)
+
     query_text = ""
     recent_messages = await store.get_recent_messages(conversation_id, limit=20)
 
@@ -171,9 +210,25 @@ async def build_memory_context(
             retrieved = await retrieve_memories(
                 store=store,
                 query_embedding=query_embedding,
+                query_text=query_text,
                 conversation_id=conversation_id,
                 limit=MAX_MEMORY_ITEMS,
             )
+            
+            # Record retrieved memory IDs for trust signal tracking
+            if retrieved:
+                try:
+                    ts_module = _lazy_import_trust_signals()
+                    if ts_module:
+                        memory_ids = [m.get("id") for m in retrieved if m.get("id")]
+                        await ts_module.record_retrieved_memories(
+                            conversation_id=conversation_id,
+                            memory_ids=memory_ids,
+                            store=store,
+                        )
+                except Exception:
+                    pass  # Trust signals are best-effort
+                    
         except Exception:
             retrieved = []
 
@@ -199,14 +254,12 @@ async def build_memory_context(
         if text:
             summary_lines.append(f"- Session: {text}")
 
-    if not memory_lines and not summary_lines:
-        return ""
-
     effective_token_budget = max(1, max_tokens)
 
     def render(memories: list[str], summary_items: list[str]) -> str:
-        parts = ["About this user:"]
+        parts: list[str] = []
         if memories:
+            parts.append("About this user:")
             parts.extend(memories)
         if summary_items:
             parts.append("Recent context:")
@@ -235,6 +288,14 @@ async def build_memory_context(
         _ = summary_lines.pop()
         context = render(memory_lines, summary_lines)
 
+    if not l0_block and not memory_lines and not summary_lines:
+        return ""
+
+    if l0_block and not context:
+        return l0_block
+
+    if l0_block:
+        return l0_block + "\n\n" + context
     return context
 
 
@@ -264,3 +325,16 @@ async def assemble_system_prompt(
         )
 
     return assembled
+
+
+# Re-export get_l0_memories for backward compatibility / QA testing
+# This is a method on MemoryStore, exposed here for convenience
+async def get_l0_memories(
+    store: MemoryStore, user_id: uuid.UUID
+) -> list[dict[str, Any]]:
+    """Get L0 memories for a user.
+
+    This is a wrapper around MemoryStore.get_l0_memories for backward compatibility.
+    Use directly via MemoryStore.get_l0_memories when you have a store instance.
+    """
+    return await store.get_l0_memories(user_id)

@@ -4,18 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import cast
+from typing import Any, cast
 
 import asyncpg
 from arq.connections import RedisSettings
+from arq.cron import cron
 from arq.worker import Worker, func
 
 from orchestrator.config import get_settings
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
 
-from .jobs import (
+from orchestrator.worker.jobs import (
     cleanup_generated_images,
+    consolidate_memories,
     extract_memories,
     garbage_collect,
     generate_conversation_title_job,
@@ -23,7 +25,7 @@ from .jobs import (
     generate_title,
     cleanup_generated_files,
 )
-from .settings import WorkerSettings
+from orchestrator.worker.settings import WorkerSettings
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,46 @@ try:
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
+# Build cron jobs based on settings
+cron_jobs: list[Any] = []
+if _worker_settings.consolidation_enabled:
+    interval = _worker_settings.consolidation_interval_days
+    if interval == 1:
+        # Daily at 2 AM UTC
+        cron_jobs.append(
+            cron(
+                consolidate_memories,
+                hour=2,
+                minute=0,
+            )
+        )
+        logger.info(f"Memory consolidation scheduled: daily at 2 AM UTC (interval={interval} days)")
+    elif interval == 7:
+        # Weekly at 2 AM UTC on Sundays
+        cron_jobs.append(
+            cron(
+                consolidate_memories,
+                hour=2,
+                minute=0,
+                weekday=6,  # Sunday (arq: 0=Monday, 6=Sunday)
+            )
+        )
+        logger.info(f"Memory consolidation scheduled: weekly on Sunday at 2 AM UTC (interval={interval} days)")
+    else:
+        # For other values, use daily with a warning
+        cron_jobs.append(
+            cron(
+                consolidate_memories,
+                hour=2,
+                minute=0,
+            )
+        )
+        logger.warning(
+            f"Memory consolidation scheduled: daily at 2 AM UTC (interval={interval} days). "
+            f"Note: Only 1 (daily) and 7 (weekly) are explicitly supported. "
+            f"Using daily as best-effort fallback."
+        )
+
 worker = Worker(
     functions=[
         func(extract_memories, max_tries=_worker_settings.retry_attempts),
@@ -74,12 +116,14 @@ worker = Worker(
         func(garbage_collect, max_tries=_worker_settings.retry_attempts),
         func(cleanup_generated_files, max_tries=_worker_settings.retry_attempts),
         func(cleanup_generated_images, max_tries=_worker_settings.retry_attempts),
+        func(consolidate_memories, max_tries=_worker_settings.retry_attempts),
     ],
     redis_settings=RedisSettings.from_dsn(_worker_settings.redis_url),
     on_startup=on_startup,
     on_shutdown=on_shutdown,
     max_jobs=_worker_settings.max_jobs,
     job_timeout=_worker_settings.job_timeout,
+    cron_jobs=cron_jobs,
 )
 
 

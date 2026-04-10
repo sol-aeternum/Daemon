@@ -1,0 +1,28 @@
+{
+  "metadata": {
+    "date": "2026-04-05",
+    "model": "gpt-4o",
+    "embedding_model": "voyage-4-large",
+    "retrieval_config": "baseline (vector similarity only, no L0/BM25/contradiction)",
+    "questions_run": 50,
+    "note": "IE category only. Synchronization bug fixed. 7881 memories in DB for test user."
+  },
+  "results": {
+    "total_questions": 50,
+    "answered": 15,
+    "abstained": 35,
+    "correct": 0,
+    "abstention_rate": 0.70,
+    "accuracy_answered": 0.0,
+    "accuracy_all": 0.0
+  },
+  "category_breakdown": {
+    "IE": {
+      "total": 50,
+      "answered": 15,
+      "abstained": 35,
+      "correct": 0
+    }
+  },
+  "diagnosis": "Retrieval returns memories but not relevant ones. Vector similarity finds semantic matches but misses keyword/exact matches. BM25 hybrid search should improve recall."
+}
