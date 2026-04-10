@@ -2,7 +2,7 @@
 
 **Multi-provider LLM orchestration platform with intelligent routing, persistent memory, and subagent architecture.**
 
-Daemon is not another ChatGPT wrapper. It's an orchestration layer that sits between multiple LLM providers and multiple frontends, adding capabilities that no single provider offers: cross-provider routing with failover, persistent conversational memory via pgvector, subagent spawning for task decomposition, and a unified API surface compatible with any OpenAI-standard frontend.
+Daemon is an orchestration layer that sits between multiple LLM providers and a custom Next.js frontend, adding capabilities that no single provider offers: tiered cross-provider routing with failover, persistent conversational memory via pgvector, specialised subagents for task decomposition, and a typed SSE event surface for real-time streaming.
 
 ## Why This Exists
 
@@ -12,12 +12,14 @@ Commercial LLM products lock you into a single provider, a single model, and the
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                    Frontends                         │
-│   Open WebUI  ·  Custom Client  ·  API Direct       │
+│           Next.js 16 Frontend (PWA)                  │
+│           Vercel AI SDK 4 + React 19                  │
 └──────────────────────┬──────────────────────────────┘
-                       │ OpenAI-compatible API
+                       │ /api/chat (SSE bridge)
 ┌──────────────────────▼──────────────────────────────┐
-│                  Daemon Core                         │
+│              FastAPI Backend                          │
+│   orchestrator/  (routing, streaming, subagents,     │
+│                   memory, tools, routes, worker)     │
 │                                                      │
 │  ┌─────────┐  ┌──────────┐  ┌────────────────────┐  │
 │  │ Router  │→ │ Provider │→ │ LiteLLM Streaming  │  │
@@ -26,57 +28,69 @@ Commercial LLM products lock you into a single provider, a single model, and the
 │       │                                              │
 │  ┌────▼────────────┐  ┌──────────────────────────┐  │
 │  │ Memory Layer    │  │ Subagent Orchestrator    │  │
-│  │ (pgvector)      │  │ (task decomposition)     │  │
+│  │ (pgvector)      │  │ @research @image @audio  │  │
+│  │                 │  │ @code @reader            │  │
 │  └─────────────────┘  └──────────────────────────┘  │
 └──────────────────────────────────────────────────────┘
                        │
 ┌──────────────────────▼──────────────────────────────┐
 │               LLM Providers                          │
-│  OpenRouter · Local Models · Custom Endpoints        │
-└──────────────────────────────────────────────────────┘
+│  OpenRouter · Local Models (Phase 3, pending GPU)   │
+└─────────────────────────────────────────────────────┘
 ```
 
 ### Key Design Decisions
 
-**Multi-provider routing over single-provider lock-in.** LiteLLM abstracts provider differences. Any OpenAI-compatible endpoint can be added via environment variables. Default provider is configurable per-deployment; per-request overrides allow model selection at query time.
+**Tiered multi-provider routing.** LiteLLM abstracts provider differences. The tier system assigns models per pricing level via environment variables — no code changes to swap models. Default tier is Pro; Free tier is rate-limited with no subagents.
 
-**Persistent memory via pgvector.** Conversations are embedded and stored in PostgreSQL with vector similarity search. The memory pipeline uses Voyage AI asymmetric embeddings (`voyage-4-large` for document writes, `voyage-4-lite` for query reads) in a shared 1024d embedding space. This enables context retrieval across sessions without relying on provider-side memory. See [MEMORY_LAYER.md](MEMORY_LAYER.md) for implementation details.
+**Persistent memory via pgvector.** Conversations are embedded and stored in PostgreSQL with vector similarity search. The memory pipeline uses Voyage AI asymmetric embeddings (`voyage-4-large` for documents, `voyage-4-lite` for queries). See [MEMORY_LAYER.md](MEMORY_LAYER.md).
 
-**Subagent spawning for task decomposition.** Complex requests can be broken into subtasks handled by specialised agents, each potentially using different models optimised for their task type. The orchestrator manages coordination and result synthesis.
+**Subagent spawning for task decomposition.** Complex requests are routed to specialised agents: `@research` (Brave Search), `@image` (image/video generation), `@audio` (ElevenLabs TTS/STT), `@code`, and `@reader`. Each may use a different model optimised for its task.
 
-**OpenAI API compatibility as integration strategy.** By implementing `/v1/models` and `/v1/chat/completions`, Daemon works with Open WebUI, any OpenAI SDK client, or custom frontends without modification. This is a deliberate architectural choice — compatibility with the dominant API standard maximises frontend optionality.
+**Typed SSE streaming.** Real-time token streaming uses typed events (`token`, `thinking`, `routing`, `tool_call`, `tool_result`, `final`, `error`, `done`) rather than raw model output, enabling structured frontend rendering.
 
-**SSE streaming with keepalive.** Real-time token streaming with configurable ping intervals prevents connection drops on slow generations.
+**Local pipeline blocked on hardware.** The `/local` pre-router flag is implemented, but all local inference code is pending RTX 5090 acquisition. The cloud pipeline runs independently.
 
 ## Project Structure
 
 ```
 Daemon/
-├── orchestrator/       # Core: routing, provider config, streaming, API
-│   ├── main.py         # FastAPI app + OpenAI-compatible endpoints
-│   ├── daemon.py       # LiteLLM streaming integration
-│   ├── config.py       # Multi-provider configuration
-│   ├── router.py       # Message routing logic
-│   └── models.py       # Pydantic schemas (inc. OpenAI-compatible types)
-├── backend/            # Backend services and data layer
-├── frontend/           # Web frontend
-├── migrations/         # Database migrations
-├── tests/              # Test suite
-├── scripts/            # Utility scripts
-├── .sisyphus/          # Agent workflow configuration
-├── .envsitter/         # Environment management tooling
-├── MEMORY_LAYER.md     # Memory system design document
-├── QUICKSTART.md       # Quick setup guide
-├── docker-compose.yml  # Full-stack deployment
-└── Dockerfile          # Container build
+├── orchestrator/       # FastAPI backend (main app, routing, subagents,
+│                       #   memory, tools, routes, worker)
+│   ├── main.py         # FastAPI app + OpenAI-compatible + SSE endpoints
+│   ├── daemon.py       # Core orchestration loop (stream_sse_chat)
+│   ├── config.py       # Tier system + env-var model configuration
+│   ├── prompts.py      # System prompt (v1)
+│   ├── memory/         # Full memory pipeline (store, extraction, dedup,
+│                       #   retrieval, injection, embedding, encryption)
+│   ├── routes/         # API route modules
+│   ├── agents/         # Subagent implementations
+│   └── worker/         # arq background job processor
+├── frontend/           # Next.js 16 web frontend (PWA)
+│   ├── app/            # App router pages (/page.tsx, /studio/page.tsx)
+│   ├── components/     # UI components
+│   ├── hooks/          # React hooks (useChat wrappers, audio, events)
+│   └── lib/events.ts   # Typed SSE event definitions
+├── providers/          # Provider client implementations
+├── migrations/         # PostgreSQL migrations (13 applied)
+├── tests/              # Test suite (pytest + playwright)
+├── scripts/             # Utility scripts
+├── data/                # Runtime data (generated files, etc.)
+├── .sisyphus/           # Agent workflow configuration
+├── MEMORY_LAYER.md      # Memory system design document
+├── QUICKSTART.md        # Quick setup guide
+├── docker-compose.yml   # Full-stack deployment (6 long-running services)
+└── Dockerfile           # Single-image backend build
 ```
+
+Note: The top-level `backend/` directory contains only a Dockerfile for Docker builds. All backend source code lives under `orchestrator/`.
 
 ## Quick Start
 
 **Prerequisites:** [uv](https://github.com/astral-sh/uv) installed.
 
 ```bash
-# Local development
+# Local development (backend only, postgres/redis must be running)
 uv run uvicorn orchestrator.main:app --reload --host 0.0.0.0 --port 8000
 
 # Docker (full stack)
@@ -86,84 +100,61 @@ docker compose up --build
 
 Verify: `curl http://localhost:8000/health`
 
-See [QUICKSTART.md](QUICKSTART.md) for detailed setup.
+Benchmarking runs from the host shell against localhost-exposed container services. See [QUICKSTART.md](QUICKSTART.md) for detailed setup.
 
-## API
+## Capabilities
 
-### Endpoints
+### Chat & Routing
+- Native `/chat` endpoint with SSE streaming (typed events)
+- OpenAI-compatible `/v1/chat/completions` and `/v1/models`
+- Tier-based model routing with auto-classification (`fast` vs `reasoning`)
+- Per-request model override
+
+### Memory
+- Encrypted conversation storage with pgvector similarity search
+- Background fact extraction (GPT-4o-mini → embedding → dedup → store)
+- Composite scoring retrieval (similarity × recency × confidence)
+- Memory injection into system prompt per conversation
+- `memory_read` / `memory_write` tools available to the orchestrator
+
+### Subagents
+- `@research` — Brave Search web search
+- `@image` — Image and video generation (xAI Imagine API)
+- `@audio` — ElevenLabs TTS/STT/sound effects
+- `@code` — Code generation and analysis
+- `@reader` — Document reading
+
+### Frontend
+- Next.js 16 PWA with streaming chat (Vercel AI SDK `useChat`)
+- Conversation list with CRUD, search, pinning, rename
+- Studio page (`/studio`) for image and video generation
+- Voice I/O: ElevenLabs streaming TTS + STT with push-to-talk
+- Settings panel: TTS voice/model/speed, STT language, memory management
+- Rich inline rendering: images (lightbox + download), audio player, tool call blocks
+- Error boundary for crash recovery
+
+### API Routes
 
 | Endpoint | Method | Description |
 |---|---|---|
 | `/v1/models` | GET | List available models (OpenAI-compatible) |
 | `/v1/chat/completions` | POST | Chat completion, streaming and non-streaming |
 | `/chat` | POST | Native Daemon chat with SSE streaming |
-| `/providers` | GET | List configured providers and default |
+| `/conversations` | GET/POST | Conversation CRUD |
+| `/conversations/{id}/messages` | GET/POST | Message history |
+| `/memories` | GET/POST/DELETE | Memory management |
+| `/users/settings` | GET/PUT | User preferences |
+| `/video-credits` | GET/POST | Video credit balance and transactions |
 | `/health` | GET | Health check |
-
-### Provider Configuration
-
-Daemon supports any OpenAI-compatible provider via environment variables:
-
-```bash
-# Built-in: OpenRouter
-DEFAULT_PROVIDER=openrouter
-OPENROUTER_API_KEY=your-key
-
-# Custom provider (any OpenAI-compatible API)
-PROVIDER_MYSERVICE_BASE_URL=https://api.example.com/v1
-PROVIDER_MYSERVICE_API_KEY=your-key
-PROVIDER_MYSERVICE_MODEL=model-name
-```
-
-Per-request provider override:
-```bash
-curl -X POST http://localhost:8000/chat \
-  -H 'Content-Type: application/json' \
-  -d '{"message":"hello","provider":"myservice"}'
-```
-
-See [.env.example](.env.example) for all configuration options.
-
-## Open WebUI Integration
-
-```bash
-# Start Daemon, then:
-docker run -d -p 3000:8080 \
-  -e OPENAI_API_BASE_URL="http://host.docker.internal:8000/v1" \
-  -e OPENAI_API_KEY="your-daemon-api-key" \
-  -e ENABLE_OLLAMA_API=False \
-  -e ENABLE_OPENAI_API=True \
-  ghcr.io/open-webui/open-webui:main
-```
-
-## xAI Grok Integration
-
-Daemon supports xAI's Grok models via OpenRouter, including:
-- **Grok 4** — Premium reasoning model for Max tier
-- **Grok 4.1 Fast** — Fast model for auto-routing
-
-### Video Generation (Studio)
-
-Daemon includes a Studio page (`/studio`) for AI-powered media generation:
-
-- **Image Generation**: Create images from text prompts using xAI Imagine API
-- **Video Generation**: Generate videos (5s/10s/15s/20s/30s) from prompts
-- **Video Credits**: Prepaid credit system for video generation
-  - Free tier: Blocked
-  - Starter/Pro/Max: Enabled with credit purchase
-  - BYOK: Bypasses credits using your own `XAI_API_KEY`
-
-Configure video generation:
-```bash
-XAI_API_KEY=your-xai-key  # Required for video generation
-```
-
-See `/studio` in the web UI to access image and video generation tools.
 
 ## Status
 
-Active development. Core orchestration, multi-provider routing, OpenAI-compatible API, and Open WebUI integration are functional. Memory layer, subagent system, and video generation in progress.
+Cloud pipeline fully operational: FastAPI backend, Next.js frontend, PostgreSQL+pgvector memory, Redis+arq worker queue, typed SSE, subagent system, Studio/video, Council deliberation system, Skills loader, Fetch service, tiered model routing, and voice I/O.
+
+**Phase 3 (local pipeline)** is blocked on hardware (RTX 5090 acquisition). The `/local` flag is parsed but all local inference code is unimplemented.
+
+Open WebUI integration is **legacy/deprecated** — the custom Next.js frontend is the primary interface.
 
 ## License
 
-[Specify your license]
+This repository does not currently declare a license.

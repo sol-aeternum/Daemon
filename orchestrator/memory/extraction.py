@@ -145,8 +145,12 @@ Facts not starting with "User" will be rejected by validation.
 
 Role awareness:
 - Input contains [User] and [Assistant] markers.
-- Extract ONLY facts about the user — their identity, preferences, hardware, software, tools, relationships, dates, plans, goals, opinions, and context.
 - NEVER extract general knowledge, technical facts, or assistant-stated world knowledge.
+- From [User] messages: extract all facts about the user as normal.
+- From [Assistant] messages: extract ONLY statements that are explicitly about
+  the user — where the assistant references "you", "your", or the user by name.
+  Do NOT extract general knowledge, explanations, technical facts, or
+  recommendations from assistant messages, even if they are correct and useful.
 
 What to extract (non-exhaustive):
 - Identity: name, age, location, birthday, occupation, relationships
@@ -186,6 +190,12 @@ CRITICAL - Multi-turn durable facts (ALWAYS extract, even in tangential mentions
 - Example: "I want to try Tailscale for my homelab" -> "User wants to try Tailscale"
 - Example: "Going to use it for LLM inference" -> "User intends to use it for LLM inference"
 - Example: "I used Arch Linux before but now I'm on macOS" -> extract BOTH "User used Arch Linux before" AND "User is on macOS"
+
+CRITICAL - Project problems and maintenance needs (extract as durable context):
+- When a user describes a concrete problem, bug, or maintenance need in their project, extract it as durable project context if it is specific and likely to matter later.
+- Preserve the specific problem statement, not just the broader project fact.
+- Do NOT replace a specific project problem with only a generic project summary.
+- If a project problem statement contains both a maintenance/action need and a concrete broken behavior, extract BOTH as separate facts.
 
 Delta context:
 - Conversation context so far is for background only.
@@ -267,11 +277,29 @@ Confidence calibration:
 - "Oh by the way, my birthday is March 15th" -> confidence around 0.92, slot personal.birthday
 - Direct factual statements ("My name is Julian", "I live in Adelaide") -> around 0.90
 
-Do NOT extract:
-- [Assistant]: "The NVIDIA RTX 5090 can draw up to 600W." (general knowledge stated by assistant)
-- [Assistant]: "PostgreSQL uses MVCC." (assistant/domain knowledge)
-- [User]: "Hi" / "Thanks" / "What's the weather today?" (filler/ephemeral)
-- [User]: "The Eiffel Tower is in Paris." (general knowledge, not about user)
+Assistant extraction — EXTRACT these (explicitly about the user):
+- [Assistant]: "Your Hetzner server in Singapore is running a CPX32" → "User's Hetzner server is in Singapore running CPX32"
+- [Assistant]: "Based on your shellfish allergy, avoid the bisque" → "User has a shellfish allergy"
+- [Assistant]: "You mentioned your commute is 45 minutes" → "User's commute is 45 minutes"
+- [Assistant]: "Your project Daemon uses FastAPI and PostgreSQL" → "User's project Daemon uses FastAPI and PostgreSQL"
+
+Assistant extraction — SKIP these (general knowledge, not about the user):
+- [Assistant]: "The NVIDIA RTX 5090 can draw up to 600W." (general knowledge)
+- [Assistant]: "PostgreSQL uses MVCC for concurrency control." (technical explanation)
+- [Assistant]: "I'd recommend using TypeScript for this project." (recommendation — extract only if user confirms)
+- [Assistant]: "The Eiffel Tower was built in 1889." (world knowledge)
+- [Assistant]: "Here's how to configure nginx reverse proxy..." (instructional content)
+
+User messages — still SKIP these:
+- [User]: "Hi" / "ok" / "lol" / "thanks" (filler)
+- [User]: "What's the weather today?" (ephemeral query)
+- [User]: "The Eiffel Tower is in Paris." (general knowledge stated by user)
+
+Project problem preservation example (Scenario 4 - extract specific problem, not just project):
+- [User]: "For Daemon I need to fix the memory system — extracted memories aren't being promoted to active status properly." →
+  - "User needs to fix the memory system for Daemon"
+  - "User's extracted memories aren't being promoted to active status properly for Daemon"
+  - Extract BOTH the maintenance need and the broken behavior; do not stop after the first valid fact.
 
 Conversation context so far:
 {summary}

@@ -6,6 +6,7 @@
 - **Encountered during**: TODO 5 execution - Re-ingest LongMemEval with revised extraction
 - **Category**: config
 - **Blocked current task**: yes
+- **Seen again**: 2026-04-10 during selective-assistant-extraction Task 9 when `PYTHONPATH=. python tests/longmemeval/evaluate.py --limit 10` failed with `socket.gaierror: [Errno -2] Name or service not known` while resolving the configured Postgres host.
 - **What happened**: Database service not available in current environment. The ingestion script requires PostgreSQL at host `postgres:5432` but no database service is running or accessible from the current shell context.
 - **Evidence**: 
   - `socket.gaierror: [Errno -2] Name or service not known` when trying to connect to postgres:5432
@@ -227,6 +228,7 @@
 - **Encountered during**: F2 Code Quality Review rerun - build verification
 - **Category**: config
 - **Blocked current task**: no
+- **Seen again**: 2026-04-10 during selective-assistant-extraction Task 1 verification with `python -m py_compile orchestrator/memory/extraction.py`.
 - **What happened**: `uv run python -m compileall orchestrator tests` could not write bytecode because multiple `__pycache__` directories are not writable from the current shell.
 - **Evidence**:
   - `PermissionError: [Errno 13] Permission denied: 'orchestrator/__pycache__/__init__.cpython-314.pyc...'`

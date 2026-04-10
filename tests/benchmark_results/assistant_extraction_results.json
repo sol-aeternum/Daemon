@@ -1,0 +1,33 @@
+{
+  "date": "2026-04-10",
+  "change": "selective assistant extraction (you/your filter) + project-problem preservation guidance",
+  "extraction_model": "gpt-4o-mini",
+  "benchmark_runs": [
+    {
+      "run": 1,
+      "P": 1.0,
+      "R": 0.9,
+      "A": 0
+    },
+    {
+      "run": 2,
+      "P": 0.9677,
+      "R": 1.0,
+      "A": 0
+    },
+    {
+      "run": 3,
+      "P": 0.9667,
+      "R": 0.9667,
+      "A": 0
+    }
+  ],
+  "median": {
+    "P": 0.9677,
+    "R": 0.9667,
+    "A": 0
+  },
+  "ie_assistant_before": 0.804,
+  "ie_assistant_after": null,
+  "notes": "Backend and worker were restarted before the final benchmark set because the benchmark runs on the host shell but hits containerized services through localhost, and the worker does not auto-reload mounted code. After restart, Scenario 4 stabilized across isolated reruns at recall 1.00/1.00/1.00 and the specific fact `User's extracted memories aren't being promoted to active status properly for Daemon` was consistently extracted. Controlled assistant spot-check still produced only user-specific memories and did not extract assistant general knowledge, recommendations, or instructional content. Full restarted benchmark artifacts: tests/results/bench_20260410_172008.json, tests/results/bench_20260410_173417.json, tests/results/bench_20260410_175014.json. Aggregate gates passed: median precision 0.9677, median recall 0.9667, adversarial false positives 0, and no full run dropped below total precision 0.90. LongMemEval IE-assistant verification remains pending because `PYTHONPATH=. python tests/longmemeval/evaluate.py --limit 10` still fails with `socket.gaierror: [Errno -2] Name or service not known` while resolving the configured Postgres host. Scenario-level status versus baseline is mixed by individual run due variance (run 1 regressed on Scenario 1, runs 2-3 showed Scenario 6 precision/recall noise), but median scenario behavior no longer shows the original Scenario 4 regression that blocked the earlier review wave."
+}
