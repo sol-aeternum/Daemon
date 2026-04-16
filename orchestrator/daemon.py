@@ -22,16 +22,21 @@ from orchestrator.tools.completion import completion_with_tools
 _trust_module_imported = False
 _trust_signals_module = None
 
+
 def _lazy_import_trust_signals():
     global _trust_module_imported, _trust_signals_module
     if not _trust_module_imported:
         try:
             import importlib
-            _trust_signals_module = importlib.import_module("orchestrator.memory.trust_signals")
+
+            _trust_signals_module = importlib.import_module(
+                "orchestrator.memory.trust_signals"
+            )
         except ImportError:
             pass
         _trust_module_imported = True
     return _trust_signals_module
+
 
 logger = logging.getLogger(__name__)
 
@@ -821,6 +826,7 @@ async def stream_sse_chat(
                 if queue is not None:
                     try:
                         import time
+
                         await queue.enqueue_job(
                             "extract_memories",
                             str(user_id),
@@ -831,6 +837,32 @@ async def stream_sse_chat(
                     except Exception as extract_error:
                         logger.warning(
                             "Failed to enqueue memory extraction: %s", extract_error
+                        )
+
+                tool_call_count = len(persisted_tool_calls)
+                if (
+                    queue is not None
+                    and assistant_message_id is not None
+                    and tool_call_count >= 5
+                ):
+                    try:
+                        import time as time_module
+
+                        debounce_key = (
+                            f"skill_eval:{conversation_uuid}:{assistant_message_id}"
+                        )
+                        await queue.enqueue_job(
+                            "run_skill_evaluation_job",
+                            str(user_id),
+                            str(conversation_uuid),
+                            str(assistant_message_id),
+                            tool_call_count,
+                            _job_id=debounce_key,
+                            _defer_by=timedelta(seconds=30),
+                        )
+                    except Exception as skill_eval_error:
+                        logger.warning(
+                            "Failed to enqueue skill evaluation: %s", skill_eval_error
                         )
             except Exception as e:
                 logger.warning("Failed to persist final message: %s", e)

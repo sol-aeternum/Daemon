@@ -255,9 +255,46 @@ class Settings(BaseSettings):
     # ===== TITLE GENERATION =====
     title_model: str = "openrouter/openai/gpt-4o-mini"
 
+    # ===== BACKGROUND REASONING =====
+    # Model used for background reasoning tasks (e.g., contradiction detection)
+    background_reasoning_model: str = "openrouter/deepseek/deepseek-chat"
+
+    # ===== DREAMING =====
+    dreaming_enabled: bool = True
+    dream_schedule_hour: int = Field(default=3, ge=0, le=23)
+    dream_min_cluster_size: int = Field(default=5, ge=1)
+
+    # ===== RETRIEVAL LOGGING =====
+    # Force retrieval trajectory logging on for all retrieval calls.
+    # Automatically enabled when running LongMemEval benchmarks.
+    retrieval_logging_enabled: bool = False
+    # Additional debug flag: also enables verbose retrieval debug logging.
+    retrieval_logging_debug: bool = False
+
     # ===== MEMORY CONSOLIDATION =====
     consolidation_enabled: bool = True
     consolidation_interval_days: int = 7
+
+    # ===== SKILL CONSOLIDATION NUDGE =====
+    consolidation_nudge_enabled: bool = True
+    # Conversation interval that triggers consolidation nudge job per user
+    consolidation_nudge_conversation_interval: int = Field(
+        default=15,
+        ge=1,
+        description="Number of conversations between consolidation nudge runs per user",
+    )
+    # Stale threshold: autonomous skills not used for this many days are flagged
+    consolidation_nudge_stale_days: int = Field(
+        default=30,
+        ge=1,
+        description="Days of inactivity before an autonomous skill is considered stale",
+    )
+    # Minimum autonomous skills before consolidation nudge runs
+    consolidation_nudge_min_skills: int = Field(
+        default=3,
+        ge=1,
+        description="Minimum autonomous skills needed before consolidation nudge evaluates merge potential",
+    )
 
     def get_tier_config(self, tier: str | None = None) -> TierConfig:
         """Get model configuration for a specific tier.

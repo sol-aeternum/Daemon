@@ -182,7 +182,9 @@ class MemoryStore:
             pinned,
             title_locked,
             json.dumps(metadata_patch) if metadata_patch is not None else None,
-            json.dumps([str(m) for m in last_retrieved_memory_ids]) if last_retrieved_memory_ids else None,
+            json.dumps([str(m) for m in last_retrieved_memory_ids])
+            if last_retrieved_memory_ids
+            else None,
         )
         return dict(row) if row else None
 
@@ -826,8 +828,13 @@ class MemoryStore:
         include_local: bool = False,
         include_historical: bool = False,
         memory_slot: str | None = None,
+        include_dream_observations: bool = False,
+        source_conversation_ids: list[uuid.UUID] | None = None,
     ) -> list[dict[str, Any]]:
         embedding_str = _format_vector(query_embedding)
+        conversation_filter = [
+            str(value) for value in source_conversation_ids or []
+        ] or None
 
         if category:
             rows = await self._pool.fetch(
@@ -840,6 +847,8 @@ class MemoryStore:
                   AND tier != 'l0'
                   AND ($4::bool OR valid_to IS NULL)
                   AND ($5::bool OR local_only = FALSE)
+                  AND ($9::bool OR source_type != 'dream')
+                  AND ($10::uuid[] IS NULL OR source_conversation_id = ANY($10::uuid[]))
                   AND embedding IS NOT NULL
                   AND category = $6
                   AND ($8::text IS NULL OR memory_slot = $8)
@@ -855,6 +864,8 @@ class MemoryStore:
                 category,
                 limit,
                 memory_slot,
+                include_dream_observations,
+                conversation_filter,
             )
         else:
             rows = await self._pool.fetch(
@@ -867,6 +878,8 @@ class MemoryStore:
                   AND tier != 'l0'
                   AND ($4::bool OR valid_to IS NULL)
                   AND ($5::bool OR local_only = FALSE)
+                  AND ($8::bool OR source_type != 'dream')
+                  AND ($9::uuid[] IS NULL OR source_conversation_id = ANY($9::uuid[]))
                   AND embedding IS NOT NULL
                   AND ($7::text IS NULL OR memory_slot = $7)
                   AND 1 - (embedding <=> $2::vector) >= $3
@@ -880,6 +893,8 @@ class MemoryStore:
                 include_local,
                 limit,
                 memory_slot,
+                include_dream_observations,
+                conversation_filter,
             )
 
         results = []
@@ -899,6 +914,8 @@ class MemoryStore:
         include_local: bool = False,
         include_historical: bool = False,
         memory_slot: str | None = None,
+        include_dream_observations: bool = False,
+        source_conversation_ids: list[uuid.UUID] | None = None,
     ) -> list[dict[str, Any]]:
         """Search memories using BM25 full-text search.
 
@@ -907,6 +924,9 @@ class MemoryStore:
         """
         # By design: L0 memories are always injected, but they must remain
         # directly searchable via BM25 for explicit recall queries.
+        conversation_filter = [
+            str(value) for value in source_conversation_ids or []
+        ] or None
         if category:
             rows = await self._pool.fetch(
                 """
@@ -917,6 +937,8 @@ class MemoryStore:
                   AND status != 'deleted'
                   AND ($3::bool OR valid_to IS NULL)
                   AND ($4::bool OR local_only = FALSE)
+                  AND ($8::bool OR source_type != 'dream')
+                  AND ($9::uuid[] IS NULL OR source_conversation_id = ANY($9::uuid[]))
                   AND content_tsv IS NOT NULL
                   AND content_tsv @@ plainto_tsquery('english', $2)
                   AND category = $5
@@ -931,6 +953,8 @@ class MemoryStore:
                 category,
                 limit,
                 memory_slot,
+                include_dream_observations,
+                conversation_filter,
             )
         else:
             rows = await self._pool.fetch(
@@ -942,6 +966,8 @@ class MemoryStore:
                   AND status != 'deleted'
                   AND ($3::bool OR valid_to IS NULL)
                   AND ($4::bool OR local_only = FALSE)
+                  AND ($7::bool OR source_type != 'dream')
+                  AND ($8::uuid[] IS NULL OR source_conversation_id = ANY($8::uuid[]))
                   AND content_tsv IS NOT NULL
                   AND content_tsv @@ plainto_tsquery('english', $2)
                   AND ($5::text IS NULL OR memory_slot = $5)
@@ -954,6 +980,8 @@ class MemoryStore:
                 include_local,
                 memory_slot,
                 limit,
+                include_dream_observations,
+                conversation_filter,
             )
 
         results = []
@@ -974,6 +1002,7 @@ class MemoryStore:
         include_local: bool = True,
         limit: int = 100,
         source_types: list[str] | None = None,
+        include_dream_observations: bool = False,
     ) -> list[dict[str, Any]]:
         """Search memories by semantic similarity, filtered by source_type.
 
@@ -1003,6 +1032,7 @@ class MemoryStore:
             include_local=include_local,
             include_historical=include_historical,
             memory_slot=memory_slot,
+            include_dream_observations=include_dream_observations,
         )
         # Filter by source_types if provided
         if source_types:
@@ -1112,6 +1142,300 @@ class MemoryStore:
             results.append(d)
         return results
 
+    async def get_dream_candidate_memories(
+        self,
+        user_id: uuid.UUID,
+    ) -> list[dict[str, Any]]:
+        rows = await self._pool.fetch(
+            """
+            SELECT * FROM memories
+            WHERE user_id = $1
+              AND status = 'active'
+              AND valid_to IS NULL
+              AND tier = 'l1'
+              AND source_type != 'dream'
+              AND memory_slot IS NOT NULL
+            ORDER BY memory_slot ASC, created_at ASC
+            """,
+            user_id,
+        )
+        results = []
+        for row in rows:
+            item = dict(row)
+            item["content"] = self._enc.decrypt(item["content"])
+            results.append(item)
+        return results
+
+    async def get_users_with_dream_candidates(self) -> list[uuid.UUID]:
+        rows = await self._pool.fetch(
+            """
+            SELECT DISTINCT user_id
+            FROM memories
+            WHERE status = 'active'
+              AND valid_to IS NULL
+              AND tier = 'l1'
+              AND source_type != 'dream'
+              AND memory_slot IS NOT NULL
+            ORDER BY user_id
+            """
+        )
+        return [row["user_id"] for row in rows]
+
+    async def get_total_conversation_count(self, user_id: uuid.UUID) -> int:
+        """Get total conversation count for a user."""
+        row = await self._pool.fetchrow(
+            """
+            SELECT COUNT(*) as count
+            FROM conversations
+            WHERE user_id = $1
+            """,
+            user_id,
+        )
+        return row["count"] if row else 0
+
+    async def get_users_with_skill_candidates(
+        self, conversation_interval: int
+    ) -> list[uuid.UUID]:
+        """Get users who have enough conversations since last nudge to trigger consolidation."""
+        rows = await self._pool.fetch(
+            """
+            SELECT DISTINCT s.user_id
+            FROM skill_nudge_user_state s
+            JOIN (
+                SELECT user_id, COUNT(*) as total_count
+                FROM conversations
+                GROUP BY user_id
+            ) c ON c.user_id = s.user_id
+            WHERE (c.total_count - s.conversations_since_nudge) >= $1
+            ORDER BY s.user_id
+            """,
+            conversation_interval,
+        )
+        return [row["user_id"] for row in rows]
+
+    async def get_user_conversation_count_since_last_nudge(
+        self, user_id: uuid.UUID
+    ) -> int:
+        """Get conversations since last nudge by computing delta from total count."""
+        total = await self.get_total_conversation_count(user_id)
+        row = await self._pool.fetchrow(
+            """
+            SELECT conversations_since_nudge
+            FROM skill_nudge_user_state
+            WHERE user_id = $1
+            """,
+            user_id,
+        )
+        last_nudge_total = row["conversations_since_nudge"] if row else 0
+        return max(0, total - last_nudge_total)
+
+    async def record_consolidation_nudge_run(
+        self, user_id: uuid.UUID, conversation_count: int
+    ) -> None:
+        """Record that a consolidation nudge ran. conversation_count is the total at this moment."""
+        await self._pool.execute(
+            """
+            INSERT INTO skill_nudge_user_state (user_id, conversations_since_nudge, last_nudge_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (user_id) DO UPDATE SET
+                conversations_since_nudge = $2,
+                last_nudge_at = NOW()
+            """,
+            user_id,
+            conversation_count,
+        )
+
+    async def get_autonomous_skill_candidates(
+        self, min_skills: int
+    ) -> list[dict[str, Any]]:
+        rows = await self._pool.fetch(
+            """
+            SELECT
+                sp.skill_id,
+                sp.name,
+                sp.description,
+                sp.embedding,
+                sp.use_count,
+                sp.last_used_at,
+                sp.allow_autonomous_edit,
+                sp.source_type,
+                sp.enabled
+            FROM skill_projections sp
+            WHERE sp.source_type = 'autonomous'
+              AND sp.enabled = TRUE
+              AND sp.embedding IS NOT NULL
+            ORDER BY sp.use_count DESC
+            LIMIT $1
+            """,
+            min_skills * 3,
+        )
+        results = []
+        for row in rows:
+            results.append(
+                {
+                    "skill_id": row["skill_id"],
+                    "name": row["name"],
+                    "description": row["description"],
+                    "embedding": self._parse_vector(row["embedding"]),
+                    "use_count": row["use_count"],
+                    "last_used_at": row["last_used_at"],
+                    "allow_autonomous_edit": row["allow_autonomous_edit"],
+                    "source_type": row["source_type"],
+                    "enabled": row["enabled"],
+                }
+            )
+        return results
+
+    async def get_recent_memories_for_user(
+        self, user_id: uuid.UUID, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        rows = await self._pool.fetch(
+            """
+            SELECT id, content, status, created_at, tier
+            FROM memories
+            WHERE user_id = $1
+              AND status = 'active'
+              AND created_at > NOW() - INTERVAL '30 days'
+            ORDER BY created_at DESC
+            LIMIT $2
+            """,
+            user_id,
+            limit,
+        )
+        results = []
+        for row in rows:
+            results.append(
+                {
+                    "id": str(row["id"]),
+                    "content": self._enc.decrypt(row["content"])
+                    if row["content"]
+                    else "",
+                    "status": row["status"],
+                    "created_at": row["created_at"].isoformat()
+                    if row["created_at"]
+                    else None,
+                    "tier": row["tier"],
+                }
+            )
+        return results
+
+    def _parse_vector(self, value: Any) -> list[float] | None:
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return [float(x) for x in value]
+        return None
+
+    async def merge_autonomous_skills(
+        self,
+        kept_skill_id: str,
+        absorbed_skill_ids: list[str],
+        user_id: uuid.UUID,
+    ) -> None:
+        from orchestrator.skills_store import delete_skill, get_skill, update_skill
+        from orchestrator.skills_projection import SkillProjectionStore
+
+        kept_skill = get_skill(kept_skill_id)
+        absorbed_content_parts = [kept_skill.get("content", "")]
+
+        for absorbed_id in absorbed_skill_ids:
+            try:
+                absorbed_skill = get_skill(absorbed_id)
+                absorbed_content_parts.append(
+                    f"\n\n-- Merged from {absorbed_skill.get('name', absorbed_id)} --\n"
+                    f"{absorbed_skill.get('content', '')}"
+                )
+                delete_skill(absorbed_id)
+
+                projection_store = SkillProjectionStore(self._pool)
+                await projection_store.delete_projection(absorbed_id)
+            except Exception:
+                pass
+
+        merged_content = "\n".join(absorbed_content_parts)
+        update_skill(
+            kept_skill_id,
+            name=None,
+            description=None,
+            content=merged_content,
+            enabled=None,
+        )
+
+        projection_store = SkillProjectionStore(self._pool)
+        await projection_store.upsert_projection(
+            skill_id=kept_skill_id,
+            name=kept_skill.get("name", ""),
+            description=kept_skill.get("description", ""),
+            source_file_path=kept_skill.get("source_file_path", ""),
+            source_hash="",
+            enabled=True,
+            source_type="autonomous",
+        )
+
+        run_id = uuid.uuid4()
+        for absorbed_id in absorbed_skill_ids:
+            await self._pool.execute(
+                """
+                INSERT INTO skill_consolidation_log
+                    (user_id, run_id, action_type, skill_id, target_skill_id, reason, status)
+                VALUES ($1, $2, 'delete', $3, $4, 'merged', 'applied')
+                """,
+                user_id,
+                run_id,
+                absorbed_id,
+                kept_skill_id,
+            )
+
+        await self._pool.execute(
+            """
+            INSERT INTO skill_consolidation_log
+                (user_id, run_id, action_type, skill_id, reason, status, skill_name, skill_description)
+            VALUES ($1, $2, 'merge', $3, $4, 'applied', $5, $6)
+            """,
+            user_id,
+            run_id,
+            kept_skill_id,
+            f"merged {len(absorbed_skill_ids)} skill(s)",
+            kept_skill.get("name", ""),
+            kept_skill.get("description", ""),
+        )
+
+    async def log_consolidation_nudge_action(
+        self,
+        user_id: uuid.UUID,
+        run_id: uuid.UUID,
+        action_type: str,
+        skill_id: str | None,
+        target_skill_id: str | None,
+        reason: str,
+        similarity: float | None,
+        status: str,
+        skill_name: str | None = None,
+        skill_description: str | None = None,
+        skill_use_count: int | None = None,
+        skill_last_used_at: Any = None,
+    ) -> None:
+        await self._pool.execute(
+            """
+            INSERT INTO skill_consolidation_log
+                (user_id, run_id, action_type, skill_id, target_skill_id, reason,
+                 similarity, status, skill_name, skill_description, skill_use_count, skill_last_used_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            """,
+            user_id,
+            run_id,
+            action_type,
+            skill_id,
+            target_skill_id,
+            reason,
+            similarity,
+            status,
+            skill_name,
+            skill_description,
+            skill_use_count,
+            skill_last_used_at,
+        )
+
     # ------------------------------------------------------------------
     # Extraction log
     # ------------------------------------------------------------------
@@ -1160,6 +1484,438 @@ class MemoryStore:
             conversation_id,
         )
         return row["created_at"] if row else None
+
+    # ------------------------------------------------------------------
+    # Retrieval log operations
+    # ------------------------------------------------------------------
+
+    async def log_retrieval(
+        self,
+        user_id: uuid.UUID,
+        query_text: str,
+        query_embedding_model: str,
+        query_embedding: list[float] | None,
+        candidate_memory_ids: list[uuid.UUID],
+        candidate_scores: dict[str, Any],
+        selected_memory_ids: list[uuid.UUID],
+        l0_included: bool,
+        latency_ms: int,
+        *,
+        conversation_id: uuid.UUID | None = None,
+        retrieval_context: str | None = None,
+        retrieval_triggered_by: str | None = None,
+    ) -> dict[str, Any]:
+        embedding_str = _format_vector(query_embedding) if query_embedding else None
+        row = await self._pool.fetchrow(
+            """
+            INSERT INTO retrieval_log
+                (user_id, conversation_id, query_text, query_embedding_model, query_embedding,
+                 candidate_memory_ids, candidate_scores, selected_memory_ids, l0_included,
+                 latency_ms, retrieval_context, retrieval_triggered_by)
+            VALUES ($1, $2, $3, $4, $5::vector, $6::uuid[], $7::jsonb, $8::uuid[], $9, $10, $11, $12)
+            RETURNING *
+            """,
+            user_id,
+            conversation_id,
+            query_text,
+            query_embedding_model,
+            embedding_str,
+            [str(m) for m in candidate_memory_ids],
+            json.dumps(candidate_scores),
+            [str(m) for m in selected_memory_ids],
+            l0_included,
+            latency_ms,
+            retrieval_context,
+            retrieval_triggered_by,
+        )
+        return dict(row)
+
+    async def get_retrieval_logs(
+        self,
+        user_id: uuid.UUID,
+        *,
+        conversation_id: uuid.UUID | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        if conversation_id is not None:
+            rows = await self._pool.fetch(
+                """
+                SELECT * FROM retrieval_log
+                WHERE user_id = $1 AND conversation_id = $2
+                ORDER BY created_at DESC
+                LIMIT $3 OFFSET $4
+                """,
+                user_id,
+                conversation_id,
+                limit,
+                offset,
+            )
+        else:
+            rows = await self._pool.fetch(
+                """
+                SELECT * FROM retrieval_log
+                WHERE user_id = $1
+                ORDER BY created_at DESC
+                LIMIT $2 OFFSET $3
+                """,
+                user_id,
+                limit,
+                offset,
+            )
+        return [dict(r) for r in rows]
+
+    async def get_retrieval_log(
+        self,
+        log_id: uuid.UUID,
+    ) -> dict[str, Any] | None:
+        row = await self._pool.fetchrow(
+            "SELECT * FROM retrieval_log WHERE id = $1",
+            log_id,
+        )
+        return dict(row) if row else None
+
+    # ------------------------------------------------------------------
+    # Entity operations
+    # ------------------------------------------------------------------
+
+    async def insert_entity(
+        self,
+        user_id: uuid.UUID,
+        canonical_name: str,
+        lookup_key: str,
+        *,
+        aliases: list[str] | None = None,
+        alias_lookup_keys: list[str] | None = None,
+        source_memory_id: uuid.UUID | None = None,
+    ) -> dict[str, Any]:
+        encrypted_name = self._enc.encrypt(canonical_name)
+        encrypted_aliases = (
+            json.dumps(self._enc.encrypt(json.dumps(aliases or [])))
+            if aliases is not None
+            else None
+        )
+        row = await self._pool.fetchrow(
+            """
+            INSERT INTO entities
+                (user_id, canonical_name, lookup_key, aliases, alias_lookup_keys, source_memory_id)
+            VALUES ($1, $2, $3, $4::jsonb, $5, $6)
+            ON CONFLICT (user_id, lookup_key) DO UPDATE
+                SET aliases = EXCLUDED.aliases::jsonb,
+                    alias_lookup_keys = EXCLUDED.alias_lookup_keys,
+                    updated_at = NOW()
+            RETURNING *
+            """,
+            user_id,
+            encrypted_name,
+            lookup_key,
+            encrypted_aliases,
+            alias_lookup_keys or [],
+            source_memory_id,
+        )
+        result = dict(row)
+        result["canonical_name"] = self._enc.decrypt(result["canonical_name"])
+        if result.get("aliases") is not None:
+            result["aliases"] = json.loads(
+                self._enc.decrypt(json.loads(result["aliases"]))
+            )
+        return result
+
+    async def get_entity(
+        self,
+        entity_id: uuid.UUID,
+    ) -> dict[str, Any] | None:
+        row = await self._pool.fetchrow(
+            "SELECT * FROM entities WHERE id = $1",
+            entity_id,
+        )
+        if not row:
+            return None
+        result = dict(row)
+        result["canonical_name"] = self._enc.decrypt(result["canonical_name"])
+        if result.get("aliases") is not None:
+            result["aliases"] = json.loads(
+                self._enc.decrypt(json.loads(result["aliases"]))
+            )
+        return result
+
+    async def get_entity_by_lookup_key(
+        self,
+        user_id: uuid.UUID,
+        lookup_key: str,
+    ) -> dict[str, Any] | None:
+        row = await self._pool.fetchrow(
+            """
+            SELECT * FROM entities
+            WHERE user_id = $1 AND lookup_key = $2
+            """,
+            user_id,
+            lookup_key,
+        )
+        if not row:
+            return None
+        result = dict(row)
+        result["canonical_name"] = self._enc.decrypt(result["canonical_name"])
+        if result.get("aliases") is not None:
+            result["aliases"] = json.loads(
+                self._enc.decrypt(json.loads(result["aliases"]))
+            )
+        return result
+
+    async def get_entities_for_user(
+        self,
+        user_id: uuid.UUID,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        rows = await self._pool.fetch(
+            """
+            SELECT * FROM entities
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            LIMIT $2 OFFSET $3
+            """,
+            user_id,
+            limit,
+            offset,
+        )
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["canonical_name"] = self._enc.decrypt(d["canonical_name"])
+            if d.get("aliases") is not None:
+                d["aliases"] = json.loads(self._enc.decrypt(json.loads(d["aliases"])))
+            results.append(d)
+        return results
+
+    async def update_entity_aliases(
+        self,
+        entity_id: uuid.UUID,
+        aliases: list[str],
+        alias_lookup_keys: list[str],
+    ) -> dict[str, Any] | None:
+        encrypted_aliases = json.dumps(self._enc.encrypt(json.dumps(aliases)))
+        row = await self._pool.fetchrow(
+            """
+            UPDATE entities
+            SET aliases = $2::jsonb,
+                alias_lookup_keys = $3::text[],
+                updated_at = NOW()
+            WHERE id = $1
+            RETURNING *
+            """,
+            entity_id,
+            encrypted_aliases,
+            alias_lookup_keys,
+        )
+        if not row:
+            return None
+        result = dict(row)
+        result["canonical_name"] = self._enc.decrypt(result["canonical_name"])
+        if result.get("aliases") is not None:
+            result["aliases"] = json.loads(
+                self._enc.decrypt(json.loads(result["aliases"]))
+            )
+        return result
+
+    async def link_entity_to_memory(
+        self,
+        entity_id: uuid.UUID,
+        memory_id: uuid.UUID,
+    ) -> bool:
+        result = await self._pool.execute(
+            """
+            UPDATE entities
+            SET linked_memory_ids = (
+                SELECT ARRAY(SELECT DISTINCT elem
+                             FROM UNNEST(linked_memory_ids || ARRAY[$2]) AS elem)
+            ),
+                updated_at = NOW()
+            WHERE id = $1
+            """,
+            entity_id,
+            memory_id,
+        )
+        return result == "UPDATE 1"
+
+    async def get_entities_for_memory(
+        self,
+        memory_id: uuid.UUID,
+    ) -> list[dict[str, Any]]:
+        rows = await self._pool.fetch(
+            """
+            SELECT e.* FROM entities e
+            WHERE $1 = ANY(e.linked_memory_ids)
+            ORDER BY e.created_at DESC
+            """,
+            memory_id,
+        )
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["canonical_name"] = self._enc.decrypt(d["canonical_name"])
+            if d.get("aliases") is not None:
+                d["aliases"] = json.loads(self._enc.decrypt(d["aliases"]))
+            results.append(d)
+        return results
+
+    async def find_entities_by_alias(
+        self,
+        user_id: uuid.UUID,
+        alias_lookup_key: str,
+    ) -> list[dict[str, Any]]:
+        rows = await self._pool.fetch(
+            """
+            SELECT * FROM entities
+            WHERE user_id = $1 AND $2 = ANY(alias_lookup_keys)
+            ORDER BY created_at DESC
+            """,
+            user_id,
+            alias_lookup_key,
+        )
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["canonical_name"] = self._enc.decrypt(d["canonical_name"])
+            if d.get("aliases") is not None:
+                d["aliases"] = json.loads(self._enc.decrypt(json.loads(d["aliases"])))
+            results.append(d)
+        return results
+
+    # ------------------------------------------------------------------
+    # Dream log operations
+    # ------------------------------------------------------------------
+
+    async def log_dream_run(
+        self,
+        user_id: uuid.UUID,
+        status: str,
+        *,
+        eligible_families: list[str] | None = None,
+        skipped_families: list[str] | None = None,
+        families_processed: int = 0,
+        observations_created: int = 0,
+        observation_memory_ids: list[uuid.UUID] | None = None,
+        error_message: str | None = None,
+        run_completed_at: datetime | None = None,
+        model_used: str | None = None,
+    ) -> dict[str, Any]:
+        row = await self._pool.fetchrow(
+            """
+            INSERT INTO dream_log
+                (user_id, status, eligible_families, skipped_families, families_processed,
+                 observations_created, observation_memory_ids, error_message, run_completed_at, model_used)
+            VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6, $7::uuid[], $8, $9, $10)
+            RETURNING *
+            """,
+            user_id,
+            status,
+            json.dumps(eligible_families or []),
+            json.dumps(skipped_families or []),
+            families_processed,
+            observations_created,
+            [str(m) for m in (observation_memory_ids or [])],
+            error_message,
+            run_completed_at,
+            model_used,
+        )
+        return dict(row)
+
+    async def update_dream_run(
+        self,
+        run_id: uuid.UUID,
+        *,
+        status: str | None = None,
+        observations_created: int | None = None,
+        observation_memory_ids: list[uuid.UUID] | None = None,
+        skipped_families: list[str] | None = None,
+        error_message: str | None = None,
+        run_completed_at: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        row = await self._pool.fetchrow(
+            """
+            UPDATE dream_log
+            SET status = COALESCE($2, status),
+                observations_created = COALESCE($3, observations_created),
+                observation_memory_ids = COALESCE($4, observation_memory_ids),
+                skipped_families = COALESCE($5, skipped_families),
+                error_message = COALESCE($6, error_message),
+                run_completed_at = COALESCE($7, run_completed_at)
+            WHERE id = $1
+            RETURNING *
+            """,
+            run_id,
+            status,
+            observations_created,
+            [str(m) for m in observation_memory_ids]
+            if observation_memory_ids is not None
+            else None,
+            json.dumps(skipped_families) if skipped_families is not None else None,
+            error_message,
+            run_completed_at,
+        )
+        return dict(row) if row else None
+
+    async def get_dream_runs(
+        self,
+        user_id: uuid.UUID,
+        *,
+        status: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        if status is not None:
+            rows = await self._pool.fetch(
+                """
+                SELECT * FROM dream_log
+                WHERE user_id = $1 AND status = $2
+                ORDER BY run_started_at DESC
+                LIMIT $3 OFFSET $4
+                """,
+                user_id,
+                status,
+                limit,
+                offset,
+            )
+        else:
+            rows = await self._pool.fetch(
+                """
+                SELECT * FROM dream_log
+                WHERE user_id = $1
+                ORDER BY run_started_at DESC
+                LIMIT $2 OFFSET $3
+                """,
+                user_id,
+                limit,
+                offset,
+            )
+        return [dict(r) for r in rows]
+
+    async def get_latest_dream_run(
+        self,
+        user_id: uuid.UUID,
+    ) -> dict[str, Any] | None:
+        row = await self._pool.fetchrow(
+            """
+            SELECT * FROM dream_log
+            WHERE user_id = $1
+            ORDER BY run_started_at DESC
+            LIMIT 1
+            """,
+            user_id,
+        )
+        return dict(row) if row else None
+
+    async def get_dream_run(
+        self,
+        run_id: uuid.UUID,
+    ) -> dict[str, Any] | None:
+        row = await self._pool.fetchrow(
+            "SELECT * FROM dream_log WHERE id = $1",
+            run_id,
+        )
+        return dict(row) if row else None
 
     # ------------------------------------------------------------------
     # Bulk operations

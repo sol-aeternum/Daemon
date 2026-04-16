@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from orchestrator.memory.retrieval import retrieve_memories_for_text
 from orchestrator.memory.store import MemoryStore
 from orchestrator.memory.dedup import dedup_and_store, check_contradiction
 from orchestrator.memory.embedding import embed_query, embed_documents
@@ -72,14 +73,17 @@ class MemoryReadTool(Tool):
             return datetime.fromisoformat(normalized)
 
         if mode == "semantic":
+            normalized_slot = slot if isinstance(slot, str) and slot.strip() else None
             query_embedding = await embed_query(query)
-            memories = await self.store.search_memories(
+            memories = await retrieve_memories_for_text(
+                store=self.store,
+                query_text=query,
                 user_id=self.user_id,
                 query_embedding=query_embedding,
                 limit=limit,
                 include_local=True,
                 include_historical=history,
-                memory_slot=slot if isinstance(slot, str) and slot.strip() else None,
+                memory_slot=normalized_slot,
             )
         else:
             try:

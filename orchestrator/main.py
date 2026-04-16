@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-import json
+import asyncio
 import hashlib
 import importlib
+import json
 import logging
 import os
 import time
 import uuid
 
+import asyncpg
 import httpx
 import litellm
 from collections.abc import AsyncIterator
@@ -56,7 +58,10 @@ from orchestrator.routes import (
 )
 from orchestrator.models_cache import fetch_openrouter_models, get_fallback_model
 from orchestrator.model_router import select_model_tier
-from orchestrator.skills_store import build_enabled_skills_block
+from orchestrator.skills_store import build_skill_index
+from orchestrator.skills_projection import SkillProjectionStore
+from orchestrator.skills_sync import SkillSyncService
+from orchestrator.skills_upgrade import load_repo_contents, run_upgrade_sync
 
 
 from orchestrator.models import (
@@ -86,9 +91,49 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     state = await init_app_state(settings)
     app.state.app_state = state
     logger.info("AppState initialised")
+
+    if state.db_pool is not None:
+        asyncio.create_task(_backfill_skill_projections(state.db_pool))
+        asyncio.create_task(_sync_repo_skills(state.db_pool))
+
     yield
     await close_app_state(state)
     logger.info("AppState shut down")
+
+
+async def _backfill_skill_projections(db_pool: asyncpg.Pool) -> None:
+    try:
+        store = SkillProjectionStore(db_pool)
+        service = SkillSyncService(store)
+        results = await service.backfill_existing_skills()
+        successful = sum(1 for r in results if r.success)
+        logger.info(
+            "Skill projection backfill complete: %d/%d skills",
+            successful,
+            len(results),
+        )
+    except Exception:
+        logger.warning("Skill projection backfill failed", exc_info=True)
+
+
+async def _sync_repo_skills(db_pool: asyncpg.Pool) -> None:
+    try:
+        repo_contents = load_repo_contents()
+        if not repo_contents:
+            logger.debug("No repo skills found, skipping sync")
+            return
+        result = await run_upgrade_sync(db_pool, repo_contents)
+        logger.info(
+            "Repo skill sync complete: %d unchanged, %d silent, %d pending, %d insert, %d deprecated, %d errors",
+            result.total_unchanged,
+            result.total_silent_updates,
+            result.total_pending_updates,
+            result.total_inserts,
+            result.total_deprecated,
+            result.total_errors,
+        )
+    except Exception:
+        logger.warning("Repo skill sync failed", exc_info=True)
 
 
 app = FastAPI(title="daemon-orchestrator", lifespan=lifespan)
@@ -858,7 +903,9 @@ async def openai_chat_completions(
     ]
     system_prompt = system_prompts[-1] if system_prompts else DAEMON_SYSTEM_PROMPT
     try:
-        skills_block = build_enabled_skills_block()
+        app_state = request.app.state.app_state
+        db_pool = getattr(app_state, "db_pool", None)
+        skills_block = await build_skill_index(db_pool=db_pool)
     except Exception:
         logger.warning(
             "Skills injection failed, continuing without skills", exc_info=True
@@ -1006,7 +1053,7 @@ async def openai_chat_completions(
                                 pass
 
             final_content = "".join(content_parts)
-            
+
             # Fallback for mock mode: if no content was collected, use mock response
             if not final_content and settings.mock_llm:
                 final_content = "(mock) Mock response from Daemon"
@@ -1631,7 +1678,8 @@ async def chat(
 
     assembled_system_prompt = DAEMON_SYSTEM_PROMPT
     try:
-        skills_block = build_enabled_skills_block()
+        db_pool = getattr(app_state, "db_pool", None)
+        skills_block = await build_skill_index(db_pool=db_pool)
     except Exception:
         logger.warning(
             "Skills injection failed, continuing without skills", exc_info=True

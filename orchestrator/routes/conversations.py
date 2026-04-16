@@ -114,7 +114,7 @@ async def create_conversation(
             user_id = uuid.UUID(conversation.user_id.replace("user_", ""))
         except ValueError:
             user_id = DEFAULT_USER_ID
-    
+
     new_conv = await store.create_conversation(
         user_id=user_id,
         title=conversation.title or "New conversation",

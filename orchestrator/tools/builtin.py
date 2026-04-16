@@ -154,15 +154,21 @@ def create_default_registry(
         SpawnMultipleTool(db_pool=db_pool, trusted_spawn_context=trusted_spawn_context)
     )
 
+    from orchestrator.tools.skill_manage import SkillManageTool
+
+    registry.register(SkillManageTool(db_pool=db_pool))
+
     if memory_store and user_id:
         from orchestrator.memory.tools import MemoryReadTool, MemoryWriteTool
         from orchestrator.tools.memory_promote import MemoryPromoteTool
         from orchestrator.tools.memory_demote import MemoryDemoteTool
+        from orchestrator.tools.memory_reflect import MemoryReflectTool
 
         registry.register(MemoryReadTool(memory_store, user_id))
         if not disable_memory_write:
             registry.register(MemoryWriteTool(memory_store, user_id))
         registry.register(MemoryPromoteTool(memory_store, user_id))
         registry.register(MemoryDemoteTool(memory_store, user_id))
+        registry.register(MemoryReflectTool(memory_store, user_id))
 
     return registry

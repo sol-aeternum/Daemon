@@ -6,21 +6,27 @@ from typing import Any, cast
 
 from orchestrator.guardrails import strip_reasoning_fields_from_message
 from orchestrator.memory.embedding import embed_query
-from orchestrator.memory.retrieval import retrieve_memories
+from orchestrator.memory.retrieval import retrieve_memories_for_text
 from orchestrator.memory.store import MemoryStore
 
 # Dynamic import for trust signals to avoid circular imports
 _trust_signals = None
 
+
 def _lazy_import_trust_signals():
     global _trust_signals
     if _trust_signals is None:
         import importlib
+
         try:
-            _trust_signals = importlib.import_module("orchestrator.memory.trust_signals")
+            _trust_signals = importlib.import_module(
+                "orchestrator.memory.trust_signals"
+            )
         except ImportError:
             pass
     return _trust_signals
+
+
 from orchestrator.prompts import DAEMON_SYSTEM_PROMPT
 
 MAX_MEMORY_ITEMS = 5
@@ -172,6 +178,8 @@ async def build_memory_context(
     if not isinstance(user_id, uuid.UUID):
         return ""
 
+    include_local = str(conversation.get("pipeline") or "").strip().lower() == "local"
+
     l0_memories = await store.get_l0_memories(user_id)
     l0_block = _format_l0_block(l0_memories)
 
@@ -207,14 +215,15 @@ async def build_memory_context(
             query_embedding = await asyncio.wait_for(
                 embed_query(query_text), timeout=8.0
             )
-            retrieved = await retrieve_memories(
+            retrieved = await retrieve_memories_for_text(
                 store=store,
-                query_embedding=query_embedding,
                 query_text=query_text,
-                conversation_id=conversation_id,
+                user_id=user_id,
+                query_embedding=query_embedding,
                 limit=MAX_MEMORY_ITEMS,
+                include_local=include_local,
             )
-            
+
             # Record retrieved memory IDs for trust signal tracking
             if retrieved:
                 try:
@@ -228,7 +237,7 @@ async def build_memory_context(
                         )
                 except Exception:
                     pass  # Trust signals are best-effort
-                    
+
         except Exception:
             retrieved = []
 

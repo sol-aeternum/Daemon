@@ -18,12 +18,16 @@ logger = logging.getLogger(__name__)
 # Dynamic import for trust signals to avoid circular imports
 _trust_signals = None
 
+
 def _lazy_import_trust_signals():
     global _trust_signals
     if _trust_signals is None:
         import importlib
+
         try:
-            _trust_signals = importlib.import_module("orchestrator.memory.trust_signals")
+            _trust_signals = importlib.import_module(
+                "orchestrator.memory.trust_signals"
+            )
         except ImportError:
             pass
     return _trust_signals
@@ -145,7 +149,7 @@ async def check_contradiction(
     existing_content: str,
     new_content: str,
 ) -> tuple[bool, str]:
-    """Check if two facts contradict each other using kimi 2.5.
+    """Check if two facts contradict each other.
 
     Returns (contradiction_detected, explanation).
     Contradiction detection is ADVISORY - callers should proceed regardless.
@@ -153,9 +157,7 @@ async def check_contradiction(
     """
     try:
         response = await litellm.acompletion(
-            # Intentionally pinned here for stable contradiction judgments until
-            # this advisory helper gets a dedicated configurable model slot.
-            model="openrouter/moonshotai/kimi-k2.5",
+            model=get_settings().background_reasoning_model,
             messages=[
                 {
                     "role": "user",

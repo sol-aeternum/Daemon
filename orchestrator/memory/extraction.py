@@ -518,8 +518,13 @@ async def extract_facts_from_text(
 
 async def process_extraction(
     store: MemoryStore, user_id: uuid.UUID, conversation_id: uuid.UUID, text: str
-) -> bool:
-    """Orchestrate extraction -> dedup -> insert."""
+) -> tuple[bool, list[dict[str, Any]]]:
+    """Orchestrate extraction -> dedup -> insert.
+
+    Returns:
+        Tuple of (success, new_memories) where new_memories is the list of
+        newly created memory dicts from deduplication.
+    """
     from orchestrator.memory.dedup import deduplicate_facts
 
     conversation = await store.get_conversation(conversation_id)
@@ -554,7 +559,7 @@ async def process_extraction(
             outcome = retry_outcome
 
     if not outcome.facts:
-        return True
+        return True, []
 
     result = await deduplicate_facts(
         store,
@@ -590,7 +595,6 @@ async def process_extraction(
         model_used=model,
     )
 
-    # Trigger summary update after successful extraction (best-effort)
     try:
         import importlib
 
@@ -600,7 +604,6 @@ async def process_extraction(
         )
         await generate_or_update_summary(conversation_id, store)
     except Exception:
-        # Summary generation is best-effort; don't fail extraction if it fails
         pass
 
-    return True
+    return True, result.new

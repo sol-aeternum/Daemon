@@ -1,11 +1,11 @@
 """Memory API routes."""
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Header
 from pydantic import BaseModel
 import uuid
 from typing import Any, Literal
 
-from orchestrator.config import get_settings
+from orchestrator.config import get_settings, Settings
 from orchestrator.db import get_app_state, AppState
 from orchestrator.memory.embedding import embed_documents
 
@@ -46,6 +46,18 @@ class MemoryReembedRequest(BaseModel):
     ] = "active"
     memory_ids: list[uuid.UUID] | None = None
     batch_size: int = 50
+
+
+def require_admin_api_key(settings: Settings, authorization: str | None) -> None:
+    if not settings.daemon_admin_api_key:
+        raise HTTPException(
+            status_code=403, detail="Admin dreaming trigger is disabled"
+        )
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    token = authorization.removeprefix("Bearer ").strip()
+    if token != settings.daemon_admin_api_key:
+        raise HTTPException(status_code=403, detail="Invalid admin bearer token")
 
 
 @router.get("")
@@ -280,6 +292,10 @@ class ConsolidateRequest(BaseModel):
     user_id: uuid.UUID | None = None
 
 
+class DreamRequest(BaseModel):
+    user_id: uuid.UUID | None = None
+
+
 @router.post("/consolidate")
 async def consolidate_memories_endpoint(
     data: ConsolidateRequest | None = None,
@@ -299,7 +315,7 @@ async def consolidate_memories_endpoint(
     if app_state.redis is None:
         raise HTTPException(
             status_code=503,
-            detail="Redis unavailable - cannot enqueue consolidation job"
+            detail="Redis unavailable - cannot enqueue consolidation job",
         )
 
     target_user_id = data.user_id if data else None
@@ -316,7 +332,7 @@ async def consolidate_memories_endpoint(
         if job is None:
             raise HTTPException(
                 status_code=500,
-                detail="Failed to enqueue consolidation job: returned None"
+                detail="Failed to enqueue consolidation job: returned None",
             )
 
         return {
@@ -328,6 +344,49 @@ async def consolidate_memories_endpoint(
         raise
     except Exception as e:
         raise HTTPException(
+            status_code=500, detail=f"Failed to enqueue consolidation job: {e}"
+        )
+
+
+@router.post("/dream")
+async def dream_memories_endpoint(
+    data: DreamRequest | None = None,
+    app_state: AppState = Depends(get_app_state),
+    settings: Settings = Depends(get_settings),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    """Admin/debug endpoint to enqueue a dreaming run for one user or all users."""
+    require_admin_api_key(settings, authorization)
+
+    if app_state.redis is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Redis unavailable - cannot enqueue dreaming job",
+        )
+
+    target_user_id = data.user_id if data else None
+
+    try:
+        job = await app_state.redis.enqueue_job(
+            "run_dreaming_job",
+            str(target_user_id) if target_user_id else None,
+            _job_id=f"dream:{target_user_id or 'all'}:{uuid.uuid4().hex[:8]}",
+        )
+        if job is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to enqueue dreaming job: returned None",
+            )
+
+        return {
+            "status": "enqueued",
+            "job_id": job.job_id,
+            "user_id": str(target_user_id) if target_user_id else "all",
+        }
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(
             status_code=500,
-            detail=f"Failed to enqueue consolidation job: {e}"
+            detail=f"Failed to enqueue dreaming job: {error}",
         )

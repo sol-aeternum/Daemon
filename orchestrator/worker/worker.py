@@ -16,14 +16,19 @@ from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
 
 from orchestrator.worker.jobs import (
+    cleanup_generated_files,
     cleanup_generated_images,
     consolidate_memories,
     extract_memories,
     garbage_collect,
     generate_conversation_title_job,
-    generate_summary_job,
     generate_title,
-    cleanup_generated_files,
+    generate_summary_job,
+    resolve_entities_job,
+    run_consolidation_nudge_job,
+    run_dreaming_job,
+    run_scheduled_dreaming_job,
+    run_skill_evaluation_job,
 )
 from orchestrator.worker.settings import WorkerSettings
 
@@ -78,7 +83,9 @@ if _worker_settings.consolidation_enabled:
                 minute=0,
             )
         )
-        logger.info(f"Memory consolidation scheduled: daily at 2 AM UTC (interval={interval} days)")
+        logger.info(
+            f"Memory consolidation scheduled: daily at 2 AM UTC (interval={interval} days)"
+        )
     elif interval == 7:
         # Weekly at 2 AM UTC on Sundays
         cron_jobs.append(
@@ -89,7 +96,9 @@ if _worker_settings.consolidation_enabled:
                 weekday=6,  # Sunday (arq: 0=Monday, 6=Sunday)
             )
         )
-        logger.info(f"Memory consolidation scheduled: weekly on Sunday at 2 AM UTC (interval={interval} days)")
+        logger.info(
+            f"Memory consolidation scheduled: weekly on Sunday at 2 AM UTC (interval={interval} days)"
+        )
     else:
         # For other values, use daily with a warning
         cron_jobs.append(
@@ -105,6 +114,30 @@ if _worker_settings.consolidation_enabled:
             f"Using daily as best-effort fallback."
         )
 
+if _worker_settings.dreaming_enabled:
+    cron_jobs.append(
+        cron(
+            run_scheduled_dreaming_job,
+            minute=0,
+        )
+    )
+    logger.info(
+        "Dreaming scheduled: hourly sweep; users run when their configured local hour matches %s:00 (fallback: server schedule when no timezone is stored)",
+        _worker_settings.dream_schedule_hour,
+    )
+
+if _worker_settings.consolidation_nudge_enabled:
+    cron_jobs.append(
+        cron(
+            run_consolidation_nudge_job,
+            minute=0,
+        )
+    )
+    logger.info(
+        "Skill consolidation nudge scheduled: hourly sweep to process users who have exceeded %s conversations since last nudge",
+        _worker_settings.consolidation_nudge_conversation_interval,
+    )
+
 worker = Worker(
     functions=[
         func(extract_memories, max_tries=_worker_settings.retry_attempts),
@@ -117,6 +150,11 @@ worker = Worker(
         func(cleanup_generated_files, max_tries=_worker_settings.retry_attempts),
         func(cleanup_generated_images, max_tries=_worker_settings.retry_attempts),
         func(consolidate_memories, max_tries=_worker_settings.retry_attempts),
+        func(run_dreaming_job, max_tries=_worker_settings.retry_attempts),
+        func(run_scheduled_dreaming_job, max_tries=_worker_settings.retry_attempts),
+        func(resolve_entities_job, max_tries=_worker_settings.retry_attempts),
+        func(run_skill_evaluation_job, max_tries=_worker_settings.retry_attempts),
+        func(run_consolidation_nudge_job, max_tries=_worker_settings.retry_attempts),
     ],
     redis_settings=RedisSettings.from_dsn(_worker_settings.redis_url),
     on_startup=on_startup,

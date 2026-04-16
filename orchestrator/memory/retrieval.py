@@ -3,9 +3,16 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import time
 import uuid
 from typing import cast
 
+from orchestrator.config import get_settings
+from orchestrator.memory.embedding import embed_query
+from orchestrator.memory.entities import (
+    _normalize_lookup_key,
+    extract_candidates_baseline,
+)
 from orchestrator.memory.store import MemoryStore
 
 logger = logging.getLogger(__name__)
@@ -13,6 +20,18 @@ logger = logging.getLogger(__name__)
 MAX_RETURNED_MEMORIES = 5
 INITIAL_VECTOR_CANDIDATES = 10
 MIN_FINAL_SCORE = 0.15
+MAX_LOGGED_CONTENT_CHARS = 120
+
+
+def _is_retrieval_logging_enabled(explicit_flag: bool) -> bool:
+    if explicit_flag:
+        return True
+    try:
+        settings = get_settings()
+        return settings.retrieval_logging_enabled or settings.retrieval_logging_debug
+    except Exception:
+        return False
+
 
 # Empirical hybrid-search calibration:
 # - keep vector similarity as the primary signal so the existing vector-only path
@@ -36,6 +55,26 @@ def _as_float(value: object, default: float) -> float:
     if isinstance(value, int | float):
         return float(value)
     return default
+
+
+def _normalize_query_text(query_text: str | None) -> str:
+    return " ".join(str(query_text or "").split())
+
+
+def _normalize_memory_slot(memory_slot: str | None) -> str | None:
+    if not isinstance(memory_slot, str):
+        return None
+    normalized = memory_slot.strip()
+    return normalized or None
+
+
+def _truncate_for_log(value: object, limit: int = MAX_LOGGED_CONTENT_CHARS) -> str:
+    text = _normalize_query_text(str(value or ""))
+    if len(text) <= limit:
+        return text
+    if limit <= 3:
+        return text[:limit]
+    return text[: limit - 3].rstrip() + "..."
 
 
 def _days_since_accessed(memory: dict[str, object]) -> float:
@@ -129,6 +168,275 @@ def _normalize_bm25_scores(candidates: list[dict[str, object]]) -> None:
             c["bm25_normalized"] = 0.0
 
 
+def _prepend_l0_memories(
+    l0_memories: list[dict[str, object]],
+    retrieved_memories: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    seen_ids: set[str] = set()
+    combined: list[dict[str, object]] = []
+
+    def add_memory(memory: dict[str, object], *, source: str) -> None:
+        memory_id = memory.get("id")
+        if memory_id is None:
+            return
+
+        memory_key = str(memory_id)
+        if not memory_key or memory_key in seen_ids:
+            return
+
+        entry = dict(memory)
+        entry.setdefault("source", source)
+        if source == "l0":
+            entry["final_score"] = float("inf")
+        combined.append(entry)
+        seen_ids.add(memory_key)
+
+    for memory in l0_memories:
+        add_memory(memory, source="l0")
+
+    for memory in retrieved_memories:
+        add_memory(memory, source=str(memory.get("source") or "hybrid"))
+
+    return combined
+
+
+def _log_retrieval_results(
+    *,
+    query_text: str | None,
+    ranked: list[dict[str, object]],
+    include_local: bool,
+    include_historical: bool,
+    memory_slot: str | None,
+) -> None:
+    logger.info(
+        "Memory retrieval query=%r returned=%d include_local=%s include_historical=%s slot=%s",
+        _truncate_for_log(query_text),
+        len(ranked),
+        include_local,
+        include_historical,
+        memory_slot,
+    )
+
+    for index, memory in enumerate(ranked, start=1):
+        logger.info(
+            "Memory retrieval #%d id=%s source=%s category=%s final=%.4f vector=%.4f bm25=%.4f content=%s",
+            index,
+            memory.get("id"),
+            memory.get("source"),
+            memory.get("category"),
+            _as_float(memory.get("final_score"), 0.0),
+            _as_float(
+                memory.get("vector_sim"), _as_float(memory.get("similarity"), 0.0)
+            ),
+            _as_float(memory.get("bm25_normalized"), 0.0),
+            _truncate_for_log(memory.get("content")),
+        )
+
+
+async def retrieve_memories_for_text(
+    store: MemoryStore,
+    query_text: str,
+    *,
+    user_id: uuid.UUID,
+    query_embedding: list[float] | None = None,
+    limit: int = 5,
+    include_local: bool = False,
+    include_historical: bool = False,
+    memory_slot: str | None = None,
+    include_l0: bool = False,
+    log_retrieval: bool = False,
+    retrieval_triggered_by: str | None = None,
+    allowed_source_conversation_ids: list[uuid.UUID] | None = None,
+    include_dream_observations: bool = False,
+) -> list[dict[str, object]]:
+    """Canonical text-query retrieval contract.
+
+    This is the shared path for prompt injection, memory_read/memory_reflect
+    style queries, and LongMemEval benchmark runs. Callers that already have an
+    embedding may pass it to preserve their existing timeout/error handling.
+    """
+
+    start_time = time.monotonic()
+    normalized_query = _normalize_query_text(query_text)
+    normalized_slot = _normalize_memory_slot(memory_slot)
+    effective_embedding = query_embedding
+    embedding_model_used: str | None = None
+
+    ranked: list[dict[str, object]] = []
+    if normalized_query:
+        if effective_embedding is None:
+            effective_embedding = await embed_query(normalized_query)
+        settings = get_settings()
+        embedding_model_used = settings.embedding_query_model
+        ranked = await retrieve_memories(
+            store=store,
+            query_embedding=effective_embedding,
+            query_text=query_text,  # Use original query for entity extraction
+            user_id=user_id,
+            limit=limit,
+            include_local=include_local,
+            include_historical=include_historical,
+            memory_slot=normalized_slot,
+            log_retrieval=_is_retrieval_logging_enabled(log_retrieval)
+            and not include_l0,
+            retrieval_triggered_by=retrieval_triggered_by,
+            retrieval_context="prompt_injection"
+            if retrieval_triggered_by is None
+            else None,
+            allowed_source_conversation_ids=allowed_source_conversation_ids,
+            include_dream_observations=include_dream_observations,
+        )
+
+    l0_included = False
+    if include_l0:
+        l0_memories = cast(
+            list[dict[str, object]], await store.get_l0_memories(user_id)
+        )
+        combined = _prepend_l0_memories(l0_memories, ranked)
+        l0_included = len(l0_memories) > 0
+
+        if (
+            _is_retrieval_logging_enabled(log_retrieval)
+            and normalized_query
+            and effective_embedding is not None
+        ):
+            end_time = time.monotonic()
+            latency_ms = int((end_time - start_time) * 1000)
+            candidate_scores: dict[str, object] = {}
+            for c in ranked:
+                mid = c.get("id")
+                if isinstance(mid, uuid.UUID):
+                    candidate_scores[str(mid)] = {
+                        "vector_sim": _as_float(c.get("vector_sim"), 0.0),
+                        "bm25_normalized": _as_float(c.get("bm25_normalized"), 0.0),
+                        "recency_boost": _as_float(c.get("recency_boost"), 0.0),
+                        "source_boost": _as_float(c.get("source_boost"), 0.0),
+                        "access_boost": _as_float(c.get("access_boost"), 0.0),
+                        "confidence": _as_float(c.get("confidence"), 1.0),
+                        "trust": _as_float(c.get("trust_score"), 0.5),
+                        "final_score": _as_float(c.get("final_score"), 0.0),
+                    }
+            selected_ids: list[uuid.UUID] = [
+                cast(uuid.UUID, m.get("id"))
+                for m in ranked
+                if isinstance(m.get("id"), uuid.UUID)
+            ]
+
+            async def _persist_l0_log() -> None:
+                try:
+                    await store.log_retrieval(
+                        user_id=user_id,
+                        query_text=normalized_query or "",
+                        query_embedding_model=embedding_model_used
+                        or get_settings().embedding_query_model,
+                        query_embedding=effective_embedding,
+                        candidate_memory_ids=[uuid.UUID(k) for k in candidate_scores],
+                        candidate_scores=candidate_scores,
+                        selected_memory_ids=selected_ids,
+                        l0_included=l0_included,
+                        latency_ms=latency_ms,
+                        retrieval_context="prompt_injection"
+                        if retrieval_triggered_by is None
+                        else None,
+                        retrieval_triggered_by=retrieval_triggered_by,
+                    )
+                except Exception:
+                    logger.exception("Failed to persist L0 retrieval log")
+
+            _ = asyncio.create_task(_persist_l0_log())
+
+        ranked = combined
+
+    return ranked
+
+
+async def _get_entity_expanded_candidates(
+    store: MemoryStore,
+    user_id: uuid.UUID,
+    query_text: str | None,
+    *,
+    include_local: bool = False,
+    allowed_source_conversation_ids: list[uuid.UUID] | None = None,
+) -> list[dict[str, object]]:
+    if not query_text or not user_id:
+        return []
+
+    try:
+        candidates = extract_candidates_baseline(query_text)
+    except Exception:
+        return []
+
+    if not candidates:
+        return []
+
+    entity_linked_memories: list[dict[str, object]] = []
+    seen_memory_ids: set[str] = set()
+    allowed_conversation_ids = (
+        {str(value) for value in allowed_source_conversation_ids}
+        if allowed_source_conversation_ids
+        else None
+    )
+
+    for candidate in candidates:
+        lookup_key = candidate.normalized_key
+        if lookup_key.startswith("@") or lookup_key.startswith("#"):
+            pass
+        else:
+            lookup_key = _normalize_lookup_key(candidate.text)
+
+        try:
+            entities_by_alias = await store.find_entities_by_alias(user_id, lookup_key)
+            entity_by_key = await store.get_entity_by_lookup_key(user_id, lookup_key)
+            entities: list[dict[str, object]] = list(entities_by_alias)
+            if entity_by_key and entity_by_key not in entities:
+                entities.append(entity_by_key)
+        except Exception:
+            continue
+
+        for entity in entities:
+            entity_id = entity.get("id")
+            if not entity_id:
+                continue
+
+            raw_linked = entity.get("linked_memory_ids")
+            if not isinstance(raw_linked, list):
+                continue
+            linked_memory_ids = raw_linked
+            for memory_id in linked_memory_ids:
+                memory_id_str = str(memory_id)
+                if memory_id_str in seen_memory_ids:
+                    continue
+                seen_memory_ids.add(memory_id_str)
+
+                try:
+                    memory = await store.get_memory(memory_id)
+                    if not memory or not memory.get("content"):
+                        continue
+                    # Mirror search_memories() eligibility contract:
+                    if memory.get("status") == "deleted":
+                        continue
+                    if memory.get("valid_to") is not None:
+                        continue
+                    if memory.get("source_type") == "dream":
+                        continue
+                    if memory.get("local_only") and not include_local:
+                        continue
+                    if allowed_conversation_ids is not None:
+                        source_conversation_id = memory.get("source_conversation_id")
+                        if (
+                            source_conversation_id is None
+                            or str(source_conversation_id)
+                            not in allowed_conversation_ids
+                        ):
+                            continue
+                    memory["source"] = "entity_linked"
+                    entity_linked_memories.append(memory)
+                except Exception:
+                    continue
+
+    return entity_linked_memories
+
+
 async def retrieve_memories(
     store: MemoryStore,
     query_embedding: list[float],
@@ -136,11 +444,28 @@ async def retrieve_memories(
     conversation_id: uuid.UUID | None = None,
     user_id: uuid.UUID | None = None,
     limit: int = 5,
+    include_local: bool | None = None,
+    include_historical: bool = False,
+    memory_slot: str | None = None,
+    log_retrieval: bool = False,
+    retrieval_triggered_by: str | None = None,
+    retrieval_context: str | None = None,
+    allowed_source_conversation_ids: list[uuid.UUID] | None = None,
+    include_dream_observations: bool = False,
 ) -> list[dict[str, object]]:
     if not query_embedding:
         return []
+    if (
+        allowed_source_conversation_ids is not None
+        and len(allowed_source_conversation_ids) == 0
+    ):
+        return []
 
-    include_local = False
+    start_time = time.monotonic()
+    effective_include_local = bool(include_local)
+    normalized_query = _normalize_query_text(query_text)
+    normalized_slot = _normalize_memory_slot(memory_slot)
+    effective_user_id: uuid.UUID | None = user_id
 
     if conversation_id is not None:
         conversation = await store.get_conversation(conversation_id)
@@ -155,36 +480,45 @@ async def retrieve_memories(
             logger.warning("Conversation %s has invalid user_id", conversation_id)
             return []
 
-        user_id = user_id_from_conv
+        effective_user_id = user_id_from_conv
         pipeline = str(conversation.get("pipeline") or "").strip().lower()
-        include_local = pipeline == "local"
+        if include_local is None:
+            effective_include_local = pipeline == "local"
 
-    if user_id is None:
+    if effective_user_id is None:
         logger.debug("No user_id provided for memory retrieval")
         return []
 
-    target_limit = max(1, min(limit, MAX_RETURNED_MEMORIES))
+    target_limit = max(1, limit)
     vector_limit = max(INITIAL_VECTOR_CANDIDATES, target_limit)
 
     vector_candidates = cast(
         list[dict[str, object]],
         await store.search_memories(
-            user_id=user_id,
+            user_id=effective_user_id,
             query_embedding=query_embedding,
             limit=vector_limit,
-            include_local=include_local,
+            include_local=effective_include_local,
+            include_historical=include_historical,
+            memory_slot=normalized_slot,
+            include_dream_observations=include_dream_observations,
+            source_conversation_ids=allowed_source_conversation_ids,
         ),
     )
 
     bm25_candidates: list[dict[str, object]] = []
-    if query_text:
+    if normalized_query:
         bm25_candidates = cast(
             list[dict[str, object]],
             await store.search_memories_bm25(
-                user_id=user_id,
-                query=query_text,
+                user_id=effective_user_id,
+                query=normalized_query,
                 limit=vector_limit,
-                include_local=include_local,
+                include_local=effective_include_local,
+                include_historical=include_historical,
+                memory_slot=normalized_slot,
+                include_dream_observations=include_dream_observations,
+                source_conversation_ids=allowed_source_conversation_ids,
             ),
         )
 
@@ -217,7 +551,39 @@ async def retrieve_memories(
 
     all_candidates = list(candidate_map.values())
 
+    # Entity expansion: runs even when vector/BM25 candidates are empty
+    # to support alias-only/entity-only queries that rely on entity-linked retrieval
+    if normalized_query and effective_user_id:
+        try:
+            entity_candidates = await _get_entity_expanded_candidates(
+                store,
+                effective_user_id,
+                query_text,  # Use original query (not normalized) for entity extraction
+                include_local=effective_include_local,
+                allowed_source_conversation_ids=allowed_source_conversation_ids,
+            )
+            for memory in entity_candidates:
+                memory_id = str(memory.get("id", ""))
+                if memory_id and memory_id not in candidate_map:
+                    entry = dict(memory)
+                    entry["vector_sim"] = _as_float(entry.get("similarity"), 0.0)
+                    entry["bm25_score"] = 0.0
+                    entry["bm25_normalized"] = 0.0
+                    candidate_map[memory_id] = entry
+            if entity_candidates:
+                all_candidates = list(candidate_map.values())
+        except Exception:
+            pass
+
     if not all_candidates:
+        if _is_retrieval_logging_enabled(log_retrieval):
+            _log_retrieval_results(
+                query_text=normalized_query,
+                ranked=[],
+                include_local=effective_include_local,
+                include_historical=include_historical,
+                memory_slot=normalized_slot,
+            )
         return []
 
     _normalize_bm25_scores(all_candidates)
@@ -259,6 +625,15 @@ async def retrieve_memories(
         reverse=True,
     )[:target_limit]
 
+    if _is_retrieval_logging_enabled(log_retrieval):
+        _log_retrieval_results(
+            query_text=normalized_query,
+            ranked=ranked,
+            include_local=effective_include_local,
+            include_historical=include_historical,
+            memory_slot=normalized_slot,
+        )
+
     memory_ids: list[uuid.UUID] = []
     for memory in ranked:
         memory_id = memory.get("id")
@@ -273,5 +648,51 @@ async def retrieve_memories(
                 logger.exception("Failed to update memory access timestamps")
 
         _ = asyncio.create_task(_touch())
+
+    if _is_retrieval_logging_enabled(log_retrieval):
+        latency_ms = int((time.monotonic() - start_time) * 1000)
+        settings = get_settings()
+        embedding_model = settings.embedding_query_model
+        candidate_scores: dict[str, object] = {}
+        for c in scored:
+            mid = c.get("id")
+            if isinstance(mid, uuid.UUID):
+                candidate_scores[str(mid)] = {
+                    "vector_sim": _as_float(c.get("vector_sim"), 0.0),
+                    "bm25_normalized": _as_float(c.get("bm25_normalized"), 0.0),
+                    "recency_boost": _as_float(c.get("recency_boost"), 0.0),
+                    "source_boost": _as_float(c.get("source_boost"), 0.0),
+                    "access_boost": _as_float(c.get("access_boost"), 0.0),
+                    "confidence": _as_float(c.get("confidence"), 1.0),
+                    "trust": _as_float(c.get("trust_score"), 0.5),
+                    "final_score": _as_float(c.get("final_score"), 0.0),
+                }
+        selected_ids: list[uuid.UUID] = [
+            cast(uuid.UUID, m.get("id"))
+            for m in ranked
+            if isinstance(m.get("id"), uuid.UUID)
+        ]
+        l0_included = any(m.get("source") == "l0" for m in ranked)
+
+        async def _persist_log() -> None:
+            try:
+                await store.log_retrieval(
+                    user_id=effective_user_id,
+                    query_text=normalized_query or "",
+                    query_embedding_model=embedding_model,
+                    query_embedding=query_embedding,
+                    candidate_memory_ids=[uuid.UUID(k) for k in candidate_scores],
+                    candidate_scores=candidate_scores,
+                    selected_memory_ids=selected_ids,
+                    l0_included=l0_included,
+                    latency_ms=latency_ms,
+                    conversation_id=conversation_id,
+                    retrieval_context=retrieval_context,
+                    retrieval_triggered_by=retrieval_triggered_by,
+                )
+            except Exception:
+                logger.exception("Failed to persist retrieval log")
+
+        _ = asyncio.create_task(_persist_log())
 
     return ranked
