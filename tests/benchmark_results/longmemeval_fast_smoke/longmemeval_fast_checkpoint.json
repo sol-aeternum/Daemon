@@ -1,0 +1,17 @@
+{
+  "dataset_path": "/tmp/longmemeval-review/data/longmemeval_s.json",
+  "results": [
+    {
+      "question_id": "e47becba",
+      "question": "What degree did I graduate with?",
+      "reference": "Business Administration",
+      "hypothesis": "",
+      "category": "IE-user",
+      "judgment": "incorrect",
+      "error": "could not determine data type of parameter $13",
+      "chunk_count": 0,
+      "session_count": 0,
+      "source_type": "import"
+    }
+  ]
+}

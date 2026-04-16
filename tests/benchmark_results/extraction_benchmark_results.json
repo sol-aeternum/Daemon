@@ -1,0 +1,63 @@
+{
+  "date": "2026-04-14",
+  "status": "COMPLETE — Fresh 3-run deterministic replay",
+  "benchmark": "extraction_benchmark",
+  "description": "Memory extraction benchmark (8 scenarios, v2.3) run 3 times via deterministic transcript replay harness. Guardrails: P>=0.90, R>=0.90, adversarial_fp=0.",
+  "extraction_model": "gpt-4o-mini",
+  "harness": "deterministic transcript replay (no /chat assistant generation contamination)",
+  "benchmark_runs": [
+    {
+      "run": 1,
+      "id": "bench_20260414_214436",
+      "date": "2026-04-14T21:44:36",
+      "P": 1.0,
+      "R": 1.0,
+      "A": 0,
+      "passed": true,
+      "notes": "Fresh run 1 - deterministic transcript replay"
+    },
+    {
+      "run": 2,
+      "id": "bench_20260414_214718",
+      "date": "2026-04-14T21:47:18",
+      "P": 1.0,
+      "R": 1.0,
+      "A": 0,
+      "passed": true,
+      "notes": "Fresh run 2 - deterministic transcript replay"
+    },
+    {
+      "run": 3,
+      "id": "bench_20260414_215000",
+      "date": "2026-04-14T21:50:00",
+      "P": 1.0,
+      "R": 1.0,
+      "A": 0,
+      "passed": true,
+      "notes": "Fresh run 3 - deterministic transcript replay"
+    }
+  ],
+  "median": {
+    "P": 1.0,
+    "R": 1.0,
+    "A": 0
+  },
+  "guardrails": {
+    "precision_threshold": 0.90,
+    "recall_threshold": 0.90,
+    "adversarial_fp_max": 0
+  },
+  "guardrail_status": {
+    "P_meets_threshold": true,
+    "R_meets_threshold": true,
+    "adversarial_fp_zero": true,
+    "overall_passes": true
+  },
+  "notes": [
+    "Fresh 3-run extraction regression pass completed using deterministic transcript replay harness",
+    "Deterministic replay removes /chat assistant generation contamination from benchmark results",
+    "All 3 runs show P=1.0, R=1.0, adversarial_fp=0 — perfect across all scenarios",
+    "S6 (Multi-Turn Session) achieves TP=7 FP=0 FN=0 in all 3 runs, vs historical runs where S6 was the weak point",
+    "Guardrails PASSED: P=1.0 >= 0.90, R=1.0 >= 0.90, adversarial_fp=0"
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "benchmark": "longmemeval",
+  "tier": 2,
+  "variant": "fast",
+  "status": "baseline",
+  "\u53d6\u4ee3": "slow",
+  "date": "2026-04-14",
+  "harness": "orchestrator.eval.longmemeval_fast",
+  "dataset": "longmemeval_s.json",
+  "question_count": 500,
+  "overall_accuracy": 0.811,
+  "category_accuracy": {
+    "MR": {
+      "accuracy": 0.8609022556390977,
+      "count": 133
+    },
+    "TR": {
+      "accuracy": 0.8458646616541353,
+      "count": 133
+    },
+    "KU": {
+      "accuracy": 0.7948717948717948,
+      "count": 78
+    },
+    "IE-assistant": {
+      "accuracy": 0.8214285714285714,
+      "count": 56
+    },
+    "IE-user": {
+      "accuracy": 0.7642857142857142,
+      "count": 70
+    },
+    "IE-preference": {
+      "accuracy": 0.5666666666666667,
+      "count": 30
+    }
+  },
+  "judgments": {
+    "correct": 311,
+    "partially_correct": 189,
+    "incorrect": 0
+  },
+  "retrieval_stats": {
+    "avg_memories_used": 4.81,
+    "avg_chunks": 331.74,
+    "avg_sessions": 47.708
+  },
+  "notes": [
+    "Trusted Tier 2 baseline replacing abandoned slow baseline path",
+    "Fast harness now uses an isolated per-run benchmark user to prevent shared-user cleanup races during direct memory import",
+    "The 11 previously tainted FK-failure questions were rerun cleanly under checkpoint resume and no error rows remain",
+    "IE-preference lowest at 0.567, MR highest at 0.861",
+    "Results stored in longmemeval_tier2_fast/ directory"
+  ],
+  "artifact_sources": {
+    "checkpoint": "longmemeval_tier2_fast/longmemeval_fast_checkpoint.json",
+    "results": "longmemeval_tier2_fast/longmemeval_fast_results.jsonl"
+  }
+}

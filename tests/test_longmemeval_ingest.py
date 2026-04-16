@@ -14,8 +14,11 @@ from tests.longmemeval.ingest import (
     TEST_USER_EMAIL,
     TEST_USER_ID,
     TEST_USER_NAME,
+    build_corpus_plan,
+    build_corpus_key,
     ensure_dataset,
     ingest_session,
+    normalize_session_messages,
     poll_extraction_complete,
 )
 
@@ -274,3 +277,59 @@ class TestConstants:
         assert TEST_USER_EMAIL == "longmemeval@daemon.test"
         assert TEST_USER_NAME == "longmemeval_test_user"
         assert TEST_USER_ID == uuid.UUID("12345678-1234-5678-1234-567812345678")
+
+
+class TestCorpusPlanning:
+    def test_normalize_session_messages_collapses_whitespace(self):
+        normalized_a = normalize_session_messages(
+            [{"role": "User", "content": "hello   world\n"}]
+        )
+        normalized_b = normalize_session_messages(
+            [{"role": "user", "content": "hello world"}]
+        )
+
+        assert normalized_a == normalized_b
+
+    def test_build_corpus_key_deduplicates_equal_session_content(self):
+        first = [{"role": "user", "content": "same session"}]
+        second = [{"role": "user", "content": "same   session"}]
+
+        assert build_corpus_key(first) == build_corpus_key(second)
+
+    def test_build_corpus_plan_reuses_duplicate_sessions_across_questions(self):
+        shared_session = [{"role": "user", "content": "shared fact"}]
+        unique_session = [{"role": "assistant", "content": "other fact"}]
+        dataset = [
+            {
+                "question_id": "q1",
+                "haystack_session_ids": ["session-a", "session-b"],
+                "haystack_sessions": [shared_session, unique_session],
+            },
+            {
+                "question_id": "q2",
+                "haystack_session_ids": ["session-c"],
+                "haystack_sessions": [[{"role": "user", "content": "shared   fact"}]],
+            },
+        ]
+
+        plan = build_corpus_plan(dataset)
+
+        assert plan.total_haystack_refs == 3
+        assert plan.unique_session_ids == 3
+        assert plan.unique_normalized_contents == 2
+        assert len(plan.corpus_sessions) == 2
+
+        shared_key = build_corpus_key(shared_session)
+        assert plan.question_corpus_refs["q1"] == (
+            shared_key,
+            build_corpus_key(unique_session),
+        )
+        assert plan.question_corpus_refs["q2"] == (shared_key,)
+
+        shared_entry = next(
+            session
+            for session in plan.corpus_sessions
+            if session.corpus_key == shared_key
+        )
+        assert shared_entry.canonical_session_id == "session-a"
+        assert shared_entry.raw_session_ids == ("session-a", "session-c")

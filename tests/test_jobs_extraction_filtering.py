@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from orchestrator.memory.extraction import messages_to_extraction_text
 from orchestrator.worker.jobs import _is_memory_write_artifact, extract_memories
 
 
@@ -59,6 +60,7 @@ async def test_extract_memories_filters_memory_write_artifacts() -> None:
     with patch(
         "orchestrator.worker.jobs.process_extraction", new_callable=AsyncMock
     ) as proc:
+        proc.return_value = (True, [])  # success, no new memories
         with patch("orchestrator.worker.jobs.MemoryStore", object):
             result = await extract_memories(
                 ctx, user_id, conversation_id, messages_json
@@ -70,5 +72,21 @@ async def test_extract_memories_filters_memory_write_artifacts() -> None:
     extracted_text = proc.await_args.kwargs["text"]
 
     assert "memory_write" not in extracted_text.lower()
-    assert "user: I live in Adelaide" in extracted_text
-    # Note: assistant content is no longer extracted when user messages exist
+    assert "[User]: I live in Adelaide" in extracted_text
+    assert "[Assistant]: Anything else?" in extracted_text
+
+
+def test_extraction_text_uses_bracketed_role_markers() -> None:
+    messages = [
+        {"role": "user", "content": "My name is Julian"},
+        {"role": "assistant", "content": "Nice to meet you, Julian!"},
+        {"role": "user", "content": "I'm building Daemon"},
+    ]
+    text = messages_to_extraction_text(messages)
+    assert "[User]:" in text
+    assert "[Assistant]:" in text
+    assert "user: " not in text
+    assert "assistant: " not in text
+    assert "My name is Julian" in text
+    assert "Nice to meet you, Julian!" in text
+    assert "I'm building Daemon" in text

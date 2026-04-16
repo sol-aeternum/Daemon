@@ -3,16 +3,24 @@
 Loads LongMemEval chat history sessions and feeds them through Daemon's
 message persistence + extraction pipeline. Each session becomes a Daemon
 conversation.
+
+Canonical benchmark/admin entrypoint:
+    python -m orchestrator.eval.longmemeval ingest --dataset /path/to/longmemeval_s.json
+
+This legacy script remains as a compatibility adapter for ingestion-specific
+fixtures and direct debugging.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import sys
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -31,6 +39,112 @@ TEST_USER_EMAIL = "longmemeval@daemon.test"
 TEST_USER_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class CorpusSession:
+    corpus_key: str
+    canonical_session_id: str
+    messages: list[dict[str, Any]]
+    raw_session_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CorpusPlan:
+    corpus_sessions: tuple[CorpusSession, ...]
+    question_corpus_refs: dict[str, tuple[str, ...]]
+    total_haystack_refs: int
+    unique_session_ids: int
+    unique_normalized_contents: int
+
+
+def normalize_question_id(entry: dict[str, Any], idx: int) -> str:
+    return str(entry.get("question_id", f"q{idx}"))
+
+
+def normalize_session_messages(messages: list[dict[str, Any]]) -> str:
+    normalized_messages: list[dict[str, str]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role", "user")).strip().lower() or "user"
+        content = " ".join(str(message.get("content", "")).split())
+        normalized_messages.append({"role": role, "content": content})
+    return json.dumps(normalized_messages, separators=(",", ":"), ensure_ascii=True)
+
+
+def build_corpus_key(messages: list[dict[str, Any]]) -> str:
+    normalized = normalize_session_messages(messages)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def build_corpus_plan(dataset: list[dict[str, Any]]) -> CorpusPlan:
+    corpus_sessions_by_key: dict[str, CorpusSession] = {}
+    session_ids_by_key: dict[str, list[str]] = {}
+    question_corpus_refs: dict[str, tuple[str, ...]] = {}
+    total_haystack_refs = 0
+    unique_session_ids: set[str] = set()
+
+    for entry_idx, entry in enumerate(dataset):
+        question_id = normalize_question_id(entry, entry_idx)
+        haystack_sessions = entry.get("haystack_sessions", [])
+        haystack_session_ids = entry.get("haystack_session_ids", [])
+        if not isinstance(haystack_sessions, list):
+            question_corpus_refs[question_id] = ()
+            continue
+
+        question_refs: list[str] = []
+        seen_question_refs: set[str] = set()
+        for sess_idx, session_messages in enumerate(haystack_sessions):
+            if not isinstance(session_messages, list):
+                continue
+            total_haystack_refs += 1
+            session_id = (
+                str(haystack_session_ids[sess_idx])
+                if sess_idx < len(haystack_session_ids)
+                else f"{question_id}_session_{sess_idx}"
+            )
+            unique_session_ids.add(session_id)
+            corpus_key = build_corpus_key(session_messages)
+
+            raw_ids = session_ids_by_key.setdefault(corpus_key, [])
+            if session_id not in raw_ids:
+                raw_ids.append(session_id)
+
+            if corpus_key not in corpus_sessions_by_key:
+                corpus_sessions_by_key[corpus_key] = CorpusSession(
+                    corpus_key=corpus_key,
+                    canonical_session_id=session_id,
+                    messages=session_messages,
+                    raw_session_ids=(session_id,),
+                )
+
+            if corpus_key not in seen_question_refs:
+                question_refs.append(corpus_key)
+                seen_question_refs.add(corpus_key)
+
+        question_corpus_refs[question_id] = tuple(question_refs)
+
+    corpus_sessions: list[CorpusSession] = []
+    for corpus_key, session in corpus_sessions_by_key.items():
+        corpus_sessions.append(
+            CorpusSession(
+                corpus_key=corpus_key,
+                canonical_session_id=session.canonical_session_id,
+                messages=session.messages,
+                raw_session_ids=tuple(
+                    session_ids_by_key.get(corpus_key, [session.canonical_session_id])
+                ),
+            )
+        )
+
+    return CorpusPlan(
+        corpus_sessions=tuple(corpus_sessions),
+        question_corpus_refs=question_corpus_refs,
+        total_haystack_refs=total_haystack_refs,
+        unique_session_ids=len(unique_session_ids),
+        unique_normalized_contents=len(corpus_sessions),
+    )
 
 
 async def ensure_dataset() -> list[dict[str, Any]]:
@@ -244,49 +358,52 @@ async def run_ingestion(
 
         results = []
         total_entries = len(dataset)
+        corpus_plan = build_corpus_plan(dataset)
 
-        logger.info(f"Starting ingestion of {total_entries} LongMemEval entries")
+        logger.info(
+            "Starting ingestion of %s LongMemEval entries (%s haystack refs, %s unique session ids, %s unique normalized sessions)",
+            total_entries,
+            corpus_plan.total_haystack_refs,
+            corpus_plan.unique_session_ids,
+            corpus_plan.unique_normalized_contents,
+        )
 
-        for entry_idx, entry in enumerate(dataset):
-            question_id = entry.get("question_id", f"unknown_{entry_idx}")
-            haystack_sessions = entry.get("haystack_sessions", [])
-
+        for session_index, corpus_session in enumerate(corpus_plan.corpus_sessions):
             logger.info(
-                f"[{entry_idx + 1}/{total_entries}] Processing entry {question_id} "
-                f"with {len(haystack_sessions)} sessions"
+                "[%s/%s] Processing corpus session %s (%s raw session ids)",
+                session_index + 1,
+                len(corpus_plan.corpus_sessions),
+                corpus_session.canonical_session_id,
+                len(corpus_session.raw_session_ids),
             )
 
-            for sess_idx, session_messages in enumerate(haystack_sessions):
-                if not isinstance(session_messages, list):
-                    continue
-
-                session_id = (
-                    entry.get("haystack_session_ids", [{}])[sess_idx]
-                    if sess_idx < len(entry.get("haystack_session_ids", []))
-                    else f"{question_id}_session_{sess_idx}"
+            try:
+                result = await ingest_session(
+                    store=store,
+                    pool=pool,
+                    user_id=test_user_id,
+                    session_id=corpus_session.canonical_session_id,
+                    messages=corpus_session.messages,
+                    session_index=session_index,
                 )
-
-                try:
-                    result = await ingest_session(
-                        store=store,
-                        pool=pool,
-                        user_id=test_user_id,
-                        session_id=session_id,
-                        messages=session_messages,
-                        session_index=entry_idx * 1000 + sess_idx,
-                    )
-                    results.append(result)
-                except Exception as e:
-                    logger.error(
-                        f"Failed to ingest session {sess_idx} of entry {question_id}: {e}"
-                    )
-                    results.append(
-                        {
-                            "session_id": session_id,
-                            "status": "error",
-                            "error": str(e),
-                        }
-                    )
+                result["corpus_key"] = corpus_session.corpus_key
+                result["raw_session_ids"] = list(corpus_session.raw_session_ids)
+                results.append(result)
+            except Exception as e:
+                logger.error(
+                    "Failed to ingest corpus session %s: %s",
+                    corpus_session.canonical_session_id,
+                    e,
+                )
+                results.append(
+                    {
+                        "corpus_key": corpus_session.corpus_key,
+                        "session_id": corpus_session.canonical_session_id,
+                        "raw_session_ids": list(corpus_session.raw_session_ids),
+                        "status": "error",
+                        "error": str(e),
+                    }
+                )
 
         successful = sum(1 for r in results if r.get("status") == "complete")
         failed = sum(
@@ -308,7 +425,10 @@ async def run_ingestion(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="LongMemEval dataset ingestion adapter"
+        description=(
+            "LongMemEval dataset ingestion adapter. For canonical benchmark runs, "
+            "prefer `python -m orchestrator.eval.longmemeval ingest --dataset ...`."
+        )
     )
     parser.add_argument(
         "--limit",

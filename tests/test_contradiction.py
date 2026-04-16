@@ -112,44 +112,78 @@ async def test_dedup_supersession_with_contradiction() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dedup_supersession_without_contradiction() -> None:
-    store = AsyncMock()
-    existing_id = uuid.uuid4()
-    store.search_memories.return_value = [
-        {
-            "id": existing_id,
-            "similarity": 0.80,
-            "content": "User drives a Tesla",
-            "memory_slot": "vehicle",
-            "valid_to": None,
-        }
-    ]
-    store.supersede_memory.return_value = {
-        "id": uuid.uuid4(),
-        "content": "User now drives a Tesla Model Y",
-        "memory_slot": "vehicle",
-        "valid_to": None,
-    }
+async def test_check_contradiction_uses_background_reasoning_model() -> None:
+    """Test that check_contradiction routes to BACKGROUND_REASONING_MODEL."""
+    mock_settings = Mock()
+    mock_settings.background_reasoning_model = "openrouter/deepseek/deepseek-chat"
 
     with (
-        patch(
-            "orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock
-        ) as embed,
+        patch("orchestrator.memory.dedup.get_settings", return_value=mock_settings),
         patch("orchestrator.memory.dedup.litellm.acompletion") as litellm_mock,
     ):
-        embed.return_value = [[0.01, 0.02]]
         litellm_mock.return_value = MockLitellmResponse("NO. The facts are consistent.")
-        result = await deduplicate_facts(
-            store,
-            uuid.uuid4(),
-            [_new_fact("User now drives a Tesla Model Y", "vehicle")],
-            conversation_id=uuid.uuid4(),
-        )
+        await check_contradiction("Fact A", "Fact B")
 
-    assert len(result.superseded) == 1
-    store.supersede_memory.assert_awaited_once()
-    call_kwargs = store.supersede_memory.await_args.kwargs
-    assert call_kwargs["metadata"] is None
+        litellm_mock.assert_awaited_once()
+        assert litellm_mock.await_args is not None
+        call_kwargs = litellm_mock.await_args.kwargs
+        assert call_kwargs["model"] == "openrouter/deepseek/deepseek-chat"
+
+
+@pytest.mark.asyncio
+async def test_check_contradiction_empty_model_string_passed_directly() -> None:
+    """Test that empty model string is passed through to LLM as-is."""
+    mock_settings = Mock()
+    mock_settings.background_reasoning_model = ""
+
+    with (
+        patch("orchestrator.memory.dedup.get_settings", return_value=mock_settings),
+        patch("orchestrator.memory.dedup.litellm.acompletion") as litellm_mock,
+    ):
+        litellm_mock.return_value = MockLitellmResponse("NO. The facts are consistent.")
+        await check_contradiction("Fact A", "Fact B")
+
+        litellm_mock.assert_awaited_once()
+        assert litellm_mock.await_args is not None
+        call_kwargs = litellm_mock.await_args.kwargs
+        assert call_kwargs["model"] == ""
+
+
+@pytest.mark.asyncio
+async def test_check_contradiction_whitespace_model_string_passed_directly() -> None:
+    """Test that whitespace-only model string is passed through to LLM as-is."""
+    mock_settings = Mock()
+    mock_settings.background_reasoning_model = "   "
+
+    with (
+        patch("orchestrator.memory.dedup.get_settings", return_value=mock_settings),
+        patch("orchestrator.memory.dedup.litellm.acompletion") as litellm_mock,
+    ):
+        litellm_mock.return_value = MockLitellmResponse("NO. The facts are consistent.")
+        await check_contradiction("Fact A", "Fact B")
+
+        litellm_mock.assert_awaited_once()
+        assert litellm_mock.await_args is not None
+        call_kwargs = litellm_mock.await_args.kwargs
+        assert call_kwargs["model"] == "   "
+
+
+@pytest.mark.asyncio
+async def test_check_contradiction_none_model_passed_directly() -> None:
+    """Test that None model string is passed through to LLM as-is."""
+    mock_settings = Mock()
+    mock_settings.background_reasoning_model = None
+
+    with (
+        patch("orchestrator.memory.dedup.get_settings", return_value=mock_settings),
+        patch("orchestrator.memory.dedup.litellm.acompletion") as litellm_mock,
+    ):
+        litellm_mock.side_effect = Exception("Model not found")
+        contradiction, explanation = await check_contradiction("Fact A", "Fact B")
+
+        litellm_mock.assert_awaited_once()
+        assert contradiction is False
+        assert explanation == ""
 
 
 @pytest.mark.asyncio

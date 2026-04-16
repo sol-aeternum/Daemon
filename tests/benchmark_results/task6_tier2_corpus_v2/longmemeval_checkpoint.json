@@ -1,0 +1,914 @@
+{
+  "version": 2,
+  "dataset_path": "/app/tests/benchmark_results/longmemeval_s.json",
+  "created_at": "2026-04-13T11:05:52+00:00",
+  "updated_at": "2026-04-13T12:01:26+00:00",
+  "phases": {
+    "ingest": {
+      "status": "running",
+      "started_at": "2026-04-13T11:05:52+00:00",
+      "updated_at": "2026-04-13T12:01:26+00:00",
+      "completed_count": 88,
+      "results": {
+        "f0b28bbb61f763cd01c08327ecb894f7b4128f71ef30aa5ff9453821d4d220c0": {
+          "session_id": "sharegpt_yywfIrx_0",
+          "conversation_id": "fe94e703-00e0-4502-8c7c-5eced062c062",
+          "message_count": 2,
+          "status": "extraction_timeout",
+          "corpus_key": "f0b28bbb61f763cd01c08327ecb894f7b4128f71ef30aa5ff9453821d4d220c0",
+          "raw_session_ids": [
+            "sharegpt_yywfIrx_0"
+          ]
+        },
+        "b309a7265c49a980b329dec15f6a57e1a2b33f1118ba8d13443badfb2418d9ce": {
+          "session_id": "85a1be56_1",
+          "conversation_id": "96215a5b-47ad-46cc-8f7d-8b027f66eac0",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "b309a7265c49a980b329dec15f6a57e1a2b33f1118ba8d13443badfb2418d9ce",
+          "raw_session_ids": [
+            "85a1be56_1"
+          ]
+        },
+        "33b3cbb2f3db4ac22b3c9596c2835dcc5e807a4c3d632d3e53434221627e8274": {
+          "session_id": "sharegpt_Jcy1CVN_0",
+          "conversation_id": "485e2af8-66e9-4fb9-96ec-09f0feefc7f9",
+          "message_count": 8,
+          "status": "extraction_timeout",
+          "corpus_key": "33b3cbb2f3db4ac22b3c9596c2835dcc5e807a4c3d632d3e53434221627e8274",
+          "raw_session_ids": [
+            "sharegpt_Jcy1CVN_0"
+          ]
+        },
+        "68d709c33fa2a0288cdd90a05e4ad7c499a20dde9a2ce108f8bb2424f42e579d": {
+          "session_id": "sharegpt_Cr2tc1f_0",
+          "conversation_id": "613fe70c-3d9e-4171-9142-f567081ff2eb",
+          "message_count": 8,
+          "status": "extraction_timeout",
+          "corpus_key": "68d709c33fa2a0288cdd90a05e4ad7c499a20dde9a2ce108f8bb2424f42e579d",
+          "raw_session_ids": [
+            "sharegpt_Cr2tc1f_0"
+          ]
+        },
+        "0c3af0b942f810b12b32c7484694ca9571bb30e6dbc924d9a6bb8f1f368e535e": {
+          "session_id": "sharegpt_DGTCD7D_0",
+          "conversation_id": "2398841d-fe1f-44e8-b2cd-caed89b14b53",
+          "message_count": 4,
+          "status": "extraction_timeout",
+          "corpus_key": "0c3af0b942f810b12b32c7484694ca9571bb30e6dbc924d9a6bb8f1f368e535e",
+          "raw_session_ids": [
+            "sharegpt_DGTCD7D_0"
+          ]
+        },
+        "360aa39a2f047030ff294aaff3b4ff23c90b8bd5a71ac7869e14864f14b66d9c": {
+          "session_id": "f6859b48_2",
+          "conversation_id": "a7b5b624-05e5-42e0-8841-ae74d1b2c0af",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "360aa39a2f047030ff294aaff3b4ff23c90b8bd5a71ac7869e14864f14b66d9c",
+          "raw_session_ids": [
+            "f6859b48_2"
+          ]
+        },
+        "4b4af2404134d7d4c7cb350b715dec9c4b9108382bd8e60f9f6dbed7caeaf90a": {
+          "session_id": "52c34859_1",
+          "conversation_id": "47f210ec-22fa-40bf-badf-b4a5a8e1ddd8",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "4b4af2404134d7d4c7cb350b715dec9c4b9108382bd8e60f9f6dbed7caeaf90a",
+          "raw_session_ids": [
+            "52c34859_1"
+          ]
+        },
+        "73e0feec608e281087021102fb11c0d80958fa181c42bc3610c936ea7c4d2958": {
+          "session_id": "ultrachat_231069",
+          "conversation_id": "c46d2e49-20c0-4271-9280-1c18641b71f7",
+          "message_count": 6,
+          "status": "extraction_timeout",
+          "corpus_key": "73e0feec608e281087021102fb11c0d80958fa181c42bc3610c936ea7c4d2958",
+          "raw_session_ids": [
+            "ultrachat_231069"
+          ]
+        },
+        "e69af9202007a23387156ffdc9e3c9882ab22708b3cb15c4f57755b7fc3905c9": {
+          "session_id": "sharegpt_qRdLQvN_7",
+          "conversation_id": "ecac7a61-7b8c-49c8-92f1-8eb087b999db",
+          "message_count": 9,
+          "status": "extraction_timeout",
+          "corpus_key": "e69af9202007a23387156ffdc9e3c9882ab22708b3cb15c4f57755b7fc3905c9",
+          "raw_session_ids": [
+            "sharegpt_qRdLQvN_7"
+          ]
+        },
+        "97a9739f265e86bdb2905c6cbe6ea4d92f191f88050592245fa610c5459e50bf": {
+          "session_id": "ultrachat_359984",
+          "conversation_id": "dd17eff0-92d6-42c0-bb4c-0e4a05622fd8",
+          "message_count": 6,
+          "status": "complete",
+          "corpus_key": "97a9739f265e86bdb2905c6cbe6ea4d92f191f88050592245fa610c5459e50bf",
+          "raw_session_ids": [
+            "ultrachat_359984"
+          ]
+        },
+        "376ab009b5e0e5abc102608983c8c3dd811c69189e3d08bcddb87aec951f1b34": {
+          "session_id": "sharegpt_8dJs7Ai_0",
+          "conversation_id": "2eaf16d3-f272-449a-bae9-b62da0bb1722",
+          "message_count": 16,
+          "status": "extraction_timeout",
+          "corpus_key": "376ab009b5e0e5abc102608983c8c3dd811c69189e3d08bcddb87aec951f1b34",
+          "raw_session_ids": [
+            "sharegpt_8dJs7Ai_0"
+          ]
+        },
+        "b8bb21e4b95ac389a79954b74cb7e420d8308bf06f8bbb0c2a611511cbeab0c7": {
+          "session_id": "c3cd646c_1",
+          "conversation_id": "0dc37a09-3386-44ff-94e5-c74cdf846176",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "b8bb21e4b95ac389a79954b74cb7e420d8308bf06f8bbb0c2a611511cbeab0c7",
+          "raw_session_ids": [
+            "c3cd646c_1"
+          ]
+        },
+        "28688968b1e3f8ea943155de1bf6e239993e3a69981679c550f77130d04f8f6e": {
+          "session_id": "4fd76316",
+          "conversation_id": "66bd574f-fc33-4e2d-b4f3-dfb6e90e6b62",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "28688968b1e3f8ea943155de1bf6e239993e3a69981679c550f77130d04f8f6e",
+          "raw_session_ids": [
+            "4fd76316",
+            "47ab10d2",
+            "78dc3b29"
+          ]
+        },
+        "8ec1002bf7e859a0bbbc63e147880de744feea5f5b2a402807461e58bb85d3bf": {
+          "session_id": "7045db85_1",
+          "conversation_id": "07ef397f-1396-4b09-82cd-74871e42de44",
+          "message_count": 12,
+          "status": "extraction_timeout",
+          "corpus_key": "8ec1002bf7e859a0bbbc63e147880de744feea5f5b2a402807461e58bb85d3bf",
+          "raw_session_ids": [
+            "7045db85_1"
+          ]
+        },
+        "b611f0a9e5b9852b461d31f38ed40133fe7701be8f22ee16e0577a96ff1444be": {
+          "session_id": "ultrachat_422229",
+          "conversation_id": "52836097-644c-417f-aaf2-278a1a2931b0",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "b611f0a9e5b9852b461d31f38ed40133fe7701be8f22ee16e0577a96ff1444be",
+          "raw_session_ids": [
+            "ultrachat_422229"
+          ]
+        },
+        "fb2e7a60855b869fb20852aeb20ec8d26afc19b1adc84234a80bdb0165062ad4": {
+          "session_id": "ultrachat_215809",
+          "conversation_id": "a63f5de3-f24b-4a22-aaa8-419cde63b040",
+          "message_count": 10,
+          "status": "complete",
+          "corpus_key": "fb2e7a60855b869fb20852aeb20ec8d26afc19b1adc84234a80bdb0165062ad4",
+          "raw_session_ids": [
+            "ultrachat_215809"
+          ]
+        },
+        "1b373ab91b33bb7e45c05ce7efb321361d73ed6eead141468cfbc3a8fabddb06": {
+          "session_id": "41abc171_4",
+          "conversation_id": "882bf3f5-ea68-41be-9653-2ecd633e3930",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "1b373ab91b33bb7e45c05ce7efb321361d73ed6eead141468cfbc3a8fabddb06",
+          "raw_session_ids": [
+            "41abc171_4"
+          ]
+        },
+        "f9759df84ae40d14ca64476009a08449784aa2a0cd5952d38c3b868b6597159e": {
+          "session_id": "5dac7cc2_1",
+          "conversation_id": "1bd88ec8-5781-45c7-8db9-502b15baefb0",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "f9759df84ae40d14ca64476009a08449784aa2a0cd5952d38c3b868b6597159e",
+          "raw_session_ids": [
+            "5dac7cc2_1"
+          ]
+        },
+        "b048fe902359fd16f5e3cca6013ec60e5865f762cb69d592ca4f5aae3d935161": {
+          "session_id": "sharegpt_rnG0ZuV_0",
+          "conversation_id": "1bfca00d-69fb-461f-975a-5d9ca701a927",
+          "message_count": 2,
+          "status": "complete",
+          "corpus_key": "b048fe902359fd16f5e3cca6013ec60e5865f762cb69d592ca4f5aae3d935161",
+          "raw_session_ids": [
+            "sharegpt_rnG0ZuV_0"
+          ]
+        },
+        "76fcc20bd7d49d4f2294c666dd6ceea06aa2a0f32f4d48499db9e82bfaa5cc21": {
+          "session_id": "3418b277_3",
+          "conversation_id": "bfeb0ebd-b4a0-4def-85b1-c44ef128deb8",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "76fcc20bd7d49d4f2294c666dd6ceea06aa2a0f32f4d48499db9e82bfaa5cc21",
+          "raw_session_ids": [
+            "3418b277_3"
+          ]
+        },
+        "67a4651c60791cbba218cb13550c3f3bc26a7e7297703027632d7f1360c7e16a": {
+          "session_id": "sharegpt_UnjngE7_65",
+          "conversation_id": "f50715cb-883d-4222-a0f3-487e591da93b",
+          "message_count": 15,
+          "status": "extraction_timeout",
+          "corpus_key": "67a4651c60791cbba218cb13550c3f3bc26a7e7297703027632d7f1360c7e16a",
+          "raw_session_ids": [
+            "sharegpt_UnjngE7_65"
+          ]
+        },
+        "e10fcdcfe6568977e98700a12eb9c15e517a960b39668e529c3bc42991761016": {
+          "session_id": "aae4411b_2",
+          "conversation_id": "1c3387f1-41f2-4748-b05b-67b96ae293ee",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "e10fcdcfe6568977e98700a12eb9c15e517a960b39668e529c3bc42991761016",
+          "raw_session_ids": [
+            "aae4411b_2"
+          ]
+        },
+        "843ee683329e2f0bfea5bce0aa5b94b255dde64aa249fd3bd7e5cac0c9d8f61a": {
+          "session_id": "2ae4f277_2",
+          "conversation_id": "cf583d16-ab19-4750-8211-4536c2319bd8",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "843ee683329e2f0bfea5bce0aa5b94b255dde64aa249fd3bd7e5cac0c9d8f61a",
+          "raw_session_ids": [
+            "2ae4f277_2"
+          ]
+        },
+        "9a3aab646ebe760a1d14bbffea4dc85cf25c03f0ec57bb1a4d2aa7eb0cc07fbe": {
+          "session_id": "sharegpt_jVow2vn_0",
+          "conversation_id": "fffdf78a-0a2c-47bb-b884-599bb5208efb",
+          "message_count": 2,
+          "status": "extraction_timeout",
+          "corpus_key": "9a3aab646ebe760a1d14bbffea4dc85cf25c03f0ec57bb1a4d2aa7eb0cc07fbe",
+          "raw_session_ids": [
+            "sharegpt_jVow2vn_0"
+          ]
+        },
+        "b703a4ad9027cc21d9f6c1ac8e1d33f5be60588a6ba79efd4d23c6e4044e56c7": {
+          "session_id": "ultrachat_45576",
+          "conversation_id": "8f05bfee-609a-4f10-8e4d-7597a67efdff",
+          "message_count": 14,
+          "status": "complete",
+          "corpus_key": "b703a4ad9027cc21d9f6c1ac8e1d33f5be60588a6ba79efd4d23c6e4044e56c7",
+          "raw_session_ids": [
+            "ultrachat_45576"
+          ]
+        },
+        "2494a147ba3cddf7a9dc895d5a889d2641e2bce07df9ec3f3f8dd1c972d427d8": {
+          "session_id": "ultrachat_530213",
+          "conversation_id": "1ef785f6-0c47-419f-9e6d-848ad94f193e",
+          "message_count": 8,
+          "status": "extraction_timeout",
+          "corpus_key": "2494a147ba3cddf7a9dc895d5a889d2641e2bce07df9ec3f3f8dd1c972d427d8",
+          "raw_session_ids": [
+            "ultrachat_530213"
+          ]
+        },
+        "620a48ecad946244cffa4ef13a06c1af29abed7b865b2e76ea41485193684a4c": {
+          "session_id": "47f00a5f",
+          "conversation_id": "9e8d309c-2839-448d-878d-9771e083a1b0",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "620a48ecad946244cffa4ef13a06c1af29abed7b865b2e76ea41485193684a4c",
+          "raw_session_ids": [
+            "47f00a5f"
+          ]
+        },
+        "68b47134c1996fec169969f075a25a4640e9b338eded0c97c639ffb7b6575712": {
+          "session_id": "978c0e70",
+          "conversation_id": "9ac192f0-981c-4620-9605-2005c3c1274c",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "68b47134c1996fec169969f075a25a4640e9b338eded0c97c639ffb7b6575712",
+          "raw_session_ids": [
+            "978c0e70"
+          ]
+        },
+        "d49ae78f43dae07b54d158543e385e2357280a605ad238c411cb721c01321c95": {
+          "session_id": "ultrachat_336116",
+          "conversation_id": "fe090e25-e661-4c90-87e0-412fa1c66c16",
+          "message_count": 14,
+          "status": "complete",
+          "corpus_key": "d49ae78f43dae07b54d158543e385e2357280a605ad238c411cb721c01321c95",
+          "raw_session_ids": [
+            "ultrachat_336116"
+          ]
+        },
+        "4e39fe6e4d12f16d146c8226f8c696ce9f133193fd265fa98e9db91ec92b4f48": {
+          "session_id": "sharegpt_T1EiHWI_13",
+          "conversation_id": "d673de83-d00b-4a7e-b660-03aa0c49e5af",
+          "message_count": 13,
+          "status": "extraction_timeout",
+          "corpus_key": "4e39fe6e4d12f16d146c8226f8c696ce9f133193fd265fa98e9db91ec92b4f48",
+          "raw_session_ids": [
+            "sharegpt_T1EiHWI_13"
+          ]
+        },
+        "7d2c0405841181efafaff71060ca7f59f618b65e80c6e32ebb1cc37afed41c66": {
+          "session_id": "3b3a77d9",
+          "conversation_id": "afc815b4-de2a-4481-83f3-65da7d238ca2",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "7d2c0405841181efafaff71060ca7f59f618b65e80c6e32ebb1cc37afed41c66",
+          "raw_session_ids": [
+            "3b3a77d9"
+          ]
+        },
+        "9848ef58783477d223a2d2dd2acb4a3958f9239e2f7d50da95ac1b2be355386e": {
+          "session_id": "a041cdd4_3",
+          "conversation_id": "5c565263-6fd6-41db-a4f6-b4c76be843c9",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "9848ef58783477d223a2d2dd2acb4a3958f9239e2f7d50da95ac1b2be355386e",
+          "raw_session_ids": [
+            "a041cdd4_3"
+          ]
+        },
+        "ee3ce5c8eb951fe6f4cbdf71f6d14e5fac9f3309dabc4f74d2caf5ec23830fc2": {
+          "session_id": "sharegpt_1L5GXZJ_0",
+          "conversation_id": "0e26103f-62d3-44d5-9fe8-1472af75508b",
+          "message_count": 2,
+          "status": "complete",
+          "corpus_key": "ee3ce5c8eb951fe6f4cbdf71f6d14e5fac9f3309dabc4f74d2caf5ec23830fc2",
+          "raw_session_ids": [
+            "sharegpt_1L5GXZJ_0"
+          ]
+        },
+        "49ac333ceaf51e3dad069ec7c4d69032064c4469919d666e567787958b928dea": {
+          "session_id": "ultrachat_574556",
+          "conversation_id": "9292aa81-f687-4010-a853-ce7a9452d5c2",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "49ac333ceaf51e3dad069ec7c4d69032064c4469919d666e567787958b928dea",
+          "raw_session_ids": [
+            "ultrachat_574556"
+          ]
+        },
+        "eb959f58a0050e6201feba164e5feb19239498b1d7e689e983e3e1d7939d91b9": {
+          "session_id": "sharegpt_gTknhGs_0",
+          "conversation_id": "5968aee0-024d-4405-b919-77bacfa74c3a",
+          "message_count": 4,
+          "status": "extraction_timeout",
+          "corpus_key": "eb959f58a0050e6201feba164e5feb19239498b1d7e689e983e3e1d7939d91b9",
+          "raw_session_ids": [
+            "sharegpt_gTknhGs_0"
+          ]
+        },
+        "e35d4bebadf0613a3792cfea1c52e5a2c0b3c9781ded168d64c0f9263f5330ad": {
+          "session_id": "d414cac5_4",
+          "conversation_id": "aec485f5-5113-4a3f-9fb7-fa40cbb4a461",
+          "message_count": 12,
+          "status": "extraction_timeout",
+          "corpus_key": "e35d4bebadf0613a3792cfea1c52e5a2c0b3c9781ded168d64c0f9263f5330ad",
+          "raw_session_ids": [
+            "d414cac5_4"
+          ]
+        },
+        "1361bc17ba10db177f33388e4e2d03b0a5757b90283c6e05a29493371e2fd007": {
+          "session_id": "ultrachat_214101",
+          "conversation_id": "3520798c-5a7f-4b7f-acfe-82e4a28a89b9",
+          "message_count": 12,
+          "status": "extraction_timeout",
+          "corpus_key": "1361bc17ba10db177f33388e4e2d03b0a5757b90283c6e05a29493371e2fd007",
+          "raw_session_ids": [
+            "ultrachat_214101"
+          ]
+        },
+        "64e289d5568367780c31f80183b2a87ef5e7f442e05b950b7c18617cc755837c": {
+          "session_id": "ultrachat_286075",
+          "conversation_id": "90dcc901-b2c5-4841-9e40-9c03fe5b3520",
+          "message_count": 12,
+          "status": "extraction_timeout",
+          "corpus_key": "64e289d5568367780c31f80183b2a87ef5e7f442e05b950b7c18617cc755837c",
+          "raw_session_ids": [
+            "ultrachat_286075"
+          ]
+        },
+        "66731e68cf04d13c7939df039cab5d836402cb5921b040dec5d5a6450d843d7d": {
+          "session_id": "ultrachat_57566",
+          "conversation_id": "335e0eb8-cb2d-4dc8-a96d-97780bb76b11",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "66731e68cf04d13c7939df039cab5d836402cb5921b040dec5d5a6450d843d7d",
+          "raw_session_ids": [
+            "ultrachat_57566"
+          ]
+        },
+        "f90d914499522acfc306ac2ea3b8826122522125c9db24a5c76240f98e71a27b": {
+          "session_id": "sharegpt_PdnvIns_0",
+          "conversation_id": "1001bf97-d7d1-4226-b6e7-873fad22bff2",
+          "message_count": 8,
+          "status": "extraction_timeout",
+          "corpus_key": "f90d914499522acfc306ac2ea3b8826122522125c9db24a5c76240f98e71a27b",
+          "raw_session_ids": [
+            "sharegpt_PdnvIns_0"
+          ]
+        },
+        "ca3a58c06dc8a8066644b24427ace76c9c0551eafead02db815687031e389c22": {
+          "session_id": "ultrachat_514031",
+          "conversation_id": "b51b9ac0-1265-431c-9e6b-3d1ad46cb40a",
+          "message_count": 14,
+          "status": "extraction_timeout",
+          "corpus_key": "ca3a58c06dc8a8066644b24427ace76c9c0551eafead02db815687031e389c22",
+          "raw_session_ids": [
+            "ultrachat_514031"
+          ]
+        },
+        "410a4e8802e9128d079d1ea78e9a218ddc935a7472c690589af9ffeeb7195461": {
+          "session_id": "ec6ca9ef",
+          "conversation_id": "22ad2cfb-caf2-4ff7-b394-d7abab79882b",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "410a4e8802e9128d079d1ea78e9a218ddc935a7472c690589af9ffeeb7195461",
+          "raw_session_ids": [
+            "ec6ca9ef"
+          ]
+        },
+        "387fbe3f389174c6bba98c919ad78840edb1f150aa40c016ef0fb0273738b860": {
+          "session_id": "d94b721b",
+          "conversation_id": "99cb69a4-83d7-46d0-917a-4249bd170fa5",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "387fbe3f389174c6bba98c919ad78840edb1f150aa40c016ef0fb0273738b860",
+          "raw_session_ids": [
+            "d94b721b"
+          ]
+        },
+        "d10c3dacf3f6f6193640d38fcf93c6064f5643242980a4457bcde8b8b59431a1": {
+          "session_id": "sharegpt_QZMeA7V_17",
+          "conversation_id": "2b700246-3c1e-4539-9931-660a686615f0",
+          "message_count": 11,
+          "status": "complete",
+          "corpus_key": "d10c3dacf3f6f6193640d38fcf93c6064f5643242980a4457bcde8b8b59431a1",
+          "raw_session_ids": [
+            "sharegpt_QZMeA7V_17"
+          ]
+        },
+        "f498baf774c9340afe2940d972fcc7cdf180962d7ad358692a74054268a7f56a": {
+          "session_id": "sharegpt_BvwQVCO_0",
+          "conversation_id": "049a83ad-a42d-4b74-94fe-9c305e2ded51",
+          "message_count": 2,
+          "status": "extraction_timeout",
+          "corpus_key": "f498baf774c9340afe2940d972fcc7cdf180962d7ad358692a74054268a7f56a",
+          "raw_session_ids": [
+            "sharegpt_BvwQVCO_0"
+          ]
+        },
+        "bd0097be5f80c7938849783d5d489efbecd196c4613cefed1a373c23f02f7d91": {
+          "session_id": "e348269f_1",
+          "conversation_id": "16f2be1f-516d-4321-b23b-afad7e1f01f2",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "bd0097be5f80c7938849783d5d489efbecd196c4613cefed1a373c23f02f7d91",
+          "raw_session_ids": [
+            "e348269f_1"
+          ]
+        },
+        "1990770692c87f828eda5fddecb285a55f8a1eb75d0ee688fa3e99ef3545e59f": {
+          "session_id": "0586f435_3",
+          "conversation_id": "f12abf60-a37b-4255-b96a-e7844da63aee",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "1990770692c87f828eda5fddecb285a55f8a1eb75d0ee688fa3e99ef3545e59f",
+          "raw_session_ids": [
+            "0586f435_3"
+          ]
+        },
+        "2503df6247bbc96916d309fd45b6dbc8abe9dad850a605b785d15de8136e28a7": {
+          "session_id": "ultrachat_458322",
+          "conversation_id": "6bd417cb-2b61-42b4-a23b-4ce0d4cf10f6",
+          "message_count": 14,
+          "status": "complete",
+          "corpus_key": "2503df6247bbc96916d309fd45b6dbc8abe9dad850a605b785d15de8136e28a7",
+          "raw_session_ids": [
+            "ultrachat_458322"
+          ]
+        },
+        "ffd174f1cd8197bd2f2f34c70ced62116f837e4b0aa16d1c36b7923e41a29c06": {
+          "session_id": "02bd2b90_3",
+          "conversation_id": "9ee3c70f-152f-468a-bda3-88ffa343d3fe",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "ffd174f1cd8197bd2f2f34c70ced62116f837e4b0aa16d1c36b7923e41a29c06",
+          "raw_session_ids": [
+            "02bd2b90_3"
+          ]
+        },
+        "ede6a7c205a64a369f7d3fad583e53dee349958e34d34be85178e8efd943957b": {
+          "session_id": "e27891d3_2",
+          "conversation_id": "fd2827c6-7378-4088-9055-d5eb2fedae09",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "ede6a7c205a64a369f7d3fad583e53dee349958e34d34be85178e8efd943957b",
+          "raw_session_ids": [
+            "e27891d3_2"
+          ]
+        },
+        "ba6ca032ca4e516eb28c0eb472fd0c224328ef86899c02b57865bc42fa1fe062": {
+          "session_id": "ultrachat_486410",
+          "conversation_id": "ae07cdcc-f93d-42cc-8bf8-f5c4d7485203",
+          "message_count": 10,
+          "status": "extraction_timeout",
+          "corpus_key": "ba6ca032ca4e516eb28c0eb472fd0c224328ef86899c02b57865bc42fa1fe062",
+          "raw_session_ids": [
+            "ultrachat_486410"
+          ]
+        },
+        "1322b689ea05e5d8c4bae348b9bb5dfc90a5f4cc87b1253aeae3d875b0a2297f": {
+          "session_id": "answer_280352e9",
+          "conversation_id": "98579daf-e5bf-4276-8503-a87aa610b17a",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "1322b689ea05e5d8c4bae348b9bb5dfc90a5f4cc87b1253aeae3d875b0a2297f",
+          "raw_session_ids": [
+            "answer_280352e9",
+            "280352e9"
+          ]
+        },
+        "f06e8692b08b297b3bddc6c3bea251260e440b3d8ddb243d5b93819fe835dc13": {
+          "session_id": "84503ce4_1",
+          "conversation_id": "2be21274-f43b-4ca7-be36-faf8a3118c90",
+          "message_count": 12,
+          "status": "extraction_timeout",
+          "corpus_key": "f06e8692b08b297b3bddc6c3bea251260e440b3d8ddb243d5b93819fe835dc13",
+          "raw_session_ids": [
+            "84503ce4_1"
+          ]
+        },
+        "10ed37e240f9c547b8b90b64c0d2570556f02367b36bb1b2544708a04a2ccb65": {
+          "session_id": "db73b7e4_4",
+          "conversation_id": "c2e82fa1-6f19-49a4-ad9f-057ec72888aa",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "10ed37e240f9c547b8b90b64c0d2570556f02367b36bb1b2544708a04a2ccb65",
+          "raw_session_ids": [
+            "db73b7e4_4"
+          ]
+        },
+        "65b0dbe21e8ec3bd6805eea60ade90aaee962152652d1fef58eb14cd04adeffd": {
+          "session_id": "sharegpt_5V5H2HN_0",
+          "conversation_id": "b0314790-775d-4d4c-838c-1b0925419b09",
+          "message_count": 10,
+          "status": "complete",
+          "corpus_key": "65b0dbe21e8ec3bd6805eea60ade90aaee962152652d1fef58eb14cd04adeffd",
+          "raw_session_ids": [
+            "sharegpt_5V5H2HN_0"
+          ]
+        },
+        "f57eed28876a19b41dd30a598290bdc973e8bb9f85de7a7c9ec5a5ea32eed67d": {
+          "session_id": "ultrachat_577747",
+          "conversation_id": "3692febd-3530-41bd-a7ab-31ae10edfeb9",
+          "message_count": 14,
+          "status": "complete",
+          "corpus_key": "f57eed28876a19b41dd30a598290bdc973e8bb9f85de7a7c9ec5a5ea32eed67d",
+          "raw_session_ids": [
+            "ultrachat_577747"
+          ]
+        },
+        "4accbc460edc4c78fe1d1e3138c2d65524595ff8c64b4dc770cdbdd216851c8e": {
+          "session_id": "f0fc84ea",
+          "conversation_id": "261f0ba3-bf7d-4d77-8185-0dd09ed95730",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "4accbc460edc4c78fe1d1e3138c2d65524595ff8c64b4dc770cdbdd216851c8e",
+          "raw_session_ids": [
+            "f0fc84ea"
+          ]
+        },
+        "743dc6c03967aabd0a4d7e006926b78ede3b86075bff99f2331b82c116133b01": {
+          "session_id": "a0b8b0ad_6",
+          "conversation_id": "4dafe467-4d53-4738-b6d8-5a5f077e5666",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "743dc6c03967aabd0a4d7e006926b78ede3b86075bff99f2331b82c116133b01",
+          "raw_session_ids": [
+            "a0b8b0ad_6"
+          ]
+        },
+        "faa4cc42a215ffbbd996af755444aefba9aa972d8ffc641619e7175454d091d9": {
+          "session_id": "ultrachat_311002",
+          "conversation_id": "94211bc4-c601-4236-994b-898f25772ccf",
+          "message_count": 8,
+          "status": "complete",
+          "corpus_key": "faa4cc42a215ffbbd996af755444aefba9aa972d8ffc641619e7175454d091d9",
+          "raw_session_ids": [
+            "ultrachat_311002"
+          ]
+        },
+        "591bc0d58820b3d8682941e7ca5b36592c73765aa96577594a255c506bfa3872": {
+          "session_id": "ultrachat_368854",
+          "conversation_id": "30e4870f-c899-4099-9e0b-e2becd973426",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "591bc0d58820b3d8682941e7ca5b36592c73765aa96577594a255c506bfa3872",
+          "raw_session_ids": [
+            "ultrachat_368854"
+          ]
+        },
+        "d5c7dee4753b7668f8be4642494d0d8116efeacb6465e6521a38e1419bf9d400": {
+          "session_id": "answer_40a90d51",
+          "conversation_id": "582971be-3755-4971-8771-b28a6d70ad69",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "d5c7dee4753b7668f8be4642494d0d8116efeacb6465e6521a38e1419bf9d400",
+          "raw_session_ids": [
+            "answer_40a90d51",
+            "40a90d51"
+          ]
+        },
+        "80c9e433194801a9735b6208fbdd86c9e1f397de430fd799008df6f2ece59b4e": {
+          "session_id": "0afa904a",
+          "conversation_id": "97a9fb8b-8e4e-4a5f-b948-1afa2c150c8f",
+          "message_count": 12,
+          "status": "extraction_timeout",
+          "corpus_key": "80c9e433194801a9735b6208fbdd86c9e1f397de430fd799008df6f2ece59b4e",
+          "raw_session_ids": [
+            "0afa904a"
+          ]
+        },
+        "d0e1d076f040467177484d4bee88f63d8af0e120a7c8b0176ec41341c64ab3dd": {
+          "session_id": "ultrachat_387144",
+          "conversation_id": "1015ba80-46e1-4f90-a5cc-2b90b909a37d",
+          "message_count": 14,
+          "status": "complete",
+          "corpus_key": "d0e1d076f040467177484d4bee88f63d8af0e120a7c8b0176ec41341c64ab3dd",
+          "raw_session_ids": [
+            "ultrachat_387144"
+          ]
+        },
+        "56a4d3296d3f5976a58db8e62cf1df4f122055bce9a9d8fb333c46704f6e703f": {
+          "session_id": "ultrachat_116883",
+          "conversation_id": "2d644c79-6475-43a7-88f3-895f7d189e7d",
+          "message_count": 6,
+          "status": "extraction_timeout",
+          "corpus_key": "56a4d3296d3f5976a58db8e62cf1df4f122055bce9a9d8fb333c46704f6e703f",
+          "raw_session_ids": [
+            "ultrachat_116883"
+          ]
+        },
+        "e59f2635dd980f124c7b12654f335e204f8bbe9842ad4da45c31ce5c6285d20d": {
+          "session_id": "sharegpt_brc2wJS_109",
+          "conversation_id": "537a1fe4-5104-4ba9-bc46-81f51d7a5674",
+          "message_count": 23,
+          "status": "extraction_timeout",
+          "corpus_key": "e59f2635dd980f124c7b12654f335e204f8bbe9842ad4da45c31ce5c6285d20d",
+          "raw_session_ids": [
+            "sharegpt_brc2wJS_109"
+          ]
+        },
+        "c52feb6f5f6de253a30a46310da025b824b4e63f2c6fd069365a9d12239088ec": {
+          "session_id": "febc8622",
+          "conversation_id": "16f0e47b-e4d0-4f76-9f2b-6fdc33cfb2b1",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "c52feb6f5f6de253a30a46310da025b824b4e63f2c6fd069365a9d12239088ec",
+          "raw_session_ids": [
+            "febc8622"
+          ]
+        },
+        "8bb5807795b24259bda4a38edbda3d7578f157ac4905b0a03cb5bdd5f471b862": {
+          "session_id": "ultrachat_392094",
+          "conversation_id": "d3a61635-f43e-4adc-87fa-4914ad4071ed",
+          "message_count": 10,
+          "status": "extraction_timeout",
+          "corpus_key": "8bb5807795b24259bda4a38edbda3d7578f157ac4905b0a03cb5bdd5f471b862",
+          "raw_session_ids": [
+            "ultrachat_392094"
+          ]
+        },
+        "88d4fe00beaecbe9980e2d1b9d2db64c751a7438101ae8133fb15ad2896c4300": {
+          "session_id": "7d8b5834_1",
+          "conversation_id": "dfd652e4-186a-401f-9c99-4814b2662c9d",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "88d4fe00beaecbe9980e2d1b9d2db64c751a7438101ae8133fb15ad2896c4300",
+          "raw_session_ids": [
+            "7d8b5834_1"
+          ]
+        },
+        "417ca05edbc6cfa2e79b4019b0b83831fd60ef89bfe6f848a0389bb750607e62": {
+          "session_id": "db50c0f6",
+          "conversation_id": "192a18d8-a782-46e2-bfef-c42b94b75f31",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "417ca05edbc6cfa2e79b4019b0b83831fd60ef89bfe6f848a0389bb750607e62",
+          "raw_session_ids": [
+            "db50c0f6"
+          ]
+        },
+        "52ebb9b041101e754aa5a21d55fba2f3be6480b793ee0b370a12b55a7d38d837": {
+          "session_id": "927b9087",
+          "conversation_id": "ad3f999e-eb09-4059-83f0-5a3de28f6e44",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "52ebb9b041101e754aa5a21d55fba2f3be6480b793ee0b370a12b55a7d38d837",
+          "raw_session_ids": [
+            "927b9087"
+          ]
+        },
+        "12bbac9579b3ac5e3b3d017855c35115fadb34e23f12e2baf05e5d592998a593": {
+          "session_id": "ultrachat_20736",
+          "conversation_id": "aa4fe809-4078-4265-9f81-6b1f5b30d6c4",
+          "message_count": 8,
+          "status": "extraction_timeout",
+          "corpus_key": "12bbac9579b3ac5e3b3d017855c35115fadb34e23f12e2baf05e5d592998a593",
+          "raw_session_ids": [
+            "ultrachat_20736"
+          ]
+        },
+        "c2bb33d421f1d29d60add77178f7dfafde6ea06256f3d2ad42ff82727f74a906": {
+          "session_id": "sharegpt_i1iuP70_0",
+          "conversation_id": "8e173a8c-83e0-48a7-b3b7-d7381dc9b321",
+          "message_count": 8,
+          "status": "complete",
+          "corpus_key": "c2bb33d421f1d29d60add77178f7dfafde6ea06256f3d2ad42ff82727f74a906",
+          "raw_session_ids": [
+            "sharegpt_i1iuP70_0"
+          ]
+        },
+        "fe17cb85977e7c639cb6d9c79e36598a18b7aff31ecedd953e77473cc7f105b9": {
+          "session_id": "1f88b2b3",
+          "conversation_id": "193e0618-455f-4bd1-9eb7-f6b0c33d554f",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "fe17cb85977e7c639cb6d9c79e36598a18b7aff31ecedd953e77473cc7f105b9",
+          "raw_session_ids": [
+            "1f88b2b3"
+          ]
+        },
+        "f978d273e2e6efdde436aabd6f12217a9418ab91da4c5e9661470b551ca54e7d": {
+          "session_id": "afe04238_1",
+          "conversation_id": "779d7ac1-a94f-471a-b10c-4d4a51c4a573",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "f978d273e2e6efdde436aabd6f12217a9418ab91da4c5e9661470b551ca54e7d",
+          "raw_session_ids": [
+            "afe04238_1"
+          ]
+        },
+        "3239ff2959e0ec053e9f90c7c9ec87d04d8e580570a78f1c5291acc83c9b3513": {
+          "session_id": "sharegpt_0Zvzz4F_0",
+          "conversation_id": "6de384e7-e822-484e-b6a0-b08dc68f6317",
+          "message_count": 10,
+          "status": "extraction_timeout",
+          "corpus_key": "3239ff2959e0ec053e9f90c7c9ec87d04d8e580570a78f1c5291acc83c9b3513",
+          "raw_session_ids": [
+            "sharegpt_0Zvzz4F_0"
+          ]
+        },
+        "adba6c6c230c85d2b8832122c25dd8fdac01694936d8c634d624b19ac648e00a": {
+          "session_id": "9ee69ca6_2",
+          "conversation_id": "f468606b-0139-4f5b-b778-32d65e4bbe42",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "adba6c6c230c85d2b8832122c25dd8fdac01694936d8c634d624b19ac648e00a",
+          "raw_session_ids": [
+            "9ee69ca6_2"
+          ]
+        },
+        "8bb1be0ac07fd84efb057095688c4ab945556a09a67b2c3f8a418ed53025db15": {
+          "session_id": "sharegpt_6poO9nA_41",
+          "conversation_id": "f468c9eb-8e68-4348-af29-9ae48368061d",
+          "message_count": 9,
+          "status": "extraction_timeout",
+          "corpus_key": "8bb1be0ac07fd84efb057095688c4ab945556a09a67b2c3f8a418ed53025db15",
+          "raw_session_ids": [
+            "sharegpt_6poO9nA_41"
+          ]
+        },
+        "e2e7ce5d1feb53665b7b02e55ad703a07516572fd072b97cca8fb3291b69fed4": {
+          "session_id": "5dce60dd",
+          "conversation_id": "c309f9f8-ecc2-4a46-9331-fb858be0b061",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "e2e7ce5d1feb53665b7b02e55ad703a07516572fd072b97cca8fb3291b69fed4",
+          "raw_session_ids": [
+            "5dce60dd"
+          ]
+        },
+        "6dd75d4bca9f877ef72e661f8b50ba557d81c744d2750cbe68c5be65c955a780": {
+          "session_id": "b5f561f5_2",
+          "conversation_id": "b35af7dc-c9c7-4c60-8226-058913fa50e6",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "6dd75d4bca9f877ef72e661f8b50ba557d81c744d2750cbe68c5be65c955a780",
+          "raw_session_ids": [
+            "b5f561f5_2"
+          ]
+        },
+        "5f5d19d0aa2bda8df9076c88bf06b6a42bfef0196a94fe65d5bacd8f4b81aec7": {
+          "session_id": "65698aa9_4",
+          "conversation_id": "5f8369ea-4300-4f42-ab9a-d444c9cf52a6",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "5f5d19d0aa2bda8df9076c88bf06b6a42bfef0196a94fe65d5bacd8f4b81aec7",
+          "raw_session_ids": [
+            "65698aa9_4"
+          ]
+        },
+        "5f8f50ac109d0f6e67abe25b0ef27ee364dd766ec0c928ed21f55e36f151ac0c": {
+          "session_id": "ultrachat_423307",
+          "conversation_id": "e8516129-5160-484a-be1e-58d66d0ec627",
+          "message_count": 6,
+          "status": "extraction_timeout",
+          "corpus_key": "5f8f50ac109d0f6e67abe25b0ef27ee364dd766ec0c928ed21f55e36f151ac0c",
+          "raw_session_ids": [
+            "ultrachat_423307"
+          ]
+        },
+        "0df3445c921c93aad94eb608bdf42c8f253ac7970c0fbc9db653a903cf8b5ffa": {
+          "session_id": "sharegpt_dabXXRO_10",
+          "conversation_id": "5248b41f-4cb0-4da6-b8f2-dc6b01e0d691",
+          "message_count": 6,
+          "status": "complete",
+          "corpus_key": "0df3445c921c93aad94eb608bdf42c8f253ac7970c0fbc9db653a903cf8b5ffa",
+          "raw_session_ids": [
+            "sharegpt_dabXXRO_10"
+          ]
+        },
+        "7fd5cbc623e17f2d152bc5a49ff2ddaf9075997a15d225918e7d628ad5bd2157": {
+          "session_id": "c22571ff_2",
+          "conversation_id": "91f82cbb-3f55-4efd-8aa6-9321d9c9b5cd",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "7fd5cbc623e17f2d152bc5a49ff2ddaf9075997a15d225918e7d628ad5bd2157",
+          "raw_session_ids": [
+            "c22571ff_2"
+          ]
+        },
+        "8ac41b8d2ab8cf838e0ff8ebbbb2702bcf6ac45546f38b81e38b3b2dcd7bd43a": {
+          "session_id": "004edb32",
+          "conversation_id": "c80670af-e556-4255-892e-9d03583dcea3",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "8ac41b8d2ab8cf838e0ff8ebbbb2702bcf6ac45546f38b81e38b3b2dcd7bd43a",
+          "raw_session_ids": [
+            "004edb32"
+          ]
+        },
+        "d34883e43711394560df6ca9f39afd842540b4797d8970b365c7f38ec3f4b2ed": {
+          "session_id": "5209e813_2",
+          "conversation_id": "6788a558-ce80-4791-9327-7d0f867aef17",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "d34883e43711394560df6ca9f39afd842540b4797d8970b365c7f38ec3f4b2ed",
+          "raw_session_ids": [
+            "5209e813_2"
+          ]
+        },
+        "f5633e9f43bf67a6f1065690ebeb997320b7cd4cc87711937abd37b584ec1039": {
+          "session_id": "628c958c_7",
+          "conversation_id": "affb4dba-8a63-49ea-a742-229683b9bed3",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "f5633e9f43bf67a6f1065690ebeb997320b7cd4cc87711937abd37b584ec1039",
+          "raw_session_ids": [
+            "628c958c_7"
+          ]
+        },
+        "8404b2bc64357a72872df5822b509789239e3751d9f118d22e9704d5bfc82d10": {
+          "session_id": "sharegpt_SrUdspT_0",
+          "conversation_id": "36fc72a3-a2f2-499e-a5b7-906308f1ef73",
+          "message_count": 2,
+          "status": "extraction_timeout",
+          "corpus_key": "8404b2bc64357a72872df5822b509789239e3751d9f118d22e9704d5bfc82d10",
+          "raw_session_ids": [
+            "sharegpt_SrUdspT_0"
+          ]
+        },
+        "ee5d246841797308b0ec86f6c797507f1e8288cd9d6d7088575bd05378fda73d": {
+          "session_id": "sharegpt_ltGQxlc_0",
+          "conversation_id": "68ac3fb1-7477-4fc4-b117-184abfc52bfe",
+          "message_count": 2,
+          "status": "extraction_timeout",
+          "corpus_key": "ee5d246841797308b0ec86f6c797507f1e8288cd9d6d7088575bd05378fda73d",
+          "raw_session_ids": [
+            "sharegpt_ltGQxlc_0"
+          ]
+        }
+      }
+    },
+    "evaluate": {
+      "status": "pending",
+      "started_at": null,
+      "updated_at": null,
+      "completed_count": 0,
+      "results": {}
+    },
+    "score": {
+      "status": "pending",
+      "started_at": null,
+      "updated_at": null,
+      "completed_count": 0,
+      "accuracy": {}
+    }
+  }
+}

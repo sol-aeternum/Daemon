@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Daemon Memory Extraction Benchmark v2.3
+Daemon Memory Extraction Benchmark v2.4
 
 Tests the extraction pipeline across 8 scenarios covering dense facts,
 ephemeral filtering, corrections/supersession, projects, hedged statements,
@@ -21,6 +21,13 @@ Changes from v2.1:
 #ZV|- Fixed S4 keyword: "memory" → "memories" (plural).
 #BB|- Fixed dedup slot fallback: S4 now uses slot 0 instead of slot 1.
 #QZ|- Improved extraction prompt: now uses atomic fact extraction.
+
+Changes from v2.3:
+- Benchmark transcript replay is now deterministic and benchmark-only.
+- Scenario messages are persisted as user turns and replayed through the real
+  worker extraction path via `extract_memories(..., messages_json=...)`.
+- This removes `/chat` assistant-response contamination while preserving the
+  production extraction + storage + dedup pipeline under local/dev DB safety.
 
 Key features:
 - Wipes memories + extraction_log between scenarios (prevents accumulation)
@@ -45,8 +52,6 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, cast
-
-import httpx
 
 try:
     psycopg2 = importlib.import_module("psycopg2")
@@ -109,14 +114,16 @@ _load_dotenv()
 # Configuration (read AFTER dotenv load)
 # ---------------------------------------------------------------------------
 
-BASE_URL = os.environ.get("DAEMON_URL", "http://localhost:8000")
 DEFAULT_WAIT = 50  # seconds to wait for extraction pipeline
 DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001"
 # Fresh benchmark user per run (isolated from stale test data)
 import uuid as _uuid
+
+
 def _fresh_benchmark_user() -> str:
     """Generate a fresh isolated benchmark user ID."""
     return str(_uuid.uuid4())
+
 
 # Safety: hosts we'll allow DB wipe on
 SAFE_HOSTS = ("localhost", "127.0.0.1", "postgres", "db", "0.0.0.0")
@@ -230,23 +237,24 @@ def wipe_redis_extract_keys(redis_url: str = REDIS_URL) -> int:
                 break
     return deleted
 
+
 def flush_redis_db(redis_url: str = REDIS_URL) -> bool:
     """Flush the entire Redis database to clear all ARQ jobs and state.
-    
+
     This is more aggressive than wipe_redis_extract_keys() - it clears the entire
     Redis DB to ensure no queued extraction jobs from previous runs can complete
     during the benchmark.
-    
+
     Refuses to flush non-local Redis as a safety measure.
     """
     if not _is_safe_redis(redis_url):
         print(f"  ⚠ Refusing to flush non-local redis: {redis_url}", file=sys.stderr)
         return False
-    
+
     if redis_mod is None:
         print("  ⚠ redis module unavailable; skipping redis flush")
         return False
-    
+
     try:
         client_cls = cast(Any, redis_mod).Redis
         client = client_cls.from_url(redis_url, decode_responses=True)
@@ -318,7 +326,9 @@ def wipe_memories(db_url: str = DATABASE_URL) -> int:
     return asyncio.run(_wipe_with_asyncpg())
 
 
-def query_memories(db_url: str = DATABASE_URL, conversation_id: str | None = None) -> list[dict[str, Any]]:
+def query_memories(
+    db_url: str = DATABASE_URL, conversation_id: str | None = None
+) -> list[dict[str, Any]]:
     """Fetch memories ordered by creation time.
 
     Returns both active and closed memories for supersession verification.
@@ -389,84 +399,125 @@ def query_memories(db_url: str = DATABASE_URL, conversation_id: str | None = Non
     return asyncio.run(_query_with_asyncpg())
 
 
-# ---------------------------------------------------------------------------
-# API helpers
-# ---------------------------------------------------------------------------
+async def _ensure_benchmark_user_async(user_id: str) -> None:
+    """Ensure benchmark user exists in DB, creating if necessary."""
+    import asyncpg
 
-client = httpx.Client(base_url=BASE_URL, timeout=120)
-
-
-def health_check() -> bool:
-    """Verify the Daemon backend is reachable."""
+    db_url = _resolve_db_url(os.environ.get("DATABASE_URL", DATABASE_URL))
+    conn = await asyncpg.connect(dsn=db_url)
     try:
-        r = client.get("/health")
-        return r.status_code == 200
-    except Exception:
-        return False
-
-
-def create_conversation(user_id: str | None = None) -> str:
-    """Create a new conversation for the given user, return its ID."""
-    # If user_id provided, ensure user exists in DB (bypasses API, creates directly)
-    if user_id:
-        _ensure_benchmark_user(user_id)
-    payload = {"title": "Benchmark"}
-    if user_id:
-        payload["user_id"] = user_id
-    r = client.post("/conversations", json=payload)
-    r.raise_for_status()
-    return r.json()["id"]
+        await conn.execute(
+            """
+            INSERT INTO users (id, email, name, username, preferences, created_at, updated_at)
+            VALUES ($1::uuid, $2, $3, $4, $5, NOW(), NOW())
+            ON CONFLICT (id) DO NOTHING
+            """,
+            user_id,
+            f"benchmark-{user_id[:8]}@daemon.test",
+            "Benchmark User",
+            f"bench_{user_id[:8]}",
+            "{}",
+        )
+    finally:
+        await conn.close()
 
 
 def _ensure_benchmark_user(user_id: str) -> None:
-    """Ensure benchmark user exists in DB, creating if necessary."""
-    import asyncpg
-    db_url = _resolve_db_url(os.environ.get("DATABASE_URL", DATABASE_URL))
-    
-    async def _create():
-        conn = await asyncpg.connect(dsn=db_url)
-        try:
-            # Try to insert, ignore if already exists
-            await conn.execute(
-                """
-                INSERT INTO users (id, email, name, username, preferences, created_at, updated_at)
-                VALUES ($1::uuid, $2, $3, $4, $5, NOW(), NOW())
-                ON CONFLICT (id) DO NOTHING
-                """,
-                user_id,
-                f"benchmark-{user_id[:8]}@daemon.test",
-                "Benchmark User",
-                f"bench_{user_id[:8]}",
-                "{}",
-            )
-        finally:
-            await conn.close()
-    
-    import asyncio
-    asyncio.run(_create())
+    """Synchronous wrapper for benchmark user setup."""
+    asyncio.run(_ensure_benchmark_user_async(user_id))
 
 
-def send_message(conversation_id: str, content: str, user_id: str) -> None:
-    """Send a user message and consume the full SSE stream."""
-    r = client.post(
-        "/chat",
-        json={
-            "conversation_id": conversation_id,
-            "message": content,
-            "user_id": user_id,
-            "disable_memory_write": True,  # Disable tool side-effects for benchmark isolation
-        },
-        headers={"Accept": "text/event-stream"},
+def build_benchmark_transcript(messages: list[str]) -> list[dict[str, str]]:
+    """Convert benchmark scenario messages into deterministic user-only turns."""
+    return [{"role": "user", "content": content} for content in messages]
+
+
+async def invoke_benchmark_extraction(
+    store: Any,
+    user_id: str,
+    conversation_id: str,
+    messages_json: list[dict[str, str]],
+) -> dict[str, object]:
+    """Run the production worker extraction path for benchmark replay only."""
+    from orchestrator.worker.jobs import extract_memories
+
+    return await extract_memories(
+        {"store": store},
+        user_id,
+        conversation_id,
+        messages_json=messages_json,
     )
-    r.raise_for_status()
 
 
-def delete_conversation(conversation_id: str) -> None:
-    """Clean up the benchmark conversation."""
+async def replay_benchmark_conversation(
+    messages: list[str],
+    user_id: str,
+    db_url: str,
+) -> str:
+    """Persist deterministic transcript turns and replay extraction synchronously.
+
+    This is benchmark-harness-only: it avoids `/chat` so extraction measures the
+    scenario transcript itself rather than stochastic assistant replies.
+    """
+    if asyncpg is None:
+        raise RuntimeError("asyncpg is required for benchmark transcript replay")
+
+    from orchestrator.memory.encryption import ContentEncryption
+    from orchestrator.memory.store import MemoryStore
+
+    asyncpg_mod = cast(Any, asyncpg)
+    pool = await asyncpg_mod.create_pool(dsn=db_url, min_size=1, max_size=4)
     try:
-        client.delete(f"/conversations/{conversation_id}")
-    except Exception:
-        pass
+        await _ensure_benchmark_user_async(user_id)
+        store = MemoryStore(
+            db_pool=pool,
+            encryption=ContentEncryption(os.environ.get("DAEMON_ENCRYPTION_KEY")),
+        )
+        conversation = await store.create_conversation(
+            _uuid.UUID(user_id), title="Benchmark"
+        )
+        conversation_id = str(conversation["id"])
+        conversation_uuid = _uuid.UUID(conversation_id)
+        transcript_so_far: list[str] = []
+
+        for turn_index, content in enumerate(messages, start=1):
+            transcript_so_far.append(content)
+            await store.insert_message(
+                conversation_id=conversation_uuid,
+                user_id=_uuid.UUID(user_id),
+                role="user",
+                content=content,
+                status="completed",
+                metadata={
+                    "benchmark_harness": "extraction",
+                    "benchmark_source": "scenario_transcript",
+                    "benchmark_turn": turn_index,
+                },
+            )
+            await store.update_conversation(
+                conversation_uuid,
+                message_count_delta=1,
+                metadata_patch={
+                    "benchmark_harness": "extraction",
+                    "benchmark_transcript_mode": "user_only_replay",
+                },
+            )
+
+            extraction_result = await invoke_benchmark_extraction(
+                store=store,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                messages_json=build_benchmark_transcript(transcript_so_far),
+            )
+            if extraction_result.get("status") != "ok":
+                raise RuntimeError(
+                    "Benchmark extraction replay failed: "
+                    f"{json.dumps(extraction_result, default=str)}"
+                )
+
+        return conversation_id
+    finally:
+        await pool.close()
 
 
 # ---------------------------------------------------------------------------
@@ -812,39 +863,45 @@ def run_scenario(
     # Generate fresh isolated benchmark user for this scenario
     benchmark_user = _fresh_benchmark_user()
     print(f"  👤 Benchmark user: {benchmark_user}")
-    
+
     t0 = time.time()
-    conv_id = create_conversation(benchmark_user)
 
     for i, msg in enumerate(scenario.messages):
         preview = msg[:70] + ("..." if len(msg) > 70 else "")
         print(f"  → [{i + 1}/{len(scenario.messages)}] {preview}")
-        send_message(conv_id, msg, benchmark_user)
-        if scenario.inter_message_wait and i < len(scenario.messages) - 1:
-            print(
-                f"  ⏳ Waiting {scenario.inter_message_wait}s for extraction to fire between messages..."
-            )
-            time.sleep(scenario.inter_message_wait)
-
-    print(f"  ⏳ Waiting {scenario.wait_seconds}s for extraction pipeline...")
-    time.sleep(scenario.wait_seconds)
+    conv_id = asyncio.run(
+        replay_benchmark_conversation(
+            messages=scenario.messages,
+            user_id=benchmark_user,
+            db_url=db_url,
+        )
+    )
+    print("  ↻ Replayed transcript through deterministic benchmark extraction path")
 
     all_memories = query_memories(db_url, conversation_id=conv_id)
     active_memories = [m for m in all_memories if m.get("valid_to") is None]
-    
+
     # Separate extracted memories (from extraction pipeline) from user_created (tool side-effects)
-    extracted_memories = [m for m in active_memories if m.get("source_type") == "extracted"]
-    user_created_memories = [m for m in active_memories if m.get("source_type") == "user_created"]
-    
+    extracted_memories = [
+        m for m in active_memories if m.get("source_type") == "extracted"
+    ]
+    user_created_memories = [
+        m for m in active_memories if m.get("source_type") == "user_created"
+    ]
+
     # Debug: show user_created memories if any
     if user_created_memories:
-        print(f"  📋 {len(user_created_memories)} user_created memory(ies) - not scored:")
+        print(
+            f"  📋 {len(user_created_memories)} user_created memory(ies) - not scored:"
+        )
         for mem in user_created_memories:
-            print(f"    → '{mem['content'][:60]}...' (source_type={mem.get('source_type')})")
-    
+            print(
+                f"    → '{mem['content'][:60]}...' (source_type={mem.get('source_type')})"
+            )
+
     # Use only extracted memories for scoring
     scoring_memories = extracted_memories
-    
+
     duration = time.time() - t0
 
     result = ScenarioResult(
@@ -1074,7 +1131,7 @@ def print_summary(results: list[ScenarioResult]) -> tuple[float, float, int]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Daemon Memory Extraction Benchmark v2.3"
+        description="Daemon Memory Extraction Benchmark v2.4"
     )
     parser.add_argument(
         "--no-wipe",
@@ -1127,24 +1184,17 @@ def main() -> None:
     db_display = (
         effective_db_url.split("@")[-1] if "@" in effective_db_url else effective_db_url
     )
-    est_minutes = len(scenarios) * (args.wait + 10) // 60
-
-    print("Daemon Memory Extraction Benchmark v2.3")
-    print(f"Target: {BASE_URL}")
+    print("Daemon Memory Extraction Benchmark v2.4")
+    print("Mode: deterministic transcript replay (no /chat assistant generation)")
     print(f"Database: {db_display}")
     print(f"Redis: {REDIS_URL}")
-    print(f"Wait time: {args.wait}s per scenario")
+    print(f"Legacy wait setting: {args.wait}s (ignored in replay mode)")
     print(f"Scenarios: {len(scenarios)}")
     print(f"DB wipe: {'disabled' if args.no_wipe else 'enabled'}")
     print(
         f"Decryption: {'available' if _get_fernet() else 'unavailable (set DAEMON_ENCRYPTION_KEY)'}"
     )
-    print(f"Estimated runtime: ~{est_minutes} minutes")
-
-    if not health_check():
-        print("❌ Health check failed — is Daemon running?")
-        sys.exit(1)
-    print("Health check: OK")
+    print("Backend health check: skipped (benchmark now uses direct replay path)")
 
     # Initial wipe
     if not args.no_wipe:
@@ -1184,9 +1234,9 @@ def main() -> None:
     # Build output
     output: dict[str, Any] = {
         "run_timestamp": datetime.now(timezone.utc).isoformat(),
-        "version": "2.3",
+        "version": "2.4",
         "config": {
-            "base_url": BASE_URL,
+            "mode": "deterministic_transcript_replay",
             "wait_seconds": args.wait,
             "db_wipe": not args.no_wipe,
             "scenarios_filter": args.scenarios,

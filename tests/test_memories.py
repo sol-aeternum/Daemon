@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -421,3 +422,45 @@ async def test_reembed_memories_rejects_unknown_status(client, monkeypatch) -> N
     )
 
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_post_memories_dream_enqueues_job(client, monkeypatch) -> None:
+    monkeypatch.setenv("DAEMON_ADMIN_API_KEY", "secret-admin")
+    get_settings.cache_clear()
+
+    mock_store = AsyncMock()
+    mock_redis = AsyncMock()
+    mock_redis.enqueue_job.return_value = SimpleNamespace(job_id="dream-job-123")
+
+    mock_app_state = create_mock_app_state(mock_store)
+    mock_app_state.redis = mock_redis
+    set_app_state(mock_app_state)
+
+    user_id = str(uuid.uuid4())
+    response = await client.post(
+        "/memories/dream",
+        json={"user_id": user_id},
+        headers={"Authorization": "Bearer secret-admin"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "enqueued"
+    assert data["job_id"] == "dream-job-123"
+    assert data["user_id"] == user_id
+    assert mock_redis.enqueue_job.await_args.args[0] == "run_dreaming_job"
+
+
+@pytest.mark.asyncio
+async def test_post_memories_dream_requires_admin_token(client, monkeypatch) -> None:
+    monkeypatch.setenv("DAEMON_ADMIN_API_KEY", "secret-admin")
+    get_settings.cache_clear()
+
+    mock_app_state = create_mock_app_state(AsyncMock())
+    mock_app_state.redis = AsyncMock()
+    set_app_state(mock_app_state)
+
+    response = await client.post("/memories/dream", json={})
+
+    assert response.status_code == 401

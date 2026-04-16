@@ -1,0 +1,102 @@
+{
+  "artifact": "task15_dream_quality_review",
+  "review_user": "task15-dream-review@daemon.test",
+  "trigger_path": "live Redis enqueue using the same run_dreaming_job contract as /memories/dream after HTTP admin gate was found disabled in runtime",
+  "pre_fix_run": {
+    "dream_run_id": "27d2fd88-5754-4223-add9-8bbff4848b3e",
+    "status": "completed",
+    "observations_created": 2,
+    "summary": "Dreaming produced grounded, linked observations, but both used maximal confidence despite limited supporting evidence.",
+    "criteria": {
+      "non_obviousness": {
+        "status": "pass",
+        "reason": "Both observations synthesize multiple underlying memories into higher-order patterns rather than merely repeating a single fact."
+      },
+      "source_linkage": {
+        "status": "pass",
+        "reason": "All cited source_memory_ids map to real extracted memories that support the synthesized claims."
+      },
+      "confidence_calibration": {
+        "status": "fail",
+        "reason": "Both observations were emitted at confidence 1.0 even though each depended on only 2-4 source memories and involved genuine synthesis rather than direct restatement."
+      },
+      "hallucination_absence": {
+        "status": "pass",
+        "reason": "No unsupported people, dates, devices, or cross-family claims were invented."
+      }
+    },
+    "observations": [
+      {
+        "content": "User consistently prioritizes brewing pour-over coffee at home using a V60, both as a daily routine and before long bike rides.",
+        "confidence": 1.0,
+        "source_memory_ids": [
+          "e86f5cf0-8434-480b-991d-26e95ccbaffd",
+          "c332d5a1-8682-4e5d-a7fb-2d7221510bfe"
+        ]
+      },
+      {
+        "content": "User maintains a detailed coffee journal, tracking specific aspects of their V60 brews, including bloom time and bed quality.",
+        "confidence": 1.0,
+        "source_memory_ids": [
+          "97cbc154-bf91-4ed5-8b47-3f513b0050f9",
+          "b08b97f6-ab14-4234-8b77-1296d1da9d50",
+          "372f13c0-9880-4d2a-9520-0f95d16d9e2e"
+        ]
+      }
+    ]
+  },
+  "fix_applied": {
+    "type": "dream_prompt_only",
+    "file": "orchestrator/memory/dreaming.py",
+    "change": "Added explicit conservative confidence-band guidance and reserved 1.0 for overwhelmingly redundant evidence."
+  },
+  "post_fix_run": {
+    "dream_run_id": "0576fe1e-d1e7-4a2d-ae9f-2cc48d85f15c",
+    "status": "completed",
+    "observations_created": 2,
+    "summary": "After the prompt-only fix, the same real-data dream flow still produced non-obvious grounded observations, but with materially more plausible confidence values.",
+    "criteria": {
+      "non_obviousness": {
+        "status": "pass",
+        "reason": "The observations compress several lower-level brew/journal memories into stable higher-order habits and tracking patterns."
+      },
+      "source_linkage": {
+        "status": "pass",
+        "reason": "Each observation points to real source_memory_ids whose decrypted contents directly support the summarized pattern."
+      },
+      "confidence_calibration": {
+        "status": "pass",
+        "reason": "Confidence dropped from 1.0/1.0 to 0.85/0.80, which better matches moderately strong synthesis from 2-4 supporting memories."
+      },
+      "hallucination_absence": {
+        "status": "pass",
+        "reason": "The observations stay inside the source evidence and do not invent extra equipment, timelines, or coffee routines."
+      }
+    },
+    "observations": [
+      {
+        "content": "User maintains a detailed coffee journal tracking specific brewing metrics like bloom time and drawdown speed for their pour-over method",
+        "confidence": 0.8500000238418579,
+        "source_memory_ids": [
+          "97cbc154-bf91-4ed5-8b47-3f513b0050f9",
+          "b08b97f6-ab14-4234-8b77-1296d1da9d50",
+          "372f13c0-9880-4d2a-9520-0f95d16d9e2e",
+          "06436f5c-f5e4-42d9-9448-e9a567338c32"
+        ]
+      },
+      {
+        "content": "User prefers brewing coffee at home with a V60, particularly before scheduled activities like work or bike rides",
+        "confidence": 0.800000011920929,
+        "source_memory_ids": [
+          "e86f5cf0-8434-480b-991d-26e95ccbaffd",
+          "c332d5a1-8682-4e5d-a7fb-2d7221510bfe"
+        ]
+      }
+    ]
+  },
+  "final_verdict": {
+    "dream_quality_after_fix": "pass",
+    "required_fix_was_needed": true,
+    "reason": "Pre-fix dream output was grounded but overconfident; the prompt-only confidence guidance fixed the weak criterion without widening dream inclusion or touching unrelated reasoning logic."
+  }
+}

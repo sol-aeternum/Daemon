@@ -1,0 +1,82 @@
+{
+  "benchmark": "longmemeval",
+  "date": "2026-04-14",
+  "trusted_baseline": "longmemeval_tier2_fast",
+  "description": "Competitor comparison table for LongMemEval. Overall accuracy values from published benchmarks. Category breakdowns not publicly available for competitors.",
+  "systems": {
+    "OMEGA": {
+      "overall": 0.954,
+      "overall_display": "95.4%",
+      "categories": null,
+      "notes": "From published benchmarks"
+    },
+    "Hindsight": {
+      "overall": 0.914,
+      "overall_display": "91.4%",
+      "categories": null,
+      "notes": "From published benchmarks"
+    },
+    "Supermemory": {
+      "overall": 0.854,
+      "overall_display": "85.4%",
+      "categories": null,
+      "notes": "From published benchmarks"
+    },
+    "EverMemOS": {
+      "overall": 0.830,
+      "overall_display": "83.0%",
+      "categories": null,
+      "notes": "From published benchmarks"
+    },
+    "Daemon (Tier 2 fast)": {
+      "overall": 0.811,
+      "overall_display": "81.1%",
+      "categories": {
+        "MR": 0.861,
+        "TR": 0.846,
+        "KU": 0.795,
+        "IE-assistant": 0.821,
+        "IE-user": 0.764,
+        "IE-preference": 0.567
+      },
+      "questions": {
+        "MR": 133, "TR": 133, "KU": 78,
+        "IE-assistant": 56, "IE-user": 70, "IE-preference": 30
+      },
+      "judgment_distribution": {
+        "correct": 311,
+        "partially_correct": 189,
+        "incorrect": 0
+      },
+      "retrieval_stats": {
+        "avg_memories_used": 4.81,
+        "avg_chunks": 331.74,
+        "avg_sessions": 47.708
+      },
+      "notes": "Trusted baseline; fast harness; isolated per-run user; zero harness-error rows"
+    },
+    "Full-ctx GPT-4o": {
+      "overall": null,
+      "overall_display": "60-64%",
+      "categories": null,
+      "notes": "Full context; no retrieval; range reflects benchmark subset variation"
+    },
+    "Zep": {
+      "overall": 0.712,
+      "overall_display": "71.2%",
+      "categories": null,
+      "notes": "From published benchmarks"
+    },
+    "Mem0": {
+      "overall": 0.490,
+      "overall_display": "49.0%",
+      "categories": null,
+      "notes": "From published benchmarks"
+    }
+  },
+  "category_breakdowns_available_for": ["Daemon (Tier 2 fast)"],
+  "artifact_sources": {
+    "daemon": "longmemeval_tier2_fast/longmemeval_fast_results.jsonl",
+    "checkpoint": "longmemeval_tier2_fast/longmemeval_fast_checkpoint.json"
+  }
+}

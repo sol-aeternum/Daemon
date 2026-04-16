@@ -4,6 +4,16 @@ Loads LongMemEval questions, retrieves relevant memories from Daemon's
 memory store, and uses GPT-4o to generate answers in LongMemEval's
 expected JSONL format.
 
+Canonical benchmark entrypoint:
+    python -m orchestrator.eval.longmemeval run --dataset /path/to/longmemeval_s.json
+
+Contract:
+    - dataset path is explicit and validated before execution
+    - results are written to <output-dir>/longmemeval_results.jsonl
+    - checkpoint state is written to <output-dir>/longmemeval_checkpoint.json
+      unless an explicit checkpoint path is provided
+    - benchmark runs always force retrieval logging on
+
 Expected output format (LongMemEval evaluate_qa.py):
     {"question_id": "e47becba", "hypothesis": "Business Administration"}
 
@@ -16,8 +26,8 @@ Category breakdown (IE, MR, TR, KU, ABS):
 
 Usage:
     python tests/longmemeval/evaluate.py
-    python tests/longmemeval/evaluate.py --limit 10
-    python tests/longmemeval/evaluate.py --output /tmp/results.jsonl
+    python tests/longmemeval/evaluate.py --dataset /path/to/longmemeval_s.json --limit 10
+    python -m orchestrator.eval.longmemeval run --dataset /path/to/longmemeval_s.json
 """
 
 from __future__ import annotations
@@ -33,9 +43,10 @@ from typing import Any
 
 import asyncpg
 from orchestrator.memory.embedding import embed_query
-from orchestrator.memory.retrieval import retrieve_memories
-from orchestrator.memory.store import MemoryStore
 from orchestrator.config import get_settings
+from orchestrator.memory.retrieval import retrieve_memories_for_text
+from orchestrator.memory.store import MemoryStore
+from tests.longmemeval.ingest import DATASET_PATH as DEFAULT_DATASET_PATH
 
 CATEGORY_MAP: dict[str, str] = {
     "single-session-user": "IE-user",
@@ -69,8 +80,9 @@ ACCURACY_CATEGORIES = [
 TEST_USER_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")
 TEST_USER_EMAIL = "longmemeval@daemon.test"
 
-DATASET_PATH = Path("/tmp/longmemeval-review/data/longmemeval_s.json")
-DEFAULT_OUTPUT_PATH = Path("/tmp/longmemeval_results.jsonl")
+DEFAULT_OUTPUT_DIR = Path("tests/benchmark_results")
+RESULTS_FILENAME = "longmemeval_results.jsonl"
+CHECKPOINT_FILENAME = "longmemeval_checkpoint.json"
 
 TOP_K_MEMORIES = 5
 RETRIEVAL_MIN_SIMILARITY = 0.0
@@ -84,6 +96,88 @@ JUDGE_TEMPERATURE = 0.0
 JUDGE_MAX_TOKENS = 256
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_output_paths(
+    output_dir: Path,
+    checkpoint_path: Path | None = None,
+) -> tuple[Path, Path]:
+    output_path = output_dir / RESULTS_FILENAME
+    effective_checkpoint = checkpoint_path or output_dir / CHECKPOINT_FILENAME
+    return output_path, effective_checkpoint
+
+
+def load_dataset(dataset_path: Path) -> list[dict[str, Any]]:
+    if not dataset_path.exists():
+        raise FileNotFoundError(f"Dataset not found: {dataset_path}")
+
+    with dataset_path.open() as handle:
+        dataset = json.load(handle)
+
+    if not isinstance(dataset, list):
+        raise ValueError(f"Dataset must be a JSON list: {dataset_path}")
+
+    return dataset
+
+
+def load_checkpoint(
+    checkpoint_path: Path,
+    *,
+    dataset_path: Path,
+) -> dict[str, dict[str, Any]]:
+    if not checkpoint_path.exists():
+        return {}
+
+    with checkpoint_path.open() as handle:
+        payload = json.load(handle)
+
+    if not isinstance(payload, dict):
+        raise ValueError(f"Checkpoint must be a JSON object: {checkpoint_path}")
+
+    checkpoint_dataset = payload.get("dataset_path")
+    if checkpoint_dataset and checkpoint_dataset != str(dataset_path):
+        raise ValueError(
+            "Checkpoint dataset mismatch: "
+            f"{checkpoint_path} was created for {checkpoint_dataset}, "
+            f"not {dataset_path}"
+        )
+
+    raw_results = payload.get("results", [])
+    if not isinstance(raw_results, list):
+        raise ValueError(f"Checkpoint results must be a JSON list: {checkpoint_path}")
+
+    checkpoint_results: dict[str, dict[str, Any]] = {}
+    for result in raw_results:
+        if not isinstance(result, dict):
+            continue
+        question_id = result.get("question_id")
+        if not isinstance(question_id, str) or not question_id:
+            continue
+        checkpoint_results[question_id] = result
+
+    return checkpoint_results
+
+
+def save_checkpoint(
+    checkpoint_path: Path,
+    *,
+    dataset_path: Path,
+    results: list[dict[str, Any]],
+) -> None:
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "dataset_path": str(dataset_path),
+        "results": results,
+    }
+    with checkpoint_path.open("w") as handle:
+        json.dump(payload, handle, indent=2)
+
+
+def write_results_jsonl(output_path: Path, results: list[dict[str, Any]]) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w") as handle:
+        for result in results:
+            handle.write(json.dumps(result) + "\n")
 
 
 def _normalize_model_for_provider(model: str) -> str:
@@ -155,9 +249,7 @@ def _extract_content(response: Any) -> str:
 
 
 def build_answer_prompt(question: str, memories: list[dict[str, Any]]) -> str:
-    memories_text = "\n\n".join(
-        f"- {memory.get('content', '')}" for memory in memories
-    )
+    memories_text = "\n\n".join(f"- {memory.get('content', '')}" for memory in memories)
 
     return f"""You are a helpful assistant. Use the provided memories to answer the question concisely.
 
@@ -176,14 +268,22 @@ def parse_answer(text: str) -> str:
     return text
 
 
-async def judge_answer(hypothesis: str, reference: str) -> str:
-    prompt = f"""Given a reference answer and a hypothesis answer, determine if the hypothesis is correct, incorrect, or partially correct.
+async def judge_answer(question_text: str, hypothesis: str, reference: str) -> str:
+    prompt = f"""You are judging whether an AI assistant's answer is factually correct.
 
-Reference Answer: {reference}
+Question: {question_text}
+Ground truth answer: {reference}
+Assistant's answer: {hypothesis}
 
-Hypothesis Answer: {hypothesis}
+Scoring rules:
+- CORRECT: The assistant's answer contains the same core factual information as the ground truth. Paraphrasing, additional context, more verbose phrasing, or minor wording differences are all CORRECT. Example: ground truth "The Glass Menagerie", answer "a production of The Glass Menagerie at the local community theater" → CORRECT.
+- PARTIAL: The answer contains SOME but not ALL required facts from a multi-part ground truth. Only use PARTIAL when the ground truth requires multiple distinct pieces of information and the answer is missing one or more of them.
+- INCORRECT: The core fact is wrong, contradicts the ground truth, or the assistant says it cannot answer when the information was available.
 
-Is the hypothesis correct, incorrect, or partially correct given the reference? Respond with exactly one word: correct, incorrect, or partially_correct."""
+Be generous with CORRECT. The question is whether the assistant knew the right answer, not whether it phrased it identically to the reference.
+
+Reply with exactly one word on the first line: CORRECT, PARTIAL, or INCORRECT
+Then a one-sentence explanation on the second line."""
 
     response = await _call_llm_with_provider_config(
         model=JUDGE_MODEL,
@@ -195,14 +295,23 @@ Is the hypothesis correct, incorrect, or partially correct given the reference? 
     if response is None:
         return "incorrect"
 
-    content = _extract_content(response).strip().lower()
+    content = _extract_content(response).strip()
+    first_line = content.split("\n")[0].strip().upper()
 
-    if "correct" in content and "partially" not in content:
+    if first_line == "CORRECT":
         return "correct"
-    elif "incorrect" in content:
-        return "incorrect"
-    elif "partially" in content:
+    elif first_line == "PARTIAL":
         return "partially_correct"
+    elif first_line == "INCORRECT":
+        return "incorrect"
+
+    content_lower = content.lower()
+    if "incorrect" in content_lower:
+        return "incorrect"
+    elif "partial" in content_lower:
+        return "partially_correct"
+    elif "correct" in content_lower:
+        return "correct"
     else:
         return "incorrect"
 
@@ -234,92 +343,21 @@ async def retrieve_user_memories(
     query_embedding: list[float],
     query_text: str,
     limit: int = TOP_K_MEMORIES,
+    log_retrieval: bool = False,
+    allowed_source_conversation_ids: list[uuid.UUID] | None = None,
 ) -> list[dict[str, Any]]:
-    # Get L0 memories first (always injected, no query match needed)
-    l0_memories = await store.get_l0_memories(user_id)
-
-    # Use proper retrieval path with hybrid scoring (vector + BM25 + composite)
-    memories = await retrieve_memories(
+    return await retrieve_memories_for_text(
         store=store,
-        query_embedding=query_embedding,
         query_text=query_text,
         user_id=user_id,
+        query_embedding=query_embedding,
         limit=limit,
+        include_l0=True,
+        log_retrieval=log_retrieval,
+        allowed_source_conversation_ids=allowed_source_conversation_ids,
+        retrieval_triggered_by="longmemeval",
+        include_dream_observations=True,
     )
-
-    # L0 memories are always prepended to results (L0 always injected)
-    # Format L0 memories to match the memory structure
-    formatted_l0 = []
-    for memory in l0_memories:
-        entry = dict(memory)
-        entry["final_score"] = float("inf")  # L0 always ranked at top
-        entry["source"] = "l0"
-        formatted_l0.append(entry)
-
-    # Combine L0 + retrieved memories, avoiding duplicates
-    seen_ids = set()
-    combined = []
-    for memory in formatted_l0:
-        memory_id = memory.get("id")
-        if memory_id and memory_id not in seen_ids:
-            combined.append(memory)
-            seen_ids.add(memory_id)
-
-    for memory in memories:
-        memory_id = memory.get("id")
-        if memory_id and memory_id not in seen_ids:
-            combined.append(memory)
-            seen_ids.add(memory_id)
-
-    return combined
-
-
-def _as_float(value: object, default: float) -> float:
-    if isinstance(value, bool):
-        return default
-    if isinstance(value, int | float):
-        return float(value)
-    return default
-
-
-def _days_since_accessed(memory: dict[str, object]) -> float:
-    import datetime as dt
-
-    now = dt.datetime.now(dt.timezone.utc)
-    accessed_at = (
-        memory.get("last_accessed_at")
-        or memory.get("updated_at")
-        or memory.get("created_at")
-    )
-    if not isinstance(accessed_at, dt.datetime):
-        return 1.0
-
-    if accessed_at.tzinfo is None:
-        accessed_at = accessed_at.replace(tzinfo=dt.timezone.utc)
-
-    delta = now - accessed_at
-    return max(delta.total_seconds() / 86400.0, 1.0)
-
-
-def _recency_score(days: float) -> float:
-    if days <= 7:
-        return 1.0
-    if days <= 30:
-        return 0.9
-    if days <= 90:
-        return 0.7
-    return 0.5
-
-
-def _source_boost(memory: dict[str, object]) -> float:
-    source_type = str(memory.get("source_type") or "").lower()
-    category = str(memory.get("category") or "").lower()
-
-    if source_type in {"project", "important"}:
-        return 1.2
-    if category == "project":
-        return 1.1
-    return 1.0
 
 
 async def evaluate_single(
@@ -328,6 +366,9 @@ async def evaluate_single(
     question_text: str,
     reference: str,
     category: str,
+    log_retrieval: bool = False,
+    allowed_source_conversation_ids: list[uuid.UUID] | None = None,
+    user_id: uuid.UUID = TEST_USER_ID,
 ) -> dict[str, Any]:
     """Evaluate a single question."""
     # Get query embedding
@@ -336,17 +377,19 @@ async def evaluate_single(
     # Retrieve memories
     memories = await retrieve_user_memories(
         store=store,
-        user_id=TEST_USER_ID,
+        user_id=user_id,
         query_embedding=query_embedding,
         query_text=question_text,
         limit=TOP_K_MEMORIES,
+        log_retrieval=log_retrieval,
+        allowed_source_conversation_ids=allowed_source_conversation_ids,
     )
 
     # Generate answer
     hypothesis = await answer_with_llm(question_text, memories)
 
     # Judge answer
-    judgment = await judge_answer(hypothesis, reference)
+    judgment = await judge_answer(question_text, hypothesis, reference)
 
     return {
         "question_id": question_id,
@@ -405,79 +448,115 @@ def print_results(results: list[dict[str, Any]], accuracy: dict[str, float]) -> 
         judgment = result["judgment"]
         hypothesis = result["hypothesis"][:60]
 
-        status = "✓" if judgment == "correct" else "✗" if judgment == "incorrect" else "~"
+        status = (
+            "✓" if judgment == "correct" else "✗" if judgment == "incorrect" else "~"
+        )
         print(f"{status} [{category}] {qid}: {judgment}")
         print(f"  Hypothesis: {hypothesis}...")
 
 
 async def run_evaluation(
+    dataset_path: Path,
     output_path: Path,
+    checkpoint_path: Path,
     limit: int | None = None,
+    force_retrieval_logging: bool = False,
 ) -> list[dict[str, Any]]:
     """Run the evaluation."""
     from orchestrator.memory.encryption import ContentEncryption
 
     settings = get_settings()
-    
+    dataset = load_dataset(dataset_path)
+    checkpoint_results = load_checkpoint(
+        checkpoint_path,
+        dataset_path=dataset_path,
+    )
+
     if not settings.database_url:
         raise RuntimeError("DATABASE_URL not set")
-    
+
     # Create pool directly
     pool = await asyncpg.create_pool(
         dsn=settings.database_url,
         min_size=2,
         max_size=10,
     )
-    
-    encryption = ContentEncryption(settings.daemon_encryption_key or "")
-    store = MemoryStore(pool, encryption)
 
-    # Load dataset
-    if not DATASET_PATH.exists():
-        raise FileNotFoundError(f"Dataset not found: {DATASET_PATH}")
+    try:
+        encryption = ContentEncryption(settings.daemon_encryption_key or "")
+        store = MemoryStore(pool, encryption)
 
-    with open(DATASET_PATH) as f:
-        dataset = json.load(f)
+        # Process questions
+        questions = dataset if limit is None else dataset[:limit]
+        question_order = [
+            str(entry.get("question_id", f"q{idx}"))
+            for idx, entry in enumerate(questions)
+        ]
 
-    # Process questions
-    results: list[dict[str, Any]] = []
-
-    questions = dataset if limit is None else dataset[:limit]
-
-    print(f"Evaluating {len(questions)} questions...")
-
-    for idx, entry in enumerate(questions):
-        question_id = entry.get("question_id", f"q{idx}")
-        question_text = entry.get("question", "")
-        reference = entry.get("answer", "")
-        category_raw = entry.get("question_type", "single-session-user")
-        category = CATEGORY_MAP.get(category_raw, "IE-user")
-
-        print(f"[{idx + 1}/{len(questions)}] {question_id}...", end=" ", flush=True)
-
-        try:
-            result = await evaluate_single(
-                store=store,
-                question_id=question_id,
-                question_text=question_text,
-                reference=reference,
-                category=category,
+        print(f"Evaluating {len(questions)} questions...")
+        if checkpoint_results:
+            print(
+                f"Resuming from checkpoint: {len(checkpoint_results)} completed questions"
             )
-            results.append(result)
-            print(f"{result['judgment']}")
-        except Exception as e:
-            print(f"ERROR: {e}")
-            results.append({
-                "question_id": question_id,
-                "question": question_text,
-                "reference": reference,
-                "hypothesis": "",
-                "category": category,
-                "judgment": "incorrect",
-                "error": str(e),
-            })
+        if force_retrieval_logging:
+            logger.info("LongMemEval benchmark forcing retrieval logging ON")
 
-    await pool.close()
+        for idx, entry in enumerate(questions):
+            question_id = str(entry.get("question_id", f"q{idx}"))
+            if question_id in checkpoint_results:
+                print(
+                    f"[{idx + 1}/{len(questions)}] {question_id}... SKIP (checkpoint)"
+                )
+                continue
+
+            question_text = entry.get("question", "")
+            reference = entry.get("answer", "")
+            category_raw = entry.get("question_type", "single-session-user")
+            category = CATEGORY_MAP.get(category_raw, "IE-user")
+
+            print(f"[{idx + 1}/{len(questions)}] {question_id}...", end=" ", flush=True)
+
+            try:
+                result = await evaluate_single(
+                    store=store,
+                    question_id=question_id,
+                    question_text=question_text,
+                    reference=reference,
+                    category=category,
+                    log_retrieval=force_retrieval_logging,
+                )
+                checkpoint_results[question_id] = result
+                print(f"{result['judgment']}")
+            except Exception as e:
+                print(f"ERROR: {e}")
+                checkpoint_results[question_id] = {
+                    "question_id": question_id,
+                    "question": question_text,
+                    "reference": reference,
+                    "hypothesis": "",
+                    "category": category,
+                    "judgment": "incorrect",
+                    "error": str(e),
+                }
+
+            ordered_checkpoint_results = [
+                checkpoint_results[qid]
+                for qid in question_order
+                if qid in checkpoint_results
+            ]
+            save_checkpoint(
+                checkpoint_path,
+                dataset_path=dataset_path,
+                results=ordered_checkpoint_results,
+            )
+
+        results = [
+            checkpoint_results[qid]
+            for qid in question_order
+            if qid in checkpoint_results
+        ]
+    finally:
+        await pool.close()
 
     # Calculate accuracy
     accuracy = score_accuracy(results)
@@ -486,22 +565,39 @@ async def run_evaluation(
     print_results(results, accuracy)
 
     # Save results
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w") as f:
-        for result in results:
-            f.write(json.dumps(result) + "\n")
+    write_results_jsonl(output_path, results)
 
     print(f"\nResults saved to: {output_path}")
+    print(f"Checkpoint saved to: {checkpoint_path}")
 
     return results
+
 
 def main():
     parser = argparse.ArgumentParser(description="Run LongMemEval evaluation")
     parser.add_argument(
-        "--output",
+        "--dataset",
         type=Path,
-        default=DEFAULT_OUTPUT_PATH,
-        help=f"Output file path (default: {DEFAULT_OUTPUT_PATH})",
+        default=DEFAULT_DATASET_PATH,
+        help=f"Dataset file path (default: {DEFAULT_DATASET_PATH})",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
+        help=(
+            f"Output directory for {RESULTS_FILENAME} and {CHECKPOINT_FILENAME} "
+            f"(default: {DEFAULT_OUTPUT_DIR})"
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=None,
+        help=(
+            "Optional checkpoint file path "
+            f"(default: <output-dir>/{CHECKPOINT_FILENAME})"
+        ),
     )
     parser.add_argument(
         "--limit",
@@ -522,7 +618,19 @@ def main():
     else:
         logging.basicConfig(level=logging.INFO)
 
-    results = asyncio.run(run_evaluation(args.output, args.limit))
+    output_path, checkpoint_path = resolve_output_paths(
+        output_dir=args.output_dir,
+        checkpoint_path=args.checkpoint,
+    )
+    results = asyncio.run(
+        run_evaluation(
+            dataset_path=args.dataset,
+            output_path=output_path,
+            checkpoint_path=checkpoint_path,
+            limit=args.limit,
+            force_retrieval_logging=True,
+        )
+    )
 
     # Final summary
     accuracy = score_accuracy(results)

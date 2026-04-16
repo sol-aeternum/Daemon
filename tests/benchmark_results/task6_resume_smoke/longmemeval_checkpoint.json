@@ -1,0 +1,813 @@
+{
+  "version": 1,
+  "dataset_path": "/tmp/longmemeval-review/data/longmemeval_s.json",
+  "created_at": "2026-04-12T06:28:04+00:00",
+  "updated_at": "2026-04-12T07:26:29+00:00",
+  "phases": {
+    "ingest": {
+      "status": "running",
+      "started_at": "2026-04-12T06:28:04+00:00",
+      "updated_at": "2026-04-12T07:26:29+00:00",
+      "completed_count": 87,
+      "results": {
+        "0:0:sharegpt_yywfIrx_0": {
+          "session_id": "sharegpt_yywfIrx_0",
+          "conversation_id": "c4fab5c8-7cc3-4fed-9ce4-b2ad2d579d06",
+          "message_count": 2,
+          "status": "extraction_timeout",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 0
+        },
+        "0:1:85a1be56_1": {
+          "session_id": "85a1be56_1",
+          "conversation_id": "416a9e92-0931-4f68-a58a-e463656a7bd1",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 1
+        },
+        "0:2:sharegpt_Jcy1CVN_0": {
+          "session_id": "sharegpt_Jcy1CVN_0",
+          "conversation_id": "5df91456-9cdd-429c-a59e-e4610499b9ec",
+          "message_count": 8,
+          "status": "extraction_timeout",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 2
+        },
+        "0:3:sharegpt_Cr2tc1f_0": {
+          "session_id": "sharegpt_Cr2tc1f_0",
+          "conversation_id": "71e7b451-724b-4e4e-90fb-61bb54bbffcf",
+          "message_count": 8,
+          "status": "extraction_timeout",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 3
+        },
+        "0:4:sharegpt_DGTCD7D_0": {
+          "session_id": "sharegpt_DGTCD7D_0",
+          "conversation_id": "4e0cb5e7-42ef-48a8-8a42-4f8e0ce374d0",
+          "message_count": 4,
+          "status": "extraction_timeout",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 4
+        },
+        "0:5:f6859b48_2": {
+          "session_id": "f6859b48_2",
+          "conversation_id": "c2b65426-29f7-44a6-8a4a-c98314998b7c",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 5
+        },
+        "0:6:52c34859_1": {
+          "session_id": "52c34859_1",
+          "conversation_id": "a3482717-c3c8-4e01-903d-10602fdced28",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 6
+        },
+        "0:7:ultrachat_231069": {
+          "session_id": "ultrachat_231069",
+          "conversation_id": "534dde9c-82ea-4dc7-bbfb-ad4971931d42",
+          "message_count": 6,
+          "status": "extraction_timeout",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 7
+        },
+        "0:8:sharegpt_qRdLQvN_7": {
+          "session_id": "sharegpt_qRdLQvN_7",
+          "conversation_id": "76e4a968-dd48-46a0-9bff-3bfd01d8ffa2",
+          "message_count": 9,
+          "status": "extraction_timeout",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 8
+        },
+        "0:9:ultrachat_359984": {
+          "session_id": "ultrachat_359984",
+          "conversation_id": "76862527-230c-407c-9d8b-bb14bcad2a2a",
+          "message_count": 6,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 9
+        },
+        "0:10:sharegpt_8dJs7Ai_0": {
+          "session_id": "sharegpt_8dJs7Ai_0",
+          "conversation_id": "af74a65d-b53c-4d00-bed3-1b3ef1dd1d9d",
+          "message_count": 16,
+          "status": "extraction_timeout",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 10
+        },
+        "0:11:c3cd646c_1": {
+          "session_id": "c3cd646c_1",
+          "conversation_id": "83ac8624-b14b-45b3-bb97-0583103cbb4c",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 11
+        },
+        "0:12:4fd76316": {
+          "session_id": "4fd76316",
+          "conversation_id": "3029180b-bd9e-459b-bb8f-ba29f5018b4f",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 12
+        },
+        "0:13:7045db85_1": {
+          "session_id": "7045db85_1",
+          "conversation_id": "b9abe2de-9289-439d-baed-5f1a07ae545a",
+          "message_count": 12,
+          "status": "extraction_timeout",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 13
+        },
+        "0:14:ultrachat_422229": {
+          "session_id": "ultrachat_422229",
+          "conversation_id": "89714f87-94ea-4918-abc6-42a3264c3508",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 14
+        },
+        "0:15:ultrachat_215809": {
+          "session_id": "ultrachat_215809",
+          "conversation_id": "832db5e0-a7ac-4be8-8dbd-ab7a1b942570",
+          "message_count": 10,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 15
+        },
+        "0:16:41abc171_4": {
+          "session_id": "41abc171_4",
+          "conversation_id": "6d1db3ea-d1bd-4795-a3a1-73e94ca08687",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 16
+        },
+        "0:17:5dac7cc2_1": {
+          "session_id": "5dac7cc2_1",
+          "conversation_id": "f7dfce4a-9e5d-48e6-b959-2f7a63a4f41d",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 17
+        },
+        "0:18:sharegpt_rnG0ZuV_0": {
+          "session_id": "sharegpt_rnG0ZuV_0",
+          "conversation_id": "2bfe0b35-032f-4d7b-8467-7ad22f42c05b",
+          "message_count": 2,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 18
+        },
+        "0:19:3418b277_3": {
+          "session_id": "3418b277_3",
+          "conversation_id": "f258ca31-a26c-4744-9341-c37e03784863",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 19
+        },
+        "0:20:sharegpt_UnjngE7_65": {
+          "session_id": "sharegpt_UnjngE7_65",
+          "conversation_id": "ea8b7b6f-1a31-42f9-9dc2-53c240edbb8a",
+          "message_count": 15,
+          "status": "extraction_timeout",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 20
+        },
+        "0:21:aae4411b_2": {
+          "session_id": "aae4411b_2",
+          "conversation_id": "9ca5fb4b-6127-4eb2-8ef2-be809f436cdd",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 21
+        },
+        "0:22:2ae4f277_2": {
+          "session_id": "2ae4f277_2",
+          "conversation_id": "7aa8a5ca-2e7f-4163-816d-90ede3d05af6",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 22
+        },
+        "0:23:sharegpt_jVow2vn_0": {
+          "session_id": "sharegpt_jVow2vn_0",
+          "conversation_id": "cd78b9b6-a1ea-4770-b8b7-8a3ed15ab677",
+          "message_count": 2,
+          "status": "extraction_timeout",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 23
+        },
+        "0:24:ultrachat_45576": {
+          "session_id": "ultrachat_45576",
+          "conversation_id": "a1df411f-0d42-4191-b252-951572fab762",
+          "message_count": 14,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 24
+        },
+        "0:25:ultrachat_530213": {
+          "session_id": "ultrachat_530213",
+          "conversation_id": "1533b92c-d6a3-4fbe-82dd-30788d31bd75",
+          "message_count": 8,
+          "status": "extraction_timeout",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 25
+        },
+        "0:26:47f00a5f": {
+          "session_id": "47f00a5f",
+          "conversation_id": "859b4fc1-21ed-43b3-ae9d-af347e062f87",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 26
+        },
+        "0:27:978c0e70": {
+          "session_id": "978c0e70",
+          "conversation_id": "1908f27b-f6ef-4334-a94b-950388ac0655",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 27
+        },
+        "0:28:ultrachat_336116": {
+          "session_id": "ultrachat_336116",
+          "conversation_id": "1533dde9-fa56-4922-98b7-a4a02d92f51b",
+          "message_count": 14,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 28
+        },
+        "0:29:sharegpt_T1EiHWI_13": {
+          "session_id": "sharegpt_T1EiHWI_13",
+          "conversation_id": "58a8557a-d05d-45d3-9123-fa8995e5c06a",
+          "message_count": 13,
+          "status": "extraction_timeout",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 29
+        },
+        "0:30:3b3a77d9": {
+          "session_id": "3b3a77d9",
+          "conversation_id": "9f69ca77-36e1-4f4a-b406-7ce2decf094b",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 30
+        },
+        "0:31:a041cdd4_3": {
+          "session_id": "a041cdd4_3",
+          "conversation_id": "619eb5e4-48c5-4e75-ad2b-973b45cd2bc8",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 31
+        },
+        "0:32:sharegpt_1L5GXZJ_0": {
+          "session_id": "sharegpt_1L5GXZJ_0",
+          "conversation_id": "7bd2a5fe-ded5-4e96-a448-73f0ca93830a",
+          "message_count": 2,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 32
+        },
+        "0:33:ultrachat_574556": {
+          "session_id": "ultrachat_574556",
+          "conversation_id": "21f887fe-949c-4d0c-865a-85d480ae708a",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 33
+        },
+        "0:34:sharegpt_gTknhGs_0": {
+          "session_id": "sharegpt_gTknhGs_0",
+          "conversation_id": "e97be22d-87bd-4cb6-a0c3-bc3dfdf253ed",
+          "message_count": 4,
+          "status": "extraction_timeout",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 34
+        },
+        "0:35:d414cac5_4": {
+          "session_id": "d414cac5_4",
+          "conversation_id": "22937736-6b0c-4ef4-8844-bfefb6594769",
+          "message_count": 12,
+          "status": "extraction_timeout",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 35
+        },
+        "0:36:ultrachat_214101": {
+          "session_id": "ultrachat_214101",
+          "conversation_id": "cec4a47c-7a1d-4674-a49e-f01fcef8ac51",
+          "message_count": 12,
+          "status": "extraction_timeout",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 36
+        },
+        "0:37:ultrachat_286075": {
+          "session_id": "ultrachat_286075",
+          "conversation_id": "ea6465a9-f933-4dad-b8a4-c946252b6335",
+          "message_count": 12,
+          "status": "extraction_timeout",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 37
+        },
+        "0:38:ultrachat_57566": {
+          "session_id": "ultrachat_57566",
+          "conversation_id": "fb0b69dc-2831-4cc7-8fbe-bf0772f9b179",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 38
+        },
+        "0:39:sharegpt_PdnvIns_0": {
+          "session_id": "sharegpt_PdnvIns_0",
+          "conversation_id": "2d66ed0a-eafb-461f-8d27-5a724782ad65",
+          "message_count": 8,
+          "status": "extraction_timeout",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 39
+        },
+        "0:40:ultrachat_514031": {
+          "session_id": "ultrachat_514031",
+          "conversation_id": "7a3f411b-c3a7-4f0f-943c-93182f3b8eda",
+          "message_count": 14,
+          "status": "extraction_timeout",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 40
+        },
+        "0:41:ec6ca9ef": {
+          "session_id": "ec6ca9ef",
+          "conversation_id": "cd260eaa-632e-42de-831b-2191daa356a8",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 41
+        },
+        "0:42:d94b721b": {
+          "session_id": "d94b721b",
+          "conversation_id": "74e7a9f7-b0c3-4fd2-abbc-512bfde0e964",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 42
+        },
+        "0:43:sharegpt_QZMeA7V_17": {
+          "session_id": "sharegpt_QZMeA7V_17",
+          "conversation_id": "d804c867-dff2-4c54-aef0-f0bd57978118",
+          "message_count": 11,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 43
+        },
+        "0:44:sharegpt_BvwQVCO_0": {
+          "session_id": "sharegpt_BvwQVCO_0",
+          "conversation_id": "5dc313ab-8c07-49c5-8dc5-420455f00dea",
+          "message_count": 2,
+          "status": "extraction_timeout",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 44
+        },
+        "0:45:e348269f_1": {
+          "session_id": "e348269f_1",
+          "conversation_id": "30ce741a-1cf1-4796-83fb-3b77100df41a",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 45
+        },
+        "0:46:0586f435_3": {
+          "session_id": "0586f435_3",
+          "conversation_id": "283941dd-d759-4ba5-b4d7-949e4b46729a",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 46
+        },
+        "0:47:ultrachat_458322": {
+          "session_id": "ultrachat_458322",
+          "conversation_id": "89c620d6-1836-4b77-b31a-16e7bf772700",
+          "message_count": 14,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 47
+        },
+        "0:48:02bd2b90_3": {
+          "session_id": "02bd2b90_3",
+          "conversation_id": "6bbc35c3-e315-4c0b-a817-d0ddcbc30635",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 48
+        },
+        "0:49:e27891d3_2": {
+          "session_id": "e27891d3_2",
+          "conversation_id": "b4b0a6a3-8958-46e1-81ca-2dd9cb3a4f97",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 49
+        },
+        "0:50:ultrachat_486410": {
+          "session_id": "ultrachat_486410",
+          "conversation_id": "7ea07651-5822-4025-92f3-d772ff0f2577",
+          "message_count": 10,
+          "status": "extraction_timeout",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 50
+        },
+        "0:51:answer_280352e9": {
+          "session_id": "answer_280352e9",
+          "conversation_id": "45e07558-993d-4ea8-b016-2173c287e5d4",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 51
+        },
+        "0:52:84503ce4_1": {
+          "session_id": "84503ce4_1",
+          "conversation_id": "d8d611c7-bf93-4664-a73f-4831c6608496",
+          "message_count": 12,
+          "status": "extraction_timeout",
+          "entry_index": 0,
+          "question_id": "e47becba",
+          "session_index": 52
+        },
+        "1:0:db73b7e4_4": {
+          "session_id": "db73b7e4_4",
+          "conversation_id": "9bc524c9-6618-4a35-8f6b-ff7d378b3452",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 0
+        },
+        "1:1:sharegpt_5V5H2HN_0": {
+          "session_id": "sharegpt_5V5H2HN_0",
+          "conversation_id": "5dbd3ec2-2ef7-4e01-b560-6c1e0e548e74",
+          "message_count": 10,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 1
+        },
+        "1:2:ultrachat_577747": {
+          "session_id": "ultrachat_577747",
+          "conversation_id": "6928d7a8-60d1-41ff-834d-ecbf772f6889",
+          "message_count": 14,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 2
+        },
+        "1:3:f0fc84ea": {
+          "session_id": "f0fc84ea",
+          "conversation_id": "961414cd-2a7a-40ff-ab1a-8573ac33af41",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 3
+        },
+        "1:4:a0b8b0ad_6": {
+          "session_id": "a0b8b0ad_6",
+          "conversation_id": "24317f24-dd12-45d7-b838-a79ff8ab130f",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 4
+        },
+        "1:5:ultrachat_311002": {
+          "session_id": "ultrachat_311002",
+          "conversation_id": "b7a8ea43-9dba-433a-b000-2b83b81f01fc",
+          "message_count": 8,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 5
+        },
+        "1:6:ultrachat_368854": {
+          "session_id": "ultrachat_368854",
+          "conversation_id": "f6597e42-6b2d-47a8-8791-d0e00841f361",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 6
+        },
+        "1:7:answer_40a90d51": {
+          "session_id": "answer_40a90d51",
+          "conversation_id": "14d8e666-adf3-47cd-8d65-51989698df89",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 7
+        },
+        "1:8:0afa904a": {
+          "session_id": "0afa904a",
+          "conversation_id": "8ed11f33-ad31-4918-8039-57e51d6dea4e",
+          "message_count": 12,
+          "status": "extraction_timeout",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 8
+        },
+        "1:9:ultrachat_387144": {
+          "session_id": "ultrachat_387144",
+          "conversation_id": "be0ac491-cd9a-4eb9-94a1-f91f6cb691c8",
+          "message_count": 14,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 9
+        },
+        "1:10:ultrachat_116883": {
+          "session_id": "ultrachat_116883",
+          "conversation_id": "677ad50b-a068-4dc0-a7c4-54724d943be1",
+          "message_count": 6,
+          "status": "extraction_timeout",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 10
+        },
+        "1:11:sharegpt_brc2wJS_109": {
+          "session_id": "sharegpt_brc2wJS_109",
+          "conversation_id": "f68cbe13-a4b5-4475-b5f4-018e789324bd",
+          "message_count": 23,
+          "status": "extraction_timeout",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 11
+        },
+        "1:12:febc8622": {
+          "session_id": "febc8622",
+          "conversation_id": "68a94bd7-b095-42ee-9146-9581c016ad5d",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 12
+        },
+        "1:13:ultrachat_392094": {
+          "session_id": "ultrachat_392094",
+          "conversation_id": "430afbdd-e1d0-4c6e-9c17-699c7bd87733",
+          "message_count": 10,
+          "status": "extraction_timeout",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 13
+        },
+        "1:14:7d8b5834_1": {
+          "session_id": "7d8b5834_1",
+          "conversation_id": "f992d386-4532-40fb-be1d-a7bc0d481c45",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 14
+        },
+        "1:15:db50c0f6": {
+          "session_id": "db50c0f6",
+          "conversation_id": "42fd16fa-94bb-4d10-822f-2cdf22d8a57f",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 15
+        },
+        "1:16:927b9087": {
+          "session_id": "927b9087",
+          "conversation_id": "75e33ed5-0c83-4991-9d04-321a2ee511f9",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 16
+        },
+        "1:17:ultrachat_20736": {
+          "session_id": "ultrachat_20736",
+          "conversation_id": "b9f53e3e-95d7-4aeb-af98-e507d9e5ef91",
+          "message_count": 8,
+          "status": "extraction_timeout",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 17
+        },
+        "1:18:sharegpt_i1iuP70_0": {
+          "session_id": "sharegpt_i1iuP70_0",
+          "conversation_id": "af0c80a4-c9ad-4a42-a425-329541df41ad",
+          "message_count": 8,
+          "status": "extraction_timeout",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 18
+        },
+        "1:19:1f88b2b3": {
+          "session_id": "1f88b2b3",
+          "conversation_id": "26d3d00b-9632-42c8-a3c9-08a7857c6dd5",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 19
+        },
+        "1:20:afe04238_1": {
+          "session_id": "afe04238_1",
+          "conversation_id": "61716e03-757d-45bb-b255-e900c6f651eb",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 20
+        },
+        "1:21:sharegpt_0Zvzz4F_0": {
+          "session_id": "sharegpt_0Zvzz4F_0",
+          "conversation_id": "0a929421-b4c5-4c2c-bc79-29adc25f5a64",
+          "message_count": 10,
+          "status": "extraction_timeout",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 21
+        },
+        "1:22:9ee69ca6_2": {
+          "session_id": "9ee69ca6_2",
+          "conversation_id": "81d4e706-fb62-4e43-b075-d017b538f10d",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 22
+        },
+        "1:23:sharegpt_6poO9nA_41": {
+          "session_id": "sharegpt_6poO9nA_41",
+          "conversation_id": "b1114f30-3f58-4b70-a9d3-9b9ef1a53c6b",
+          "message_count": 9,
+          "status": "extraction_timeout",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 23
+        },
+        "1:24:5dce60dd": {
+          "session_id": "5dce60dd",
+          "conversation_id": "97ff139e-e279-4c39-975f-54909439dbc5",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 24
+        },
+        "1:25:b5f561f5_2": {
+          "session_id": "b5f561f5_2",
+          "conversation_id": "e2994d05-e152-4acc-bdda-14039175aeda",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 25
+        },
+        "1:26:65698aa9_4": {
+          "session_id": "65698aa9_4",
+          "conversation_id": "bf8acd48-13b7-40d7-a4cc-5493e4940415",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 26
+        },
+        "1:27:ultrachat_423307": {
+          "session_id": "ultrachat_423307",
+          "conversation_id": "f8052f49-1f77-410b-937b-dbb532b3b904",
+          "message_count": 6,
+          "status": "extraction_timeout",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 27
+        },
+        "1:28:sharegpt_dabXXRO_10": {
+          "session_id": "sharegpt_dabXXRO_10",
+          "conversation_id": "984bf2c8-6f4f-480e-aa1b-f2ba531aaaba",
+          "message_count": 6,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 28
+        },
+        "1:29:c22571ff_2": {
+          "session_id": "c22571ff_2",
+          "conversation_id": "b5430ff9-1d8a-4644-ad86-8c4e77bffb88",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 29
+        },
+        "1:30:004edb32": {
+          "session_id": "004edb32",
+          "conversation_id": "3c3fa299-0216-4a71-a8e0-23a382b497ec",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 30
+        },
+        "1:31:5209e813_2": {
+          "session_id": "5209e813_2",
+          "conversation_id": "b9e68f8e-f4cb-4133-bc3a-2381ee05f8c8",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 31
+        },
+        "1:32:628c958c_7": {
+          "session_id": "628c958c_7",
+          "conversation_id": "53dfffbe-b38a-41c6-8b88-f468762240be",
+          "message_count": 12,
+          "status": "complete",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 32
+        },
+        "1:33:sharegpt_SrUdspT_0": {
+          "session_id": "sharegpt_SrUdspT_0",
+          "conversation_id": "3352ea34-43ae-43bf-97b4-27fdb3bdc2f2",
+          "message_count": 2,
+          "status": "extraction_timeout",
+          "entry_index": 1,
+          "question_id": "118b2229",
+          "session_index": 33
+        }
+      }
+    },
+    "evaluate": {
+      "status": "pending",
+      "started_at": null,
+      "updated_at": null,
+      "completed_count": 0,
+      "results": {}
+    },
+    "score": {
+      "status": "pending",
+      "started_at": null,
+      "updated_at": null,
+      "completed_count": 0,
+      "accuracy": {}
+    }
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "generated_at": "2026-04-14T13:30:00Z",
+  "data_source": "longmemeval_fast_checkpoint.json (analyzed without live database retrieval_log)",
+  "data_source_note": "The benchmark user was deleted after the run. Live retrieval_log entries (candidate_ids, selected_ids) are not preserved in the checkpoint file. This diagnostics output is derived from checkpoint judgment data only.",
+  "total_questions": 500,
+  "judgment_counts": {
+    "correct": 311,
+    "partially_correct": 189,
+    "incorrect": 0
+  },
+  "failure_mode_note": "Zero 'incorrect' judgments in the dataset. All 500 questions received either 'correct' or 'partially_correct' judgments. Since 'incorrect'=0, extraction_miss/retrieval_miss/reader_failure classification via live retrieval_log is not applicable.",
+  "failure_mode_counts": {
+    "extraction_miss": 0,
+    "retrieval_miss": 0,
+    "reader_failure": 0,
+    "unknown": 0,
+    "not_applicable_no_wrong_answers": 500
+  },
+  "category_breakdown": {
+    "IE-user": {
+      "total": 70,
+      "correct": 37,
+      "partially_correct": 33,
+      "incorrect": 0,
+      "accuracy": 0.764
+    },
+    "IE-preference": {
+      "total": 30,
+      "correct": 4,
+      "partially_correct": 26,
+      "incorrect": 0,
+      "accuracy": 0.567
+    },
+    "IE-assistant": {
+      "total": 56,
+      "correct": 36,
+      "partially_correct": 20,
+      "incorrect": 0,
+      "accuracy": 0.821
+    },
+    "MR": {
+      "total": 133,
+      "correct": 96,
+      "partially_correct": 37,
+      "incorrect": 0,
+      "accuracy": 0.861
+    },
+    "TR": {
+      "total": 133,
+      "correct": 92,
+      "partially_correct": 41,
+      "incorrect": 0,
+      "accuracy": 0.846
+    },
+    "KU": {
+      "total": 78,
+      "correct": 46,
+      "partially_correct": 32,
+      "incorrect": 0,
+      "accuracy": 0.795
+    }
+  },
+  "weakest_category": {
+    "name": "IE-preference",
+    "accuracy": 0.567,
+    "partially_correct_rate": 0.867,
+    "note": "IE-preference has the highest partially_correct rate (26/30 = 86.7%), indicating answers are directionally correct but missing or misapplying preference details."
+  },
+  "retrieval_stats": {
+    "avg_memories_used": 4.81,
+    "avg_chunks": 331.74,
+    "avg_sessions": 47.708
+  },
+  "limitations": [
+    "Live retrieval_log data not available (benchmark user deleted after run)",
+    "Cannot perform true failure-mode classification (extraction_miss/retrieval_miss/reader_failure) without candidate/selected memory IDs",
+    "Checkpoint preserves judgment results but not retrieval evidence",
+    "Diagnostics module requires asyncpg database connection and user_id with retrieval_log entries"
+  ],
+  "diagnostics_module_cli": "uv run python -m orchestrator.eval.diagnostics --results tests/benchmark_results/longmemeval_tier2_fast/longmemeval_fast_results.jsonl --user-id <uuid> --output-dir tests/benchmark_results",
+  "diagnostics_module_note": "To run live diagnostics, a benchmark user with active retrieval_log entries is required. The fast harness creates isolated users that are deleted after each run."
+}

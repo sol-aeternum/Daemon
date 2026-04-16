@@ -1,5 +1,183 @@
 # TRIAGE.md
 
+## 2026-04-16 23:37 — Autonomous-edit toggle still crashes on live deprecated skills
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: autonomous-skill-creation final F3 hands-on QA verdict
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: The current `/settings/skills` page loads and the list/detail/download/admin-sync paths work, but clicking **Allow autonomous edits** on a live system skill still fails end-to-end. The browser shows `Failed to update autonomous edit setting.` and the backing `PATCH /skills/{id}/autonomous-edit` route returns `500`.
+- **Evidence**:
+  - Browser QA on `http://127.0.0.1:3000/settings/skills` captured `toggleStatus: 500`, `errorVisible: true`, and `successVisible: false` immediately after clicking the checkbox for `pending-skill`.
+  - Direct API call: `PATCH /skills/pending-skill/autonomous-edit HTTP/1.1` → `500 Internal Server Error`
+  - Backend traceback: `asyncpg.exceptions.DataError: invalid input for query argument $13: {'deprecated': True, ...} (expected str, got dict)`
+  - Trace path: `/app/orchestrator/routes/skills.py:273` → `store.upsert_projection(...)`
+- **Likely cause**: The autonomous-edit route reuses `projection.get("pending_update")` as a Python dict when calling `SkillProjectionStore.upsert_projection()`, but that store path is still binding the JSONB argument as a string-encoded value rather than a native JSONB-compatible payload (confidence 93%).
+- **Suggested action**: Fix the autonomous-edit projection upsert path to serialize/bind `pending_update` consistently with the successful list/detail reads, then re-run live browser QA on `/settings/skills` to verify the checkbox updates instead of surfacing the error banner.
+
+## 2026-04-16 23:35 — Repository-Wide BasedPyright Warning Debt Dominates Backend Diagnostics
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: whole-repo audit verification
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: Running `lsp_diagnostics` over `orchestrator/` returned zero errors but a very large warning backlog, making static-signal triage noisy and obscuring high-value regressions.
+- **Evidence**:
+  - `Directory: /home/sol/daemon/orchestrator ... Files scanned: 50 (capped at 50) ... Files with errors: 0 ... Total diagnostics: 2169`
+  - Representative warnings concentrated in `orchestrator/db.py`, `orchestrator/memory/embedding.py`, `orchestrator/memory/summary.py`, `orchestrator/memory/summarization.py`, and `orchestrator/memory/trust*.py` (`reportExplicitAny`, `reportUnknown*`, `reportMissingTypeStubs`, `reportUnusedCallResult`).
+- **Likely cause**: The repository keeps strict BasedPyright warning rules enabled while core data/integration modules intentionally use dynamic third-party APIs (LiteLLM/asyncpg dict payloads), accumulating long-lived warning debt (confidence 91%).
+- **Suggested action**: Establish a warning-budget strategy (targeted suppressions, typed adapter layers, or staged cleanup) so CI/static checks can surface new high-impact issues instead of warning flood.
+
+## 2026-04-15 12:57 — Subagent Task Delegation Hit Workspace CreditsError
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: autonomous-skill-creation Task 1 delegation retry gate
+- **Category**: dependency
+- **Blocked current task**: yes
+- **What happened**: The first delegated attempt to write `.sisyphus/plans/skill-integration-decision.md` failed before producing usable work because the monitored subagent session returned `Unauthorized` with a nested `CreditsError` for insufficient workspace balance.
+- **Evidence**:
+  - `Unauthorized: {"type":"error","error":{"type":"CreditsError","message":"Insufficient balance. Manage your billing here: https://opencode.ai/workspace/wrk_01KFQJSNM8KAAP52SN02MF4GTQ/billing"}}`
+- **Likely cause**: The selected subagent/model route for the first Task 1 delegation required workspace credits that are currently unavailable for that provider path (confidence 93%).
+- **Suggested action**: Retry the task with an available agent/model route or restore workspace billing balance before relying on this provider for further delegations.
+
+## 2026-04-14 23:47 — LSP JSON Diagnostics Blocked By Missing Biome Server
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: artifact-only Task 15/Task 16 trust refresh verification
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: `lsp_diagnostics` could not run against `tests/benchmark_results/` because the configured JSON-capable LSP server (`biome`) is not installed in this environment.
+- **Evidence**:
+  - `Error: LSP server 'biome' is configured but NOT INSTALLED.`
+  - `Command not found: biome`
+- **Likely cause**: The workspace/tooling configuration expects Biome for JSON diagnostics, but the binary is unavailable in the current shell/runtime (confidence 97%).
+- **Suggested action**: Install `@biomejs/biome` or adjust the diagnostics/tooling configuration so JSON artifact checks do not depend on an unavailable server.
+
+## 2026-04-14 12:44 — LiteLLM Printed Repeated Provider Help During One-Scenario Benchmark Run
+- **Severity**: warning
+- **Scope**: upstream
+- **Encountered during**: deterministic extraction benchmark one-scenario CLI verification
+- **Category**: dependency
+- **Blocked current task**: no
+- **What happened**: The one-scenario `tests/benchmark_extraction.py` verification run completed successfully and no longer hit the nested event-loop crash, but LiteLLM repeatedly printed `Provider List: https://docs.litellm.ai/docs/providers` to stdout during extraction calls.
+- **Evidence**:
+  - One-scenario direct run output printed the same `Provider List: https://docs.litellm.ai/docs/providers` line 12 times between transcript replay and result reporting.
+- **Likely cause**: LiteLLM emitted provider-resolution/help output during repeated extraction-model calls even though the configured model still returned usable benchmark results (confidence 70%).
+- **Suggested action**: If this keeps cluttering benchmark output, inspect the active LiteLLM/provider configuration for extraction-model resolution and suppress or redirect this help-text noise in benchmark runs.
+- **Seen again**: 2026-04-16 during autonomous-skill-creation Task 13 when `PYTHONPATH=. python tests/benchmark_extraction.py --json --no-save` passed but printed `Provider List: https://docs.litellm.ai/docs/providers` repeatedly throughout the 8-scenario run.
+
+## 2026-04-16 03:40 — Extraction Benchmark Dedup Supersession Still Leaves Corolla Facts Active
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: autonomous-skill-creation Task 13 memory extraction benchmark verification
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: The full extraction benchmark passed its headline precision/recall guardrails, but Scenario 3 (Corrections and Supersession) still reported failed dedup expectations because the superseded Corolla fact and its correction remained active instead of being retired after the Tesla replacement fact was written.
+- **Evidence**:
+  - `Dedup post-close skipped family=vehicle keep_id=None`
+  - `✗ DEDUP: 'User drives a 2019 Toyota Corolla' active=True, expected active=False`
+  - `✗ DEDUP: 'User sold the Corolla last month' active=True, expected active=False`
+  - Full run still ended with `TOTAL ... P=1.00 R=1.00` and `✅ BENCHMARK PASSED`
+- **Likely cause**: The correction/supersession dedup path appears to miss the vehicle-family closeout in this benchmark replay, so retrieval-quality guardrails pass while bitemporal cleanup remains incomplete (confidence 81%).
+- **Suggested action**: Inspect the correction/post-close dedup flow for `family=vehicle` in the replayed extraction path and decide whether the benchmark should fail when `dedup_results` contain `pass: false`.
+
+## 2026-04-14 12:31 — BasedPyright Warning Debt Remains In Benchmark Harness Files
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: extraction benchmark harness stabilization
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: Error-level diagnostics are clean on the modified benchmark files, but `lsp_diagnostics` still reports warning-level BasedPyright debt in `tests/benchmark_extraction.py` and the new focused test file due dynamic asyncpg imports, `Any`-heavy benchmark helpers, and test doubles.
+- **Evidence**:
+  - `tests/benchmark_extraction.py` warnings included `reportMissingTypeStubs` for `asyncpg`, `reportExplicitAny`, and `reportUnusedCallResult`
+  - `tests/test_benchmark_extraction.py` warnings included `reportExplicitAny` around fake store/test-double helpers
+- **Likely cause**: The benchmark harness intentionally uses dynamic runtime imports and thin test doubles around asyncpg/store behavior, while BasedPyright is configured to warn aggressively on `Any` and missing stubs in this repository (confidence 94%).
+- **Suggested action**: If warning cleanup matters later, add narrower local helper types/protocols or targeted Pyright suppressions for benchmark-only harness/test code.
+
+## 2026-04-14 08:28 — Tier 2 Fast Artifact Directory Was Root-Owned
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Task 6 fast baseline artifact repair
+- **Category**: config
+- **Blocked current task**: yes
+- **What happened**: The existing `tests/benchmark_results/longmemeval_tier2_fast/` artifact files were owned by `root`, so the host-shell repair script could not remove the 11 tainted rows from `longmemeval_fast_results.jsonl` and `longmemeval_fast_checkpoint.json`.
+- **Evidence**:
+  - `PermissionError: [Errno 13] Permission denied: '/home/sol/daemon/tests/benchmark_results/longmemeval_tier2_fast/longmemeval_fast_results.jsonl'`
+  - `ls -l tests/benchmark_results/longmemeval_tier2_fast` showed `root root` ownership for the checkpoint/results files before repair.
+- **Likely cause**: The original benchmark run was executed inside the backend container as root against a bind-mounted workspace, so the generated artifact files were written with root ownership on the host (confidence 98%).
+- **Suggested action**: Either standardize benchmark execution on the host user or `chown` container-written artifact directories after completion so future resume/repair runs are writable from the shell.
+
+## 2026-04-14 08:24 — Shared Benchmark User Caused Fast Harness FK Race
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 6 fast baseline closure repair
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: The fast harness reused the global LongMemEval benchmark user (`TEST_USER_ID`), and its per-question cleanup deletes all conversations for that user. That made the harness vulnerable to overlapping cleanup from another LongMemEval process or repair run deleting freshly created conversations between conversation creation and direct memory insert, producing intermittent `memories_source_conversation_id_fkey` failures.
+- **Evidence**:
+  - 11 contiguous rows in `tests/benchmark_results/longmemeval_tier2_fast/longmemeval_fast_results.jsonl` had `chunk_count = 0`, `session_count = 0`, and `error = insert or update on table "memories" violates foreign key constraint "memories_source_conversation_id_fkey"`
+  - The failing `source_conversation_id` values differed per question, and the block later recovered without any data-specific harness change.
+  - `orchestrator/eval/longmemeval_fast.py` previously called `cleanup_benchmark_state(... TEST_USER_ID)` and `evaluate_single(...)` against the shared benchmark user while using direct inserts that depend on conversation rows staying present.
+- **Likely cause**: Shared mutable benchmark state across runs let another LongMemEval cleanup path delete the active fast harness conversations mid-import; this is consistent with the contiguous failure window and the fact that single-question isolated smoke runs passed (confidence 88%).
+- **Suggested action**: Keep `longmemeval_fast` on an isolated per-run benchmark user and avoid reintroducing the shared `TEST_USER_ID` into this harness path.
+
+## 2026-04-13 21:45 — LongMemEval Fast Insert SQL Placeholder Mismatch
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Small real fast-harness smoke run
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: The first live `longmemeval_fast` smoke run failed before retrieval because the direct memory insert SQL referenced `to_tsvector('english', $15)` even though the statement only bound 13 parameters.
+- **Evidence**:
+  - `asyncpg.exceptions.IndeterminateDatatypeError: could not determine data type of parameter $13`
+  - `orchestrator/eval/longmemeval_fast.py` insert statement originally used `to_tsvector('english', $15)` while passing 13 bind args.
+- **Likely cause**: The new direct-insert SQL was adapted from the production insert shape, but the `content_tsv` placeholder index was not updated after trimming the parameter list for the standalone harness (confidence 98%).
+- **Suggested action**: Keep the regression test assertion on the insert query placeholder and rerun a live smoke whenever this SQL changes.
+
+## 2026-04-13 21:41 — BasedPyright Warning Debt In `longmemeval_fast.py`
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Changed-file diagnostics for the fast harness
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: `lsp_diagnostics` on the new `orchestrator/eval/longmemeval_fast.py` file reported warning-level BasedPyright debt around dynamic `asyncpg` usage, argparse call-result handling, and strict `Any` rules, even after the file was brought to zero error-level diagnostics.
+- **Evidence**:
+  - `warning[basedpyright] (reportMissingTypeStubs): Stub file not found for "asyncpg"`
+  - `warning[basedpyright] (reportUnknownMemberType): Type of "execute" is partially unknown`
+  - `warning[basedpyright] (reportExplicitAny): Type 'Any' is not allowed`
+- **Likely cause**: The project is running strict BasedPyright checks against dynamic asyncpg/argparse-heavy orchestration code without dedicated stubs or local type-narrowing for every call site (confidence 90%).
+- **Suggested action**: If warning cleanup becomes important, add narrower local helper types/casts for pool operations and argparse parsing, or explicitly suppress this style of dynamic integration code.
+
+## 2026-04-12 15:58 — LongMemEval Verbose Mode Leaks Provider API Key
+- **Severity**: critical
+- **Scope**: upstream
+- **Encountered during**: Task 6 resume smoke verification
+- **Category**: security
+- **Blocked current task**: no
+- **What happened**: Running the canonical LongMemEval command with `--verbose` enabled LiteLLM debug logging that printed the configured OpenRouter API key in plaintext in the process output while ingesting the benchmark dataset.
+- **Evidence**:
+  - `LiteLLM:DEBUG ... litellm.acompletion(... api_key='sk-or-v1-...')`
+  - The leak appeared in the smoke command output for `python -m orchestrator.eval.longmemeval run ... --verbose`.
+- **Likely cause**: LiteLLM debug logging includes raw request parameters, and the benchmark/runner logging path does not redact provider credentials before those parameters are logged (confidence 95%).
+- **Suggested action**: Avoid `--verbose` in environments with live credentials, and add credential redaction or safer debug logging defaults around provider calls before relying on verbose mode for production/debug benchmark runs.
+
+## 2026-04-13 11:12 — `uv run pytest` Misses Repo Root On PYTHONPATH
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: LongMemEval corpus-first redesign verification
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: The first focused verification command failed during pytest startup before reaching the changed LongMemEval tests because `tests/conftest.py` could not import `orchestrator` when invoked as `uv run pytest ...` from the repo root.
+- **Evidence**:
+  - `ImportError while loading conftest '/home/sol/daemon/tests/conftest.py'.`
+  - `tests/conftest.py:8: in <module>`
+  - `E   ModuleNotFoundError: No module named 'orchestrator'`
+- **Likely cause**: The host-shell `uv run pytest` invocation in this workspace is not adding the repository root to `sys.path`, so package-style imports rely on `PYTHONPATH=.` or an editable install to resolve local modules (confidence 90%).
+- **Suggested action**: Standardize test invocation on `PYTHONPATH=. uv run pytest ...` or package the repo so `orchestrator` resolves consistently in host-shell verification flows.
+- **Seen again**: 2026-04-15 during Task 1 regression gate verification — plain `pytest tests/test_longmemeval_fast.py tests/test_longmemeval_runner.py tests/test_longmemeval_ingest.py` failed with `ModuleNotFoundError: No module named 'orchestrator'`; confirmed `PYTHONPATH=. pytest ...` passes (29 tests).
+- **Seen again**: 2026-04-16 during autonomous-skill-creation Task 11 focused suite verification — exact `pytest tests/test_skill_extraction_prompt.py tests/test_skill_dedup.py tests/test_skill_injection.py tests/test_skill_manage.py tests/test_skill_protection.py tests/test_skill_api_contracts.py -q` failed in `tests/conftest.py` with `ModuleNotFoundError: No module named 'orchestrator'`; confirmed the same six-file suite passes as `PYTHONPATH=. pytest ...` (88 tests).
+- **Seen again**: 2026-04-16 during autonomous-skill-creation Task 13 when `python tests/benchmark_extraction.py --json --no-save` failed in `tests/benchmark_extraction.py:465` with `ModuleNotFoundError: No module named 'orchestrator'`; the benchmark script also requires `PYTHONPATH=.` in this host-shell setup.
+
 ## 2026-04-06 — LongMemEval Re-ingestion Blocked (TODO 5)
 - **Severity**: critical
 - **Scope**: host
@@ -7,6 +185,8 @@
 - **Category**: config
 - **Blocked current task**: yes
 - **Seen again**: 2026-04-10 during selective-assistant-extraction Task 9 when `PYTHONPATH=. python tests/longmemeval/evaluate.py --limit 10` failed with `socket.gaierror: [Errno -2] Name or service not known` while resolving the configured Postgres host.
+- **Seen again**: 2026-04-12 during Task 15 reasoning-quality validation when host-side asyncpg inspection scripts failed with `socket.gaierror: [Errno -2] Name or service not known` against the configured Postgres host while the Docker Compose `postgres` service was up and mapped on localhost.
+- **Seen again**: 2026-04-12 during Task 6 Tier 2 baseline prep when the host-shell runtime still resolved `DATABASE_URL` to `postgres:5432`; direct asyncpg connection failed with `gaierror: [Errno -2] Name or service not known`, while the same database was reachable at `127.0.0.1:5432`.
 - **What happened**: Database service not available in current environment. The ingestion script requires PostgreSQL at host `postgres:5432` but no database service is running or accessible from the current shell context.
 - **Evidence**: 
   - `socket.gaierror: [Errno -2] Name or service not known` when trying to connect to postgres:5432
@@ -27,8 +207,40 @@
 - **What happened**: `docker compose ps` emitted startup warnings because `FAL_KEY` is unset in the current environment, even though the core backend/frontend/postgres/redis/worker stack is running.
 - **Evidence**:
   - `time="2026-04-08T20:33:09+09:30" level=warning msg="The \"FAL_KEY\" variable is not set. Defaulting to a blank string."`
+- **Seen again**: 2026-04-12 during Task 6 baseline runtime inspection when `docker compose ps` emitted the same `The "FAL_KEY" variable is not set. Defaulting to a blank string.` warning while the benchmark-related services were otherwise healthy.
+- **Seen again**: 2026-04-16 during autonomous-skill-creation F3 runtime QA when both `docker compose ps` and `docker compose logs backend` emitted the same `The "FAL_KEY" variable is not set. Defaulting to a blank string.` warning while the core stack remained up.
 - **Likely cause**: Docker Compose references `FAL_KEY` for Kling/fal.ai video configuration, but the local `.env` for this stack does not define it (confidence 95%).
 - **Suggested action**: Decide whether `FAL_KEY` should be required only for Studio/video flows; if optional, suppress or scope the compose warning. If required for this environment, add it to the active env file.
+
+## 2026-04-16 23:04 — Playwright MCP Requires Missing Chrome Binary In This Environment
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: autonomous-skill-creation F3 hands-on browser QA
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: The required Playwright MCP could not launch a browser because it is hardwired to a Chrome binary path that does not exist in this environment. QA was still completed by switching to the known-good local Chromium binary (`/usr/bin/chromium`) through the installed Playwright package.
+- **Evidence**:
+  - `Error: server: Chromium distribution 'chrome' is not found at /opt/google/chrome/chrome`
+  - `Run "npx playwright install chrome"`
+- **Seen again**: 2026-04-16 during the final autonomous-skill-creation F3 verdict when `skill_mcp(playwright.browser_navigate)` still failed with the same missing Chrome path before QA continued via local `playwright` + `/usr/bin/chromium`.
+- **Likely cause**: The MCP/browser tooling is configured for a Chrome install at `/opt/google/chrome/chrome`, but this host only has Chromium available at `/usr/bin/chromium` (confidence 98%).
+- **Suggested action**: Point the Playwright MCP/browser launcher at `/usr/bin/chromium` in this environment or install the expected Chrome distribution so browser QA works without a manual workaround.
+
+## 2026-04-16 23:05 — Skills List/Detail APIs Crash Because `pending_update` Is Stored As A JSON String
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: autonomous-skill-creation F3 hands-on runtime QA
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: The live `/settings/skills` surface is broken because both `/skills` and `/skills/{skill_id}` return HTTP 500 when a skill projection has `pending_update`. FastAPI response validation rejects those values because the API contract expects a dictionary, but the persisted `pending_update` rows are double-encoded JSON strings instead.
+- **Evidence**:
+  - Chromium body text on `http://localhost:3000/settings/skills`: `0 total` and `Failed to load skills. Please verify API connectivity.`
+  - Browser/runtime request: `http://localhost:3000/api/skills` → `500`
+  - Backend log: `fastapi.exceptions.ResponseValidationError` with `loc: ('response', 'skills', 0, 'pending_update')` and `Input should be a valid dictionary`
+  - Backend log: `GET /skills/pending-skill HTTP/1.1` → `500 Internal Server Error` with `loc: ('response', 'pending_update')`
+  - Live projection query: `jsonb_typeof(pending_update)` returned `string` for `document-csv`, `document-docx`, `opencode-planner`, and `pending-skill`
+- **Likely cause**: The pending-update write path is serializing upgrade metadata more than once before it reaches the `skill_projections.pending_update` JSONB column, so readback returns a JSON string literal instead of an object (confidence 95%).
+- **Suggested action**: Trace the pending-update persistence path in the upgrade/projection store, stop double-encoding JSON before `pending_update` writes, and add a regression test that exercises deprecated/update rows through the live list/detail response models.
 
 ## 2026-04-08 20:35 — Frontend Lint Script Broken Under Next 16
 - **Severity**: warning
@@ -42,6 +254,7 @@
   - `> next lint`
   - `Invalid project directory provided, no such directory: /home/sol/daemon/frontend/lint`
 - **Seen again**: 2026-04-10 during F2 rerun on current repository state.
+- **Seen again**: 2026-04-16 during whole-repo audit verification when `npm run lint` in `frontend/` still failed immediately with `Invalid project directory provided, no such directory: /home/sol/daemon/frontend/lint`.
 - **Likely cause**: The project still uses the legacy `next lint` script shape, which is not behaving correctly under the current Next.js 16 CLI/runtime in this workspace (confidence 90%).
 - **Suggested action**: Replace the frontend lint script with a supported ESLint invocation for Next 16 (for example an explicit `eslint` command/config) and re-run F2.
 
@@ -86,6 +299,8 @@
   - `E   ^`
   - `E SyntaxError: unmatched ')'`
 - **Seen again**: 2026-04-10 during F2 rerun on current repository state.
+- **Seen again**: 2026-04-16 during autonomous-skill-creation Task 13 when `PYTHONPATH=. pytest tests -q -k memory` failed during collection before reaching memory-filtered tests because `tests/test_video_e2e.py:596` still contains `SyntaxError: unmatched ')'`.
+- **Seen again**: 2026-04-16 during whole-repo audit verification when `PYTHONPATH=. pytest -q` aborted during collection on the same `tests/test_video_e2e.py:596` unmatched `)` syntax error.
 - **Likely cause**: A malformed edit left the test file syntactically invalid (confidence 99%).
 - **Suggested action**: Fix the unmatched parenthesis in `tests/test_video_e2e.py:596` before relying on project-wide pytest results.
 
@@ -95,12 +310,37 @@
 - **Encountered during**: F2 Code Quality Review - project quality checks
 - **Category**: deprecation
 - **Blocked current task**: no
+- **Seen again**: 2026-04-10 during retrieval/LongMemEval contract verification when `uv run pytest tests/memory/test_tools.py tests/test_hybrid_search.py tests/test_l0_injection.py tests/memory/test_retrieval.py tests/test_retrieval.py tests/test_longmemeval_ingest.py` emitted 15 LiteLLM deprecation warnings on Python 3.14.
+- **Seen again**: 2026-04-10 during Task 4 LongMemEval runner repair when `uv run pytest tests/test_longmemeval_ingest.py tests/test_longmemeval_runner.py` passed but still emitted 15 LiteLLM deprecation warnings on Python 3.14.
+- **Seen again**: 2026-04-10 during Task 9 dreaming verification when `uv run pytest tests/test_dreaming.py tests/test_memories.py tests/test_config.py` passed but still emitted the same LiteLLM/arq Python 3.14 deprecation warnings.
+- **Seen again**: 2026-04-10 during Task 9 dreaming contract repair when `uv run pytest tests/test_dreaming.py tests/test_memories.py tests/test_config.py` passed with 31 tests but still emitted the same LiteLLM/arq Python 3.14 deprecation warnings.
+- **Seen again**: 2026-04-15 during autonomous-skill-creation Task 2 regression verification when `PYTHONPATH=. pytest tests/test_store.py tests/test_chat_history.py tests/test_skill_projection_sync.py -q` passed with 32 tests but still emitted the same LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
+- **Seen again**: 2026-04-16 during autonomous-skill-creation Task 6 evaluator verification when `PYTHONPATH=. pytest tests/test_skill_extraction_prompt.py tests/test_skill_evaluator.py -q` and `PYTHONPATH=. pytest tests/test_skill_extraction_prompt.py tests/test_skill_evaluator.py tests/test_skill_projection_sync.py -q -k 'skill_evaluator or skill_extraction_prompt or update_autonomous_metadata'` passed but still emitted the same LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
+- **Seen again**: 2026-04-16 during autonomous-skill-creation Task 6 focused evaluator verification when `PYTHONPATH=. pytest tests/test_skill_extraction_prompt.py tests/test_skill_evaluator.py -q` passed with 7 tests but still emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
+- **Seen again**: 2026-04-16 during autonomous-skill-creation Task 6 correction verification when `PYTHONPATH=. pytest tests/test_skill_extraction_prompt.py tests/test_skill_evaluator.py -q` passed with 9 tests but still emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
+- **Seen again**: 2026-04-16 during autonomous-skill-creation Task 11 focused suite verification when `PYTHONPATH=. pytest tests/test_skill_extraction_prompt.py tests/test_skill_dedup.py tests/test_skill_injection.py tests/test_skill_manage.py tests/test_skill_protection.py tests/test_skill_api_contracts.py -q` passed with 88 tests but still emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
+- **Seen again**: 2026-04-16 during autonomous-skill-creation Task 13 when both `PYTHONPATH=. pytest tests/test_skill*.py -q` (194 passed) and `PYTHONPATH=. pytest tests -q -k memory` emitted the same LiteLLM/arq `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
+- **Seen again**: 2026-04-16 during whole-repo audit verification when `PYTHONPATH=. pytest -q` emitted the same LiteLLM/arq `asyncio.iscoroutinefunction` deprecation warnings before failing on unrelated test collection syntax errors.
 - **What happened**: Pytest emitted repeated deprecation warnings from third-party dependencies that still call `asyncio.iscoroutinefunction`, which is deprecated on Python 3.14 and scheduled for removal in Python 3.16.
 - **Evidence**:
   - `/home/sol/daemon/.venv/lib/python3.14/site-packages/litellm/litellm_core_utils/logging_utils.py:273: DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction() instead`
   - `/home/sol/daemon/.venv/lib/python3.14/site-packages/arq/cron.py:178: DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction() instead`
 - **Likely cause**: Current pinned versions of LiteLLM and arq are not yet updated for Python 3.14's coroutine-inspection deprecation path (confidence 95%).
 - **Suggested action**: Track dependency updates or pin compatible versions before Python 3.16 removes the deprecated API.
+
+## 2026-04-10 12:30 — BasedPyright Warning Debt In Dreaming-Touched Python Modules
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 9 dreaming verification - changed-file diagnostics
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: `lsp_diagnostics` reported warning-level BasedPyright debt in the touched Python modules even though there were no diagnostics errors and the focused dreaming tests passed. The warnings are mostly strict-type noise around dynamic `asyncpg`/LiteLLM interfaces and existing worker/route call-result patterns.
+- **Evidence**:
+  - `orchestrator/memory/dreaming.py` warnings including `Stub file not found for "asyncpg"` and unknown-member warnings around response extraction / `litellm.acompletion`
+  - `orchestrator/worker/jobs.py` warnings including `reportUnusedCallResult` and existing protected `_pool` usage
+  - `orchestrator/memory/retrieval.py` and `orchestrator/routes/memories.py` warnings including `reportUnusedCallResult`
+- **Likely cause**: The project runs BasedPyright in a strict warning mode against modules that intentionally use dynamic libraries and loose dict-shaped payloads without dedicated stubs or local suppression strategy (confidence 90%).
+- **Suggested action**: Decide whether these modules should gain stronger local typing / `_ =` cleanup, or whether the project wants targeted Pyright suppressions for dynamic memory/worker integration code.
 
 ## 2026-04-08 20:35 — Biome LSP Missing for Frontend/Test Diagnostics
 - **Severity**: warning
@@ -178,6 +418,8 @@
   - `Error: No LSP server configured for extension: .md`
 - **Likely cause**: The local Oh My OpenCode LSP configuration only registers code-language servers, not Markdown (confidence 99%).
 - **Suggested action**: Add a markdown-capable LSP if markdown diagnostics are expected as part of verification workflows.
+- **Seen again**: 2026-04-16 during autonomous-skill-creation Task 11 changed-file diagnostics — `lsp_diagnostics` on `TRIAGE.md` returned `Error: No LSP server configured for extension: .md` while Python diagnostics remained clean.
+- **Seen again**: 2026-04-16 during autonomous-skill-creation Task 13 changed-file diagnostics — `lsp_diagnostics` could validate `tests/benchmark_skills.py`, but both `TRIAGE.md` and `.sisyphus/notepads/autonomous-skill-creation/learnings.md` again returned `Error: No LSP server configured for extension: .md`.
 
 ## 2026-04-08 11:12 — `dedup.py` References Missing Trust Helper
 - **Severity**: critical
@@ -335,3 +577,309 @@
   - git diff orchestrator/memory/extraction.py confirms: -gpt-5.4-nano +gpt-4o-mini on lines 340 and 472
 - **Likely cause**: Commit 8dfb3047 (2026-03-27) intentionally swapped extraction to gpt-5.4-nano after SCORECARD showed it passing all benchmark gates (P=1.00, R=0.90, A=1.00). Uncommitted changes then reverted to gpt-4o-mini, possibly to align with the implicit-preference-extraction plan's guardrail.
 - **Suggested action**: Clarify the extraction model policy: if gpt-5.4-nano is the intended production model (better benchmark scores), update the plan guardrail to reflect that. If gpt-4o-mini is required by the plan, the committed 8dfb3047 change should be reverted or the plan guardrail explicitly amended before proceeding to Task 2.
+
+## 2026-04-10 19:54 — Retrieval Score Test Expected Pre-Trust Formula
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 1 verification - retrieval and LongMemEval test run
+- **Category**: test-failure
+- **Blocked current task**: yes
+- **What happened**: The required retrieval test suite failed because `tests/test_retrieval.py::test_score_memory_multiplies_all_factors` still expected `_score_memory()` to omit the default `trust_score=0.5` factor, but the live retrieval contract includes trust in the product.
+- **Evidence**:
+  - `FAILED tests/test_retrieval.py::test_score_memory_multiplies_all_factors`
+  - `E assert 0.3920400000000001 == 0.7840800000000002 ± 7.8e-07`
+  - `tests/test_retrieval.py:48-49` sets `expected = 0.8 * 0.9 * 1.1 * 0.9 * 1.1` and asserts `_score_memory(memory) == pytest.approx(expected)`
+  - `orchestrator/memory/retrieval.py:119-121` multiplies by `trust = _as_float(memory.get("trust_score"), 0.5)`
+- **Likely cause**: The test was written before trust scoring became part of the retrieval score contract, so it now encodes a stale expectation rather than the intended behavior (confidence 98%).
+- **Suggested action**: Update the test expectation to include the default trust multiplier so the suite verifies the preserved trust-scored contract instead of the old pre-trust formula.
+
+## 2026-04-10 — Pre-existing test bug: `test_dedup_supersession_with_contradiction` asserts `metadata is None`
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 2 verification - BACKGROUND_REASONING_MODEL config test run
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: The test `tests/test_contradiction.py::test_dedup_supersession_with_contradiction` fails because its assertion at line 109 checks `assert call_kwargs["metadata"] is None`, but the test name and LLM response ("YES. Fact B directly contradicts Fact A.") indicate contradiction WAS detected, so metadata should contain `contradiction_detected: True`, not None.
+- **Evidence**:
+  - `AssertionError: assert {'contradiction_detected': True, 'contradiction_explanation': 'YES. Fact B directly contradicts Fact A.'} is None`
+  - The test patches litellm to return "YES..." response which triggers contradiction detection
+- **Likely cause**: Test assertion was written incorrectly - it should check `assert call_kwargs["metadata"] is not None` and validate the contradiction content (confidence 99%).
+- **Suggested action**: Fix the assertion in `test_dedup_supersession_with_contradiction` to check that metadata contains the expected contradiction detection fields, not None.
+
+## 2026-04-10 — Contradiction-path tests emit unawaited coroutine warning in trust-signal hook
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 2 verification - contradiction test run
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: The targeted contradiction test slice passed after fixing assertions, but pytest still emitted a runtime warning from the explicit negative trust-signal path in `orchestrator/memory/dedup.py` indicating an `AsyncMock` coroutine was never awaited.
+- **Evidence**:
+  - `tests/test_contradiction.py::test_dedup_supersession_with_contradiction`
+  - `RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited`
+  - `orchestrator/memory/dedup.py:515` in the call to `await ts_module.apply_explicit_negative_signal(...)`
+- **Likely cause**: The contradiction-path tests exercise the trust-signal hook with mocked collaborators in a way that surfaces an await/AsyncMock mismatch inside or below `apply_explicit_negative_signal` (confidence 80%).
+- **Suggested action**: If later work touches dedup/trust-signal behavior, reproduce this warning directly and determine whether the bug is in the production hook or only in the test/mock setup.
+- **Seen again**: 2026-04-16 during autonomous-skill-creation Task 13 when `PYTHONPATH=. pytest tests/test_benchmark_extraction.py tests/test_memory_promote.py tests/test_memory_migrations.py tests/test_memories.py tests/test_retrieval.py tests/test_hybrid_search.py tests/test_l0_injection.py tests/test_store.py tests/test_chat_history.py tests/test_extraction.py tests/test_dedup_bitemporal.py tests/test_dedup_slot_fallback.py -q` passed with 130 tests but `tests/test_dedup_bitemporal.py` again emitted `orchestrator/memory/dedup.py:515: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited`.
+
+## 2026-04-15 13:40 — Chat history regression tests emit unawaited AsyncMock warnings in settings/memory injection path
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: autonomous-skill-creation Task 2 regression verification
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: The broader regression run passed, but `tests/test_chat_history.py` emitted runtime warnings that `AsyncMock` coroutines were never awaited while formatting user settings and retrieving expanded memory candidates during chat/system-prompt assembly.
+- **Evidence**:
+  - `orchestrator/memory/injection.py:138: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited`
+  - `orchestrator/memory/injection.py:140: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited`
+  - `orchestrator/main.py:1649: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited`
+  - `orchestrator/memory/retrieval.py:558: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited`
+  - Command: `PYTHONPATH=. pytest tests/test_store.py tests/test_chat_history.py tests/test_skill_projection_sync.py -q`
+- **Likely cause**: Some chat-history tests are wiring async collaborators into settings/memory injection code paths with `AsyncMock` objects that are consumed like synchronous values, producing coroutine warnings even though assertions still pass (confidence 84%).
+- **Suggested action**: When the chat history or memory injection path is next touched, inspect the relevant fixtures/mocks in `tests/test_chat_history.py` and the called settings/retrieval helpers to ensure async results are awaited or mocked with the correct sync/async shape.
+- **Seen again**: 2026-04-16 during autonomous-skill-creation Task 13 when the targeted memory regression slice (130 passed) reproduced the same unawaited `AsyncMockMixin._execute_mock_call` warnings from `orchestrator/memory/injection.py:138`, `orchestrator/memory/injection.py:140`, `orchestrator/main.py:1652`, and `orchestrator/memory/retrieval.py:558`.
+
+## 2026-04-16 03:44 — Targeted Memory Tests Emit New aiohttp/LiteLLM Runtime Warnings
+- **Severity**: info
+- **Scope**: upstream
+- **Encountered during**: autonomous-skill-creation Task 13 targeted memory regression slice
+- **Category**: deprecation
+- **Blocked current task**: no
+- **What happened**: The narrowed memory regression selection passed, but the dedup-focused tests emitted additional third-party warnings from aiohttp and LiteLLM's logging worker that are separate from the already-known project-side AsyncMock warnings.
+- **Evidence**:
+  - `/usr/lib/python3.14/site-packages/aiohttp/connector.py:1003: DeprecationWarning: enable_cleanup_closed ignored because https://github.com/python/cpython/pull/118960 is fixed in Python version sys.version_info(major=3, minor=14, micro=4, releaselevel='final', serial=0)`
+  - `/home/sol/.local/lib/python3.14/site-packages/litellm/litellm_core_utils/logging_worker.py:75: RuntimeWarning: coroutine 'Logging.async_success_handler' was never awaited`
+- **Likely cause**: Current aiohttp and LiteLLM versions are surfacing Python 3.14 compatibility/teardown noise in the memory dedup test path, likely independent of the autonomous-skill changes (confidence 78%).
+- **Suggested action**: Track upstream dependency updates and, if these warnings become noisy enough, inspect whether the dedup tests need tighter teardown/mocking around LiteLLM logging hooks.
+
+## 2026-04-16 02:55 — Playwright browser install blocked by interactive sudo requirement
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: autonomous-skill-creation Task 10 hands-on UI verification
+- **Category**: tooling
+- **Blocked current task**: yes
+- **What happened**: Browser-level QA for `/settings/skills` could not run because the Playwright MCP requires a Chrome binary that is not installed, and `npx playwright install chrome` failed when the host asked for an interactive sudo password.
+- **Evidence**:
+  - Playwright MCP error: `Chromium distribution 'chrome' is not found at /opt/google/chrome/chrome`
+  - Install attempt output: `sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper`
+  - Install attempt output: `Failed to install browsers` / `Error: Failed to install chrome`
+- **Seen again**: 2026-04-16 during autonomous-skill-creation F3 manual QA when `skill_mcp` Playwright navigation again failed with `Chromium distribution 'chrome' is not found at /opt/google/chrome/chrome`; runtime browser QA continued via local `/usr/bin/chromium` instead of the MCP.
+- **Likely cause**: This environment lacks the Playwright Chrome runtime and blocks non-interactive privilege escalation needed by the installer (confidence 96%).
+- **Suggested action**: Preinstall the required Playwright browser/runtime on the host or provide a non-interactive browser image so mandatory browser QA can run in future UI tasks.
+
+## 2026-04-16 13:26 — Skills projection mutation routes crash when projection table is missing
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: autonomous-skill-creation F3 real manual QA
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: The required `pending-update` and `autonomous-edit` skill flows are not operational in the running app. Direct API exercise of both routes against a real skill returned `500 Internal Server Error`, and backend logs show both handlers crash while querying the projection store because the `skill_projections` relation does not exist.
+- **Evidence**:
+  - `POST /skills/pending-skill/pending-update HTTP/1.1` → `500 Internal Server Error`
+  - `PATCH /skills/pending-skill/autonomous-edit HTTP/1.1` → `500 Internal Server Error`
+  - Backend traceback: `asyncpg.exceptions.UndefinedTableError: relation "skill_projections" does not exist`
+  - Trace paths: `/app/orchestrator/routes/skills.py:276` → `service.apply_pending_update(skill_id)` and `/app/orchestrator/routes/skills.py:231` → `store.get_projection(skill_id)`
+- **Seen again**: 2026-04-16 during autonomous-skill-creation F3 rerun when live browser/API verification still showed every `/skills` and `/skills/{id}` response returning `source_type=null`, `allow_autonomous_edit=null`, and `pending_update=null`, and direct `psql -U daemon -d daemon -c "\dt *skill*"` in `daemon-postgres-1` reported `Did not find any relation named "*skill*".`
+- **Likely cause**: The runtime database schema in this environment is missing the `skill_projections` table expected by the new autonomous-skill endpoints, so the read paths that rely on projection metadata crash instead of failing gracefully (confidence 98%).
+- **Suggested action**: Apply/verify the migration that creates `skill_projections` (or add startup/schema guards) and re-run manual QA for `/settings/skills`, especially pending-update and autonomous-edit flows.
+
+## 2026-04-16 03:11 — Skills settings page fails at runtime due to direct backend CORS in development
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: autonomous-skill-creation Task 10 hands-on Chromium QA
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: The `/settings/skills` page loaded in Chromium, but skill data never loaded because the frontend attempted to fetch `http://localhost:8000/skills` directly from the browser and the backend response lacked a permissive CORS header for the page origin. The UI rendered `Failed to load skills. Please verify API connectivity.` and showed no skills.
+- **Evidence**:
+  - Browser console: `Access to fetch at 'http://localhost:8000/skills' from origin 'http://localhost:3000' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.`
+  - Browser console: `GET http://localhost:8000/skills :: net::ERR_FAILED`
+  - UI text: `0 total` and `Failed to load skills. Please verify API connectivity.`
+  - `frontend/components/settings/SkillsTab.tsx:81-83` sets `apiBaseUrl` to `process.env.NEXT_PUBLIC_API_URL || (process.env.NODE_ENV === 'development' ? 'http://localhost:8000' : '')`
+- **Likely cause**: In development the settings page prefers an absolute backend origin instead of same-origin requests, so browser calls bypass the frontend app and hit a backend that is not currently configured to allow that origin via CORS (confidence 94%).
+- **Suggested action**: Update the skills settings fetch path so development uses a safe same-origin/proxied route or ensure the backend serves the required CORS headers for the configured frontend origin.
+
+## 2026-04-16 03:18 — Skills settings proxy path double-prefixes `/skills` and 404s
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: autonomous-skill-creation Task 10 hands-on Chromium QA after proxy-route fix
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: After switching to the same-origin proxy, the settings page still failed to load skills because the frontend called `/api/skills/skills` instead of `/api/skills`. The page first showed `Loading skills...` and then fell back to `Failed to load skills. Please verify API connectivity.` / `No matching skills.` after search interaction.
+- **Evidence**:
+  - Browser request failure: `GET http://localhost:3000/api/skills/skills :: net::ERR_ABORTED`
+  - Browser console: `Failed to load resource: the server responded with a status of 404 (Not Found)`
+  - `frontend/components/settings/SkillsTab.tsx:141-146` calls `fetchWithTimeout('/skills', ...)`
+  - `frontend/components/settings/SkillsTab.tsx:102-103` prepends `const proxyPath = "/api/skills" + normalizedPath`, turning `/skills` into `/api/skills/skills`
+- **Likely cause**: The new proxy helper assumes callers pass resource paths relative to the skills root, but existing callers still pass paths beginning with `/skills`, causing the route prefix to be duplicated (confidence 98%).
+- **Suggested action**: Normalize the proxy helper or its callers so list/detail requests map to `/api/skills`, `/api/skills/{id}`, etc. exactly once.
+
+## 2026-04-16 03:22 — Skills proxy route does not handle `/api/skills` root path
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: autonomous-skill-creation Task 10 hands-on Chromium QA after proxy path fix
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: After fixing the double-prefix bug, the page still failed because the browser requested `/api/skills`, but the proxy only exists at `frontend/app/api/skills/[...path]/route.ts`. The root list request 404s, leaving the page in the same failed-load state.
+- **Evidence**:
+  - Browser request failure: `GET http://localhost:3000/api/skills :: net::ERR_ABORTED`
+  - Browser console: `Failed to load resource: the server responded with a status of 404 (Not Found)`
+  - UI text: `Failed to load skills. Please verify API connectivity.`
+  - Existing proxy file: `frontend/app/api/skills/[...path]/route.ts` (catch-all for nested paths only)
+- **Likely cause**: The Next.js catch-all route `[...path]` does not match the empty root path `/api/skills`, so the list endpoint has no same-origin handler (confidence 97%).
+- **Suggested action**: Add a root `frontend/app/api/skills/route.ts` or switch to an optional catch-all so both `/api/skills` and `/api/skills/*` are proxied.
+
+## 2026-04-12 14:57 — Live Postgres Schema/Data Lag Behind Reasoning Code
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: Task 15 reasoning-quality validation
+- **Category**: config
+- **Blocked current task**: yes
+- **What happened**: After working around the host `postgres` hostname issue by connecting to the mapped localhost database, the live Postgres instance contained the benchmark user row but no memories for `longmemeval@daemon.test`, and querying `dream_log` failed because the table does not exist. The running database is behind the reasoning-layer schema/data expected by the current code.
+- **Evidence**:
+  - `test_user_exists True`
+  - `test_user_memories 0`
+  - `test_user_conversations 0`
+  - `asyncpg.exceptions.UndefinedTableError: relation "dream_log" does not exist`
+- **Likely cause**: The active Docker-backed Postgres instance has not had the current reasoning migrations applied and does not yet contain the benchmark ingestion data needed for Task 15 validation (confidence 95%).
+- **Suggested action**: Apply the current migrations to the active database, verify reasoning-layer tables (`dream_log`, retrieval/entity support) exist, then ingest/populate the benchmark data before running Task 15 validation.
+
+## 2026-04-12 15:30 — Fast LongMemEval Harness Fails Memory Import FK Check
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: Task 15 reasoning-quality validation
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: The newly trusted `orchestrator.eval.longmemeval_fast` path ran against the 10-question MR subset but every question failed before retrieval because direct memory inserts hit `memories_source_conversation_id_fkey`. The harness created conversations, then attempted raw memory inserts whose `source_conversation_id` was not visible/present to the insert statement on the reachable DB path.
+- **Evidence**:
+  - `asyncpg.exceptions.ForeignKeyViolationError: insert or update on table "memories" violates foreign key constraint "memories_source_conversation_id_fkey"`
+  - `DETAIL:  Key (source_conversation_id)=(85932bac-2532-4a30-ae22-4f8620c40e03) is not present in table "conversations".`
+  - The same failure repeated for all 10 MR questions in `uv run python -m orchestrator.eval.longmemeval_fast --dataset tests/benchmark_results/task15_mr_subset_10.json --output-dir tests/benchmark_results/task15_mr_fast_standard`
+- **Likely cause**: The fast harness mixes conversation creation through `MemoryStore.create_conversation()` with raw SQL inserts on pooled connections, and on this runtime path the referenced conversation rows are not available to the later insert operation as expected (confidence 80%).
+- **Suggested action**: Fix the fast harness import path so conversation rows are durably present before raw memory inserts (for example by creating conversations on the same connection/transaction strategy used for the inserts, or by avoiding `source_conversation_id` references in the direct-import path if they are not required for the benchmark contract), then rerun the 10-question MR subset.
+
+## 2026-04-13 22:03 — Live Dream HTTP Trigger Disabled by Missing Admin Key
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 15 reasoning-quality validation
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: The dedicated manual dream endpoint is present, but the running backend rejects all requests with `403` because `daemon_admin_api_key` is unset in the live runtime. That disables the HTTP/manual admin path even though Redis and the worker are healthy.
+- **Evidence**:
+  - `POST http://127.0.0.1:8000/memories/dream` → `403 {"detail":"Admin dreaming trigger is disabled"}`
+  - `orchestrator/routes/memories.py:52-55` returns 403 when `settings.daemon_admin_api_key` is falsy
+- **Likely cause**: The backend container was started without `DAEMON_ADMIN_API_KEY`/`daemon_admin_api_key`, so the route-level guard disables the admin/debug dreaming endpoint by design (confidence 98%).
+- **Suggested action**: Decide whether Task/QA environments should expose the manual dream trigger; if yes, provide `DAEMON_ADMIN_API_KEY` in the live env. If not, document that manual dreaming must be enqueued through the same Redis job contract outside HTTP.
+
+## 2026-04-13 22:22 — Live Worker Missing `run_dreaming_job` Registration
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 15 reasoning-quality validation
+- **Category**: config
+- **Blocked current task**: yes
+- **What happened**: Enqueuing the same Redis job contract used by the manual dreaming route succeeded, but the worker rejected the job because it did not have `run_dreaming_job` registered. The running worker process is behind the repo state that now includes the dreaming jobs.
+- **Evidence**:
+  - Worker log: `job task15-dream-92a4a9dc, function 'run_dreaming_job' not found`
+  - No `dream_log` rows were created for the seeded review user after enqueueing the job
+- **Likely cause**: The worker container was started before the dreaming job registration landed, or it is running a stale module state that has not reloaded to include `run_dreaming_job` (confidence 90%).
+- **Suggested action**: Restart/reload the worker so it imports the current `orchestrator.worker.worker`/`jobs.py` state and confirms `run_dreaming_job` is registered before relying on manual dream enqueues.
+
+## 2026-04-14 09:45 — Worker Entity Resolution Errors Block Fresh Extraction Benchmark
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 16 extraction benchmark closure
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: The `persist_extraction_result` function in `orchestrator/memory/entities.py` receives a Fernet-encrypted token string where a JSON-parseable value is expected for the `aliases` field, causing `asyncpg.exceptions.InvalidTextRepresentationError: invalid input syntax for type json`. This fills the ARQ queue with failing entity resolution jobs, causing extraction job processing delays. This prevents fresh 3-run extraction benchmark execution — individual scenario tests pass after worker restart, but the full 8-scenario × 3-run benchmark exceeds reasonable timeouts.
+- **Evidence**:
+  - Worker log: `asyncpg.exceptions.InvalidTextRepresentationError: invalid input syntax for type json. Token "gAAAAABp3YPXNc1liobZlRJPTaiWo6t" is invalid.`
+  - Stack: `resolve_entities_job` → `persist_extraction_result` → `insert_entity` → `_pool.fetchrow`
+  - Full 8-scenario benchmark with 40s wait times exceeds 480s timeout without completing
+- **Likely cause**: Entity resolution is passing an encrypted field (or the wrong field entirely) to the JSONB column for `aliases`. The issue appears to be in how `persist_extraction_result` constructs the entity insert call, passing a Fernet token string instead of the unencrypted aliases JSON (confidence 85%).
+- **Suggested action**: Investigate `persist_extraction_result` in `orchestrator/memory/entities.py` and `insert_entity` in `orchestrator/memory/store.py` to understand why encrypted values are reaching JSONB columns. This is a production code bug, not a benchmark infrastructure issue.
+- **RESOLVED 2026-04-14**: Fix applied to `orchestrator/memory/store.py`. The bug was in `insert_entity` and `update_entity_aliases` passing Fernet token strings directly to JSONB columns. The fix: JSON-encode encrypted aliases before storage (`json.dumps(encrypted_aliases)`) and add `::jsonb` cast. Also updated all entity retrieval methods (`get_entity`, `get_entity_by_lookup_key`, `get_entities_for_user`, `find_entities_by_alias`) to handle new retrieval format requiring double `json.loads`. Added regression tests in `tests/test_entity_integration.py`. All 53 entity tests pass. Fresh extraction benchmark runs should no longer be blocked.
+
+## 2026-04-14 11:15 — Scenario 6 Extraction Format Mismatch (Root Cause of Regression)
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: Task 16 extraction benchmark closure - Scenario 6 missing early technical facts
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: `extract_memories` in `jobs.py` was converting messages to text using `_messages_to_text()` which produces `user: ...` / `assistant: ...` format, but `EXTRACTION_PROMPT` explicitly says "Input contains [User] and [Assistant] markers". This format contract mismatch caused the extraction model to misinterpret the role-labeled input on the live production path.
+- **Evidence**:
+  - `jobs.py:241` → `text = _messages_to_text(messages)` producing `user:` / `assistant:`
+  - `extraction.py:147` → EXTRACTION_PROMPT says "Input contains [User] and [Assistant] markers"
+  - `extraction.py:105-120` → `messages_to_extraction_text()` already produces correct `[User]:` / `[Assistant]:` format
+  - Scenario 6 runs 2 and 3 missing early facts (`9950X3D`, `Be Quiet Light Base`, `CachyOS`, `Arch`) but keeping later facts
+- **Likely cause**: The worker text formatting diverged from the extraction prompt contract after the extraction pipeline was rewritten, and no regression test existed to catch this mismatch (confidence 95%).
+- **Suggested action**: Re-run fresh extraction benchmark to verify Scenario 6 now extracts all facts. The format mismatch fix should resolve the recall regression without any other changes.
+
+## 2026-04-14 21:50 — Task 16 Extraction Benchmark COMPLETE
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Task 16 extraction benchmark closure
+- **Category**: test-success
+- **Blocked current task**: no — now resolved
+- **What happened**: Fresh 3-run extraction benchmark completed successfully via deterministic transcript replay harness. All 3 runs (bench_20260414_214436, 214718, 215000) show P=1.0, R=1.0, adversarial_fp=0. S6 achieves TP=7 FP=0 FN=0 across all runs, confirming the Scenario 6 format fix resolved the recall regression.
+- **Evidence**:
+  - `tests/results/bench_20260414_214436.json`: P=1.0, R=1.0, passed=true, S6: TP=7 FP=0 FN=0
+  - `tests/results/bench_20260414_214718.json`: P=1.0, R=1.0, passed=true, S6: TP=7 FP=0 FN=0
+  - `tests/results/bench_20260414_215000.json`: P=1.0, R=1.0, passed=true, S6: TP=7 FP=0 FN=0
+- **Likely cause**: Entity alias JSON persistence fix + extraction format fix + deterministic replay harness combination resolved all blockers.
+- **Suggested action**: None — Task 16 extraction regression pass complete. Update artifact files with fresh results.
+
+## 2026-04-14 12:55 — Bug 1 Fixed: persist_extraction_result() Collapsed Unrelated New Entities
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: Final review of entity pipeline
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: `persist_extraction_result()` in `orchestrator/memory/entities.py` grouped all `merge_decision == "new"` entities under `resolved_entity_id=None`, collapsing unrelated new entities (e.g., "Alice" and "Bob") into one canonical entity with aliases. The loop picked the first resolution as canonical and added all others as aliases, destroying entity separation.
+- **Evidence**:
+  - Lines 932-940 in `entities.py`: `entities_by_canonical[canonical_id].append(resolution)` where `canonical_id=None` for all new resolutions
+  - Lines 985-1010: only one entity created for the entire `None` bucket
+- **Fix applied**: Separated `new_resolutions` from `merged_resolutions` upfront. Each `new` resolution now gets its own `insert_entity()` call with no alias consolidation. `merged` resolutions (with existing `resolved_entity_id`) continue to use the alias-consolidation grouping.
+- **Files changed**: `orchestrator/memory/entities.py` (persist_extraction_result function)
+- **Verification**: Added `test_two_unrelated_new_entities_remain_separate` in `tests/memory/test_entity_persistence.py`. All 26 memory tests pass.
+- **RESOLVED 2026-04-14**
+
+## 2026-04-16 13:56 — Settings sidebar conversation fetch still hits direct-backend CORS then 404 fallback
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: autonomous-skill-creation F3 rerun hands-on QA
+- **Category**: runtime-error
+- **Blocked current task**: no
+- **What happened**: While manually verifying `/settings/skills` in a real Chromium session, the page still emitted browser-side request failures unrelated to the skills proxy itself because the shared conversation history hook attempted `http://localhost:8000/conversations?limit=100` first, hit CORS, then fell back to same-origin `/conversations?limit=100`, which 404ed under Next. The skills pane rendered, but the settings surface still carries visible runtime noise and a broken sidebar data fetch path.
+- **Evidence**:
+  - Playwright/Chromium console: `Access to fetch at 'http://localhost:8000/conversations?limit=100' from origin 'http://127.0.0.1:3000' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.`
+  - Playwright network failure: `http://localhost:8000/conversations?limit=100` → `net::ERR_FAILED`
+  - Playwright bad response: `http://127.0.0.1:3000/conversations?limit=100` → `404`
+  - `frontend/hooks/useConversationHistory.ts:43-45` sets `apiBaseUrl` to `process.env.NEXT_PUBLIC_API_URL || (process.env.NODE_ENV === "development" ? "http://localhost:8000" : "")`
+  - `frontend/hooks/useConversationHistory.ts:57-61` falls back to the raw same-origin path `/conversations?limit=100` rather than a proxied API route
+- **Likely cause**: The shared conversation-history client still uses the old development-time direct-backend base URL and a non-proxied fallback path, so settings pages inherit a lingering CORS/404 fetch path even after the skills-specific proxy work was repaired (confidence 94%).
+- **Suggested action**: Route conversation history through a same-origin API proxy (or add a valid `/api/conversations` bridge) and stop preferring direct backend browser calls in development.
+- **Seen again**: 2026-04-16 during the final autonomous-skill-creation F3 rerun — `/settings/skills` loaded and the skills-specific list/detail/download flows worked, but Chromium still logged the same `http://localhost:8000/conversations?limit=100` CORS failure followed by `http://127.0.0.1:3000/conversations?limit=100` returning `404`.
+
+## 2026-04-14 12:55 — Bug 2 Fixed: _get_entity_expanded_candidates() Reintroduced Ineligible Memories
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: Final review of retrieval path
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: `_get_entity_expanded_candidates()` in `orchestrator/memory/retrieval.py` called `store.get_memory()` which has no eligibility filtering, then only checked `source_type != "dream"` and `allowed_conversation_ids`. It did NOT filter out `status='deleted'`, `local_only=True`, or `valid_to IS NOT NULL` (superseded) memories. This let entity-linked memories bypass the retrieval contract that `search_memories()` enforces.
+- **Evidence**:
+  - `store.get_memory()` at line 460-469: `SELECT * FROM memories WHERE id = $1` — no WHERE clause filters
+  - `search_memories()` at lines 820-905: enforces `status != 'deleted'`, `valid_to IS NULL`, `local_only = FALSE`, `source_type != 'dream'`
+- **Fix applied**: Added inline eligibility checks after `get_memory()` inside `_get_entity_expanded_candidates()`:
+  1. `status != 'deleted'`
+  2. `valid_to IS NULL`
+  3. `source_type != 'dream'`
+  4. `local_only == False` (unless `include_local=True`)
+  5. `source_conversation_id in allowed_conversation_ids` (if specified)
+  Also added `include_local` parameter (default `False`) to `_get_entity_expanded_candidates()` and pass `effective_include_local` from `retrieve_memories()`.
+- **Files changed**: `orchestrator/memory/retrieval.py` (`_get_entity_expanded_candidates` and its call site in `retrieve_memories`)
+- **Verification**: Added 4 regression tests in `tests/memory/test_entity_persistence.py`:
+  - `test_deleted_memory_not_returned`
+  - `test_local_only_memory_excluded_when_include_local_false`
+  - `test_superseded_memory_excluded`
+  - `test_dream_memory_excluded`
+  All 26 memory tests pass.
+- **RESOLVED 2026-04-14**
