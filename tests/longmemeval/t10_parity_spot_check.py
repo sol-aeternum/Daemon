@@ -36,13 +36,11 @@ import asyncpg
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from orchestrator.config import get_settings
-from orchestrator.memory.embedding import embed_query
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.injection import (
     assemble_system_prompt,
     build_memory_context,
 )
-from orchestrator.memory.retrieval import retrieve_memories_for_text
 from orchestrator.memory.store import MemoryStore
 
 from tests.longmemeval.ingest import SYNTHETIC_USER_NAMESPACE, create_synthetic_user
