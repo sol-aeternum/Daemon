@@ -51,7 +51,6 @@ system_prompt = await assemble_system_prompt(
 hypothesis = await answer_with_llm(
     question_text,
     memories,
-    benchmark_mode=benchmark_mode,
     system_prompt=system_prompt,  # <-- direct pass, unchanged
 )
 ```
@@ -65,9 +64,7 @@ hypothesis = await answer_with_llm(
 **Location**: `parity_harness.py:143-145`
 
 ```python
-judgment = await judge_answer(
-    question_text, hypothesis, reference, benchmark_mode=benchmark_mode
-)
+judgment = await judge_answer(question_text, hypothesis, reference)
 ```
 
 **Classification**: ALLOWED — `hypothesis` is raw LLM output passed directly; no transform applied to production prompt.
