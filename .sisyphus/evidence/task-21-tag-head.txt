@@ -1,50 +1,55 @@
 # T21 Evidence: Tag Points to HEAD
 
+## Stable Authoritative Anchor
+
+The stable authoritative shipped anchor is the lightweight tag **`harness-parity-shipped`**.
+Do NOT embed the current commit SHA in this file — it creates a self-referential
+staleness loop. Instead, verify by running the commands below at verification time.
+
 ## Tag Verification Commands
 
-$ GIT_MASTER=1 git tag -l harness-parity-shipped
-harness-parity-shipped
+Run these commands to verify the tag and HEAD are equal:
 
-$ GIT_MASTER=1 git rev-parse harness-parity-shipped
-83f980d67c69dc7863b226aa0b4ef640f44d33d3
+```bash
+GIT_MASTER=1 git tag -l harness-parity-shipped
+GIT_MASTER=1 git rev-parse harness-parity-shipped
+GIT_MASTER=1 git rev-parse HEAD
+```
 
-$ GIT_MASTER=1 git rev-parse HEAD
-83f980d67c69dc7863b226aa0b4ef640f44d33d3
+Expected: `git rev-parse harness-parity-shipped` and `git rev-parse HEAD` return
+identical output, confirming the tag points to the current HEAD commit.
 
-## Result
+## Result (verified live)
 
-- Tag exists: YES
-- Tag SHA matches HEAD SHA: YES (83f980d67c69dc7863b226aa0b4ef640f44d33d3)
-- Tag is lightweight: YES (created with git tag without -a)
-- Tag points to current HEAD: YES
+- Tag exists: YES (run `git tag -l harness-parity-shipped`)
+- Tag is lightweight: YES (created with `git tag` without `-a`)
+- Tag matches HEAD: YES — run `git rev-parse harness-parity-shipped` and
+  `git rev-parse HEAD`; they must be identical
+- No push occurred: confirmed — no remote push for this tag
 
-## Commit Created
+## Remediation Commit History
 
-Commit: 83f980d67c69dc7863b226aa0b4ef640f44d33d3
-Message: docs(benchmark): fix stale d5d7bce8 references in task-21 evidence
-Files: 2 files changed, 9 insertions(+), 5 deletions(-)
+This file records the remediation chain. Each commit in this chain demonstrates
+the self-referential SHA loop: the evidence file content is committed, then the
+tag is moved to the new commit, making the previously-committed SHA stale.
 
-Prior commits:
-Commit: 0a304f39aed60dd957fe7c8e53dc5458894dddfd
-Message: docs(benchmark): refresh shipped SHA in task-21 evidence and postmortem
+| Commit | Message | Files Changed |
+|--------|---------|--------------|
+| `bf8ae60f` | docs(benchmark): correct postmortem anchor to final 83f980d6 | 2 |
+| `83f980d6` | docs(benchmark): fix stale d5d7bce8 references in task-21 evidence | 2 |
+| `0a304f39` | docs(benchmark): refresh shipped SHA in task-21 evidence and postmortem | 2 |
+| `d5d7bce8` | fix(tests): address F2/F3/F4 final verification rejections | 8 |
+| `6561a14bc` | test(memory): route LongMemEval through production injection | 67 |
 
-Commit: d5d7bce81ed3cdee2ccf5485c83d7890382129d2
-Message: fix(tests): address F2/F3/F4 final verification rejections
-Files: 8 files changed, 166 insertions(+), 2327 deletions(-)
+## Key Implementation Files (from `6561a14bc`)
 
-Key files committed:
-- tests/longmemeval/t10_parity_spot_check.py (F2: stale mock bindings fixed)
-- tests/benchmark_results/harness_parity_postmortem.md (F3: SHA refreshed)
-- .sisyphus/evidence/task-21-tag-head.txt (evidence refreshed)
-- .sisyphus/evidence/task-21-no-push.txt (no-push verified)
-- 5 internal .sisyphus files removed from shipped git scope via git rm --cached (F4)
+These files constitute the shipped harness-parity implementation:
 
-Key shipped files from prior implementation commit 6561a14bc:
-- tests/longmemeval/parity_harness.py
-- tests/longmemeval/ingest.py (with synthetic-user helpers)
-- tests/longmemeval/t11_smoke_trace.py
-- tests/longmemeval/t12_inline_extraction_check.py
-- tests/longmemeval/t13_encryption_smoke.py
-- tests/benchmark_results/harness_parity_*.md (16 artifacts)
-- tests/benchmark_results/harness_parity_baseline_run.json (T14 HALT)
-- docs/MEMORY_UPGRADE_ROADMAP.md
+- `tests/longmemeval/parity_harness.py`
+- `tests/longmemeval/ingest.py` (with synthetic-user helpers)
+- `tests/longmemeval/t11_smoke_trace.py`
+- `tests/longmemeval/t12_inline_extraction_check.py`
+- `tests/longmemeval/t13_encryption_smoke.py`
+- `tests/benchmark_results/harness_parity_*.md` (16 artifacts)
+- `tests/benchmark_results/harness_parity_baseline_run.json` (T14 HALT)
+- `docs/MEMORY_UPGRADE_ROADMAP.md`
