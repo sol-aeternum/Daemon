@@ -319,13 +319,26 @@ Then a one-sentence explanation on the second line."""
 async def answer_with_llm(
     question: str,
     memories: list[dict[str, Any]],
+    *,
+    system_prompt: str | None = None,
 ) -> str:
-    """Call GPT-4o via LiteLLM to generate an answer."""
-    prompt = build_answer_prompt(question, memories)
+    """Call GPT-4o via LiteLLM to generate an answer.
+
+    Passes system_prompt as a real system message when supplied;
+    otherwise falls back to the legacy build_answer_prompt() path.
+    """
+    if system_prompt is not None:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": question},
+        ]
+    else:
+        prompt = build_answer_prompt(question, memories)
+        messages = [{"role": "user", "content": prompt}]
 
     response = await _call_llm_with_provider_config(
         model=ANSWER_MODEL,
-        messages=[{"role": "user", "content": prompt}],
+        messages=messages,
         temperature=ANSWER_TEMPERATURE,
         max_tokens=ANSWER_MAX_TOKENS,
     )

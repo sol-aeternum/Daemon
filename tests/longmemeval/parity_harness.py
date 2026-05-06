@@ -136,6 +136,7 @@ async def parity_evaluate_single(
     hypothesis = await answer_with_llm(
         question_text,
         memories,
+        system_prompt=system_prompt,
     )
 
     judgment = await judge_answer(question_text, hypothesis, reference)
