@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import enum
 import hashlib
 import json
 import logging
@@ -38,7 +39,30 @@ TEST_USER_NAME = "longmemeval_test_user"
 TEST_USER_EMAIL = "longmemeval@daemon.test"
 TEST_USER_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
+# Deterministic synthetic user namespace for parity harness.
+# UUID5 derived from this namespace + question_id gives a stable synthetic user ID
+# per question, enabling production-faithful user-scoped retrieval without
+# sharing a single benchmark user across all questions.
+SYNTHETIC_USER_NAMESPACE = uuid.UUID("7a3d9c1b-5f8e-4a2d-9e7c-0f1a3b5c6d7e")
+
 logger = logging.getLogger(__name__)
+
+
+class ExtractionOutcome(enum.Enum):
+    """Explicit extraction outcome accounting for benchmark reproducibility.
+
+    Distinguishes the following cases:
+    - completed: extraction ran and produced one or more memories
+    - empty: extraction ran and completed successfully but produced zero memories
+    - timed_out: extraction did not complete within expected time (not currently
+      reachable in the inline path, but preserved for compatibility)
+    - errored: extraction failed with an exception
+    """
+
+    COMPLETED = "completed"
+    EMPTY = "empty"
+    TIMED_OUT = "timed_out"
+    ERRORED = "errored"
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +197,41 @@ async def ensure_dataset() -> list[dict[str, Any]]:
         raise
 
 
+async def create_synthetic_user(
+    pool: asyncpg.Pool,
+    question_id: str,
+    email: str | None = None,
+) -> uuid.UUID:
+    """Create or get a deterministic synthetic user for a question.
+
+    The user ID is derived via UUID5 from SYNTHETIC_USER_NAMESPACE + question_id,
+    making it deterministic: the same question_id always produces the same user ID.
+    This enables production-faithful per-question isolation without sharing a
+    single benchmark user across all questions.
+    """
+    synthetic_user_id = uuid.uuid5(SYNTHETIC_USER_NAMESPACE, question_id)
+    synthetic_email = email or f"parity-{question_id}@daemon.synthetic"
+
+    async with pool.acquire() as conn:
+        existing = await conn.fetchrow(
+            "SELECT id FROM users WHERE id = $1", synthetic_user_id
+        )
+        if existing:
+            return synthetic_user_id
+
+        await conn.execute(
+            """
+            INSERT INTO users (id, email, name, username, preferences, created_at, updated_at)
+            VALUES ($1, $2, $3, $3, '{}'::jsonb, NOW(), NOW())
+            ON CONFLICT (id) DO NOTHING
+            """,
+            synthetic_user_id,
+            synthetic_email,
+            f"synthetic-{question_id[:16]}",
+        )
+    return synthetic_user_id
+
+
 async def create_test_user(pool: asyncpg.Pool) -> uuid.UUID:
     """Create or get the dedicated test user for benchmark isolation."""
     async with pool.acquire() as conn:
@@ -212,7 +271,16 @@ async def poll_extraction_complete(
     max_wait_seconds: int = 90,
     poll_interval: float = 2.0,
 ) -> bool:
-    """Poll extraction_log until we see an entry for this conversation."""
+    """Poll extraction_log until we see an entry for this conversation.
+
+    DEPRECATED: This function is no longer called in the canonical benchmark path.
+    `process_extraction()` is an inline await that guarantees completion before
+    returning. The post-call poll is a redundant second barrier and has been
+    removed from `ingest_session()`.
+
+    This function is retained for backward compatibility and potential future
+    async-queue-based extraction paths.
+    """
     start = datetime.now()
     while (datetime.now() - start).total_seconds() < max_wait_seconds:
         async with pool.acquire() as conn:
@@ -257,7 +325,14 @@ async def ingest_session(
     messages: list[dict[str, Any]],
     session_index: int,
 ) -> dict[str, Any]:
-    """Ingest a single LongMemEval session as one conversation."""
+    """Ingest a single LongMemEval session as one conversation.
+
+    Returns a dict with:
+        - session_id, conversation_id, message_count
+        - status: "complete" | "extraction_failed"
+        - outcome: ExtractionOutcome enum value
+        - error: error message if status is "extraction_failed"
+    """
     conversation = await store.create_conversation(
         user_id=user_id,
         pipeline="cloud",
@@ -295,29 +370,30 @@ async def ingest_session(
         if m.get("content")
     )
 
+    outcome = ExtractionOutcome.COMPLETED
+    error_message: str | None = None
+
     try:
-        await process_extraction(
+        _success, new_memories = await process_extraction(
             store=store,
             user_id=user_id,
             conversation_id=conversation_id,
             text=extraction_text,
         )
+        if not new_memories:
+            outcome = ExtractionOutcome.EMPTY
     except Exception as e:
         logger.error(f"Extraction failed for session {session_id}: {e}")
-        return {
-            "session_id": session_id,
-            "conversation_id": str(conversation_id),
-            "status": "extraction_failed",
-            "error": str(e),
-        }
-
-    extraction_ok = await poll_extraction_complete(pool, conversation_id)
+        outcome = ExtractionOutcome.ERRORED
+        error_message = str(e)
 
     return {
         "session_id": session_id,
         "conversation_id": str(conversation_id),
         "message_count": len(messages),
-        "status": "complete" if extraction_ok else "extraction_timeout",
+        "status": "complete" if outcome != ExtractionOutcome.ERRORED else "extraction_failed",
+        "outcome": outcome.value,
+        "error": error_message,
     }
 
 
@@ -412,9 +488,24 @@ async def run_ingestion(
             if r.get("status") in ("error", "extraction_failed", "extraction_timeout")
         )
 
+        outcome_completed = sum(
+            1 for r in results if r.get("outcome") == ExtractionOutcome.COMPLETED.value
+        )
+        outcome_empty = sum(
+            1 for r in results if r.get("outcome") == ExtractionOutcome.EMPTY.value
+        )
+        outcome_errored = sum(
+            1 for r in results if r.get("outcome") == ExtractionOutcome.ERRORED.value
+        )
+        outcome_timed_out = sum(
+            1 for r in results if r.get("outcome") == ExtractionOutcome.TIMED_OUT.value
+        )
+
         logger.info(
             f"Ingestion complete: {successful} successful, {failed} failed, "
-            f"{len(results)} total sessions processed"
+            f"{len(results)} total sessions processed. "
+            f"Outcomes: completed={outcome_completed}, empty={outcome_empty}, "
+            f"errored={outcome_errored}, timed_out={outcome_timed_out}"
         )
 
         return results
