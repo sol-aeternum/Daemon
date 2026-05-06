@@ -5,8 +5,8 @@ T10 — Stratified Runtime Parity Spot-Check
 Compares (A) the system prompt from parity_evaluate_single() harness path
 against (B) direct production build_memory_context() + assemble_system_prompt() call.
 
-Dataset: tests/benchmark_results/wave0_full_corpus_aligned/longmemeval_results.jsonl
-         (source: local artifact; canonical HuggingFace URL returns 404)
+Dataset: tests/longmemeval/fixtures/t10_stratified_questions.json
+         (committed minimal question/reference fixture for the 20 stratified IDs)
 
 Command:
     DATABASE_URL='<redacted DATABASE_URL>' \
@@ -56,12 +56,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 # ---------------------------------------------------------------------------
 # Corpus source
 # ---------------------------------------------------------------------------
-CORPUS_PATH = Path(
-    "/home/sol/daemon/tests/benchmark_results/wave0_full_corpus_aligned/longmemeval_results.jsonl"
-)
+CORPUS_PATH = REPO_ROOT / "tests/longmemeval/fixtures/t10_stratified_questions.json"
 
 # ---------------------------------------------------------------------------
 # Stratification plan: 20 questions, >=2 per present category
@@ -102,8 +102,7 @@ def load_questions(qids: list[str]) -> dict[str, dict[str, Any]]:
     """Load question records from corpus by IDs."""
     questions: dict[str, dict[str, Any]] = {}
     with open(CORPUS_PATH) as f:
-        for line in f:
-            obj = json.loads(line)
+        for obj in json.load(f):
             if obj["question_id"] in qids:
                 questions[obj["question_id"]] = obj
     return questions
@@ -594,13 +593,13 @@ if __name__ == "__main__":
     result: dict[str, Any] = asyncio.run(run_comparison())
 
     # Write evidence JSON
-    out_path = Path("/home/sol/daemon/.sisyphus/evidence/task-10-spot-check.json")
+    out_path = REPO_ROOT / ".sisyphus/evidence/task-10-spot-check.json"
     with open(out_path, "w") as f:
         json.dump(result, f, indent=2)
     logger.info(f"Written: {out_path}")
 
     # Write stratification evidence
-    strat_path = Path("/home/sol/daemon/.sisyphus/evidence/task-10-stratification.txt")
+    strat_path = REPO_ROOT / ".sisyphus/evidence/task-10-stratification.txt"
     with open(strat_path, "w") as f:
         f.write("T10 Stratification Evidence\n")
         f.write(f"Generated: {datetime.now().isoformat()}\n")
