@@ -56,7 +56,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DEV_SUBSET_PATH = Path("/home/sol/daemon/tests/benchmark_longmemeval/fixtures/dev_subset.json")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEV_SUBSET_PATH = REPO_ROOT / "tests/longmemeval/fixtures/t12_dev_subset_minimal.json"
 
 # 3 questions: IE-user (single-session-user), MR (multi-session), TR (temporal-reasoning)
 SAMPLE_QUESTIONS = [
@@ -398,13 +399,13 @@ if __name__ == "__main__":
     evidence = asyncio.run(run_t12_check())
 
     # Write JSON evidence
-    out_json = Path("/home/sol/daemon/.sisyphus/evidence/task-12-inline-extraction.json")
+    out_json = REPO_ROOT / ".sisyphus/evidence/task-12-inline-extraction.json"
     with open(out_json, "w") as f:
         json.dump(evidence, f, indent=2)
     logger.info(f"Written: {out_json}")
 
     # Write no-oracle-load evidence
-    no_oracle_path = Path("/home/sol/daemon/.sisyphus/evidence/task-12-no-oracle-load.txt")
+    no_oracle_path = REPO_ROOT / ".sisyphus/evidence/task-12-no-oracle-load.txt"
     with open(no_oracle_path, "w") as f:
         f.write("T12 No-PreExtracted/No-Oracle Memory Load Evidence\n")
         f.write(f"Generated: {evidence['t12_timestamp']}\n\n")
@@ -452,7 +453,7 @@ if __name__ == "__main__":
     logger.info(f"Written: {no_oracle_path}")
 
     # Write main benchmark artifact
-    artifact_path = Path("/home/sol/daemon/tests/benchmark_results/harness_parity_inline_extraction_check.json")
+    artifact_path = REPO_ROOT / "tests/benchmark_results/harness_parity_inline_extraction_check.json"
     with open(artifact_path, "w") as f:
         json.dump(evidence, f, indent=2)
     logger.info(f"Written: {artifact_path}")
