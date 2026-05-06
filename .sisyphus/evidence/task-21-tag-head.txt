@@ -1,0 +1,42 @@
+# T21 Evidence: Tag Points to HEAD
+
+## Tag Verification Commands
+
+$ GIT_MASTER=1 git tag -l harness-parity-shipped
+harness-parity-shipped
+
+$ GIT_MASTER=1 git rev-parse harness-parity-shipped
+6561a14bc43718e97fb5652e48525b2f2c3d589f
+
+$ GIT_MASTER=1 git rev-parse HEAD
+6561a14bc43718e97fb5652e48525b2f2c3d589f
+
+## Result
+
+- Tag exists: YES
+- Tag SHA matches HEAD SHA: YES (6561a14bc43718e97fb5652e48525b2f2c3d589f)
+- Tag is lightweight: YES (created with git tag without -a)
+- Tag points to current HEAD: YES
+
+## Commit Created
+
+Commit: 6561a14bc43718e97fb5652e48525b2f2c3d589f
+Message: test(memory): route LongMemEval through production injection
+Files: 67 files changed, 10242 insertions(+), 184 deletions(-)
+
+Key files committed:
+- tests/longmemeval/parity_harness.py (new)
+- tests/longmemeval/t10_parity_spot_check.py (new)
+- tests/longmemeval/t11_smoke_trace.py (new)
+- tests/longmemeval/t12_inline_extraction_check.py (new)
+- tests/longmemeval/t13_encryption_smoke.py (new)
+- tests/benchmark_results/harness_parity_*.md (16 artifacts)
+- tests/benchmark_results/harness_parity_baseline_run.json (T14 HALT)
+- tests/benchmark_results/harness_parity_baseline_decision.md (T15)
+- tests/benchmark_results/harness_parity_baseline_oracle.md (T16)
+- tests/benchmark_results/wave0_option_a_production_aligned_baseline.md (T18 patch)
+- tests/benchmark_results/wave0_closure_memo.md (T17 patch - additive)
+- docs/MEMORY_UPGRADE_ROADMAP.md (T20 patch)
+- .sisyphus/plans/longmemeval-harness-production-parity.md (plan)
+- .sisyphus/notepads/longmemeval-harness-production-parity/*.md (4 notepads with T21 learnings)
+- .sisyphus/evidence/task-{1-20}-*.txt (37 evidence files)

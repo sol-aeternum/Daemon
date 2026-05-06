@@ -51,7 +51,6 @@ from tests.longmemeval.parity_harness import (
     TOP_K_MEMORIES,
     create_answer_conversation,
 )
-from tests.longmemeval.evaluate import answer_with_llm, judge_answer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -275,16 +274,14 @@ async def patched_parity_evaluate_single(
             conversation_id=answer_conversation_id,
         )
 
-        # Call answer_with_llm (mocked)
-        hypothesis = await answer_with_llm(
+        hypothesis = await eval_mod.answer_with_llm(
             question_text,
             memories,
             benchmark_mode=benchmark_mode,
             system_prompt=system_prompt,
         )
 
-        # Call judge_answer (mocked)
-        judgment = await judge_answer(
+        judgment = await eval_mod.judge_answer(
             question_text, hypothesis, reference, benchmark_mode=benchmark_mode
         )
 
