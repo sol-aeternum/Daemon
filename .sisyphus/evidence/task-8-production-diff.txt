@@ -1,0 +1,37 @@
+# T8 — `orchestrator/memory/**` Diff Evidence
+
+## Command
+
+```bash
+git diff 07e9e6e7ab0a36f987040da4b176f5e89e1b3692..HEAD -- 'orchestrator/memory/**'
+```
+
+## Base Commit
+
+```
+07e9e6e7ab0a36f987040da4b176f5e89e1b3692
+```
+
+## Raw Output
+
+```
+(empty output)
+```
+
+## Exit Code
+
+```
+0
+```
+
+## Interpretation
+
+Exit code 0 with empty output means zero files under `orchestrator/memory/**` were modified between base commit and HEAD.
+
+## Verification
+
+No `orchestrator/memory/` files appear in `git status` as modified (M).
+
+## Next Task
+
+T9 (Static call-graph parity assertion) is unblocked.

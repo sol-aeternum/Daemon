@@ -1,0 +1,130 @@
+# T9 Evidence — Chain Coverage vs T1 Inventory
+
+## Purpose
+
+Compare the new T7 parity path call sites against the T1 inventory call-site names.
+
+---
+
+## T1 Inventory Call-Site Names
+
+From `harness_parity_inventory.md`:
+
+| Symbol | File | Lines |
+|--------|------|-------|
+| `_format_eval_memory_block` | evaluate.py | 434, 487, 652 |
+| `build_assembled_system_prompt` | evaluate.py | 477, 490, 651 |
+| `evaluate_single` | evaluate.py | 627 |
+| `assemble_system_prompt` | evaluate.py | 50, 490 |
+| `build_memory_context` | evaluate.py | NOT called (T1 gap) |
+
+---
+
+## T7 Parity Path Coverage
+
+File: `tests/longmemeval/parity_harness.py`
+
+| Symbol | Parity Usage | Line(s) | Notes |
+|--------|-------------|---------|-------|
+| `_format_eval_memory_block` | NOT USED | — | Not in parity_harness.py |
+| `build_assembled_system_prompt` | NOT USED | — | Not in parity_harness.py |
+| `evaluate_single` | NOT USED | — | Not in parity_harness.py |
+| `build_memory_context` | CALLED | 125-129 | Production entry via import |
+| `assemble_system_prompt` | CALLED | 131-134 | Production entry via import |
+| `answer_with_llm` | CALLED | 136-141 | Via evaluate.py import |
+| `judge_answer` | CALLED | 143-145 | Via evaluate.py import |
+| `embed_query` | CALLED | 110 | Via orchestrator.memory.embedding |
+| `retrieve_memories_for_text` | CALLED | 113-123 | Via orchestrator.memory.retrieval |
+
+---
+
+## Key Difference: Production Entry Point
+
+### T1 Legacy Path (evaluate.py)
+
+```
+evaluate_single()
+  embed_query()                        # line 639
+  retrieve_user_memories()             # line 641
+  build_assembled_system_prompt()      # line 651 → calls:
+    _format_eval_memory_block()        # line 487 (BENCHMARK-LOCAL)
+    assemble_system_prompt()           # line 490 (production)
+  _format_eval_memory_block()          # line 652 (again, for metadata)
+  answer_with_llm()                   # line 653
+```
+
+### T7 Parity Path (parity_harness.py)
+
+```
+parity_evaluate_single()
+  embed_query()                        # line 110
+  retrieve_memories_for_text()         # line 113
+  build_memory_context()               # line 125 (PRODUCTION)
+  assemble_system_prompt()             # line 131 (PRODUCTION)
+  answer_with_llm()                   # line 136
+```
+
+---
+
+## Chain Length Comparison
+
+| Aspect | T1 Legacy (evaluate.py) | T7 Parity (parity_harness.py) |
+|--------|-------------------------|-------------------------------|
+| Production `build_memory_context()` | NOT called | Called (line 125) |
+| Benchmark-local formatter | `_format_eval_memory_block()` called | NOT called |
+| Production `assemble_system_prompt()` | Called (line 490) | Called (line 131) |
+| Steps from retrieval to model call | 4 steps | 2 steps |
+| Duplicate formatter calls | Yes (line 487 + 652) | No |
+
+---
+
+## T1 vs T7: Functional Difference
+
+The critical functional difference between T1 and T7 is the source of `memory_context`:
+
+- **T1 Legacy**: `memory_context` comes from `_format_eval_memory_block()` — a benchmark-local substitute that does NOT call production `build_memory_context()`
+- **T7 Parity**: `memory_context` comes from `build_memory_context()` — the actual production function
+
+This means:
+- T1 benchmark could NOT measure changes to production `build_memory_context()`
+- T7 parity path CAN measure production `build_memory_context()` changes
+
+---
+
+## T1 Inventory Symbols: Preserved vs Not Used
+
+| T1 Symbol | Status in Parity Path |
+|------------|----------------------|
+| `_format_eval_memory_block` | Preserved (NOT deleted) but NOT USED in parity_harness.py |
+| `build_assembled_system_prompt` | Preserved (NOT deleted) but NOT USED in parity_harness.py |
+| `evaluate_single` | Preserved (NOT deleted) but NOT USED in parity_harness.py |
+| `assemble_system_prompt` | Replaced by direct production call (line 131) |
+| `TEST_USER_ID` | Preserved in evaluate.py but NOT USED in parity_harness.py |
+| `TEST_USER_EMAIL` | Preserved in evaluate.py but NOT USED in parity_harness.py |
+
+---
+
+## No-Transform Invariant: Parity vs Legacy
+
+Both T1 and T7 satisfy the no-transform invariant for their respective prompt chains:
+
+- **T1 Legacy**: After `assemble_system_prompt()` returns at line 490, `system_prompt` is only assigned (line 490), passed to `answer_with_llm()` (line 654), and included in result dict (line 704)
+- **T7 Parity**: After `assemble_system_prompt()` returns at line 131, `system_prompt` is only assigned (line 131), passed to `answer_with_llm()` (line 140), and included in result dict (line 164)
+
+The difference is not in transform operations but in which formatter feeds the production assembly:
+- T1 uses `_format_eval_memory_block()` (benchmark-local)
+- T7 uses `build_memory_context()` (production)
+
+---
+
+## Evidence Files
+
+- `tests/benchmark_results/harness_parity_static_check.md` — PASS verdict with line references
+- `.sisyphus/evidence/task-9-static-chain.txt` — grep/AST evidence for no-transform checks
+- `.sisyphus/evidence/task-9-chain-coverage.txt` — This file
+
+---
+
+## Evidence Status: COMPLETE
+
+Chain coverage comparison confirms T7 parity path covers the production entry points (`build_memory_context`, `assemble_system_prompt`) and does not use the benchmark-local formatters (`_format_eval_memory_block`, `build_assembled_system_prompt`). All T1 inventory symbols are preserved (not deleted) per T6-GATE constraints.

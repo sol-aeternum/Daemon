@@ -1,0 +1,47 @@
+{
+  "evidence_type": "task-15-anomaly-math",
+  "generated_at": "2026-05-06T02:47:00Z",
+  "status": "halt",
+  "t14_artifact": "tests/benchmark_results/harness_parity_baseline_run.json",
+  "t14_status": "halt",
+  "halt_reason": "Full haystack-bearing LongMemEval_S corpus unavailable",
+  "comparison_baseline": {
+    "source": "tests/benchmark_results/wave0_option_a_production_aligned_baseline.md",
+    "raw_artifact_score": "49 / 500 = 0.098",
+    "production_aligned_adjusted_score": "49 / 473 = 0.10359408033826638",
+    "rounded_percent_reference": 10.4
+  },
+  "rank_order_reference": {
+    "source": "tests/benchmark_results/wave0_closure_memo.md",
+    "rule": "anomaly if more than 3 of 6 reported category ranks move"
+  },
+  "anomaly_criteria": {
+    "aggregate_absolute_deviation_threshold_pp": 10,
+    "rank_movement_threshold": ">3 of 6",
+    "default_declaration_rule": {
+      "no_anomaly": "use T14 aggregate as baseline",
+      "anomaly_plus_agreement_within_2pp": "use mean of two aggregate scores",
+      "anomaly_plus_disagreement_over_2pp": "HALT baseline undeterminable"
+    }
+  },
+  "can_compute_anomaly": false,
+  "why_not_executable": [
+    "T14 status is halt, not completed.",
+    "T14 aggregate_adjusted_score is null.",
+    "T14 per_category_scores is null.",
+    "T14 records is null, so there are no fresh full-corpus records for replay math."
+  ],
+  "aggregate_deviation_pp": null,
+  "rank_movement_count": null,
+  "anomalous": null,
+  "baseline_decision": "halt_baseline_undeterminable",
+  "blocking_tasks": [
+    "T15",
+    "T16",
+    "T17",
+    "T18",
+    "T19",
+    "T20"
+  ],
+  "required_resolution": "Obtain the full haystack-bearing 500-question LongMemEval_S corpus, rerun T14 to produce fresh records, and then recompute T15 anomaly math from the completed baseline artifact."
+}

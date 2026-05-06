@@ -1,0 +1,7 @@
+KU | old=18.7% | new=null/unavailable | delta=null/not computable | reason=T15 halted with baseline undeterminable because T14 never produced completed aggregate/per-category outputs.
+IE-preference | old=17.2% | new=null/unavailable | delta=null/not computable | reason=T15 halted with baseline undeterminable because T14 never produced completed aggregate/per-category outputs.
+IE-user | old=16.1% | new=null/unavailable | delta=null/not computable | reason=T15 halted with baseline undeterminable because T14 never produced completed aggregate/per-category outputs.
+IE-assistant | old=13.7% | new=null/unavailable | delta=null/not computable | reason=T15 halted with baseline undeterminable because T14 never produced completed aggregate/per-category outputs.
+MR | old=7.1% | new=null/unavailable | delta=null/not computable | reason=T15 halted with baseline undeterminable because T14 never produced completed aggregate/per-category outputs.
+TR | old=2.3% | new=null/unavailable | delta=null/not computable | reason=T15 halted with baseline undeterminable because T14 never produced completed aggregate/per-category outputs.
+ABS | old=0.0% | new=null/unavailable | delta=null/not computable | reason=T15 halted with baseline undeterminable because T14 never produced completed aggregate/per-category outputs.

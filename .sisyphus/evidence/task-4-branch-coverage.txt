@@ -1,0 +1,101 @@
+# Branch Coverage Evidence — T4
+
+**Generated**: 2026-05-06
+**Purpose**: Prove every category maps to a T1 inventory assembly path, and no category-specific formatter was omitted.
+
+---
+
+## Coverage Matrix: Category → Assembly Path
+
+| Category | Count | T1 Path A: `_format_eval_memory_block()` | T1 Path B: `build_assembled_system_prompt()` | T1 Path C: `assemble_system_prompt()` | T1 Path D: `retrieve_user_memories()` |
+|---|---|---|---|---|---|
+| IE-user (non-ABS) | 64 | ✅ evaluate.py:434,652 | ✅ evaluate.py:477,651 | ✅ evaluate.py:490 | ✅ evaluate.py:604-624 |
+| IE-assistant | 56 | ✅ evaluate.py:434,652 | ✅ evaluate.py:477,651 | ✅ evaluate.py:490 | ✅ evaluate.py:604-624 |
+| IE-preference | 30 | ✅ evaluate.py:434,652 | ✅ evaluate.py:477,651 | ✅ evaluate.py:490 | ✅ evaluate.py:604-624 |
+| MR (non-ABS) | 121 | ✅ evaluate.py:434,652 | ✅ evaluate.py:477,651 | ✅ evaluate.py:490 | ✅ evaluate.py:604-624 |
+| TR (non-ABS) | 127 | ✅ evaluate.py:434,652 | ✅ evaluate.py:477,651 | ✅ evaluate.py:490 | ✅ evaluate.py:604-624 |
+| KU (non-ABS) | 72 | ✅ evaluate.py:434,652 | ✅ evaluate.py:477,651 | ✅ evaluate.py:490 | ✅ evaluate.py:604-624 |
+| ABS (IE-user subtype) | 6 | ✅ evaluate.py:434,652 | ✅ evaluate.py:477,651 | ✅ evaluate.py:490 | ✅ evaluate.py:604-624 |
+| ABS (MR subtype) | 12 | ✅ evaluate.py:434,652 | ✅ evaluate.py:477,651 | ✅ evaluate.py:490 | ✅ evaluate.py:604-624 |
+| ABS (TR subtype) | 6 | ✅ evaluate.py:434,652 | ✅ evaluate.py:477,651 | ✅ evaluate.py:490 | ✅ evaluate.py:604-624 |
+| ABS (KU subtype) | 6 | ✅ evaluate.py:434,652 | ✅ evaluate.py:477,651 | ✅ evaluate.py:490 | ✅ evaluate.py:604-624 |
+
+**Result: ALL categories covered by the same 4 T1 inventory items. No category-specific formatter omitted.**
+
+---
+
+## T1 Inventory Items — Verification Against Categories
+
+### T1 Item: `_format_eval_memory_block()` [evaluate.py:434-474]
+- Called at line 487 inside `build_assembled_system_prompt()` — used by ALL categories
+- Called at line 652 inside `evaluate_single()` — used by ALL categories (checkpoint metadata)
+- **No category branching** — renders all memories identically as `"- Fact: ..."` regardless of memory category or question category
+- **Coverage**: IE-user ✅, IE-assistant ✅, IE-preference ✅, MR ✅, TR ✅, KU ✅, ABS ✅
+
+### T1 Item: `build_assembled_system_prompt()` [evaluate.py:477-490]
+- Called at line 651 inside `evaluate_single()` — used by ALL categories
+- Calls `_format_eval_memory_block()` then `assemble_system_prompt()`
+- **Coverage**: IE-user ✅, IE-assistant ✅, IE-preference ✅, MR ✅, TR ✅, KU ✅, ABS ✅
+
+### T1 Item: `assemble_system_prompt()` [evaluate.py:50 imported, line 490 called]
+- Called at line 490 inside `build_assembled_system_prompt()` — used by ALL categories
+- **Coverage**: IE-user ✅, IE-assistant ✅, IE-preference ✅, MR ✅, TR ✅, KU ✅, ABS ✅
+
+### T1 Item: `retrieve_user_memories()` [evaluate.py:604-624]
+- Called at lines 641-648 inside `evaluate_single()` — used by ALL categories
+- Wraps `retrieve_memories_for_text()` with hardcoded flags
+- **Coverage**: IE-user ✅, IE-assistant ✅, IE-preference ✅, MR ✅, TR ✅, KU ✅, ABS ✅
+
+---
+
+## Branch Coverage Summary
+
+```
+T1 Inventory Item              | IE-user | IE-assistant | IE-preference | MR | TR | KU | ABS
+------------------------------|---------|--------------|----------------|----|----|---|-----
+_format_eval_memory_block     |   ✅    |      ✅      |       ✅       | ✅ | ✅ | ✅ |  ✅
+build_assembled_system_prompt |   ✅    |      ✅      |       ✅       | ✅ | ✅ | ✅ |  ✅
+assemble_system_prompt        |   ✅    |      ✅      |       ✅       | ✅ | ✅ | ✅ |  ✅
+retrieve_user_memories        |   ✅    |      ✅      |       ✅       | ✅ | ✅ | ✅ |  ✅
+```
+
+**All 10 category+subtype combinations (IE-user, IE-assistant, IE-preference, MR, TR, KU, ABS-IE, ABS-MR, ABS-TR, ABS-KU) map to the same 4 T1 inventory assembly items.**
+
+**No category-specific formatter found in the harness that was omitted from T1 inventory.**
+
+---
+
+## Verification Commands
+
+```bash
+# Count categories in aligned corpus
+python3 -c "
+import json
+from collections import Counter
+cats = Counter()
+abs_by_cat = Counter()
+with open('tests/benchmark_results/wave0_full_corpus_aligned/longmemeval_results.jsonl') as f:
+    for line in f:
+        obj = json.loads(line)
+        cats[obj['category']] += 1
+        if obj['question_id'].endswith('_abs'):
+            abs_by_cat[obj['category']] += 1
+for k, v in sorted(cats.items()):
+    print(f'{k}: {v}')
+print(f'ABS by parent: {dict(sorted(abs_by_cat.items()))}')
+print(f'Total: {sum(cats.values())}')
+"
+
+# Verify T1 inventory paths exist for all categories
+grep -n "_format_eval_memory_block\|build_assembled_system_prompt\|assemble_system_prompt\|retrieve_user_memories" tests/longmemeval/evaluate.py | head -20
+```
+
+---
+
+## Conclusion
+
+**Branch coverage: COMPLETE**
+- Every category (IE-user, IE-assistant, IE-preference, MR, TR, KU) and ABS subtype converges through the same 4 T1 inventory assembly items
+- No category-specific formatters exist in the harness
+- No T1 inventory items are omitted for any category
+- The answer-time assembly path is **single and unified** across all 500 questions

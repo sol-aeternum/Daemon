@@ -1,0 +1,79 @@
+{
+  "question_id": "b86304ba",
+  "fresh_question_id": "b86304ba_t11fresh",
+  "synthetic_user_id": "c8bf04a7-ba3e-54e3-b622-fd77a7cb0c37",
+  "question_type": "single-session-user",
+  "haystack_session_count": 3,
+  "haystack_message_count": 27,
+  "total_messages_ingested": 27,
+  "extraction_outcomes": [
+    "completed",
+    "empty",
+    "completed"
+  ],
+  "extraction_completed_count": 2,
+  "extraction_empty_count": 1,
+  "extraction_created_memory_ids": [
+    "e8e4e0f0-9da9-4989-bd9f-520e29362cda",
+    "a09dcc01-406f-4a61-a07a-30f54ceeea7d",
+    "1545e495-1a14-40a8-aad9-966656d35a96",
+    "857897c1-ec6f-4611-8848-40dc0927b9b6",
+    "24ca7d5c-8b6f-4628-bfd1-93af9207a03b",
+    "c0536584-c9af-4770-afd1-66c6d42c1d2e",
+    "f2742c9d-31b0-4691-8b6a-c20969f18926",
+    "a997f913-1aa0-477d-8ebc-35052054d452",
+    "7eaa7305-b17e-4d02-8061-fff7eff265e6"
+  ],
+  "memories_used": 1,
+  "retrieved_memory_ids": [
+    "857897c1-ec6f-4611-8848-40dc0927b9b6"
+  ],
+  "retrieval_latency_ms": 29.61,
+  "memory_context_length": 102,
+  "memory_context_preview": "About this user:\n- Fact: User's reusable water bottle has saved them money on overpriced airport water",
+  "system_prompt_length": 9336,
+  "system_prompt_preview": "You are Daemon, a personal AI assistant.\n\nWhen asked \"who are you\" or similar, respond: \"I'm Daemon, a personal AI assistant.\"\n\nIf the user presses for specifics about your model or capabilities, be honest: explain you are currently running on a specific model (which may vary), that you can switch models automatically based on requests, and that you have tools and subagents at your disposal. The exact wording can vary naturally.\n\nYou respond directly most of the time. When necessary, you spawn s",
+  "encryption": {
+    "messages_checked": 10,
+    "memories_checked": 9,
+    "extraction_logs_checked": 2,
+    "messages_decoded_ok": 10,
+    "memories_decoded_ok": 9,
+    "extraction_logs_decoded_ok": 2,
+    "failures": []
+  },
+  "same_user_verification": {
+    "verified": true,
+    "checked": 1,
+    "all_same_user": true,
+    "retrieved_user_ids": [
+      "c8bf04a7-ba3e-54e3-b622-fd77a7cb0c37"
+    ],
+    "expected_user_id": "c8bf04a7-ba3e-54e3-b622-fd77a7cb0c37"
+  },
+  "rollback_gates": {
+    "memories_used_nonzero": true,
+    "extraction_completed_nonzero": true,
+    "retrieval_latency_ok": true,
+    "encryption_ok": true,
+    "same_user_retrieval": true,
+    "current_run_provenance": true
+  },
+  "all_gates_pass": true,
+  "provenance_ids": [
+    "857897c1-ec6f-4611-8848-40dc0927b9b6"
+  ],
+  "current_run_memory_ids": [
+    "f2742c9d-31b0-4691-8b6a-c20969f18926",
+    "7eaa7305-b17e-4d02-8061-fff7eff265e6",
+    "24ca7d5c-8b6f-4628-bfd1-93af9207a03b",
+    "c0536584-c9af-4770-afd1-66c6d42c1d2e",
+    "a997f913-1aa0-477d-8ebc-35052054d452",
+    "857897c1-ec6f-4611-8848-40dc0927b9b6",
+    "e8e4e0f0-9da9-4989-bd9f-520e29362cda",
+    "1545e495-1a14-40a8-aad9-966656d35a96",
+    "a09dcc01-406f-4a61-a07a-30f54ceeea7d"
+  ],
+  "provider_route": "openai/gpt-4o-mini",
+  "smoke_timestamp": "2026-05-06T10:45:49.027691"
+}

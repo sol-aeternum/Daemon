@@ -1,0 +1,60 @@
+# Task 18 — Framing Check (CORRECTED)
+# T18: Surgical update to Wave 0 Option A baseline document
+
+## Required Terms Check
+
+All checks performed against:
+`tests/benchmark_results/wave0_option_a_production_aligned_baseline.md`
+
+| Term | Expected | Found | Status |
+|------|----------|-------|--------|
+| `49/473` | >= 1 | 2 | PASS |
+| `harness-artifact` | >= 1 | 2 | PASS |
+| `HALT — baseline undeterminable` | 1 (exact) | 1 | PASS |
+| `tests/benchmark_results/harness_parity_baseline_decision.md` | 1 (full path) | 1 | PASS |
+| `10.4%` | >= 1 (literal) | 2 | PASS |
+
+## T15 Fabricated Baseline Check
+
+**Question: Does the patched file contain any fabricated T15 numeric baseline?**
+
+Scanned for: `T15`, `post-parity baseline`, `full-corpus baseline`, any numeric score attributed to T15.
+
+Result: No fabricated T15 numeric baseline found.
+
+The file correctly states:
+- T15 is `HALT — baseline undeterminable` (cited from tests/benchmark_results/harness_parity_baseline_decision.md)
+- The 49/473 figure is labeled as "Wave 0 Option A harness-artifact anchor only"
+- No T15 percentage, rank, delta, or threshold-crossing result is provided
+
+## No-Fabrication Confirmation
+
+The patched file explicitly states:
+```
+Per `tests/benchmark_results/harness_parity_baseline_decision.md` (generated 2026-05-06),
+T15 is **HALT — baseline undeterminable** because the full haystack-bearing
+LongMemEval_S corpus is unavailable and T14 produced no completed run.
+No numeric T15 baseline exists.
+```
+
+This is the correct, honest answer per the task requirements.
+
+## Missing Path Confirmation
+
+**Question: Does `tests/benchmark_results/wave0_aligned_baseline.md` (the requested path) exist?**
+
+```bash
+$ ls -la tests/benchmark_results/wave0_aligned_baseline.md
+ls: cannot access '...': No such file or directory
+```
+
+Answer: NO — the requested path is absent.
+The actual patched file is `tests/benchmark_results/wave0_option_a_production_aligned_baseline.md`.
+
+## Correction Note (2026-05-06)
+
+Atlas Phase 1 caught two gaps in the original T18 patch:
+1. `10.4%` was not literally present (only 0.1036 was used); fixed to include literal `~10.4%` alongside `49/473`
+2. Citation used bare `harness_parity_baseline_decision.md` instead of full path; fixed to `tests/benchmark_results/harness_parity_baseline_decision.md`
+
+Both fixes preserve the HALT logic and no-fabrication constraint.

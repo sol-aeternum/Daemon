@@ -1,0 +1,80 @@
+{
+  "evidence_type": "task-16-threshold-review",
+  "generated_at": "2026-05-06T02:53:02Z",
+  "status": "halt",
+  "dependency": {
+    "task": "T15",
+    "artifact": "tests/benchmark_results/harness_parity_baseline_decision.md",
+    "baseline_decision": "halt_baseline_undeterminable",
+    "t14_dependency": "tests/benchmark_results/harness_parity_baseline_run.json",
+    "halt_reason": "Full haystack-bearing LongMemEval_S corpus unavailable"
+  },
+  "roadmap_source": "docs/MEMORY_UPGRADE_ROADMAP.md",
+  "roadmap_priority_implications": "informationally_blocked",
+  "can_compute_threshold_crossings": false,
+  "threshold_crossings_assessment": "not_assessable_from_halted_upstream_artifacts",
+  "roadmap_edits_authorized": false,
+  "roadmap_edit_status": "no roadmap edits",
+  "categories": [
+    {
+      "category": "KU",
+      "old_score_percent": 18.7,
+      "new_score_percent": null,
+      "delta_percent_points": null,
+      "threshold_crossing": null,
+      "reason": "T15 halted with baseline undeterminable because T14 did not produce completed aggregate or per-category outputs."
+    },
+    {
+      "category": "IE-preference",
+      "old_score_percent": 17.2,
+      "new_score_percent": null,
+      "delta_percent_points": null,
+      "threshold_crossing": null,
+      "reason": "T15 halted with baseline undeterminable because T14 did not produce completed aggregate or per-category outputs."
+    },
+    {
+      "category": "IE-user",
+      "old_score_percent": 16.1,
+      "new_score_percent": null,
+      "delta_percent_points": null,
+      "threshold_crossing": null,
+      "reason": "T15 halted with baseline undeterminable because T14 did not produce completed aggregate or per-category outputs."
+    },
+    {
+      "category": "IE-assistant",
+      "old_score_percent": 13.7,
+      "new_score_percent": null,
+      "delta_percent_points": null,
+      "threshold_crossing": null,
+      "reason": "T15 halted with baseline undeterminable because T14 did not produce completed aggregate or per-category outputs."
+    },
+    {
+      "category": "MR",
+      "old_score_percent": 7.1,
+      "new_score_percent": null,
+      "delta_percent_points": null,
+      "threshold_crossing": null,
+      "reason": "T15 halted with baseline undeterminable because T14 did not produce completed aggregate or per-category outputs."
+    },
+    {
+      "category": "TR",
+      "old_score_percent": 2.3,
+      "new_score_percent": null,
+      "delta_percent_points": null,
+      "threshold_crossing": null,
+      "reason": "T15 halted with baseline undeterminable because T14 did not produce completed aggregate or per-category outputs."
+    },
+    {
+      "category": "ABS",
+      "old_score_percent": 0.0,
+      "new_score_percent": null,
+      "delta_percent_points": null,
+      "threshold_crossing": null,
+      "reason": "T15 halted with baseline undeterminable because T14 did not produce completed aggregate or per-category outputs."
+    }
+  ],
+  "notes": [
+    "The Wave 0 Option A 49/473 value remains a historical comparison anchor only and is not promoted to a new T15/T16 baseline.",
+    "Threshold-crossing analysis and roadmap-priority refresh remain blocked until the full haystack-bearing corpus is restored and T14/T15 are rerun successfully."
+  ]
+}

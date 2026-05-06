@@ -1,0 +1,59 @@
+diff --git a/tests/benchmark_results/wave0_closure_memo.md b/tests/benchmark_results/wave0_closure_memo.md
+index 4db1f593..621547c9 100644
+--- a/tests/benchmark_results/wave0_closure_memo.md
++++ b/tests/benchmark_results/wave0_closure_memo.md
+@@ -342,3 +342,53 @@ The following gates were pre-data diagnostic sanity bounds. Under **User Option
+ | Future W1 gate redesign | W1+ (structural) | Option A defines new baseline; gates need redesign under new semantics |
+ 
+ Wave 0 Option A closure is structurally complete under the Option A contract.
++
++---
++
++## 15. T17 Additive Correction — T15 HALT Honest Record (2026-05-06)
++
++**Amended:** 2026-05-06
++**Source plan:** `.sisyphus/plans/longmemeval-harness-production-parity.md` (T17)
++
++### What this section does
++
++This is an additive correction appended under the plan's T17 mandate. It does not edit, delete, reflow, or reorder any existing line in this document. It records the T15 HALT honestly.
++
++### T15 status — HALT: baseline undeterminable
++
++Per `tests/benchmark_results/harness_parity_baseline_decision.md` (T15 artifact, 2026-05-06):
++
++> **Decision: HALT — baseline undeterminable.**
++
++> T15 is blocked by the T14 HALT. No new production-faithful full-corpus baseline can be declared from the current artifact set, and no confirmation run can be performed. The Wave 0 Option A number remains the historical comparison anchor only; it is **not** replaced by a new T15 baseline because no valid T14 completed run exists.
++
++T15 anomaly math is **not executable**. The T14 artifact (`tests/benchmark_results/harness_parity_baseline_run.json`) reports `status: "halt"` and `halt_reason: "Full haystack-bearing LongMemEval_S corpus unavailable"`. All numeric fields — `aggregate_adjusted_score`, `per_category_scores`, `records` — are `null`. There is no T15 number to compare against the Wave 0 Option A anchor of `49 / 473 = 0.10359408033826638`.
++
++No T15 numeric baseline exists. The plan's new-baseline requirement is therefore satisfied only by the HALT declaration itself, not by any fresh score. T16 propagated this correctly by setting all `new`, `delta`, and threshold-crossing fields to `null`.
++
++### Root cause — `_format_eval_memory_block` left as active consumer-path formatter
++
++The T2 reconstruction (`tests/benchmark_results/harness_parity_path_a_reconstruction.md`) identified the decisive coverage miss:
++
++> "Wave 0 Path A treated 'production assembly with benchmark-local `memory_context`' as sufficiently aligned, even though the benchmark answer path still built `memory_context` outside production and the runner contract still pinned `_format_eval_memory_block()` via `active_memory_formatter_sha256`."
++
++The benchmark harness continues to hash `_format_eval_memory_block` as the active memory formatter. This is not a post-Wave-0 regression — it was present during Wave 0 and is the reason the parity path requires a new entry point (`parity_harness.py`) that calls `build_memory_context()` instead.
++
++### What is not resolved by this correction
++
++- No fresh full-corpus baseline exists; the 49/473 anchor remains the only comparison figure on record
++- T14 remains blocked by corpus unavailability
++- T15–T20 remain blocked until the full haystack-bearing LongMemEval_S corpus is restored
++
++### What this correction resolves
++
++- T15 HALT is now recorded in the closure memo with explicit citation of the T15 artifact and the T14 artifact that triggered it
++- No fabricated T15 number is entered into this document
++- The `_format_eval_memory_block` / `active_memory_formatter_sha256` root cause is explicitly named and cited from the T2 reconstruction
++- The dependency chain (corpus → T14 → T15 → T16–T20) is made visible in the closure record
++
++### Verbatim T2 root-cause quote (corrective addendum — 2026-05-06T03:15:00Z)
++
++The quote in the preceding subsection was a paraphrased summary of the T2 reconstruction's conclusion. The plan requires at least one verbatim sentence from the T2 artifact. The exact sentence from line 23 of `tests/benchmark_results/harness_parity_path_a_reconstruction.md` is:
++
++> In short: **Path A missed `_format_eval_memory_block()` because it audited whether the benchmark reused production `assemble_system_prompt()`, not whether the benchmark had stopped using `_format_eval_memory_block()` as the active consumer-path formatter.**
+---DIFF END---

@@ -1,0 +1,33 @@
+# T13 — Redaction Check Results
+
+**Date**: 2026-05-06
+**Check**: Scan T13 artifacts for raw sensitive content
+
+## Patterns Checked
+
+| Pattern | Found | Assessment |
+|---------|-------|-----------|
+| `postgresql://` | ✅ Found | Present in safe URL shape — credentials redacted to `<user:pass>` |
+| `password=` | ❌ Not found | No `password=` field in any artifact |
+| `<OLD-CREDENTIALS>` | ❌ Not found | No old credential placeholders in any artifact |
+| `<user:pass>` | ✅ Found | Safe placeholder replacing actual credentials |
+| `DAEMON_ENCRYPTION_KEY` | ✅ Found | Env var name only, no value in any artifact |
+| `Fernet` | ✅ Found | Algorithm name only, no key material |
+| `ciphertext` | ✅ Found | Generic technical term, no actual ciphertext |
+| `decrypted` | ✅ Found | Field/status names only, no actual decrypted content |
+| `gAAAAA[a-zA-Z0-9_/-]+` | ❌ Not found | No Fernet token literals in any artifact |
+
+## Result: PASS
+
+No raw sensitive content found. All patterns are either:
+- Safe redaction placeholders (`<user:pass>@127.0.0.1:5432/daemon`)
+- Technical term references (algorithm names, field names)
+- No actual decrypted plaintext, raw keys, or credentials
+
+## Artifacts Scanned
+
+- `.sisyphus/evidence/task-13-encryption-smoke.json`
+- `.sisyphus/evidence/task-13-encryption-smoke.md`
+- `.sisyphus/evidence/task-13-redaction-check.txt`
+- `tests/benchmark_results/harness_parity_encryption_smoke.md`
+- `tests/longmemeval/t13_encryption_smoke.py`

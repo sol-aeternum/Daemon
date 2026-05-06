@@ -1,0 +1,38 @@
+Task 19 — TODO 5 baseline-band reconciliation
+
+Before excerpt (pre-edit):
+
+- [ ] 5. Reproduce 10.4% Baseline at Rollback Anchor
+
+  **What to do**: Run LongMemEval_S at `pre-wave-1` / `07e9e6e7` with production-aligned path and write `tests/benchmark_results/wave1_baseline_repro.json`. Confirm aggregate is 9.4%-11.4%, category scores within ±2pp of closure memo, excluded count 27.
+  **Must NOT do**: Do not modify code or move `pre-wave-1`.
+
+  **Acceptance Criteria**:
+  - [ ] Baseline artifact exists with per-question verdicts and raw counts.
+  - [ ] Adjusted score is within [9.4%, 11.4%].
+  - [ ] Excluded-question count is 27 and each exclusion is attributed.
+
+Required after-state:
+- Cite `tests/benchmark_results/harness_parity_baseline_decision.md`.
+- Cite generated date `2026-05-06`.
+- Preserve exact T15 status: `HALT — baseline undeterminable`.
+- State that numeric T15 baseline and numeric ±1pp band are unavailable until the full haystack-bearing LongMemEval_S corpus is restored and T14/T15 are rerun.
+- Do not invent a reproduction range.
+
+After excerpt:
+
+- [ ] 5. Record T15 Harness-Parity Baseline Decision Anchor
+
+  **What to do**: Use `tests/benchmark_results/harness_parity_baseline_decision.md` (generated 2026-05-06) as the authoritative `harness-parity-shipped` baseline-decision artifact. Cite the exact T15 status `HALT — baseline undeterminable`, preserve Wave 0 closure-memo / 27-exclusion references only as historical pre-parity context if needed, and state explicitly that no numeric T15 baseline or ±1pp band exists until the full haystack-bearing LongMemEval_S corpus is restored and T14/T15 are rerun.
+  **Must NOT do**: Do not fabricate a numeric baseline or ±1pp band; do not modify code or move `harness-parity-shipped`.
+
+  **Acceptance Criteria**:
+  - [ ] TODO 5 cites `tests/benchmark_results/harness_parity_baseline_decision.md`, generated 2026-05-06, and the exact status `HALT — baseline undeterminable`.
+  - [ ] TODO 5 states that no numeric T15 baseline or ±1pp band is available until the full haystack-bearing LongMemEval_S corpus is restored and T14/T15 are rerun.
+  - [ ] Any retained Wave 0 closure-memo / 27-exclusion comparison is labeled historical pre-parity context only.
+
+Explanation:
+- The original TODO 5 assumed a completed reproduced numeric baseline at `pre-wave-1` and a numeric acceptance band derived from that run.
+- The authoritative replacement source is `tests/benchmark_results/harness_parity_baseline_decision.md`, generated 2026-05-06, whose exact T15 result is `HALT — baseline undeterminable`.
+- Because T15 halted, there is no truthful numeric T15 baseline and therefore no truthful numeric ±1pp band to insert.
+- The rewrite preserves the intent of TODO 5 by converting it into a HALT-aware documentation/anchor step and explicitly names the unblock condition: restore the full haystack-bearing LongMemEval_S corpus, then rerun T14 and T15.

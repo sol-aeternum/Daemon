@@ -1,0 +1,190 @@
+{
+  "t12_timestamp": "2026-05-06T11:06:55.062373",
+  "sample_questions": [
+    "b86304ba",
+    "28dc39ac",
+    "8c18457d"
+  ],
+  "categories_sampled": [
+    "IE-user",
+    "MR",
+    "TR"
+  ],
+  "question_results": [
+    {
+      "question_id": "b86304ba",
+      "fresh_question_id": "b86304ba_t12ie",
+      "synthetic_user_id": "a22c9f41-4d1f-5622-91b1-1b46553ac386",
+      "category": "IE-user",
+      "question_type": "single-session-user",
+      "haystack_session_count": 3,
+      "haystack_message_count": 27,
+      "total_messages_ingested": 27,
+      "extraction_invocation_count": 3,
+      "extraction_outcomes": [
+        "completed",
+        "empty",
+        "completed"
+      ],
+      "extraction_completed_count": 2,
+      "extraction_empty_count": 1,
+      "extraction_error_count": 0,
+      "extraction_created_memory_ids": [
+        "184e479f-7a8f-42ce-b176-39e5ee07555a",
+        "b6658bf8-7942-4758-bac8-ce4bef968415",
+        "dbbd4f4c-1a38-4a7e-b72d-a32f8d9882f2",
+        "45c593c9-ddb4-4a4b-84de-2a70869e14df",
+        "896e986b-ad63-4e9e-b4d0-961192ec7b34",
+        "90ddb044-7817-4dba-a22e-2378ad0e6df8",
+        "6b143d22-46e2-4bf0-9159-ad51bffb7f09",
+        "d2f36f18-65fb-43c2-9427-ea3e48985396",
+        "b140482e-3833-4a3d-b3ed-755c520dc2b5",
+        "e96667c9-9754-4f18-9420-15e3b5ab9f29"
+      ],
+      "memories_retrieved_count": 1,
+      "retrieved_memory_ids": [
+        "e96667c9-9754-4f18-9420-15e3b5ab9f29"
+      ],
+      "retrieval_latency_ms": 5.1,
+      "same_user_verification": {
+        "verified": true,
+        "checked": 1,
+        "all_same_user": true,
+        "retrieved_user_ids": [
+          "a22c9f41-4d1f-5622-91b1-1b46553ac386"
+        ],
+        "expected_user_id": "a22c9f41-4d1f-5622-91b1-1b46553ac386"
+      },
+      "provenance_intersection_ids": [
+        "e96667c9-9754-4f18-9420-15e3b5ab9f29"
+      ],
+      "rollback_gates": {
+        "extraction_invoked": true,
+        "extraction_completed_nonzero": true,
+        "retrieval_latency_ok": true,
+        "same_user_retrieval": true,
+        "created_memories_belong_to_synthetic_user": true,
+        "current_run_provenance": true
+      },
+      "all_gates_pass": true
+    },
+    {
+      "question_id": "28dc39ac",
+      "fresh_question_id": "28dc39ac_t12mr",
+      "synthetic_user_id": "3af2c441-6d31-5d63-be17-2e6b4ed3bbd6",
+      "category": "MR",
+      "question_type": "multi-session",
+      "haystack_session_count": 3,
+      "haystack_message_count": 36,
+      "total_messages_ingested": 36,
+      "extraction_invocation_count": 3,
+      "extraction_outcomes": [
+        "empty",
+        "empty",
+        "completed"
+      ],
+      "extraction_completed_count": 1,
+      "extraction_empty_count": 2,
+      "extraction_error_count": 0,
+      "extraction_created_memory_ids": [
+        "74826138-5c77-46f7-aad7-32b572b59f1d",
+        "49365f67-a7ac-4731-ae7c-1bd7168036e5",
+        "08ea8ee3-a1ac-440a-8b2a-b17fc0a14359",
+        "d13e6d27-e988-4057-84ba-74e86a6009c4",
+        "56f7d1f0-d985-4049-a8b2-b96ca1bc102b",
+        "ab4f96f5-161e-4db6-a8bc-5eac25ba1099"
+      ],
+      "memories_retrieved_count": 3,
+      "retrieved_memory_ids": [
+        "08ea8ee3-a1ac-440a-8b2a-b17fc0a14359",
+        "49365f67-a7ac-4731-ae7c-1bd7168036e5",
+        "74826138-5c77-46f7-aad7-32b572b59f1d"
+      ],
+      "retrieval_latency_ms": 4.18,
+      "same_user_verification": {
+        "verified": true,
+        "checked": 3,
+        "all_same_user": true,
+        "retrieved_user_ids": [
+          "3af2c441-6d31-5d63-be17-2e6b4ed3bbd6",
+          "3af2c441-6d31-5d63-be17-2e6b4ed3bbd6",
+          "3af2c441-6d31-5d63-be17-2e6b4ed3bbd6"
+        ],
+        "expected_user_id": "3af2c441-6d31-5d63-be17-2e6b4ed3bbd6"
+      },
+      "provenance_intersection_ids": [
+        "74826138-5c77-46f7-aad7-32b572b59f1d",
+        "08ea8ee3-a1ac-440a-8b2a-b17fc0a14359",
+        "49365f67-a7ac-4731-ae7c-1bd7168036e5"
+      ],
+      "rollback_gates": {
+        "extraction_invoked": true,
+        "extraction_completed_nonzero": true,
+        "retrieval_latency_ok": true,
+        "same_user_retrieval": true,
+        "created_memories_belong_to_synthetic_user": true,
+        "current_run_provenance": true
+      },
+      "all_gates_pass": true
+    },
+    {
+      "question_id": "8c18457d",
+      "fresh_question_id": "8c18457d_t12tr",
+      "synthetic_user_id": "ed47d6ee-93a5-5bbf-8de4-651a74136aa3",
+      "category": "TR",
+      "question_type": "temporal-reasoning",
+      "haystack_session_count": 3,
+      "haystack_message_count": 33,
+      "total_messages_ingested": 33,
+      "extraction_invocation_count": 3,
+      "extraction_outcomes": [
+        "empty",
+        "completed",
+        "empty"
+      ],
+      "extraction_completed_count": 1,
+      "extraction_empty_count": 2,
+      "extraction_error_count": 0,
+      "extraction_created_memory_ids": [
+        "3fbb84b0-8826-4997-9ac3-5c4e0f14802a",
+        "f4342ed6-e1ce-4679-9672-8ad48b1779cd",
+        "084b3e83-6969-43da-b001-a1f03392b74a",
+        "cfe70295-c6bb-4ef0-8c7b-9968ca74034c"
+      ],
+      "memories_retrieved_count": 1,
+      "retrieved_memory_ids": [
+        "cfe70295-c6bb-4ef0-8c7b-9968ca74034c"
+      ],
+      "retrieval_latency_ms": 3.73,
+      "same_user_verification": {
+        "verified": true,
+        "checked": 1,
+        "all_same_user": true,
+        "retrieved_user_ids": [
+          "ed47d6ee-93a5-5bbf-8de4-651a74136aa3"
+        ],
+        "expected_user_id": "ed47d6ee-93a5-5bbf-8de4-651a74136aa3"
+      },
+      "provenance_intersection_ids": [
+        "cfe70295-c6bb-4ef0-8c7b-9968ca74034c"
+      ],
+      "rollback_gates": {
+        "extraction_invoked": true,
+        "extraction_completed_nonzero": true,
+        "retrieval_latency_ok": true,
+        "same_user_retrieval": true,
+        "created_memories_belong_to_synthetic_user": true,
+        "current_run_provenance": true
+      },
+      "all_gates_pass": true
+    }
+  ],
+  "overall_pass": true,
+  "pre_extraction_oracle_check": {
+    "no_bulk_memory_load": true,
+    "inline_extraction_only": true,
+    "fresh_synthetic_users": true,
+    "note": "No import statements for benchmark_extraction found in tests/longmemeval/*.py. Remaining mentions are T12 self-report/comment/artifact strings only. benchmark_extraction.py is not imported anywhere in the longmemeval test path."
+  },
+  "db_connectivity_verified": true
+}

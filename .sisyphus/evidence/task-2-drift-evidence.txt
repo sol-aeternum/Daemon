@@ -1,0 +1,13 @@
+Task 2 drift evidence
+Date: 2026-05-06
+
+No finding was classified as post_w0_drift.
+
+Reason:
+- The required documentary evidence directly supports the listed gaps as Path A coverage misses.
+- This task prohibits post_w0_drift labels without concrete git/history proof.
+- No such proof was established for any T1 finding during this forensic pass.
+
+Result:
+- All classified items were downgraded to path_a_miss.
+- No git-log drift evidence entries were required or recorded.

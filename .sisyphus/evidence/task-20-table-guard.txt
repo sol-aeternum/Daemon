@@ -1,0 +1,28 @@
+Task 20 — roadmap table/section guard
+Date: 2026-05-06
+
+Intent:
+- Confirm T20 did not edit the priors, lift tables, category table, wave sections, or other downstream roadmap structure outside the opening blockquote.
+
+Guard anchors verified after patch:
+- `docs/MEMORY_UPGRADE_ROADMAP.md:21` → `## Production-aligned baseline structure`
+- `docs/MEMORY_UPGRADE_ROADMAP.md:25` → `| Category | Score | Signal |`
+- `docs/MEMORY_UPGRADE_ROADMAP.md:120` → `| # | Wave | Change | Original prior lift | Effort | Risk | Confidence at 10.4% baseline |`
+- `docs/MEMORY_UPGRADE_ROADMAP.md:134` → `## Wave 0 — CLOSED`
+- `docs/MEMORY_UPGRADE_ROADMAP.md:142` → `## Wave 1 — Prompt-surface changes (batch)`
+
+Grep evidence:
+- The only new HALT-aware baseline wording appears in the opening note at lines 3-5.
+- The category-table section still starts at line 21 and its header row still starts at line 25.
+- The ranked-sequence prior-lift table still starts at line 120.
+- The nearby wave section anchors (`## Wave 0 — CLOSED`, `## Wave 1 — Prompt-surface changes (batch)`) remain at lines 134 and 142.
+
+Context-preservation evidence from post-edit grep:
+- `docs/MEMORY_UPGRADE_ROADMAP.md:13` still says the benchmark and production system had been measuring different things.
+- `docs/MEMORY_UPGRADE_ROADMAP.md:23` still starts `10.4% aggregate decomposes into a per-category structure...`
+- `docs/MEMORY_UPGRADE_ROADMAP.md:49` still describes LongMemEval_S as the full-pipeline wave gate.
+- `docs/MEMORY_UPGRADE_ROADMAP.md:136` still contains the Wave 0 closure summary with `10.4% adjusted (49/473)` as existing historical roadmap context.
+
+Diff-scope note:
+- Because the roadmap file was already dirty before T20, `git diff` against `HEAD` is broader than this task.
+- T20 therefore uses anchor preservation plus readback of the opening note to substantiate that the task did not edit tables or downstream sections in the current working copy.

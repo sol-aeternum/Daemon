@@ -1,0 +1,38 @@
+Task 3 halt check
+(c) dependency count: 0
+Disposition: PROCEED
+Reason: No prerequisite state element discovered in this audit requires changes to orchestrator/memory/** or other production code. Required work is harness-side synthetic-user isolation plus pre-population via existing code paths.
+Important: This does NOT clear the separate T1/T2 consumer-path gate; it only means Task 3 found no new production-change dependency blocker.
+
+## injection_allowed_source_conversation_ids
+[no matches]
+
+## runner_unfiltered_retrieval_guard
+1370:            # retrieval. Caller converts [] to allowed_source_conversation_ids=None.
+1683:                            "Will not proceed with unfiltered retrieval (allowed_source_conversation_ids=None) "
+
+## build_memory_context_scope
+173:    conversation = await store.get_conversation(conversation_id)
+177:    user_id = conversation.get("user_id")
+195:    recent_messages = await store.get_recent_messages(conversation_id, limit=20)
+210:        store.get_recent_summaries(user_id, limit=MAX_SUMMARY_ITEMS)
+
+## summary_memory_source
+orchestrator/memory/consolidation.py:478:                category="summary",
+orchestrator/memory/extraction.py:602:        generate_or_update_summary = getattr(
+orchestrator/memory/extraction.py:603:            summary_module, "generate_or_update_summary"
+orchestrator/memory/extraction.py:605:        await generate_or_update_summary(conversation_id, store)
+orchestrator/memory/summary.py:52:async def generate_or_update_summary(
+orchestrator/memory/store.py:1120:    async def get_recent_summaries(
+
+## entity_resolution_existing_paths
+orchestrator/worker/jobs.py:20:    extract_and_resolve_entities,
+orchestrator/worker/jobs.py:21:    persist_extraction_result,
+orchestrator/worker/jobs.py:262:                        "resolve_entities_job",
+orchestrator/worker/jobs.py:877:async def resolve_entities_job(
+orchestrator/worker/jobs.py:960:        extraction_result = await extract_and_resolve_entities(
+orchestrator/worker/jobs.py:965:            entity_ids = await persist_extraction_result(
+orchestrator/memory/entities.py:839:async def extract_and_resolve_entities(
+orchestrator/memory/entities.py:911:async def persist_extraction_result(
+orchestrator/memory/entities.py:924:        extraction_result: Result from extract_and_resolve_entities
+
