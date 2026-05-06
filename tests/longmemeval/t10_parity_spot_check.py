@@ -249,11 +249,12 @@ async def patched_parity_evaluate_single(
         )
 
         # Retrieve memories (mocked -> empty)
-        memories = await retrieve_memories_for_text(
+        # Call through patched module attribute to use mock
+        memories = await inj.retrieve_memories_for_text(
             store=store,
             query_text=question_text,
             user_id=synthetic_user_id,
-            query_embedding=await embed_query(question_text),
+            query_embedding=await inj.embed_query(question_text),
             limit=TOP_K_MEMORIES,
             include_l0=True,
             log_retrieval=True,
@@ -392,11 +393,12 @@ async def direct_production_call(
     inj.retrieve_memories_for_text = _mock_retrieve_memories_for_text
 
     try:
-        memories = await retrieve_memories_for_text(
+        # Call through patched module attribute to use mock
+        memories = await inj.retrieve_memories_for_text(
             store=store,
             query_text=question_text,
             user_id=synthetic_user_id,
-            query_embedding=await embed_query(question_text),
+            query_embedding=await inj.embed_query(question_text),
             limit=TOP_K_MEMORIES,
             include_l0=True,
             log_retrieval=True,
