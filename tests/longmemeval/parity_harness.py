@@ -136,13 +136,9 @@ async def parity_evaluate_single(
     hypothesis = await answer_with_llm(
         question_text,
         memories,
-        benchmark_mode=benchmark_mode,
-        system_prompt=system_prompt,
     )
 
-    judgment = await judge_answer(
-        question_text, hypothesis, reference, benchmark_mode=benchmark_mode
-    )
+    judgment = await judge_answer(question_text, hypothesis, reference)
 
     retrieved_memory_ids = [str(m.get("id")) for m in memories if m.get("id")]
 
