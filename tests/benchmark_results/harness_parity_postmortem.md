@@ -2,7 +2,7 @@
 
 - **Task**: T22 — Write harness parity postmortem
 - **Generated**: 2026-05-06
-- **Authoritative shipped anchor**: `harness-parity-shipped` → `6561a14bc43718e97fb5652e48525b2f2c3d589f` (`.sisyphus/evidence/task-21-tag-head.txt`)
+- **Authoritative shipped anchor**: `harness-parity-shipped` → `d5d7bce81ed3cdee2ccf5485c83d7890382129d2` (`.sisyphus/evidence/task-21-tag-head.txt`)
 - **Scope note**: This document synthesizes T1-T21 artifacts only. It does not introduce new benchmark counts, code changes, or roadmap decisions.
 
 ## (a) Inventory and classifications
@@ -107,7 +107,7 @@ The documentation/tag follow-through after the parity work stayed surgical and s
 | `tests/benchmark_results/wave0_option_a_production_aligned_baseline.md` | Two sentence groups only: lines 40-45 and 106-113 reframed `49/473` / `10.4%` as historical harness artifact, added T15 HALT citation, and avoided fabricating a new baseline. | `.sisyphus/evidence/task-18-surgical-diff.txt:17-74`; `.sisyphus/evidence/task-18-framing-check.txt:9-40` |
 | `.sisyphus/plans/wave1-prompt-surface-changes.md` | Targeted anchor rewrite only: `10.4%` count `2→1`, `pre-wave-1` `9→6`, `harness-parity-shipped` `0→3`; remaining `pre-wave-1` hits intentionally confined to TODO 18 rollback exception. | `.sisyphus/evidence/task-19-grep-reconcile.txt:6-84`; `.sisyphus/evidence/task-19-todo5-band.txt:15-38` |
 | `docs/MEMORY_UPGRADE_ROADMAP.md` | Opening note only (lines 3-5 in working copy) rewritten to cite T15 HALT/T14 block; downstream category tables and wave sections left untouched. | `.sisyphus/evidence/task-20-roadmap-diff.txt:4-28`; `.sisyphus/evidence/task-20-table-guard.txt:4-28` |
-| `harness-parity-shipped` tag | Lightweight local tag verified at the authoritative shipped SHA `6561a14bc43718e97fb5652e48525b2f2c3d589f`; no push occurred. | `.sisyphus/evidence/task-21-tag-head.txt:5-25`; `.sisyphus/evidence/task-21-no-push.txt:5-38` |
+| `harness-parity-shipped` tag | Lightweight local tag verified at the authoritative shipped SHA `d5d7bce81ed3cdee2ccf5485c83d7890382129d2`; no push occurred. | `.sisyphus/evidence/task-21-tag-head.txt:5-25`; `.sisyphus/evidence/task-21-no-push.txt:5-38` |
 
 The net effect of T17-T21 was to make the record honest: parity-path implementation shipped, historical Wave 0 figures stayed labeled as historical harness artifacts, and downstream docs stopped pretending that a fresh numeric post-parity baseline existed.
 
