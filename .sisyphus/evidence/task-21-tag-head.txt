@@ -6,19 +6,23 @@ $ GIT_MASTER=1 git tag -l harness-parity-shipped
 harness-parity-shipped
 
 $ GIT_MASTER=1 git rev-parse harness-parity-shipped
-d5d7bce81ed3cdee2ccf5485c83d7890382129d2
+0a304f39aed60dd957fe7c8e53dc5458894dddfd
 
 $ GIT_MASTER=1 git rev-parse HEAD
-d5d7bce81ed3cdee2ccf5485c83d7890382129d2
+0a304f39aed60dd957fe7c8e53dc5458894dddfd
 
 ## Result
 
 - Tag exists: YES
-- Tag SHA matches HEAD SHA: YES (d5d7bce81ed3cdee2ccf5485c83d7890382129d2)
+- Tag SHA matches HEAD SHA: YES (0a304f39aed60dd957fe7c8e53dc5458894dddfd)
 - Tag is lightweight: YES (created with git tag without -a)
 - Tag points to current HEAD: YES
 
 ## Commit Created
+
+Commit: 0a304f39aed60dd957fe7c8e53dc5458894dddfd
+Message: docs(benchmark): refresh shipped SHA in task-21 evidence and postmortem
+Files: 2 files changed, 21 insertions(+), 21 deletions(-)
 
 Commit: d5d7bce81ed3cdee2ccf5485c83d7890382129d2
 Message: fix(tests): address F2/F3/F4 final verification rejections
