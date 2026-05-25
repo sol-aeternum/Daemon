@@ -43,6 +43,7 @@ tests/results/
 tests/tests/results/
 =1.12.0
 =1.2.0
+feature-matrix-2026-05-25-tag-snapshot.txt
 
 # Data directories
 data/
