@@ -59,16 +59,16 @@ This file is the versioned, PR-gated source of truth for Daemon's user-visible f
 | Spawn Agent / Spawn Multiple | Backend stable | Backend stable | Not started | Not started | Subagent orchestration service | No |
 | Memory Organization Controls | Backend stable | Backend stable | Not started | Not started | Memory management API | No |
 | Skill Management (CRUD) | Cross-client stable | Cross-client stable | Not started | Not started | GET/POST /skills, GET/PUT/DELETE /skills/{id}, PATCH endpoints, POST /skills/upload | No |
-| Interactive HTML Artifacts | Cross-client stable | Cross-client stable | Not started | Not started | Orchestrator generates html:interactive code blocks | No |
+| Interactive HTML Artifacts | Cross-client stable | Cross-client stable | Not started | Not started | Interactive artifact rendering service | No |
 | **Voice I/O** | — | — | — | — | — | — |
 | ElevenLabs TTS (streaming) | Cross-client stable | Cross-client stable | Not started | Not started | POST /tts, GET /audio/token | No |
 | ElevenLabs STT (streaming) | Cross-client stable | Cross-client stable | Not started | Not started | POST /stt, GET /audio/scribe-token | No |
 | Sound Effects Generation (ElevenLabs) | Backend stable | Backend stable | Not started | Not started | POST /sound-effects | No |
-| Voice Settings (TTS voice/model/speed/format, STT language) | Cross-client stable | Cross-client stable | Not started | Not started | localStorage (TTS), PATCH /users/me/settings (STT) | No |
+| Voice Settings (TTS voice/model/speed/format, STT language) | Cross-client stable | Cross-client stable | Not started | Not started | Client settings storage + PATCH /users/me/settings | No |
 | **Models & Routing** | — | — | — | — | — | — |
 | Model Selector UI (catalog + full search) | Cross-client stable | Cross-client stable | Not started | Not started | GET /v1/catalog, GET /v1/models | No |
 | **Settings** | — | — | — | — | — | — |
-| Appearance Settings (Dark/Light/System theme) | Cross-client stable | Cross-client stable | Not started | Not started | CSS variable switching (no backend) | No |
+| Appearance Settings (Dark/Light/System theme) | Cross-client stable | Cross-client stable | Not started | Not started | Client theme settings (no backend) | No |
 | Enrollment & Profile Settings (display name, custom instructions) | Cross-client stable | Cross-client stable | Not started | Not started | GET /users/me/settings, PATCH /users/me/settings | Yes |
 | Memory Management Settings | Cross-client stable | Cross-client stable | Not started | Not started | GET /memories, DELETE /memories/{id}, POST /memories/{id}/confirm, DELETE /memories?confirm=true | No |
 | **Notifications** | — | — | — | — | — | — |
@@ -83,7 +83,7 @@ This file is the versioned, PR-gated source of truth for Daemon's user-visible f
 | Council Deliberation (multi-perspective LLM debate) | Cross-client stable | Cross-client stable | Not started | Not started | Council streaming service | No |
 | Council Interview Flow (roster, rounds, audit config) | Cross-client stable | Cross-client stable | Not started | Not started | /council command → interview flow | No |
 | Studio Image Generation (web UI) | Cross-client stable | Cross-client stable | Not started | Not started | Studio image generation route | No |
-| Studio Video Generation (web UI with credit check) | Cross-client stable | Cross-client stable | Not started | Not started | POST /video-credits/estimate → POST /api/images/generate mode=video | No |
+| Studio Video Generation (web UI with credit check) | Cross-client stable | Cross-client stable | Not started | Not started | POST /video-credits/estimate + studio video generation route | No |
 | Video Credit Balance & Transactions | Cross-client stable | Cross-client stable | Not started | Not started | GET /video-credits/balance, GET /video-credits/transactions, GET /video-credits/estimate | No |
 | **BYOK** | — | — | — | — | — | — |
 | BYOK (bring your own OpenRouter key) | Cross-client stable | Cross-client stable | Not started | Not started | User settings API + provider credential pass-through | No |
