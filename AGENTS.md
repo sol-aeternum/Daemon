@@ -134,3 +134,16 @@ If zero issues: "Triage: clean — no anomalies encountered."
 <!-- - __pycache__ PermissionError in container (host ownership mismatch) -->
 <!-- - LiteLLM asyncio.iscoroutinefunction DeprecationWarning on Python 3.14+ -->
 <!-- END TRIAGE_SUPPRESS -->
+
+## Feature Matrix
+
+Daemon maintains a feature matrix at `docs/FEATURE_MATRIX.md` capturing every user-visible feature's state across each client surface. This is scope control, not documentation.
+
+**When you must edit the matrix:**
+- Adding a new user-visible feature → add a row
+- Promoting a feature's state on any surface (e.g., `Not started` → `Mobile eligible`) → update the relevant cell
+- Retiring or platform-restricting a feature → update cells or remove the row with justification in the PR
+
+**Validation:** Run `python scripts/lint_feature_matrix.py` before committing matrix changes. CI integration is a separate follow-up; until then, discipline is human-enforced via PR review.
+
+**Internal infrastructure is out of scope.** The matrix tracks user-visible capabilities only. Memory dedup thresholds, embedding model choice, retrieval scoring — none of these are matrix entries.
