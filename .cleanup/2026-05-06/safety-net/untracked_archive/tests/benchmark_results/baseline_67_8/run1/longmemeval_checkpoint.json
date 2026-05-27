@@ -1,0 +1,378 @@
+{
+  "version": 2,
+  "dataset_path": "/tmp/longmemeval-review/data/longmemeval_s.json",
+  "created_at": "2026-04-18T04:02:11+00:00",
+  "updated_at": "2026-04-18T04:04:17+00:00",
+  "phases": {
+    "ingest": {
+      "status": "running",
+      "started_at": "2026-04-18T04:02:11+00:00",
+      "updated_at": "2026-04-18T04:04:17+00:00",
+      "completed_count": 20,
+      "results": {
+        "f0b28bbb61f763cd01c08327ecb894f7b4128f71ef30aa5ff9453821d4d220c0": {
+          "session_id": "sharegpt_yywfIrx_0",
+          "conversation_id": "4f06e50f-cde3-4306-93f7-2d52fc8024a4",
+          "message_count": 2,
+          "status": "extraction_timeout",
+          "error": "Extraction polling timed out for conversation 4f06e50f-cde3-4306-93f7-2d52fc8024a4 after 5.0s (start interval 0.1s, backoff x2.0, cap 2.0s)",
+          "corpus_key": "f0b28bbb61f763cd01c08327ecb894f7b4128f71ef30aa5ff9453821d4d220c0",
+          "raw_session_ids": [
+            "sharegpt_yywfIrx_0"
+          ]
+        },
+        "b309a7265c49a980b329dec15f6a57e1a2b33f1118ba8d13443badfb2418d9ce": {
+          "session_id": "85a1be56_1",
+          "conversation_id": "1162d02a-7214-4e4f-a0bc-93509950a7e0",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "b309a7265c49a980b329dec15f6a57e1a2b33f1118ba8d13443badfb2418d9ce",
+          "raw_session_ids": [
+            "85a1be56_1"
+          ]
+        },
+        "33b3cbb2f3db4ac22b3c9596c2835dcc5e807a4c3d632d3e53434221627e8274": {
+          "session_id": "sharegpt_Jcy1CVN_0",
+          "conversation_id": "d9376b6a-14d5-418d-bf47-5e5dba32f655",
+          "message_count": 8,
+          "status": "extraction_timeout",
+          "error": "Extraction polling timed out for conversation d9376b6a-14d5-418d-bf47-5e5dba32f655 after 5.0s (start interval 0.1s, backoff x2.0, cap 2.0s)",
+          "corpus_key": "33b3cbb2f3db4ac22b3c9596c2835dcc5e807a4c3d632d3e53434221627e8274",
+          "raw_session_ids": [
+            "sharegpt_Jcy1CVN_0"
+          ]
+        },
+        "68d709c33fa2a0288cdd90a05e4ad7c499a20dde9a2ce108f8bb2424f42e579d": {
+          "session_id": "sharegpt_Cr2tc1f_0",
+          "conversation_id": "8939f341-c24b-4b58-99f4-25f9697699a1",
+          "message_count": 8,
+          "status": "extraction_timeout",
+          "error": "Extraction polling timed out for conversation 8939f341-c24b-4b58-99f4-25f9697699a1 after 5.0s (start interval 0.1s, backoff x2.0, cap 2.0s)",
+          "corpus_key": "68d709c33fa2a0288cdd90a05e4ad7c499a20dde9a2ce108f8bb2424f42e579d",
+          "raw_session_ids": [
+            "sharegpt_Cr2tc1f_0"
+          ]
+        },
+        "0c3af0b942f810b12b32c7484694ca9571bb30e6dbc924d9a6bb8f1f368e535e": {
+          "session_id": "sharegpt_DGTCD7D_0",
+          "conversation_id": "0edb2718-5969-4b87-ac9e-e4a73f31bc8c",
+          "message_count": 4,
+          "status": "extraction_timeout",
+          "error": "Extraction polling timed out for conversation 0edb2718-5969-4b87-ac9e-e4a73f31bc8c after 5.0s (start interval 0.1s, backoff x2.0, cap 2.0s)",
+          "corpus_key": "0c3af0b942f810b12b32c7484694ca9571bb30e6dbc924d9a6bb8f1f368e535e",
+          "raw_session_ids": [
+            "sharegpt_DGTCD7D_0"
+          ]
+        },
+        "360aa39a2f047030ff294aaff3b4ff23c90b8bd5a71ac7869e14864f14b66d9c": {
+          "session_id": "f6859b48_2",
+          "conversation_id": "b92a59b6-59b9-40b9-b0f7-0648736bdcff",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "360aa39a2f047030ff294aaff3b4ff23c90b8bd5a71ac7869e14864f14b66d9c",
+          "raw_session_ids": [
+            "f6859b48_2"
+          ]
+        },
+        "4b4af2404134d7d4c7cb350b715dec9c4b9108382bd8e60f9f6dbed7caeaf90a": {
+          "session_id": "52c34859_1",
+          "conversation_id": "8974d74e-9cb6-4644-893e-98064d1d7e5c",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "4b4af2404134d7d4c7cb350b715dec9c4b9108382bd8e60f9f6dbed7caeaf90a",
+          "raw_session_ids": [
+            "52c34859_1"
+          ]
+        },
+        "73e0feec608e281087021102fb11c0d80958fa181c42bc3610c936ea7c4d2958": {
+          "session_id": "ultrachat_231069",
+          "conversation_id": "7c5ce6fa-728e-4cd8-a821-8dd26672ef81",
+          "message_count": 6,
+          "status": "extraction_timeout",
+          "error": "Extraction polling timed out for conversation 7c5ce6fa-728e-4cd8-a821-8dd26672ef81 after 5.0s (start interval 0.1s, backoff x2.0, cap 2.0s)",
+          "corpus_key": "73e0feec608e281087021102fb11c0d80958fa181c42bc3610c936ea7c4d2958",
+          "raw_session_ids": [
+            "ultrachat_231069"
+          ]
+        },
+        "e69af9202007a23387156ffdc9e3c9882ab22708b3cb15c4f57755b7fc3905c9": {
+          "session_id": "sharegpt_qRdLQvN_7",
+          "conversation_id": "bababa18-f02d-45ba-af3d-ebf9767ac649",
+          "message_count": 9,
+          "status": "extraction_timeout",
+          "error": "Extraction polling timed out for conversation bababa18-f02d-45ba-af3d-ebf9767ac649 after 5.0s (start interval 0.1s, backoff x2.0, cap 2.0s)",
+          "corpus_key": "e69af9202007a23387156ffdc9e3c9882ab22708b3cb15c4f57755b7fc3905c9",
+          "raw_session_ids": [
+            "sharegpt_qRdLQvN_7"
+          ]
+        },
+        "97a9739f265e86bdb2905c6cbe6ea4d92f191f88050592245fa610c5459e50bf": {
+          "session_id": "ultrachat_359984",
+          "conversation_id": "4a3a557a-a40c-48fc-ace9-a0a5980958ff",
+          "message_count": 6,
+          "status": "complete",
+          "corpus_key": "97a9739f265e86bdb2905c6cbe6ea4d92f191f88050592245fa610c5459e50bf",
+          "raw_session_ids": [
+            "ultrachat_359984"
+          ]
+        },
+        "376ab009b5e0e5abc102608983c8c3dd811c69189e3d08bcddb87aec951f1b34": {
+          "session_id": "sharegpt_8dJs7Ai_0",
+          "conversation_id": "3cdfa787-e4f0-43ba-bdec-0ba50b9080f4",
+          "message_count": 16,
+          "status": "extraction_timeout",
+          "error": "Extraction polling timed out for conversation 3cdfa787-e4f0-43ba-bdec-0ba50b9080f4 after 5.0s (start interval 0.1s, backoff x2.0, cap 2.0s)",
+          "corpus_key": "376ab009b5e0e5abc102608983c8c3dd811c69189e3d08bcddb87aec951f1b34",
+          "raw_session_ids": [
+            "sharegpt_8dJs7Ai_0"
+          ]
+        },
+        "b8bb21e4b95ac389a79954b74cb7e420d8308bf06f8bbb0c2a611511cbeab0c7": {
+          "session_id": "c3cd646c_1",
+          "conversation_id": "d8d5bc7e-12ee-4510-881f-e6533b5b9695",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "b8bb21e4b95ac389a79954b74cb7e420d8308bf06f8bbb0c2a611511cbeab0c7",
+          "raw_session_ids": [
+            "c3cd646c_1"
+          ]
+        },
+        "28688968b1e3f8ea943155de1bf6e239993e3a69981679c550f77130d04f8f6e": {
+          "session_id": "4fd76316",
+          "conversation_id": "bb0ea6bb-ac23-449c-bfb6-a392a4736366",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "28688968b1e3f8ea943155de1bf6e239993e3a69981679c550f77130d04f8f6e",
+          "raw_session_ids": [
+            "4fd76316",
+            "47ab10d2",
+            "78dc3b29"
+          ]
+        },
+        "8ec1002bf7e859a0bbbc63e147880de744feea5f5b2a402807461e58bb85d3bf": {
+          "session_id": "7045db85_1",
+          "conversation_id": "458ba9b8-73d8-4eaa-9c74-f316aaf4014f",
+          "message_count": 12,
+          "status": "extraction_timeout",
+          "error": "Extraction polling timed out for conversation 458ba9b8-73d8-4eaa-9c74-f316aaf4014f after 5.0s (start interval 0.1s, backoff x2.0, cap 2.0s)",
+          "corpus_key": "8ec1002bf7e859a0bbbc63e147880de744feea5f5b2a402807461e58bb85d3bf",
+          "raw_session_ids": [
+            "7045db85_1"
+          ]
+        },
+        "b611f0a9e5b9852b461d31f38ed40133fe7701be8f22ee16e0577a96ff1444be": {
+          "session_id": "ultrachat_422229",
+          "conversation_id": "9b5aa84d-780a-4f94-8f53-2cab9b9f17ea",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "b611f0a9e5b9852b461d31f38ed40133fe7701be8f22ee16e0577a96ff1444be",
+          "raw_session_ids": [
+            "ultrachat_422229"
+          ]
+        },
+        "fb2e7a60855b869fb20852aeb20ec8d26afc19b1adc84234a80bdb0165062ad4": {
+          "session_id": "ultrachat_215809",
+          "conversation_id": "b38766ef-98d3-4181-914e-317973bc6296",
+          "message_count": 10,
+          "status": "complete",
+          "corpus_key": "fb2e7a60855b869fb20852aeb20ec8d26afc19b1adc84234a80bdb0165062ad4",
+          "raw_session_ids": [
+            "ultrachat_215809"
+          ]
+        },
+        "1b373ab91b33bb7e45c05ce7efb321361d73ed6eead141468cfbc3a8fabddb06": {
+          "session_id": "41abc171_4",
+          "conversation_id": "7105c74e-6586-48ea-b51a-7f9b87655f53",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "1b373ab91b33bb7e45c05ce7efb321361d73ed6eead141468cfbc3a8fabddb06",
+          "raw_session_ids": [
+            "41abc171_4"
+          ]
+        },
+        "f9759df84ae40d14ca64476009a08449784aa2a0cd5952d38c3b868b6597159e": {
+          "session_id": "5dac7cc2_1",
+          "conversation_id": "be8b30c0-228e-4f97-8337-0adf85939405",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "f9759df84ae40d14ca64476009a08449784aa2a0cd5952d38c3b868b6597159e",
+          "raw_session_ids": [
+            "5dac7cc2_1"
+          ]
+        },
+        "b048fe902359fd16f5e3cca6013ec60e5865f762cb69d592ca4f5aae3d935161": {
+          "session_id": "sharegpt_rnG0ZuV_0",
+          "conversation_id": "e7741404-6e9e-457f-b950-797a84b596a0",
+          "message_count": 2,
+          "status": "complete",
+          "corpus_key": "b048fe902359fd16f5e3cca6013ec60e5865f762cb69d592ca4f5aae3d935161",
+          "raw_session_ids": [
+            "sharegpt_rnG0ZuV_0"
+          ]
+        },
+        "76fcc20bd7d49d4f2294c666dd6ceea06aa2a0f32f4d48499db9e82bfaa5cc21": {
+          "session_id": "3418b277_3",
+          "conversation_id": "2feb7405-9112-40e8-b1f2-51d0dda0c91f",
+          "message_count": 12,
+          "status": "complete",
+          "corpus_key": "76fcc20bd7d49d4f2294c666dd6ceea06aa2a0f32f4d48499db9e82bfaa5cc21",
+          "raw_session_ids": [
+            "3418b277_3"
+          ]
+        }
+      }
+    },
+    "evaluate": {
+      "status": "pending",
+      "started_at": null,
+      "updated_at": null,
+      "completed_count": 0,
+      "results": {}
+    },
+    "score": {
+      "status": "pending",
+      "started_at": null,
+      "updated_at": null,
+      "completed_count": 0,
+      "accuracy": {}
+    }
+  },
+  "benchmark_effective_config": {
+    "lane": "canonical",
+    "pin_path": "tests/benchmark_longmemeval/longmemeval_config_pin.json",
+    "runtime": {
+      "dataset_path": "/tmp/longmemeval-review/data/longmemeval_s.json",
+      "limit": null,
+      "output_path": "/home/sol/daemon/tests/benchmark_results/baseline_67_8/run1/longmemeval_results.jsonl",
+      "checkpoint_path": "/home/sol/daemon/tests/benchmark_results/baseline_67_8/run1/longmemeval_checkpoint.json",
+      "score_path": "/home/sol/daemon/tests/benchmark_results/baseline_67_8/run1/longmemeval_score.json",
+      "force_retrieval_logging": true
+    },
+    "pinned_authority": {
+      "pin_schema_version": 1,
+      "inventory_source": "tests/benchmark_longmemeval/CONFIG_PINNING.md",
+      "shared": {
+        "provider_route": {
+          "openrouter_base_url": "https://openrouter.ai/api/v1",
+          "openrouter_referer": "https://daemon.ai",
+          "openrouter_title": "Daemon AI Assistant",
+          "request_timeout_s": 90.0
+        },
+        "answer": {
+          "model": "openrouter/openai/gpt-4o",
+          "temperature": 0.7,
+          "max_tokens": 256,
+          "prompt_sha256": "6ec439707cedacb13c817a26d84d19ad423cf3817dac20e7bc739ed12628bebb"
+        },
+        "judge": {
+          "model": "openrouter/openai/gpt-4o",
+          "temperature": 0.0,
+          "max_tokens": 256,
+          "prompt_sha256": "c4a43ae86a71d37c7094463871d75452a0b9664109702ab82f6b2f9e4b2751b5"
+        },
+        "query_embedding": {
+          "embedding_query_model": "voyage-4-lite",
+          "embedding_dimensions": 1024
+        },
+        "retrieval": {
+          "call_contract": {
+            "top_k_memories": 5,
+            "include_l0": true,
+            "include_dream_observations": true,
+            "retrieval_triggered_by": "longmemeval"
+          },
+          "logging": {
+            "retrieval_logging_enabled": false,
+            "retrieval_logging_debug": false,
+            "effective_force_retrieval_logging": true
+          },
+          "ranking": {
+            "initial_vector_candidates": 10,
+            "min_final_score": 0.15,
+            "hybrid_vector_weight": 0.5,
+            "hybrid_bm25_weight": 0.3,
+            "hybrid_recency_confidence_weight": 0.2
+          },
+          "scope_defaults": {
+            "include_local": false,
+            "include_historical": false,
+            "memory_slot": null
+          },
+          "inactive_controls": {
+            "max_returned_memories": 5,
+            "active_in_longmemeval": false,
+            "effective_limit_authority": "TOP_K_MEMORIES"
+          }
+        }
+      },
+      "canonical": {
+        "artifact_contract": {
+          "results_filename": "longmemeval_results.jsonl",
+          "checkpoint_filename": "longmemeval_checkpoint.json",
+          "score_filename": "longmemeval_score.json",
+          "checkpoint_version": 2
+        },
+        "benchmark_user": {
+          "user_id": "12345678-1234-5678-1234-567812345678",
+          "email": "longmemeval@daemon.test"
+        },
+        "corpus_plan": {
+          "build_corpus_plan_sha256": "f193048b827163055ae2e944769c6fc8175a4101017551046a84b5bcaa38abad",
+          "normalize_session_messages_sha256": "2215c4b4ffb2816f35d1dacb91c84279d2da30a51e6c80702a75737ece691ec0"
+        },
+        "extraction": {
+          "model": "openrouter/openai/gpt-4o-mini",
+          "prompt_sha256": "e9898c7a0d76fe1444ced1560a1c21df78cc3341d3caf930ae738344ee180378",
+          "input_max_chars": 4000,
+          "temperature": 0.0,
+          "top_p": 1.0,
+          "max_tokens": 2000,
+          "confidence_calibration": {
+            "default_extracted_confidence": 0.8,
+            "hedge_override_confidence": 0.65,
+            "strong_override_confidence": 0.92,
+            "correction_min_confidence": 0.9
+          }
+        },
+        "document_embedding": {
+          "embedding_document_model": "voyage-4-large",
+          "embedding_dimensions": 1024
+        },
+        "dedup": {
+          "merge_threshold": 0.9,
+          "supersede_threshold": 0.82,
+          "supersede_same_slot_threshold": 0.65,
+          "contradiction_model": "openrouter/deepseek/deepseek-chat",
+          "contradiction_temperature": 0.1,
+          "check_contradiction_sha256": "018339d0446b50b786a4bff50a20f2be9ee52cfcf4f7023e014d601cb5496317"
+        }
+      },
+      "fast_lane_reference": {
+        "artifact_contract": {
+          "results_filename": "longmemeval_fast_results.jsonl",
+          "checkpoint_filename": "longmemeval_fast_checkpoint.json"
+        },
+        "benchmark_user_strategy": {
+          "fresh_user_per_run": true,
+          "build_benchmark_user_sha256": "ac4faf958ca1fab2d8110a6092461d8dfc505c7a88fcb606c44c29bdd9aa7a8a"
+        },
+        "chunking": {
+          "default_chunk_max_chars": 4000,
+          "default_overlap_turns": 2,
+          "sample_user_turn": "[User]: Example text",
+          "sample_assistant_turn": "[Assistant]: Example text"
+        },
+        "direct_insert": {
+          "benchmark_name": "longmemeval_fast",
+          "benchmark_source_type": "import",
+          "benchmark_category": "fact",
+          "insert_chunk_memories_sha256": "aa99a88773c71b6e5fe12e47efd4ea1fc922f4c5ab65e5178347889a22034334"
+        },
+        "logging": {
+          "effective_force_retrieval_logging": true
+        }
+      }
+    }
+  },
+  "benchmark_config_drift_warnings": []
+}

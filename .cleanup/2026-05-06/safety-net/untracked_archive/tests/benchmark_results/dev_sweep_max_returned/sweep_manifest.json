@@ -1,0 +1,496 @@
+{
+  "baseline": {
+    "mean_strict_accuracy": 0.27,
+    "run1_strict_accuracy": 0.32,
+    "run2_strict_accuracy": 0.22
+  },
+  "current_return_limit": 5,
+  "dataset_path": "tests/benchmark_longmemeval/fixtures/dev_subset.json",
+  "generated_at": "2026-04-18T15:20:50+00:00",
+  "runs": [
+    {
+      "accuracy": {
+        "ABS": 0.0,
+        "IE-assistant": 0.4444444444444444,
+        "IE-preference": 0.0,
+        "IE-user": 0.2222222222222222,
+        "KU": 0.3333333333333333,
+        "MR": 0.3,
+        "TR": 0.3
+      },
+      "checkpoint_path": "tests/benchmark_results/dev_sweep_max_returned/k05/longmemeval_checkpoint.json",
+      "max_estimated_answer_prompt_tokens": 153,
+      "max_memories_used": 5,
+      "mean_estimated_answer_prompt_tokens": 113.74,
+      "mean_memories_used": 5,
+      "output_dir": "tests/benchmark_results/dev_sweep_max_returned/k05",
+      "result_count": 50,
+      "results_path": "tests/benchmark_results/dev_sweep_max_returned/k05/longmemeval_results.jsonl",
+      "retrieval_diagnostics_path": "tests/benchmark_results/dev_sweep_max_returned/k05/retrieval_diagnostics.json",
+      "run_summary_path": "tests/benchmark_results/dev_sweep_max_returned/k05/run_summary.json",
+      "score_path": "tests/benchmark_results/dev_sweep_max_returned/k05/longmemeval_score.json",
+      "strict_accuracy": 0.3,
+      "strict_delta_vs_baseline_mean": 0.02999999999999997,
+      "strict_delta_vs_run1": -0.020000000000000018,
+      "strict_delta_vs_run2": 0.07999999999999999,
+      "subset_deltas": {
+        "locked_failure_union": {
+          "delta_vs_run1": -1,
+          "delta_vs_run2": 4,
+          "run1_accuracy": 0.1282051282051282,
+          "run1_correct": 5,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.10256410256410256,
+          "sweep_correct": 4,
+          "total": 39
+        },
+        "retrieval_miss_all": {
+          "delta_vs_run1": 0,
+          "delta_vs_run2": 2,
+          "run1_accuracy": 0.1,
+          "run1_correct": 2,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.1,
+          "sweep_correct": 2,
+          "total": 20
+        },
+        "retrieval_miss_multi_session": {
+          "delta_vs_run1": 1,
+          "delta_vs_run2": 1,
+          "run1_accuracy": 0.0,
+          "run1_correct": 0,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.16666666666666666,
+          "sweep_correct": 1,
+          "total": 6
+        },
+        "retrieval_miss_single_session_user": {
+          "delta_vs_run1": -2,
+          "delta_vs_run2": 0,
+          "run1_accuracy": 0.3333333333333333,
+          "run1_correct": 2,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.0,
+          "sweep_correct": 0,
+          "total": 6
+        },
+        "retrieval_miss_temporal_reasoning": {
+          "delta_vs_run1": 1,
+          "delta_vs_run2": 1,
+          "run1_accuracy": 0.0,
+          "run1_correct": 0,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.2,
+          "sweep_correct": 1,
+          "total": 5
+        }
+      },
+      "support_analysis": {
+        "exact_support_match_questions": 4,
+        "support_beyond_current_limit": 0,
+        "support_in_candidates": 2,
+        "support_in_selected": 2,
+        "support_min_rank_histogram": {
+          "1": 1,
+          "2": 1
+        },
+        "support_recovered_within_top_k": 0
+      },
+      "top_k": 5
+    },
+    {
+      "accuracy": {
+        "ABS": 0.0,
+        "IE-assistant": 0.5555555555555556,
+        "IE-preference": 0.0,
+        "IE-user": 0.5555555555555556,
+        "KU": 0.2222222222222222,
+        "MR": 0.3,
+        "TR": 0.1
+      },
+      "checkpoint_path": "tests/benchmark_results/dev_sweep_max_returned/k06/longmemeval_checkpoint.json",
+      "max_estimated_answer_prompt_tokens": 171,
+      "max_memories_used": 6,
+      "mean_estimated_answer_prompt_tokens": 127.88,
+      "mean_memories_used": 6,
+      "output_dir": "tests/benchmark_results/dev_sweep_max_returned/k06",
+      "result_count": 50,
+      "results_path": "tests/benchmark_results/dev_sweep_max_returned/k06/longmemeval_results.jsonl",
+      "retrieval_diagnostics_path": "tests/benchmark_results/dev_sweep_max_returned/k06/retrieval_diagnostics.json",
+      "run_summary_path": "tests/benchmark_results/dev_sweep_max_returned/k06/run_summary.json",
+      "score_path": "tests/benchmark_results/dev_sweep_max_returned/k06/longmemeval_score.json",
+      "strict_accuracy": 0.32,
+      "strict_delta_vs_baseline_mean": 0.04999999999999999,
+      "strict_delta_vs_run1": 0.0,
+      "strict_delta_vs_run2": 0.1,
+      "subset_deltas": {
+        "locked_failure_union": {
+          "delta_vs_run1": 1,
+          "delta_vs_run2": 6,
+          "run1_accuracy": 0.1282051282051282,
+          "run1_correct": 5,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.15384615384615385,
+          "sweep_correct": 6,
+          "total": 39
+        },
+        "retrieval_miss_all": {
+          "delta_vs_run1": 1,
+          "delta_vs_run2": 3,
+          "run1_accuracy": 0.1,
+          "run1_correct": 2,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.15,
+          "sweep_correct": 3,
+          "total": 20
+        },
+        "retrieval_miss_multi_session": {
+          "delta_vs_run1": 1,
+          "delta_vs_run2": 1,
+          "run1_accuracy": 0.0,
+          "run1_correct": 0,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.16666666666666666,
+          "sweep_correct": 1,
+          "total": 6
+        },
+        "retrieval_miss_single_session_user": {
+          "delta_vs_run1": 0,
+          "delta_vs_run2": 2,
+          "run1_accuracy": 0.3333333333333333,
+          "run1_correct": 2,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.3333333333333333,
+          "sweep_correct": 2,
+          "total": 6
+        },
+        "retrieval_miss_temporal_reasoning": {
+          "delta_vs_run1": 0,
+          "delta_vs_run2": 0,
+          "run1_accuracy": 0.0,
+          "run1_correct": 0,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.0,
+          "sweep_correct": 0,
+          "total": 5
+        }
+      },
+      "support_analysis": {
+        "exact_support_match_questions": 4,
+        "support_beyond_current_limit": 0,
+        "support_in_candidates": 2,
+        "support_in_selected": 2,
+        "support_min_rank_histogram": {
+          "1": 1,
+          "2": 1
+        },
+        "support_recovered_within_top_k": 0
+      },
+      "top_k": 6
+    },
+    {
+      "accuracy": {
+        "ABS": 0.0,
+        "IE-assistant": 0.3333333333333333,
+        "IE-preference": 0.0,
+        "IE-user": 0.2222222222222222,
+        "KU": 0.3333333333333333,
+        "MR": 0.2,
+        "TR": 0.2
+      },
+      "checkpoint_path": "tests/benchmark_results/dev_sweep_max_returned/k07/longmemeval_checkpoint.json",
+      "max_estimated_answer_prompt_tokens": 180,
+      "max_memories_used": 7,
+      "mean_estimated_answer_prompt_tokens": 142.1,
+      "mean_memories_used": 7,
+      "output_dir": "tests/benchmark_results/dev_sweep_max_returned/k07",
+      "result_count": 50,
+      "results_path": "tests/benchmark_results/dev_sweep_max_returned/k07/longmemeval_results.jsonl",
+      "retrieval_diagnostics_path": "tests/benchmark_results/dev_sweep_max_returned/k07/retrieval_diagnostics.json",
+      "run_summary_path": "tests/benchmark_results/dev_sweep_max_returned/k07/run_summary.json",
+      "score_path": "tests/benchmark_results/dev_sweep_max_returned/k07/longmemeval_score.json",
+      "strict_accuracy": 0.24,
+      "strict_delta_vs_baseline_mean": -0.030000000000000027,
+      "strict_delta_vs_run1": -0.08000000000000002,
+      "strict_delta_vs_run2": 0.01999999999999999,
+      "subset_deltas": {
+        "locked_failure_union": {
+          "delta_vs_run1": -4,
+          "delta_vs_run2": 1,
+          "run1_accuracy": 0.1282051282051282,
+          "run1_correct": 5,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.02564102564102564,
+          "sweep_correct": 1,
+          "total": 39
+        },
+        "retrieval_miss_all": {
+          "delta_vs_run1": -1,
+          "delta_vs_run2": 1,
+          "run1_accuracy": 0.1,
+          "run1_correct": 2,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.05,
+          "sweep_correct": 1,
+          "total": 20
+        },
+        "retrieval_miss_multi_session": {
+          "delta_vs_run1": 0,
+          "delta_vs_run2": 0,
+          "run1_accuracy": 0.0,
+          "run1_correct": 0,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.0,
+          "sweep_correct": 0,
+          "total": 6
+        },
+        "retrieval_miss_single_session_user": {
+          "delta_vs_run1": -2,
+          "delta_vs_run2": 0,
+          "run1_accuracy": 0.3333333333333333,
+          "run1_correct": 2,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.0,
+          "sweep_correct": 0,
+          "total": 6
+        },
+        "retrieval_miss_temporal_reasoning": {
+          "delta_vs_run1": 1,
+          "delta_vs_run2": 1,
+          "run1_accuracy": 0.0,
+          "run1_correct": 0,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.2,
+          "sweep_correct": 1,
+          "total": 5
+        }
+      },
+      "support_analysis": {
+        "exact_support_match_questions": 4,
+        "support_beyond_current_limit": 0,
+        "support_in_candidates": 2,
+        "support_in_selected": 2,
+        "support_min_rank_histogram": {
+          "1": 1,
+          "2": 1
+        },
+        "support_recovered_within_top_k": 0
+      },
+      "top_k": 7
+    },
+    {
+      "accuracy": {
+        "ABS": 0.0,
+        "IE-assistant": 0.3333333333333333,
+        "IE-preference": 0.0,
+        "IE-user": 0.3333333333333333,
+        "KU": 0.5555555555555556,
+        "MR": 0.3,
+        "TR": 0.2
+      },
+      "checkpoint_path": "tests/benchmark_results/dev_sweep_max_returned/k08/longmemeval_checkpoint.json",
+      "max_estimated_answer_prompt_tokens": 195,
+      "max_memories_used": 8,
+      "mean_estimated_answer_prompt_tokens": 156.04,
+      "mean_memories_used": 8,
+      "output_dir": "tests/benchmark_results/dev_sweep_max_returned/k08",
+      "result_count": 50,
+      "results_path": "tests/benchmark_results/dev_sweep_max_returned/k08/longmemeval_results.jsonl",
+      "retrieval_diagnostics_path": "tests/benchmark_results/dev_sweep_max_returned/k08/retrieval_diagnostics.json",
+      "run_summary_path": "tests/benchmark_results/dev_sweep_max_returned/k08/run_summary.json",
+      "score_path": "tests/benchmark_results/dev_sweep_max_returned/k08/longmemeval_score.json",
+      "strict_accuracy": 0.32,
+      "strict_delta_vs_baseline_mean": 0.04999999999999999,
+      "strict_delta_vs_run1": 0.0,
+      "strict_delta_vs_run2": 0.1,
+      "subset_deltas": {
+        "locked_failure_union": {
+          "delta_vs_run1": 0,
+          "delta_vs_run2": 5,
+          "run1_accuracy": 0.1282051282051282,
+          "run1_correct": 5,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.1282051282051282,
+          "sweep_correct": 5,
+          "total": 39
+        },
+        "retrieval_miss_all": {
+          "delta_vs_run1": 1,
+          "delta_vs_run2": 3,
+          "run1_accuracy": 0.1,
+          "run1_correct": 2,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.15,
+          "sweep_correct": 3,
+          "total": 20
+        },
+        "retrieval_miss_multi_session": {
+          "delta_vs_run1": 1,
+          "delta_vs_run2": 1,
+          "run1_accuracy": 0.0,
+          "run1_correct": 0,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.16666666666666666,
+          "sweep_correct": 1,
+          "total": 6
+        },
+        "retrieval_miss_single_session_user": {
+          "delta_vs_run1": -2,
+          "delta_vs_run2": 0,
+          "run1_accuracy": 0.3333333333333333,
+          "run1_correct": 2,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.0,
+          "sweep_correct": 0,
+          "total": 6
+        },
+        "retrieval_miss_temporal_reasoning": {
+          "delta_vs_run1": 1,
+          "delta_vs_run2": 1,
+          "run1_accuracy": 0.0,
+          "run1_correct": 0,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.2,
+          "sweep_correct": 1,
+          "total": 5
+        }
+      },
+      "support_analysis": {
+        "exact_support_match_questions": 4,
+        "support_beyond_current_limit": 0,
+        "support_in_candidates": 2,
+        "support_in_selected": 2,
+        "support_min_rank_histogram": {
+          "1": 1,
+          "2": 1
+        },
+        "support_recovered_within_top_k": 0
+      },
+      "top_k": 8
+    },
+    {
+      "accuracy": {
+        "ABS": 0.0,
+        "IE-assistant": 0.1111111111111111,
+        "IE-preference": 0.0,
+        "IE-user": 0.3333333333333333,
+        "KU": 0.2222222222222222,
+        "MR": 0.2,
+        "TR": 0.3
+      },
+      "checkpoint_path": "tests/benchmark_results/dev_sweep_max_returned/k09/longmemeval_checkpoint.json",
+      "max_estimated_answer_prompt_tokens": 211,
+      "max_memories_used": 9,
+      "mean_estimated_answer_prompt_tokens": 169.7,
+      "mean_memories_used": 8.98,
+      "output_dir": "tests/benchmark_results/dev_sweep_max_returned/k09",
+      "result_count": 50,
+      "results_path": "tests/benchmark_results/dev_sweep_max_returned/k09/longmemeval_results.jsonl",
+      "retrieval_diagnostics_path": "tests/benchmark_results/dev_sweep_max_returned/k09/retrieval_diagnostics.json",
+      "run_summary_path": "tests/benchmark_results/dev_sweep_max_returned/k09/run_summary.json",
+      "score_path": "tests/benchmark_results/dev_sweep_max_returned/k09/longmemeval_score.json",
+      "strict_accuracy": 0.22,
+      "strict_delta_vs_baseline_mean": -0.05000000000000002,
+      "strict_delta_vs_run1": -0.1,
+      "strict_delta_vs_run2": 0.0,
+      "subset_deltas": {
+        "locked_failure_union": {
+          "delta_vs_run1": -2,
+          "delta_vs_run2": 3,
+          "run1_accuracy": 0.1282051282051282,
+          "run1_correct": 5,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.07692307692307693,
+          "sweep_correct": 3,
+          "total": 39
+        },
+        "retrieval_miss_all": {
+          "delta_vs_run1": 1,
+          "delta_vs_run2": 3,
+          "run1_accuracy": 0.1,
+          "run1_correct": 2,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.15,
+          "sweep_correct": 3,
+          "total": 20
+        },
+        "retrieval_miss_multi_session": {
+          "delta_vs_run1": 0,
+          "delta_vs_run2": 0,
+          "run1_accuracy": 0.0,
+          "run1_correct": 0,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.0,
+          "sweep_correct": 0,
+          "total": 6
+        },
+        "retrieval_miss_single_session_user": {
+          "delta_vs_run1": -1,
+          "delta_vs_run2": 1,
+          "run1_accuracy": 0.3333333333333333,
+          "run1_correct": 2,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.16666666666666666,
+          "sweep_correct": 1,
+          "total": 6
+        },
+        "retrieval_miss_temporal_reasoning": {
+          "delta_vs_run1": 2,
+          "delta_vs_run2": 2,
+          "run1_accuracy": 0.0,
+          "run1_correct": 0,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.4,
+          "sweep_correct": 2,
+          "total": 5
+        }
+      },
+      "support_analysis": {
+        "exact_support_match_questions": 4,
+        "support_beyond_current_limit": 0,
+        "support_in_candidates": 2,
+        "support_in_selected": 2,
+        "support_min_rank_histogram": {
+          "1": 1,
+          "2": 1
+        },
+        "support_recovered_within_top_k": 0
+      },
+      "top_k": 9
+    }
+  ],
+  "seed_checkpoint_conversation_matches": 2079,
+  "seed_checkpoint_path": "tests/benchmark_results/dev_subset_baseline/run2/longmemeval_checkpoint.json",
+  "top_k_values": [
+    5,
+    6,
+    7,
+    8,
+    9
+  ]
+}

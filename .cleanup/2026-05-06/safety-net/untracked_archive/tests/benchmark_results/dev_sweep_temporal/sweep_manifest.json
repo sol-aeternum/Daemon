@@ -1,0 +1,227 @@
+{
+  "comparison": {
+    "eligible_for_full_corpus_promotion": false,
+    "locked_failure_union_delta_on_minus_off": -1,
+    "promotion_reason": "The locked dev subset did not show a clean temporal-cell win without broader regression, so the temporal filter should not advance to full-corpus promotion yet.",
+    "retrieval_miss_temporal_reasoning_delta_on_minus_off": 0,
+    "strict_accuracy_delta_on_minus_off": 0.0
+  },
+  "dataset_path": "tests/benchmark_longmemeval/fixtures/dev_subset.json",
+  "generated_at": "2026-04-18T15:42:35+00:00",
+  "promotion_gate": {
+    "subset_veto_min_locked_cases": 5,
+    "subset_veto_pass": true
+  },
+  "runs": [
+    {
+      "accuracy": {
+        "ABS": 0.0,
+        "IE-assistant": 0.3333333333333333,
+        "IE-preference": 0.0,
+        "IE-user": 0.2222222222222222,
+        "KU": 0.4444444444444444,
+        "MR": 0.3,
+        "TR": 0.1
+      },
+      "checkpoint_path": "tests/benchmark_results/dev_sweep_temporal/off/longmemeval_checkpoint.json",
+      "max_memories_used": 6,
+      "mean_memories_used": 6,
+      "output_dir": "tests/benchmark_results/dev_sweep_temporal/off",
+      "result_count": 50,
+      "results_path": "tests/benchmark_results/dev_sweep_temporal/off/longmemeval_results.jsonl",
+      "retrieval_diagnostics_path": "tests/benchmark_results/dev_sweep_temporal/off/retrieval_diagnostics.json",
+      "run_name": "off",
+      "run_summary_path": "tests/benchmark_results/dev_sweep_temporal/off/run_summary.json",
+      "score_path": "tests/benchmark_results/dev_sweep_temporal/off/longmemeval_score.json",
+      "strict_accuracy": 0.26,
+      "strict_delta_vs_run1": -0.06,
+      "strict_delta_vs_run2": 0.04000000000000001,
+      "subset_deltas": {
+        "locked_failure_union": {
+          "delta_vs_run1": -2,
+          "delta_vs_run2": 3,
+          "run1_accuracy": 0.1282051282051282,
+          "run1_correct": 5,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.07692307692307693,
+          "sweep_correct": 3,
+          "total": 39
+        },
+        "retrieval_miss_all": {
+          "delta_vs_run1": -1,
+          "delta_vs_run2": 1,
+          "run1_accuracy": 0.1,
+          "run1_correct": 2,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.05,
+          "sweep_correct": 1,
+          "total": 20
+        },
+        "retrieval_miss_multi_session": {
+          "delta_vs_run1": 1,
+          "delta_vs_run2": 1,
+          "run1_accuracy": 0.0,
+          "run1_correct": 0,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.16666666666666666,
+          "sweep_correct": 1,
+          "total": 6
+        },
+        "retrieval_miss_single_session_user": {
+          "delta_vs_run1": -2,
+          "delta_vs_run2": 0,
+          "run1_accuracy": 0.3333333333333333,
+          "run1_correct": 2,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.0,
+          "sweep_correct": 0,
+          "total": 6
+        },
+        "retrieval_miss_temporal_reasoning": {
+          "delta_vs_run1": 0,
+          "delta_vs_run2": 0,
+          "run1_accuracy": 0.0,
+          "run1_correct": 0,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.0,
+          "sweep_correct": 0,
+          "total": 5
+        }
+      },
+      "temporal_filter_enabled": false,
+      "temporal_query_activation": {
+        "armed_count": 8,
+        "armed_question_ids": [
+          "86f00804",
+          "gpt4_4edbafa2",
+          "f685340e",
+          "gpt4_93159ced_abs",
+          "80ec1f4f_abs",
+          "92a0aa75",
+          "3ba21379",
+          "gpt4_93159ced"
+        ],
+        "armed_target_cell_question_ids": []
+      },
+      "top_k": 6
+    },
+    {
+      "accuracy": {
+        "ABS": 0.0,
+        "IE-assistant": 0.3333333333333333,
+        "IE-preference": 0.0,
+        "IE-user": 0.3333333333333333,
+        "KU": 0.3333333333333333,
+        "MR": 0.3,
+        "TR": 0.1
+      },
+      "checkpoint_path": "tests/benchmark_results/dev_sweep_temporal/on/longmemeval_checkpoint.json",
+      "max_memories_used": 6,
+      "mean_memories_used": 6,
+      "output_dir": "tests/benchmark_results/dev_sweep_temporal/on",
+      "result_count": 50,
+      "results_path": "tests/benchmark_results/dev_sweep_temporal/on/longmemeval_results.jsonl",
+      "retrieval_diagnostics_path": "tests/benchmark_results/dev_sweep_temporal/on/retrieval_diagnostics.json",
+      "run_name": "on",
+      "run_summary_path": "tests/benchmark_results/dev_sweep_temporal/on/run_summary.json",
+      "score_path": "tests/benchmark_results/dev_sweep_temporal/on/longmemeval_score.json",
+      "strict_accuracy": 0.26,
+      "strict_delta_vs_run1": -0.06,
+      "strict_delta_vs_run2": 0.04000000000000001,
+      "subset_deltas": {
+        "locked_failure_union": {
+          "delta_vs_run1": -3,
+          "delta_vs_run2": 2,
+          "run1_accuracy": 0.1282051282051282,
+          "run1_correct": 5,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.05128205128205128,
+          "sweep_correct": 2,
+          "total": 39
+        },
+        "retrieval_miss_all": {
+          "delta_vs_run1": 0,
+          "delta_vs_run2": 2,
+          "run1_accuracy": 0.1,
+          "run1_correct": 2,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.1,
+          "sweep_correct": 2,
+          "total": 20
+        },
+        "retrieval_miss_multi_session": {
+          "delta_vs_run1": 1,
+          "delta_vs_run2": 1,
+          "run1_accuracy": 0.0,
+          "run1_correct": 0,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.16666666666666666,
+          "sweep_correct": 1,
+          "total": 6
+        },
+        "retrieval_miss_single_session_user": {
+          "delta_vs_run1": -1,
+          "delta_vs_run2": 1,
+          "run1_accuracy": 0.3333333333333333,
+          "run1_correct": 2,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.16666666666666666,
+          "sweep_correct": 1,
+          "total": 6
+        },
+        "retrieval_miss_temporal_reasoning": {
+          "delta_vs_run1": 0,
+          "delta_vs_run2": 0,
+          "run1_accuracy": 0.0,
+          "run1_correct": 0,
+          "run2_accuracy": 0.0,
+          "run2_correct": 0,
+          "sweep_accuracy": 0.0,
+          "sweep_correct": 0,
+          "total": 5
+        }
+      },
+      "temporal_filter_enabled": true,
+      "temporal_query_activation": {
+        "armed_count": 8,
+        "armed_question_ids": [
+          "86f00804",
+          "gpt4_4edbafa2",
+          "f685340e",
+          "gpt4_93159ced_abs",
+          "80ec1f4f_abs",
+          "92a0aa75",
+          "3ba21379",
+          "gpt4_93159ced"
+        ],
+        "armed_target_cell_question_ids": []
+      },
+      "top_k": 6
+    }
+  ],
+  "seed_checkpoint_path": "tests/benchmark_results/dev_subset_baseline/run2/longmemeval_checkpoint.json",
+  "shared_overrides": {
+    "top_k_memories": 6
+  },
+  "target_failure_cell": {
+    "category": "temporal-reasoning",
+    "count": 5,
+    "question_ids": [
+      "0bb5a684",
+      "6613b389",
+      "8c18457d",
+      "gpt4_af6db32f",
+      "gpt4_b0863698"
+    ],
+    "stage": "retrieval-miss"
+  }
+}

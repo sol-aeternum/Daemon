@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-04-25T02:30:39.960766+00:00",
+  "total_extraction_calls": 17,
+  "observed_fingerprint": null,
+  "observed_model": null,
+  "total_memories_created": 53,
+  "active_memories": 53,
+  "extraction_outcome_counts": {
+    "completed": 17,
+    "errored": 0,
+    "empty": 14,
+    "unknown": 0
+  }
+}

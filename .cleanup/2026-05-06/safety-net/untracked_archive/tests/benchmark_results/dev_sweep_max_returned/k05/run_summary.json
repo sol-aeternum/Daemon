@@ -1,0 +1,89 @@
+{
+  "accuracy": {
+    "ABS": 0.0,
+    "IE-assistant": 0.4444444444444444,
+    "IE-preference": 0.0,
+    "IE-user": 0.2222222222222222,
+    "KU": 0.3333333333333333,
+    "MR": 0.3,
+    "TR": 0.3
+  },
+  "max_estimated_answer_prompt_tokens": 153,
+  "max_memories_used": 5,
+  "mean_estimated_answer_prompt_tokens": 113.74,
+  "mean_memories_used": 5,
+  "result_count": 50,
+  "strict_accuracy": 0.3,
+  "strict_delta_vs_baseline_mean": 0.02999999999999997,
+  "strict_delta_vs_run1": -0.020000000000000018,
+  "strict_delta_vs_run2": 0.07999999999999999,
+  "subset_deltas": {
+    "locked_failure_union": {
+      "delta_vs_run1": -1,
+      "delta_vs_run2": 4,
+      "run1_accuracy": 0.1282051282051282,
+      "run1_correct": 5,
+      "run2_accuracy": 0.0,
+      "run2_correct": 0,
+      "sweep_accuracy": 0.10256410256410256,
+      "sweep_correct": 4,
+      "total": 39
+    },
+    "retrieval_miss_all": {
+      "delta_vs_run1": 0,
+      "delta_vs_run2": 2,
+      "run1_accuracy": 0.1,
+      "run1_correct": 2,
+      "run2_accuracy": 0.0,
+      "run2_correct": 0,
+      "sweep_accuracy": 0.1,
+      "sweep_correct": 2,
+      "total": 20
+    },
+    "retrieval_miss_multi_session": {
+      "delta_vs_run1": 1,
+      "delta_vs_run2": 1,
+      "run1_accuracy": 0.0,
+      "run1_correct": 0,
+      "run2_accuracy": 0.0,
+      "run2_correct": 0,
+      "sweep_accuracy": 0.16666666666666666,
+      "sweep_correct": 1,
+      "total": 6
+    },
+    "retrieval_miss_single_session_user": {
+      "delta_vs_run1": -2,
+      "delta_vs_run2": 0,
+      "run1_accuracy": 0.3333333333333333,
+      "run1_correct": 2,
+      "run2_accuracy": 0.0,
+      "run2_correct": 0,
+      "sweep_accuracy": 0.0,
+      "sweep_correct": 0,
+      "total": 6
+    },
+    "retrieval_miss_temporal_reasoning": {
+      "delta_vs_run1": 1,
+      "delta_vs_run2": 1,
+      "run1_accuracy": 0.0,
+      "run1_correct": 0,
+      "run2_accuracy": 0.0,
+      "run2_correct": 0,
+      "sweep_accuracy": 0.2,
+      "sweep_correct": 1,
+      "total": 5
+    }
+  },
+  "support_analysis": {
+    "exact_support_match_questions": 4,
+    "support_beyond_current_limit": 0,
+    "support_in_candidates": 2,
+    "support_in_selected": 2,
+    "support_min_rank_histogram": {
+      "1": 1,
+      "2": 1
+    },
+    "support_recovered_within_top_k": 0
+  },
+  "top_k": 5
+}

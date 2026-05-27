@@ -1,0 +1,20 @@
+{
+  "results": [
+    {
+      "run": 1,
+      "status": "failed",
+      "error": "LongMemEval dataset not found: /home/sol/daemon/tests/tests/benchmark_longmemeval/fixtures/dev_subset.json. Pass --dataset with a valid JSON file path."
+    },
+    {
+      "run": 2,
+      "status": "failed",
+      "error": "LongMemEval dataset not found: /home/sol/daemon/tests/tests/benchmark_longmemeval/fixtures/dev_subset.json. Pass --dataset with a valid JSON file path."
+    },
+    {
+      "run": 3,
+      "status": "failed",
+      "error": "LongMemEval dataset not found: /home/sol/daemon/tests/tests/benchmark_longmemeval/fixtures/dev_subset.json. Pass --dataset with a valid JSON file path."
+    }
+  ],
+  "successful": 0
+}

@@ -1,0 +1,76 @@
+{
+  "timestamp": "2026-04-25T04:54:16.298951+00:00",
+  "test_user_id": "12345678-1234-5678-1234-567812345678",
+  "counts_before": {
+    "conversations": 0,
+    "messages": 0,
+    "memories": 0,
+    "memory_extraction_log": 0,
+    "retrieval_log": 0,
+    "dream_log": 0,
+    "entities": 0,
+    "skill_consolidation_log": 0,
+    "skill_nudge_user_state": 0
+  },
+  "first_result": {
+    "success": true,
+    "tables_cleared": {
+      "retrieval_log": 0,
+      "dream_log": 0,
+      "entities": 0,
+      "memories": 0,
+      "memory_extraction_log": 0,
+      "messages": 0,
+      "conversations": 0
+    },
+    "extended_tables_cleared": {
+      "skill_consolidation_log": 0,
+      "skill_nudge_user_state": 0
+    },
+    "total_rows_deleted": 0,
+    "row_counts_after_reset": {
+      "conversations": 0,
+      "messages": 0,
+      "memories": 0,
+      "memory_extraction_log": 0,
+      "retrieval_log": 0,
+      "dream_log": 0,
+      "entities": 0,
+      "skill_consolidation_log": 0,
+      "skill_nudge_user_state": 0
+    },
+    "all_zero": true,
+    "error": null
+  },
+  "second_result": {
+    "success": true,
+    "tables_cleared": {
+      "retrieval_log": 0,
+      "dream_log": 0,
+      "entities": 0,
+      "memories": 0,
+      "memory_extraction_log": 0,
+      "messages": 0,
+      "conversations": 0
+    },
+    "extended_tables_cleared": {
+      "skill_consolidation_log": 0,
+      "skill_nudge_user_state": 0
+    },
+    "total_rows_deleted": 0,
+    "row_counts_after_reset": {
+      "conversations": 0,
+      "messages": 0,
+      "memories": 0,
+      "memory_extraction_log": 0,
+      "retrieval_log": 0,
+      "dream_log": 0,
+      "entities": 0,
+      "skill_consolidation_log": 0,
+      "skill_nudge_user_state": 0
+    },
+    "all_zero": true,
+    "error": null
+  },
+  "confirmed_clean": true
+}

@@ -1,0 +1,374 @@
+{
+  "abstention_metrics": {
+    "abstention_like_fixture_answers": 2,
+    "correct_fixture_cases": 3,
+    "fixture_case_count": 5,
+    "locked_failure_case_count": 2,
+    "locked_failure_correct": 0,
+    "locked_failure_question_ids": [
+      "gpt4_93159ced_abs",
+      "gpt4_372c3eed_abs"
+    ]
+  },
+  "accuracy": {
+    "ABS": 0.0,
+    "IE-assistant": 0.4444444444444444,
+    "IE-preference": 0.0,
+    "IE-user": 0.2222222222222222,
+    "KU": 0.3333333333333333,
+    "MR": 0.2,
+    "TR": 0.1
+  },
+  "benchmark_config_drift_warnings": [
+    "shared.retrieval.call_contract.top_k_memories: pinned=5 effective=6"
+  ],
+  "expected_drift_warning_count": 1,
+  "false_abstention_metrics": {
+    "count": 23,
+    "question_ids": [
+      "86f00804",
+      "19b5f2b3",
+      "4388e9dd",
+      "e8a79c70",
+      "71a3fd6b",
+      "28dc39ac",
+      "ba358f49",
+      "1192316e",
+      "8c18457d",
+      "6613b389",
+      "gpt4_b0863698",
+      "f685340e",
+      "184da446",
+      "ad7109d1",
+      "2bf43736",
+      "0bb5a684",
+      "0977f2af",
+      "c5e8278d",
+      "545bd2b5",
+      "cc06de0d",
+      "59524333",
+      "25e5aa4f",
+      "7a8d0b71"
+    ],
+    "rows": [
+      {
+        "category": "IE-user",
+        "hypothesis": "I'm sorry, but I don't have information about which book you are currently reading based on the provided memories.",
+        "judgment": "incorrect",
+        "question_id": "86f00804"
+      },
+      {
+        "category": "IE-user",
+        "hypothesis": "I'm sorry, but I don't have information on how long you were in Japan based on the memories provided.",
+        "judgment": "incorrect",
+        "question_id": "19b5f2b3"
+      },
+      {
+        "category": "IE-assistant",
+        "hypothesis": "I'm sorry, but I don't have any memories or information about Andy or a comedy movie scene script from our previous chats.",
+        "judgment": "incorrect",
+        "question_id": "4388e9dd"
+      },
+      {
+        "category": "IE-assistant",
+        "hypothesis": "I'm sorry, but I don't have a memory of our conversation about the number of eggs needed for a classic French omelette. Could you please provide more details or check the specific recipe you're referring to?",
+        "judgment": "incorrect",
+        "question_id": "e8a79c70"
+      },
+      {
+        "category": "IE-assistant",
+        "hypothesis": "I'm sorry, but I don't have the phone number for the Speyer tourism board in the memories provided. You might want to check their official website or contact them through email for the most accurate information.",
+        "judgment": "incorrect",
+        "question_id": "71a3fd6b"
+      },
+      {
+        "category": "MR",
+        "hypothesis": "I'm sorry, but I don't have information on the total number of hours you've spent playing games.",
+        "judgment": "incorrect",
+        "question_id": "28dc39ac"
+      },
+      {
+        "category": "MR",
+        "hypothesis": "I'm sorry, but I don't have information about your age or when your friend Rachel is getting married based on the provided memories.",
+        "judgment": "incorrect",
+        "question_id": "ba358f49"
+      },
+      {
+        "category": "MR",
+        "hypothesis": "I'm sorry, but the memories provided do not contain information about the time it takes you to get ready and commute to work.",
+        "judgment": "incorrect",
+        "question_id": "1192316e"
+      },
+      {
+        "category": "TR",
+        "hypothesis": "I'm sorry, but there is no information in the provided memories about when you bought a gift for your brother's graduation ceremony, so I cannot calculate the number of days between that event and when you bought a birthday gift for your best friend.",
+        "judgment": "incorrect",
+        "question_id": "8c18457d"
+      },
+      {
+        "category": "TR",
+        "hypothesis": "I'm sorry, but I don't have any information about when Rachel got engaged. Therefore, I cannot determine how many months before your anniversary it occurred.",
+        "judgment": "incorrect",
+        "question_id": "6613b389"
+      },
+      {
+        "category": "TR",
+        "hypothesis": "I'm sorry, I don't have the exact date of when you participated in the 5K charity run, so I can't determine how many days ago it was.",
+        "judgment": "incorrect",
+        "question_id": "gpt4_b0863698"
+      },
+      {
+        "category": "KU",
+        "hypothesis": "I'm sorry, but I don't have information on how often you played tennis with your friends at the local park previously or how often you play now.",
+        "judgment": "incorrect",
+        "question_id": "f685340e"
+      },
+      {
+        "category": "KU",
+        "hypothesis": "I'm sorry, but I don't have any information on how many pages of 'A Short History of Nearly Everything' you have read so far.",
+        "judgment": "incorrect",
+        "question_id": "184da446"
+      },
+      {
+        "category": "IE-user",
+        "hypothesis": "I'm sorry, I don't have any information about your new internet plan speed.",
+        "judgment": "incorrect",
+        "question_id": "ad7109d1"
+      },
+      {
+        "category": "IE-assistant",
+        "hypothesis": "I'm sorry, but I don't have specific information about the chapters in Tanqueray's \"The Spiritual Life\" treatise. You might want to check the table of contents or the index of the book for detailed information on where vocal prayer and meditation are discussed.",
+        "judgment": "incorrect",
+        "question_id": "2bf43736"
+      },
+      {
+        "category": "TR",
+        "hypothesis": "You attended the 'Effective Communication in the Workplace' workshop on January 10th. Since the memories provided do not specify the exact date of the team meeting you were preparing for, I cannot determine the number of days between the workshop and the team meeting. If you provide the date of the team meeting, I will be able to answer your question.",
+        "judgment": "incorrect",
+        "question_id": "0bb5a684"
+      },
+      {
+        "category": "KU",
+        "hypothesis": "Based on the memories provided, you haven't explicitly mentioned investing in a new kitchen gadget before getting the Air Fryer. Therefore, I don't have enough information to determine which kitchen gadget you invested in prior to the Air Fryer.",
+        "judgment": "incorrect",
+        "question_id": "0977f2af"
+      },
+      {
+        "category": "IE-user",
+        "hypothesis": "I'm sorry, I don't have that information from the provided memories.",
+        "judgment": "incorrect",
+        "question_id": "c5e8278d"
+      },
+      {
+        "category": "IE-user",
+        "hypothesis": "I'm sorry, but I don't have any information on your average screen time on Instagram.",
+        "judgment": "incorrect",
+        "question_id": "545bd2b5"
+      },
+      {
+        "category": "MR",
+        "hypothesis": "I don't have information on the train fare to compare it to the $12 taxi ride cost. Could you provide the train fare amount?",
+        "judgment": "incorrect",
+        "question_id": "cc06de0d"
+      },
+      {
+        "category": "KU",
+        "hypothesis": "I'm sorry, I don't have information about the time you usually go to the gym.",
+        "judgment": "incorrect",
+        "question_id": "59524333"
+      },
+      {
+        "category": "IE-user",
+        "hypothesis": "I'm sorry, but the information about where you completed your Bachelor's degree in Computer Science is not available in the provided memories.",
+        "judgment": "incorrect",
+        "question_id": "25e5aa4f"
+      },
+      {
+        "category": "IE-assistant",
+        "hypothesis": "I'm sorry, but I don't have any memories or information about the DHL Wellness Retreats campaign or details about the budget allocation for influencer marketing in that campaign.",
+        "judgment": "incorrect",
+        "question_id": "7a8d0b71"
+      }
+    ]
+  },
+  "locked_failure_union": {
+    "correct": 2,
+    "total": 39
+  },
+  "max_memories_used": 6,
+  "mean_memories_used": 6.0,
+  "normalized_effective_config": {
+    "lane": "canonical",
+    "pin_path": "tests/benchmark_longmemeval/longmemeval_config_pin.json",
+    "pinned_authority": {
+      "canonical": {
+        "artifact_contract": {
+          "checkpoint_filename": "longmemeval_checkpoint.json",
+          "checkpoint_version": 2,
+          "results_filename": "longmemeval_results.jsonl",
+          "score_filename": "longmemeval_score.json"
+        },
+        "benchmark_user": {
+          "email": "longmemeval@daemon.test",
+          "user_id": "12345678-1234-5678-1234-567812345678"
+        },
+        "corpus_plan": {
+          "build_corpus_plan_sha256": "f193048b827163055ae2e944769c6fc8175a4101017551046a84b5bcaa38abad",
+          "normalize_session_messages_sha256": "2215c4b4ffb2816f35d1dacb91c84279d2da30a51e6c80702a75737ece691ec0"
+        },
+        "dedup": {
+          "check_contradiction_sha256": "018339d0446b50b786a4bff50a20f2be9ee52cfcf4f7023e014d601cb5496317",
+          "contradiction_model": "openrouter/deepseek/deepseek-chat",
+          "contradiction_temperature": 0.1,
+          "merge_threshold": 0.9,
+          "supersede_same_slot_threshold": 0.65,
+          "supersede_threshold": 0.82
+        },
+        "document_embedding": {
+          "embedding_dimensions": 1024,
+          "embedding_document_model": "voyage-4-large"
+        },
+        "extraction": {
+          "confidence_calibration": {
+            "correction_min_confidence": 0.9,
+            "default_extracted_confidence": 0.8,
+            "hedge_override_confidence": 0.65,
+            "strong_override_confidence": 0.92
+          },
+          "input_max_chars": 4000,
+          "max_tokens": 2000,
+          "model": "openrouter/openai/gpt-4o-mini",
+          "prompt_sha256": "e9898c7a0d76fe1444ced1560a1c21df78cc3341d3caf930ae738344ee180378",
+          "temperature": 0.0,
+          "top_p": 1.0
+        }
+      },
+      "fast_lane_reference": {
+        "artifact_contract": {
+          "checkpoint_filename": "longmemeval_fast_checkpoint.json",
+          "results_filename": "longmemeval_fast_results.jsonl"
+        },
+        "benchmark_user_strategy": {
+          "build_benchmark_user_sha256": "ac4faf958ca1fab2d8110a6092461d8dfc505c7a88fcb606c44c29bdd9aa7a8a",
+          "fresh_user_per_run": true
+        },
+        "chunking": {
+          "default_chunk_max_chars": 4000,
+          "default_overlap_turns": 2,
+          "sample_assistant_turn": "[Assistant]: Example text",
+          "sample_user_turn": "[User]: Example text"
+        },
+        "direct_insert": {
+          "benchmark_category": "fact",
+          "benchmark_name": "longmemeval_fast",
+          "benchmark_source_type": "import",
+          "insert_chunk_memories_sha256": "aa99a88773c71b6e5fe12e47efd4ea1fc922f4c5ab65e5178347889a22034334"
+        },
+        "logging": {
+          "effective_force_retrieval_logging": true
+        }
+      },
+      "inventory_source": "tests/benchmark_longmemeval/CONFIG_PINNING.md",
+      "pin_schema_version": 1,
+      "shared": {
+        "answer": {
+          "max_tokens": 256,
+          "model": "openrouter/openai/gpt-4o",
+          "prompt_sha256": "<prompt>",
+          "temperature": 0.7
+        },
+        "judge": {
+          "max_tokens": 256,
+          "model": "openrouter/openai/gpt-4o",
+          "prompt_sha256": "c4a43ae86a71d37c7094463871d75452a0b9664109702ab82f6b2f9e4b2751b5",
+          "temperature": 0.0
+        },
+        "provider_route": {
+          "openrouter_base_url": "https://openrouter.ai/api/v1",
+          "openrouter_referer": "https://daemon.ai",
+          "openrouter_title": "Daemon AI Assistant",
+          "request_timeout_s": 90.0
+        },
+        "query_embedding": {
+          "embedding_dimensions": 1024,
+          "embedding_query_model": "voyage-4-lite"
+        },
+        "retrieval": {
+          "call_contract": {
+            "include_dream_observations": true,
+            "include_l0": true,
+            "retrieval_triggered_by": "longmemeval",
+            "top_k_memories": 6
+          },
+          "inactive_controls": {
+            "active_in_longmemeval": false,
+            "effective_limit_authority": "TOP_K_MEMORIES",
+            "max_returned_memories": 5
+          },
+          "logging": {
+            "effective_force_retrieval_logging": true,
+            "retrieval_logging_debug": false,
+            "retrieval_logging_enabled": false
+          },
+          "ranking": {
+            "hybrid_bm25_weight": 0.3,
+            "hybrid_recency_confidence_weight": 0.2,
+            "hybrid_vector_weight": 0.5,
+            "initial_vector_candidates": 10,
+            "min_final_score": 0.15
+          },
+          "scope_defaults": {
+            "include_historical": false,
+            "include_local": false,
+            "memory_slot": null
+          }
+        }
+      }
+    },
+    "runtime": {
+      "checkpoint_path": "<checkpoint>",
+      "dataset_path": "tests/benchmark_longmemeval/fixtures/dev_subset.json",
+      "force_retrieval_logging": true,
+      "limit": null,
+      "output_path": "<output>",
+      "score_path": "<score>"
+    }
+  },
+  "prompt_guardrail_enabled": false,
+  "prompt_guardrail_sha256": "6ec439707cedacb13c817a26d84d19ad423cf3817dac20e7bc739ed12628bebb",
+  "protected_cells": {
+    "abstention": {
+      "accuracy": 0.6,
+      "metric_key": "abstention_overlay"
+    },
+    "knowledge-update": {
+      "accuracy": 0.3333333333333333,
+      "metric_key": "KU"
+    },
+    "multi-session": {
+      "accuracy": 0.2,
+      "metric_key": "MR"
+    },
+    "single-session-assistant": {
+      "accuracy": 0.4444444444444444,
+      "metric_key": "IE-assistant"
+    },
+    "single-session-user": {
+      "accuracy": 0.2222222222222222,
+      "metric_key": "IE-user"
+    },
+    "temporal-reasoning": {
+      "accuracy": 0.1,
+      "metric_key": "TR"
+    }
+  },
+  "result_count": 50,
+  "run_name": "off",
+  "secondary_cell": {
+    "category": "temporal-reasoning",
+    "correct": 0,
+    "stage": "generation-error",
+    "total": 3
+  },
+  "strict_accuracy": 0.24
+}

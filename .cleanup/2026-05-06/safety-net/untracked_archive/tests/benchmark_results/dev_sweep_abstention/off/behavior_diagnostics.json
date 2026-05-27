@@ -1,0 +1,569 @@
+[
+  {
+    "abstention_like": false,
+    "category": "IE-user",
+    "hypothesis": "The painting of a sunset is worth triple the amount you paid for it.",
+    "is_abstention_variant": false,
+    "judgment": "correct",
+    "question_id": "b86304ba",
+    "taxonomy": null
+  },
+  {
+    "abstention_like": false,
+    "category": "IE-user",
+    "hypothesis": "Your memories do not include a specific cocktail recipe that you tried last weekend.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "8550ddae",
+    "taxonomy": {
+      "category": "single-session-user",
+      "stage": "retrieval-miss"
+    }
+  },
+  {
+    "abstention_like": true,
+    "category": "IE-user",
+    "hypothesis": "I'm sorry, but I don't have information about which book you are currently reading based on the provided memories.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "86f00804",
+    "taxonomy": {
+      "category": "single-session-user",
+      "stage": "retrieval-miss"
+    }
+  },
+  {
+    "abstention_like": true,
+    "category": "IE-user",
+    "hypothesis": "I'm sorry, but I don't have information on how long you were in Japan based on the memories provided.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "19b5f2b3",
+    "taxonomy": {
+      "category": "single-session-user",
+      "stage": "retrieval-miss"
+    }
+  },
+  {
+    "abstention_like": false,
+    "category": "IE-user",
+    "hypothesis": "It took the user around 5 hours to move everything into the new apartment.",
+    "is_abstention_variant": false,
+    "judgment": "correct",
+    "question_id": "caf9ead2",
+    "taxonomy": null
+  },
+  {
+    "abstention_like": false,
+    "category": "IE-assistant",
+    "hypothesis": "The language learning app that uses mnemonics to help learners memorize words and phrases is likely \"Memrise.\"",
+    "is_abstention_variant": false,
+    "judgment": "correct",
+    "question_id": "fca762bc",
+    "taxonomy": null
+  },
+  {
+    "abstention_like": true,
+    "category": "IE-assistant",
+    "hypothesis": "I'm sorry, but I don't have any memories or information about Andy or a comedy movie scene script from our previous chats.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "4388e9dd",
+    "taxonomy": {
+      "category": "single-session-assistant",
+      "stage": "retrieval-miss"
+    }
+  },
+  {
+    "abstention_like": true,
+    "category": "IE-assistant",
+    "hypothesis": "I'm sorry, but I don't have a memory of our conversation about the number of eggs needed for a classic French omelette. Could you please provide more details or check the specific recipe you're referring to?",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "e8a79c70",
+    "taxonomy": {
+      "category": "single-session-assistant",
+      "stage": "extraction-miss"
+    }
+  },
+  {
+    "abstention_like": false,
+    "category": "IE-assistant",
+    "hypothesis": "The vegan eatery I recommended with multiple locations throughout New York City is by CHLOE.",
+    "is_abstention_variant": false,
+    "judgment": "correct",
+    "question_id": "d596882b",
+    "taxonomy": null
+  },
+  {
+    "abstention_like": true,
+    "category": "IE-assistant",
+    "hypothesis": "I'm sorry, but I don't have the phone number for the Speyer tourism board in the memories provided. You might want to check their official website or contact them through email for the most accurate information.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "71a3fd6b",
+    "taxonomy": {
+      "category": "single-session-assistant",
+      "stage": "extraction-miss"
+    }
+  },
+  {
+    "abstention_like": true,
+    "category": "MR",
+    "hypothesis": "I'm sorry, but I don't have information on the total number of hours you've spent playing games.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "28dc39ac",
+    "taxonomy": {
+      "category": "multi-session",
+      "stage": "extraction-miss"
+    }
+  },
+  {
+    "abstention_like": true,
+    "category": "MR",
+    "hypothesis": "I'm sorry, but I don't have information about your age or when your friend Rachel is getting married based on the provided memories.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "ba358f49",
+    "taxonomy": {
+      "category": "multi-session",
+      "stage": "retrieval-miss"
+    }
+  },
+  {
+    "abstention_like": false,
+    "category": "MR",
+    "hypothesis": "Based on your goal to limit Instagram usage to 15 minutes a day, Monday to Friday, you are taking social media breaks on 5 days each week.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "6cb6f249",
+    "taxonomy": {
+      "category": "multi-session",
+      "stage": "retrieval-miss"
+    }
+  },
+  {
+    "abstention_like": false,
+    "category": "MR",
+    "hypothesis": "You mentioned that your accommodations in Maui cost over $300 per night. Without specific information on your accommodation costs in Tokyo, I can't calculate the exact difference. However, if you provide the cost per night for Tokyo, I can help determine how much more you spent per night in Maui.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "2318644b",
+    "taxonomy": {
+      "category": "multi-session",
+      "stage": "retrieval-miss"
+    }
+  },
+  {
+    "abstention_like": true,
+    "category": "MR",
+    "hypothesis": "I'm sorry, but the memories provided do not contain information about the time it takes you to get ready and commute to work.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "1192316e",
+    "taxonomy": {
+      "category": "multi-session",
+      "stage": "retrieval-miss"
+    }
+  },
+  {
+    "abstention_like": true,
+    "category": "TR",
+    "hypothesis": "I'm sorry, but there is no information in the provided memories about when you bought a gift for your brother's graduation ceremony, so I cannot calculate the number of days between that event and when you bought a birthday gift for your best friend.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "8c18457d",
+    "taxonomy": {
+      "category": "temporal-reasoning",
+      "stage": "retrieval-miss"
+    }
+  },
+  {
+    "abstention_like": false,
+    "category": "TR",
+    "hypothesis": "You attended your first BBQ event on the 10th of June.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "gpt4_4edbafa2",
+    "taxonomy": {
+      "category": "temporal-reasoning",
+      "stage": "generation-error"
+    }
+  },
+  {
+    "abstention_like": true,
+    "category": "TR",
+    "hypothesis": "I'm sorry, but I don't have any information about when Rachel got engaged. Therefore, I cannot determine how many months before your anniversary it occurred.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "6613b389",
+    "taxonomy": {
+      "category": "temporal-reasoning",
+      "stage": "retrieval-miss"
+    }
+  },
+  {
+    "abstention_like": false,
+    "category": "TR",
+    "hypothesis": "The Super Bowl typically takes place on the first Sunday of February. Since today is October 18, 2023, the most recent Super Bowl would have been on February 12, 2023. Thus, the Super Bowl was 248 days ago.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "gpt4_af6db32f",
+    "taxonomy": {
+      "category": "temporal-reasoning",
+      "stage": "retrieval-miss"
+    }
+  },
+  {
+    "abstention_like": true,
+    "category": "TR",
+    "hypothesis": "I'm sorry, I don't have the exact date of when you participated in the 5K charity run, so I can't determine how many days ago it was.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "gpt4_b0863698",
+    "taxonomy": {
+      "category": "temporal-reasoning",
+      "stage": "retrieval-miss"
+    }
+  },
+  {
+    "abstention_like": false,
+    "category": "KU",
+    "hypothesis": "You were pre-approved for a $350,000 loan.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "852ce960",
+    "taxonomy": {
+      "category": "knowledge-update",
+      "stage": "generation-error"
+    }
+  },
+  {
+    "abstention_like": false,
+    "category": "KU",
+    "hypothesis": "Your personal best time in the charity 5K run was 25:50.",
+    "is_abstention_variant": false,
+    "judgment": "correct",
+    "question_id": "6a1eabeb",
+    "taxonomy": null
+  },
+  {
+    "abstention_like": true,
+    "category": "KU",
+    "hypothesis": "I'm sorry, I don't have information on the number of Crash Course videos you've watched in the past few weeks.",
+    "is_abstention_variant": false,
+    "judgment": "correct",
+    "question_id": "5831f84d",
+    "taxonomy": {
+      "category": "knowledge-update",
+      "stage": "retrieval-miss"
+    }
+  },
+  {
+    "abstention_like": true,
+    "category": "KU",
+    "hypothesis": "I'm sorry, but I don't have information on how often you played tennis with your friends at the local park previously or how often you play now.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "f685340e",
+    "taxonomy": {
+      "category": "knowledge-update",
+      "stage": "retrieval-miss"
+    }
+  },
+  {
+    "abstention_like": true,
+    "category": "KU",
+    "hypothesis": "I'm sorry, but I don't have any information on how many pages of 'A Short History of Nearly Everything' you have read so far.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "184da446",
+    "taxonomy": null
+  },
+  {
+    "abstention_like": true,
+    "category": "KU",
+    "hypothesis": "Based on the provided memories, there is no information about you playing table tennis at the local park.",
+    "is_abstention_variant": true,
+    "judgment": "correct",
+    "question_id": "f685340e_abs",
+    "taxonomy": null
+  },
+  {
+    "abstention_like": true,
+    "category": "TR",
+    "hypothesis": "I'm sorry, but there is no information in the provided memories about you booking an Airbnb in Sacramento.",
+    "is_abstention_variant": true,
+    "judgment": "correct",
+    "question_id": "982b5123_abs",
+    "taxonomy": null
+  },
+  {
+    "abstention_like": false,
+    "category": "TR",
+    "hypothesis": "You have been working for about 4 years and 3 months at NovaTech before starting your current job at Google.",
+    "is_abstention_variant": true,
+    "judgment": "incorrect",
+    "question_id": "gpt4_93159ced_abs",
+    "taxonomy": {
+      "category": "abstention",
+      "stage": "generation-error"
+    }
+  },
+  {
+    "abstention_like": false,
+    "category": "MR",
+    "hypothesis": "Based on the provided memories, there is no specific information about visiting any museums or galleries in December.",
+    "is_abstention_variant": true,
+    "judgment": "correct",
+    "question_id": "80ec1f4f_abs",
+    "taxonomy": null
+  },
+  {
+    "abstention_like": false,
+    "category": "MR",
+    "hypothesis": "In the United States, formal education typically consists of 4 years of high school, 4 years for an undergraduate degree, and about 2 years for a Master's degree. Therefore, you would spend approximately 10 years in formal education from high school to the completion of your Master's degree.",
+    "is_abstention_variant": true,
+    "judgment": "incorrect",
+    "question_id": "gpt4_372c3eed_abs",
+    "taxonomy": {
+      "category": "abstention",
+      "stage": "extraction-miss"
+    }
+  },
+  {
+    "abstention_like": true,
+    "category": "IE-user",
+    "hypothesis": "I'm sorry, I don't have any information about your new internet plan speed.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "ad7109d1",
+    "taxonomy": {
+      "category": "single-session-user",
+      "stage": "retrieval-miss"
+    }
+  },
+  {
+    "abstention_like": true,
+    "category": "IE-assistant",
+    "hypothesis": "I'm sorry, but I don't have specific information about the chapters in Tanqueray's \"The Spiritual Life\" treatise. You might want to check the table of contents or the index of the book for detailed information on where vocal prayer and meditation are discussed.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "2bf43736",
+    "taxonomy": {
+      "category": "single-session-assistant",
+      "stage": "extraction-miss"
+    }
+  },
+  {
+    "abstention_like": false,
+    "category": "IE-preference",
+    "hypothesis": "It's possible that your sneezing could be related to something in your living room, especially if there are new or different elements there, such as dust, plants, or antiques. Since you are planning to get a spider plant or a snake plant, consider checking if they or any other plants might be contributing to your symptoms. Additionally, if you've recently acquired any antiques or have items that may collect dust, these could also be potential allergens.",
+    "is_abstention_variant": false,
+    "judgment": "partially_correct",
+    "question_id": "75f70248",
+    "taxonomy": {
+      "category": "single-session-preference",
+      "stage": "generation-error"
+    }
+  },
+  {
+    "abstention_like": false,
+    "category": "MR",
+    "hypothesis": "You spent a total of $200 on gifts for your coworker and brother.",
+    "is_abstention_variant": false,
+    "judgment": "correct",
+    "question_id": "a3332713",
+    "taxonomy": null
+  },
+  {
+    "abstention_like": true,
+    "category": "TR",
+    "hypothesis": "You attended the 'Effective Communication in the Workplace' workshop on January 10th. Since the memories provided do not specify the exact date of the team meeting you were preparing for, I cannot determine the number of days between the workshop and the team meeting. If you provide the date of the team meeting, I will be able to answer your question.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "0bb5a684",
+    "taxonomy": {
+      "category": "temporal-reasoning",
+      "stage": "retrieval-miss"
+    }
+  },
+  {
+    "abstention_like": true,
+    "category": "KU",
+    "hypothesis": "Based on the memories provided, you haven't explicitly mentioned investing in a new kitchen gadget before getting the Air Fryer. Therefore, I don't have enough information to determine which kitchen gadget you invested in prior to the Air Fryer.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "0977f2af",
+    "taxonomy": {
+      "category": "knowledge-update",
+      "stage": "extraction-miss"
+    }
+  },
+  {
+    "abstention_like": true,
+    "category": "IE-user",
+    "hypothesis": "I'm sorry, I don't have that information from the provided memories.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "c5e8278d",
+    "taxonomy": {
+      "category": "single-session-user",
+      "stage": "extraction-miss"
+    }
+  },
+  {
+    "abstention_like": false,
+    "category": "IE-assistant",
+    "hypothesis": "The restaurant you plan to try for Nasi Goreng is Miss Bee's.",
+    "is_abstention_variant": false,
+    "judgment": "correct",
+    "question_id": "c4f10528",
+    "taxonomy": {
+      "category": "single-session-assistant",
+      "stage": "generation-error"
+    }
+  },
+  {
+    "abstention_like": false,
+    "category": "IE-preference",
+    "hypothesis": "Consider using Tokyo's extensive public transportation system, which is efficient and eco-friendly. Familiarize yourself with the subway lines and purchase a prepaid Suica or Pasmo card for convenient travel. Additionally, try scheduling coffee dates or walks with friends to explore the city together, which can make navigation more enjoyable and less stressful.",
+    "is_abstention_variant": false,
+    "judgment": "partially_correct",
+    "question_id": "0a34ad58",
+    "taxonomy": {
+      "category": "single-session-preference",
+      "stage": "generation-error"
+    }
+  },
+  {
+    "abstention_like": false,
+    "category": "MR",
+    "hypothesis": "The memories you provided do not specify how long you have been working in your current role as a Senior Marketing Specialist.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "92a0aa75",
+    "taxonomy": {
+      "category": "multi-session",
+      "stage": "retrieval-miss"
+    }
+  },
+  {
+    "abstention_like": false,
+    "category": "TR",
+    "hypothesis": "You set up the mesh network system first.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "gpt4_65aabe59",
+    "taxonomy": {
+      "category": "temporal-reasoning",
+      "stage": "generation-error"
+    }
+  },
+  {
+    "abstention_like": false,
+    "category": "KU",
+    "hypothesis": "You are currently working on adding extra details to your Ford Mustang Shelby GT350R model.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "3ba21379",
+    "taxonomy": {
+      "category": "knowledge-update",
+      "stage": "generation-error"
+    }
+  },
+  {
+    "abstention_like": true,
+    "category": "IE-user",
+    "hypothesis": "I'm sorry, but I don't have any information on your average screen time on Instagram.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "545bd2b5",
+    "taxonomy": {
+      "category": "single-session-user",
+      "stage": "retrieval-miss"
+    }
+  },
+  {
+    "abstention_like": false,
+    "category": "IE-assistant",
+    "hypothesis": "The brand you are thinking of is Veja. They use wild rubber sourced from the Amazon rainforest in their shoe designs.",
+    "is_abstention_variant": false,
+    "judgment": "correct",
+    "question_id": "1de5cff2",
+    "taxonomy": null
+  },
+  {
+    "abstention_like": false,
+    "category": "IE-preference",
+    "hypothesis": "To improve your phone's battery life, you can try reducing screen brightness, closing unused apps running in the background, disabling location services when not needed, and using battery saver mode. Additionally, consider carrying a portable charger, which might be as helpful as carrying a water bottle for staying hydrated.",
+    "is_abstention_variant": false,
+    "judgment": "partially_correct",
+    "question_id": "09d032c9",
+    "taxonomy": {
+      "category": "single-session-preference",
+      "stage": "extraction-miss"
+    }
+  },
+  {
+    "abstention_like": true,
+    "category": "MR",
+    "hypothesis": "I don't have information on the train fare to compare it to the $12 taxi ride cost. Could you provide the train fare amount?",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "cc06de0d",
+    "taxonomy": {
+      "category": "multi-session",
+      "stage": "retrieval-miss"
+    }
+  },
+  {
+    "abstention_like": false,
+    "category": "TR",
+    "hypothesis": "You have been working for some time before your current job at NovaTech, as you completed a research internship at UC Berkeley. However, the exact duration of your work experience before NovaTech is not specified in the provided memories.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "gpt4_93159ced",
+    "taxonomy": {
+      "category": "temporal-reasoning",
+      "stage": "generation-error"
+    }
+  },
+  {
+    "abstention_like": true,
+    "category": "KU",
+    "hypothesis": "I'm sorry, I don't have information about the time you usually go to the gym.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "59524333",
+    "taxonomy": {
+      "category": "knowledge-update",
+      "stage": "extraction-miss"
+    }
+  },
+  {
+    "abstention_like": true,
+    "category": "IE-user",
+    "hypothesis": "I'm sorry, but the information about where you completed your Bachelor's degree in Computer Science is not available in the provided memories.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "25e5aa4f",
+    "taxonomy": {
+      "category": "single-session-user",
+      "stage": "retrieval-miss"
+    }
+  },
+  {
+    "abstention_like": true,
+    "category": "IE-assistant",
+    "hypothesis": "I'm sorry, but I don't have any memories or information about the DHL Wellness Retreats campaign or details about the budget allocation for influencer marketing in that campaign.",
+    "is_abstention_variant": false,
+    "judgment": "incorrect",
+    "question_id": "7a8d0b71",
+    "taxonomy": {
+      "category": "single-session-assistant",
+      "stage": "extraction-miss"
+    }
+  }
+]
