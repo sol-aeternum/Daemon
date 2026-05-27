@@ -10,7 +10,7 @@
 
 The `MEMORY_EVIDENCE_ABSTENTION_GUARDRAIL` constant is **genuinely unwired** from production prompt assembly:
 
-- **Constant absent**: `MEMORY_EVIDENCE_ABSTENTION_GUARDRAIL` does not exist in any committed Python source. Import probe returns `ImportError`.
+ - **Constant absent from production**: `MEMORY_EVIDENCE_ABSTENTION_GUARDRAIL` is not defined in production `orchestrator/prompts.py`. Import probe of production source returns `ImportError`. Test and archive references may exist in committed Python (e.g., `tests/benchmark_longmemeval/abstention_sweep.py` imports it for benchmark purposes); the critical gap is production does not define/export it.
 - **Assembly unwired**: `assemble_system_prompt()` in `orchestrator/memory/injection.py` imports only `DAEMON_SYSTEM_PROMPT`. No reference to the guardrail constant, its verbatim text, or paraphrased equivalent.
 - **Production unwired**: Python-path-limited pickaxe confirms the string is absent from production source (`orchestrator/prompts.py`). Test and archive references may exist; the critical gap is that `orchestrator/prompts.py` does not define/export the constant and `assemble_system_prompt()` does not import/append it.
 - **Generic guidance is semantically distinct**: Generic "do not speculate" (DAEMON_SYSTEM_PROMPT:63) addresses not guessing whether a memory exists; it does not substitute for the archived guardrail's instruction to say "I don't know" when retrieved memory is insufficient.
@@ -78,9 +78,8 @@ git diff --name-only HEAD -- orchestrator/memory/ orchestrator/eval/runner.py or
 
 ### W1 TODO 4 — Harness Parity Diagnostic
 
-- **Does NOT need patching** before W1 commissioning.
-- The pytest gate passing confirms harness-side saved artifacts/checkpoints differ between guardrail-on and guardrail-off states. It does NOT prove the live harness toggle still runs or that production wiring is correct.
-- W1 TODO 4 remains a harness parity diagnostic, not production restoration.
+- This audit applies no production or harness code patch. The saved-artifact pytest gate confirms harness-side saved artifacts/checkpoints differ between guardrail-on and guardrail-off states; it does NOT prove the live harness toggle still runs or that `abstention_sweep.py` can import the constant successfully.
+- W1 TODO 4 remains a harness parity diagnostic, not production restoration. W1 commissioning must not treat the saved-artifact gate as proof of live toggle health.
 
 ### W1 TODO 9 — Production Restoration
 
@@ -92,7 +91,7 @@ git diff --name-only HEAD -- orchestrator/memory/ orchestrator/eval/runner.py or
 
 | W1 Item | Status |
 |---------|--------|
-| TODO 4 | Complete as-is; does NOT need patch before W1 commissioning |
+| TODO 4 | Harness parity diagnostic; no patch applied. Saved-artifact pytest does not prove live toggle health. |
 | TODO 9 | Deferred to separately authorized wire-it plan |
 
 ---
