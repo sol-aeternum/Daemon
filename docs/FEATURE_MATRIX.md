@@ -37,6 +37,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Edit and Resubmit Message | Not started | Not started | Not started | Not started | Existing chat submission path; message edit UI not implemented | No |
 | Model Discovery | Cross-client stable | Cross-client stable | Not started | Not started | GET /v1/models, GET /v1/catalog | No |
 | Typed SSE Event Protocol | Cross-client stable | Cross-client stable | Not started | Not started | Chat and council streaming services | No |
+| OpenAI Chat Completions API | Backend stable | Backend stable | Not started | Not started | POST /v1/chat/completions compatibility endpoint | No |
 | **Conversations** | — | — | — | — | — | — |
 | Recent Conversations List (search, pin, rename, delete) | Cross-client stable | Cross-client stable | Not started | Not started | GET /conversations, POST /conversations, DELETE /conversations/{id}, PATCH /conversations/{id} | Yes |
 | Conversation Switching | Cross-client stable | Cross-client stable | Not started | Not started | GET /conversations/{id} | No |
@@ -99,7 +100,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Share Intent Ingestion | — | Not started | Not started | Not started | No backend (OS/app-intent entry point not implemented) | Yes |
 | Biometric Unlock | — | — | Not started | Not started | No backend (client OS biometric gate not implemented) | Yes |
 | **Local Pipeline** | — | — | — | — | — | — |
-| Local Pipeline Routing (/local flag) | Web experimental | Web experimental | Not started | Not started | Pre-router intent parsing and disabled Cloud/Local UI; local inference pending hardware | No |
+| Local Pipeline Routing (/local flag) | Not started | Not started | Not started | Not started | Pre-router intent parsing and disabled Cloud/Local UI; local inference pending hardware | No |
 | **PWA / Offline** | — | — | — | — | — | — |
 | PWA Service Worker + Offline Indicator | Platform-specific permanent | Platform-specific permanent | Not started | Not started | Browser service worker (no backend) | No |
 | Mobile-Responsive Navigation (hamburger + sidebar) | Cross-client stable | Cross-client stable | Not started | Not started | Purely frontend responsive navigation | No |
