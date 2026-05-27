@@ -35,7 +35,7 @@ Waves 1–4 = the plausible-78–82% bundle. Wave 5+ compounds slower and more o
 A wave **ships** iff:
 1. **Strict lift**: +2pp or greater on LongMemEval_S aggregate vs. the immediately prior shipped baseline.
 2. **No subset regression**: no per-category drop exceeding the measured-noise floor on any LongMemEval category (single-session-user, single-session-assistant, single-session-preference, temporal-reasoning, knowledge-update, multi-session).
-3. **Extraction benchmark non-regression**: P ≥ 0.95, R ≥ 0.85, A ≤ 2 preserved (current: P=1.00 R=0.93 A=0).
+3. **Extraction benchmark non-regression**: P ≥ 0.95, R ≥ 0.85, A ≤ 2 preserved (current: P=1.00, R=1.00, adversarial_fp=0 — see `tests/benchmark_results/extraction_benchmark_canonical.md` for canonical baseline and metric lineage).
 4. **Triple-run variance ≤ 3pp** (the Phase 0 reproducibility criterion).
 
 A wave **fails** → full rollback, document failure mode in `tests/benchmark_results/waveN_postmortem.md`, advance to next wave. **No partial ships.** No smuggling individual components from a failed bundle into the next wave without re-gating them standalone.

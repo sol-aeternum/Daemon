@@ -1,5 +1,49 @@
 # TRIAGE.md
 
+## 2026-05-27 UTC — Repository LSP error scan surfaced unrelated dirty-tree Python errors
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: abstention-guardrail-wiring-audit Task 1 verification
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: Atlas ran the required workspace Python LSP scan after an artifact-only Task 1 and the scan reported 22 error-level diagnostics in unrelated Python files, including existing/untracked advisor paths plus audio/base/image/reminder modules. Task 1 only created markdown/text evidence and did not modify these Python files.
+- **Evidence**: `lsp_diagnostics(filePath=".", severity="error")` reported errors in `orchestrator/subagents/audio.py`, `orchestrator/subagents/base.py`, `orchestrator/subagents/image.py`, `orchestrator/tools/reminder.py`, and `orchestrator/tools/advisor.py` such as `FalKlingError is not defined` and unknown advisor imports.
+- **Likely cause**: Pre-existing dirty-tree/project diagnostics unrelated to the abstention guardrail audit artifacts (confidence 90%).
+- **Suggested action**: Re-run diagnostics from a clean tree or triage the advisor/Kling/reminder diagnostics separately before relying on workspace-wide LSP as a regression signal.
+
+## 2026-05-27 UTC — Task 3 verification probe used stale ExpectedFact constructor
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Task 3 — Structural and Import Validation Atlas-side verification
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: An Atlas-side supplemental verification snippet initially instantiated `ExpectedFact(content=...)`, but the recovered benchmark dataclass only accepts `keywords`, `description`, `min_confidence`, `max_confidence`, and `expected_category`. The corrected probe using `ExpectedFact(keywords=[...])` passed and did not affect benchmark source or evidence.
+- **Evidence**: `TypeError: ExpectedFact.__init__() got an unexpected keyword argument 'content'`; `tests/benchmark_extraction.py:568-575`; corrected command output `match_fact keyword behavior OK`.
+- **Likely cause**: Verification probe drifted from the canonical dataclass signature (confidence 99%).
+- **Suggested action**: Prefer importing and inspecting dataclass signatures before constructing benchmark helper objects in ad hoc verification snippets.
+
+## 2026-05-27 UTC — Markdown artifact diagnostics unavailable in current LSP setup
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: Task 8 — harness parity baseline stability artifact verification
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: Required changed-file diagnostics could not run on the two modified Markdown artifacts because this environment has no LSP server configured for the `.md` extension.
+- **Evidence**: `lsp_diagnostics` on `tests/benchmark_results/harness_parity_baseline_stability.md` and `.sisyphus/notepads/longmemeval-parity-baseline-completion/learnings.md` returned `Error: No LSP server configured for extension: .md`.
+- **Likely cause**: OpenCode LSP configuration in this workspace defines language servers for code and JSON-oriented extensions but does not include a Markdown-capable server such as Marksman (confidence 98%).
+- **Suggested action**: Add a Markdown LSP server to the workspace tooling if artifact-only tasks are expected to satisfy the changed-file diagnostics requirement without fallback checks.
+
+## 2026-05-27 UTC — Backend container restart wiped completed run2 artifacts from `/tmp/opencode`
+- **Severity**: critical
+- **Scope**: host
+- **Encountered during**: Task 7 — longmemeval-parity-baseline-completion final run2 artifact copy-back
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: After Task 7 cleanup succeeded and run2 had been launched/detected as progressing, the Docker stack restarted. `daemon-backend-1` came back up only ~11 minutes before finalization, and its ephemeral `/tmp/opencode` directory no longer existed, so the completed in-container run2 artifacts were gone before they could be copied into `tests/benchmark_results/harness_parity_baseline/run2/`.
+- **Evidence**: `docker ps --format '{{.Names}}\t{{.Status}}'` showed all long-running containers `Up 11 minutes`. `docker top daemon-backend-1` showed only the restarted uvicorn processes and no parity runner. `docker exec daemon-backend-1 sh -lc 'ls -la /tmp/opencode'` returned `ls: cannot access '/tmp/opencode': No such file or directory`. A direct file probe reported `results_exists=False`, `summary_exists=False`, `rows=0` for `/tmp/opencode/harness_parity_baseline_run2/{results.jsonl,summary.json}`.
+- **Likely cause**: Host/container restart or compose recreation cleared the backend container's ephemeral `/tmp` filesystem before repo-side copy-back happened (confidence 96%).
+- **Suggested action**: Do not rely on container `/tmp` as the only copy of long-running benchmark outputs. For future runs, stream or periodically copy artifacts to host storage during execution, or mount a persistent volume for `/tmp/opencode`/benchmark outputs.
+
 ## 2026-04-16 23:37 — Autonomous-edit toggle still crashes on live deprecated skills
 - **Severity**: critical
 - **Scope**: project
@@ -52,6 +96,7 @@
   - `Command not found: biome`
 - **Likely cause**: The workspace/tooling configuration expects Biome for JSON diagnostics, but the binary is unavailable in the current shell/runtime (confidence 97%).
 - **Suggested action**: Install `@biomejs/biome` or adjust the diagnostics/tooling configuration so JSON artifact checks do not depend on an unavailable server.
+- **Seen again**: 2026-05-27 during Task 8 artifact verification when `lsp_diagnostics` on `.sisyphus/evidence/task-8-stability.json` again returned `LSP server 'biome' is configured but NOT INSTALLED` / `Command not found: biome`.
 
 ## 2026-04-14 12:44 — LiteLLM Printed Repeated Provider Help During One-Scenario Benchmark Run
 - **Severity**: warning
@@ -420,6 +465,7 @@
 - **Suggested action**: Add a markdown-capable LSP if markdown diagnostics are expected as part of verification workflows.
 - **Seen again**: 2026-04-16 during autonomous-skill-creation Task 11 changed-file diagnostics — `lsp_diagnostics` on `TRIAGE.md` returned `Error: No LSP server configured for extension: .md` while Python diagnostics remained clean.
 - **Seen again**: 2026-04-16 during autonomous-skill-creation Task 13 changed-file diagnostics — `lsp_diagnostics` could validate `tests/benchmark_skills.py`, but both `TRIAGE.md` and `.sisyphus/notepads/autonomous-skill-creation/learnings.md` again returned `Error: No LSP server configured for extension: .md`.
+- **Seen again**: 2026-05-26 during final feature-matrix remediation — `lsp_diagnostics` on `/tmp/opencode/feature-matrix-2026-05-25/docs/FEATURE_MATRIX.md` returned `Error: No LSP server configured for extension: .md`, so Markdown verification again relied on readback/manual inspection plus repository-specific validators.
 
 ## 2026-04-08 11:12 — `dedup.py` References Missing Trust Helper
 - **Severity**: critical
@@ -463,6 +509,7 @@
   - `orchestrator/tools/reminder.py:25` → `error[basedpyright] (reportMissingTypeArgument)`
 - **Likely cause**: Pre-existing type-check debt in unrelated subagent/tooling modules surfaced because directory diagnostics scan the whole orchestrator tree rather than only the Tier2-touched files (confidence 92%).
 - **Suggested action**: Clean up the unrelated basedpyright errors or limit diagnostics verification to the actual changed files when running future review waves.
+- **Seen again**: 2026-05-27 during Task 4 extraction-benchmark-recovery-rebuild verification. Directory-level `lsp_diagnostics` scanned 50 Python files and reported 22 error-level diagnostics in unrelated files including `orchestrator/subagents/audio.py`, `orchestrator/subagents/base.py`, `orchestrator/subagents/image.py`, `orchestrator/tools/reminder.py`, and dirty-tree `orchestrator/tools/advisor.py`; artifact JSON/manual validation still passed and current Task 4 did not modify those files.
 
 ## 2026-04-10 15:15 — compileall Cannot Write __pycache__ Files
 - **Severity**: warning
@@ -883,3 +930,95 @@
   - `test_dream_memory_excluded`
   All 26 memory tests pass.
 - **RESOLVED 2026-04-14**
+
+## 2026-05-26 10:09 — Glob Tool Fails Because ripgrep Binary Is Missing
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: feature-matrix-review-fixes Task 1/Task 2 verification
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: The `glob` tool could not enumerate `.sisyphus/notepads/feature-matrix-review-fixes/*.md` because its underlying `/usr/bin/rg` binary is missing in this environment. Verification continued by reading known notepad paths directly.
+- **Evidence**: `ENOENT: no such file or directory, posix_spawn '/usr/bin/rg'`
+- **Likely cause**: The agent/tooling runtime expects ripgrep at `/usr/bin/rg`, but this host image does not provide that binary at the expected path (confidence 95%).
+- **Suggested action**: Install ripgrep or adjust the file-search tooling configuration to point at the available binary so `glob` works reliably during orchestration.
+
+
+## 2026-05-26 20:28 — Markdown LSP Diagnostics Unavailable For Evidence Files
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: F3. Real Manual QA — feature-matrix-review-fixes evidence artifact validation
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: `lsp_diagnostics` could not run on the newly written markdown evidence and notepad files because this environment has no LSP server configured for `.md` extensions.
+- **Evidence**:
+  - `Error: No LSP server configured for extension: .md`
+  - `Available servers: typescript, deno, vue, eslint, oxlint, biome, gopls, ruby-lsp, basedpyright, pyright...`
+- **Likely cause**: The local Oh My OpenCode LSP configuration does not include a markdown-capable server, so artifact-only documentation files cannot participate in the standard changed-file diagnostics step (confidence 98%).
+- **Suggested action**: Add a markdown-capable LSP server to the tool configuration or document that markdown evidence files should be verified by readback only in this environment.
+
+## 2026-05-27 11:00 — Push of feature-matrix Review Commit Rejected Due to Diverged Remote
+- **Severity**: critical
+- **Scope**: tooling
+- **Encountered during**: feature-matrix-review-fixes push to origin/main
+- **Category**: config
+- **Blocked current task**: yes
+- **What happened**: `git push origin HEAD:main` was rejected with `non-fast-forward` error because `origin/main` has diverged — it contains commits from PR #1 merge that are not in our local branch. The exact commit `48859f43caa986d8a70500a1cc247bc4a7bd16c3` cannot be placed on origin/main without force-push or history rewrite, both of which are forbidden by task constraints.
+- **Evidence**:
+  - Push error: `! [rejected] HEAD -> main (non-fast-forward)`
+  - `origin/main` = `a7bae08bb19189b54a0c75f9a3477ce40724e566` (contains PR #1 merge)
+  - Our commit `48859f43` is NOT on origin/main
+  - `git ls-remote origin refs/heads/main` = `a7bae08bb19189b54a0c75f9a3477ce40724e566`
+- **Likely cause**: The local feature branch was created from an older main state, then PR #1 was merged separately. Our review-fix commit was made after the PR merge, creating a divergent history where our commit is not a descendant of origin/main (confidence 99%).
+- **Suggested action**: To get `48859f43` onto origin/main without force-push: either (a) merge our branch into a fresh local main and push the merge commit (but this creates a new commit, not the exact 48859f43), or (b) cherry-pick 48859f43 onto a local copy of origin/main and push that (creates new hash), or (c) request force-push authorization. The exact commit cannot appear on origin/main without violating the no-force-push constraint.
+
+
+## 2026-05-27T04:57:02Z — Evidence append shell heredoc syntax error
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Task 9 — append post-write validation evidence
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: A shell/Python heredoc used to append validation details to the evidence artifact failed before modifying the evidence file. The command was retried with a simpler append payload.
+- **Evidence**: `SyntaxError: unterminated triple-quoted string literal (detected at line 27)` followed by `/usr/bin/bash: -c: line 32: unexpected EOF while looking for matching ``'`.
+- **Likely cause**: The append payload embedded a nested `PY` heredoc marker and fenced code block inside a triple-quoted Python string, prematurely terminating the outer heredoc (confidence 99%).
+- **Suggested action**: For artifact append commands, avoid nested heredoc markers inside Python string literals or use a generated text file/string without matching delimiter text.
+
+## 2026-05-27 UTC — Workspace had unrelated uncommitted files during W1 plan patch verification
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Task 10 — Surgically Patch W1 Prompt-Surface Plan
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: The required path-filtered diff stat for `.sisyphus/plans/wave1-prompt-surface-changes.md` passed, but a global changed-file probe showed unrelated pre-existing modified paths outside this task scope. This task did not edit those files.
+- **Evidence**: `GIT_MASTER=1 git diff --name-only` returned `.sisyphus/plans/wave1-prompt-surface-changes.md`, `TRIAGE.md`, and `frontend/next-env.d.ts`.
+- **Likely cause**: Workspace carried over modified files from earlier sessions or generated frontend type artifacts before this task began (confidence 80%).
+- **Suggested action**: Review or stash unrelated workspace changes before requiring a globally clean changed-file check; for this task, use the required path-filtered diff stat to verify the W1 plan patch itself.
+
+## 2026-05-27 UTC — Extraction Benchmark Determinism Test Imports Missing Symbol
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 7 — Triage and W1 Gate Handoff (extraction-benchmark-recovery-rebuild)
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: `tests/memory/test_extraction_determinism.py` (line 13) imports `BENCHMARK_MODE` from `orchestrator.memory.extraction`, but the symbol does not exist in that module. The import fails with `ImportError: cannot import name 'BENCHMARK_MODE' from 'orchestrator.memory.extraction'`.
+- **Evidence**:
+  - `from orchestrator.memory.extraction import BENCHMARK_MODE` → `ImportError: cannot import name 'BENCHMARK_MODE'`
+  - `grep -r "BENCHMARK_MODE" orchestrator/memory/extraction.py` → no matches
+  - `grep -r "DEDUP_BENCHMARK_MODE" orchestrator/memory/dedup.py` → no matches
+  - `tests/memory/test_extraction_determinism.py` also imports `DEDUP_BENCHMARK_MODE`, `BENCHMARK_SEED`, `DEDUP_BENCHMARK_SEED`, `EXTRACTION_TEMPERATURE`, `CONTRADICTION_TEMPERATURE` from the same modules
+- **Likely cause**: The determinism test file expects symbols that were never exported from the production extraction/dedup modules, or were removed/refactored without updating the test imports (confidence 92%).
+- **Suggested action**: Either add the missing symbol exports to `orchestrator.memory.extraction` and `orchestrator.memory.dedup`, or update the test imports to use the correct symbol paths. Do not run `tests/memory/test_extraction_determinism.py` until the import gap is resolved.
+
+## 2026-05-27 UTC — Extraction Benchmark External Service Dependencies
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 7 — Triage and W1 Gate Handoff (extraction-benchmark-recovery-rebuild)
+- **Category**: dependency
+- **Blocked current task**: no
+- **What happened**: The canonical extraction benchmark (`tests/benchmark_extraction.py` v2.4) depends on external services with no local fallback: OpenRouter for extraction model calls and contradiction detection, and Voyage AI for embedding generation. A service outage or credential failure would block benchmark execution.
+- **Evidence**:
+  - Task 4 validation confirmed OpenRouter (GPT-4o-mini extraction + contradiction) and Voyage AI (embeddings) are required
+  - No local fallback model or embedding service is configured for extraction
+  - Task 4 ran successfully with no service failures, but the dependency risk remains
+- **Likely cause**: The benchmark harness intentionally exercises the production extraction pipeline against live external services to detect real-world quality regressions (confidence 95%).
+- **Suggested action**: Document the dependency risk in benchmark runbook. Consider adding a dry-run mode that validates connectivity before full execution. Do not attempt to mock these services in the benchmark harness — the purpose is real-world quality detection.

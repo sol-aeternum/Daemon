@@ -1,15 +1,15 @@
 # Wave 1 Prompt-Surface Changes
 
 ## TL;DR
-> **Summary**: Execute W1 as a prompt-surface benchmark cycle: JSON memory evidence, Chain-of-Note instruction, confidence bins, hedge/abstain guidance, restored abstention guardrail, and gated LongMemEval_S validation. Implementation changes are confined to `orchestrator/memory/injection.py`; if the benchmark consumer path cannot measure that production prompt surface, the wave halts before implementation.
+> **Summary**: Execute W1 as a prompt-surface benchmark cycle: JSON memory evidence, Chain-of-Note instruction, confidence bins, hedge/abstain guidance, restored abstention guardrail, and gated LongMemEval_S validation. Implementation changes are confined to `orchestrator/memory/injection.py`; W1 compares against the completed harness-parity anchor `0.14013426853707415` (`declare-new-w1-anchor`) through `tests/longmemeval/parity_harness.py:parity_evaluate_single()`.
 > **Deliverables**: Diagnostic/probe artifacts, `injection.py` changes, extraction/encryption/smoke/full-corpus gate artifacts, ship-or-rollback execution, mandatory postmortem.
 > **Effort**: Large
 > **Parallel**: YES - after serial gates
-> **Critical Path**: Consumer-path gate → R/F/A probe → diagnostic audit → baseline reproduction → implementation → validation/gate → ship/rollback → postmortem
+> **Critical Path**: Harness-parity anchor confirmation → R/F/A probe → diagnostic audit → implementation → validation/gate → ship/rollback → postmortem
 
 ## Context
 ### Original Request
-- Lift LongMemEval_S from the historical pre-parity Wave 0 Option A harness artifact (~10.4%, 49/473) by changing only how retrieved memories are formatted into the answering model prompt.
+- Lift LongMemEval_S from the completed harness-parity W1 anchor `0.14013426853707415` (Task 8 decision `declare-new-w1-anchor`) by changing only how retrieved memories are formatted into the answering model prompt.
 - Bundle W1.a and W1.b into one benchmark cycle and one ship/no-ship decision.
 - Keep implementation mutations confined to `orchestrator/memory/injection.py`.
 
@@ -18,18 +18,22 @@
 - Current L1 rendering is bullet prose at `orchestrator/memory/injection.py:268-276`; current L0 is separate `[FROZEN MEMORIES]`, fetched at `orchestrator/memory/injection.py:183` and prepended at `orchestrator/memory/injection.py:306-307`.
 - Current `DEFAULT_MAX_TOKENS` is 2500 at `orchestrator/memory/injection.py:34`; W1 contract requires 1500.
 - `MEMORY_EVIDENCE_ABSTENTION_GUARDRAIL` exists at `orchestrator/prompts.py:3-6` but is not appended by `assemble_system_prompt()`; tests/comments expect it.
-- Likely C3 artifact: `tests/benchmark_results/wave0_closure_option_a_rerun/longmemeval_results.jsonl`; the historical pre-parity Wave 0 Option A harness-artifact figure was 49/473 = 10.36% after 27 invalid-ciphertext exclusions.
+- Authoritative W1 anchor artifact: `tests/benchmark_results/harness_parity_baseline_stability.md` declares `ARTIFACT_DECISION: declare-new-w1-anchor` and aggregate baseline anchor `0.14013426853707415` from run1 full summary plus run2 headline-only summary.
+- W1 comparison/rollback framing uses the `harness-parity-shipped` tag; the legacy `pre-wave-1` rollback anchor remains preserved for implementation rollback.
+- W1 benchmark and validation work is pinned to `tests/longmemeval/parity_harness.py:parity_evaluate_single()`, which imports production `build_memory_context()` and `assemble_system_prompt()` before answering.
+- Run2 raw artifacts and per-category metrics are unavailable by user-authorized waiver; do not reconstruct category deltas or invent raw run2 rows.
+- Task 9 `binding-priority-refresh` guidance: emphasize temporal-reasoning (`8/133`) and multi-session (`16/133`) for W1 evidence attention while protecting all categories and avoiding category-specific implementation branches.
 - LongMemEval execution needs live PostgreSQL/Redis plus `DATABASE_URL` and `DAEMON_ENCRYPTION_KEY`.
 
 ### Metis / Oracle Review
-- Critical risk: current LongMemEval may format memories separately in `tests/longmemeval/evaluate.py`, so `injection.py` changes could be invisible to the benchmark. This plan adds TODO 0 as a hard halt gate; it does not authorize `evaluate.py` edits.
+- Completed harness-parity work resolved the former benchmark-consumer risk for W1 by pinning the measurable answer path to `tests/longmemeval/parity_harness.py:parity_evaluate_single()`; TODO 0 is now a satisfied precondition, not an implementation blocker.
 - Guardrail is dead code today; W1 must restore and preserve it in `assemble_system_prompt()`.
 - `provenance` is not a DB column; derive it from existing memory dict fields only.
 - User requires L0 in the same JSON format; L0 must be array-head elements, not a separate stanza.
 
 ## Work Objectives
 ### Core Objective
-Modify `orchestrator/memory/injection.py` so production memory prompt injection emits structured JSON evidence with confidence-aware instructions, then validate with benchmark artifacts that actually traverse the same consumer prompt surface.
+Modify `orchestrator/memory/injection.py` so production memory prompt injection emits structured JSON evidence with confidence-aware instructions, then validate with benchmark artifacts that traverse the pinned harness-parity consumer prompt surface.
 
 ### Definition of Done
 - `git diff harness-parity-shipped..HEAD -- orchestrator/memory/` shows changes only in `orchestrator/memory/injection.py`.
@@ -37,7 +41,7 @@ Modify `orchestrator/memory/injection.py` so production memory prompt injection 
 - L0 entries are first when present; `MEMORY_EVIDENCE_ABSTENTION_GUARDRAIL`, Chain-of-Note, and hedge/abstain guidance are present when memory evidence exists.
 - Extraction benchmark: Precision ≥0.95, Recall ≥0.85, adversarial misfires ≤2.
 - Encryption smoke succeeds on ≥20 sampled rows each from messages, memories, and extraction log snippet content.
-- Gate passes only if LongMemEval_S aggregate lift is ≥+2pp over reproduced baseline, confirmation rule passes if needed, no previously-passing category drops below 5%, median `memories_used` >0, retrieval p95 <1500ms, and provider routing failure rate <5%.
+- Gate passes only if LongMemEval_S aggregate lift is ≥+2pp over the Task 8 anchor `0.14013426853707415`, confirmation rule passes if needed, no previously-passing category drops below 5%, median `memories_used` >0, retrieval p95 <1500ms, and provider routing failure rate <5%.
 
 ### Must NOT Have
 - No producer-layer, retrieval-layer, schema, frontend, reranker, embedding-key, time-filter, or pool-size changes.
@@ -53,23 +57,23 @@ Modify `orchestrator/memory/injection.py` so production memory prompt injection 
 
 ## Execution Strategy
 ### Parallel Execution Waves
-Wave 0: TODO 0 consumer-path gate (serial hard gate)
+Wave 0: TODO 0 completed harness-parity anchor precondition
 Wave 1: TODOs 1-3 diagnostic probe (serial because each consumes prior artifact)
-Wave 2: TODOs 4-5 audit and baseline (serial)
+Wave 2: TODOs 4-5 audit and anchor recording (serial)
 Wave 3: TODOs 6-11 implementation in `injection.py` (serial)
 Wave 4: TODOs 12-14 pre-gate validation (12 and 13 parallel, then 14)
 Wave 5: TODOs 15-19 gate, ship/rollback, postmortem (serial with conditional 16)
 Wave 6: TODO 20 optional ablation only after ship and user request
 
 ### Dependency Matrix
-- 0 blocks all implementation and benchmark-gate work.
+- 0 records the already-satisfied harness-parity precondition for all implementation and benchmark-gate work.
 - 1 → 2 → 3 → 4 → 5 → 6.
 - 6 → 7 → 8 → 9 → 10 → 11.
 - 11 → 12 and 13; 12+13 → 14 → 15 → 16 → 17 → 18 → 19.
 - 20 depends on ship case from 18 and explicit user request.
 
 ### Agent Dispatch Summary
-- Wave 0: 1 ultrabrain task
+- Wave 0: 1 completed harness-parity anchor task
 - Wave 1: 3 ultrabrain/general investigation tasks
 - Wave 2: 2 ultrabrain/general audit/test tasks
 - Wave 3: 6 general implementation tasks
@@ -82,48 +86,49 @@ Wave 6: TODO 20 optional ablation only after ship and user request
 
 - [x] 0. Benchmark Consumer-Path Viability Gate
 
-  **What to do**: Before any code change, prove whether LongMemEval_S will consume the same memory prompt surface that W1 changes in `orchestrator/memory/injection.py`. Inspect the live benchmark path from `tests/longmemeval/evaluate.py` to the final `answer_prompt_metadata.system_message` and produce `tests/benchmark_results/wave1_benchmark_consumer_path.md`. If `_format_eval_memory_block()` or equivalent collapses memories before `assemble_system_prompt()` and prevents JSON/confidence/provenance/timestamp/source fields from reaching the benchmark prompt, write `decision: halt-harness-parity-required` and stop all implementation TODOs. Do not edit `tests/longmemeval/evaluate.py`.
-  **Must NOT do**: Do not authorize benchmark adapter edits; do not treat a separate harness path as acceptable evidence.
+  **What to do**: Treat this gate as completed by the separate harness-parity baseline work. `tests/benchmark_results/harness_parity_baseline_stability.md` is the Task 8 source of truth: `ARTIFACT_DECISION: declare-new-w1-anchor`, aggregate anchor `0.14013426853707415`, and no run3. W1 benchmark/validation work is pinned to `tests/longmemeval/parity_harness.py:parity_evaluate_single()` and the `harness-parity-shipped` comparison baseline tag.
+  **Must NOT do**: Do not reopen legacy benchmark-adapter work inside W1; do not edit `tests/longmemeval/evaluate.py`; do not treat historical pre-parity artifacts as the actionable W1 baseline.
 
   **Recommended Agent Profile**:
   - Category: `ultrabrain` - Reason: consumer-path correctness determines whether the whole wave is measurable.
   - Skills: [] - No extra skill required.
   - Omitted: [`git-master`] - No git mutation.
 
-  **Parallelization**: Can Parallel: NO | Wave 0 | Blocks: 1-20 | Blocked By: none
+  **Parallelization**: Can Parallel: NO | Wave 0 | Blocks: none after Task 8 anchor | Blocked By: completed harness-parity Tasks 8-9
 
   **References**:
   - Pattern: `orchestrator/memory/injection.py:168` - production memory-context builder.
   - Pattern: `orchestrator/memory/injection.py:311` - final system prompt assembler.
-  - Pattern: `tests/longmemeval/evaluate.py` - benchmark answer path and metadata capture.
-  - Pattern: `tests/benchmark_results/wave0_closure_option_a_rerun/longmemeval_results.jsonl` - expected row metadata style.
+  - Pattern: `tests/longmemeval/parity_harness.py:parity_evaluate_single()` - pinned W1 benchmark answer path.
+  - Pattern: `tests/benchmark_results/harness_parity_baseline_stability.md` - Task 8 anchor declaration.
+  - Pattern: `tests/benchmark_results/harness_parity_oracle_wave_priority.md` - Task 9 `binding-priority-refresh`.
 
   **Acceptance Criteria**:
-  - [ ] `tests/benchmark_results/wave1_benchmark_consumer_path.md` exists.
-  - [ ] It states one of `proceed-production-surface-measurable` or `halt-harness-parity-required`.
-  - [ ] It includes call-chain evidence and at least one captured or reconstructed prompt metadata path showing where memory context enters the final answer prompt.
-  - [ ] If decision is halt, all TODOs 1-20 are blocked until user commissions harness parity or explicitly changes scope.
+  - [ ] The plan cites Task 8 decision `declare-new-w1-anchor` and aggregate anchor `0.14013426853707415`.
+  - [ ] The plan pins W1 measurement to `tests/longmemeval/parity_harness.py:parity_evaluate_single()`.
+  - [ ] Legacy `tests/longmemeval/evaluate.py` is treated only as a non-authoritative path that must not be edited in W1.
+  - [ ] If the parity harness path is unavailable or changed, stop and request explicit harness-parity scope rather than patching it inside W1.
 
   **QA Scenarios**:
   ```
-  Scenario: Benchmark consumes production prompt surface
+  Scenario: Completed anchor is present
     Tool: Bash
-    Steps: Trace evaluate.py call chain and inspect one result row's answer_prompt_metadata.system_message.
-    Expected: Artifact proves memory JSON fields can reach benchmark prompt without non-injection code edits.
-    Evidence: .sisyphus/evidence/task-0-consumer-path.md
+    Steps: Read `tests/benchmark_results/harness_parity_baseline_stability.md` and verify `declare-new-w1-anchor`, `0.14013426853707415`, and no-run3 disposition.
+    Expected: W1 may proceed under the completed harness-parity anchor without reopening TODO 0.
+    Evidence: .sisyphus/evidence/task-0-anchor.md
 
-  Scenario: Benchmark bypasses production formatting
+  Scenario: Legacy benchmark path is accidentally selected
     Tool: Bash
-    Steps: Trace formatter use and identify any benchmark-local formatter that collapses memory dict fields.
-    Expected: Artifact states halt-harness-parity-required and no implementation starts.
-    Evidence: .sisyphus/evidence/task-0-consumer-path-halt.md
+    Steps: Check downstream benchmark commands/imports for `tests/longmemeval/parity_harness.py:parity_evaluate_single()` rather than legacy `evaluate_single()`.
+    Expected: Any mismatch is a scope stop requiring explicit harness-parity authorization, not a W1 implementation change.
+    Evidence: .sisyphus/evidence/task-0-path-regression.md
   ```
 
-  **Commit**: NO | Message: n/a | Files: [`tests/benchmark_results/wave1_benchmark_consumer_path.md`]
+  **Commit**: NO | Message: n/a | Files: [`tests/benchmark_results/harness_parity_baseline_stability.md`, `tests/benchmark_results/harness_parity_oracle_wave_priority.md`]
 
-- [ ] 1. Locate C3 Error Data for Pre-W1 Probe
+- [ ] 1. Locate Harness-Parity Error Data for Pre-W1 Probe
 
-  **What to do**: Locate the canonical per-question C3 full-corpus artifact and write `tests/benchmark_results/wave1_probe_data_inventory.md` naming paths, schema, required fields, and IE-* incorrect-answer population size.
+  **What to do**: Locate the canonical per-question harness-parity run1 full-corpus artifact and write `tests/benchmark_results/wave1_probe_data_inventory.md` naming paths, schema, required fields, and IE-* incorrect-answer population size.
   **Must NOT do**: Do not sample before confirming population size and fields.
 
   **Recommended Agent Profile**:
@@ -131,16 +136,16 @@ Wave 6: TODO 20 optional ablation only after ship and user request
   - Skills: [] - No specialized skill needed.
   - Omitted: [`memory-wave-diagnostic`] - Used later for system audit, not inventory.
 
-  **Parallelization**: Can Parallel: NO | Wave 1 | Blocks: 2 | Blocked By: 0 proceed
+  **Parallelization**: Can Parallel: NO | Wave 1 | Blocks: 2 | Blocked By: 0 satisfied
 
   **References**:
-  - Pattern: `tests/benchmark_results/wave0_closure_option_a_rerun/longmemeval_results.jsonl` - likely C3 per-row artifact.
-  - Pattern: `tests/benchmark_results/wave0_closure_memo.md` - baseline context.
+  - Pattern: `tests/benchmark_results/harness_parity_baseline/run1/results.jsonl` - canonical run1 per-row artifact.
+  - Pattern: `tests/benchmark_results/harness_parity_baseline/run1/summary.json` - run1 aggregate/category source for priority-only profile.
 
   **Acceptance Criteria**:
   - [ ] Inventory artifact exists and names exact file path(s).
   - [ ] It enumerates at least `question_id`, `category`, `judgment`/verdict, `retrieved_memory_ids`, `memories_used`, and prompt metadata fields.
-  - [ ] It states IE-* incorrect-answer population size; if <30, it recommends a fresh C3 sub-run and blocks TODO 2.
+  - [ ] It states IE-* incorrect-answer population size; if <30, it recommends a fresh W1-compatible probe and blocks TODO 2.
 
   **QA Scenarios**:
   ```
@@ -274,44 +279,47 @@ Wave 6: TODO 20 optional ablation only after ship and user request
 
   **Commit**: NO | Message: n/a | Files: [`tests/benchmark_results/wave1_system_audit.md`]
 
-- [ ] 5. Record T15 Harness-Parity Baseline Decision Anchor
+- [ ] 5. Record Task 8 Harness-Parity Baseline Anchor
 
-  **What to do**: Use `tests/benchmark_results/harness_parity_baseline_decision.md` (generated 2026-05-06) as the authoritative `harness-parity-shipped` baseline-decision artifact. Cite the exact T15 status `HALT — baseline undeterminable`, preserve Wave 0 closure-memo / 27-exclusion references only as historical pre-parity context if needed, and state explicitly that no numeric T15 baseline or ±1pp band exists until the full haystack-bearing LongMemEval_S corpus is restored and T14/T15 are rerun.
-  **Must NOT do**: Do not fabricate a numeric baseline or ±1pp band; do not modify code or move `harness-parity-shipped`.
+  **What to do**: Use `tests/benchmark_results/harness_parity_baseline_stability.md` as the authoritative W1 comparison artifact. Cite `ARTIFACT_DECISION: declare-new-w1-anchor`, aggregate anchor `0.14013426853707415`, `harness-parity-shipped` as the comparison baseline tag, and `tests/longmemeval/parity_harness.py:parity_evaluate_single()` as the pinned measurement path. State that run2 raw artifacts and per-category metrics are unavailable/waived, so exact W1 count thresholds must be recomputed from raw W1 denominators and exclusions at gate time.
+  **Must NOT do**: Do not fabricate run2 raw artifacts, run2 per-category metrics, or category stability claims; do not use historical pre-parity artifacts as the actionable W1 baseline; do not modify code or move `harness-parity-shipped`.
 
   **Recommended Agent Profile**:
-  - Category: `general` - Reason: benchmark execution and artifact validation.
+  - Category: `general` - Reason: benchmark artifact validation and anchor recording.
   - Skills: [] - No extra skill.
   - Omitted: [`git-master`] - Only read tag/checkout if needed; no commits.
 
   **Parallelization**: Can Parallel: NO | Wave 2 | Blocks: 6 and 15 | Blocked By: 4
 
   **References**:
-  - Test: `tests/longmemeval/evaluate.py` - LongMemEval harness.
-  - Pattern: `tests/benchmark_results/harness_parity_baseline_decision.md` - authoritative T15 baseline-decision artifact.
-  - Pattern: `tests/benchmark_results/wave0_closure_memo.md` - historical pre-parity category comparison only.
+  - Test: `tests/longmemeval/parity_harness.py:parity_evaluate_single()` - pinned LongMemEval harness-parity answer path.
+  - Pattern: `tests/benchmark_results/harness_parity_baseline_stability.md` - Task 8 anchor declaration.
+  - Pattern: `tests/benchmark_results/harness_parity_oracle_wave_priority.md` - Task 9 `binding-priority-refresh`.
+  - Pattern: `tests/benchmark_results/harness_parity_baseline/run1/summary.json` - only surviving full per-category profile, for priority/protection only.
+  - Pattern: `tests/benchmark_results/harness_parity_baseline/run2/headline_summary.json` - headline-only run2 source.
 
   **Acceptance Criteria**:
-  - [ ] TODO 5 cites `tests/benchmark_results/harness_parity_baseline_decision.md`, generated 2026-05-06, and the exact status `HALT — baseline undeterminable`.
-  - [ ] TODO 5 states that no numeric T15 baseline or ±1pp band is available until the full haystack-bearing LongMemEval_S corpus is restored and T14/T15 are rerun.
-  - [ ] Any retained Wave 0 closure-memo / 27-exclusion comparison is labeled historical pre-parity context only.
+  - [ ] TODO 5 cites `tests/benchmark_results/harness_parity_baseline_stability.md`, `declare-new-w1-anchor`, and `0.14013426853707415`.
+  - [ ] TODO 5 preserves `harness-parity-shipped` as the comparison baseline tag and the parity harness path pin.
+  - [ ] TODO 5 states run2 raw artifacts/per-category metrics are unavailable and must not be reconstructed.
+  - [ ] Any retained historical pre-parity comparison is labeled non-actionable and not used for W1 lift math.
 
   **QA Scenarios**:
   ```
-  Scenario: T15 decision artifact is HALT-aware
+  Scenario: Task 8 anchor is recorded
     Tool: Bash
-    Steps: Read `tests/benchmark_results/harness_parity_baseline_decision.md` and verify path/date/status plus the explicit no-numeric-baseline constraint.
-    Expected: TODO 5 cites the artifact path/date/status exactly and does not invent a numeric baseline or ±1pp band.
-    Evidence: .sisyphus/evidence/task-5-baseline-fail.md
+    Steps: Read `tests/benchmark_results/harness_parity_baseline_stability.md` and verify `declare-new-w1-anchor`, `0.14013426853707415`, and no-run3 disposition.
+    Expected: TODO 5 uses the Task 8 aggregate anchor as the W1 comparison basis.
+    Evidence: .sisyphus/evidence/task-5-anchor.md
 
-  Scenario: Future rerun remains blocked
+  Scenario: Headline-only limitation is protected
     Tool: Bash
-    Steps: Check whether the full haystack-bearing LongMemEval_S corpus and completed T14/T15 reruns exist.
-    Expected: If they do not, TODO 5 remains a HALT-aware documentation gate rather than a numeric reproduction task.
-    Evidence: .sisyphus/evidence/task-5-baseline-fail.md
+    Steps: Read run2 headline metadata and confirm no raw run2 results or per-category metrics are used.
+    Expected: TODO 5 keeps category deltas waived/unavailable and forbids invented run2 raw artifacts.
+    Evidence: .sisyphus/evidence/task-5-run2-limitation.md
   ```
 
-  **Commit**: NO | Message: n/a | Files: [`tests/benchmark_results/harness_parity_baseline_decision.md`]
+  **Commit**: NO | Message: n/a | Files: [`tests/benchmark_results/harness_parity_baseline_stability.md`, `tests/benchmark_results/harness_parity_oracle_wave_priority.md`]
 
 - [ ] 6. Define JSON Schema and Confidence Helpers
 
@@ -658,7 +666,7 @@ Wave 6: TODO 20 optional ablation only after ship and user request
 
 - [ ] 15. LongMemEval_S Full-Corpus Gate Run
 
-  **What to do**: Run full LongMemEval_S on W1 changes, using the same exclusion logic as baseline. Write `tests/benchmark_results/wave1_gate_run.json` with raw per-question rows, aggregate/per-category counts, latency/provider metrics, and prompt samples proving W1 prompt surface was measured.
+  **What to do**: Run full LongMemEval_S on W1 changes through `tests/longmemeval/parity_harness.py:parity_evaluate_single()`, comparing aggregate lift against the Task 8 anchor `0.14013426853707415`. Write `tests/benchmark_results/wave1_gate_run.json` with raw per-question rows, aggregate/per-category counts, latency/provider metrics, and prompt samples proving W1 prompt surface was measured.
   **Must NOT do**: Do not trust status fields; recompute from raw rows.
 
   **Recommended Agent Profile**:
@@ -669,12 +677,12 @@ Wave 6: TODO 20 optional ablation only after ship and user request
   **Parallelization**: Can Parallel: NO | Wave 5 | Blocks: 16,17 | Blocked By: 14
 
   **References**:
-  - Test: `tests/longmemeval/evaluate.py` - full-corpus harness.
-  - Pattern: `tests/benchmark_results/wave1_baseline_repro.json` - comparison baseline.
+  - Test: `tests/longmemeval/parity_harness.py:parity_evaluate_single()` - full-corpus harness-parity answer path.
+  - Pattern: `tests/benchmark_results/harness_parity_baseline_stability.md` - comparison anchor.
 
   **Acceptance Criteria**:
   - [ ] Artifact exists with correct_count, incorrect_count, total_count, excluded_count, per-category raw counts.
-  - [ ] Excluded count is 27 unless TODO 5 documented a different reproduced baseline denominator.
+  - [ ] Runtime exclusions are reported from raw W1 rows; lift math recomputes the denominator at gate time rather than assuming a historical exclusion count.
   - [ ] Median `memories_used` >0, retrieval p95 <1500ms, provider routing failure rate <5%.
   - [ ] At least 5 sampled answer prompts in metadata contain the W1 JSON/confidence/guardrail surface.
 
@@ -697,7 +705,7 @@ Wave 6: TODO 20 optional ablation only after ship and user request
 
 - [ ] 16. Conditional Confirmation Run
 
-  **What to do**: If TODO 15 lift over TODO 5 baseline is in [+2pp, +4pp], run a second full-corpus confirmation and write `tests/benchmark_results/wave1_gate_run_confirm.json`. If lift is >+4pp or <+2pp, write a documented skip note in the gate decision/postmortem.
+  **What to do**: If TODO 15 lift over the TODO 5 anchor `0.14013426853707415` is in [+2pp, +4pp], run a second full-corpus confirmation and write `tests/benchmark_results/wave1_gate_run_confirm.json`. If lift is >+4pp or <+2pp, write a documented skip note in the gate decision/postmortem.
   **Must NOT do**: Do not run confirmation for a failed <+2pp gate unless user explicitly requests diagnostics.
 
   **Recommended Agent Profile**:
@@ -712,7 +720,7 @@ Wave 6: TODO 20 optional ablation only after ship and user request
 
   **Acceptance Criteria**:
   - [ ] Artifact exists if required, otherwise skip reason is documented.
-  - [ ] If executed, second run lift is computed from raw counts against TODO 5 baseline.
+  - [ ] If executed, second run lift is computed from raw counts against TODO 5 anchor `0.14013426853707415`.
   - [ ] Per-category non-regression rule applies to confirmation run.
 
   **QA Scenarios**:
@@ -745,7 +753,7 @@ Wave 6: TODO 20 optional ablation only after ship and user request
   **Parallelization**: Can Parallel: NO | Wave 5 | Blocks: 18 | Blocked By: 15,16,12
 
   **References**:
-  - Pattern: `tests/benchmark_results/wave1_baseline_repro.json` - baseline.
+  - Pattern: `tests/benchmark_results/harness_parity_baseline_stability.md` - Task 8 comparison anchor.
   - Pattern: `tests/benchmark_results/wave1_gate_run.json` - gate run.
   - Pattern: `tests/benchmark_results/wave1_extraction_check.json` - extraction gate.
 
@@ -861,13 +869,13 @@ Wave 6: TODO 20 optional ablation only after ship and user request
   **Parallelization**: Can Parallel: NO | Wave 6 | Blocks: none | Blocked By: 18 ship + user request
 
   **References**:
-  - Test: `tests/longmemeval/evaluate.py` - full-corpus harness.
-  - Pattern: `tests/benchmark_results/wave1_gate_run.json` - bundled baseline.
+  - Test: `tests/longmemeval/parity_harness.py:parity_evaluate_single()` - full-corpus harness-parity answer path.
+  - Pattern: `tests/benchmark_results/wave1_gate_run.json` - bundled W1 result.
 
   **Acceptance Criteria**:
   - [ ] If requested, two run artifacts and `tests/benchmark_results/wave1_ablation.md` exist.
   - [ ] If not requested, skip reason is documented.
-  - [ ] Any executed ablation cites raw counts and pp lift vs baseline.
+  - [ ] Any executed ablation cites raw counts and pp lift vs TODO 5 anchor.
 
   **QA Scenarios**:
   ```
