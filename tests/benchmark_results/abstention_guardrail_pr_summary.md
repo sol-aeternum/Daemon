@@ -111,7 +111,7 @@ Full lifecycle evidence: `.sisyphus/evidence/task-8-pr-lifecycle.md`
 
 ## PR URL
 
-`https://github.com/sol-aeternum/Daemon/pull/N` — *(to be filled after gh pr create)*
+https://github.com/sol-aeternum/Daemon/pull/3
 
 ---
 
