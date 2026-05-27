@@ -4,6 +4,8 @@
 
 This file is the versioned, PR-gated source of truth for Daemon's user-visible feature scope across client surfaces (Web, Android PWA, Android native, iOS future). Changes to user-visible capabilities must be reflected here before shipping.
 
+Client Surface denotes user-invokable affordances only — direct interaction points the user can consciously trigger (buttons, slash commands, explicit menu actions). LLM-initiated tool executions rendered in-chat are system responses, not user affordances, and are excluded from client-surface status.
+
 ## Legend
 
 - `—` = not applicable on this surface by design;
@@ -28,7 +30,11 @@ This file is the versioned, PR-gated source of truth for Daemon's user-visible f
 |---|---|---|---|---|---|---|
 | **Chat & Streaming** | — | — | — | — | — | — |
 | Chat Streaming + Reconnect | Cross-client stable | Cross-client stable | Not started | Not started | POST /chat SSE streaming service | Yes |
-| OpenAI Chat Completions API | Backend stable | Backend stable | Not started | Not started | POST /v1/chat/completions | No |
+| File Upload | Cross-client stable | Cross-client stable | Not started | Not started | Client-side file attachments and chat serialization | No |
+| Stop/Cancel Streaming | Not started | Not started | Not started | Not started | Existing SSE disconnect handling; no user-visible stop control | No |
+| Copy Message | Not started | Not started | Not started | Not started | Pure client-side clipboard action not implemented | No |
+| Regenerate Response | Not started | Not started | Not started | Not started | Existing chat submission path; retry UI not wired | No |
+| Edit and Resubmit Message | Not started | Not started | Not started | Not started | Existing chat submission path; message edit UI not implemented | No |
 | Model Discovery | Cross-client stable | Cross-client stable | Not started | Not started | GET /v1/models, GET /v1/catalog | No |
 | Typed SSE Event Protocol | Cross-client stable | Cross-client stable | Not started | Not started | Chat and council streaming services | No |
 | **Conversations** | — | — | — | — | — | — |
@@ -55,7 +61,7 @@ This file is the versioned, PR-gated source of truth for Daemon's user-visible f
 | HTTP Request (generic) | Backend stable | Backend stable | Not started | Not started | HTTP request service | No |
 | Reminders (local JSON) | Backend stable | Backend stable | Not started | Not started | Reminder scheduling service | No |
 | Time & Math (get_time, calculate) | Backend stable | Backend stable | Not started | Not started | Utility tools service | No |
-| Consult Advisor (domain expert escalation) | Cross-client stable | Cross-client stable | Not started | Not started | Advisor consultation service | No |
+| Consult Advisor (domain expert escalation) | Not started | Not started | Not started | Not started | No advisor tool registered in this branch snapshot; no user-invokable client affordance | No |
 | Spawn Agent / Spawn Multiple | Backend stable | Backend stable | Not started | Not started | Subagent orchestration service | No |
 | Memory Organization Controls | Backend stable | Backend stable | Not started | Not started | Memory management API | No |
 | Skill Management (CRUD) | Cross-client stable | Cross-client stable | Not started | Not started | GET/POST /skills, GET/PUT/DELETE /skills/{id}, PATCH endpoints, POST /skills/upload | No |
@@ -93,6 +99,7 @@ This file is the versioned, PR-gated source of truth for Daemon's user-visible f
 | Share Intent Ingestion | — | Not started | Not started | Not started | No backend (OS/app-intent entry point not implemented) | Yes |
 | Biometric Unlock | — | — | Not started | Not started | No backend (client OS biometric gate not implemented) | Yes |
 | **Local Pipeline** | — | — | — | — | — | — |
+| Local Pipeline Routing (/local flag) | Web experimental | Web experimental | Not started | Not started | Pre-router intent parsing and disabled Cloud/Local UI; local inference pending hardware | No |
 | **PWA / Offline** | — | — | — | — | — | — |
 | PWA Service Worker + Offline Indicator | Platform-specific permanent | Platform-specific permanent | Not started | Not started | Browser service worker (no backend) | No |
-| Mobile Navigation (sidebar + header) | Platform-specific permanent | Platform-specific permanent | Not started | Not started | No backend (purely frontend) | No |
+| Mobile-Responsive Navigation (hamburger + sidebar) | Cross-client stable | Cross-client stable | Not started | Not started | Purely frontend responsive navigation | No |
