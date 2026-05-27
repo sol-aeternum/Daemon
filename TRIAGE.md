@@ -1022,3 +1022,13 @@
   - Task 4 ran successfully with no service failures, but the dependency risk remains
 - **Likely cause**: The benchmark harness intentionally exercises the production extraction pipeline against live external services to detect real-world quality regressions (confidence 95%).
 - **Suggested action**: Document the dependency risk in benchmark runbook. Consider adding a dry-run mode that validates connectivity before full execution. Do not attempt to mock these services in the benchmark harness — the purpose is real-world quality detection.
+## 2026-05-27T11:31:53Z — GitHub large file warning on main push
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: auth-device-model Task 1 preflight cleanup
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: `git push origin main` completed, but GitHub warned that a committed cleanup archive artifact exceeds the recommended 50 MB file size threshold.
+- **Evidence**: `remote: warning: File .cleanup/2026-05-06/safety-net/untracked_archive/tests/benchmark_results/wave0_full_corpus_recovery/longmemeval_filtered_dataset.json is 91.64 MB; this is larger than GitHub's recommended maximum file size of 50.00 MB`
+- **Likely cause**: Large benchmark recovery artifact was included in the pre-existing cleanup archive committed to preserve local work (confidence 95%).
+- **Suggested action**: Review whether large benchmark/archive artifacts should be moved to external artifact storage or Git LFS in a separate cleanup task.
