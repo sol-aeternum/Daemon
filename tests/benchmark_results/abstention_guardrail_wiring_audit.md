@@ -348,7 +348,7 @@ Oracle must answer the following. The audit artifact is the sole fact package.
 
 ### Primary Question
 
-**Select exactly one disposition** from `wire-it`, `defer-with-patch`, or `remove-dead-reference`. State the chosen disposition and explain the operational consequences for W1 TODO 9 production restoration specifically.
+**Select exactly one disposition** from `wire-it`, `defer-with-patch`, or `remove-dead-reference`. State the chosen disposition, explain the operational consequences for W1 TODO 9 production restoration, and explain the operational consequences for W1 TODO 4 (including whether W1 TODO 4 must be patched before commissioning W1 and whether production wiring/removal must be deferred to a separate plan).
 
 ### Secondary Questions
 
