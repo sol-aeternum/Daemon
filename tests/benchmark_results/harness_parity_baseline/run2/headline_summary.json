@@ -1,0 +1,18 @@
+{
+  "artifact_type": "headline_only_run2_metadata",
+  "raw_artifacts_available": false,
+  "rerun_forbidden": true,
+  "rows": 500,
+  "unique_ids": 500,
+  "duplicates": 0,
+  "aggregate": 0.146,
+  "correct": 73,
+  "total": 500,
+  "excluded_runtime_errors": 0,
+  "observed_results_sha256": "5b8843c4efb4904a4dd9f0c7db0e4fb9eabe23e7cbe8deaed185596dae8e3b99",
+  "observed_summary_sha256": "7be53e6c09ffad4dcf5f2fe065e2440ce30d4f3715a2e3885f6d6886c6ff6a74",
+  "corpus_sha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442",
+  "runner_sha256": "0230c9d89ce84dc8d2b48568e393dbf48ead8190ea9ef5b6e2c6883740082635",
+  "note": "Headline-only metadata artifact. Original run2 raw results.jsonl and full summary.json were lost after backend container recreation wiped /tmp/opencode before repo copy-back. Per-category run2 data is unavailable from surviving artifacts.",
+  "user_override": "do not begin another run 2, we can move ahead with the headline numbers only. a full rerun is 48 hours of wasted time given the headline numbers"
+}

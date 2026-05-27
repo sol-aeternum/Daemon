@@ -1,0 +1,17 @@
+{
+  "run_number": 3,
+  "generated_at": "2026-04-23T15:27:16+00:00",
+  "result_count": 50,
+  "aggregate_accuracy": 0.26,
+  "aggregate_accuracy_formatted": "26.0%",
+  "correct_count": 13,
+  "accuracy": {
+    "IE-user": 0.1111111111111111,
+    "IE-assistant": 0.4444444444444444,
+    "IE-preference": 0.0,
+    "MR": 0.1,
+    "KU": 0.3333333333333333,
+    "TR": 0.3,
+    "ABS": 0.0
+  }
+}

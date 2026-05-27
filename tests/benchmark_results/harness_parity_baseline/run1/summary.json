@@ -1,0 +1,75 @@
+{
+  "total": 500,
+  "total_submitted": 500,
+  "runtime_excluded": 1,
+  "excluded_runtime_errors": 1,
+  "denominator": 499,
+  "correct": 67,
+  "aggregate": 0.1342685370741483,
+  "accuracy": 0.1342685370741483,
+  "categories": {
+    "single-session-user": {
+      "correct": 16,
+      "incorrect": 53,
+      "excluded": 1
+    },
+    "multi-session": {
+      "correct": 16,
+      "incorrect": 117,
+      "excluded": 0
+    },
+    "single-session-preference": {
+      "correct": 4,
+      "incorrect": 26,
+      "excluded": 0
+    },
+    "temporal-reasoning": {
+      "correct": 8,
+      "incorrect": 125,
+      "excluded": 0
+    },
+    "knowledge-update": {
+      "correct": 15,
+      "incorrect": 63,
+      "excluded": 0
+    },
+    "single-session-assistant": {
+      "correct": 8,
+      "incorrect": 48,
+      "excluded": 0
+    }
+  },
+  "per_category": {
+    "single-session-user": {
+      "correct": 16,
+      "incorrect": 53,
+      "excluded": 1
+    },
+    "multi-session": {
+      "correct": 16,
+      "incorrect": 117,
+      "excluded": 0
+    },
+    "single-session-preference": {
+      "correct": 4,
+      "incorrect": 26,
+      "excluded": 0
+    },
+    "temporal-reasoning": {
+      "correct": 8,
+      "incorrect": 125,
+      "excluded": 0
+    },
+    "knowledge-update": {
+      "correct": 15,
+      "incorrect": 63,
+      "excluded": 0
+    },
+    "single-session-assistant": {
+      "correct": 8,
+      "incorrect": 48,
+      "excluded": 0
+    }
+  },
+  "generated_at": "2026-05-25T06:02:01.861759Z"
+}

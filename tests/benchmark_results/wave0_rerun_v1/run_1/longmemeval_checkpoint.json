@@ -1,0 +1,245 @@
+{
+  "version": 2,
+  "dataset_path": "/home/sol/daemon/tests/benchmark_longmemeval/fixtures/dev_subset.json",
+  "created_at": "2026-04-25T14:21:55+00:00",
+  "updated_at": "2026-04-25T14:22:08+00:00",
+  "phases": {
+    "ingest": {
+      "status": "running",
+      "started_at": "2026-04-25T14:21:55+00:00",
+      "updated_at": "2026-04-25T14:22:08+00:00",
+      "completed_count": 2,
+      "results": {
+        "ff9700b5f1a72a7895cfdf5c002e89a2562b6f9f0cae0b623eb920daa871bc7d": {
+          "session_id": "91074ce7",
+          "conversation_id": "40620f0b-e813-40c9-931b-0756f8e6efec",
+          "message_count": 12,
+          "status": "complete",
+          "outcome": "completed",
+          "error": null,
+          "corpus_key": "ff9700b5f1a72a7895cfdf5c002e89a2562b6f9f0cae0b623eb920daa871bc7d",
+          "raw_session_ids": [
+            "91074ce7"
+          ]
+        },
+        "6ae65272937172e6caa4673472743717fdaf3268aef27b7ded74443d8b8120cf": {
+          "session_id": "sharegpt_P1RbLxL_11",
+          "conversation_id": "ee7bc523-4507-4ee1-9f7c-89a9336ae406",
+          "message_count": 3,
+          "status": "complete",
+          "outcome": "empty",
+          "error": null,
+          "corpus_key": "6ae65272937172e6caa4673472743717fdaf3268aef27b7ded74443d8b8120cf",
+          "raw_session_ids": [
+            "sharegpt_P1RbLxL_11"
+          ]
+        }
+      }
+    },
+    "evaluate": {
+      "status": "pending",
+      "started_at": null,
+      "updated_at": null,
+      "completed_count": 0,
+      "results": {}
+    },
+    "score": {
+      "status": "pending",
+      "started_at": null,
+      "updated_at": null,
+      "completed_count": 0,
+      "accuracy": {}
+    }
+  },
+  "benchmark_effective_config": {
+    "lane": "canonical",
+    "pin_path": "tests/benchmark_longmemeval/longmemeval_config_pin.json",
+    "runtime": {
+      "dataset_path": "/home/sol/daemon/tests/benchmark_longmemeval/fixtures/dev_subset.json",
+      "limit": null,
+      "output_path": "/home/sol/daemon/tests/benchmark_results/wave0_rerun_v1/run_1/longmemeval_results.jsonl",
+      "checkpoint_path": "/home/sol/daemon/tests/benchmark_results/wave0_rerun_v1/run_1/longmemeval_checkpoint.json",
+      "score_path": "/home/sol/daemon/tests/benchmark_results/wave0_rerun_v1/run_1/longmemeval_score.json",
+      "force_retrieval_logging": true
+    },
+    "pinned_authority": {
+      "pin_schema_version": 1,
+      "inventory_source": "tests/benchmark_longmemeval/CONFIG_PINNING.md",
+      "shared": {
+        "provider_route": {
+          "openrouter_base_url": "https://openrouter.ai/api/v1",
+          "openrouter_referer": "https://daemon.ai",
+          "openrouter_title": "Daemon AI Assistant",
+          "request_timeout_s": 300.0,
+          "benchmark_mode": {
+            "extra_body_required": true,
+            "allow_fallbacks": false,
+            "description": "Benchmark mode requires extra_body={'provider': {'order': [<full_endpoint_slug>], 'allow_fallbacks': false}}"
+          }
+        },
+        "answer": {
+          "model": "openrouter/openai/gpt-4o",
+          "temperature": 0.7,
+          "max_tokens": 256,
+          "prompt_sha256": "6ec439707cedacb13c817a26d84d19ad423cf3817dac20e7bc739ed12628bebb",
+          "benchmark_mode": {
+            "model": "openrouter/openai/gpt-4o-2024-08-06",
+            "endpoint_slug": "openrouter/openai/gpt-4o-2024-08-06",
+            "temperature": 0.0,
+            "seed": 42,
+            "extra_body_provider_order": [
+              "openrouter/openai/gpt-4o-2024-08-06"
+            ],
+            "extra_body_allow_fallbacks": false
+          }
+        },
+        "judge": {
+          "model": "openrouter/openai/gpt-4o",
+          "temperature": 0.0,
+          "max_tokens": 256,
+          "prompt_sha256": "c4a43ae86a71d37c7094463871d75452a0b9664109702ab82f6b2f9e4b2751b5",
+          "benchmark_mode": {
+            "model": "openrouter/openai/gpt-4o-2024-08-06",
+            "endpoint_slug": "openrouter/openai/gpt-4o-2024-08-06",
+            "temperature": 0.0,
+            "seed": 42,
+            "extra_body_provider_order": [
+              "openrouter/openai/gpt-4o-2024-08-06"
+            ],
+            "extra_body_allow_fallbacks": false
+          }
+        },
+        "query_embedding": {
+          "embedding_query_model": "voyage-4-lite",
+          "embedding_dimensions": 1024
+        },
+        "retrieval": {
+          "call_contract": {
+            "top_k_memories": 5,
+            "include_l0": true,
+            "include_dream_observations": true,
+            "retrieval_triggered_by": "longmemeval"
+          },
+          "logging": {
+            "retrieval_logging_enabled": false,
+            "retrieval_logging_debug": false,
+            "effective_force_retrieval_logging": true
+          },
+          "ranking": {
+            "initial_vector_candidates": 10,
+            "min_final_score": 0.15,
+            "hybrid_vector_weight": 0.5,
+            "hybrid_bm25_weight": 0.3,
+            "hybrid_recency_confidence_weight": 0.2
+          },
+          "scope_defaults": {
+            "include_local": false,
+            "include_historical": false,
+            "memory_slot": null
+          },
+          "inactive_controls": {
+            "max_returned_memories": 5,
+            "active_in_longmemeval": false,
+            "effective_limit_authority": "TOP_K_MEMORIES"
+          }
+        }
+      },
+      "canonical": {
+        "artifact_contract": {
+          "results_filename": "longmemeval_results.jsonl",
+          "checkpoint_filename": "longmemeval_checkpoint.json",
+          "score_filename": "longmemeval_score.json",
+          "checkpoint_version": 2
+        },
+        "benchmark_user": {
+          "user_id": "12345678-1234-5678-1234-567812345678",
+          "email": "longmemeval@daemon.test"
+        },
+        "corpus_plan": {
+          "build_corpus_plan_sha256": "f193048b827163055ae2e944769c6fc8175a4101017551046a84b5bcaa38abad",
+          "normalize_session_messages_sha256": "2215c4b4ffb2816f35d1dacb91c84279d2da30a51e6c80702a75737ece691ec0"
+        },
+        "extraction": {
+          "model": "openrouter/openai/gpt-4o-mini",
+          "prompt_sha256": "e9898c7a0d76fe1444ced1560a1c21df78cc3341d3caf930ae738344ee180378",
+          "input_max_chars": 4000,
+          "temperature": 0.0,
+          "top_p": 1.0,
+          "max_tokens": 2000,
+          "confidence_calibration": {
+            "default_extracted_confidence": 0.8,
+            "hedge_override_confidence": 0.65,
+            "strong_override_confidence": 0.92,
+            "correction_min_confidence": 0.9
+          },
+          "benchmark_mode": {
+            "model": "openrouter/openai/gpt-4o-mini-2024-07-18",
+            "endpoint_slug": "openai",
+            "temperature": 0.0,
+            "seed": 42,
+            "extra_body_provider_order": [
+              "openai"
+            ],
+            "extra_body_allow_fallbacks": false
+          }
+        },
+        "document_embedding": {
+          "embedding_document_model": "voyage-4-large",
+          "embedding_dimensions": 1024
+        },
+        "dedup": {
+          "merge_threshold": 0.9,
+          "supersede_threshold": 0.82,
+          "supersede_same_slot_threshold": 0.65,
+          "contradiction_model": "openrouter/deepseek/deepseek-v3.2",
+          "contradiction_temperature": 0.1,
+          "check_contradiction_sha256": "db5802d7ae38532519186ad2a195a4f2296c3e674b803f0c143d81bc4064d2ed",
+          "benchmark_mode": {
+            "model": "openrouter/deepseek/deepseek-v3.2",
+            "endpoint_slug": "novita",
+            "temperature": 0.0,
+            "seed": 42,
+            "extra_body_provider_order": [
+              "novita"
+            ],
+            "extra_body_allow_fallbacks": false
+          }
+        }
+      },
+      "fast_lane_reference": {
+        "artifact_contract": {
+          "results_filename": "longmemeval_fast_results.jsonl",
+          "checkpoint_filename": "longmemeval_fast_checkpoint.json"
+        },
+        "benchmark_user_strategy": {
+          "fresh_user_per_run": true,
+          "build_benchmark_user_sha256": "ac4faf958ca1fab2d8110a6092461d8dfc505c7a88fcb606c44c29bdd9aa7a8a"
+        },
+        "chunking": {
+          "default_chunk_max_chars": 4000,
+          "default_overlap_turns": 2,
+          "sample_user_turn": "[User]: Example text",
+          "sample_assistant_turn": "[Assistant]: Example text"
+        },
+        "direct_insert": {
+          "benchmark_name": "longmemeval_fast",
+          "benchmark_source_type": "import",
+          "benchmark_category": "fact",
+          "insert_chunk_memories_sha256": "aa99a88773c71b6e5fe12e47efd4ea1fc922f4c5ab65e5178347889a22034334"
+        },
+        "logging": {
+          "effective_force_retrieval_logging": true
+        }
+      }
+    }
+  },
+  "benchmark_config_drift_warnings": [
+    "canonical.dedup.benchmark_mode.endpoint_slug: pinned='openrouter/deepseek/deepseek-chat-v3-5' effective='novita'",
+    "canonical.dedup.benchmark_mode.extra_body_provider_order[0]: pinned='openrouter/deepseek/deepseek-chat-v3-5' effective='novita'",
+    "canonical.dedup.benchmark_mode.model: pinned='openrouter/deepseek/deepseek-chat-v3-5' effective='openrouter/deepseek/deepseek-v3.2'",
+    "canonical.dedup.check_contradiction_sha256: pinned='231d90af9c13755925b4f7ca98d82f3e975adecbbd2426127fc5d506979734df' effective='db5802d7ae38532519186ad2a195a4f2296c3e674b803f0c143d81bc4064d2ed'",
+    "canonical.dedup.contradiction_model: pinned='openrouter/deepseek/deepseek-chat-v3-5' effective='openrouter/deepseek/deepseek-v3.2'",
+    "canonical.extraction.benchmark_mode.endpoint_slug: pinned='openrouter/openai/gpt-4o-mini-2024-07-18' effective='openai'",
+    "canonical.extraction.benchmark_mode.extra_body_provider_order[0]: pinned='openrouter/openai/gpt-4o-mini-2024-07-18' effective='openai'"
+  ]
+}

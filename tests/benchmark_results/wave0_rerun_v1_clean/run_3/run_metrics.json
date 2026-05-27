@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-04-26T14:43:27.671759+00:00",
+  "total_extraction_calls": 1129,
+  "observed_fingerprint": "fp_4181e24c46",
+  "observed_model": "openai/gpt-4o-mini-2024-07-18",
+  "total_memories_created": 3816,
+  "active_memories": 3816,
+  "extraction_outcome_counts": {
+    "completed": 1125,
+    "errored": 6,
+    "empty": 948,
+    "unknown": 0
+  }
+}

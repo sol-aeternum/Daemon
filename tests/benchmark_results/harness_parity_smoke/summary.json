@@ -1,0 +1,35 @@
+{
+  "total_submitted": 5,
+  "runtime_excluded": 0,
+  "denominator": 5,
+  "correct": 0,
+  "accuracy": 0.0,
+  "per_category": {
+    "single-session-user": {
+      "correct": 0,
+      "incorrect": 1,
+      "excluded": 0
+    },
+    "single-session-assistant": {
+      "correct": 0,
+      "incorrect": 1,
+      "excluded": 0
+    },
+    "single-session-preference": {
+      "correct": 0,
+      "incorrect": 1,
+      "excluded": 0
+    },
+    "multi-session": {
+      "correct": 0,
+      "incorrect": 1,
+      "excluded": 0
+    },
+    "temporal-reasoning": {
+      "correct": 0,
+      "incorrect": 1,
+      "excluded": 0
+    }
+  },
+  "generated_at": "2026-05-23T10:24:43.790912Z"
+}

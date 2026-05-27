@@ -1,0 +1,17 @@
+{
+  "results": [
+    {
+      "run": 1,
+      "status": "success"
+    },
+    {
+      "run": 2,
+      "status": "success"
+    },
+    {
+      "run": 3,
+      "status": "success"
+    }
+  ],
+  "successful": 3
+}

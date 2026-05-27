@@ -1,0 +1,998 @@
+{
+  "baseline": {
+    "mean_strict_accuracy": 0.27,
+    "run1_strict_accuracy": 0.32,
+    "run2_strict_accuracy": 0.22
+  },
+  "current_baseline": {
+    "approved_target_cells": {
+      "retrieval_miss_multi_session": {
+        "current_accuracy": 0.16666666666666666,
+        "current_correct": 1,
+        "total": 6
+      },
+      "retrieval_miss_single_session_user": {
+        "current_accuracy": 0.16666666666666666,
+        "current_correct": 1,
+        "total": 6
+      },
+      "retrieval_miss_temporal_reasoning": {
+        "current_accuracy": 0.0,
+        "current_correct": 0,
+        "total": 5
+      }
+    },
+    "checkpoint_path": "tests/benchmark_results/dev_sweep_temporal/on/longmemeval_checkpoint.json",
+    "locked_failure_union": {
+      "current_accuracy": 0.05128205128205128,
+      "current_correct": 2,
+      "total": 39
+    },
+    "normalized_effective_config": {
+      "lane": "canonical",
+      "pin_path": "tests/benchmark_longmemeval/longmemeval_config_pin.json",
+      "pinned_authority": {
+        "canonical": {
+          "artifact_contract": {
+            "checkpoint_filename": "longmemeval_checkpoint.json",
+            "checkpoint_version": 2,
+            "results_filename": "longmemeval_results.jsonl",
+            "score_filename": "longmemeval_score.json"
+          },
+          "benchmark_user": {
+            "email": "longmemeval@daemon.test",
+            "user_id": "12345678-1234-5678-1234-567812345678"
+          },
+          "corpus_plan": {
+            "build_corpus_plan_sha256": "f193048b827163055ae2e944769c6fc8175a4101017551046a84b5bcaa38abad",
+            "normalize_session_messages_sha256": "2215c4b4ffb2816f35d1dacb91c84279d2da30a51e6c80702a75737ece691ec0"
+          },
+          "dedup": {
+            "check_contradiction_sha256": "018339d0446b50b786a4bff50a20f2be9ee52cfcf4f7023e014d601cb5496317",
+            "contradiction_model": "openrouter/deepseek/deepseek-chat",
+            "contradiction_temperature": 0.1,
+            "merge_threshold": 0.9,
+            "supersede_same_slot_threshold": 0.65,
+            "supersede_threshold": 0.82
+          },
+          "document_embedding": {
+            "embedding_dimensions": 1024,
+            "embedding_document_model": "voyage-4-large"
+          },
+          "extraction": {
+            "confidence_calibration": {
+              "correction_min_confidence": 0.9,
+              "default_extracted_confidence": 0.8,
+              "hedge_override_confidence": 0.65,
+              "strong_override_confidence": 0.92
+            },
+            "input_max_chars": 4000,
+            "max_tokens": 2000,
+            "model": "openrouter/openai/gpt-4o-mini",
+            "prompt_sha256": "e9898c7a0d76fe1444ced1560a1c21df78cc3341d3caf930ae738344ee180378",
+            "temperature": 0.0,
+            "top_p": 1.0
+          }
+        },
+        "fast_lane_reference": {
+          "artifact_contract": {
+            "checkpoint_filename": "longmemeval_fast_checkpoint.json",
+            "results_filename": "longmemeval_fast_results.jsonl"
+          },
+          "benchmark_user_strategy": {
+            "build_benchmark_user_sha256": "ac4faf958ca1fab2d8110a6092461d8dfc505c7a88fcb606c44c29bdd9aa7a8a",
+            "fresh_user_per_run": true
+          },
+          "chunking": {
+            "default_chunk_max_chars": 4000,
+            "default_overlap_turns": 2,
+            "sample_assistant_turn": "[Assistant]: Example text",
+            "sample_user_turn": "[User]: Example text"
+          },
+          "direct_insert": {
+            "benchmark_category": "fact",
+            "benchmark_name": "longmemeval_fast",
+            "benchmark_source_type": "import",
+            "insert_chunk_memories_sha256": "aa99a88773c71b6e5fe12e47efd4ea1fc922f4c5ab65e5178347889a22034334"
+          },
+          "logging": {
+            "effective_force_retrieval_logging": true
+          }
+        },
+        "inventory_source": "tests/benchmark_longmemeval/CONFIG_PINNING.md",
+        "pin_schema_version": 1,
+        "shared": {
+          "answer": {
+            "max_tokens": 256,
+            "model": "openrouter/openai/gpt-4o",
+            "prompt_sha256": "6ec439707cedacb13c817a26d84d19ad423cf3817dac20e7bc739ed12628bebb",
+            "temperature": 0.7
+          },
+          "judge": {
+            "max_tokens": 256,
+            "model": "openrouter/openai/gpt-4o",
+            "prompt_sha256": "c4a43ae86a71d37c7094463871d75452a0b9664109702ab82f6b2f9e4b2751b5",
+            "temperature": 0.0
+          },
+          "provider_route": {
+            "openrouter_base_url": "https://openrouter.ai/api/v1",
+            "openrouter_referer": "https://daemon.ai",
+            "openrouter_title": "Daemon AI Assistant",
+            "request_timeout_s": 90.0
+          },
+          "query_embedding": {
+            "embedding_dimensions": 1024,
+            "embedding_query_model": "voyage-4-lite"
+          },
+          "retrieval": {
+            "call_contract": {
+              "include_dream_observations": true,
+              "include_l0": true,
+              "retrieval_triggered_by": "longmemeval",
+              "top_k_memories": 6
+            },
+            "inactive_controls": {
+              "active_in_longmemeval": false,
+              "effective_limit_authority": "TOP_K_MEMORIES",
+              "max_returned_memories": 5
+            },
+            "logging": {
+              "effective_force_retrieval_logging": true,
+              "retrieval_logging_debug": false,
+              "retrieval_logging_enabled": false
+            },
+            "ranking": {
+              "initial_vector_candidates": 10,
+              "min_final_score": 0.15
+            },
+            "scope_defaults": {
+              "include_historical": false,
+              "include_local": false,
+              "memory_slot": null
+            }
+          }
+        }
+      },
+      "runtime": {
+        "checkpoint_path": "<checkpoint>",
+        "dataset_path": "tests/benchmark_longmemeval/fixtures/dev_subset.json",
+        "force_retrieval_logging": true,
+        "limit": null,
+        "output_path": "<output>",
+        "score_path": "<score>"
+      }
+    },
+    "output_dir": "tests/benchmark_results/dev_sweep_temporal/on",
+    "protected_cells": {
+      "knowledge-update": {
+        "accuracy": 0.3333333333333333,
+        "metric_key": "KU"
+      },
+      "multi-session": {
+        "accuracy": 0.3,
+        "metric_key": "MR"
+      },
+      "single-session-assistant": {
+        "accuracy": 0.3333333333333333,
+        "metric_key": "IE-assistant"
+      },
+      "single-session-user": {
+        "accuracy": 0.3333333333333333,
+        "metric_key": "IE-user"
+      },
+      "temporal-reasoning": {
+        "accuracy": 0.1,
+        "metric_key": "TR"
+      }
+    },
+    "results_path": "tests/benchmark_results/dev_sweep_temporal/on/longmemeval_results.jsonl",
+    "run_summary_path": "tests/benchmark_results/dev_sweep_temporal/on/run_summary.json",
+    "score_path": "tests/benchmark_results/dev_sweep_temporal/on/longmemeval_score.json",
+    "strict_accuracy": 0.26,
+    "temporal_filter_enabled": true,
+    "top_k": 6,
+    "weight_sum": 1.0,
+    "weights": {
+      "bm25": 0.3,
+      "recency_confidence": 0.2,
+      "vector": 0.5
+    }
+  },
+  "dataset_path": "tests/benchmark_longmemeval/fixtures/dev_subset.json",
+  "generated_at": "2026-04-18T16:46:08+00:00",
+  "recommendation": {
+    "best_non_qualifying_run": "balanced",
+    "current_weights_remain_locally_optimal": true,
+    "reason": "No approved alternative improved the primary retrieval-miss \u00d7 multi-session target cell without introducing a strict-score, locked-failure, protected-cell, or other approved-target regression on the locked dev subset.",
+    "recommended_run": null
+  },
+  "runs": [
+    {
+      "accuracy": {
+        "ABS": 0.0,
+        "IE-assistant": 0.3333333333333333,
+        "IE-preference": 0.0,
+        "IE-user": 0.2222222222222222,
+        "KU": 0.3333333333333333,
+        "MR": 0.2,
+        "TR": 0.1
+      },
+      "approved_target_cells": {
+        "retrieval_miss_multi_session": {
+          "current_accuracy": 0.16666666666666666,
+          "current_correct": 1,
+          "delta_vs_current": -1,
+          "sweep_accuracy": 0.0,
+          "sweep_correct": 0,
+          "total": 6
+        },
+        "retrieval_miss_single_session_user": {
+          "current_accuracy": 0.16666666666666666,
+          "current_correct": 1,
+          "delta_vs_current": -1,
+          "sweep_accuracy": 0.0,
+          "sweep_correct": 0,
+          "total": 6
+        },
+        "retrieval_miss_temporal_reasoning": {
+          "current_accuracy": 0.0,
+          "current_correct": 0,
+          "delta_vs_current": 0,
+          "sweep_accuracy": 0.0,
+          "sweep_correct": 0,
+          "total": 5
+        }
+      },
+      "benchmark_config_drift_warnings": [
+        "shared.retrieval.call_contract.top_k_memories: pinned=5 effective=6",
+        "shared.retrieval.ranking.hybrid_bm25_weight: pinned=0.3 effective=0.25",
+        "shared.retrieval.ranking.hybrid_recency_confidence_weight: pinned=0.2 effective=0.15",
+        "shared.retrieval.ranking.hybrid_vector_weight: pinned=0.5 effective=0.6"
+      ],
+      "checkpoint_path": "tests/benchmark_results/dev_sweep_weights/vector_heavy/longmemeval_checkpoint.json",
+      "expected_drift_warnings": [
+        "shared.retrieval.call_contract.top_k_memories: pinned=5 effective=6",
+        "shared.retrieval.ranking.hybrid_bm25_weight: pinned=0.3 effective=0.25",
+        "shared.retrieval.ranking.hybrid_recency_confidence_weight: pinned=0.2 effective=0.15",
+        "shared.retrieval.ranking.hybrid_vector_weight: pinned=0.5 effective=0.6"
+      ],
+      "locked_failure_union": {
+        "current_accuracy": 0.05128205128205128,
+        "current_correct": 2,
+        "delta_vs_current": -2,
+        "sweep_accuracy": 0.0,
+        "sweep_correct": 0,
+        "total": 39
+      },
+      "negative_protected_deltas": {
+        "multi-session": -0.09999999999999998,
+        "single-session-user": -0.1111111111111111
+      },
+      "negative_target_deltas": {
+        "retrieval_miss_multi_session": -1,
+        "retrieval_miss_single_session_user": -1
+      },
+      "normalized_effective_config": {
+        "lane": "canonical",
+        "pin_path": "tests/benchmark_longmemeval/longmemeval_config_pin.json",
+        "pinned_authority": {
+          "canonical": {
+            "artifact_contract": {
+              "checkpoint_filename": "longmemeval_checkpoint.json",
+              "checkpoint_version": 2,
+              "results_filename": "longmemeval_results.jsonl",
+              "score_filename": "longmemeval_score.json"
+            },
+            "benchmark_user": {
+              "email": "longmemeval@daemon.test",
+              "user_id": "12345678-1234-5678-1234-567812345678"
+            },
+            "corpus_plan": {
+              "build_corpus_plan_sha256": "f193048b827163055ae2e944769c6fc8175a4101017551046a84b5bcaa38abad",
+              "normalize_session_messages_sha256": "2215c4b4ffb2816f35d1dacb91c84279d2da30a51e6c80702a75737ece691ec0"
+            },
+            "dedup": {
+              "check_contradiction_sha256": "018339d0446b50b786a4bff50a20f2be9ee52cfcf4f7023e014d601cb5496317",
+              "contradiction_model": "openrouter/deepseek/deepseek-chat",
+              "contradiction_temperature": 0.1,
+              "merge_threshold": 0.9,
+              "supersede_same_slot_threshold": 0.65,
+              "supersede_threshold": 0.82
+            },
+            "document_embedding": {
+              "embedding_dimensions": 1024,
+              "embedding_document_model": "voyage-4-large"
+            },
+            "extraction": {
+              "confidence_calibration": {
+                "correction_min_confidence": 0.9,
+                "default_extracted_confidence": 0.8,
+                "hedge_override_confidence": 0.65,
+                "strong_override_confidence": 0.92
+              },
+              "input_max_chars": 4000,
+              "max_tokens": 2000,
+              "model": "openrouter/openai/gpt-4o-mini",
+              "prompt_sha256": "e9898c7a0d76fe1444ced1560a1c21df78cc3341d3caf930ae738344ee180378",
+              "temperature": 0.0,
+              "top_p": 1.0
+            }
+          },
+          "fast_lane_reference": {
+            "artifact_contract": {
+              "checkpoint_filename": "longmemeval_fast_checkpoint.json",
+              "results_filename": "longmemeval_fast_results.jsonl"
+            },
+            "benchmark_user_strategy": {
+              "build_benchmark_user_sha256": "ac4faf958ca1fab2d8110a6092461d8dfc505c7a88fcb606c44c29bdd9aa7a8a",
+              "fresh_user_per_run": true
+            },
+            "chunking": {
+              "default_chunk_max_chars": 4000,
+              "default_overlap_turns": 2,
+              "sample_assistant_turn": "[Assistant]: Example text",
+              "sample_user_turn": "[User]: Example text"
+            },
+            "direct_insert": {
+              "benchmark_category": "fact",
+              "benchmark_name": "longmemeval_fast",
+              "benchmark_source_type": "import",
+              "insert_chunk_memories_sha256": "aa99a88773c71b6e5fe12e47efd4ea1fc922f4c5ab65e5178347889a22034334"
+            },
+            "logging": {
+              "effective_force_retrieval_logging": true
+            }
+          },
+          "inventory_source": "tests/benchmark_longmemeval/CONFIG_PINNING.md",
+          "pin_schema_version": 1,
+          "shared": {
+            "answer": {
+              "max_tokens": 256,
+              "model": "openrouter/openai/gpt-4o",
+              "prompt_sha256": "6ec439707cedacb13c817a26d84d19ad423cf3817dac20e7bc739ed12628bebb",
+              "temperature": 0.7
+            },
+            "judge": {
+              "max_tokens": 256,
+              "model": "openrouter/openai/gpt-4o",
+              "prompt_sha256": "c4a43ae86a71d37c7094463871d75452a0b9664109702ab82f6b2f9e4b2751b5",
+              "temperature": 0.0
+            },
+            "provider_route": {
+              "openrouter_base_url": "https://openrouter.ai/api/v1",
+              "openrouter_referer": "https://daemon.ai",
+              "openrouter_title": "Daemon AI Assistant",
+              "request_timeout_s": 90.0
+            },
+            "query_embedding": {
+              "embedding_dimensions": 1024,
+              "embedding_query_model": "voyage-4-lite"
+            },
+            "retrieval": {
+              "call_contract": {
+                "include_dream_observations": true,
+                "include_l0": true,
+                "retrieval_triggered_by": "longmemeval",
+                "top_k_memories": 6
+              },
+              "inactive_controls": {
+                "active_in_longmemeval": false,
+                "effective_limit_authority": "TOP_K_MEMORIES",
+                "max_returned_memories": 5
+              },
+              "logging": {
+                "effective_force_retrieval_logging": true,
+                "retrieval_logging_debug": false,
+                "retrieval_logging_enabled": false
+              },
+              "ranking": {
+                "initial_vector_candidates": 10,
+                "min_final_score": 0.15
+              },
+              "scope_defaults": {
+                "include_historical": false,
+                "include_local": false,
+                "memory_slot": null
+              }
+            }
+          }
+        },
+        "runtime": {
+          "checkpoint_path": "<checkpoint>",
+          "dataset_path": "tests/benchmark_longmemeval/fixtures/dev_subset.json",
+          "force_retrieval_logging": true,
+          "limit": null,
+          "output_path": "<output>",
+          "score_path": "<score>"
+        }
+      },
+      "output_dir": "tests/benchmark_results/dev_sweep_weights/vector_heavy",
+      "protected_cells": {
+        "knowledge-update": {
+          "accuracy": 0.3333333333333333,
+          "metric_key": "KU"
+        },
+        "multi-session": {
+          "accuracy": 0.2,
+          "metric_key": "MR"
+        },
+        "single-session-assistant": {
+          "accuracy": 0.3333333333333333,
+          "metric_key": "IE-assistant"
+        },
+        "single-session-user": {
+          "accuracy": 0.2222222222222222,
+          "metric_key": "IE-user"
+        },
+        "temporal-reasoning": {
+          "accuracy": 0.1,
+          "metric_key": "TR"
+        }
+      },
+      "protected_deltas_vs_current": {
+        "knowledge-update": 0.0,
+        "multi-session": -0.09999999999999998,
+        "single-session-assistant": 0.0,
+        "single-session-user": -0.1111111111111111,
+        "temporal-reasoning": 0.0
+      },
+      "qualifying_improvement": false,
+      "regressions": [
+        "strict_accuracy -4.0%",
+        "locked_failure_union -2/39",
+        "protected_cell:single-session-user -11.1%",
+        "protected_cell:multi-session -10.0%",
+        "target_cell:retrieval_miss_multi_session -1",
+        "target_cell:retrieval_miss_single_session_user -1"
+      ],
+      "result_count": 50,
+      "results_path": "tests/benchmark_results/dev_sweep_weights/vector_heavy/longmemeval_results.jsonl",
+      "run_name": "vector_heavy",
+      "run_summary_path": "tests/benchmark_results/dev_sweep_weights/vector_heavy/run_summary.json",
+      "score_path": "tests/benchmark_results/dev_sweep_weights/vector_heavy/longmemeval_score.json",
+      "strict_accuracy": 0.22,
+      "strict_delta_vs_current": -0.04000000000000001,
+      "strict_delta_vs_run1": -0.1,
+      "strict_delta_vs_run2": 0.0,
+      "temporal_filter_enabled": true,
+      "top_k": 6,
+      "weight_sum": 1.0,
+      "weights": {
+        "bm25": 0.25,
+        "recency_confidence": 0.15,
+        "vector": 0.6
+      }
+    },
+    {
+      "accuracy": {
+        "ABS": 0.0,
+        "IE-assistant": 0.3333333333333333,
+        "IE-preference": 0.0,
+        "IE-user": 0.3333333333333333,
+        "KU": 0.5555555555555556,
+        "MR": 0.3,
+        "TR": 0.2
+      },
+      "approved_target_cells": {
+        "retrieval_miss_multi_session": {
+          "current_accuracy": 0.16666666666666666,
+          "current_correct": 1,
+          "delta_vs_current": 0,
+          "sweep_accuracy": 0.16666666666666666,
+          "sweep_correct": 1,
+          "total": 6
+        },
+        "retrieval_miss_single_session_user": {
+          "current_accuracy": 0.16666666666666666,
+          "current_correct": 1,
+          "delta_vs_current": 0,
+          "sweep_accuracy": 0.16666666666666666,
+          "sweep_correct": 1,
+          "total": 6
+        },
+        "retrieval_miss_temporal_reasoning": {
+          "current_accuracy": 0.0,
+          "current_correct": 0,
+          "delta_vs_current": 1,
+          "sweep_accuracy": 0.2,
+          "sweep_correct": 1,
+          "total": 5
+        }
+      },
+      "benchmark_config_drift_warnings": [
+        "shared.retrieval.call_contract.top_k_memories: pinned=5 effective=6",
+        "shared.retrieval.ranking.hybrid_bm25_weight: pinned=0.3 effective=0.4",
+        "shared.retrieval.ranking.hybrid_vector_weight: pinned=0.5 effective=0.4"
+      ],
+      "checkpoint_path": "tests/benchmark_results/dev_sweep_weights/balanced/longmemeval_checkpoint.json",
+      "expected_drift_warnings": [
+        "shared.retrieval.call_contract.top_k_memories: pinned=5 effective=6",
+        "shared.retrieval.ranking.hybrid_bm25_weight: pinned=0.3 effective=0.4",
+        "shared.retrieval.ranking.hybrid_vector_weight: pinned=0.5 effective=0.4"
+      ],
+      "locked_failure_union": {
+        "current_accuracy": 0.05128205128205128,
+        "current_correct": 2,
+        "delta_vs_current": 3,
+        "sweep_accuracy": 0.1282051282051282,
+        "sweep_correct": 5,
+        "total": 39
+      },
+      "negative_protected_deltas": {},
+      "negative_target_deltas": {},
+      "normalized_effective_config": {
+        "lane": "canonical",
+        "pin_path": "tests/benchmark_longmemeval/longmemeval_config_pin.json",
+        "pinned_authority": {
+          "canonical": {
+            "artifact_contract": {
+              "checkpoint_filename": "longmemeval_checkpoint.json",
+              "checkpoint_version": 2,
+              "results_filename": "longmemeval_results.jsonl",
+              "score_filename": "longmemeval_score.json"
+            },
+            "benchmark_user": {
+              "email": "longmemeval@daemon.test",
+              "user_id": "12345678-1234-5678-1234-567812345678"
+            },
+            "corpus_plan": {
+              "build_corpus_plan_sha256": "f193048b827163055ae2e944769c6fc8175a4101017551046a84b5bcaa38abad",
+              "normalize_session_messages_sha256": "2215c4b4ffb2816f35d1dacb91c84279d2da30a51e6c80702a75737ece691ec0"
+            },
+            "dedup": {
+              "check_contradiction_sha256": "018339d0446b50b786a4bff50a20f2be9ee52cfcf4f7023e014d601cb5496317",
+              "contradiction_model": "openrouter/deepseek/deepseek-chat",
+              "contradiction_temperature": 0.1,
+              "merge_threshold": 0.9,
+              "supersede_same_slot_threshold": 0.65,
+              "supersede_threshold": 0.82
+            },
+            "document_embedding": {
+              "embedding_dimensions": 1024,
+              "embedding_document_model": "voyage-4-large"
+            },
+            "extraction": {
+              "confidence_calibration": {
+                "correction_min_confidence": 0.9,
+                "default_extracted_confidence": 0.8,
+                "hedge_override_confidence": 0.65,
+                "strong_override_confidence": 0.92
+              },
+              "input_max_chars": 4000,
+              "max_tokens": 2000,
+              "model": "openrouter/openai/gpt-4o-mini",
+              "prompt_sha256": "e9898c7a0d76fe1444ced1560a1c21df78cc3341d3caf930ae738344ee180378",
+              "temperature": 0.0,
+              "top_p": 1.0
+            }
+          },
+          "fast_lane_reference": {
+            "artifact_contract": {
+              "checkpoint_filename": "longmemeval_fast_checkpoint.json",
+              "results_filename": "longmemeval_fast_results.jsonl"
+            },
+            "benchmark_user_strategy": {
+              "build_benchmark_user_sha256": "ac4faf958ca1fab2d8110a6092461d8dfc505c7a88fcb606c44c29bdd9aa7a8a",
+              "fresh_user_per_run": true
+            },
+            "chunking": {
+              "default_chunk_max_chars": 4000,
+              "default_overlap_turns": 2,
+              "sample_assistant_turn": "[Assistant]: Example text",
+              "sample_user_turn": "[User]: Example text"
+            },
+            "direct_insert": {
+              "benchmark_category": "fact",
+              "benchmark_name": "longmemeval_fast",
+              "benchmark_source_type": "import",
+              "insert_chunk_memories_sha256": "aa99a88773c71b6e5fe12e47efd4ea1fc922f4c5ab65e5178347889a22034334"
+            },
+            "logging": {
+              "effective_force_retrieval_logging": true
+            }
+          },
+          "inventory_source": "tests/benchmark_longmemeval/CONFIG_PINNING.md",
+          "pin_schema_version": 1,
+          "shared": {
+            "answer": {
+              "max_tokens": 256,
+              "model": "openrouter/openai/gpt-4o",
+              "prompt_sha256": "6ec439707cedacb13c817a26d84d19ad423cf3817dac20e7bc739ed12628bebb",
+              "temperature": 0.7
+            },
+            "judge": {
+              "max_tokens": 256,
+              "model": "openrouter/openai/gpt-4o",
+              "prompt_sha256": "c4a43ae86a71d37c7094463871d75452a0b9664109702ab82f6b2f9e4b2751b5",
+              "temperature": 0.0
+            },
+            "provider_route": {
+              "openrouter_base_url": "https://openrouter.ai/api/v1",
+              "openrouter_referer": "https://daemon.ai",
+              "openrouter_title": "Daemon AI Assistant",
+              "request_timeout_s": 90.0
+            },
+            "query_embedding": {
+              "embedding_dimensions": 1024,
+              "embedding_query_model": "voyage-4-lite"
+            },
+            "retrieval": {
+              "call_contract": {
+                "include_dream_observations": true,
+                "include_l0": true,
+                "retrieval_triggered_by": "longmemeval",
+                "top_k_memories": 6
+              },
+              "inactive_controls": {
+                "active_in_longmemeval": false,
+                "effective_limit_authority": "TOP_K_MEMORIES",
+                "max_returned_memories": 5
+              },
+              "logging": {
+                "effective_force_retrieval_logging": true,
+                "retrieval_logging_debug": false,
+                "retrieval_logging_enabled": false
+              },
+              "ranking": {
+                "initial_vector_candidates": 10,
+                "min_final_score": 0.15
+              },
+              "scope_defaults": {
+                "include_historical": false,
+                "include_local": false,
+                "memory_slot": null
+              }
+            }
+          }
+        },
+        "runtime": {
+          "checkpoint_path": "<checkpoint>",
+          "dataset_path": "tests/benchmark_longmemeval/fixtures/dev_subset.json",
+          "force_retrieval_logging": true,
+          "limit": null,
+          "output_path": "<output>",
+          "score_path": "<score>"
+        }
+      },
+      "output_dir": "tests/benchmark_results/dev_sweep_weights/balanced",
+      "protected_cells": {
+        "knowledge-update": {
+          "accuracy": 0.5555555555555556,
+          "metric_key": "KU"
+        },
+        "multi-session": {
+          "accuracy": 0.3,
+          "metric_key": "MR"
+        },
+        "single-session-assistant": {
+          "accuracy": 0.3333333333333333,
+          "metric_key": "IE-assistant"
+        },
+        "single-session-user": {
+          "accuracy": 0.3333333333333333,
+          "metric_key": "IE-user"
+        },
+        "temporal-reasoning": {
+          "accuracy": 0.2,
+          "metric_key": "TR"
+        }
+      },
+      "protected_deltas_vs_current": {
+        "knowledge-update": 0.22222222222222227,
+        "multi-session": 0.0,
+        "single-session-assistant": 0.0,
+        "single-session-user": 0.0,
+        "temporal-reasoning": 0.1
+      },
+      "qualifying_improvement": false,
+      "regressions": [],
+      "result_count": 50,
+      "results_path": "tests/benchmark_results/dev_sweep_weights/balanced/longmemeval_results.jsonl",
+      "run_name": "balanced",
+      "run_summary_path": "tests/benchmark_results/dev_sweep_weights/balanced/run_summary.json",
+      "score_path": "tests/benchmark_results/dev_sweep_weights/balanced/longmemeval_score.json",
+      "strict_accuracy": 0.32,
+      "strict_delta_vs_current": 0.06,
+      "strict_delta_vs_run1": 0.0,
+      "strict_delta_vs_run2": 0.1,
+      "temporal_filter_enabled": true,
+      "top_k": 6,
+      "weight_sum": 1.0,
+      "weights": {
+        "bm25": 0.4,
+        "recency_confidence": 0.2,
+        "vector": 0.4
+      }
+    },
+    {
+      "accuracy": {
+        "ABS": 0.0,
+        "IE-assistant": 0.4444444444444444,
+        "IE-preference": 0.0,
+        "IE-user": 0.2222222222222222,
+        "KU": 0.2222222222222222,
+        "MR": 0.2,
+        "TR": 0.3
+      },
+      "approved_target_cells": {
+        "retrieval_miss_multi_session": {
+          "current_accuracy": 0.16666666666666666,
+          "current_correct": 1,
+          "delta_vs_current": -1,
+          "sweep_accuracy": 0.0,
+          "sweep_correct": 0,
+          "total": 6
+        },
+        "retrieval_miss_single_session_user": {
+          "current_accuracy": 0.16666666666666666,
+          "current_correct": 1,
+          "delta_vs_current": -1,
+          "sweep_accuracy": 0.0,
+          "sweep_correct": 0,
+          "total": 6
+        },
+        "retrieval_miss_temporal_reasoning": {
+          "current_accuracy": 0.0,
+          "current_correct": 0,
+          "delta_vs_current": 1,
+          "sweep_accuracy": 0.2,
+          "sweep_correct": 1,
+          "total": 5
+        }
+      },
+      "benchmark_config_drift_warnings": [
+        "shared.retrieval.call_contract.top_k_memories: pinned=5 effective=6",
+        "shared.retrieval.ranking.hybrid_bm25_weight: pinned=0.3 effective=0.5",
+        "shared.retrieval.ranking.hybrid_vector_weight: pinned=0.5 effective=0.3"
+      ],
+      "checkpoint_path": "tests/benchmark_results/dev_sweep_weights/bm25_heavy/longmemeval_checkpoint.json",
+      "expected_drift_warnings": [
+        "shared.retrieval.call_contract.top_k_memories: pinned=5 effective=6",
+        "shared.retrieval.ranking.hybrid_bm25_weight: pinned=0.3 effective=0.5",
+        "shared.retrieval.ranking.hybrid_vector_weight: pinned=0.5 effective=0.3"
+      ],
+      "locked_failure_union": {
+        "current_accuracy": 0.05128205128205128,
+        "current_correct": 2,
+        "delta_vs_current": 1,
+        "sweep_accuracy": 0.07692307692307693,
+        "sweep_correct": 3,
+        "total": 39
+      },
+      "negative_protected_deltas": {
+        "knowledge-update": -0.1111111111111111,
+        "multi-session": -0.09999999999999998,
+        "single-session-user": -0.1111111111111111
+      },
+      "negative_target_deltas": {
+        "retrieval_miss_multi_session": -1,
+        "retrieval_miss_single_session_user": -1
+      },
+      "normalized_effective_config": {
+        "lane": "canonical",
+        "pin_path": "tests/benchmark_longmemeval/longmemeval_config_pin.json",
+        "pinned_authority": {
+          "canonical": {
+            "artifact_contract": {
+              "checkpoint_filename": "longmemeval_checkpoint.json",
+              "checkpoint_version": 2,
+              "results_filename": "longmemeval_results.jsonl",
+              "score_filename": "longmemeval_score.json"
+            },
+            "benchmark_user": {
+              "email": "longmemeval@daemon.test",
+              "user_id": "12345678-1234-5678-1234-567812345678"
+            },
+            "corpus_plan": {
+              "build_corpus_plan_sha256": "f193048b827163055ae2e944769c6fc8175a4101017551046a84b5bcaa38abad",
+              "normalize_session_messages_sha256": "2215c4b4ffb2816f35d1dacb91c84279d2da30a51e6c80702a75737ece691ec0"
+            },
+            "dedup": {
+              "check_contradiction_sha256": "018339d0446b50b786a4bff50a20f2be9ee52cfcf4f7023e014d601cb5496317",
+              "contradiction_model": "openrouter/deepseek/deepseek-chat",
+              "contradiction_temperature": 0.1,
+              "merge_threshold": 0.9,
+              "supersede_same_slot_threshold": 0.65,
+              "supersede_threshold": 0.82
+            },
+            "document_embedding": {
+              "embedding_dimensions": 1024,
+              "embedding_document_model": "voyage-4-large"
+            },
+            "extraction": {
+              "confidence_calibration": {
+                "correction_min_confidence": 0.9,
+                "default_extracted_confidence": 0.8,
+                "hedge_override_confidence": 0.65,
+                "strong_override_confidence": 0.92
+              },
+              "input_max_chars": 4000,
+              "max_tokens": 2000,
+              "model": "openrouter/openai/gpt-4o-mini",
+              "prompt_sha256": "e9898c7a0d76fe1444ced1560a1c21df78cc3341d3caf930ae738344ee180378",
+              "temperature": 0.0,
+              "top_p": 1.0
+            }
+          },
+          "fast_lane_reference": {
+            "artifact_contract": {
+              "checkpoint_filename": "longmemeval_fast_checkpoint.json",
+              "results_filename": "longmemeval_fast_results.jsonl"
+            },
+            "benchmark_user_strategy": {
+              "build_benchmark_user_sha256": "ac4faf958ca1fab2d8110a6092461d8dfc505c7a88fcb606c44c29bdd9aa7a8a",
+              "fresh_user_per_run": true
+            },
+            "chunking": {
+              "default_chunk_max_chars": 4000,
+              "default_overlap_turns": 2,
+              "sample_assistant_turn": "[Assistant]: Example text",
+              "sample_user_turn": "[User]: Example text"
+            },
+            "direct_insert": {
+              "benchmark_category": "fact",
+              "benchmark_name": "longmemeval_fast",
+              "benchmark_source_type": "import",
+              "insert_chunk_memories_sha256": "aa99a88773c71b6e5fe12e47efd4ea1fc922f4c5ab65e5178347889a22034334"
+            },
+            "logging": {
+              "effective_force_retrieval_logging": true
+            }
+          },
+          "inventory_source": "tests/benchmark_longmemeval/CONFIG_PINNING.md",
+          "pin_schema_version": 1,
+          "shared": {
+            "answer": {
+              "max_tokens": 256,
+              "model": "openrouter/openai/gpt-4o",
+              "prompt_sha256": "6ec439707cedacb13c817a26d84d19ad423cf3817dac20e7bc739ed12628bebb",
+              "temperature": 0.7
+            },
+            "judge": {
+              "max_tokens": 256,
+              "model": "openrouter/openai/gpt-4o",
+              "prompt_sha256": "c4a43ae86a71d37c7094463871d75452a0b9664109702ab82f6b2f9e4b2751b5",
+              "temperature": 0.0
+            },
+            "provider_route": {
+              "openrouter_base_url": "https://openrouter.ai/api/v1",
+              "openrouter_referer": "https://daemon.ai",
+              "openrouter_title": "Daemon AI Assistant",
+              "request_timeout_s": 90.0
+            },
+            "query_embedding": {
+              "embedding_dimensions": 1024,
+              "embedding_query_model": "voyage-4-lite"
+            },
+            "retrieval": {
+              "call_contract": {
+                "include_dream_observations": true,
+                "include_l0": true,
+                "retrieval_triggered_by": "longmemeval",
+                "top_k_memories": 6
+              },
+              "inactive_controls": {
+                "active_in_longmemeval": false,
+                "effective_limit_authority": "TOP_K_MEMORIES",
+                "max_returned_memories": 5
+              },
+              "logging": {
+                "effective_force_retrieval_logging": true,
+                "retrieval_logging_debug": false,
+                "retrieval_logging_enabled": false
+              },
+              "ranking": {
+                "initial_vector_candidates": 10,
+                "min_final_score": 0.15
+              },
+              "scope_defaults": {
+                "include_historical": false,
+                "include_local": false,
+                "memory_slot": null
+              }
+            }
+          }
+        },
+        "runtime": {
+          "checkpoint_path": "<checkpoint>",
+          "dataset_path": "tests/benchmark_longmemeval/fixtures/dev_subset.json",
+          "force_retrieval_logging": true,
+          "limit": null,
+          "output_path": "<output>",
+          "score_path": "<score>"
+        }
+      },
+      "output_dir": "tests/benchmark_results/dev_sweep_weights/bm25_heavy",
+      "protected_cells": {
+        "knowledge-update": {
+          "accuracy": 0.2222222222222222,
+          "metric_key": "KU"
+        },
+        "multi-session": {
+          "accuracy": 0.2,
+          "metric_key": "MR"
+        },
+        "single-session-assistant": {
+          "accuracy": 0.4444444444444444,
+          "metric_key": "IE-assistant"
+        },
+        "single-session-user": {
+          "accuracy": 0.2222222222222222,
+          "metric_key": "IE-user"
+        },
+        "temporal-reasoning": {
+          "accuracy": 0.3,
+          "metric_key": "TR"
+        }
+      },
+      "protected_deltas_vs_current": {
+        "knowledge-update": -0.1111111111111111,
+        "multi-session": -0.09999999999999998,
+        "single-session-assistant": 0.1111111111111111,
+        "single-session-user": -0.1111111111111111,
+        "temporal-reasoning": 0.19999999999999998
+      },
+      "qualifying_improvement": false,
+      "regressions": [
+        "protected_cell:single-session-user -11.1%",
+        "protected_cell:multi-session -10.0%",
+        "protected_cell:knowledge-update -11.1%",
+        "target_cell:retrieval_miss_multi_session -1",
+        "target_cell:retrieval_miss_single_session_user -1"
+      ],
+      "result_count": 50,
+      "results_path": "tests/benchmark_results/dev_sweep_weights/bm25_heavy/longmemeval_results.jsonl",
+      "run_name": "bm25_heavy",
+      "run_summary_path": "tests/benchmark_results/dev_sweep_weights/bm25_heavy/run_summary.json",
+      "score_path": "tests/benchmark_results/dev_sweep_weights/bm25_heavy/longmemeval_score.json",
+      "strict_accuracy": 0.26,
+      "strict_delta_vs_current": 0.0,
+      "strict_delta_vs_run1": -0.06,
+      "strict_delta_vs_run2": 0.04000000000000001,
+      "temporal_filter_enabled": true,
+      "top_k": 6,
+      "weight_sum": 1.0,
+      "weights": {
+        "bm25": 0.5,
+        "recency_confidence": 0.2,
+        "vector": 0.3
+      }
+    }
+  ],
+  "seed_checkpoint_path": "tests/benchmark_results/dev_subset_baseline/run2/longmemeval_checkpoint.json",
+  "shared_overrides": {
+    "initial_vector_candidates": 10,
+    "min_final_score": 0.15,
+    "temporal_filter_enabled": true,
+    "top_k_memories": 6
+  },
+  "weight_sets": [
+    {
+      "run_name": "vector_heavy",
+      "weight_sum": 1.0,
+      "weights": {
+        "bm25": 0.25,
+        "recency_confidence": 0.15,
+        "vector": 0.6
+      }
+    },
+    {
+      "run_name": "balanced",
+      "weight_sum": 1.0,
+      "weights": {
+        "bm25": 0.4,
+        "recency_confidence": 0.2,
+        "vector": 0.4
+      }
+    },
+    {
+      "run_name": "bm25_heavy",
+      "weight_sum": 1.0,
+      "weights": {
+        "bm25": 0.5,
+        "recency_confidence": 0.2,
+        "vector": 0.3
+      }
+    }
+  ]
+}

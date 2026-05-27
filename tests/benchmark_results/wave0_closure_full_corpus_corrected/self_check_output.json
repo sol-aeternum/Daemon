@@ -1,0 +1,86 @@
+{
+  "answer_fingerprints": {
+    "fp_5f78e76dfa": 500
+  },
+  "answer_models": {
+    "openai/gpt-4o-2024-08-06": 500
+  },
+  "category_mismatch_count": 0,
+  "category_mismatch_sample": [],
+  "checkpoint_evaluate_completed_count": 500,
+  "checkpoint_evaluate_status": "completed",
+  "checkpoint_path": "tests/benchmark_results/wave0_closure_full_corpus_corrected/longmemeval_checkpoint.json",
+  "checkpoint_score_completed_count": 500,
+  "checkpoint_score_result_count": 500,
+  "checkpoint_score_status": "completed",
+  "dataset_category_counts": {
+    "IE-assistant": 56,
+    "IE-preference": 30,
+    "IE-user": 70,
+    "KU": 78,
+    "MR": 133,
+    "TR": 133
+  },
+  "dataset_ids_missing_in_raw": [],
+  "dataset_path": "/tmp/longmemeval_s_reconstructed_runner_native.json",
+  "dataset_question_type_counts": {
+    "knowledge-update": 78,
+    "multi-session": 133,
+    "single-session-assistant": 56,
+    "single-session-preference": 30,
+    "single-session-user": 70,
+    "temporal-reasoning": 133
+  },
+  "dataset_rows": 500,
+  "derived_accuracy": {
+    "ABS": 0.0,
+    "IE-assistant": 0.125,
+    "IE-preference": 0.06666666666666667,
+    "IE-user": 0.04285714285714286,
+    "KU": 0.07692307692307693,
+    "MR": 0.07518796992481203,
+    "TR": 0.015037593984962405
+  },
+  "duplicate_question_ids": {},
+  "empty_hypothesis_count": 0,
+  "error_count": 0,
+  "judge_fingerprints": {
+    "fp_b69b0233b8": 500
+  },
+  "judge_models": {
+    "openai/gpt-4o-2024-08-06": 500
+  },
+  "no_silent_model_fallback": true,
+  "no_silent_provider_fallback": true,
+  "non_empty_reference_count": 500,
+  "provider_endpoint_slugs_from_prompt_metadata": {
+    "openai": 500
+  },
+  "raw_category_counts": {
+    "IE-assistant": 56,
+    "IE-preference": 30,
+    "IE-user": 70,
+    "KU": 78,
+    "MR": 133,
+    "TR": 133
+  },
+  "raw_ids_missing_in_dataset": [],
+  "raw_rows": 500,
+  "reference_mismatch_count": 0,
+  "reference_mismatch_sample": [],
+  "results_path": "tests/benchmark_results/wave0_closure_full_corpus_corrected/longmemeval_results.jsonl",
+  "score_accuracy": {
+    "ABS": 0.0,
+    "IE-assistant": 0.125,
+    "IE-preference": 0.06666666666666667,
+    "IE-user": 0.04285714285714286,
+    "KU": 0.07692307692307693,
+    "MR": 0.07518796992481203,
+    "TR": 0.015037593984962405
+  },
+  "score_matches_derived_accuracy": true,
+  "score_path": "tests/benchmark_results/wave0_closure_full_corpus_corrected/longmemeval_score.json",
+  "score_result_count": 500,
+  "success_count": 500,
+  "unique_question_ids": 500
+}

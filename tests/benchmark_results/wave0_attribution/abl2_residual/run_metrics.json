@@ -1,0 +1,910 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-04-22T16:01:05+00:00",
+  "run_metadata": {
+    "run_started_at": "2026-04-22T12:57:16+00:00",
+    "dataset_path": "tests/benchmark_longmemeval/fixtures/dev_subset.json",
+    "output_dir": "tests/benchmark_results/wave0_attribution/abl2_residual",
+    "checkpoint_path": "tests/benchmark_results/wave0_attribution/abl2_residual",
+    "limit": null,
+    "phase_counts": {
+      "ingest_completed": 2079,
+      "evaluate_completed": 50,
+      "score_result_count": 50
+    }
+  },
+  "effective_deterministic_flags": {
+    "lane": null,
+    "force_retrieval_logging": null,
+    "benchmark_mode": false,
+    "answer_temperature": null,
+    "judge_temperature": null,
+    "extraction_temperature": null,
+    "retrieval_top_k": null,
+    "seed": 42
+  },
+  "provider_fingerprint_metadata": {
+    "answer": {},
+    "judge": {}
+  },
+  "extraction_counts_outcomes": {
+    "total_sessions": 2079,
+    "by_outcome": {
+      "completed": 1941,
+      "empty": 0,
+      "timed_out": 0,
+      "errored": 138,
+      "unknown": 0
+    }
+  },
+  "retrieval_counts_latencies": {
+    "total_retrieval_calls": 50,
+    "per_question": [
+      {
+        "question_id": "b86304ba",
+        "latency_ms": 26,
+        "l0_included": false
+      },
+      {
+        "question_id": "8550ddae",
+        "latency_ms": 18,
+        "l0_included": false
+      },
+      {
+        "question_id": "86f00804",
+        "latency_ms": 7,
+        "l0_included": false
+      },
+      {
+        "question_id": "19b5f2b3",
+        "latency_ms": 7,
+        "l0_included": false
+      },
+      {
+        "question_id": "caf9ead2",
+        "latency_ms": 6,
+        "l0_included": false
+      },
+      {
+        "question_id": "fca762bc",
+        "latency_ms": 6,
+        "l0_included": false
+      },
+      {
+        "question_id": "4388e9dd",
+        "latency_ms": 7,
+        "l0_included": false
+      },
+      {
+        "question_id": "e8a79c70",
+        "latency_ms": 7,
+        "l0_included": false
+      },
+      {
+        "question_id": "d596882b",
+        "latency_ms": 8,
+        "l0_included": false
+      },
+      {
+        "question_id": "71a3fd6b",
+        "latency_ms": 7,
+        "l0_included": false
+      },
+      {
+        "question_id": "28dc39ac",
+        "latency_ms": 6,
+        "l0_included": false
+      },
+      {
+        "question_id": "ba358f49",
+        "latency_ms": 8,
+        "l0_included": false
+      },
+      {
+        "question_id": "6cb6f249",
+        "latency_ms": 7,
+        "l0_included": false
+      },
+      {
+        "question_id": "2318644b",
+        "latency_ms": 8,
+        "l0_included": false
+      },
+      {
+        "question_id": "1192316e",
+        "latency_ms": 7,
+        "l0_included": false
+      },
+      {
+        "question_id": "8c18457d",
+        "latency_ms": 6,
+        "l0_included": false
+      },
+      {
+        "question_id": "gpt4_4edbafa2",
+        "latency_ms": 8,
+        "l0_included": false
+      },
+      {
+        "question_id": "6613b389",
+        "latency_ms": 7,
+        "l0_included": false
+      },
+      {
+        "question_id": "gpt4_af6db32f",
+        "latency_ms": 7,
+        "l0_included": false
+      },
+      {
+        "question_id": "gpt4_b0863698",
+        "latency_ms": 6,
+        "l0_included": false
+      },
+      {
+        "question_id": "852ce960",
+        "latency_ms": 8,
+        "l0_included": false
+      },
+      {
+        "question_id": "6a1eabeb",
+        "latency_ms": 7,
+        "l0_included": false
+      },
+      {
+        "question_id": "5831f84d",
+        "latency_ms": 6,
+        "l0_included": false
+      },
+      {
+        "question_id": "f685340e",
+        "latency_ms": 6,
+        "l0_included": false
+      },
+      {
+        "question_id": "184da446",
+        "latency_ms": 8,
+        "l0_included": false
+      },
+      {
+        "question_id": "f685340e_abs",
+        "latency_ms": 5,
+        "l0_included": false
+      },
+      {
+        "question_id": "982b5123_abs",
+        "latency_ms": 8,
+        "l0_included": false
+      },
+      {
+        "question_id": "gpt4_93159ced_abs",
+        "latency_ms": 7,
+        "l0_included": false
+      },
+      {
+        "question_id": "80ec1f4f_abs",
+        "latency_ms": 7,
+        "l0_included": false
+      },
+      {
+        "question_id": "gpt4_372c3eed_abs",
+        "latency_ms": 7,
+        "l0_included": false
+      },
+      {
+        "question_id": "ad7109d1",
+        "latency_ms": 7,
+        "l0_included": false
+      },
+      {
+        "question_id": "2bf43736",
+        "latency_ms": 9,
+        "l0_included": false
+      },
+      {
+        "question_id": "75f70248",
+        "latency_ms": 6,
+        "l0_included": false
+      },
+      {
+        "question_id": "a3332713",
+        "latency_ms": 6,
+        "l0_included": false
+      },
+      {
+        "question_id": "0bb5a684",
+        "latency_ms": 8,
+        "l0_included": false
+      },
+      {
+        "question_id": "0977f2af",
+        "latency_ms": 7,
+        "l0_included": false
+      },
+      {
+        "question_id": "c5e8278d",
+        "latency_ms": 7,
+        "l0_included": false
+      },
+      {
+        "question_id": "c4f10528",
+        "latency_ms": 10,
+        "l0_included": false
+      },
+      {
+        "question_id": "0a34ad58",
+        "latency_ms": 8,
+        "l0_included": false
+      },
+      {
+        "question_id": "92a0aa75",
+        "latency_ms": 5,
+        "l0_included": false
+      },
+      {
+        "question_id": "gpt4_65aabe59",
+        "latency_ms": 5,
+        "l0_included": false
+      },
+      {
+        "question_id": "3ba21379",
+        "latency_ms": 6,
+        "l0_included": false
+      },
+      {
+        "question_id": "545bd2b5",
+        "latency_ms": 7,
+        "l0_included": false
+      },
+      {
+        "question_id": "1de5cff2",
+        "latency_ms": 7,
+        "l0_included": false
+      },
+      {
+        "question_id": "09d032c9",
+        "latency_ms": 7,
+        "l0_included": false
+      },
+      {
+        "question_id": "cc06de0d",
+        "latency_ms": 5,
+        "l0_included": false
+      },
+      {
+        "question_id": "gpt4_93159ced",
+        "latency_ms": 5,
+        "l0_included": false
+      },
+      {
+        "question_id": "59524333",
+        "latency_ms": 7,
+        "l0_included": false
+      },
+      {
+        "question_id": "25e5aa4f",
+        "latency_ms": 8,
+        "l0_included": false
+      },
+      {
+        "question_id": "7a8d0b71",
+        "latency_ms": 8,
+        "l0_included": false
+      }
+    ]
+  },
+  "queue_depth": {
+    "before_reset": {
+      "redis_keys": null
+    },
+    "after_reset": {
+      "redis_keys": 0
+    }
+  },
+  "total_memories_at_end": {
+    "active": 3685,
+    "historical": 0,
+    "total": 3685
+  },
+  "per_question": [
+    {
+      "question_id": "b86304ba",
+      "retrieved_memory_ids": [
+        "ffa5e051-1f56-4631-9f5e-967abebd78e5",
+        "9e80d33d-50a0-4a60-bc6c-38b21366e049",
+        "821623f1-2e7d-4f94-88f0-394314792b89",
+        "fdc514d4-0983-449d-b02f-48fdaec23fb0",
+        "94ab888b-d013-4a88-9a1c-75d9178cca9e"
+      ],
+      "answer_hash": "d432711d7d96b86ac1e8cfa01eac15a229e03ecd52dde0f7e7bd4fc2701664f4",
+      "judgment_hash": "15a596e3c98c407e043751ff3b21ff0358a1bdfdf3fe948b1523893a8e5de2e8"
+    },
+    {
+      "question_id": "8550ddae",
+      "retrieved_memory_ids": [
+        "5b9001ae-eb22-4e08-8e83-ecb58f9cac6d",
+        "882a426f-e66b-44ec-8a53-6c40bc69c12d",
+        "52278a05-278c-4ba4-ad1f-6bba6fac7655",
+        "ced9f094-4e74-47d2-a9f9-d00c0a7d0a13",
+        "62b53bb6-8926-44f7-b047-a7fd086ff7c7"
+      ],
+      "answer_hash": "d51b0f1c77fbea0164343deb99ade9a3c515ba7c4c2e1cec65ea8b7cbec2eaa7",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "86f00804",
+      "retrieved_memory_ids": [
+        "54bf7e0c-1113-4dfd-8543-d08ad339f83d",
+        "7c93cebe-4dd5-4621-83c6-d84e89e6f13a",
+        "85f01577-48f1-4959-93c0-df5ac4c28d26",
+        "4830b015-c9c2-47d7-acbd-ee474f404093",
+        "93c0b1a1-7a18-4523-a323-7d5494bb5a93"
+      ],
+      "answer_hash": "8c0f03645aa143494dceb63dc3f4fcbd3bdfdc5af8f19228cdd4d341be7287a8",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "19b5f2b3",
+      "retrieved_memory_ids": [
+        "50a90286-685b-4747-b395-9b84427e7390",
+        "d53843de-caf6-4576-92bb-a31024b0bab8",
+        "f1fc5c9a-0c6e-4fa2-9f84-4481c97e2ea6",
+        "c583cfda-a872-4e65-a3c9-0d852354ae59",
+        "5032b43a-4afc-4d32-a3ca-b88d138eca06"
+      ],
+      "answer_hash": "fde1e4d0319174a180e4fec3d18f001332e1872a2f443ada093ca455823422bd",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "caf9ead2",
+      "retrieved_memory_ids": [
+        "6250b8d5-6b50-423d-9447-eee2001f6f41",
+        "e8ac2024-39f6-47e2-aa71-bdbbdf0ef5b5",
+        "2e81ae42-016e-44d8-a19e-303b8b26dd8f",
+        "21a6502b-37fe-45e8-be02-9deb7b64778c",
+        "26a6205f-c8fa-4877-b94c-f489805a7744"
+      ],
+      "answer_hash": "35ad0fc32f029b52f0345bb788cbd21462ec65141bbb69213d63ffb61abec3e0",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "fca762bc",
+      "retrieved_memory_ids": [
+        "f8d40bb7-e5d1-472d-8ecf-4336e5dbb34d",
+        "f3127d23-f5a5-46da-b303-b06427e9c4ad",
+        "37e1aed7-ba67-4009-929c-60154cdcf24e",
+        "b11f9552-4e98-4be0-9aa1-3ffa9eb66e9e",
+        "8fec1d7a-7e8e-4f3d-85ab-db0b82bfa4ad"
+      ],
+      "answer_hash": "8b483cba5dd07e5beb4c7acf1fd03de3f3285d7f080db7f2911b386b929385df",
+      "judgment_hash": "15a596e3c98c407e043751ff3b21ff0358a1bdfdf3fe948b1523893a8e5de2e8"
+    },
+    {
+      "question_id": "4388e9dd",
+      "retrieved_memory_ids": [
+        "ec49cf5d-434f-4c96-bcb1-afad39d45e3e",
+        "4270f6a5-0978-4546-a64b-9a0e380baa95",
+        "43c1279e-af6e-45e3-b97c-491871ba2fa5",
+        "9975058a-719c-4951-870a-502ec4b2cb0c",
+        "3e067209-f939-4d59-bc05-5a8c6c323b77"
+      ],
+      "answer_hash": "df982d3fb6f6709852f80700e374fb2a7d6cdf28d21eaefa2d3538828411080d",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "e8a79c70",
+      "retrieved_memory_ids": [
+        "1d0707c3-af89-4a7f-ad6f-8febc492341b",
+        "6a4173a1-cbe2-4cb9-8a1a-3654f86cdb49",
+        "3257c50d-1b45-4bb9-9d3e-92976c2e0dcc",
+        "a232ac4e-e267-47f7-8923-90ed8d5979e6",
+        "7ff9d1cb-a158-407d-a506-dc69826a9643"
+      ],
+      "answer_hash": "f9b44070faeab4dfe2af72df4d1083b9bc2abc6871f1e24a6447711d2df10f70",
+      "judgment_hash": "15a596e3c98c407e043751ff3b21ff0358a1bdfdf3fe948b1523893a8e5de2e8"
+    },
+    {
+      "question_id": "d596882b",
+      "retrieved_memory_ids": [
+        "756bc8ac-24ce-49c7-b8dd-af0a46ea31aa",
+        "83ad8e44-236b-4c27-a9db-9c098b170494",
+        "3a329673-afb8-4a8a-a41f-3e552ddbea4e",
+        "3efdcf88-5153-4220-ad46-fb8af6ab8991",
+        "208e427f-4218-46c0-ad08-59fe2b0b6b1e"
+      ],
+      "answer_hash": "f8b21d03b95a3d636967da3a1646ae09cad767632b5d21df2f6c0b6734b5b2a0",
+      "judgment_hash": "15a596e3c98c407e043751ff3b21ff0358a1bdfdf3fe948b1523893a8e5de2e8"
+    },
+    {
+      "question_id": "71a3fd6b",
+      "retrieved_memory_ids": [
+        "8f7e506e-4099-4807-9357-49a112bad9ba",
+        "921334da-57ce-48d1-b218-f751dc739a32",
+        "96d8da86-461c-4f4e-81e7-4bd9d6deefa7",
+        "9e576815-5c2a-496a-9ac8-19ca05577483",
+        "df1de43a-9f0e-48e0-942b-4614a929c524"
+      ],
+      "answer_hash": "53ffc849890e3738e2ce39f26e033af72d92282d7023fbbee36c3be5e77b713c",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "28dc39ac",
+      "retrieved_memory_ids": [
+        "f5056dde-c265-42c9-af60-210defa9ffc6",
+        "807e42b3-c98d-4643-8b36-9ac19463850e",
+        "5a876e2a-ced8-4e8f-9cd4-b4fe8b5a436d",
+        "491d181a-f7d1-4671-b123-2f6f0aba0200",
+        "bb0273bc-2d60-455f-b1d7-f27462d1677f"
+      ],
+      "answer_hash": "9c3fd0546028bb964468b4f5a71253ebcadb4af67912c7ccea442873706bfc40",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "ba358f49",
+      "retrieved_memory_ids": [
+        "471225b3-278f-40d3-a715-5074fb3b34ad",
+        "9f256af5-e350-4d80-b467-fa0c31d739e6",
+        "ce505afd-b987-4c91-846d-ae9e534dcd6e",
+        "a76545f3-213f-4923-a2ba-9573e5b6cbe7",
+        "b7d11bec-4c34-4c56-8acf-09ae80fbe17d"
+      ],
+      "answer_hash": "71344817403625001b49e9624083d478d2ddfa128942d21835061bbf67972a73",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "6cb6f249",
+      "retrieved_memory_ids": [
+        "71ceb205-74ab-4814-ad24-5073a832dabe",
+        "ca702059-e78c-448f-907d-4b2fa81cb612",
+        "7516d72e-1439-4a5e-9f64-6ee9a2842e7b",
+        "ada4eaa9-d507-4d1a-85fd-1d5b3fb588db",
+        "34109aec-efb7-4bb0-b94a-d74b7b38d72c"
+      ],
+      "answer_hash": "fcd483cad1ea3d00b6d6dfbf8239f4884fb9266e3d0bf2dc8943f18a3b137484",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "2318644b",
+      "retrieved_memory_ids": [
+        "cf650d42-40ce-4109-a21b-0a0852aacb3f",
+        "f1285cc5-c2a1-4346-b3a1-cb3006bf63ae",
+        "ec947443-2bab-4a03-bd66-9a63ec701bdf",
+        "3a230856-1183-4853-afe9-3b539a75aeb7",
+        "d5e9cccc-5ff7-4ee7-8e47-452374ec8037"
+      ],
+      "answer_hash": "8c15517590d84a448ff6b659bccc90f6d59ba73eec1e2f34df056b6cc2e6b3b1",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "1192316e",
+      "retrieved_memory_ids": [
+        "84dbd217-0ac9-430f-b503-2ba5dba17ad6",
+        "7ba9e0f9-8473-4336-a0b6-d5b2cae71637",
+        "dfe7d90c-8a10-46bb-b6b2-24af6df49079",
+        "9be9b460-adba-4c57-97f0-f79f750ef823",
+        "affe71c2-3895-4165-ab25-b04a6a57c476"
+      ],
+      "answer_hash": "985276c1fcfb57e7a235dc6513d9196aecbacf9510325dfc21256da9761513ba",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "8c18457d",
+      "retrieved_memory_ids": [
+        "27e214c6-b6ec-4a91-9b9d-53a4ef5c487f",
+        "7e35c4d7-0cda-4aa9-9be9-539ffad811e2",
+        "5f24fdaf-2914-475b-a301-b7a143ab5cd4",
+        "59efa63b-a6b2-459f-9d6a-09c219e6e3eb",
+        "5818f868-9263-44cb-8173-b023d94701e5"
+      ],
+      "answer_hash": "31972c531ddb37cb592a6819881168855c041b0e012fab6a6abd3b1b48d4b1c4",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "gpt4_4edbafa2",
+      "retrieved_memory_ids": [
+        "27f0e13f-5172-4290-85fb-eee2a03f85df",
+        "c41c2d91-9a83-412b-8db7-cca1b4adac7d",
+        "3a89a626-b38e-4d08-9801-55b0f77fc69f",
+        "f6c716a8-62a4-4e96-8e57-c7cccf12bdc9",
+        "de71944e-010a-45cb-b497-1e85693c7e40"
+      ],
+      "answer_hash": "b76f1e1703d8f8ebc94ec4482cf2e4ff839b4c3215cb131af58d42dccf5a4edd",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "6613b389",
+      "retrieved_memory_ids": [
+        "bdf4f1c0-cfe9-47ed-b893-757c95527685",
+        "8dd239df-30ac-4791-bc8e-125af745783d",
+        "7fb67237-bfc6-4da0-82e6-d74de5d5b7b1",
+        "4e42b6bb-d548-4d6e-9e9d-a5c220186a17",
+        "90e6d6bb-47d3-4662-999a-9c678fc82a68"
+      ],
+      "answer_hash": "72404ff51401c62d11e6ca3d3ed13d94a6ad6a3e0d90188d40208941076b82e0",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "gpt4_af6db32f",
+      "retrieved_memory_ids": [
+        "39116cd6-b503-44b5-9fdc-47baa833cbe1",
+        "1bfe0681-898d-402b-adae-87858e751e5e",
+        "02f11cc9-22bc-467e-b831-7f2fdf4a69ca",
+        "5573e1e6-bdbb-4fdc-89bc-965d035b8698",
+        "6b28d6fe-e7bf-4cb5-a3cd-191708622713"
+      ],
+      "answer_hash": "9d35057c476fcdf750fe7465f4523508058d50b85c09439bce16243ff8cd75ea",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "gpt4_b0863698",
+      "retrieved_memory_ids": [
+        "681e9d1c-d996-4d27-9e55-8a6fe5a3c577",
+        "571e2403-c3ea-4821-80d0-eff4cf1cf91e",
+        "c0ccf38e-597e-45f3-9353-945c2b063ffe",
+        "ba2e2ce8-effb-4e94-8424-c66ccec7a965",
+        "7f68035e-1159-472e-843a-a0307314d467"
+      ],
+      "answer_hash": "2f0cbc78aff274d512e228550a028de4180c63c5ed4072df48acd7e74930cf35",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "852ce960",
+      "retrieved_memory_ids": [
+        "2ad43c04-98f2-40f9-8d6e-4be94fb87378",
+        "e8075de7-b308-4479-9feb-40aa80929545",
+        "df898b1e-d9b3-4268-b6f0-7edbd89957ee",
+        "ed9eee5f-43fe-4391-910d-52f19645c1ae",
+        "f292ac24-b19a-4a67-9ea0-0203153a6717"
+      ],
+      "answer_hash": "62a347a7304f090800ea04d771f8b4c694a633ab45b9608983e8c2ece33931c8",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "6a1eabeb",
+      "retrieved_memory_ids": [
+        "ae766788-c3bb-4932-a832-7a18c9eea801",
+        "3084a7c2-2f19-40b3-b639-4506a60bd206",
+        "de128903-7eeb-416a-ab50-88e3d2e37a05",
+        "28fda86b-da6d-48e5-9203-e81eb9ab196e",
+        "fc750250-e864-477f-9880-a13572bc3ad5"
+      ],
+      "answer_hash": "24ec22934db3a57b0447da4bf1f2880c3cc96841f30647f98660c1e69c995fcc",
+      "judgment_hash": "15a596e3c98c407e043751ff3b21ff0358a1bdfdf3fe948b1523893a8e5de2e8"
+    },
+    {
+      "question_id": "5831f84d",
+      "retrieved_memory_ids": [
+        "c2807849-2cef-46ce-9825-45e4e54f8046",
+        "9c0babbc-1b2a-4493-9a76-45c373b8800e",
+        "11046b60-6d25-4a91-8b27-c5e5522300c6",
+        "01bec9d9-5899-4f91-9a8f-3cede9abe92b",
+        "0ac94a5f-4833-4587-9a76-b5fbb5d25075"
+      ],
+      "answer_hash": "95552d9ba584449a220891190ad19c4a599b002f7f24695b09559a42770157f9",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "f685340e",
+      "retrieved_memory_ids": [
+        "c8df3c0e-4478-477d-97c4-1d45276d872d",
+        "4e60cdc7-99a4-4b21-b3a2-85816df668eb",
+        "4f58681d-b02a-4e21-bde7-d78c70e7aa96",
+        "034fb643-ba61-4507-9b7f-c8665dc45b5a",
+        "ecc6c169-2289-47d5-86f5-4f41cbe0f76d"
+      ],
+      "answer_hash": "04bc6bdcf7c1e94bd6715d10dfd99926f164b0c2872ca05c6507da1a0fd006c2",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "184da446",
+      "retrieved_memory_ids": [
+        "557c7847-2a0c-4df5-815a-57d39fdaa607",
+        "2ac14964-9f46-449c-be70-596aaea60970",
+        "d76239d5-b1d7-4c01-99ea-c29216b7dbe6",
+        "7c023f2c-3e94-4581-bf8a-4909fb026005",
+        "fb2355a2-f03d-4adb-af89-f05066df8cc1"
+      ],
+      "answer_hash": "081b7d1a219b2716d7a77e3827f52d59b667801c5e8c7e0e1561d34e02a39022",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "f685340e_abs",
+      "retrieved_memory_ids": [
+        "c8df3c0e-4478-477d-97c4-1d45276d872d",
+        "4f58681d-b02a-4e21-bde7-d78c70e7aa96",
+        "4e60cdc7-99a4-4b21-b3a2-85816df668eb",
+        "034fb643-ba61-4507-9b7f-c8665dc45b5a",
+        "ecc6c169-2289-47d5-86f5-4f41cbe0f76d"
+      ],
+      "answer_hash": "921f280fc9ef1b6b15a96db92c74924542a5e0eb35e9980e957560982ce3c17c",
+      "judgment_hash": "15a596e3c98c407e043751ff3b21ff0358a1bdfdf3fe948b1523893a8e5de2e8"
+    },
+    {
+      "question_id": "982b5123_abs",
+      "retrieved_memory_ids": [
+        "50218b59-be1a-4ff2-97e8-7ea503074a3c",
+        "5038135f-1c50-488e-83d4-87fafd49ee3d",
+        "c2753403-041c-4bab-a21c-0bdb8a05d47c",
+        "e7ed342b-b00f-4592-a806-88b467453c70",
+        "dc9a9aa6-1bc5-4ae2-a116-1bef0d93aa45"
+      ],
+      "answer_hash": "4ed1178889f9aa990829c891aadd58f8e5b4c65fe2e99e195282015ca9e2e049",
+      "judgment_hash": "15a596e3c98c407e043751ff3b21ff0358a1bdfdf3fe948b1523893a8e5de2e8"
+    },
+    {
+      "question_id": "gpt4_93159ced_abs",
+      "retrieved_memory_ids": [
+        "323a1b26-5ecd-4c49-bcdf-a3afc5c14252",
+        "53a4c9d8-26ca-4666-b827-4a5d50625149",
+        "c9a7b9bb-6545-4811-a4cc-79a92998bc6c",
+        "e7d6910e-1ec5-4ca9-97f7-9f5227c0fce1",
+        "8a415361-56d2-43c6-b346-6d9a2a02e8f3"
+      ],
+      "answer_hash": "f8a8dc548206d365604f4e4b2abd69bf59d06c03f11e594ded9cf6d209db9a83",
+      "judgment_hash": "15a596e3c98c407e043751ff3b21ff0358a1bdfdf3fe948b1523893a8e5de2e8"
+    },
+    {
+      "question_id": "80ec1f4f_abs",
+      "retrieved_memory_ids": [
+        "c3efe508-09bf-47ca-a3aa-d45d5799824f",
+        "7bb8fab5-4bd6-4bb0-a276-f85f0d8832e2",
+        "96bbbf08-bead-4042-8b23-c081c04816a3",
+        "81cbb77b-455d-49e3-be86-edc40c71d7bd",
+        "c0d2d5c9-7c64-45d1-b0a2-aeb0547c3303"
+      ],
+      "answer_hash": "a35355461fa864cd62101e6cda1324a432dd3d3f8ed29ae8456af9efb5555d88",
+      "judgment_hash": "15a596e3c98c407e043751ff3b21ff0358a1bdfdf3fe948b1523893a8e5de2e8"
+    },
+    {
+      "question_id": "gpt4_372c3eed_abs",
+      "retrieved_memory_ids": [
+        "03ee7947-c852-4341-87b3-8b4d5455ebb4",
+        "4c94b86c-82ab-4cca-b097-b645973e75e9",
+        "634060f2-326d-4c64-aa36-669d3c16aaf8",
+        "a84abfd4-b2e8-42d6-9a43-710dd381247a",
+        "8f47ebd9-2b73-4c9f-949a-28113163e662"
+      ],
+      "answer_hash": "554cf1cb6f6b59592438f35cd9d466ba70040948a4d84dc6f19db848f1947d62",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "ad7109d1",
+      "retrieved_memory_ids": [
+        "fab776ae-4231-4207-9952-75c4c16c1791",
+        "0623dd3c-7664-4de9-a068-fbbbf3affa12",
+        "6a31a72a-d995-4638-825a-a66bef0d1987",
+        "2d656391-f361-40f7-a0de-be171c43acba",
+        "79961092-8186-46a3-ac28-58b959f69fde"
+      ],
+      "answer_hash": "4dd8b47b6b1df9678fb391157a3823d8fcdbf1a155e8fbb93a8ab30b41d735be",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "2bf43736",
+      "retrieved_memory_ids": [
+        "1bb87fa6-a487-4b29-9f3c-ec2fafb94b03",
+        "bea7a2d8-c6d7-47f4-9e31-0511e02a6371",
+        "ce7f978c-c70d-4f06-b2c9-44beb5eefa5a",
+        "1fdf372c-f955-4a13-a39b-5062e280426f",
+        "38cfd14e-f913-409c-9416-e0300d4bc31a"
+      ],
+      "answer_hash": "357ae515ecda5dfc448b866fcd2dce0b90f9caa19c8b7836a42f46d74695d16a",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "75f70248",
+      "retrieved_memory_ids": [
+        "38928b72-3f9a-44cc-a6fa-8ba24b8e650a",
+        "99991189-7858-4f21-8739-59c0f60aab85",
+        "5047d020-5fed-4ddb-a765-fec55bf73c04",
+        "828b4bec-e4a2-419f-b2ec-35570920f46b",
+        "85ebf4d5-24cd-4190-839a-025cb96786d7"
+      ],
+      "answer_hash": "f91e7cc09d03c7b7afd6e2d0a4b16900cd5276a689e164d3bd22588a7725b2e5",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "a3332713",
+      "retrieved_memory_ids": [
+        "db12964a-a32e-4895-9de3-012df491888e",
+        "9cac7edc-a9e6-4ea9-8f06-ba30a26b94a8",
+        "b5afe9c9-daa1-414c-880a-cd951b2bfbf1",
+        "35d69769-b414-434a-a64f-7a3265be196d",
+        "af8360ac-90cc-463d-9709-dc051f89edcc"
+      ],
+      "answer_hash": "83e4af9ec81c192f392b3511770edf98a100fefdf03c90ab8fc20535836e9b56",
+      "judgment_hash": "15a596e3c98c407e043751ff3b21ff0358a1bdfdf3fe948b1523893a8e5de2e8"
+    },
+    {
+      "question_id": "0bb5a684",
+      "retrieved_memory_ids": [
+        "8b2ef27b-6bba-41de-815d-5cb5e3c4c07b",
+        "d418bea0-afaf-44dd-9125-b9991733e908",
+        "7a4321e6-a2b4-4213-859f-f4d1e62a6d82",
+        "5f42253d-8a4c-43a2-86d0-8ba5e67a3321",
+        "81ab40a2-71fb-4220-a184-65233ea672b8"
+      ],
+      "answer_hash": "794f025d15f3aaf1ebd2fc45bf88676117e837c4f9890d2f5b845bb39b88dff9",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "0977f2af",
+      "retrieved_memory_ids": [
+        "5ba453e0-7df0-415a-ab4a-5f5437c0197c",
+        "3a0b4725-fd35-44e6-ac2d-74b059264ef6",
+        "e2be2dee-ff7f-4576-9e16-320805203e45",
+        "26d5b6f5-1cf8-4c5b-b220-7c3bc9129dd9",
+        "3243c6ae-6999-4b37-9a9e-5d47c1f0bca4"
+      ],
+      "answer_hash": "7ca4dfd5bcc5471435aad5648416706342d996535e60339d52fb4ea256fa4cfe",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "c5e8278d",
+      "retrieved_memory_ids": [
+        "d1bc6f93-ab9f-4a22-a9f6-10a0ca67de2a",
+        "ddbcb2ef-bb7e-42f6-9c28-73ed584d4664",
+        "61c90bd3-49f1-4eb7-b19a-1e37b0f34622",
+        "37fa0a2b-3eff-4d45-8521-75e34ec4c870",
+        "e04a135a-0f5f-47a6-b9da-a9572b24b4b0"
+      ],
+      "answer_hash": "954e72316f15f10789e4da075a160a96de730edaa430fd55b68aca44003927db",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "c4f10528",
+      "retrieved_memory_ids": [
+        "e6e4aca9-d781-49a3-a39b-e04791b864e9",
+        "a44710f5-931c-4d79-b249-b1b0e255594c",
+        "be14ce5d-1967-40a7-bbcf-b27a8d769195",
+        "ca506ca2-c41d-4959-ae18-ff49453e0df9",
+        "ee348182-e891-4106-a93f-5740c1f2813c"
+      ],
+      "answer_hash": "352a2ba736cc48180650041184e390d852ab814d0014f553f677fbbf71b31ce6",
+      "judgment_hash": "15a596e3c98c407e043751ff3b21ff0358a1bdfdf3fe948b1523893a8e5de2e8"
+    },
+    {
+      "question_id": "0a34ad58",
+      "retrieved_memory_ids": [
+        "33fd3c19-c754-4f6f-93ec-63cedb923d26",
+        "bd18dd8c-da61-41d7-867b-cb44ed1a2766",
+        "869b2b6a-c223-414a-a25b-92e4db68a471",
+        "8fc230a1-9496-4790-801f-d4d2595709cd",
+        "ce89a76d-4746-48fb-be4e-b83cdc5ad98c"
+      ],
+      "answer_hash": "feb68116a0cd49ba1d393a0424123afa85ec24f083025b9384d5d21cc500ba89",
+      "judgment_hash": "d5da45250f0c5f29d83d59077cf9d185dfcd3bc5d4aa2387bde61b214efb74da"
+    },
+    {
+      "question_id": "92a0aa75",
+      "retrieved_memory_ids": [
+        "db7362e6-cb7a-454d-8ff9-7d1514e95c6d",
+        "57d1efd5-5bab-4bb5-953a-216a8867b8a5",
+        "e0c987a9-200d-4fd0-bccc-c312d5d6eea2",
+        "4e565c4d-4b02-4cf4-8b8c-36bf1ab03e4f",
+        "29d1881b-e475-444d-8af3-a3a8fe7ffc23"
+      ],
+      "answer_hash": "238339e0014e0919d8d2829e94fa542dc9c3d31358aa4910e035ddde0bb6a8f3",
+      "judgment_hash": "15a596e3c98c407e043751ff3b21ff0358a1bdfdf3fe948b1523893a8e5de2e8"
+    },
+    {
+      "question_id": "gpt4_65aabe59",
+      "retrieved_memory_ids": [
+        "26f963f3-4481-4be7-8954-d95e5f60295b",
+        "e598048e-c532-4168-b9c0-2babb3cb0e1f",
+        "04642a48-8369-4974-b40c-f49427ce051f",
+        "c648ae3c-4307-47f3-8a17-c7624764371b",
+        "ae5c9976-8d34-41e4-8b31-954d5b9902c8"
+      ],
+      "answer_hash": "8547d993f141dda419d66d49dd553b1eaaab4f0775dc1c18bb8fa5f446d3ab88",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "3ba21379",
+      "retrieved_memory_ids": [
+        "9d1d8ddd-b964-4c81-b7e0-df89d6b64fc7",
+        "65ff5b49-3f9a-41a0-b319-b0ba09e89786",
+        "3b88e87c-47b6-4162-b9eb-0fcf0c46f8a9",
+        "e43e0b13-0a92-4408-ac66-f58b6faafc2e",
+        "19e9575e-fb30-4d8a-94ab-6898119d851c"
+      ],
+      "answer_hash": "7eaf10a8f6e68b5db2b8d7bf68b34917ec4305c122b499139313e8f2275c70ec",
+      "judgment_hash": "15a596e3c98c407e043751ff3b21ff0358a1bdfdf3fe948b1523893a8e5de2e8"
+    },
+    {
+      "question_id": "545bd2b5",
+      "retrieved_memory_ids": [
+        "cf7eab2c-b396-4b83-a632-71875c9a6374",
+        "ae596651-a1c0-4c9e-91ec-d7e2352c044f",
+        "a82bd1d1-91ba-4d6b-aee5-62a17b599bf2",
+        "8d82b213-7de2-4763-ae65-1cd3e5088983",
+        "788b2dfa-af66-416b-b44a-8fbfd20c4e1b"
+      ],
+      "answer_hash": "ba65c180f750f0a13793a0b5744a151661c6b18e91e62dfe83c6073dc80375f3",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "1de5cff2",
+      "retrieved_memory_ids": [
+        "1f40dadf-c2c5-4709-9284-a931219aede3",
+        "1ea29b10-5962-435e-9ff7-49b5c5380879",
+        "34970ecb-707c-465c-8c84-f0a525b42ae8",
+        "a2186343-00ab-4b12-9675-ae61f0078ec0",
+        "b3083a0b-6115-4bae-97f7-3917cfa8cf0c"
+      ],
+      "answer_hash": "b3695cacc6101e035309415fdbe8e43263d237a875f65bc9474e934af58bc64b",
+      "judgment_hash": "15a596e3c98c407e043751ff3b21ff0358a1bdfdf3fe948b1523893a8e5de2e8"
+    },
+    {
+      "question_id": "09d032c9",
+      "retrieved_memory_ids": [
+        "4261d36f-59f6-46fb-a7ba-41c8bd0e7215",
+        "10c26ef9-a1e7-4841-982d-d267bda72b64",
+        "2edf6fc2-12d8-4744-a818-f17c3ffaedec",
+        "fb6512de-7bfa-4be6-9454-f9fe5d61e934",
+        "cbc95c3d-34ba-4174-b84c-b07ed8d355d8"
+      ],
+      "answer_hash": "35932bac3c486c14581eae3a36f8081dab67f3ad7cf257de0112c61b72517e95",
+      "judgment_hash": "15a596e3c98c407e043751ff3b21ff0358a1bdfdf3fe948b1523893a8e5de2e8"
+    },
+    {
+      "question_id": "cc06de0d",
+      "retrieved_memory_ids": [
+        "00aa04b8-ad46-4d95-8bdc-fa460045c8fc",
+        "8ff56298-c047-4cdb-b6ba-a86ae02193dd",
+        "5df41157-f7f8-48c1-aaaa-f363390b9574",
+        "f05c4977-50fd-47dc-abb4-b9cff5bd2aa0",
+        "021b00c8-c6a6-4530-8cac-c5e199c4148a"
+      ],
+      "answer_hash": "cb7d41089d0a6f61987adbd6967633dcfc9154fb204376abb254f908e45e8cb0",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "gpt4_93159ced",
+      "retrieved_memory_ids": [
+        "e39c3c79-58c4-4a0f-a64e-c256126e86ea",
+        "193ee030-8dd1-46b7-8c4a-dc0b4b3f1ebe",
+        "a5886967-ab01-44ba-b17e-bfa08c7be750",
+        "7b792132-7cd1-4fb9-90f0-79ad8adfb8a7",
+        "4812c2c7-1cc0-4b87-8477-abd6cfde9fa7"
+      ],
+      "answer_hash": "5389344e016b77893f3eb7558f18769364e3f422f6e488a976ad6a47f5ed47f2",
+      "judgment_hash": "15a596e3c98c407e043751ff3b21ff0358a1bdfdf3fe948b1523893a8e5de2e8"
+    },
+    {
+      "question_id": "59524333",
+      "retrieved_memory_ids": [
+        "2b839cd3-5579-418d-87fa-4dde4700e866",
+        "e0231188-7e9c-4ff7-8ff6-6da422cae957",
+        "82ac38e6-56a3-4319-89a8-f06eb6d4dc97",
+        "b9c6d639-2868-4fbd-83d2-13f15e6957f2",
+        "5a5aeb77-17d5-4724-a041-84dd12d8dd1d"
+      ],
+      "answer_hash": "6093515fd955746e6d90d35c74a1e3dedb166fa4f6b826d615582a5c6298de66",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    },
+    {
+      "question_id": "25e5aa4f",
+      "retrieved_memory_ids": [
+        "10374180-44a5-4419-b3f6-0eb5f703be69",
+        "ce419f9c-736e-4854-8cce-434ddd504852",
+        "27cf4502-cc46-47e9-8667-91bc8f7d499f",
+        "9e35a978-7494-4bc1-8475-f7fd79c0e278",
+        "01c518f8-aa97-4271-bbd3-7364b6f36902"
+      ],
+      "answer_hash": "3df1dbe75856c6b06e0c70e1da1b680434370d715178b234d0031d2a342c5ce2",
+      "judgment_hash": "15a596e3c98c407e043751ff3b21ff0358a1bdfdf3fe948b1523893a8e5de2e8"
+    },
+    {
+      "question_id": "7a8d0b71",
+      "retrieved_memory_ids": [
+        "49f2299b-d0dd-4e97-8a91-d5562deb6004",
+        "97b10088-c0ea-47bf-baec-c470159fedd5",
+        "7f7850f4-6d9a-47e6-9e5f-c16aa68502e7",
+        "7f5f6d9b-8837-4c5b-94d4-bbc120432a02",
+        "f4c00103-16c0-481d-af62-16b9dc38725a"
+      ],
+      "answer_hash": "e536206b98df4de9b691629b904593569dbdc4780375afd4c1db3adeadc105ad",
+      "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3"
+    }
+  ]
+}

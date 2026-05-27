@@ -1,0 +1,263 @@
+{
+  "version": 2,
+  "dataset_path": "/tmp/smoke_e47/e47becba.json",
+  "created_at": "2026-05-01T12:28:59+00:00",
+  "updated_at": "2026-05-01T12:29:02+00:00",
+  "phases": {
+    "ingest": {
+      "status": "pending",
+      "started_at": null,
+      "updated_at": null,
+      "completed_count": 0,
+      "results": {}
+    },
+    "evaluate": {
+      "status": "completed",
+      "started_at": "2026-05-01T12:28:59+00:00",
+      "updated_at": "2026-05-01T12:29:02+00:00",
+      "completed_count": 1,
+      "results": {
+        "e47becba": {
+          "question_id": "e47becba",
+          "question": "What degree did I graduate with?",
+          "reference": "",
+          "hypothesis": "Let me check that for you. Please hold on a moment.",
+          "category": "IE-user",
+          "judgment": "incorrect",
+          "memories_used": 0,
+          "retrieved_memory_ids": [],
+          "answer_hash": "cbf1f9ef30cef336cec914426e41a07ec00d31d1004848a39e96d73be8cef5ed",
+          "judgment_hash": "203d3536bd62ad33ac70b7ea3d4f5e10b6d52ebd0cb7582841a053aebb7186a3",
+          "answer_model": "openai/gpt-4o-2024-08-06",
+          "answer_fingerprint": "fp_3028a26f07",
+          "judge_model": "openai/gpt-4o-2024-08-06",
+          "judge_fingerprint": "fp_246dab3317",
+          "answer_prompt_metadata": {
+            "system_message": "You are Daemon, a personal AI assistant.\n\nWhen asked \"who are you\" or similar, respond: \"I'm Daemon, a personal AI assistant.\"\n\nIf the user presses for specifics about your model or capabilities, be honest: explain you are currently running on a specific model (which may vary), that you can switch models automatically based on requests, and that you have tools and subagents at your disposal. The exact wording can vary naturally.\n\nYou respond directly most of the time. When necessary, you spawn specialized subagents for research, image generation, code tasks, document reading, or document generation.\n\nBe concise, accurate, and pragmatic.\n\nYou have access to tools that you can call when they help:\n- get_time: Returns the current time (defaults to Australia/Adelaide).\n- calculate: Perform mathematical calculations.\n- web_search: Search the web using Brave Search API.\n- web_fetch: Fetch content from a URL using multiple strategies (direct, Jina, Crawl4AI, Archive.org).\n  For YouTube URLs, prefer web_fetch with extract=\"transcript\".\n- http_request: Make HTTP requests to external APIs.\n- notification_send: Send push notifications via ntfy.sh.\n- reminder_set: Set reminders for later.\n- reminder_list: List your reminders.\n- consult_advisor: Consult an expert domain-specific advisor for guidance on complex reasoning, code review, research synthesis, or when uncertain about your approach. Prefer this before spawning a subagent for complex tasks \u2014 advisors give strategic guidance while subagents execute in isolation.\n- spawn_agent: Spawn a specialized subagent (research, image, audio, code, reader, document) for complex tasks. Use when an advisor recommends spawning or when isolated execution is clearly needed.\n- spawn_multiple: Spawn multiple subagents in parallel.\n\nWhen to use consult_advisor:\n- Complex reasoning problems where a domain expert perspective would help\n- Code review, architecture questions, or debugging strategies\n- Research synthesis or multi-source analysis\n- When uncertain about your approach and want a second opinion before acting\n- The advisor gives strategic guidance; you decide whether to follow it\n\nAdvisor traces are audit artifacts: they are stored for record-keeping and replay but are never\ninjected into your prompt context for future turns. This keeps your context clean and prevents\n advisor reasoning from biasing subsequent decisions. Only the advisor's final answer reaches you.\n\nWhen to use spawn_agent:\n- Use @research for: current news, fact-checking, market research, comparison shopping\n- Use @image for: generating images, art, diagrams, visualizations, or videos\n- Use @audio for: generating sound effects, audio clips, music snippets, ambient sounds\n- Use @code for: code review, debugging, generating code snippets\n- Use @reader for: analyzing documents, extracting information from files\n- Use @document for: generating .docx Word documents, .csv spreadsheets, or other document files\n- When an advisor recommends spawning, or when isolated subagent execution is clearly needed\n- When spawning @document, include a filename field in context: a short kebab-case descriptor from user intent (examples: quarterly-status-report, meeting-notes-march, jane-smith-resume). Do not include file extension. If unclear, omit filename.\n\nVideo generation is available through the @image subagent with mode=\"video\" in context. BEFORE offering video generation, ALWAYS check if the user has sufficient video credits using the credit check tool. Only offer video generation if the user has enough credits. If credits are insufficient, suggest they purchase credits or upgrade \u2014 do not mention video as an option unless the user explicitly asks. Free tier cannot generate videos. Video generation costs video credits based on duration (~$0.05/second).\n\nIf the user asks for a retry, variation, or follow-up after a spawn_agent result, call spawn_agent again and reuse the previous session by passing session_id from the last spawn_agent tool result metadata. Do not claim you lack context in these follow-ups.\n\nDo not use http_request for image generation. Always use spawn_agent with agent_type=\"image\" for images.\n\nWhen asked for the time:\n1. Call get_time to get the current local time.\n2. Answer in the local time provided by the tool (include the timezone abbreviation).\n3. If relevant, you can also mention the UTC time.\n\n## Memory\n\nYou have persistent memory about the current user. Relevant memories are injected into\nyour context automatically \u2014 check the \"What you know about this user\" section above.\n\n## Memory Categories\n- fact: Personal details, relationships, biographical info\n  \"User's brother is named Callan\", \"User lives in Adelaide\"\n- preference: Likes, dislikes, opinions, style choices\n  \"User prefers terse responses\", \"User's favourite colour is blue\"\n- project: Ongoing work, goals, plans\n  \"User is building Daemon, a personal AI assistant\"\n- correction: Fixes to previous memories\n  \"User's dog is Max, not Rex\"\n- summary: Conversation summaries (system-generated only)\n\nWhen asked about personal facts, preferences, or prior context, call memory_read before\nanswering. Do not speculate about what you do or don't remember.\n\nFor deeper recall, use memory_read:\n- Temporal queries \u2192 mode: temporal, with after/before dates\n- Specific facts \u2192 mode: semantic, with targeted query\n- Don't search for things already in your injected context\n\n## When to Use memory_reflect vs memory_read\n\nUse **memory_read** for simple factual recall:\n- \"What city does the user live in?\"\n- \"What's their preferred programming language?\"\n- \"When did they last work on the Daemon project?\"\n\nUse **memory_reflect** for synthesis, patterns, and history questions:\n- \"How has the user's preferences evolved over time?\"\n- \"What patterns are there in their work habits?\"\n- \"What is the history of their interest in AI?\"\n- \"How have their opinions on X changed?\"\n- \"What does their stack/projects suggest about their interests?\"\n- \"What themes emerge across their recent conversations?\"\n\nmemory_reflect uses expanded retrieval (top-15) with L0 memories included, calls the\norchestrator model for synthesis, and produces no memory writes. Only call it when\nthe question genuinely asks for synthesis or pattern analysis \u2014 do not call it for\nsimple factual lookups.\n\nUse memory_write when the user explicitly asks you to remember or forget something,\nor when they correct a previous fact. Routine facts are captured automatically \u2014\nyou don't need to store everything manually.\n\nMemory operations are invisible to the user. If a memory tool call fails,\nretry with corrected parameters. Never surface memory errors, category\nchoices, or storage mechanics to the user. The user says \"my brother is\nnamed Callan\" \u2014 you respond naturally and store the fact silently.\n\nIf current conversation contradicts an injected memory, follow the conversation\nand use memory_write to update the memory.\n\n## Slot Guidance\n\nWhen correcting or updating a fact, provide a slot so the old memory is properly\nsuperseded. Slots use dotted hierarchies matching the domain:\n  slot=\"vehicle\"  slot=\"location.city\"  slot=\"preference.editor\"\n  slot=\"hardware.gpu\"  slot=\"job.title\"  slot=\"pet.name\"\n\nPrefer action=\"create\" with a slot over action=\"update\" for corrections \u2014 the system\ntracks history automatically. Only use action=\"update\" when you have the specific\nmemory_id to revise.\n\nWhen using memory_read for targeted recall, pass slot to narrow results:\n  memory_read(query=\"car\", slot=\"vehicle\") \u2014 only vehicle memories\n  memory_read(query=\"what changed\", history=true) \u2014 includes superseded memories\n\n## Interactive HTML Artifacts\n\nWhen interaction helps, output one `html:interactive` code block. Keep any surrounding prose short (1-2 sentences) and do not narrate implementation steps.\n\nQuality bar for artifacts:\n- Use a polished, card-based layout with clear spacing and visual hierarchy.\n- Prefer sliders, segmented controls, and prominent numeric outputs over raw form-heavy UI.\n- Include at least one visual element (chart, bars, timeline, or progress visualization) when relevant.\n- Make it responsive and touch-friendly (minimum control height ~40px).\n- Use theme variables: `--bg-primary`, `--bg-secondary`, `--bg-tertiary`, `--text-primary`, `--text-secondary`, `--text-muted`, `--accent`, `--border`, `--status-success|warning|error`.\n- In narrative text, only claim features that are visibly present in the HTML you output. Do not mention a chart, curve, tooltip, legend, or control unless it is actually rendered.\n\nTechnical requirements:\n- Self-contained HTML/CSS/JS only (no external scripts, styles, fonts, images, or network calls).\n- Keep total artifact payload under 50KB.\n- Include resize messaging so container height adapts:\n  `window.parent.postMessage({ type: 'artifact-height', height: document.body.scrollHeight }, '*')`\n- Always label controls and keep keyboard focus visible.\n- Keep explanatory prose short and specific to what users can immediately see and interact with.\n\nUse artifacts for calculators, simulations, data explainers, comparison tools, and educational interactives.\n\nYou have access to memory tools for reading and writing durable user and project context.",
+            "user_message": "What degree did I graduate with?",
+            "memory_content": "",
+            "memories_raw": [],
+            "model": "openai/gpt-4o-2024-08-06",
+            "answer_fingerprint": "fp_3028a26f07",
+            "provider_endpoint_slug": "openai",
+            "seed": 42,
+            "temperature": 0.0
+          },
+          "failure_category": ""
+        }
+      }
+    },
+    "score": {
+      "status": "pending",
+      "started_at": null,
+      "updated_at": null,
+      "completed_count": 0,
+      "accuracy": {}
+    }
+  },
+  "benchmark_effective_config": {
+    "lane": "canonical",
+    "pin_path": "tests/benchmark_longmemeval/longmemeval_config_pin.json",
+    "runtime": {
+      "dataset_path": "/tmp/smoke_e47/e47becba.json",
+      "limit": null,
+      "output_path": "tests/benchmark_results/wave0_closure_smoke/longmemeval_results.jsonl",
+      "checkpoint_path": "tests/benchmark_results/wave0_closure_smoke/longmemeval_checkpoint.json",
+      "score_path": "tests/benchmark_results/wave0_closure_smoke/longmemeval_score.json",
+      "force_retrieval_logging": true,
+      "benchmark_mode": true
+    },
+    "pinned_authority": {
+      "pin_schema_version": 1,
+      "inventory_source": "tests/benchmark_longmemeval/CONFIG_PINNING.md",
+      "shared": {
+        "provider_route": {
+          "openrouter_base_url": "https://openrouter.ai/api/v1",
+          "openrouter_referer": "https://daemon.ai",
+          "openrouter_title": "Daemon AI Assistant",
+          "request_timeout_s": 300.0,
+          "benchmark_mode": {
+            "extra_body_required": true,
+            "allow_fallbacks": false,
+            "description": "Benchmark mode requires extra_body={'provider': {'order': [<provider_slug>], 'allow_fallbacks': false}}"
+          }
+        },
+        "answer": {
+          "model": "openrouter/openai/gpt-4o",
+          "temperature": 0.7,
+          "max_tokens": 256,
+          "prompt_contract_kind": "aligned_system_user_with_legacy_fallback_v1",
+          "active_message_roles": [
+            "system",
+            "user"
+          ],
+          "legacy_fallback_message_roles": [
+            "user"
+          ],
+          "prompt_sha256": "946c5b14964f0309857d499bb0a8e9ec4d4194f4ff69fb00514dc80b3a49568c",
+          "benchmark_mode": {
+            "model": "openrouter/openai/gpt-4o-2024-08-06",
+            "endpoint_slug": "openai",
+            "temperature": 0.0,
+            "seed": 42,
+            "extra_body_provider_order": [
+              "openai"
+            ],
+            "extra_body_allow_fallbacks": false
+          }
+        },
+        "judge": {
+          "model": "openrouter/openai/gpt-4o",
+          "temperature": 0.0,
+          "max_tokens": 256,
+          "prompt_sha256": "c4a43ae86a71d37c7094463871d75452a0b9664109702ab82f6b2f9e4b2751b5",
+          "benchmark_mode": {
+            "model": "openrouter/openai/gpt-4o-2024-08-06",
+            "endpoint_slug": "openai",
+            "temperature": 0.0,
+            "seed": 42,
+            "extra_body_provider_order": [
+              "openai"
+            ],
+            "extra_body_allow_fallbacks": false
+          }
+        },
+        "query_embedding": {
+          "embedding_query_model": "voyage-4-lite",
+          "embedding_dimensions": 1024
+        },
+        "retrieval": {
+          "call_contract": {
+            "top_k_memories": 5,
+            "include_l0": true,
+            "include_dream_observations": true,
+            "retrieval_triggered_by": "longmemeval"
+          },
+          "logging": {
+            "retrieval_logging_enabled": false,
+            "retrieval_logging_debug": false,
+            "effective_force_retrieval_logging": true
+          },
+          "ranking": {
+            "initial_vector_candidates": 10,
+            "min_final_score": 0.15,
+            "hybrid_vector_weight": 0.5,
+            "hybrid_bm25_weight": 0.3,
+            "hybrid_recency_confidence_weight": 0.2
+          },
+          "scope_defaults": {
+            "include_local": false,
+            "include_historical": false,
+            "memory_slot": null
+          },
+          "inactive_controls": {
+            "max_returned_memories": 5,
+            "active_in_longmemeval": false,
+            "effective_limit_authority": "TOP_K_MEMORIES"
+          }
+        }
+      },
+      "canonical": {
+        "artifact_contract": {
+          "results_filename": "longmemeval_results.jsonl",
+          "checkpoint_filename": "longmemeval_checkpoint.json",
+          "score_filename": "longmemeval_score.json",
+          "checkpoint_version": 2
+        },
+        "benchmark_user": {
+          "user_id": "12345678-1234-5678-1234-567812345678",
+          "email": "longmemeval@daemon.test"
+        },
+        "corpus_plan": {
+          "build_corpus_plan_sha256": "f193048b827163055ae2e944769c6fc8175a4101017551046a84b5bcaa38abad",
+          "normalize_session_messages_sha256": "2215c4b4ffb2816f35d1dacb91c84279d2da30a51e6c80702a75737ece691ec0"
+        },
+        "extraction": {
+          "model": "openrouter/placeholder/extraction-model",
+          "prompt_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "input_max_chars": 10000,
+          "temperature": 0.0,
+          "top_p": 1.0,
+          "max_tokens": 1024,
+          "confidence_calibration": {
+            "default_extracted_confidence": 0.5,
+            "hedge_override_confidence": 0.3,
+            "strong_override_confidence": 0.9,
+            "correction_min_confidence": 0.0
+          },
+          "benchmark_mode": {
+            "model": "openrouter/placeholder/extraction-model",
+            "endpoint_slug": "openai",
+            "temperature": 0.0,
+            "seed": 42,
+            "extra_body_provider_order": [
+              "openai"
+            ],
+            "extra_body_allow_fallbacks": false
+          }
+        },
+        "document_embedding": {
+          "embedding_document_model": "voyage-4-large",
+          "embedding_dimensions": 1024
+        },
+        "dedup": {
+          "merge_threshold": 0.9,
+          "supersede_threshold": 0.82,
+          "supersede_same_slot_threshold": 0.65,
+          "contradiction_model": "openrouter/placeholder/contradiction-model",
+          "contradiction_temperature": 0.1,
+          "check_contradiction_sha256": "98180695e84d61ad6ad03abda84115ae248ee024ee2aaffd7f31db4bd5865549",
+          "benchmark_mode": {
+            "model": "openrouter/placeholder/contradiction-model",
+            "endpoint_slug": "novita",
+            "temperature": 0.0,
+            "seed": 42,
+            "extra_body_provider_order": [
+              "novita"
+            ],
+            "extra_body_allow_fallbacks": false
+          }
+        }
+      },
+      "fast_lane_reference": {
+        "artifact_contract": {
+          "results_filename": "longmemeval_fast_results.jsonl",
+          "checkpoint_filename": "longmemeval_fast_checkpoint.json"
+        },
+        "benchmark_user_strategy": {
+          "fresh_user_per_run": true,
+          "build_benchmark_user_sha256": "ac4faf958ca1fab2d8110a6092461d8dfc505c7a88fcb606c44c29bdd9aa7a8a"
+        },
+        "chunking": {
+          "default_chunk_max_chars": 4000,
+          "default_overlap_turns": 2,
+          "sample_user_turn": "[User]: Example text",
+          "sample_assistant_turn": "[Assistant]: Example text"
+        },
+        "direct_insert": {
+          "benchmark_name": "longmemeval_fast",
+          "benchmark_source_type": "import",
+          "benchmark_category": "fact",
+          "insert_chunk_memories_sha256": "aa99a88773c71b6e5fe12e47efd4ea1fc922f4c5ab65e5178347889a22034334"
+        },
+        "logging": {
+          "effective_force_retrieval_logging": true
+        }
+      }
+    }
+  },
+  "benchmark_config_drift_warnings": [
+    "canonical.dedup.benchmark_mode.model: pinned='openrouter/deepseek/deepseek-chat-v3-5' effective='openrouter/placeholder/contradiction-model'",
+    "canonical.dedup.check_contradiction_sha256: pinned='231d90af9c13755925b4f7ca98d82f3e975adecbbd2426127fc5d506979734df' effective='98180695e84d61ad6ad03abda84115ae248ee024ee2aaffd7f31db4bd5865549'",
+    "canonical.dedup.contradiction_model: pinned='openrouter/deepseek/deepseek-chat-v3.5' effective='openrouter/placeholder/contradiction-model'",
+    "canonical.extraction.benchmark_mode.model: pinned='openrouter/openai/gpt-4o-mini-2024-07-18' effective='openrouter/placeholder/extraction-model'",
+    "canonical.extraction.confidence_calibration.correction_min_confidence: pinned=0.9 effective=0.0",
+    "canonical.extraction.confidence_calibration.default_extracted_confidence: pinned=0.8 effective=0.5",
+    "canonical.extraction.confidence_calibration.hedge_override_confidence: pinned=0.65 effective=0.3",
+    "canonical.extraction.confidence_calibration.strong_override_confidence: pinned=0.92 effective=0.9",
+    "canonical.extraction.input_max_chars: pinned=4000 effective=10000",
+    "canonical.extraction.max_tokens: pinned=2000 effective=1024",
+    "canonical.extraction.model: pinned='openrouter/openai/gpt-4o-mini' effective='openrouter/placeholder/extraction-model'",
+    "canonical.extraction.prompt_sha256: pinned='e9898c7a0d76fe1444ced1560a1c21df78cc3341d3caf930ae738344ee180378' effective='e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'"
+  ]
+}

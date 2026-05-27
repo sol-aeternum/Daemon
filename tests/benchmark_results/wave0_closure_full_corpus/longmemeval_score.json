@@ -1,0 +1,13 @@
+{
+  "generated_at": "2026-05-01T13:27:35+00:00",
+  "result_count": 500,
+  "accuracy": {
+    "IE-user": 0.366,
+    "IE-assistant": 0.0,
+    "IE-preference": 0.0,
+    "MR": 0.0,
+    "KU": 0.0,
+    "TR": 0.0,
+    "ABS": 0.0
+  }
+}
