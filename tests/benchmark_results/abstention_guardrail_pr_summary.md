@@ -40,8 +40,8 @@ The archived guardrail text is recoverable from uncommitted archive (`.cleanup/2
 | File | Commit | Description |
 |------|--------|-------------|
 | `tests/benchmark_results/abstention_guardrail_wiring_audit.md` | `3155d69f` | Main audit artifact (395 lines) |
-| `abstention_guardrail_oracle_disposition.md` | Not tracked | Oracle selected `wire-it`; file status unknown |
-| `abstention_guardrail_wire_it_plan_stub.md` | Not tracked | Non-production plan stub for separate wire-it authorization |
+| `abstention_guardrail_oracle_disposition.md` | Committed in this fix | Oracle selected `wire-it`; disposition with rationale and consequences |
+| `abstention_guardrail_wire_it_plan_stub.md` | Committed in this fix | Non-production plan stub for separate wire-it authorization |
 
 ---
 
