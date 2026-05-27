@@ -12,7 +12,7 @@ The `MEMORY_EVIDENCE_ABSTENTION_GUARDRAIL` constant is **genuinely unwired** fro
 
 - **Constant absent**: `MEMORY_EVIDENCE_ABSTENTION_GUARDRAIL` does not exist in any committed Python source. Import probe returns `ImportError`.
 - **Assembly unwired**: `assemble_system_prompt()` in `orchestrator/memory/injection.py` imports only `DAEMON_SYSTEM_PROMPT`. No reference to the guardrail constant, its verbatim text, or paraphrased equivalent.
-- **Git history confirms zero**: Python-path-limited pickaxe returns zero commits. The string never appeared in any committed Python file.
+- **Production unwired**: Python-path-limited pickaxe confirms the string is absent from production source (`orchestrator/prompts.py`). Test and archive references may exist; the critical gap is that `orchestrator/prompts.py` does not define/export the constant and `assemble_system_prompt()` does not import/append it.
 - **Generic guidance is semantically distinct**: Generic "do not speculate" (DAEMON_SYSTEM_PROMPT:63) addresses not guessing whether a memory exists; it does not substitute for the archived guardrail's instruction to say "I don't know" when retrieved memory is insufficient.
 
 Full audit: `tests/benchmark_results/abstention_guardrail_wiring_audit.md`
@@ -59,8 +59,6 @@ EXIT_CODE: 0
 
 **Critical caveat**: This gate tests harness-side saved prompt artifacts, NOT production `assemble_system_prompt()` wiring. A passing gate does NOT prove the guardrail is present in production.
 
-Full output: `.sisyphus/evidence/task-8-final-pytest.txt`
-
 ---
 
 ## Forbidden Path Verification
@@ -81,7 +79,7 @@ git diff --name-only HEAD -- orchestrator/memory/ orchestrator/eval/runner.py or
 ### W1 TODO 4 — Harness Parity Diagnostic
 
 - **Does NOT need patching** before W1 commissioning.
-- The pytest gate passing proves harness-side toggle works on harness-side artifacts. It does NOT measure production guardrail behavior.
+- The pytest gate passing confirms harness-side saved artifacts/checkpoints differ between guardrail-on and guardrail-off states. It does NOT prove the live harness toggle still runs or that production wiring is correct.
 - W1 TODO 4 remains a harness parity diagnostic, not production restoration.
 
 ### W1 TODO 9 — Production Restoration
@@ -104,8 +102,6 @@ git diff --name-only HEAD -- orchestrator/memory/ orchestrator/eval/runner.py or
 **Commit**: Made — `docs(memory): summarize abstention guardrail audit`
 **Branch pushed**: `auth-device-model-2026-05-27` → `origin/auth-device-model-2026-05-27`
 **PR created**: See URL below
-
-Full lifecycle evidence: `.sisyphus/evidence/task-8-pr-lifecycle.md`
 
 ---
 
