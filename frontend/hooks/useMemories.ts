@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { getAuthHeader } from "@/lib/auth";
 
 export interface Memory {
   id: string;
@@ -46,8 +47,9 @@ export function useMemories() {
     (process.env.NODE_ENV === "development" ? "http://localhost:8000" : "");
 
   const getAuthHeaders = useCallback((): Record<string, string> => {
-    const apiKey = typeof window !== "undefined" ? localStorage.getItem("daemon_api_key") || "" : "";
-    return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+    const header = getAuthHeader();
+    if (!header) return {};
+    return { Authorization: header };
   }, []);
 
   const apiCandidates = useCallback(

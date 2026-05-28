@@ -1,5 +1,16 @@
 # TRIAGE.md
 
+## 2026-05-28 UTC — Frontend build blocked by pre-existing advisorEvents.ts type error
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 17 setup page verification (Playwright screenshot)
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: `npm run build` in `frontend/` fails with `./lib/advisorEvents.ts:3:21 Type error: Module '"./events"' has no exported member 'isAdvisorEvent'`. This prevents building the frontend and thus prevents launching the dev server for a Playwright screenshot.
+- **Evidence**: `next build --webpack` output shows `Failed to compile.` at `./lib/advisorEvents.ts:3:21`.
+- **Likely cause**: Pre-existing frontend issue where `lib/advisorEvents.ts` imports `isAdvisorEvent` from `lib/events.ts`, but `events.ts` does not export that symbol. Documented in task context as "lib/advisorEvents.ts missing advisor guards and 19 advisor/tool-call test failures" (confidence 95%).
+- **Suggested action**: Fix `lib/events.ts` to export `isAdvisorEvent` or remove the broken import from `lib/advisorEvents.ts`. Out of scope for Task 17.
+
 ## 2026-05-27 UTC — Repository LSP error scan surfaced unrelated dirty-tree Python errors
 - **Severity**: warning
 - **Scope**: project
@@ -110,6 +121,18 @@
 - **Likely cause**: LiteLLM emitted provider-resolution/help output during repeated extraction-model calls even though the configured model still returned usable benchmark results (confidence 70%).
 - **Suggested action**: If this keeps cluttering benchmark output, inspect the active LiteLLM/provider configuration for extraction-model resolution and suppress or redirect this help-text noise in benchmark runs.
 - **Seen again**: 2026-04-16 during autonomous-skill-creation Task 13 when `PYTHONPATH=. python tests/benchmark_extraction.py --json --no-save` passed but printed `Provider List: https://docs.litellm.ai/docs/providers` repeatedly throughout the 8-scenario run.
+
+## 2026-05-28T02:05Z — httpx per-request cookies deprecation still emitted by auth tests
+
+- **Severity**: warning
+- **Scope**: upstream
+- **Encountered during**: Task 21 amendment verification
+- **Category**: dependency
+- **Blocked current task**: no
+- **What happened**: Targeted auth pytest runs passed, but existing tests still emit `httpx` deprecation warnings because they use per-request `cookies={...}` arguments. The warning appears in enrollment, refresh, device-management, and route-hardening suites.
+- **Evidence**: `DeprecationWarning: Setting per-request cookies=<...> is being deprecated, because the expected behaviour on cookie persistence is ambiguous. Set cookies directly on the client instance instead.` from `/home/sol/.local/lib/python3.14/site-packages/httpx/_client.py:1859` and `:1966` during `pytest tests/test_route_auth_hardening.py -q` and `pytest tests/test_auth_middleware.py tests/test_auth_cookies_csrf.py tests/test_setup_flow.py tests/test_enrollment_flow.py tests/test_refresh_flow.py tests/test_device_management.py tests/test_auth_user_scoping.py -q`.
+- **Likely cause**: Existing tests were written against older `httpx` behavior and have not yet been updated to set cookies on the client/session instead of passing them per request (confidence 96%).
+- **Suggested action**: Update affected auth tests to use client-level cookie state before `httpx` removes per-request cookie support.
 
 ## 2026-04-16 03:40 — Extraction Benchmark Dedup Supersession Still Leaves Corolla Facts Active
 - **Severity**: warning
@@ -492,6 +515,25 @@
 - **Seen again**: 2026-04-10 during F4 scope fidelity rerun on current repository state.
 - **Likely cause**: Local/tooling environment is missing the configured Biome binary required for JS/TS/JSON diagnostics (confidence 99%).
 - **Suggested action**: Install `@biomejs/biome` or adjust tooling configuration before relying on LSP cleanliness for frontend/test files.
+
+## 2026-05-27 UTC — auth-device-model branch missing Task 13 commit and auth test files
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: Task 14 — legacy API-key removal verification
+- **Category**: config
+- **Blocked current task**: yes
+- **What happened**: The current branch `auth-device-model-2026-05-27` is not descended from the expected Task 13 commit `6a8f64e6`, and all auth test files committed by Task 13 are absent from the working tree. Task 14 edits are applied atop an unexpected base, making safe commit/closure impossible without branch history reconciliation.
+- **Evidence**:
+  - `git branch --show-current` → `auth-device-model-2026-05-27`
+  - `git rev-parse HEAD` → `cf1e163239e76feec95aacebd0d865046b5e4c5a`
+  - `git rev-parse origin/auth-device-model-2026-05-27` → `cf1e163239e76feec95aacebd0d865046b5e4c5a`
+  - `git show --stat --oneline 6a8f64e6` → commit exists
+  - `git branch -a --contains 6a8f64e6` → no containing branch output (commit not reachable from current branch)
+  - `git ls-files tests/test_enrollment_flow.py tests/test_refresh_flow.py tests/test_device_management.py tests/test_session_cleanup.py` → no files tracked
+  - Directory listing confirms those expected auth test files are absent
+- **Likely cause**: Branch history was rewritten or Task 13 was never merged to the current branch; plan assumed prior auth commits were present in the working tree (confidence 97%).
+- **Suggested action**: Investigate whether Task 13 commit `6a8f64e6` should be cherry-picked or merged into `auth-device-model-2026-05-27`, and restore the auth test files before closing Task 14.
+- **Note**: Verification also surfaced unrelated failures: `npm run build` failed on `lib/advisorEvents.ts` (missing `isAdvisorEvent` export), and `npm run test:run` failed 19 existing advisor/tool-call tests. Changed-file LSP diagnostics and Task 14 grep acceptance passed. These advisor/test failures are pre-existing and separate from the branch mismatch.
 
 ## 2026-04-10 00:00 — Pre-existing BasedPyright Errors Outside Changed Tier2 Files
 - **Severity**: warning
@@ -1032,3 +1074,14 @@
 - **Evidence**: `remote: warning: File .cleanup/2026-05-06/safety-net/untracked_archive/tests/benchmark_results/wave0_full_corpus_recovery/longmemeval_filtered_dataset.json is 91.64 MB; this is larger than GitHub's recommended maximum file size of 50.00 MB`
 - **Likely cause**: Large benchmark recovery artifact was included in the pre-existing cleanup archive committed to preserve local work (confidence 95%).
 - **Suggested action**: Review whether large benchmark/archive artifacts should be moved to external artifact storage or Git LFS in a separate cleanup task.
+
+## 2026-05-28T20:04:00Z — pycache permission denied during syntax verification
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Task 14 — legacy API-key removal final verification
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: `python -m py_compile` on modified Python files failed with `Permission denied: __pycache__/*.pyc` due to container host-user vs container-process user mismatch (container root vs host user).
+- **Evidence**: `PermissionError: [Errno 13] Permission denied: 'orchestrator/__pycache__/main.cpython-314.pyc.140168641807248'`
+- **Likely cause**: Host user's permissions don't match container's pycache directory ownership (confidence 95%).
+- **Suggested action**: Use `python -c "import ..."` syntax check instead of `py_compile` for verification in containerized environments.

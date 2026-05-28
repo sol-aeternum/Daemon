@@ -399,29 +399,3 @@ async def test_chat_per_message_model_override_bypasses_auto_routing(
     assert routing["model"] == explicit_model
     assert routing["tier"] == "explicit"
     assert routing["reason"] == f"user_selected:{explicit_model}"
-
-
-@pytest.mark.asyncio
-async def test_api_key_authentication(client, monkeypatch):
-    """Test that API key authentication works when configured."""
-    monkeypatch.setenv("DAEMON_API_KEY", "test-secret-key")
-    get_settings.cache_clear()
-
-    # Request without key should fail
-    response = await client.get("/health")
-    assert response.status_code == 200  # Health is public
-
-    response = await client.get("/providers")
-    assert response.status_code == 401
-
-    # Request with wrong key should fail
-    response = await client.get(
-        "/providers", headers={"Authorization": "Bearer wrong-key"}
-    )
-    assert response.status_code == 401
-
-    # Request with correct key should succeed
-    response = await client.get(
-        "/providers", headers={"Authorization": "Bearer test-secret-key"}
-    )
-    assert response.status_code == 200

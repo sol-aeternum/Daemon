@@ -14,6 +14,7 @@ import { PromptInput } from "./components/PromptInput";
 import { ReferenceUpload } from "./components/ReferenceUpload";
 import { ResolutionPicker } from "./components/ResolutionPicker";
 import { useVideoGeneration } from "./hooks/useVideoGeneration";
+import { getAuthHeader } from "@/lib/auth";
 
 const DEFAULT_STUDIO_USER_ID = "00000000-0000-0000-0000-000000000001";
 const VALID_VIDEO_TIERS = ["free", "starter", "pro", "max", "byok"] as const;
@@ -44,11 +45,9 @@ function getApiBaseUrl(): string {
 }
 
 function getAuthHeaders(): HeadersInit {
-  if (typeof window === "undefined") {
-    return {};
-  }
-  const apiKey = localStorage.getItem("daemon_api_key") || "";
-  return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+  const header = getAuthHeader();
+  if (!header) return {};
+  return { Authorization: header };
 }
 
 function isVideoTier(value: string): value is VideoTier {

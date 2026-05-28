@@ -11,6 +11,7 @@ const settingsNav = [
   { href: '/settings/voice', label: 'Voice' },
   { href: '/settings/appearance', label: 'Appearance' },
   { href: '/settings/memory', label: 'Memory' },
+  { href: '/settings/devices', label: 'Devices' },
   { href: '/settings/skills', label: 'Skills' },
 ];
 

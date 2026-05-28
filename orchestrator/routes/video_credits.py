@@ -5,25 +5,13 @@ from pydantic import BaseModel
 from typing import List
 import uuid
 
+from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.db import get_app_state, AppState
 from db.video_credits import Transaction
 from orchestrator.config import Settings, get_settings
 from config.video_pricing import estimate_cost
 
 router = APIRouter(prefix="/video-credits", tags=["video_credits"])
-
-DEFAULT_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
-
-
-def require_api_key(settings: Settings, authorization: str | None) -> None:
-    """Require valid API key for authentication."""
-    if not settings.daemon_api_key:
-        return
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing bearer token")
-    token = authorization.removeprefix("Bearer ").strip()
-    if token != settings.daemon_api_key:
-        raise HTTPException(status_code=401, detail="Invalid bearer token")
 
 
 def require_admin_api_key(settings: Settings, authorization: str | None) -> None:
@@ -34,11 +22,6 @@ def require_admin_api_key(settings: Settings, authorization: str | None) -> None
     token = authorization.removeprefix("Bearer ").strip()
     if token != settings.daemon_admin_api_key:
         raise HTTPException(status_code=403, detail="Invalid admin bearer token")
-
-
-def get_bound_user_id() -> uuid.UUID:
-    return DEFAULT_USER_ID
-
 
 def get_bound_tier(settings: Settings) -> str:
     tier = settings.default_tier.lower().strip()
@@ -75,17 +58,13 @@ class EstimateResponse(BaseModel):
 @router.get("/balance", response_model=BalanceResponse)
 async def get_balance(
     app_state: AppState = Depends(get_app_state),
-    settings: Settings = Depends(get_settings),
-    authorization: str | None = Header(default=None, alias="Authorization"),
-    user_id: uuid.UUID = Query(..., description="User ID to get balance for"),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
     """Get current video credit balance for a user."""
-    require_api_key(settings, authorization)
-
     if app_state.video_credits_dal is None:
         raise HTTPException(status_code=503, detail="Video credits service unavailable")
 
-    balance = await app_state.video_credits_dal.get_balance(user_id)
+    balance = await app_state.video_credits_dal.get_balance(auth.user_id)
     return BalanceResponse(balance=balance)
 
 
@@ -94,18 +73,14 @@ async def get_transactions(
     limit: int = Query(50, le=100),
     offset: int = Query(0),
     app_state: AppState = Depends(get_app_state),
-    settings: Settings = Depends(get_settings),
-    authorization: str | None = Header(default=None, alias="Authorization"),
-    user_id: uuid.UUID = Query(..., description="User ID to get transactions for"),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
     """Get paginated transaction history for a user."""
-    require_api_key(settings, authorization)
-
     if app_state.video_credits_dal is None:
         raise HTTPException(status_code=503, detail="Video credits service unavailable")
 
     transactions = await app_state.video_credits_dal.get_transactions(
-        user_id, limit, offset
+        auth.user_id, limit, offset
     )
     # Get total count for pagination
     db_pool = app_state.db_pool
@@ -115,7 +90,7 @@ async def get_transactions(
     async with db_pool.acquire() as conn:
         total = await conn.fetchval(
             "SELECT COUNT(*) FROM video_credit_transactions WHERE user_id = $1",
-            user_id,
+            auth.user_id,
         )
 
     return TransactionListResponse(
@@ -130,6 +105,7 @@ async def grant_credits(
     app_state: AppState = Depends(get_app_state),
     settings: Settings = Depends(get_settings),
     authorization: str | None = Header(default=None, alias="Authorization"),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
     """Admin-only endpoint to grant video credits to a user."""
     require_admin_api_key(settings, authorization)
@@ -164,14 +140,11 @@ async def estimate_video_cost(
     tier: str = Query(..., description="User tier (free, starter, pro, max, or byok)"),
     provider: str = Query("xai", description="Video provider (xai)"),
     resolution: str | None = Query(None, description="Requested output resolution"),
-    user_id: uuid.UUID = Query(..., description="User ID"),
     app_state: AppState = Depends(get_app_state),
     settings: Settings = Depends(get_settings),
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
     """Estimate credits required for a video of given duration and tier."""
-    require_api_key(settings, authorization)
-
     tier_lower = tier.lower().strip()
     if tier_lower not in VALID_TIERS:
         raise HTTPException(status_code=400, detail="Invalid tier")
@@ -202,7 +175,7 @@ async def estimate_video_cost(
         )
 
     # Get user's current balance
-    current_balance = await app_state.video_credits_dal.get_balance(user_id)
+    current_balance = await app_state.video_credits_dal.get_balance(auth.user_id)
 
     # Calculate credits required
     credits_required = estimate_cost(
