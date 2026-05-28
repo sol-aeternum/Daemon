@@ -97,10 +97,7 @@ export function useStreamingTts(options: StreamingTtsOptions = {}) {
 
     try {
       // Fetch token for WebSocket auth
-      const storedDaemonKey = localStorage.getItem("daemon_api_key")?.trim();
-      const tokenResponse = await fetch("/api/audio/token", {
-        headers: storedDaemonKey ? { Authorization: `Bearer ${storedDaemonKey}` } : undefined,
-      });
+      const tokenResponse = await fetch("/api/audio/token");
       
       if (!tokenResponse.ok) {
         throw new Error("Failed to get audio token");

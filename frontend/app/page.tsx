@@ -28,6 +28,7 @@ import { MicButton } from "../components/MicButton";
 import { TextToSpeechButton } from "../components/TextToSpeechButton";
 import { StreamingTtsMessage } from "../components/StreamingTtsMessage";
 import { useLocalStorage } from "../hooks/useLocalStorage";
+import { refreshIfNeeded, getAuthHeader } from "../lib/auth";
 import { ThinkingIndicator } from "../components/ThinkingIndicator";
 import MarkdownMessage from "../components/MarkdownMessage";
 import { FileDownloadCard } from "../components/FileDownloadCard";
@@ -603,15 +604,21 @@ function ChatContent() {
     body: { id: currentId || latestConversationIdRef.current || null },
     id: currentId || undefined,
     initialMessages: currentConversation?.messages || [],
-    fetch: (input, init) => {
+    fetch: async (input, init) => {
+      await refreshIfNeeded();
       const body = init?.body ? JSON.parse(init.body as string) : {};
       body.model = activeModel;
-      // Preserve id from body option
       if (body.id === undefined) {
         body.id = currentId || latestConversationIdRef.current || null;
       }
+      const headers = new Headers(init?.headers);
+      const authHeader = getAuthHeader();
+      if (authHeader) {
+        headers.set("Authorization", authHeader);
+      }
       return fetch(input, {
         ...init,
+        headers,
         body: JSON.stringify(body),
       });
     },

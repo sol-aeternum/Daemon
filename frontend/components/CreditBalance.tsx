@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Coins, ExternalLink, Loader2, RefreshCw, TriangleAlert } from "lucide-react";
+import { getAuthHeader } from "@/lib/auth";
 
 export interface CreditBalanceProps {
   mode: "compact" | "expanded";
@@ -27,11 +28,9 @@ function getApiBaseUrl(): string {
 }
 
 function getAuthHeaders(): HeadersInit {
-  if (typeof window === "undefined") {
-    return {};
-  }
-  const apiKey = localStorage.getItem("daemon_api_key") || "";
-  return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+  const header = getAuthHeader();
+  if (!header) return {};
+  return { Authorization: header };
 }
 
 export function CreditBalance({ mode, userId, refreshInterval }: CreditBalanceProps) {

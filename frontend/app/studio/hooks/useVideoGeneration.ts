@@ -2,6 +2,7 @@
 
 import { useCallback, useRef } from "react";
 import { useStudio } from "../StudioProvider";
+import { getAuthHeader } from "@/lib/auth";
 
 type VideoSourceMode = "text-to-video" | "image-to-video";
 type VideoTier = "starter" | "pro" | "max" | "byok";
@@ -41,11 +42,9 @@ function getApiBaseUrl(): string {
 }
 
 function getAuthHeaders(): HeadersInit {
-  if (typeof window === "undefined") {
-    return {};
-  }
-  const apiKey = localStorage.getItem("daemon_api_key") || "";
-  return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+  const header = getAuthHeader();
+  if (!header) return {};
+  return { Authorization: header };
 }
 
 function toObject(value: unknown): JsonObject | null {

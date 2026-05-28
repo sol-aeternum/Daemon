@@ -22,6 +22,7 @@ import {
   User,
   Code,
 } from 'lucide-react';
+import { getAuthHeader } from '@/lib/auth';
 
 type ActionStatus = 'idle' | 'loading' | 'success' | 'error';
 type FilterType = 'all' | 'system' | 'imported' | 'manual' | 'autonomous';
@@ -78,24 +79,22 @@ export default function SkillsTab() {
   const [showFilters, setShowFilters] = useState(false);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
 
-  const getAuthHeaders = useCallback(() => {
-    const apiKey = typeof window !== 'undefined' ? localStorage.getItem('daemon_api_key') || '' : '';
-    const headers: Record<string, string> = {};
-
-    if (apiKey) {
-      headers.Authorization = `Bearer ${apiKey}`;
-    }
-
-    return headers;
+  const getAuthHeaders = useCallback((): HeadersInit => {
+    const header = getAuthHeader();
+    if (!header) return [];
+    return { Authorization: header };
   }, []);
 
-  const getJsonHeaders = useCallback(
-    () => ({
-      'Content-Type': 'application/json',
-      ...getAuthHeaders(),
-    }),
-    [getAuthHeaders]
-  );
+  const getJsonHeaders = useCallback((): HeadersInit => {
+      const authHeader = getAuthHeader();
+      if (authHeader) {
+        return {
+          'Content-Type': 'application/json',
+          Authorization: authHeader,
+        };
+      }
+      return { 'Content-Type': 'application/json' };
+    }, [getAuthHeader]);
 
   const fetchWithTimeout = useCallback(
     async (path: string, init: RequestInit = {}, timeoutMs = 12000) => {

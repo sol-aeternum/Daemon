@@ -197,8 +197,7 @@ export default function SettingsPanel({ sttSettings, setSttSettings }: SettingsP
                 onClick={async () => {
                   try {
                     await fetch(`${apiBaseUrl}/memory/all`, {
-                      method: 'DELETE',
-                      headers: { 'Authorization': `Bearer ${localStorage.getItem('daemon_api_key')}` }
+                      method: 'DELETE'
                     });
                     window.location.reload();
                   } catch (error) {

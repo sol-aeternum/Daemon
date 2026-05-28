@@ -18,6 +18,7 @@ import {
   AlertTriangle,
   MessageSquare,
 } from 'lucide-react';
+import { getAuthHeader } from '@/lib/auth';
 
 interface MemoryStats {
   total: number;
@@ -69,8 +70,9 @@ export default function MemoryTab() {
     (process.env.NODE_ENV === 'development' ? 'http://localhost:8000' : '');
 
   const getAuthHeaders = useCallback((): Record<string, string> => {
-    const apiKey = typeof window !== 'undefined' ? localStorage.getItem('daemon_api_key') || '' : '';
-    return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+    const header = getAuthHeader();
+    if (!header) return {};
+    return { Authorization: header };
   }, []);
 
   const apiCandidates = useCallback(
