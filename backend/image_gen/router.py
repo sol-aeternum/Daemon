@@ -14,10 +14,9 @@ from backend.image_gen.dispatcher import GenerationEvent, dispatch_parallel
 from backend.image_gen.models import (
     TierName,
     get_image_model,
-    get_image_models_for_tier,
 )
 from backend.image_gen.storage import ImageStorage
-from orchestrator.config import Settings, get_settings
+from orchestrator.auth import AuthenticatedDevice, require_device_auth
 
 router = APIRouter(prefix="/api/images", tags=["images"])
 
@@ -55,13 +54,10 @@ class UploadReferenceResponse(BaseModel):
 
 @router.get("/models")
 async def get_models(
-    settings: Annotated[Settings, Depends(get_settings)],
-    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
     x_daemon_tier: Annotated[str | None, Header(alias="X-Daemon-Tier")] = None,
     tier: Literal["free", "starter", "pro", "max", "byok"] | None = None,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> JSONResponse:
-    _require_api_key(settings, authorization)
-
     resolved_tier = tier or x_daemon_tier or "starter"
     if resolved_tier not in _ALLOWED_TIERS:
         raise HTTPException(status_code=400, detail=f"Invalid tier: {resolved_tier}")
@@ -85,10 +81,8 @@ async def get_models(
 @router.get("/{image_id}")
 async def get_image(
     image_id: str,
-    settings: Annotated[Settings, Depends(get_settings)],
-    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> Response:
-    _require_api_key(settings, authorization)
     try:
         image_bytes, content_type = _storage.get_image(image_id)
     except ValueError as exc:
@@ -102,10 +96,8 @@ async def get_image(
 @router.get("/{image_id}/metadata")
 async def get_image_metadata(
     image_id: str,
-    settings: Annotated[Settings, Depends(get_settings)],
-    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> JSONResponse:
-    _require_api_key(settings, authorization)
     try:
         metadata = _storage.get_metadata(image_id)
     except ValueError as exc:
@@ -119,11 +111,8 @@ async def get_image_metadata(
 @router.post("/upload-reference", response_model=UploadReferenceResponse)
 async def upload_reference(
     file: Annotated[UploadFile, File(...)],
-    settings: Annotated[Settings, Depends(get_settings)],
-    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> UploadReferenceResponse:
-    _require_api_key(settings, authorization)
-
     filename = file.filename or ""
     if not filename:
         raise HTTPException(status_code=400, detail="Missing file name")
@@ -179,11 +168,8 @@ async def upload_reference(
 async def generate_images(
     request: Request,
     payload: GenerateRequest,
-    settings: Annotated[Settings, Depends(get_settings)],
-    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> StreamingResponse:
-    _require_api_key(settings, authorization)
-
     request_reference_b64 = payload.reference_image_b64
     if request_reference_b64 is None and payload.reference_id:
         try:
@@ -229,16 +215,6 @@ async def generate_images(
             "X-Accel-Buffering": "no",
         },
     )
-
-
-def _require_api_key(settings: Settings, authorization: str | None) -> None:
-    if not settings.daemon_api_key:
-        return
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing bearer token")
-    token = authorization.removeprefix("Bearer ").strip()
-    if token != settings.daemon_api_key:
-        raise HTTPException(status_code=401, detail="Invalid bearer token")
 
 
 def _validate_generation_request(
