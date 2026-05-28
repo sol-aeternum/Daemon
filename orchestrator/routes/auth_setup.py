@@ -364,11 +364,17 @@ async def enroll_complete_endpoint(
                     detail="Enrollment session expired",
                 )
 
-            code_valid = verify_enrollment_code(
-                body.code,
-                pepper,
-                pending_row["code_verifier_hash"],
-            )
+            try:
+                code_valid = verify_enrollment_code(
+                    body.code,
+                    pepper,
+                    pending_row["code_verifier_hash"],
+                )
+            except (ValueError, AttributeError):
+                raise HTTPException(
+                    status_code=401,
+                    detail="Invalid enrollment code",
+                )
 
             if not code_valid:
                 wrong_attempts = pending_row["wrong_attempts_remaining"] - 1

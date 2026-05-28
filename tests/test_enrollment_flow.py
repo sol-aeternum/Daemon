@@ -808,6 +808,67 @@ class TestMalformedPendingId:
             restore_init(original)
 
 
+class TestMalformedCode:
+    @pytest.mark.asyncio
+    async def test_malformed_code_returns_401(self, setup_env, monkeypatch):
+        mock_pool = MockPool(active_device_count=1)
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                state = app.state.app_state
+
+                access_token = "test-access-token-malformed-code"
+                state.db_pool._access_token = access_token
+                state.db_pool._access_token_hash = hash_token(access_token)
+                state.db_pool._user_id = SINGLETON_ID
+                state.db_pool._device_id = uuid.uuid4()
+                state.db_pool._session_id = uuid.uuid4()
+
+                async def mock_verify(pool, token):
+                    if token == access_token:
+                        from orchestrator.auth import AuthenticatedDevice
+                        return AuthenticatedDevice(
+                            user_id=SINGLETON_ID,
+                            device_id=pool._device_id,
+                            session_id=pool._session_id,
+                        )
+                    return None
+
+                import orchestrator.auth as auth_module
+                original_verify = auth_module._verify_access_token
+                auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
+
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    valid_pending_id = str(uuid.uuid4())
+                    malformed_codes = [
+                        "1234567",
+                        "123456789",
+                        "abcdefgh",
+                        "1234-567",
+                        "12345-678",
+                        "12-345678",
+                        "abcd-efgh",
+                        "",
+                        "1234 5678",
+                        "1234567a",
+                    ]
+                    for malformed_code in malformed_codes:
+                        response = await client.post(
+                            "/v1/auth/enroll/complete",
+                            json={
+                                "pending_id": valid_pending_id,
+                                "code": malformed_code,
+                                "client_kind": "native",
+                            },
+                        )
+                        assert response.status_code == 401, f"Expected 401 for code={malformed_code!r}, got {response.status_code}"
+
+                auth_module._verify_access_token = original_verify
+        finally:
+            restore_init(original)
+
+
 class TestNoPlaintextCode:
     @pytest.mark.asyncio
     async def test_no_plaintext_code_in_db(self, setup_env, monkeypatch):
