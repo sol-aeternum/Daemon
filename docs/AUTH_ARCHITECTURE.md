@@ -1,11 +1,11 @@
 # Daemon Auth / Device Architecture
 
-This document locks the architecture for replacing shared `DAEMON_API_KEY` authentication with per-device opaque-token authentication. It is derived from `.sisyphus/plans/auth-device-model.md`, `_scratch_auth_audit.md`, and `_scratch_auth_research.md` only.
+This document locks the architecture for replacing the legacy shared-credential authentication model with per-device opaque-token authentication. It is derived from `.sisyphus/plans/auth-device-model.md`, `_scratch_auth_audit.md`, and `_scratch_auth_research.md` only.
 
 ## Locked Decisions
 
-### Decision 1 — Hard-remove `DAEMON_API_KEY`
-`DAEMON_API_KEY` is removed as an authentication model. There is no API-key coexistence, fallback token env var, migration helper, deprecation path, or `AUTH_MODE` feature flag.
+### Decision 1 — Hard-remove legacy credential model
+The legacy shared-credential model is removed as an authentication approach. There is no API-key coexistence, fallback token env var, migration helper, deprecation path, or feature flag for the old model.
 
 ### Decision 2 — Preserve the singleton user
 The existing singleton user ID `00000000-0000-0000-0000-000000000001` remains the user identity. Setup find-or-creates this user inside the setup transaction and must not destroy existing conversations, memories, settings, or video-credit ownership.
@@ -288,10 +288,10 @@ Audit gaps to harden:
 
 ## Frontend Token Model
 
-The web frontend uses an auth runtime/AuthProvider with memory-only access-token state. It refreshes with `credentials: "include"`, updates memory with the new access token, and clears memory state when logout/revoke clears the cookie. Existing `localStorage.getItem("daemon_api_key")` and direct backend calls carrying localStorage credentials are removed.
+The web frontend uses an auth runtime/AuthProvider with memory-only access-token state. It refreshes with `credentials: "include"`, updates memory with the new access token, and clears memory state when logout/revoke clears the cookie. Existing localStorage credential references and direct backend calls carrying stored credentials are removed.
 
 SSE/chat requests pre-refresh before opening long streams. The access token is attached at request creation; if a new request is required after expiry, the frontend refreshes and reconnects.
 
 ## Out-of-Scope Follow-Ups
 
-The following are explicitly not part of this architecture task or auth-device-model implementation: OAuth/PKCE, social login/OIDC, passkeys/WebAuthn/FIDO2, 2FA/TOTP, multi-user auth, email/password recovery, mobile UI, push auth, API-key coexistence, `AUTH_MODE`, migration helpers, fallback auth env vars, and setup-token URLs.
+The following are explicitly not part of this architecture task or auth-device-model implementation: OAuth/PKCE, social login/OIDC, passkeys/WebAuthn/FIDO2, 2FA/TOTP, multi-user auth, email/password recovery, mobile UI, push auth, API-key coexistence, runtime auth-mode switches, migration helpers, fallback auth env vars, and setup-token URLs.

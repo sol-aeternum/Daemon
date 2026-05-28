@@ -1,6 +1,6 @@
 -- Migration: 031_auth_device_model
 -- Devices, sessions, and pending_enrollments for per-device opaque-token auth.
--- Replaces the legacy DAEMON_API_KEY model.
+-- Replaces the legacy shared-credential auth model.
 --
 -- Security anchors (AUTH_ARCHITECTURE.md):
 -- Decision 7:  Tokens are 256-bit opaque values (secrets.token_urlsafe(32))
