@@ -816,6 +816,8 @@ class TestMalformedCode:
         try:
             async with app.router.lifespan_context(app):
                 state = app.state.app_state
+                settings = get_settings()
+                pepper = validate_and_get_pepper(settings)
 
                 access_token = "test-access-token-malformed-code"
                 state.db_pool._access_token = access_token
@@ -841,17 +843,29 @@ class TestMalformedCode:
                 transport = ASGITransport(app=app)
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     valid_pending_id = str(uuid.uuid4())
+                    stored_code = "12345678"
+                    code_verifier_hash = hash_enrollment_code(stored_code, pepper)
+                    pending_row = {
+                        "id": uuid.UUID(valid_pending_id),
+                        "user_id": SINGLETON_ID,
+                        "code_verifier_hash": code_verifier_hash,
+                        "wrong_attempts_remaining": 3,
+                        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
+                        "consumed_at": None,
+                    }
+                    state.db_pool._pending_enrollments[uuid.UUID(valid_pending_id)] = pending_row
+
                     malformed_codes = [
                         "1234567",
                         "123456789",
                         "abcdefgh",
                         "1234-567",
-                        "12345-678",
-                        "12-345678",
                         "abcd-efgh",
                         "",
-                        "1234 5678",
                         "1234567a",
+                        "!@#$%^&",
+                        "aaaaaaa!",
+                        "1234567!",
                     ]
                     for malformed_code in malformed_codes:
                         response = await client.post(
