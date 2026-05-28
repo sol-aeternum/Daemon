@@ -363,7 +363,6 @@ DATABASE_URL=postgresql://user:pass@postgres:5432/daemon
 REDIS_URL=redis://redis:6379
 
 # Security
-DAEMON_API_KEY=
 DAEMON_ENCRYPTION_KEY=
 
 # Optional
