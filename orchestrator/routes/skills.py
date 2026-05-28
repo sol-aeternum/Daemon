@@ -13,6 +13,7 @@ from fastapi import (
     UploadFile,
 )
 
+from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.config import Settings, get_settings
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
@@ -120,7 +121,10 @@ class PendingUpdateAction(BaseModel):
 
 
 @router.get("")
-async def list_skills(request: Request) -> dict[str, list[skills_store.SkillSummary]]:
+async def list_skills(
+    request: Request,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
+) -> dict[str, list[skills_store.SkillSummary]]:
     skills = skills_store.list_skills()
     if hasattr(request.app.state, "app_state"):
         app_state = request.app.state.app_state
@@ -147,7 +151,11 @@ async def list_skills(request: Request) -> dict[str, list[skills_store.SkillSumm
 
 
 @router.get("/{skill_id}")
-async def get_skill(skill_id: str, request: Request) -> skills_store.SkillDetail:
+async def get_skill(
+    skill_id: str,
+    request: Request,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
+) -> skills_store.SkillDetail:
     try:
         detail = skills_store.get_skill(skill_id)
         try:
@@ -163,7 +171,9 @@ async def get_skill(skill_id: str, request: Request) -> skills_store.SkillDetail
 
 @router.post("", status_code=201)
 async def create_skill(
-    payload: SkillCreate, request: Request
+    payload: SkillCreate,
+    request: Request,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> skills_store.SkillDetail:
     try:
         result = skills_store.create_skill(
@@ -187,6 +197,7 @@ async def upload_skill(
     request: Request,
     file: Annotated[UploadFile, File(...)],
     overwrite: Annotated[bool, Form()] = False,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> skills_store.SkillDetail:
     filename = file.filename or ""
     if not filename:
@@ -218,7 +229,10 @@ async def upload_skill(
 
 @router.put("/{skill_id}")
 async def update_skill(
-    skill_id: str, payload: SkillUpdate, request: Request
+    skill_id: str,
+    payload: SkillUpdate,
+    request: Request,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> skills_store.SkillDetail:
     try:
         result = skills_store.update_skill(
@@ -240,7 +254,10 @@ async def update_skill(
 
 @router.patch("/{skill_id}/enabled")
 async def set_skill_enabled(
-    skill_id: str, payload: SkillEnabledUpdate, request: Request
+    skill_id: str,
+    payload: SkillEnabledUpdate,
+    request: Request,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> skills_store.SkillDetail:
     try:
         result = skills_store.update_skill(
@@ -261,7 +278,11 @@ async def set_skill_enabled(
 
 
 @router.delete("/{skill_id}")
-async def delete_skill(skill_id: str, request: Request) -> dict[str, str]:
+async def delete_skill(
+    skill_id: str,
+    request: Request,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
+) -> dict[str, str]:
     try:
         skills_store.delete_skill(skill_id)
         sync = _get_sync_service(request)
@@ -279,6 +300,7 @@ async def set_skill_autonomous_edit(
     skill_id: str,
     payload: SkillAutonomousEditUpdate,
     request: Request,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> dict[str, Any]:
     """Toggle allow_autonomous_edit flag for a skill."""
     try:
@@ -305,6 +327,7 @@ async def handle_pending_update(
     skill_id: str,
     payload: PendingUpdateAction,
     request: Request,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> dict[str, Any]:
     """Apply or dismiss a pending update for a skill via the upgrade service."""
     if not hasattr(request.app.state, "app_state"):
@@ -348,7 +371,10 @@ async def handle_pending_update(
 
 
 @router.get("/{skill_id}/download")
-async def download_skill(skill_id: str) -> PlainTextResponse:
+async def download_skill(
+    skill_id: str,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
+) -> PlainTextResponse:
     """Download skill as markdown file.
 
     Returns the canonical markdown (frontmatter + body) suitable for
@@ -383,6 +409,7 @@ async def admin_sync_repo_skills(
     request: Request,
     settings: Settings = Depends(get_settings),
     authorization: str | None = Header(default=None, alias="Authorization"),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> AdminSyncResponse:
     require_admin_api_key(settings, authorization)
 
