@@ -204,7 +204,7 @@ export default function EnrollmentModal({
               </p>
               <button
                 type="button"
-                onClick={loadEnrollment}
+                onClick={() => void loadEnrollment()}
                 className="mt-2 px-4 py-2 text-sm font-medium text-accent-primary hover:bg-accent-subtle rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
               >
                 Try again
