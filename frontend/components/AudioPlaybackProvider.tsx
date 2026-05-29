@@ -6,8 +6,11 @@ import {
   useRef,
   useState,
   useCallback,
+  useEffect,
   ReactNode,
 } from "react";
+import { ensureAuthHeader } from "../lib/auth";
+import { getProtectedMediaUrl } from "../hooks/useAuthenticatedImageUrl";
 
 /**
  * AudioPlaybackProvider manages a single HTMLAudioElement for cached TTS playback.
@@ -66,6 +69,14 @@ export function AudioPlaybackProvider({
   >(null);
   const [isLoading, setIsLoading] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const objectUrlRef = useRef<string | null>(null);
+
+  const revokeObjectUrl = useCallback(() => {
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
+    }
+  }, []);
 
   const stop = useCallback(() => {
     if (audioRef.current) {
@@ -76,17 +87,41 @@ export function AudioPlaybackProvider({
       audioRef.current.oncanplay = null;
       audioRef.current = null;
     }
+    revokeObjectUrl();
     setCurrentlyPlayingText(null);
     setIsLoading(false);
-  }, []);
+  }, [revokeObjectUrl]);
+
+  useEffect(() => stop, [stop]);
 
   const play = useCallback(
-    (text: string, audioUrl: string, playbackRate: number = 1.0) => {
+    async (text: string, audioUrl: string, playbackRate: number = 1.0) => {
       // Stop any currently playing audio
       stop();
 
+      const protectedUrl = getProtectedMediaUrl(audioUrl);
+      let playableUrl = audioUrl;
+      if (protectedUrl) {
+        setCurrentlyPlayingText(text);
+        setIsLoading(true);
+        try {
+          const authHeader = await ensureAuthHeader();
+          const headers: HeadersInit = {};
+          if (authHeader) headers.Authorization = authHeader;
+          const response = await fetch(protectedUrl, { headers });
+          if (!response.ok) throw new Error(`fetch ${response.status}`);
+          const blob = await response.blob();
+          playableUrl = URL.createObjectURL(blob);
+          objectUrlRef.current = playableUrl;
+        } catch (err) {
+          console.error("Failed to load authenticated audio:", err);
+          stop();
+          return;
+        }
+      }
+
       // Create new audio element
-      const audio = new Audio(audioUrl);
+      const audio = new Audio(playableUrl);
       audioRef.current = audio;
       setCurrentlyPlayingText(text);
       setIsLoading(true);
@@ -101,6 +136,7 @@ export function AudioPlaybackProvider({
         if (audioRef.current === audio) {
           audioRef.current = null;
           setCurrentlyPlayingText(null);
+          revokeObjectUrl();
         }
         setIsLoading(false);
       };
@@ -109,6 +145,7 @@ export function AudioPlaybackProvider({
         if (audioRef.current === audio) {
           audioRef.current = null;
           setCurrentlyPlayingText(null);
+          revokeObjectUrl();
         }
         setIsLoading(false);
         console.error("Audio playback error");
@@ -119,7 +156,7 @@ export function AudioPlaybackProvider({
         stop();
       });
     },
-    [stop]
+    [revokeObjectUrl, stop]
   );
 
   const isPlaying = useCallback(
