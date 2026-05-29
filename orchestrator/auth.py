@@ -40,6 +40,19 @@ class AuthenticatedDevice:
     session_id: uuid.UUID
 
 
+@dataclass
+class AdminOrDeviceAuth:
+    """Result of admin-or-device authentication with explicit admin signal.
+
+    The is_admin field explicitly indicates whether auth succeeded via
+    admin API key (True) or device token (False). Callers must NOT
+    infer admin status from user_id comparison with sentinel UUIDs.
+    """
+
+    authenticated_device: AuthenticatedDevice
+    is_admin: bool
+
+
 async def _verify_access_token(
     db_pool: asyncpg.Pool,
     token: str,
@@ -184,3 +197,66 @@ async def require_device_auth(
     request.state.session_id = auth_result.session_id
 
     return auth_result
+
+
+async def require_admin_or_device_auth(
+    request: Request,
+) -> AdminOrDeviceAuth:
+    """FastAPI dependency: authenticate via admin API key OR device access token.
+
+    Use in route handlers as:
+        auth: AdminOrDeviceAuth = Depends(require_admin_or_device_auth)
+
+    This is for admin endpoints that should accept EITHER:
+      - The DAEMON_ADMIN_API_KEY credential (admin key auth), OR
+      - A valid device access token (device auth)
+
+    The Authorization header is checked as admin key first, then as device token.
+    Raises HTTPException 401 if neither authentication succeeds.
+
+    Returns AdminOrDeviceAuth with explicit is_admin signal. Callers must NOT
+    infer admin status by comparing user_id to sentinel UUIDs.
+    """
+    from orchestrator.config import get_settings
+
+    authorization = request.headers.get("Authorization")
+    token = _extract_bearer_token(authorization)
+
+    if token is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing or invalid authorization header",
+        )
+
+    settings = get_settings()
+
+    if settings.daemon_admin_api_key and token == settings.daemon_admin_api_key:
+        admin_device = AuthenticatedDevice(
+            user_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+            device_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+            session_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+        )
+        return AdminOrDeviceAuth(authenticated_device=admin_device, is_admin=True)
+
+    app_state = request.app.state.app_state
+    db_pool = app_state.db_pool
+
+    if db_pool is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Database unavailable",
+        )
+
+    auth_result = await _verify_access_token(db_pool, token)
+
+    if auth_result is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or expired access token",
+        )
+
+    request.state.user_id = auth_result.user_id
+    request.state.device_id = auth_result.device_id
+    request.state.session_id = auth_result.session_id
+
+    return AdminOrDeviceAuth(authenticated_device=auth_result, is_admin=False)

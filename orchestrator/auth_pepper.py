@@ -21,12 +21,16 @@ logger = logging.getLogger(__name__)
 MIN_PEPPER_BYTES = 32
 MIN_PEPPER_CHARS = 43
 
+_development_pepper_cache: str | None = None
+
 
 class PepperValidationError(Exception):
     pass
 
 
 def validate_and_get_pepper(settings: Settings) -> str:
+    global _development_pepper_cache
+
     environment = settings.daemon_environment.lower().strip()
 
     if environment not in ("production", "development"):
@@ -51,13 +55,14 @@ def validate_and_get_pepper(settings: Settings) -> str:
         return pepper
 
     if not pepper:
-        ephemeral_pepper = secrets.token_urlsafe(32)
-        logger.warning(
-            "daemon_auth_pepper not set in development. "
-            "Using process-ephemeral pepper. "
-            "Pending enrollments created with this pepper will become invalid after restart."
-        )
-        return ephemeral_pepper
+        if _development_pepper_cache is None:
+            _development_pepper_cache = secrets.token_urlsafe(32)
+            logger.warning(
+                "daemon_auth_pepper not set in development. "
+                "Using process-ephemeral pepper. "
+                "Pending enrollments created with this pepper will become invalid after restart."
+            )
+        return _development_pepper_cache
 
     return pepper
 
