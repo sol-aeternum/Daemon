@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useCallback, useEffect, useState } from "react";
+import { getAuthHeader, refreshIfNeeded } from "@/lib/auth";
 
 interface StreamingTtsOptions {
   voice?: string;
@@ -96,9 +97,15 @@ export function useStreamingTts(options: StreamingTtsOptions = {}) {
     abortControllerRef.current = new AbortController();
 
     try {
-      // Fetch token for WebSocket auth
-      const tokenResponse = await fetch("/api/audio/token");
-      
+      let authHeader = getAuthHeader();
+      if (!authHeader) {
+        await refreshIfNeeded();
+        authHeader = getAuthHeader();
+      }
+      const tokenResponse = await fetch("/api/audio/token", {
+        headers: authHeader ? { Authorization: authHeader } : {},
+      });
+
       if (!tokenResponse.ok) {
         throw new Error("Failed to get audio token");
       }
