@@ -279,6 +279,43 @@ class TestConsumedRefreshReuse:
             restore_init(original)
 
     @pytest.mark.asyncio
+    async def test_consumed_refresh_reuse_via_cookie_includes_clear_cookie_header(
+        self, setup_env, monkeypatch
+    ):
+        user_id = SINGLETON_ID
+        device_id = uuid.uuid4()
+        refresh_token = generate_token()
+        refresh_hash = hash_token(refresh_token)
+        consumed_session = _make_session(refresh_hash, user_id, device_id, "web", consumed=True)
+        devices = {
+            str(device_id): {"id": device_id, "user_id": user_id, "revoked_at": None},
+        }
+        mock_pool = MockPool(
+            sessions={refresh_hash: consumed_session},
+            devices=devices,
+        )
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    response = await client.post(
+                        "/v1/auth/refresh",
+                        cookies={"__Host-daemon_refresh": refresh_token},
+                        headers={
+                            "Origin": "https://app.daemon.ai",
+                            "Sec-Fetch-Site": "same-origin",
+                        },
+                    )
+
+                    assert response.status_code == 401, response.text
+                    cookie_header = response.headers.get("set-cookie", "")
+                    assert "__Host-daemon_refresh" in cookie_header
+                    assert "Max-Age=0" in cookie_header or "max-age=0" in cookie_header
+        finally:
+            restore_init(original)
+
+    @pytest.mark.asyncio
     async def test_consumed_reuse_revokes_same_device_sessions(self, setup_env, monkeypatch):
         user_id = SINGLETON_ID
         device_id = uuid.uuid4()
@@ -615,6 +652,62 @@ class TestClientKindPreservation:
                     assert len(mock_pool._captured_inserts) >= 1
                     insert_args = mock_pool._captured_inserts[0]["args"]
                     assert insert_args[2] == "native"
+        finally:
+            restore_init(original)
+
+
+class TestRefreshTransportMismatch:
+    @pytest.mark.asyncio
+    async def test_web_token_via_body_returns_400_no_replacement(self, setup_env, monkeypatch):
+        user_id = SINGLETON_ID
+        device_id = uuid.uuid4()
+        refresh_token = generate_token()
+        refresh_hash = hash_token(refresh_token)
+        old_session = _make_session(refresh_hash, user_id, device_id, "web")
+        devices = {str(device_id): {"id": device_id, "user_id": user_id, "revoked_at": None}}
+        mock_pool = MockPool(sessions={refresh_hash: old_session}, devices=devices)
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    response = await client.post(
+                        "/v1/auth/refresh",
+                        json={"refresh_token": refresh_token},
+                    )
+
+                    assert response.status_code == 400, response.text
+                    assert "transport mismatch" in response.json()["detail"]
+                    assert len(mock_pool._captured_inserts) == 0
+        finally:
+            restore_init(original)
+
+    @pytest.mark.asyncio
+    async def test_native_token_via_cookie_returns_400_no_replacement(self, setup_env, monkeypatch):
+        user_id = SINGLETON_ID
+        device_id = uuid.uuid4()
+        refresh_token = generate_token()
+        refresh_hash = hash_token(refresh_token)
+        old_session = _make_session(refresh_hash, user_id, device_id, "native")
+        devices = {str(device_id): {"id": device_id, "user_id": user_id, "revoked_at": None}}
+        mock_pool = MockPool(sessions={refresh_hash: old_session}, devices=devices)
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    response = await client.post(
+                        "/v1/auth/refresh",
+                        cookies={"__Host-daemon_refresh": refresh_token},
+                        headers={
+                            "Origin": "https://app.daemon.ai",
+                            "Sec-Fetch-Site": "same-origin",
+                        },
+                    )
+
+                    assert response.status_code == 400, response.text
+                    assert "transport mismatch" in response.json()["detail"]
+                    assert len(mock_pool._captured_inserts) == 0
         finally:
             restore_init(original)
 

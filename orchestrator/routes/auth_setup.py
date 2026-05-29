@@ -618,12 +618,16 @@ async def refresh_endpoint(
                             environment=settings.daemon_environment,
                         )
                         cookie_headers = clear_refresh_cookie(cookie_config)
-                        for header_name, header_value in cookie_headers.items():
-                            response.headers[header_name] = header_value
-                    exc_to_raise = HTTPException(
-                        status_code=401,
-                        detail="Invalid or expired refresh token",
-                    )
+                        exc_to_raise = HTTPException(
+                            status_code=401,
+                            detail="Invalid or expired refresh token",
+                            headers=cookie_headers,
+                        )
+                    else:
+                        exc_to_raise = HTTPException(
+                            status_code=401,
+                            detail="Invalid or expired refresh token",
+                        )
                 elif existing_row is None:
                     raise HTTPException(
                         status_code=401,
@@ -636,11 +640,20 @@ async def refresh_endpoint(
                     )
 
             if exc_to_raise is None and consumed_row is not None:
-                user_id: uuid.UUID = consumed_row["user_id"]
-                device_id: uuid.UUID = consumed_row["device_id"]
                 client_kind: str = consumed_row["client_kind"]
 
-                # Generate replacement tokens
+                if is_web and client_kind == "native":
+                    exc_to_raise = HTTPException(
+                        status_code=400,
+                        detail="Refresh token transport mismatch",
+                    )
+                elif not is_web and client_kind == "web":
+                    exc_to_raise = HTTPException(
+                        status_code=400,
+                        detail="Refresh token transport mismatch",
+                    )
+
+            if exc_to_raise is None and consumed_row is not None:
                 now = datetime.now(timezone.utc)
                 access_expires = now + timedelta(minutes=ACCESS_TOKEN_TTL_MINUTES)
                 refresh_expires = now + timedelta(days=REFRESH_TOKEN_TTL_DAYS)
@@ -657,9 +670,9 @@ async def refresh_endpoint(
                     )
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                     """,
-                    user_id,
-                    device_id,
-                    client_kind,
+                    consumed_row["user_id"],
+                    consumed_row["device_id"],
+                    consumed_row["client_kind"],
                     hash_token(access_token),
                     access_expires,
                     hash_token(refresh_token),
