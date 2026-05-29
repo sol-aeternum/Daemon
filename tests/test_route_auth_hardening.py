@@ -19,6 +19,7 @@ from orchestrator.main import app
 async def client(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "")
     monkeypatch.setenv("REDIS_URL", "")
+    monkeypatch.setenv("DAEMON_ENVIRONMENT", "development")
     get_settings.cache_clear()
 
     async with app.router.lifespan_context(app):
@@ -32,6 +33,7 @@ async def authenticated_client(monkeypatch):
     """Client with a fake DB pool that returns valid session for bearer auth."""
     monkeypatch.setenv("DATABASE_URL", "")
     monkeypatch.setenv("REDIS_URL", "")
+    monkeypatch.setenv("DAEMON_ENVIRONMENT", "development")
     get_settings.cache_clear()
 
     user_id = uuid.uuid4()
@@ -279,7 +281,7 @@ class TestVideoCreditsRoutesAreProtected:
         assert response.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_grant_returns_401(self, client):
+    async def test_grant_returns_403_when_admin_disabled(self, client):
         response = await client.post(
             "/video-credits/grant",
             json={
@@ -288,7 +290,7 @@ class TestVideoCreditsRoutesAreProtected:
                 "description": "test",
             },
         )
-        assert response.status_code == 401
+        assert response.status_code == 403
 
     @pytest.mark.asyncio
     async def test_estimate_returns_401(self, client):
@@ -315,7 +317,7 @@ class TestImageGenRoutesAreProtected:
         assert response.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_get_metadata_returns_401(self, client):
+    async def test_get_metadata_returns_401_when_unauthenticated(self, client):
         response = await client.get("/api/images/image-123/metadata")
         assert response.status_code == 401
 
@@ -333,6 +335,23 @@ class TestImageGenRoutesAreProtected:
             "/api/images/generate",
             json={"models": ["flux"], "prompt": "test"},
         )
+        assert response.status_code == 401
+
+
+class TestGeneratedArtifactRoutesAreProtected:
+    @pytest.mark.asyncio
+    async def test_generated_images_returns_401(self, client):
+        response = await client.get("/generated-images/test.png")
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_generated_files_returns_401(self, client):
+        response = await client.get("/generated-files/test.txt")
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_generated_audio_returns_401(self, client):
+        response = await client.get("/generated-audio/test.mp3")
         assert response.status_code == 401
 
 

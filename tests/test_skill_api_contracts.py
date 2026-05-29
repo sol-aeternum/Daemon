@@ -12,6 +12,9 @@ import pytest_asyncio
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import uuid
+
+from orchestrator.auth import AdminOrDeviceAuth, AuthenticatedDevice
 from orchestrator.config import get_settings
 from orchestrator.routes import skills as skills_router
 
@@ -49,14 +52,22 @@ def _set_db_pool(client: TestClient, db_pool: AsyncMock | None) -> None:
 
 
 @pytest.fixture
-def app_with_mock_db(mock_db_pool: AsyncMock) -> FastAPI:
-    """Create FastAPI app with mocked db pool in app state."""
+def app_with_mock_db(
+    mock_db_pool: AsyncMock, fake_authenticated_device: AuthenticatedDevice
+) -> FastAPI:
     app = FastAPI()
     app.include_router(skills_router.router)
 
     mock_app_state = MagicMock()
     mock_app_state.db_pool = mock_db_pool
+    mock_app_state.redis = MagicMock()
+    mock_app_state.memory_store = MagicMock()
+    mock_app_state.video_credits_dal = MagicMock()
     cast(Any, app).state.app_state = mock_app_state
+
+    app.dependency_overrides[skills_router.require_device_auth] = (
+        lambda: fake_authenticated_device
+    )
 
     return app
 
@@ -69,8 +80,31 @@ def client(app_with_mock_db: FastAPI) -> TestClient:
 
 @pytest_asyncio.fixture
 async def mock_db_pool() -> AsyncMock:
-    """Create mock database pool."""
-    return AsyncMock()
+    """Create mock database pool with proper async context manager for device auth."""
+    from contextlib import asynccontextmanager
+
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    conn.fetchval = AsyncMock(return_value=datetime.now())
+    conn.execute = AsyncMock()
+
+    @asynccontextmanager
+    async def mock_acquire():
+        yield conn
+
+    pool = AsyncMock()
+    pool.acquire = MagicMock(side_effect=lambda: mock_acquire())
+
+    return pool
+
+
+@pytest.fixture
+def fake_authenticated_device() -> AuthenticatedDevice:
+    return AuthenticatedDevice(
+        user_id=uuid.UUID("11111111-1111-1111-1111-111111111111"),
+        device_id=uuid.UUID("22222222-2222-2222-2222-222222222222"),
+        session_id=uuid.UUID("33333333-3333-3333-3333-333333333333"),
+    )
 
 
 @pytest.fixture
@@ -1182,12 +1216,17 @@ class TestAdminSyncRoute:
         response = test_client.post("/skills/admin/sync")
 
         assert response.status_code == 401
-        assert "Missing bearer token" in response.json()["detail"]
+        assert "Missing or invalid authorization header" in response.json()["detail"]
 
     def test_admin_sync_rejects_invalid_token(
         self, app_with_mock_db: FastAPI, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Admin sync returns 403 when an invalid token is provided."""
+        """Admin sync returns 401 when an invalid token is provided.
+
+        With the new require_admin_or_device_auth dependency, an invalid token
+        that doesn't match the admin key falls through to device auth,
+        which fails with 401.
+        """
         monkeypatch.setenv("DAEMON_ADMIN_API_KEY", "test-secret-key")
         get_settings.cache_clear()
 
@@ -1197,5 +1236,35 @@ class TestAdminSyncRoute:
             headers={"Authorization": "Bearer wrong-token"},
         )
 
+        assert response.status_code == 401
+        assert "Invalid or expired access token" in response.json()["detail"]
+
+    def test_admin_sync_rejects_non_admin_device(
+        self,
+        app_with_mock_db: FastAPI,
+        fake_authenticated_device: AuthenticatedDevice,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Admin sync returns 403 when a non-admin device auth is used.
+
+        Authenticated devices without admin privilege must not trigger repo skill sync.
+        """
+        monkeypatch.setenv("DAEMON_ADMIN_API_KEY", "test-secret-key")
+        get_settings.cache_clear()
+
+        non_admin_auth = AdminOrDeviceAuth(
+            authenticated_device=fake_authenticated_device,
+            is_admin=False,
+        )
+        app_with_mock_db.dependency_overrides[
+            skills_router.require_admin_or_device_auth
+        ] = lambda: non_admin_auth
+
+        test_client = TestClient(app_with_mock_db)
+        response = test_client.post(
+            "/skills/admin/sync",
+            headers={"Authorization": "Bearer valid-device-token"},
+        )
+
         assert response.status_code == 403
-        assert "Invalid admin bearer token" in response.json()["detail"]
+        assert "Admin access required" in response.json()["detail"]
