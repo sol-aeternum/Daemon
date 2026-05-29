@@ -19,13 +19,18 @@ export async function GET(_request: NextRequest, { params }: RouteContext) {
   const resolvedParams = await params;
   const filePath = resolvedParams.path.join("/");
 
+  const authHeader = _request.headers.get("authorization");
+
   let lastStatus = 502;
   let lastError = "Failed to fetch generated file";
 
   for (const apiUrl of API_URLS) {
     const upstreamUrl = `${apiUrl.replace(/\/$/, "")}/generated-files/${filePath}`;
     try {
-      const upstream = await fetch(upstreamUrl, { cache: "no-store" });
+      const upstream = await fetch(upstreamUrl, {
+        cache: "no-store",
+        headers: authHeader ? { authorization: authHeader } : {},
+      });
 
       if (!upstream.ok) {
         lastStatus = upstream.status;

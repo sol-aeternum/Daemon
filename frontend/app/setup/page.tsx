@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { refreshAccessToken, completeSetup } from "../../lib/auth";
+import { refreshAccessToken, completeSetup, completeEnrollment } from "../../lib/auth";
 import { Sparkles, Shield, AlertCircle } from "lucide-react";
 
 export default function SetupPage() {
@@ -12,6 +12,11 @@ export default function SetupPage() {
   const [displayName, setDisplayName] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [enrollmentPayload, setEnrollmentPayload] = useState("");
+  const [enrollmentPendingId, setEnrollmentPendingId] = useState("");
+  const [enrollmentCode, setEnrollmentCode] = useState("");
+  const [isEnrolling, setIsEnrolling] = useState(false);
+  const [enrollmentError, setEnrollmentError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -59,6 +64,51 @@ export default function SetupPage() {
       setError("Network error. Please check your connection and try again.");
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  function parseEnrollmentPayload(payload: string): { pendingId: string; code: string } | null {
+    const trimmed = payload.trim();
+    if (trimmed.startsWith("daemon-enroll://")) {
+      const inner = trimmed.slice("daemon-enroll://".length);
+      const parts = inner.split("#");
+      if (parts.length === 2 && parts[0] && parts[1]) {
+        return { pendingId: parts[0], code: parts[1] };
+      }
+    }
+    return null;
+  }
+
+  async function handleEnrollSubmit(e: { preventDefault: () => void }) {
+    e.preventDefault();
+    setEnrollmentError(null);
+
+    let pendingId = enrollmentPendingId.trim();
+    let code = enrollmentCode.trim();
+
+    const parsed = parseEnrollmentPayload(enrollmentPayload);
+    if (parsed) {
+      pendingId = parsed.pendingId;
+      code = parsed.code;
+    }
+
+    if (!pendingId || !code) {
+      setEnrollmentError("Please provide both pending ID and code, or paste the full enrollment link.");
+      return;
+    }
+
+    setIsEnrolling(true);
+    try {
+      const result = await completeEnrollment(pendingId, code);
+      if (result.success) {
+        router.push("/");
+      } else {
+        setEnrollmentError(result.error || "Enrollment failed. Please try again.");
+      }
+    } catch {
+      setEnrollmentError("Network error. Please check your connection and try again.");
+    } finally {
+      setIsEnrolling(false);
     }
   }
 
@@ -154,6 +204,91 @@ export default function SetupPage() {
             {isSubmitting ? "Setting up..." : "Complete Setup"}
           </button>
         </form>
+
+        <div className="border-t border-[var(--color-border-primary)] pt-6">
+          <h2 className="text-lg font-semibold text-[var(--color-text-primary)] mb-1">
+            Continue Enrollment
+          </h2>
+          <p className="text-sm text-[var(--color-text-muted)] mb-4">
+            Have a pending enrollment from another browser? Complete it here.
+          </p>
+
+          <form onSubmit={handleEnrollSubmit} className="space-y-4">
+            <div>
+              <label
+                htmlFor="enrollment-payload"
+                className="block text-sm font-medium text-[var(--color-text-secondary)] mb-1.5"
+              >
+                Enrollment Link or Token
+              </label>
+              <input
+                id="enrollment-payload"
+                type="text"
+                autoComplete="off"
+                placeholder="Paste daemon-enroll://... or leave empty for manual entry"
+                value={enrollmentPayload}
+                onChange={(e) => setEnrollmentPayload(e.target.value)}
+                disabled={isEnrolling}
+                className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label
+                  htmlFor="enrollment-pending-id"
+                  className="block text-sm font-medium text-[var(--color-text-secondary)] mb-1.5"
+                >
+                  Pending ID
+                </label>
+                <input
+                  id="enrollment-pending-id"
+                  type="text"
+                  autoComplete="off"
+                  placeholder="Pending ID"
+                  value={enrollmentPendingId}
+                  onChange={(e) => setEnrollmentPendingId(e.target.value)}
+                  disabled={isEnrolling}
+                  className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="enrollment-code"
+                  className="block text-sm font-medium text-[var(--color-text-secondary)] mb-1.5"
+                >
+                  Code
+                </label>
+                <input
+                  id="enrollment-code"
+                  type="text"
+                  autoComplete="off"
+                  placeholder="Code"
+                  value={enrollmentCode}
+                  onChange={(e) => setEnrollmentCode(e.target.value)}
+                  disabled={isEnrolling}
+                  className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
+                />
+              </div>
+            </div>
+
+            {enrollmentError && (
+              <div className="flex items-start gap-2.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
+                <p className="text-sm text-red-300">{enrollmentError}</p>
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={isEnrolling}
+              className="w-full rounded-xl bg-[var(--color-accent-primary)] px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-[var(--color-accent-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {isEnrolling ? "Completing enrollment..." : "Complete Enrollment"}
+            </button>
+          </form>
+        </div>
 
       <div className="flex items-start gap-3 rounded-xl border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-4 py-3">
           <Shield className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-accent-primary)]" />

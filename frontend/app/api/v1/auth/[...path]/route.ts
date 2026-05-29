@@ -33,6 +33,9 @@ function buildProxyHeaders(req: Request): Headers {
   const xForwardedProto = req.headers.get("x-forwarded-proto");
   if (xForwardedProto) headers.set("X-Forwarded-Proto", xForwardedProto);
 
+  const authorization = req.headers.get("authorization");
+  if (authorization) headers.set("Authorization", authorization);
+
   return headers;
 }
 
