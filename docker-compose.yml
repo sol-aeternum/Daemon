@@ -33,6 +33,12 @@ services:
       - DATABASE_URL=${DATABASE_URL:-postgresql://daemon:daemon@postgres:5432/daemon}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - DAEMON_ENCRYPTION_KEY=${DAEMON_ENCRYPTION_KEY}
+      - DAEMON_ENVIRONMENT=${DAEMON_ENVIRONMENT:-development}
+      - DAEMON_AUTH_PEPPER=${DAEMON_AUTH_PEPPER}
+      - DAEMON_ALLOWED_ORIGINS=${DAEMON_ALLOWED_ORIGINS:-http://localhost:3000}
+      - DAEMON_PUBLIC_ORIGIN=${DAEMON_PUBLIC_ORIGIN:-http://localhost:3000}
+      - DAEMON_COOKIE_SECURE=${DAEMON_COOKIE_SECURE:-false}
+      - DAEMON_ADMIN_API_KEY=${DAEMON_ADMIN_API_KEY}
     volumes:
       - .:/app
     command: uvicorn orchestrator.main:app --host 0.0.0.0 --port 8000 --reload
@@ -60,6 +66,9 @@ services:
       - DATABASE_URL=${DATABASE_URL:-postgresql://daemon:daemon@postgres:5432/daemon}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - DAEMON_ENCRYPTION_KEY=${DAEMON_ENCRYPTION_KEY}
+      - DAEMON_ENVIRONMENT=${DAEMON_ENVIRONMENT:-development}
+      - DAEMON_AUTH_PEPPER=${DAEMON_AUTH_PEPPER}
+      - DAEMON_ADMIN_API_KEY=${DAEMON_ADMIN_API_KEY}
     volumes:
       - .:/app
     command: python -m orchestrator.worker.worker
