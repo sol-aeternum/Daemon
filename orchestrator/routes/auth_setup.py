@@ -338,7 +338,7 @@ async def enroll_complete_endpoint(
         async with conn.transaction():
             pending_row = await conn.fetchrow(
                 """
-                SELECT id, user_id, code_verifier_hash,
+                SELECT id, user_id, created_by_device_id, code_verifier_hash,
                        wrong_attempts_remaining, expires_at, consumed_at
                 FROM pending_enrollments
                 WHERE id = $1
@@ -348,6 +348,18 @@ async def enroll_complete_endpoint(
             )
 
             if pending_row is None:
+                raise HTTPException(
+                    status_code=401,
+                    detail="Invalid enrollment session",
+                )
+
+            creating_device_row = await conn.fetchrow(
+                """
+                SELECT revoked_at FROM devices WHERE id = $1
+                """,
+                pending_row["created_by_device_id"],
+            )
+            if creating_device_row is None or creating_device_row["revoked_at"] is not None:
                 raise HTTPException(
                     status_code=401,
                     detail="Invalid enrollment session",

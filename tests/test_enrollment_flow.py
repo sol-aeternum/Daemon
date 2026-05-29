@@ -87,11 +87,20 @@ class MockConn:
         return None
 
     async def fetchrow(self, sql, *args):
-        if "SELECT id, user_id, code_verifier_hash" in sql:
+        if "SELECT id, user_id, created_by_device_id, code_verifier_hash" in sql:
             pending_id = args[0]
             if pending_id in self._pool._pending_enrollments:
-                return self._pool._pending_enrollments[pending_id]
+                row = self._pool._pending_enrollments[pending_id]
+                if "created_by_device_id" not in row:
+                    row = {**row, "created_by_device_id": getattr(self._pool, "_device_id", uuid.uuid4())}
+                return row
             return None
+        if "SELECT revoked_at FROM devices" in sql:
+            device_id = args[0]
+            key = device_id if device_id in self._pool._devices else str(device_id)
+            if key in self._pool._devices:
+                return {"revoked_at": self._pool._devices[key].get("revoked_at")}
+            return {"revoked_at": None}
         if "SELECT id FROM users" in sql:
             return {"id": SINGLETON_ID}
         return None
@@ -113,6 +122,7 @@ class MockPool:
         self._device_created = False
         self._connections = []
         self._pending_enrollments = {}
+        self._devices = {}
         self._user_id = SINGLETON_ID
         self._session_insert_args = None
         self._update_wrong_attempts = None
@@ -934,6 +944,86 @@ class TestNoPlaintextCode:
                     code = start_data["code"]
                     assert code not in str(pending_insert)
                     assert code != stored_hash
+
+                auth_module._verify_access_token = original_verify
+        finally:
+            restore_init(original)
+
+
+class TestRevokedCreatorDevice:
+    @pytest.mark.asyncio
+    async def test_enroll_complete_rejects_revoked_creator_device(self, setup_env, monkeypatch):
+        mock_pool = MockPool(active_device_count=2)
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                state = app.state.app_state
+                settings = get_settings()
+                pepper = validate_and_get_pepper(settings)
+
+                access_token = "test-access-token-revoked-creator"
+                state.db_pool._access_token = access_token
+                state.db_pool._access_token_hash = hash_token(access_token)
+                state.db_pool._user_id = SINGLETON_ID
+                state.db_pool._device_id = uuid.uuid4()
+                state.db_pool._session_id = uuid.uuid4()
+
+                creator_device_id = state.db_pool._device_id
+
+                async def mock_verify(pool, token):
+                    if token == access_token:
+                        from orchestrator.auth import AuthenticatedDevice
+                        return AuthenticatedDevice(
+                            user_id=SINGLETON_ID,
+                            device_id=pool._device_id,
+                            session_id=pool._session_id,
+                        )
+                    return None
+
+                import orchestrator.auth as auth_module
+                original_verify = auth_module._verify_access_token
+                auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
+
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    start_response = await client.post(
+                        "/v1/auth/enroll/start",
+                        headers=make_auth_headers(access_token),
+                    )
+
+                    assert start_response.status_code == 200, start_response.text
+                    start_data = start_response.json()
+                    pending_id = start_data["pending_id"]
+                    code = start_data["code"]
+                    code_verifier_hash = hash_enrollment_code(code, pepper)
+
+                    pending_row = {
+                        "id": uuid.UUID(pending_id),
+                        "user_id": SINGLETON_ID,
+                        "created_by_device_id": creator_device_id,
+                        "code_verifier_hash": code_verifier_hash,
+                        "wrong_attempts_remaining": 3,
+                        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
+                        "consumed_at": None,
+                    }
+                    state.db_pool._pending_enrollments[uuid.UUID(pending_id)] = pending_row
+                    state.db_pool._devices[str(creator_device_id)] = {
+                        "id": creator_device_id,
+                        "user_id": SINGLETON_ID,
+                        "revoked_at": datetime.now(timezone.utc),
+                    }
+
+                    complete_response = await client.post(
+                        "/v1/auth/enroll/complete",
+                        json={
+                            "pending_id": pending_id,
+                            "code": code,
+                            "client_kind": "native",
+                        },
+                    )
+
+                    assert complete_response.status_code == 401, complete_response.text
+                    assert mock_pool._device_created is False
 
                 auth_module._verify_access_token = original_verify
         finally:
