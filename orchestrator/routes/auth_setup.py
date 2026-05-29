@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.auth_cookies import (
     COOKIE_NAME,
+    CookiePolicyError,
     build_refresh_cookie,
     clear_refresh_cookie,
     make_refresh_cookie_config,
@@ -163,6 +164,14 @@ async def setup_endpoint(
     if not verify_token(body.setup_token, app_state.setup_token_hash):
         raise HTTPException(status_code=401, detail="Invalid setup token")
 
+    try:
+        cookie_config = make_refresh_cookie_config(
+            cookie_secure=settings.daemon_cookie_secure,
+            environment=settings.daemon_environment,
+        )
+    except CookiePolicyError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
     async with app_state.db_pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute(
@@ -186,10 +195,6 @@ async def setup_endpoint(
 
     app_state.setup_token_hash = None
 
-    cookie_config = make_refresh_cookie_config(
-        cookie_secure=settings.daemon_cookie_secure,
-        environment=settings.daemon_environment,
-    )
     refresh_max_age = int(timedelta(days=REFRESH_TOKEN_TTL_DAYS).total_seconds())
     cookie_headers = build_refresh_cookie(
         value=refresh_token,

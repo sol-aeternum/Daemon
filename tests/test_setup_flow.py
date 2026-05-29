@@ -390,3 +390,60 @@ class TestConcurrentSetup:
                     assert already_complete_count == 2, f"Expected 2 already_complete, got {already_complete_count}: {statuses}"
         finally:
             restore_init(original)
+
+
+class TestSetupCookiePolicyValidation:
+    """Verify cookie policy is validated BEFORE state mutation.
+
+    When production environment uses insecure cookies, the setup request must be
+    rejected BEFORE any device/session creation and BEFORE clearing setup_token_hash.
+    """
+
+    @pytest.mark.asyncio
+    async def test_production_insecure_cookie_rejected_before_state_mutation(self, monkeypatch):
+        """CookiePolicyError raised before device/session creation and before setup_token_hash cleared."""
+        # Use production + insecure cookie to trigger CookiePolicyError
+        monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/testdb")
+        monkeypatch.setenv("REDIS_URL", "")
+        monkeypatch.setenv("DAEMON_ALLOWED_ORIGINS", "https://app.daemon.ai")
+        monkeypatch.setenv("DAEMON_PUBLIC_ORIGIN", "https://app.daemon.ai")
+        monkeypatch.setenv("DAEMON_ENVIRONMENT", "production")
+        monkeypatch.setenv("DAEMON_COOKIE_SECURE", "false")
+        monkeypatch.setenv("DAEMON_AUTH_PEPPER", "test-pepper-for-all-tests-12345678901234567890")
+        get_settings.cache_clear()
+
+        mock_pool = MockPool(active_device_count=0, singleton_user_exists=False)
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                state = app.state.app_state
+                plaintext = generate_setup_token()
+                state.setup_token_hash = hash_token(plaintext)
+                original_setup_token_hash = state.setup_token_hash
+
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    response = await client.post(
+                        "/v1/auth/setup",
+                        json={"setup_token": plaintext},
+                        headers={
+                            "Origin": "https://app.daemon.ai",
+                            "Sec-Fetch-Site": "same-origin",
+                        },
+                    )
+
+                    # Request must fail
+                    assert response.status_code == 500, (
+                        f"Expected 500 for CookiePolicyError, got {response.status_code}: {response.text}"
+                    )
+                    # setup_token_hash must NOT be cleared (validation happened before state mutation)
+                    assert state.setup_token_hash == original_setup_token_hash, (
+                        f"setup_token_hash was cleared! Expected {original_setup_token_hash}, got {state.setup_token_hash}"
+                    )
+                    # No device must have been created
+                    assert mock_pool._device_created is False, (
+                        "Device was created despite CookiePolicyError"
+                    )
+        finally:
+            restore_init(original)
+            get_settings.cache_clear()
