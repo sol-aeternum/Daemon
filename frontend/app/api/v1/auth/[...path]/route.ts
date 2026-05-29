@@ -54,13 +54,15 @@ async function proxyRequest(req: Request, context: RouteContext): Promise<Respon
   let backendRes: Response | null = null;
   let lastError: Error | null = null;
 
+  const requestBody = method !== "GET" && method !== "HEAD" ? await req.arrayBuffer() : undefined;
+
   for (const apiUrl of API_URLS) {
     try {
       backendRes = await fetch(`${apiUrl}/v1/auth/${normalizedPath}`, {
         method,
         headers: requestHeaders,
         credentials: "include",
-        body: method !== "GET" && method !== "HEAD" ? await req.arrayBuffer() : undefined,
+        body: requestBody,
       });
       break;
     } catch (error) {

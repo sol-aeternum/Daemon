@@ -327,6 +327,9 @@ async def enroll_complete_endpoint(
         )
 
     async with app_state.db_pool.acquire() as conn:
+        exc_to_raise: HTTPException | None = None
+        access_token = ""
+        refresh_token = ""
         async with conn.transaction():
             pending_row = await conn.fetchrow(
                 """
@@ -387,71 +390,76 @@ async def enroll_complete_endpoint(
                         """,
                         pending_row["id"],
                     )
-                    raise HTTPException(
+                    exc_to_raise = HTTPException(
                         status_code=410,
                         detail="Enrollment session expired",
                     )
+                else:
+                    await conn.execute(
+                        """
+                        UPDATE pending_enrollments
+                        SET wrong_attempts_remaining = $1
+                        WHERE id = $2
+                        """,
+                        wrong_attempts,
+                        pending_row["id"],
+                    )
+                    exc_to_raise = HTTPException(
+                        status_code=401,
+                        detail="Invalid enrollment code",
+                    )
+
+            if exc_to_raise is None:
+                user_id: uuid.UUID = pending_row["user_id"]
+                device_id = await conn.fetchval(
+                    """
+                    INSERT INTO devices (user_id, display_name, platform)
+                    VALUES ($1, $2, $3)
+                    RETURNING id
+                    """,
+                    user_id,
+                    "Enrolled Device",
+                    body.client_kind,
+                )
+
+                now = datetime.now(timezone.utc)
+                access_expires = now + timedelta(minutes=ACCESS_TOKEN_TTL_MINUTES)
+                refresh_expires = now + timedelta(days=REFRESH_TOKEN_TTL_DAYS)
+                access_token = generate_token()
+                refresh_token = generate_token()
+
+                await conn.execute(
+                    """
+                    INSERT INTO sessions (
+                        user_id, device_id, client_kind,
+                        access_token_hash, access_expires_at,
+                        refresh_token_hash, refresh_expires_at,
+                        created_at
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    """,
+                    user_id,
+                    device_id,
+                    body.client_kind,
+                    hash_token(access_token),
+                    access_expires,
+                    hash_token(refresh_token),
+                    refresh_expires,
+                    now,
+                )
+
                 await conn.execute(
                     """
                     UPDATE pending_enrollments
-                    SET wrong_attempts_remaining = $1
+                    SET consumed_at = $1
                     WHERE id = $2
                     """,
-                    wrong_attempts,
+                    now,
                     pending_row["id"],
                 )
-                raise HTTPException(
-                    status_code=401,
-                    detail="Invalid enrollment code",
-                )
 
-            user_id: uuid.UUID = pending_row["user_id"]
-            device_id = await conn.fetchval(
-                """
-                INSERT INTO devices (user_id, display_name, platform)
-                VALUES ($1, $2, $3)
-                RETURNING id
-                """,
-                user_id,
-                "Enrolled Device",
-                body.client_kind,
-            )
-
-            now = datetime.now(timezone.utc)
-            access_expires = now + timedelta(minutes=ACCESS_TOKEN_TTL_MINUTES)
-            refresh_expires = now + timedelta(days=REFRESH_TOKEN_TTL_DAYS)
-            access_token = generate_token()
-            refresh_token = generate_token()
-
-            await conn.execute(
-                """
-                INSERT INTO sessions (
-                    user_id, device_id, client_kind,
-                    access_token_hash, access_expires_at,
-                    refresh_token_hash, refresh_expires_at,
-                    created_at
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                """,
-                user_id,
-                device_id,
-                body.client_kind,
-                hash_token(access_token),
-                access_expires,
-                hash_token(refresh_token),
-                refresh_expires,
-                now,
-            )
-
-            await conn.execute(
-                """
-                UPDATE pending_enrollments
-                SET consumed_at = $1
-                WHERE id = $2
-                """,
-                now,
-                pending_row["id"],
-            )
+    if exc_to_raise:
+        raise exc_to_raise
 
     if body.client_kind == "web":
         cookie_config = make_refresh_cookie_config(
@@ -540,6 +548,10 @@ async def refresh_endpoint(
     assert presented_token is not None, "presented_token must be set at this point"
     token_hash = hash_token(presented_token)
 
+    exc_to_raise: HTTPException | None = None
+    access_token = ""
+    refresh_token = ""
+
     async with app_state.db_pool.acquire() as conn:
         async with conn.transaction():
             # Atomic consume: UPDATE ... WHERE valid (not consumed, not expired, not revoked, device active)
@@ -576,7 +588,6 @@ async def refresh_endpoint(
                     )
 
                 if existing_row["refresh_consumed_at"] is not None:
-                    # Consumed reuse: revoke device + all sessions, clear cookie, log sanitized warning
                     device_id_to_revoke: uuid.UUID = existing_row["device_id"]
                     logger.warning(
                         "Refresh token reuse detected for device_id=%s",
@@ -604,48 +615,55 @@ async def refresh_endpoint(
                         cookie_headers = clear_refresh_cookie(cookie_config)
                         for header_name, header_value in cookie_headers.items():
                             response.headers[header_name] = header_value
+                    exc_to_raise = HTTPException(
+                        status_code=401,
+                        detail="Invalid or expired refresh token",
+                    )
+                elif existing_row is None:
                     raise HTTPException(
                         status_code=401,
                         detail="Invalid or expired refresh token",
                     )
+                else:
+                    exc_to_raise = HTTPException(
+                        status_code=401,
+                        detail="Invalid or expired refresh token",
+                    )
 
-                # Unconsumed but invalid (expired/revoked/device-revoked) — 401 without revocation
-                raise HTTPException(
-                    status_code=401,
-                    detail="Invalid or expired refresh token",
+            if exc_to_raise is None and consumed_row is not None:
+                user_id: uuid.UUID = consumed_row["user_id"]
+                device_id: uuid.UUID = consumed_row["device_id"]
+                client_kind: str = consumed_row["client_kind"]
+
+                # Generate replacement tokens
+                now = datetime.now(timezone.utc)
+                access_expires = now + timedelta(minutes=ACCESS_TOKEN_TTL_MINUTES)
+                refresh_expires = now + timedelta(days=REFRESH_TOKEN_TTL_DAYS)
+                access_token = generate_token()
+                refresh_token = generate_token()
+
+                await conn.execute(
+                    """
+                    INSERT INTO sessions (
+                        user_id, device_id, client_kind,
+                        access_token_hash, access_expires_at,
+                        refresh_token_hash, refresh_expires_at,
+                        created_at
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    """,
+                    user_id,
+                    device_id,
+                    client_kind,
+                    hash_token(access_token),
+                    access_expires,
+                    hash_token(refresh_token),
+                    refresh_expires,
+                    now,
                 )
 
-            session_id: uuid.UUID = consumed_row["id"]
-            user_id: uuid.UUID = consumed_row["user_id"]
-            device_id: uuid.UUID = consumed_row["device_id"]
-            client_kind: str = consumed_row["client_kind"]
-
-            # Generate replacement tokens
-            now = datetime.now(timezone.utc)
-            access_expires = now + timedelta(minutes=ACCESS_TOKEN_TTL_MINUTES)
-            refresh_expires = now + timedelta(days=REFRESH_TOKEN_TTL_DAYS)
-            access_token = generate_token()
-            refresh_token = generate_token()
-
-            await conn.execute(
-                """
-                INSERT INTO sessions (
-                    user_id, device_id, client_kind,
-                    access_token_hash, access_expires_at,
-                    refresh_token_hash, refresh_expires_at,
-                    created_at
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                """,
-                user_id,
-                device_id,
-                client_kind,
-                hash_token(access_token),
-                access_expires,
-                hash_token(refresh_token),
-                refresh_expires,
-                now,
-            )
+    if exc_to_raise:
+        raise exc_to_raise
 
     # Set replacement cookie for web mode
     if is_web:
@@ -787,6 +805,18 @@ async def revoke_device_endpoint(
             already_revoked = row["revoked_at"] is not None
 
             if not already_revoked:
+                active_count = await conn.fetchval(
+                    """
+                    SELECT COUNT(*) FROM devices
+                    WHERE user_id = $1 AND revoked_at IS NULL
+                    """,
+                    auth.user_id,
+                )
+                if active_count <= 1:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="cannot_revoke_last_active_device",
+                    )
                 await conn.execute(
                     """
                     UPDATE devices SET revoked_at = NOW() WHERE id = $1

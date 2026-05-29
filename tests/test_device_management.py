@@ -26,6 +26,13 @@ class MockConn:
     async def fetchval(self, sql, *args):
         if "SELECT NOW()" in sql:
             return datetime.now(timezone.utc)
+        if "COUNT(*)" in sql and "devices" in sql:
+            user_id = args[0]
+            count = 0
+            for d in self._pool._devices.values():
+                if d.get("user_id") == user_id and d.get("revoked_at") is None:
+                    count += 1
+            return count
         return None
 
     async def fetchrow(self, sql, *args):
@@ -760,11 +767,8 @@ class TestRevokeDeviceCurrentDeviceClearsCookie:
                         cookies={"__Host-daemon_refresh": "some-refresh-token"},
                     )
 
-                    assert response.status_code == 204, f"Expected 204, got {response.status_code}"
-
-                    cookie_header = response.headers.get("set-cookie", "")
-                    assert "__Host-daemon_refresh" in cookie_header
-                    assert "Max-Age=0" in cookie_header
+                    assert response.status_code == 409, f"Expected 409, got {response.status_code}"
+                    assert response.json()["detail"] == "cannot_revoke_last_active_device"
 
                 auth_module._verify_access_token = original_verify
         finally:
@@ -812,10 +816,74 @@ class TestRevokeDeviceCurrentDeviceClearsCookie:
                         headers=make_auth_headers(access_token),
                     )
 
-                    assert response.status_code == 204, f"Expected 204, got {response.status_code}"
+                    assert response.status_code == 409, f"Expected 409, got {response.status_code}"
+                    assert response.json()["detail"] == "cannot_revoke_last_active_device"
 
                     set_cookie = response.headers.get("set-cookie", "")
                     assert "__Host-daemon_refresh" not in set_cookie
+
+                auth_module._verify_access_token = original_verify
+        finally:
+            restore_init(original)
+
+    @pytest.mark.asyncio
+    async def test_revoke_current_device_with_other_device_remaining_succeeds(self, setup_env, monkeypatch):
+        user_id = SINGLETON_ID
+        my_device_id = uuid.uuid4()
+        other_device_id = uuid.uuid4()
+
+        devices = {
+            str(my_device_id): _make_device(my_device_id, user_id, "My Phone", "web"),
+            str(other_device_id): _make_device(other_device_id, user_id, "My Laptop", "native"),
+        }
+        sessions = {
+            f"hash-{my_device_id}": {
+                "id": uuid.uuid4(),
+                "user_id": user_id,
+                "device_id": my_device_id,
+                "client_kind": "web",
+                "revoked_at": None,
+            },
+        }
+
+        mock_pool = MockPool(devices=devices, sessions=sessions)
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                state = app.state.app_state
+                access_token = "test-access-token-has-other-device"
+                state.db_pool._access_token = access_token
+                state.db_pool._access_token_hash = hash_token(access_token)
+                state.db_pool._user_id = user_id
+                state.db_pool._device_id = my_device_id
+                state.db_pool._session_id = uuid.uuid4()
+
+                async def mock_verify(pool, token):
+                    if token == access_token:
+                        from orchestrator.auth import AuthenticatedDevice
+                        return AuthenticatedDevice(
+                            user_id=user_id,
+                            device_id=my_device_id,
+                            session_id=pool._session_id,
+                        )
+                    return None
+
+                import orchestrator.auth as auth_module
+                original_verify = auth_module._verify_access_token
+                auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
+
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    response = await client.delete(
+                        f"/v1/auth/devices/{my_device_id}",
+                        headers=make_auth_headers(access_token),
+                        cookies={"__Host-daemon_refresh": "some-refresh-token"},
+                    )
+
+                    assert response.status_code == 204, f"Expected 204, got {response.status_code}"
+                    cookie_header = response.headers.get("set-cookie", "")
+                    assert "__Host-daemon_refresh" in cookie_header
+                    assert "Max-Age=0" in cookie_header
 
                 auth_module._verify_access_token = original_verify
         finally:
