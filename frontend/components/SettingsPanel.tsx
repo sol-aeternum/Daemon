@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { ensureAuthHeader } from '@/lib/auth';
 
 
 interface SttSettings {
@@ -196,10 +197,20 @@ export default function SettingsPanel({ sttSettings, setSttSettings }: SettingsP
               <button
                 onClick={async () => {
                   try {
-                    await fetch(`${apiBaseUrl}/memory/all`, {
-                      method: 'DELETE'
-                    });
-                    window.location.reload();
+                    const authHeader = await ensureAuthHeader();
+                    const proxyPath = '/memories?confirm=true';
+                    const directPath = '/memories?confirm=true';
+                    const candidates = apiBaseUrl
+                      ? [proxyPath, `${apiBaseUrl}${directPath}`, directPath]
+                      : [proxyPath, directPath];
+                    let success = false;
+                    for (const candidate of candidates) {
+                      const headers = new Headers();
+                      if (authHeader) headers.set('Authorization', authHeader);
+                      const res = await fetch(candidate, { method: 'DELETE', headers });
+                      if (res.ok) { success = true; break; }
+                    }
+                    if (success) window.location.reload();
                   } catch (error) {
                     console.error('Failed to clear memory:', error);
                   }

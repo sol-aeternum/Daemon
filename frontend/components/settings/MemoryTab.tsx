@@ -18,7 +18,7 @@ import {
   AlertTriangle,
   MessageSquare,
 } from 'lucide-react';
-import { getAuthHeader } from '@/lib/auth';
+import { ensureAuthHeader } from '@/lib/auth';
 
 interface MemoryStats {
   total: number;
@@ -69,8 +69,8 @@ export default function MemoryTab() {
     process.env.NEXT_PUBLIC_API_URL ||
     (process.env.NODE_ENV === 'development' ? 'http://localhost:8000' : '');
 
-  const getAuthHeaders = useCallback((): Record<string, string> => {
-    const header = getAuthHeader();
+  const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
+    const header = await ensureAuthHeader();
     if (!header) return {};
     return { Authorization: header };
   }, []);
@@ -130,7 +130,7 @@ export default function MemoryTab() {
   const fetchMemoryStats = useCallback(async () => {
     try {
       const response = await fetchWithFallback('/memories?limit=1', {
-        headers: getAuthHeaders(),
+        headers: await getAuthHeaders(),
       });
       if (!response.ok) {
         setActionStatus('error');
@@ -199,7 +199,7 @@ export default function MemoryTab() {
     try {
       const response = await fetchWithFallback('/memories?confirm=true', {
         method: 'DELETE',
-        headers: getAuthHeaders(),
+        headers: await getAuthHeaders(),
       });
 
       if (!response.ok) {
