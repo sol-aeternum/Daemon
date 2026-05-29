@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Coins, ExternalLink, Loader2, RefreshCw, TriangleAlert } from "lucide-react";
-import { getAuthHeader } from "@/lib/auth";
+import { ensureAuthHeader } from "@/lib/auth";
 
 export interface CreditBalanceProps {
   mode: "compact" | "expanded";
@@ -25,12 +25,6 @@ function getApiBaseUrl(): string {
     return "http://localhost:8000";
   }
   return "";
-}
-
-function getAuthHeaders(): HeadersInit {
-  const header = getAuthHeader();
-  if (!header) return {};
-  return { Authorization: header };
 }
 
 export function CreditBalance({ mode, userId, refreshInterval }: CreditBalanceProps) {
@@ -75,9 +69,10 @@ export function CreditBalance({ mode, userId, refreshInterval }: CreditBalancePr
       for (let index = 0; index < candidates.length; index += 1) {
         const candidate = candidates[index];
         try {
+          const authHeader = await ensureAuthHeader();
           const response = await fetch(candidate, {
             headers: {
-              ...getAuthHeaders(),
+              ...(authHeader ? { Authorization: authHeader } : {}),
             },
             cache: "no-store",
           });
@@ -160,13 +155,36 @@ export function CreditBalance({ mode, userId, refreshInterval }: CreditBalancePr
     };
   }, [fetchBalance]);
 
-  const transactionsHref = useMemo(() => {
-    if (!userId) {
-      return "#";
-    }
+  const handleViewTransactions = useCallback(async () => {
+    if (!userId) return;
+    const authHeader = await ensureAuthHeader();
     const query = new URLSearchParams({ user_id: userId, limit: "50", offset: "0" });
-    return `/api/video-credits/transactions?${query.toString()}`;
-  }, [userId]);
+    const proxyPath = `/api/video-credits/transactions?${query.toString()}`;
+    const directPath = `/video-credits/transactions?${query.toString()}`;
+    const candidates = apiBaseUrl
+      ? [proxyPath, `${apiBaseUrl}${directPath}`, directPath]
+      : [proxyPath, directPath];
+
+    for (const candidate of candidates) {
+      try {
+        const response = await fetch(candidate, {
+          headers: {
+            ...(authHeader ? { Authorization: authHeader } : {}),
+          },
+          cache: "no-store",
+        });
+        if (response.ok) {
+          const json = await response.json();
+          const text = JSON.stringify(json, null, 2);
+          const blob = new Blob([text], { type: "text/plain" });
+          const url = URL.createObjectURL(blob);
+          window.open(url, "_blank", "noopener,noreferrer");
+          setTimeout(() => URL.revokeObjectURL(url), 10000);
+          return;
+        }
+      } catch (_err) {}
+    }
+  }, [apiBaseUrl, userId]);
 
   const renderedBalance = balance ?? 0;
 
@@ -221,15 +239,14 @@ export function CreditBalance({ mode, userId, refreshInterval }: CreditBalancePr
 
       <div className="mt-4 flex items-center justify-between border-t border-[var(--color-border-primary)] pt-3">
         <span className="text-xs text-[var(--color-text-muted)]">Need more detail?</span>
-        <a
-          href={transactionsHref}
-          target="_blank"
-          rel="noreferrer"
+        <button
+          type="button"
+          onClick={handleViewTransactions}
           className="inline-flex items-center gap-1 text-xs font-medium text-[var(--color-accent-primary)] hover:text-[var(--color-accent-hover)]"
         >
           View transactions
           <ExternalLink className="h-3.5 w-3.5" />
-        </a>
+        </button>
       </div>
     </section>
   );

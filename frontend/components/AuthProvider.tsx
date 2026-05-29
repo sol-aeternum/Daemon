@@ -74,11 +74,6 @@ export function AuthProvider({ children }: AuthProviderProps) {
       if (event === "cleared" || event === "refreshed") {
         updateAuthState();
       }
-      if (event === "refresh-needed" && !hasValidAccessToken()) {
-        refreshAccessToken().then(() => {
-          if (mounted) updateAuthState();
-        });
-      }
     });
 
     return () => {
