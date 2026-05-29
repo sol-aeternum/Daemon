@@ -11,6 +11,7 @@ import {
 import {
   attemptPageLoadRefresh,
   clearAuthState,
+  clearLocalAuthState,
   getAccessToken,
   getAuthHeader,
   hasValidAccessToken,
@@ -71,7 +72,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
     const unsubscribe = listenForAuthEvents((event) => {
       if (!mounted) return;
-      if (event === "cleared" || event === "refreshed") {
+      if (event === "cleared") {
+        clearLocalAuthState();
+        updateAuthState();
+      } else if (event === "refreshed") {
         updateAuthState();
       }
     });

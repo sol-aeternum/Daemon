@@ -32,9 +32,13 @@ export function setAccessToken(token: string, expiresAtMs: number): void {
   _expiresAt = expiresAtMs;
 }
 
-export function clearAuthState(): void {
+export function clearLocalAuthState(): void {
   _accessToken = null;
   _expiresAt = 0;
+}
+
+export function clearAuthState(): void {
+  clearLocalAuthState();
   _broadcastAuthEvent("cleared");
 }
 
