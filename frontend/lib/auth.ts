@@ -164,8 +164,6 @@ async function doRefresh(): Promise<RefreshResult> {
     return { success: true };
   }
 
-  _broadcastAuthEvent("refresh-needed");
-
   const response = await _fetchAuthProxy("/refresh", {
     method: "POST",
     credentials: "include",
@@ -199,6 +197,13 @@ export async function refreshIfNeeded(): Promise<string | null> {
   }
   const result = await refreshAccessToken();
   return result.success ? _accessToken : null;
+}
+
+export async function ensureAuthHeader(): Promise<string | null> {
+  const header = getAuthHeader();
+  if (header) return header;
+  await refreshIfNeeded();
+  return getAuthHeader();
 }
 
 export async function completeSetup(
@@ -254,7 +259,7 @@ export async function startEnrollment(): Promise<{
   error?: string;
 }> {
   try {
-    const authHeader = getAuthHeader();
+    const authHeader = await ensureAuthHeader();
     const headers = new Headers();
     if (authHeader) {
       headers.set("Authorization", authHeader);
@@ -349,7 +354,7 @@ export async function listDevices(): Promise<{
   error?: string;
 }> {
   try {
-    const authHeader = getAuthHeader();
+    const authHeader = await ensureAuthHeader();
     const headers = new Headers();
     if (authHeader) {
       headers.set("Authorization", authHeader);
@@ -399,7 +404,7 @@ export async function revokeDevice(deviceId: string): Promise<{
   error?: string;
 }> {
   try {
-    const authHeader = getAuthHeader();
+    const authHeader = await ensureAuthHeader();
     const headers = new Headers();
     if (authHeader) {
       headers.set("Authorization", authHeader);
