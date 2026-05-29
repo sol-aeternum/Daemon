@@ -1,11 +1,11 @@
 """Memory API routes."""
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Header
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 import uuid
 from typing import Any, Literal
 
-from orchestrator.auth import AuthenticatedDevice, require_device_auth
+from orchestrator.auth import AuthenticatedDevice, AdminOrDeviceAuth, require_admin_or_device_auth, require_device_auth
 from orchestrator.config import get_settings, Settings
 from orchestrator.db import get_app_state, AppState
 from orchestrator.memory.embedding import embed_documents
@@ -45,18 +45,6 @@ class MemoryReembedRequest(BaseModel):
     ] = "active"
     memory_ids: list[uuid.UUID] | None = None
     batch_size: int = 50
-
-
-def require_admin_api_key(settings: Settings, authorization: str | None) -> None:
-    if not settings.daemon_admin_api_key:
-        raise HTTPException(
-            status_code=403, detail="Admin dreaming trigger is disabled"
-        )
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing bearer token")
-    token = authorization.removeprefix("Bearer ").strip()
-    if token != settings.daemon_admin_api_key:
-        raise HTTPException(status_code=403, detail="Invalid admin bearer token")
 
 
 @router.get("")
@@ -371,12 +359,15 @@ async def consolidate_memories_endpoint(
 async def dream_memories_endpoint(
     data: DreamRequest | None = None,
     app_state: AppState = Depends(get_app_state),
-    settings: Settings = Depends(get_settings),
-    authorization: str | None = Header(default=None, alias="Authorization"),
-    auth: AuthenticatedDevice = Depends(require_device_auth),
+    auth: AdminOrDeviceAuth = Depends(require_admin_or_device_auth),
 ):
-    """Admin/debug endpoint to enqueue a dreaming run for one user or all users."""
-    require_admin_api_key(settings, authorization)
+    """Admin/debug endpoint to enqueue a dreaming run for one user or all users.
+
+    Authorization rules:
+    - Admin API key: may specify any user_id, or omit it to target all users.
+    - Device auth: may only target auth.user_id (own user). If user_id is omitted,
+      defaults to auth.user_id. Requesting a different user's ID returns 403.
+    """
 
     if app_state.redis is None:
         raise HTTPException(
@@ -384,7 +375,18 @@ async def dream_memories_endpoint(
             detail="Redis unavailable - cannot enqueue dreaming job",
         )
 
-    target_user_id = data.user_id if data else None
+    device = auth.authenticated_device
+
+    if auth.is_admin:
+        target_user_id = data.user_id if data else None
+    else:
+        requested_user_id = data.user_id if data else None
+        if requested_user_id is not None and requested_user_id != device.user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Device auth cannot target another user",
+            )
+        target_user_id = device.user_id
 
     try:
         job = await app_state.redis.enqueue_job(

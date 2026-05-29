@@ -105,9 +105,12 @@ async def grant_credits(
     app_state: AppState = Depends(get_app_state),
     settings: Settings = Depends(get_settings),
     authorization: str | None = Header(default=None, alias="Authorization"),
-    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
-    """Admin-only endpoint to grant video credits to a user."""
+    """Admin-only endpoint to grant video credits to a user.
+
+    Requires only the admin bearer token in the Authorization header.
+    Does NOT require device authentication.
+    """
     require_admin_api_key(settings, authorization)
 
     if app_state.video_credits_dal is None:
@@ -138,8 +141,10 @@ VALID_VIDEO_PROVIDERS = {"xai", "fal"}
 async def estimate_video_cost(
     duration: int = Query(..., description="Video duration in seconds", ge=1),
     tier: str = Query(..., description="User tier (free, starter, pro, max, or byok)"),
-    provider: str = Query("xai", description="Video provider (xai)"),
+    provider: str = Query("xai", description="Video provider (xai, kling)"),
     resolution: str | None = Query(None, description="Requested output resolution"),
+    kling_model: str | None = Query(None, description="Kling model (kling-o3-pro, kling-v3-pro)"),
+    audio_enabled: bool = Query(False, description="Whether audio is enabled for Kling"),
     app_state: AppState = Depends(get_app_state),
     settings: Settings = Depends(get_settings),
     auth: AuthenticatedDevice = Depends(require_device_auth),
@@ -150,7 +155,7 @@ async def estimate_video_cost(
         raise HTTPException(status_code=400, detail="Invalid tier")
 
     provider_name = provider.lower().strip()
-    if provider_name not in VALID_VIDEO_PROVIDERS:
+    if provider_name not in VALID_VIDEO_PROVIDERS and provider_name != "kling":
         raise HTTPException(status_code=400, detail="Invalid provider")
 
     if app_state.video_credits_dal is None:
@@ -174,15 +179,26 @@ async def estimate_video_cost(
             ),
         )
 
+    normalized_kling_model = "o3-pro"
+    if kling_model:
+        model_lower = kling_model.lower().strip()
+        if model_lower == "kling-v3-pro":
+            normalized_kling_model = "v3-pro"
+        elif model_lower in ("kling-o3-pro", "o3-pro"):
+            normalized_kling_model = "o3-pro"
+
     # Get user's current balance
     current_balance = await app_state.video_credits_dal.get_balance(auth.user_id)
 
     # Calculate credits required
+    pricing_provider = "fal" if provider_name == "kling" else provider_name
     credits_required = estimate_cost(
         duration_seconds=duration,
         tier=tier_lower,
-        provider=provider_name,
+        provider=pricing_provider,
         resolution=resolution,
+        kling_model=normalized_kling_model,
+        audio_enabled=audio_enabled,
     )
 
     return EstimateResponse(

@@ -13,7 +13,7 @@ from fastapi import (
     UploadFile,
 )
 
-from orchestrator.auth import AuthenticatedDevice, require_device_auth
+from orchestrator.auth import AuthenticatedDevice, AdminOrDeviceAuth, require_admin_or_device_auth, require_device_auth
 from orchestrator.config import Settings, get_settings
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
@@ -28,19 +28,6 @@ from orchestrator.skills_upgrade import (
 )
 
 router = APIRouter(prefix="/skills", tags=["skills"])
-
-
-def require_admin_api_key(settings: Settings, authorization: str | None) -> None:
-    """Reject unauthenticated admin requests."""
-    if not settings.daemon_admin_api_key:
-        raise HTTPException(
-            status_code=403, detail="Admin dreaming trigger is disabled"
-        )
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing bearer token")
-    token = authorization.removeprefix("Bearer ").strip()
-    if token != settings.daemon_admin_api_key:
-        raise HTTPException(status_code=403, detail="Invalid admin bearer token")
 
 
 def _safe_isoformat(value: Any) -> str | None:
@@ -407,11 +394,11 @@ class AdminSyncResponse(BaseModel):
 @router.post("/admin/sync", response_model=AdminSyncResponse)
 async def admin_sync_repo_skills(
     request: Request,
-    settings: Settings = Depends(get_settings),
-    authorization: str | None = Header(default=None, alias="Authorization"),
-    auth: AuthenticatedDevice = Depends(require_device_auth),
+    auth: AdminOrDeviceAuth = Depends(require_admin_or_device_auth),
 ) -> AdminSyncResponse:
-    require_admin_api_key(settings, authorization)
+
+    if not auth.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
 
     if not hasattr(request.app.state, "app_state"):
         raise HTTPException(status_code=503, detail="App state not available")

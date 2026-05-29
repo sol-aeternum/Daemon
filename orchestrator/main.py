@@ -31,6 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
+from orchestrator.auth_pepper import PepperValidationError, validate_and_get_pepper
 from orchestrator.council.sse import stream_council, stream_council_interview_response
 from orchestrator.config import ProviderConfig, Settings, get_settings
 from orchestrator.daemon import (
@@ -93,6 +94,13 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+
+    try:
+        validate_and_get_pepper(settings)
+    except PepperValidationError as exc:
+        logger.critical("Production pepper validation failed: %s", exc)
+        raise
+
     state = await init_app_state(settings)
     app.state.app_state = state
     logger.info("AppState initialised")
@@ -260,6 +268,25 @@ def _build_trusted_spawn_context(
         else None
     )
 
+    raw_provider = video_meta.get("provider")
+    video_provider = None
+    kling_model = None
+    audio_enabled = None
+    if isinstance(raw_provider, str) and raw_provider.strip():
+        provider_lower = raw_provider.lower().strip()
+        if provider_lower == "kling":
+            video_provider = "fal"
+            raw_kling_model = video_meta.get("kling_model")
+            if isinstance(raw_kling_model, str):
+                model_lower = raw_kling_model.lower().strip()
+                if model_lower == "kling-v3-pro":
+                    kling_model = "v3-pro"
+                elif model_lower in ("kling-o3-pro", "o3-pro"):
+                    kling_model = "o3-pro"
+            audio_enabled = video_meta.get("audio_enabled")
+        elif provider_lower in ("xai", "fal"):
+            video_provider = provider_lower
+
     return {
         "video": {
             "mode": "video",
@@ -269,6 +296,9 @@ def _build_trusted_spawn_context(
             "source_mode": source_mode,
             "reference_image_url": reference_image_url,
             "reference_image_id": reference_image_id,
+            "video_provider": video_provider,
+            "kling_model": kling_model,
+            "audio_enabled": audio_enabled,
         }
     }
 
@@ -1136,7 +1166,10 @@ TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @app.get("/generated-images/{filename}")
-async def serve_generated_image(filename: str) -> FileResponse:
+async def serve_generated_image(
+    filename: str,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
+) -> FileResponse:
     """Serve a generated image file from disk."""
     # Sanitize filename to prevent path traversal
     safe_name = Path(filename).name
@@ -1152,7 +1185,10 @@ async def serve_generated_image(filename: str) -> FileResponse:
 
 
 @app.get("/generated-audio/{filename}")
-async def serve_generated_audio(filename: str) -> FileResponse:
+async def serve_generated_audio(
+    filename: str,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
+) -> FileResponse:
     """Serve a generated audio file from disk (TTS or sound effects)."""
     safe_name = Path(filename).name
     # Check TTS cache first, then generated audio directory
@@ -1170,7 +1206,10 @@ async def serve_generated_audio(filename: str) -> FileResponse:
 
 
 @app.get("/generated-files/{filename}")
-async def serve_generated_file(filename: str) -> FileResponse:
+async def serve_generated_file(
+    filename: str,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
+) -> FileResponse:
     """Serve a generated document file from disk."""
     safe_name = Path(filename).name
     filepath = GENERATED_FILES_DIR / safe_name
