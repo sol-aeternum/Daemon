@@ -2,7 +2,7 @@
 
 import { useCallback, useRef } from "react";
 import { useStudio } from "../StudioProvider";
-import { getAuthHeader } from "@/lib/auth";
+import { ensureAuthHeader } from "@/lib/auth";
 
 type VideoSourceMode = "text-to-video" | "image-to-video";
 type VideoTier = "starter" | "pro" | "max" | "byok";
@@ -41,8 +41,8 @@ function getApiBaseUrl(): string {
   return "";
 }
 
-function getAuthHeaders(): HeadersInit {
-  const header = getAuthHeader();
+async function getAuthHeaders(): Promise<HeadersInit> {
+  const header = await ensureAuthHeader();
   if (!header) return {};
   return { Authorization: header };
 }
@@ -207,7 +207,7 @@ export function useVideoGeneration() {
 
         const apiBaseUrl = getApiBaseUrl();
         const candidates = apiBaseUrl
-          ? [`${apiBaseUrl}/chat`, `${apiBaseUrl}/api/chat`, "/api/chat", "/chat"]
+          ? ["/api/chat", `${apiBaseUrl}/api/chat`, "/chat", `${apiBaseUrl}/chat`]
           : ["/api/chat", "/chat"];
 
         let response: Response | null = null;
@@ -217,7 +217,7 @@ export function useVideoGeneration() {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              ...getAuthHeaders(),
+              ...(await getAuthHeaders()),
             },
             body: JSON.stringify({
               message,

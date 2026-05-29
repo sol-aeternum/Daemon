@@ -14,7 +14,7 @@ import { PromptInput } from "./components/PromptInput";
 import { ReferenceUpload } from "./components/ReferenceUpload";
 import { ResolutionPicker } from "./components/ResolutionPicker";
 import { useVideoGeneration } from "./hooks/useVideoGeneration";
-import { getAuthHeader } from "@/lib/auth";
+import { ensureAuthHeader } from "@/lib/auth";
 
 const DEFAULT_STUDIO_USER_ID = "00000000-0000-0000-0000-000000000001";
 const VALID_VIDEO_TIERS = ["free", "starter", "pro", "max", "byok"] as const;
@@ -44,8 +44,8 @@ function getApiBaseUrl(): string {
   return "";
 }
 
-function getAuthHeaders(): HeadersInit {
-  const header = getAuthHeader();
+async function getAuthHeaders(): Promise<HeadersInit> {
+  const header = await ensureAuthHeader();
   if (!header) return {};
   return { Authorization: header };
 }
@@ -218,7 +218,7 @@ function VideoModeControls({
       try {
         const response = await fetch(candidate, {
           headers: {
-            ...getAuthHeaders(),
+            ...(await getAuthHeaders()),
           },
           cache: "no-store",
         });
