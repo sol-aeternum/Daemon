@@ -47,6 +47,8 @@ class MockConn:
             self._session_insert_args = args
         if "pg_advisory_xact_lock" in sql:
             self._pool._lock_acquired = True
+        if "UPDATE devices SET revoked_at = NOW() WHERE revoked_at IS NULL" in sql:
+            self._pool._active_count = 0
         return None
 
     async def fetchrow(self, sql, *args):
@@ -62,9 +64,10 @@ class MockConn:
 
 
 class MockPool:
-    def __init__(self, active_device_count=0, singleton_user_exists=False):
+    def __init__(self, active_device_count=0, singleton_user_exists=False, has_valid_session=True):
         self._active_count = active_device_count
         self._singleton_exists = singleton_user_exists
+        self._has_valid_session = has_valid_session
         self._closed = False
         self._lock_acquired = False
         self._device_created = False
@@ -73,12 +76,16 @@ class MockPool:
     async def fetchval(self, sql, *args):
         if "COUNT(*)" in sql and "devices" in sql:
             return self._active_count
+        if "EXISTS" in sql and "SELECT 1" in sql and "sessions" in sql:
+            return self._has_valid_session
         return None
 
     async def fetchrow(self, sql, *args):
         return None
 
     async def execute(self, sql, *args):
+        if "UPDATE devices SET revoked_at = NOW() WHERE revoked_at IS NULL" in sql:
+            self._active_count = 0
         return None
 
     @asynccontextmanager
@@ -151,6 +158,24 @@ class TestStartupActiveDeviceSuppressesToken:
             async with app.router.lifespan_context(app):
                 pass
             assert ">>> Daemon setup required" not in caplog.text
+        finally:
+            restore_init(original)
+
+
+class TestStartupRecoveryWithStaleDevices:
+    @pytest.mark.asyncio
+    async def test_startup_generates_recovery_token_when_devices_have_no_valid_sessions(
+        self, setup_env, monkeypatch, caplog
+    ):
+        mock_pool = MockPool(active_device_count=1, has_valid_session=False)
+        original = make_mock_init(mock_pool)
+        try:
+            caplog.set_level(logging.INFO)
+            caplog.clear()
+            async with app.router.lifespan_context(app):
+                pass
+            assert ">>> Daemon recovery:" in caplog.text
+            assert mock_pool._active_count == 0
         finally:
             restore_init(original)
 

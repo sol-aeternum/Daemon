@@ -189,6 +189,35 @@ async def _check_first_boot_setup(state: AppState) -> None:
                 ">>> Daemon setup required. Open http://<host>:<port>/setup and enter token: %s",
                 plaintext,
             )
+        else:
+            has_valid_session = await state.db_pool.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM sessions s
+                    JOIN devices d ON d.id = s.device_id
+                    WHERE d.revoked_at IS NULL
+                      AND s.refresh_consumed_at IS NULL
+                      AND s.refresh_expires_at > NOW()
+                      AND s.revoked_at IS NULL
+                )
+                """
+            )
+            if not has_valid_session:
+                async with state.db_pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE devices SET revoked_at = NOW() WHERE revoked_at IS NULL"
+                    )
+                    await conn.execute(
+                        "UPDATE sessions SET revoked_at = NOW() WHERE revoked_at IS NULL"
+                    )
+                from orchestrator.auth_tokens import generate_setup_token, hash_token
+                plaintext = generate_setup_token()
+                state.setup_token_hash = hash_token(plaintext)
+                logger.info(
+                    ">>> Daemon recovery: all sessions expired. Open http://<host>:<port>/setup and enter token: %s",
+                    plaintext,
+                )
     except Exception:
         logger.warning("First-boot setup check failed", exc_info=True)
 
