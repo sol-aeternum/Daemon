@@ -571,6 +571,34 @@ async def refresh_endpoint(
 
     async with app_state.db_pool.acquire() as conn:
         async with conn.transaction():
+            # Pre-check: query client_kind BEFORE consuming, so mismatch returns 400
+            # without burning an otherwise valid refresh token.  Only valid sessions
+            # on active devices are candidates; revoked-device tokens fall through to
+            # the invalid-token path.
+            pre_row = await conn.fetchrow(
+                """
+                SELECT client_kind
+                FROM sessions
+                WHERE refresh_token_hash = $1
+                  AND refresh_consumed_at IS NULL
+                  AND refresh_expires_at > NOW()
+                  AND revoked_at IS NULL
+                  AND EXISTS (SELECT 1 FROM devices WHERE id = sessions.device_id AND revoked_at IS NULL)
+                """,
+                token_hash,
+            )
+            if pre_row is not None:
+                stored_kind = pre_row["client_kind"]
+                if is_web and stored_kind == "native":
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Refresh token transport mismatch",
+                    )
+                if not is_web and stored_kind == "web":
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Refresh token transport mismatch",
+                    )
             # Atomic consume: UPDATE ... WHERE valid (not consumed, not expired, not revoked, device active)
             consumed_row = await conn.fetchrow(
                 """

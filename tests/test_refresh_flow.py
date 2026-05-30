@@ -57,6 +57,13 @@ class MockConn:
                     }
                     return self._pool._sessions[token_hash]
             return None
+        if "SELECT client_kind" in sql and "refresh_token_hash" in sql and "refresh_consumed_at IS NULL" in sql:
+            token_hash = args[0]
+            if token_hash in self._pool._sessions:
+                row = self._pool._sessions[token_hash]
+                if self._is_session_valid(row):
+                    return row
+            return None
         if "SELECT" in sql and "refresh_consumed_at" in sql and "UPDATE" not in sql and "refresh_token_hash" in sql:
             token_hash = args[0]
             if token_hash in self._pool._sessions:
@@ -78,12 +85,12 @@ class MockConn:
     async def execute(self, sql, *args):
         if "INSERT INTO sessions" in sql:
             self._pool._captured_inserts.append({"sql": sql, "args": args})
-        if "UPDATE devices" in sql and "revoked_at" in sql:
+        if "UPDATE devices" in sql and "revoked_at" in sql and args:
             device_id = args[0]
             key = device_id if device_id in self._pool._devices else str(device_id)
             if key in self._pool._devices:
                 self._pool._devices[key]["revoked_at"] = datetime.now(timezone.utc)
-        if "UPDATE sessions" in sql and "revoked_at" in sql and "device_id" in sql:
+        if "UPDATE sessions" in sql and "revoked_at" in sql and "device_id" in sql and args:
             device_id = args[0]
             for key, sess in self._pool._sessions.items():
                 if sess["device_id"] == device_id:
@@ -679,6 +686,7 @@ class TestRefreshTransportMismatch:
                     assert response.status_code == 400, response.text
                     assert "transport mismatch" in response.json()["detail"]
                     assert len(mock_pool._captured_inserts) == 0
+                    assert mock_pool._sessions[refresh_hash]["refresh_consumed_at"] is None
         finally:
             restore_init(original)
 
@@ -708,6 +716,7 @@ class TestRefreshTransportMismatch:
                     assert response.status_code == 400, response.text
                     assert "transport mismatch" in response.json()["detail"]
                     assert len(mock_pool._captured_inserts) == 0
+                    assert mock_pool._sessions[refresh_hash]["refresh_consumed_at"] is None
         finally:
             restore_init(original)
 
