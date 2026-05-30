@@ -36,11 +36,11 @@ class TestRefreshCookieConfig:
         assert config.same_site == "Strict"
         assert config.path == "/"
 
-    def test_development_insecure_cookie_allowed(self):
+    def test_development_host_prefix_requires_secure(self):
         config = make_refresh_cookie_config(cookie_secure=False, environment="development")
         assert config.name == "__Host-daemon_refresh"
         assert config.http_only is True
-        assert config.secure is False
+        assert config.secure is True
         assert config.same_site == "Strict"
         assert config.path == "/"
 
@@ -66,11 +66,11 @@ class TestBuildRefreshCookie:
         assert "Path=/" in cookie
         assert "Domain=" not in cookie
 
-    def test_development_insecure_cookie_string(self):
+    def test_development_host_prefix_cookie_includes_secure(self):
         config = make_refresh_cookie_config(cookie_secure=False, environment="development")
         result = build_refresh_cookie("test_refresh_token_value", config)
         cookie = result["Set-Cookie"]
-        assert "Secure" not in cookie
+        assert "Secure" in cookie
         assert "HttpOnly" in cookie
         assert "SameSite=Strict" in cookie
         assert "Path=/" in cookie

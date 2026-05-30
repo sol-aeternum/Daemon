@@ -11,7 +11,7 @@ Cookie attributes:
   - SameSite=Strict: always
   - Path=/: always
   - Domain: never (rejected by spec)
-  - Secure: production=true, development=false only if DAEMON_ENVIRONMENT=development
+   - Secure: always (required for __Host- prefix; DAEMON_COOKIE_SECURE=false raises CookiePolicyError in production)
 """
 
 from __future__ import annotations
@@ -44,7 +44,9 @@ def make_refresh_cookie_config(
             "daemon_cookie_secure=false is not allowed in production"
         )
     if environment == "development" and not cookie_secure:
-        secure = False
+        # __Host- prefix always requires Secure; DAEMON_COOKIE_SECURE=false
+        # cannot make __Host-daemon_refresh insecure because __Host- requires Secure.
+        secure = COOKIE_NAME.startswith("__Host-")
     else:
         secure = True
 
