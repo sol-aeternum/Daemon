@@ -138,6 +138,13 @@ function parseSseFrame(frame: string): { event: string; dataText: string } {
   return { event, dataText: dataText.trim() };
 }
 
+export function getVideoGenerationEndpointCandidates(apiBaseUrl: string): string[] {
+  const rawEndpoints = apiBaseUrl ? [`${apiBaseUrl}/chat`, "/chat"] : ["/chat"];
+  const bridgeEndpoints = apiBaseUrl ? [`${apiBaseUrl}/api/chat`, "/api/chat"] : ["/api/chat"];
+
+  return [...rawEndpoints, ...bridgeEndpoints];
+}
+
 function buildVideoRequestMessage(options: {
   prompt: string;
   duration: number;
@@ -175,14 +182,14 @@ export function useVideoGeneration() {
       const referenceImageUrl = referenceImage?.url;
       const referenceImageId = referenceImage?.id;
 
-        const modelId = provider === "kling" ? klingModel ?? "kling-o3-pro" : "xai-grok-imagine-3-video";
-        const modelName = provider === "kling" ? "Kling 3.0" : "xAI Grok Imagine 3";
+      const modelId = provider === "kling" ? klingModel ?? "kling-o3-pro" : "xai-grok-imagine-3-video";
+      const modelName = provider === "kling" ? "Kling 3.0" : "xAI Grok Imagine 3";
 
-        upsertGeneration({
-          id: generationId,
-          mediaType: "video",
-          modelId,
-          modelName,
+      upsertGeneration({
+        id: generationId,
+        mediaType: "video",
+        modelId,
+        modelName,
         prompt: trimmedPrompt,
         aspectRatio: "16:9",
         resolution: "video",
@@ -206,38 +213,45 @@ export function useVideoGeneration() {
         });
 
         const apiBaseUrl = getApiBaseUrl();
-        const candidates = apiBaseUrl
-          ? ["/api/chat", `${apiBaseUrl}/api/chat`, "/chat", `${apiBaseUrl}/chat`]
-          : ["/api/chat", "/chat"];
+        const candidates = getVideoGenerationEndpointCandidates(apiBaseUrl);
 
         let response: Response | null = null;
         for (let index = 0; index < candidates.length; index += 1) {
           const candidate = candidates[index];
-          const candidateResponse = await fetch(candidate, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              ...(await getAuthHeaders()),
-            },
-            body: JSON.stringify({
-              message,
-              model: "auto",
-              messages: [{ role: "user", content: message }],
-              metadata: {
-                video_generation: {
-                  duration,
-                  source_mode: sourceMode,
-                  tier,
-                  user_id: userId,
-                  provider,
-                  reference_image_url: referenceImageUrl,
-                  reference_image_id: referenceImageId,
-                  kling_model: provider === "kling" ? klingModel : undefined,
-                  audio_enabled: provider === "kling" ? audioEnabled : undefined,
-                },
+          let candidateResponse: Response;
+
+          try {
+            candidateResponse = await fetch(candidate, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                ...(await getAuthHeaders()),
               },
-            }),
-          });
+              body: JSON.stringify({
+                message,
+                model: "auto",
+                messages: [{ role: "user", content: message }],
+                metadata: {
+                  video_generation: {
+                    duration,
+                    source_mode: sourceMode,
+                    tier,
+                    user_id: userId,
+                    provider,
+                    reference_image_url: referenceImageUrl,
+                    reference_image_id: referenceImageId,
+                    kling_model: provider === "kling" ? klingModel : undefined,
+                    audio_enabled: provider === "kling" ? audioEnabled : undefined,
+                  },
+                },
+              }),
+            });
+          } catch (error) {
+            if (index < candidates.length - 1) {
+              continue;
+            }
+            throw error;
+          }
 
           if (candidateResponse.status === 404 && index < candidates.length - 1) {
             continue;

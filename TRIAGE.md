@@ -1237,3 +1237,54 @@
 - **Evidence**: `orchestrator/config.py:8: in <module> from pydantic import Field` followed by `ModuleNotFoundError: No module named 'pydantic'`.
 - **Likely cause**: Backend test dependencies are not installed in the active Python environment (90% confidence).
 - **Suggested action**: Install backend requirements in the test environment before running pytest.
+
+## 2026-05-31 04:02 UTC — Targeted Vitest run emits npm http-proxy config warning
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR #4 Studio video SSE endpoint review fix verification
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: The targeted frontend Vitest run passed, but npm printed a warning about an unknown `http-proxy` environment config before invoking Vitest.
+- **Evidence**: `npm test -- --run __tests__/studio-video-generation.test.ts` printed `npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.` and then passed `2 tests`.
+- **Likely cause**: The shell/container npm environment appears to include a legacy or nonstandard `http-proxy` config key that current npm tolerates but plans to reject later (confidence 80%).
+- **Suggested action**: Inspect npm config/environment variables for `http-proxy` and replace it with supported proxy settings if needed.
+- **Seen again**: 2026-05-31 04:03 UTC during the rerun of `npm test -- --run __tests__/studio-video-generation.test.ts`; tests still passed.
+- **Seen again**: 2026-05-31 04:03 UTC during the edit-cleanup command whose Python step failed but whose test step still passed.
+- **Seen again**: 2026-05-31 04:04 UTC during `npx tsc --noEmit --pretty false`, before the typecheck failed on unrelated project errors.
+- **Seen again**: 2026-05-31 04:03 UTC during the final targeted rerun of `npm test -- --run __tests__/studio-video-generation.test.ts`; tests still passed.
+- **Seen again**: 2026-05-31 04:04 UTC during another cleanup attempt whose Python step failed but whose targeted test still passed.
+- **Seen again**: 2026-05-31 04:05 UTC during the final targeted rerun of `npm test -- --run __tests__/studio-video-generation.test.ts`; tests still passed.
+
+## 2026-05-31 04:00 UTC — Broad ripgrep command included missing test path
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR #4 Studio video SSE endpoint review fix inspection
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: A broad search command returned exit code 2 because it included a top-level `tests` path that does not exist in this checkout context, even though it still printed useful frontend matches.
+- **Evidence**: `rg -n "useVideoGeneration|video_generating|/api/chat|raw /chat|parseSseFrame" frontend __tests__ tests -S` printed `rg: __tests__: No such file or directory (os error 2)`.
+- **Likely cause**: The repository's frontend tests live under `frontend/__tests__`, and there is no root-level `__tests__` directory in this checkout (confidence 95%).
+- **Suggested action**: Scope future searches to existing directories such as `frontend`, `orchestrator`, and root files unless a path is confirmed first.
+
+## 2026-05-31 04:03 UTC — Patch command used frontend working directory with repo-relative path
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR #4 Studio video SSE endpoint review fix cleanup
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: A cleanup command attempted to edit `frontend/app/studio/hooks/useVideoGeneration.ts` while the shell working directory was already `frontend`, causing the Python edit step to fail before the subsequent targeted test ran and passed.
+- **Evidence**: Python printed `FileNotFoundError: [Errno 2] No such file or directory: 'frontend/app/studio/hooks/useVideoGeneration.ts'`; the same shell invocation then ran `npm test -- --run __tests__/studio-video-generation.test.ts` and passed `2 tests`.
+- **Likely cause**: The command mixed root-relative file paths with a frontend working directory (confidence 99%).
+- **Suggested action**: Use repository-root working directory for repo-relative edit scripts, or shorten paths when running from package subdirectories.
+- **Seen again**: 2026-05-31 04:04 UTC during a second edit command with the same mixed working-directory/path issue; the subsequent targeted test still passed.
+
+## 2026-05-31 04:04 UTC — Frontend typecheck fails on pre-existing advisor event type drift
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: PR #4 Studio video SSE endpoint review fix verification
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: A full frontend TypeScript check failed on advisor event tests and `lib/advisorEvents.ts` type mismatches unrelated to the Studio video endpoint candidate change. The targeted Studio video test still passes.
+- **Evidence**: `npx tsc --noEmit --pretty false` exited with code 2 and reported errors including `__tests__/advisor-events.test.ts(4,3): error TS2305: Module '"../lib/events"' has no exported member 'isAdvisorEndEvent'.`, multiple `Type '"advisor_start"' is not assignable to type ...` errors, and `lib/advisorEvents.ts(521,25): error TS2352: Conversion of type ... to type 'ChatEvent' may be a mistake`.
+- **Likely cause**: Advisor event tests/helpers appear to expect event union members and type guards that are not currently exported by `lib/events.ts` (confidence 90%).
+- **Suggested action**: Reconcile advisor event schema exports with `lib/advisorEvents.ts` and `__tests__/advisor-events.test.ts`, or exclude stale tests from the typecheck if intentionally obsolete.
