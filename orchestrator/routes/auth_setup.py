@@ -28,6 +28,7 @@ from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.auth_cookies import (
     COOKIE_NAME,
     CookiePolicyError,
+    RefreshCookieConfig,
     build_refresh_cookie,
     clear_refresh_cookie,
     make_refresh_cookie_config,
@@ -331,6 +332,16 @@ async def enroll_complete_endpoint(
             detail="Invalid enrollment session",
         )
 
+    cookie_config: RefreshCookieConfig | None = None
+    if body.client_kind == "web":
+        try:
+            cookie_config = make_refresh_cookie_config(
+                cookie_secure=settings.daemon_cookie_secure,
+                environment=settings.daemon_environment,
+            )
+        except CookiePolicyError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
     async with app_state.db_pool.acquire() as conn:
         exc_to_raise: HTTPException | None = None
         access_token = ""
@@ -479,10 +490,7 @@ async def enroll_complete_endpoint(
         raise exc_to_raise
 
     if body.client_kind == "web":
-        cookie_config = make_refresh_cookie_config(
-            cookie_secure=settings.daemon_cookie_secure,
-            environment=settings.daemon_environment,
-        )
+        assert cookie_config is not None
         refresh_max_age = int(timedelta(days=REFRESH_TOKEN_TTL_DAYS).total_seconds())
         cookie_headers = build_refresh_cookie(
             value=refresh_token,

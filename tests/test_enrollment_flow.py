@@ -1028,3 +1028,198 @@ class TestRevokedCreatorDevice:
                 auth_module._verify_access_token = original_verify
         finally:
             restore_init(original)
+
+
+class TestWebEnrollCookiePolicyErrorBeforeDbMutation:
+    """Regression: CookiePolicyError must be raised before DB transaction opens.
+
+    Verifies the fix for discussion_r3328580684: web enroll cookie policy error
+    was raised AFTER committed DB changes (device/session creation + pending
+    enrollment consumption). Now it is raised BEFORE opening the transaction.
+    """
+
+    @pytest.mark.asyncio
+    async def test_web_enroll_production_insecure_cookie_returns_500_before_device_session_or_consumption(
+        self, monkeypatch
+    ):
+        """Production + daemon_cookie_secure=false → 500 before any DB mutation."""
+        # Override env to production + insecure cookie (triggers CookiePolicyError)
+        monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/testdb")
+        monkeypatch.setenv("REDIS_URL", "")
+        monkeypatch.setenv("DAEMON_ALLOWED_ORIGINS", "https://app.daemon.ai")
+        monkeypatch.setenv("DAEMON_PUBLIC_ORIGIN", "https://app.daemon.ai")
+        monkeypatch.setenv("DAEMON_ENVIRONMENT", "production")
+        monkeypatch.setenv("DAEMON_AUTH_PEPPER", "test-pepper-for-all-tests-12345678901234567890")
+        # Explicitly false — in production this raises CookiePolicyError
+        monkeypatch.setenv("DAEMON_COOKIE_SECURE", "false")
+        get_settings.cache_clear()
+
+        mock_pool = MockPool(active_device_count=1)
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                state = app.state.app_state
+                settings = get_settings()
+                pepper = validate_and_get_pepper(settings)
+
+                access_token = "test-access-token-production-insecure"
+                state.db_pool._access_token = access_token
+                state.db_pool._access_token_hash = hash_token(access_token)
+                state.db_pool._user_id = SINGLETON_ID
+                state.db_pool._device_id = uuid.uuid4()
+                state.db_pool._session_id = uuid.uuid4()
+
+                async def mock_verify(pool, token):
+                    if token == access_token:
+                        from orchestrator.auth import AuthenticatedDevice
+                        return AuthenticatedDevice(
+                            user_id=SINGLETON_ID,
+                            device_id=pool._device_id,
+                            session_id=pool._session_id,
+                        )
+                    return None
+
+                import orchestrator.auth as auth_module
+                original_verify = auth_module._verify_access_token
+                auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
+
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    start_response = await client.post(
+                        "/v1/auth/enroll/start",
+                        headers=make_auth_headers(access_token),
+                    )
+
+                    assert start_response.status_code == 200, start_response.text
+                    start_data = start_response.json()
+                    pending_id = start_data["pending_id"]
+                    code = start_data["code"]
+
+                    pending_row = {
+                        "id": uuid.UUID(pending_id),
+                        "user_id": SINGLETON_ID,
+                        "code_verifier_hash": hash_enrollment_code(code, pepper),
+                        "wrong_attempts_remaining": 3,
+                        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
+                        "consumed_at": None,
+                    }
+                    state.db_pool._pending_enrollments[uuid.UUID(pending_id)] = pending_row
+
+                    complete_response = await client.post(
+                        "/v1/auth/enroll/complete",
+                        json={
+                            "pending_id": pending_id,
+                            "code": code,
+                            "client_kind": "web",
+                        },
+                        headers={
+                            "Origin": "https://app.daemon.ai",
+                            "Sec-Fetch-Site": "same-origin",
+                        },
+                    )
+
+                    # Must return 500 before device/session creation and pending consumption
+                    assert complete_response.status_code == 500, complete_response.text
+                    assert "daemon_cookie_secure=false is not allowed in production" in complete_response.text
+
+                    # Verify NO device was created
+                    assert mock_pool._device_created is False
+
+                    # Verify pending enrollment was NOT consumed (no consumed_at update)
+                    conn = mock_pool._connections[-1] if mock_pool._connections else None
+                    # If no connections, transaction was never opened (correct — pre-transaction failure)
+                    assert conn is None or conn._pending_update_args is None
+
+                auth_module._verify_access_token = original_verify
+        finally:
+            restore_init(original)
+            get_settings.cache_clear()
+
+    @pytest.mark.asyncio
+    async def test_native_enroll_not_affected_by_production_insecure_cookie(self, monkeypatch):
+        """Native enrollment must not require web cookie config and must succeed."""
+        monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/testdb")
+        monkeypatch.setenv("REDIS_URL", "")
+        monkeypatch.setenv("DAEMON_ALLOWED_ORIGINS", "https://app.daemon.ai")
+        monkeypatch.setenv("DAEMON_PUBLIC_ORIGIN", "https://app.daemon.ai")
+        monkeypatch.setenv("DAEMON_ENVIRONMENT", "production")
+        monkeypatch.setenv("DAEMON_AUTH_PEPPER", "test-pepper-for-all-tests-12345678901234567890")
+        monkeypatch.setenv("DAEMON_COOKIE_SECURE", "false")
+        get_settings.cache_clear()
+
+        mock_pool = MockPool(active_device_count=1)
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                state = app.state.app_state
+                settings = get_settings()
+                pepper = validate_and_get_pepper(settings)
+
+                access_token = "test-access-token-native-production"
+                state.db_pool._access_token = access_token
+                state.db_pool._access_token_hash = hash_token(access_token)
+                state.db_pool._user_id = SINGLETON_ID
+                state.db_pool._device_id = uuid.uuid4()
+                state.db_pool._session_id = uuid.uuid4()
+
+                async def mock_verify(pool, token):
+                    if token == access_token:
+                        from orchestrator.auth import AuthenticatedDevice
+                        return AuthenticatedDevice(
+                            user_id=SINGLETON_ID,
+                            device_id=pool._device_id,
+                            session_id=pool._session_id,
+                        )
+                    return None
+
+                import orchestrator.auth as auth_module
+                original_verify = auth_module._verify_access_token
+                auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
+
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    start_response = await client.post(
+                        "/v1/auth/enroll/start",
+                        headers=make_auth_headers(access_token),
+                    )
+
+                    assert start_response.status_code == 200
+                    start_data = start_response.json()
+                    pending_id = start_data["pending_id"]
+                    code = start_data["code"]
+                    code_verifier_hash = hash_enrollment_code(code, pepper)
+
+                    pending_row = {
+                        "id": uuid.UUID(pending_id),
+                        "user_id": SINGLETON_ID,
+                        "code_verifier_hash": code_verifier_hash,
+                        "wrong_attempts_remaining": 3,
+                        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
+                        "consumed_at": None,
+                    }
+                    state.db_pool._pending_enrollments[uuid.UUID(pending_id)] = pending_row
+
+                    complete_response = await client.post(
+                        "/v1/auth/enroll/complete",
+                        json={
+                            "pending_id": pending_id,
+                            "code": code,
+                            "client_kind": "native",
+                        },
+                    )
+
+                    # Native enrollment must succeed despite production+insecure cookie
+                    assert complete_response.status_code == 200, complete_response.text
+                    complete_data = complete_response.json()
+                    assert "access_token" in complete_data
+                    assert "refresh_token" in complete_data
+                    assert complete_data["refresh_token"] is not None
+                    # No cookie header for native
+                    cookie_header = complete_response.headers.get("set-cookie", "")
+                    assert "__Host-daemon_refresh" not in cookie_header
+                    assert mock_pool._device_created is True
+
+                auth_module._verify_access_token = original_verify
+        finally:
+            restore_init(original)
+            get_settings.cache_clear()
