@@ -50,20 +50,20 @@ _DEDUP_MERGE_RE = re.compile(r"dedup_merge_threshold:\s*float\s*=\s*Field\s*\(\s
 _DEDUP_SUPERSEDE_GENERIC_RE = re.compile(r"dedup_supersede_threshold:\s*float\s*=\s*Field\s*\(\s*default\s*=\s*([\d.]+)")
 _DEDUP_SUPERSEDE_SAME_SLOT_RE = re.compile(r"dedup_supersede_same_slot_threshold:\s*float\s*=\s*Field\s*\(\s*default\s*=\s*([\d.]+)")
 
-# Accept bold-label (GFM) and plain-label forms:
+# Accept bold-label (GFM), uppercase plain, and lowercase plain forms:
 #   **EMBEDDING_DOCUMENT_MODEL**: voyage-4-large
 #   EMBEDDING_DOCUMENT_MODEL: voyage-4-large
 #   embedding_document_model: "voyage-4-large"
 _EMBEDDING_DOC_MODEL_CLAIM_RE = re.compile(
-    r'\*\*EMBEDDING_DOCUMENT_MODEL\*\*[:=\s]+(?:["\'])?([a-z0-9-]+)(?=["\']?\s|$)',
+    r'(?:\*\*EMBEDDING_DOCUMENT_MODEL\*\*|EMBEDDING_DOCUMENT_MODEL|embedding_document_model)[:=\s]+(?:["\'])?([a-z0-9-]+)(?=["\']?\s|$)',
     re.IGNORECASE,
 )
 _EMBEDDING_QUERY_MODEL_CLAIM_RE = re.compile(
-    r'\*\*EMBEDDING_QUERY_MODEL\*\*[:=\s]+(?:["\'])?([a-z0-9-]+)(?=["\']?\s|$)',
+    r'(?:\*\*EMBEDDING_QUERY_MODEL\*\*|EMBEDDING_QUERY_MODEL|embedding_query_model)[:=\s]+(?:["\'])?([a-z0-9-]+)(?=["\']?\s|$)',
     re.IGNORECASE,
 )
 _EMBEDDING_DIMENSIONS_CLAIM_RE = re.compile(
-    r'\*\*EMBEDDING_DIMENSIONS\*\*[:=\s]+(\d+)',
+    r'(?:\*\*EMBEDDING_DIMENSIONS\*\*|EMBEDDING_DIMENSIONS|embedding_dimensions)[:=\s]+(\d+)',
     re.IGNORECASE,
 )
 
