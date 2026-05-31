@@ -32,9 +32,7 @@ router = APIRouter(prefix="/skills", tags=["skills"])
 def require_admin_api_key(settings: Settings, authorization: str | None) -> None:
     """Reject unauthenticated admin requests."""
     if not settings.daemon_admin_api_key:
-        raise HTTPException(
-            status_code=403, detail="Admin dreaming trigger is disabled"
-        )
+        raise HTTPException(status_code=403, detail="Admin dreaming trigger is disabled")
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token")
     token = authorization.removeprefix("Bearer ").strip()
@@ -131,16 +129,12 @@ async def list_skills(request: Request) -> dict[str, list[skills_store.SkillSumm
                     proj = await store.get_projection(skill["id"])
                     if proj:
                         skill["source_type"] = proj.get("source_type")
-                        skill["allow_autonomous_edit"] = proj.get(
-                            "allow_autonomous_edit"
-                        )
+                        skill["allow_autonomous_edit"] = proj.get("allow_autonomous_edit")
                         skill["repo_version"] = proj.get("repo_version")
                         skill["local_version"] = proj.get("local_version")
                         skill["pending_update"] = proj.get("pending_update")
                         skill["use_count"] = proj.get("use_count")
-                        skill["last_used_at"] = _safe_isoformat(
-                            proj.get("last_used_at")
-                        )
+                        skill["last_used_at"] = _safe_isoformat(proj.get("last_used_at"))
                 except Exception:
                     continue
     return {"skills": skills}
@@ -162,9 +156,7 @@ async def get_skill(skill_id: str, request: Request) -> skills_store.SkillDetail
 
 
 @router.post("", status_code=201)
-async def create_skill(
-    payload: SkillCreate, request: Request
-) -> skills_store.SkillDetail:
+async def create_skill(payload: SkillCreate, request: Request) -> skills_store.SkillDetail:
     try:
         result = skills_store.create_skill(
             name=payload.name,
@@ -196,9 +188,7 @@ async def upload_skill(
         raw_bytes = await file.read()
         markdown = raw_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise HTTPException(
-            status_code=400, detail="Skill file must be UTF-8 markdown"
-        ) from exc
+        raise HTTPException(status_code=400, detail="Skill file must be UTF-8 markdown") from exc
 
     try:
         result = skills_store.import_skill_markdown(
@@ -342,9 +332,7 @@ async def handle_pending_update(
         }
 
     else:
-        raise HTTPException(
-            status_code=400, detail="Invalid action. Use 'apply' or 'dismiss'"
-        )
+        raise HTTPException(status_code=400, detail="Invalid action. Use 'apply' or 'dismiss'")
 
 
 @router.get("/{skill_id}/download")

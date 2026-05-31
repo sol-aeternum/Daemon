@@ -54,9 +54,7 @@ class TestDedupSlotFallback:
         mock_store.touch_memory = AsyncMock()
 
         # Create the slotted fact
-        fact = SimpleFact(
-            content="User's name is Julian", category="fact", slot="personal.name"
-        )
+        fact = SimpleFact(content="User's name is Julian", category="fact", slot="personal.name")
 
         mock_embedding = [0.1] * 1024
 
@@ -74,14 +72,10 @@ class TestDedupSlotFallback:
             )
 
             # Assert: should merge with existing unslotted memory
-            assert len(result.merged) == 1, (
-                f"Expected 1 merged, got {len(result.merged)}"
-            )
+            assert len(result.merged) == 1, f"Expected 1 merged, got {len(result.merged)}"
             assert len(result.new) == 0, f"Expected 0 new, got {len(result.new)}"
             assert len(result.superseded) == 0
-            mock_embed_documents.assert_awaited_once_with(
-                ["personal.name: User's name is Julian"]
-            )
+            mock_embed_documents.assert_awaited_once_with(["personal.name: User's name is Julian"])
 
     @pytest.mark.asyncio
     async def test_slotted_fact_creates_new_when_no_match(self):
@@ -108,9 +102,7 @@ class TestDedupSlotFallback:
         )
 
         # Create the slotted fact
-        fact = SimpleFact(
-            content="User's name is Julian", category="fact", slot="personal.name"
-        )
+        fact = SimpleFact(content="User's name is Julian", category="fact", slot="personal.name")
 
         mock_embedding = [0.1] * 1024
 
@@ -131,6 +123,4 @@ class TestDedupSlotFallback:
             assert len(result.new) == 1, f"Expected 1 new, got {len(result.new)}"
             assert len(result.merged) == 0
             assert len(result.superseded) == 0
-            mock_embed_documents.assert_awaited_once_with(
-                ["personal.name: User's name is Julian"]
-            )
+            mock_embed_documents.assert_awaited_once_with(["personal.name: User's name is Julian"])

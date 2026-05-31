@@ -28,10 +28,30 @@ exclude = ["backend", "frontend", "data", "tests"]
 
 [dependency-groups]
 dev = [
+    "bandit>=1.9.4",
+    "basedpyright>=1.39.6",
+    "pip-audit>=2.10.0",
+    "pre-commit>=4.6.0",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
+    "ruff>=0.15.15",
 ]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+include = [
+    "orchestrator/**/*.py",
+    "providers/**/*.py",
+    "scripts/**/*.py",
+    "tests/**/*.py",
+]
+extend-exclude = ["tests/test_video_e2e.py"]
+
+[tool.ruff.lint]
+extend-select = ["RUF100"]
 
 [tool.pyright]
 venvPath = "."
 venv = ".uv-venv"
+typeCheckingMode = "standard"

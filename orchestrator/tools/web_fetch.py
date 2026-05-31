@@ -10,7 +10,9 @@ from orchestrator.services.fetch.service import FetchService
 
 class WebFetchTool(Tool):
     name: str = "web_fetch"
-    description: str = "Fetch content from a URL using multiple strategies (direct, Jina, Crawl4AI, Archive.org)"
+    description: str = (
+        "Fetch content from a URL using multiple strategies (direct, Jina, Crawl4AI, Archive.org)"
+    )
     parameters: dict[str, Any] = {
         "type": "object",
         "properties": {

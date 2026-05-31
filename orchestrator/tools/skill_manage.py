@@ -160,9 +160,7 @@ class SkillManageTool(Tool):
             SkillProjectionStore(db_pool) if db_pool is not None else None
         )
         self._sync_service: SkillSyncService | None = (
-            SkillSyncService(self._projection_store)
-            if self._projection_store is not None
-            else None
+            SkillSyncService(self._projection_store) if self._projection_store is not None else None
         )
 
     async def execute(self, **kwargs: Any) -> str:
@@ -240,9 +238,7 @@ class SkillManageTool(Tool):
                         proj = proj_by_id.get(s["id"])
                         if proj:
                             s["source_type"] = proj.get("source_type")
-                            s["allow_autonomous_edit"] = proj.get(
-                                "allow_autonomous_edit"
-                            )
+                            s["allow_autonomous_edit"] = proj.get("allow_autonomous_edit")
                             s["repo_version"] = proj.get("repo_version")
                             s["local_version"] = proj.get("local_version")
                             s["use_count"] = proj.get("use_count")
@@ -276,9 +272,7 @@ class SkillManageTool(Tool):
             try:
                 await self._projection_store.touch_usage(skill_id)
             except Exception as exc:
-                logger.warning(
-                    "Failed to update usage metadata for skill %s: %s", skill_id, exc
-                )
+                logger.warning("Failed to update usage metadata for skill %s: %s", skill_id, exc)
 
         return json.dumps(detail, indent=2)
 
@@ -317,9 +311,7 @@ class SkillManageTool(Tool):
 
         if self._sync_service:
             try:
-                _ = await self._sync_service.sync_skill(
-                    detail["id"], source_type=source_type
-                )
+                _ = await self._sync_service.sync_skill(detail["id"], source_type=source_type)
             except Exception as exc:
                 logger.warning("Failed to sync new skill to projection: %s", exc)
 
@@ -359,9 +351,7 @@ class SkillManageTool(Tool):
             try:
                 projection = await self._projection_store.get_projection(skill_id)
             except Exception as exc:
-                logger.warning(
-                    "Failed to load projection for protection check: %s", exc
-                )
+                logger.warning("Failed to load projection for protection check: %s", exc)
 
         if projection is None and caller_autonomous and self._sync_service:
             sync_result = await self._sync_service.sync_skill(skill_id)
@@ -383,8 +373,7 @@ class SkillManageTool(Tool):
             return json.dumps(
                 {
                     "error": (
-                        f"old_text not found in skill content. "
-                        "patch requires exact substring match."
+                        "old_text not found in skill content. patch requires exact substring match."
                     )
                 }
             )
@@ -432,9 +421,7 @@ class SkillManageTool(Tool):
             try:
                 projection = await self._projection_store.get_projection(skill_id)
             except Exception as exc:
-                logger.warning(
-                    "Failed to load projection for protection check: %s", exc
-                )
+                logger.warning("Failed to load projection for protection check: %s", exc)
 
         if projection is None and caller_autonomous and self._sync_service:
             sync_result = await self._sync_service.sync_skill(skill_id)

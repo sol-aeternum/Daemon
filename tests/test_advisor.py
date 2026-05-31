@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import uuid
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import pytest_asyncio
@@ -123,7 +123,7 @@ async def test_advisor_cycle_coding_domain_emits_advisor_start_and_end(
 
     async def fake_completion_with_tools(**kwargs: Any):
         nonlocal advisor_called, captured_domain
-        execution_context = kwargs.get("execution_context")
+        execution_context = kwargs.get("execution_context")  # noqa: F841
 
         # First chunk: advisor_start-like metadata via tool call
         yield {"type": "content_delta", "content": "Let me "}
@@ -159,12 +159,14 @@ async def test_advisor_cycle_coding_domain_emits_advisor_start_and_end(
         }
         yield {
             "type": "advisor_text_done",
-            "content": json.dumps({
-                "answer": "Review the auth boundary carefully.",
-                "sufficient": True,
-                "escalate": False,
-                "spawn_recommended": None,
-            }),
+            "content": json.dumps(
+                {
+                    "answer": "Review the auth boundary carefully.",
+                    "sufficient": True,
+                    "escalate": False,
+                    "spawn_recommended": None,
+                }
+            ),
             "advisor_id": "advisor_coding_1",
             "trace_key": "req_test:coding",
             "parent_trace_key": "req_test:assistant",
@@ -174,14 +176,16 @@ async def test_advisor_cycle_coding_domain_emits_advisor_start_and_end(
         yield {
             "type": "tool_result",
             "name": "consult_advisor",
-            "result": json.dumps({
-                "advisor_id": "advisor_coding_1",
-                "answer": "Review the auth boundary carefully.",
-                "sufficient": True,
-                "escalate": False,
-                "status": "completed",
-                "budget": {"current_count": 1, "limit": 10},
-            }),
+            "result": json.dumps(
+                {
+                    "advisor_id": "advisor_coding_1",
+                    "answer": "Review the auth boundary carefully.",
+                    "sufficient": True,
+                    "escalate": False,
+                    "status": "completed",
+                    "budget": {"current_count": 1, "limit": 10},
+                }
+            ),
             "tool_call_id": "call_advisor_1",
         }
         yield {
@@ -197,7 +201,10 @@ async def test_advisor_cycle_coding_domain_emits_advisor_start_and_end(
             "tool_call_id": "call_advisor_1",
         }
         yield {"type": "content_delta", "content": "answer based on advisor."}
-        yield {"type": "done", "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}}
+        yield {
+            "type": "done",
+            "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
+        }
 
     from orchestrator import daemon as daemon_module
 
@@ -259,12 +266,14 @@ async def test_advisor_cycle_graphics_domain(client: AsyncClient, monkeypatch):
         }
         yield {
             "type": "advisor_text_done",
-            "content": json.dumps({
-                "answer": "Use warm orange tones.",
-                "sufficient": True,
-                "escalate": False,
-                "spawn_recommended": None,
-            }),
+            "content": json.dumps(
+                {
+                    "answer": "Use warm orange tones.",
+                    "sufficient": True,
+                    "escalate": False,
+                    "spawn_recommended": None,
+                }
+            ),
             "advisor_id": "advisor_graphics_1",
             "trace_key": "req_test:graphics",
             "parent_trace_key": "req_test:assistant",
@@ -274,13 +283,15 @@ async def test_advisor_cycle_graphics_domain(client: AsyncClient, monkeypatch):
         yield {
             "type": "tool_result",
             "name": "consult_advisor",
-            "result": json.dumps({
-                "advisor_id": "advisor_graphics_1",
-                "answer": "Use warm orange tones.",
-                "sufficient": True,
-                "status": "completed",
-                "budget": {"current_count": 1, "limit": 10},
-            }),
+            "result": json.dumps(
+                {
+                    "advisor_id": "advisor_graphics_1",
+                    "answer": "Use warm orange tones.",
+                    "sufficient": True,
+                    "status": "completed",
+                    "budget": {"current_count": 1, "limit": 10},
+                }
+            ),
             "tool_call_id": "call_graphics_1",
         }
         yield {
@@ -356,12 +367,14 @@ async def test_advisor_cycle_reasoning_domain(client: AsyncClient, monkeypatch):
         }
         yield {
             "type": "advisor_text_done",
-            "content": json.dumps({
-                "answer": "The proof has a gap in step 3.",
-                "sufficient": True,
-                "escalate": False,
-                "spawn_recommended": None,
-            }),
+            "content": json.dumps(
+                {
+                    "answer": "The proof has a gap in step 3.",
+                    "sufficient": True,
+                    "escalate": False,
+                    "spawn_recommended": None,
+                }
+            ),
             "advisor_id": "advisor_reasoning_1",
             "trace_key": "req_test:reasoning",
             "parent_trace_key": "req_test:assistant",
@@ -371,13 +384,15 @@ async def test_advisor_cycle_reasoning_domain(client: AsyncClient, monkeypatch):
         yield {
             "type": "tool_result",
             "name": "consult_advisor",
-            "result": json.dumps({
-                "advisor_id": "advisor_reasoning_1",
-                "answer": "The proof has a gap in step 3.",
-                "sufficient": True,
-                "status": "completed",
-                "budget": {"current_count": 1, "limit": 10},
-            }),
+            "result": json.dumps(
+                {
+                    "advisor_id": "advisor_reasoning_1",
+                    "answer": "The proof has a gap in step 3.",
+                    "sufficient": True,
+                    "status": "completed",
+                    "budget": {"current_count": 1, "limit": 10},
+                }
+            ),
             "tool_call_id": "call_reasoning_1",
         }
         yield {
@@ -453,12 +468,14 @@ async def test_advisor_cycle_research_domain(client: AsyncClient, monkeypatch):
         }
         yield {
             "type": "advisor_text_done",
-            "content": json.dumps({
-                "answer": "Try arXiv for量子 computing papers.",
-                "sufficient": True,
-                "escalate": False,
-                "spawn_recommended": None,
-            }),
+            "content": json.dumps(
+                {
+                    "answer": "Try arXiv for量子 computing papers.",
+                    "sufficient": True,
+                    "escalate": False,
+                    "spawn_recommended": None,
+                }
+            ),
             "advisor_id": "advisor_research_1",
             "trace_key": "req_test:research",
             "parent_trace_key": "req_test:assistant",
@@ -468,13 +485,15 @@ async def test_advisor_cycle_research_domain(client: AsyncClient, monkeypatch):
         yield {
             "type": "tool_result",
             "name": "consult_advisor",
-            "result": json.dumps({
-                "advisor_id": "advisor_research_1",
-                "answer": "Try arXiv for量子 computing papers.",
-                "sufficient": True,
-                "status": "completed",
-                "budget": {"current_count": 1, "limit": 10},
-            }),
+            "result": json.dumps(
+                {
+                    "advisor_id": "advisor_research_1",
+                    "answer": "Try arXiv for量子 computing papers.",
+                    "sufficient": True,
+                    "status": "completed",
+                    "budget": {"current_count": 1, "limit": 10},
+                }
+            ),
             "tool_call_id": "call_research_1",
         }
         yield {
@@ -550,12 +569,14 @@ async def test_advisor_cycle_general_domain(client: AsyncClient, monkeypatch):
         }
         yield {
             "type": "advisor_text_done",
-            "content": json.dumps({
-                "answer": "Use async updates and clear agendas.",
-                "sufficient": True,
-                "escalate": False,
-                "spawn_recommended": None,
-            }),
+            "content": json.dumps(
+                {
+                    "answer": "Use async updates and clear agendas.",
+                    "sufficient": True,
+                    "escalate": False,
+                    "spawn_recommended": None,
+                }
+            ),
             "advisor_id": "advisor_general_1",
             "trace_key": "req_test:general",
             "parent_trace_key": "req_test:assistant",
@@ -565,13 +586,15 @@ async def test_advisor_cycle_general_domain(client: AsyncClient, monkeypatch):
         yield {
             "type": "tool_result",
             "name": "consult_advisor",
-            "result": json.dumps({
-                "advisor_id": "advisor_general_1",
-                "answer": "Use async updates and clear agendas.",
-                "sufficient": True,
-                "status": "completed",
-                "budget": {"current_count": 1, "limit": 10},
-            }),
+            "result": json.dumps(
+                {
+                    "advisor_id": "advisor_general_1",
+                    "answer": "Use async updates and clear agendas.",
+                    "sufficient": True,
+                    "status": "completed",
+                    "budget": {"current_count": 1, "limit": 10},
+                }
+            ),
             "tool_call_id": "call_general_1",
         }
         yield {
@@ -637,12 +660,14 @@ async def test_advisor_budget_exhausted_returns_budget_exhausted_status(
         yield {
             "type": "tool_result",
             "name": "consult_advisor",
-            "result": json.dumps({
-                "advisor_id": None,
-                "answer": "Advisor budget exhausted for this conversation.",
-                "status": "budget_exhausted",
-                "budget": {"current_count": 10, "limit": 10},
-            }),
+            "result": json.dumps(
+                {
+                    "advisor_id": None,
+                    "answer": "Advisor budget exhausted for this conversation.",
+                    "status": "budget_exhausted",
+                    "budget": {"current_count": 10, "limit": 10},
+                }
+            ),
             "tool_call_id": "call_budget_1",
         }
         yield {"type": "content_delta", "content": "Continue without advisor."}
@@ -686,9 +711,7 @@ async def test_advisor_budget_exhausted_returns_budget_exhausted_status(
 
 
 @pytest.mark.asyncio
-async def test_advisor_timeout_handling_graceful_degradation(
-    client: AsyncClient, monkeypatch
-):
+async def test_advisor_timeout_handling_graceful_degradation(client: AsyncClient, monkeypatch):
     """When advisor times out, error event is emitted and flow continues gracefully."""
     monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
     get_settings.cache_clear()
@@ -735,13 +758,15 @@ async def test_advisor_timeout_handling_graceful_degradation(
         yield {
             "type": "tool_result",
             "name": "consult_advisor",
-            "result": json.dumps({
-                "advisor_id": "advisor_timeout_1",
-                "answer": "provider timeout",
-                "status": "error",
-                "error": "provider timeout",
-                "budget": {"current_count": 1, "limit": 10},
-            }),
+            "result": json.dumps(
+                {
+                    "advisor_id": "advisor_timeout_1",
+                    "answer": "provider timeout",
+                    "status": "error",
+                    "error": "provider timeout",
+                    "budget": {"current_count": 1, "limit": 10},
+                }
+            ),
             "tool_call_id": "call_timeout_1",
         }
         yield {"type": "content_delta", "content": "Continuing without advisor input."}
@@ -774,9 +799,7 @@ async def test_advisor_timeout_handling_graceful_degradation(
 
 
 @pytest.mark.asyncio
-async def test_advisor_graceful_degradation_on_nested_error(
-    client: AsyncClient, monkeypatch
-):
+async def test_advisor_graceful_degradation_on_nested_error(client: AsyncClient, monkeypatch):
     """When advisor has internal error, top-level flow still completes."""
     monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
     get_settings.cache_clear()
@@ -822,13 +845,15 @@ async def test_advisor_graceful_degradation_on_nested_error(
         yield {
             "type": "tool_result",
             "name": "consult_advisor",
-            "result": json.dumps({
-                "advisor_id": "advisor_error_1",
-                "answer": "rate limit exceeded",
-                "status": "error",
-                "error": "rate limit exceeded",
-                "budget": {"current_count": 1, "limit": 10},
-            }),
+            "result": json.dumps(
+                {
+                    "advisor_id": "advisor_error_1",
+                    "answer": "rate limit exceeded",
+                    "status": "error",
+                    "error": "rate limit exceeded",
+                    "budget": {"current_count": 1, "limit": 10},
+                }
+            ),
             "tool_call_id": "call_error_1",
         }
         yield {"type": "content_delta", "content": "Proceeding without advisor."}
@@ -890,12 +915,14 @@ async def test_advisor_depth_cap_rejected_when_already_in_advisor_scope(
             yield {
                 "type": "tool_result",
                 "name": "consult_advisor",
-                "result": json.dumps({
-                    "advisor_id": None,
-                    "answer": "Cannot call advisor from within advisor context (depth cap).",
-                    "status": "depth_cap",
-                    "budget": {"current_count": 0, "limit": 10},
-                }),
+                "result": json.dumps(
+                    {
+                        "advisor_id": None,
+                        "answer": "Cannot call advisor from within advisor context (depth cap).",
+                        "status": "depth_cap",
+                        "budget": {"current_count": 0, "limit": 10},
+                    }
+                ),
                 "tool_call_id": "call_nested_advisor_1",
             }
             return
@@ -928,12 +955,14 @@ async def test_advisor_depth_cap_rejected_when_already_in_advisor_scope(
         }
         yield {
             "type": "advisor_text_done",
-            "content": json.dumps({
-                "answer": "Top-level advice.",
-                "sufficient": True,
-                "escalate": False,
-                "spawn_recommended": None,
-            }),
+            "content": json.dumps(
+                {
+                    "answer": "Top-level advice.",
+                    "sufficient": True,
+                    "escalate": False,
+                    "spawn_recommended": None,
+                }
+            ),
             "advisor_id": "advisor_outer_1",
             "trace_key": "req_test:outer",
             "parent_trace_key": "req_test:assistant",
@@ -943,13 +972,15 @@ async def test_advisor_depth_cap_rejected_when_already_in_advisor_scope(
         yield {
             "type": "tool_result",
             "name": "consult_advisor",
-            "result": json.dumps({
-                "advisor_id": "advisor_outer_1",
-                "answer": "Top-level advice.",
-                "sufficient": True,
-                "status": "completed",
-                "budget": {"current_count": 1, "limit": 10},
-            }),
+            "result": json.dumps(
+                {
+                    "advisor_id": "advisor_outer_1",
+                    "answer": "Top-level advice.",
+                    "sufficient": True,
+                    "status": "completed",
+                    "budget": {"current_count": 1, "limit": 10},
+                }
+            ),
             "tool_call_id": "call_advisor_outer",
         }
         yield {
@@ -1000,16 +1031,14 @@ async def test_advisor_depth_cap_rejected_when_already_in_advisor_scope(
 
 
 @pytest.mark.asyncio
-async def test_failed_advisor_call_does_not_increment_budget(
-    client: AsyncClient, monkeypatch
-):
+async def test_failed_advisor_call_does_not_increment_budget(client: AsyncClient, monkeypatch):
     """When advisor fails/times out, increment_advisor_call_count is NOT called."""
     monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
     get_settings.cache_clear()
 
     budget_store = _FakeMemoryStore(advisor_call_count=2)
     call_tracker = {"count": 0}
-    original_increment = budget_store.increment_advisor_call_count
+    original_increment = budget_store.increment_advisor_call_count  # noqa: F841
 
     async def tracking_increment(_conversation_id: Any) -> int:
         call_tracker["count"] += 1
@@ -1058,13 +1087,15 @@ async def test_failed_advisor_call_does_not_increment_budget(
         yield {
             "type": "tool_result",
             "name": "consult_advisor",
-            "result": json.dumps({
-                "advisor_id": "advisor_fail_1",
-                "answer": "connection refused",
-                "status": "error",
-                "error": "connection refused",
-                "budget": {"current_count": 2, "limit": 10},
-            }),
+            "result": json.dumps(
+                {
+                    "advisor_id": "advisor_fail_1",
+                    "answer": "connection refused",
+                    "status": "error",
+                    "error": "connection refused",
+                    "budget": {"current_count": 2, "limit": 10},
+                }
+            ),
             "tool_call_id": "call_fail_1",
         }
         yield {"type": "content_delta", "content": "Continuing."}
@@ -1094,9 +1125,7 @@ async def test_failed_advisor_call_does_not_increment_budget(
 
 
 @pytest.mark.asyncio
-async def test_timeout_advisor_call_does_not_increment_budget(
-    client: AsyncClient, monkeypatch
-):
+async def test_timeout_advisor_call_does_not_increment_budget(client: AsyncClient, monkeypatch):
     """When advisor times out, budget is NOT incremented."""
     monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
     get_settings.cache_clear()
@@ -1149,13 +1178,15 @@ async def test_timeout_advisor_call_does_not_increment_budget(
         yield {
             "type": "tool_result",
             "name": "consult_advisor",
-            "result": json.dumps({
-                "advisor_id": "advisor_timeout_2",
-                "answer": "provider timeout",
-                "status": "error",
-                "error": "provider timeout",
-                "budget": {"current_count": 0, "limit": 10},
-            }),
+            "result": json.dumps(
+                {
+                    "advisor_id": "advisor_timeout_2",
+                    "answer": "provider timeout",
+                    "status": "error",
+                    "error": "provider timeout",
+                    "budget": {"current_count": 0, "limit": 10},
+                }
+            ),
             "tool_call_id": "call_timeout_2",
         }
         yield {"type": "content_delta", "content": "Continuing after timeout."}
@@ -1233,12 +1264,14 @@ async def test_advisor_traces_persisted_but_not_in_history_messages(
         }
         yield {
             "type": "advisor_text_done",
-            "content": json.dumps({
-                "answer": "Trace test advice.",
-                "sufficient": True,
-                "escalate": False,
-                "spawn_recommended": None,
-            }),
+            "content": json.dumps(
+                {
+                    "answer": "Trace test advice.",
+                    "sufficient": True,
+                    "escalate": False,
+                    "spawn_recommended": None,
+                }
+            ),
             "advisor_id": "advisor_trace_1",
             "trace_key": "req_test:trace",
             "parent_trace_key": "req_test:assistant",
@@ -1248,13 +1281,15 @@ async def test_advisor_traces_persisted_but_not_in_history_messages(
         yield {
             "type": "tool_result",
             "name": "consult_advisor",
-            "result": json.dumps({
-                "advisor_id": "advisor_trace_1",
-                "answer": "Trace test advice.",
-                "sufficient": True,
-                "status": "completed",
-                "budget": {"current_count": 1, "limit": 10},
-            }),
+            "result": json.dumps(
+                {
+                    "advisor_id": "advisor_trace_1",
+                    "answer": "Trace test advice.",
+                    "sufficient": True,
+                    "status": "completed",
+                    "budget": {"current_count": 1, "limit": 10},
+                }
+            ),
             "tool_call_id": "call_trace_1",
         }
         yield {
@@ -1302,10 +1337,14 @@ async def test_advisor_traces_persisted_but_not_in_history_messages(
     final_insert = captured_insert_calls[-1]
 
     # Advisor traces should be stored WITH the message (advisor_traces parameter passed)
-    assert "advisor_traces" in final_insert, f"Expected advisor_traces in insert call: {final_insert.keys()}"
+    assert "advisor_traces" in final_insert, (
+        f"Expected advisor_traces in insert call: {final_insert.keys()}"
+    )
     advisor_traces = final_insert["advisor_traces"]
     assert isinstance(advisor_traces, dict), f"Expected dict, got {type(advisor_traces)}"
-    assert "advisor_trace_1" in advisor_traces or len(advisor_traces) > 0, f"Expected trace ID in advisor_traces: {advisor_traces}"
+    assert "advisor_trace_1" in advisor_traces or len(advisor_traces) > 0, (
+        f"Expected trace ID in advisor_traces: {advisor_traces}"
+    )
 
     # The key invariant: history_messages passed to future calls should NOT contain advisor trace content
     # This is verified by the architecture: advisor_traces go to insert_message but are NOT
@@ -1318,9 +1357,7 @@ async def test_advisor_traces_persisted_but_not_in_history_messages(
 
 
 @pytest.mark.asyncio
-async def test_advisor_registry_excludes_spawn_tools(
-    client: AsyncClient, monkeypatch
-):
+async def test_advisor_registry_excludes_spawn_tools(client: AsyncClient, monkeypatch):
     """Advisor registry does not include spawn_agent or consult_advisor itself."""
     from orchestrator.tools.builtin import create_advisor_registry
 
@@ -1342,9 +1379,7 @@ async def test_advisor_registry_excludes_spawn_tools(
 
 
 @pytest.mark.asyncio
-async def test_advisor_trace_stored_with_message_not_in_context(
-    client: AsyncClient, monkeypatch
-):
+async def test_advisor_trace_stored_with_message_not_in_context(client: AsyncClient, monkeypatch):
     """Verify that advisor traces are stored with message but NOT in content for reinjection."""
     monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
     get_settings.cache_clear()
@@ -1384,12 +1419,14 @@ async def test_advisor_trace_stored_with_message_not_in_context(
         }
         yield {
             "type": "advisor_text_done",
-            "content": json.dumps({
-                "answer": "Exclusion test.",
-                "sufficient": True,
-                "escalate": False,
-                "spawn_recommended": None,
-            }),
+            "content": json.dumps(
+                {
+                    "answer": "Exclusion test.",
+                    "sufficient": True,
+                    "escalate": False,
+                    "spawn_recommended": None,
+                }
+            ),
             "advisor_id": "advisor_exclude_1",
             "trace_key": "req_test:exclude",
             "parent_trace_key": "req_test:assistant",
@@ -1399,13 +1436,15 @@ async def test_advisor_trace_stored_with_message_not_in_context(
         yield {
             "type": "tool_result",
             "name": "consult_advisor",
-            "result": json.dumps({
-                "advisor_id": "advisor_exclude_1",
-                "answer": "Exclusion test.",
-                "sufficient": True,
-                "status": "completed",
-                "budget": {"current_count": 1, "limit": 10},
-            }),
+            "result": json.dumps(
+                {
+                    "advisor_id": "advisor_exclude_1",
+                    "answer": "Exclusion test.",
+                    "sufficient": True,
+                    "status": "completed",
+                    "budget": {"current_count": 1, "limit": 10},
+                }
+            ),
             "tool_call_id": "call_exclude_1",
         }
         yield {

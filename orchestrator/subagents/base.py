@@ -7,7 +7,6 @@ from typing import Any
 from dataclasses import dataclass, field
 from enum import Enum
 import asyncio
-import json
 import uuid
 
 
@@ -54,9 +53,7 @@ class BaseSubagent(ABC):
         self.config = config or {}
 
     @abstractmethod
-    async def execute(
-        self, task: str, context: dict[str, Any] | None = None
-    ) -> SubagentResult:
+    async def execute(self, task: str, context: dict[str, Any] | None = None) -> SubagentResult:
         """Execute the subagent task.
 
         Args:
@@ -183,9 +180,7 @@ class SubagentManager:
             task = spawn[1]
             spawn_context = spawn[2] if len(spawn) > 2 else None
             session_id = spawn[3] if len(spawn) > 3 else None
-            tasks.append(
-                self.spawn(agent_type, task, spawn_context or context, session_id)
-            )
+            tasks.append(self.spawn(agent_type, task, spawn_context or context, session_id))
         return await asyncio.gather(*tasks)
 
     def get_history(self) -> list[SubagentResult]:

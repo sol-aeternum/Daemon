@@ -19,12 +19,8 @@ from orchestrator.subagents.document import DocumentSubagent
 
 logger = logging.getLogger(__name__)
 
-GENERATED_IMAGES_DIR = (
-    Path(__file__).resolve().parent.parent.parent / "data" / "generated_images"
-)
-GENERATED_AUDIO_DIR = (
-    Path(__file__).resolve().parent.parent.parent / "data" / "generated_audio"
-)
+GENERATED_IMAGES_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "generated_images"
+GENERATED_AUDIO_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "generated_audio"
 
 
 def _persist_image_result(result_dict: dict[str, Any]) -> dict[str, Any]:
@@ -357,9 +353,7 @@ class SpawnMultipleTool(Tool):
             try:
                 agent_type = SubagentType(agent_type_str.lower())
                 task = agent_spec.get("task", "")
-                context = self._apply_trusted_context(
-                    agent_type, agent_spec.get("context")
-                )
+                context = self._apply_trusted_context(agent_type, agent_spec.get("context"))
                 session_id = agent_spec.get("session_id")
                 spawns.append((agent_type, task, context, session_id))
             except ValueError:

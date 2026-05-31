@@ -52,13 +52,19 @@ def test_memory_layer_doc_sync_dedup_thresholds_match_shipped() -> None:
     config = _load_config()
 
     merge_match = re.search(r"dedup_merge_threshold.*?default=(\d+\.\d+)", config, re.DOTALL)
-    supersede_match = re.search(r"dedup_supersede_threshold.*?default=(\d+\.\d+)", config, re.DOTALL)
+    supersede_match = re.search(
+        r"dedup_supersede_threshold.*?default=(\d+\.\d+)", config, re.DOTALL
+    )
     same_slot_match = re.search(
         r"dedup_supersede_same_slot_threshold.*?default=(\d+\.\d+)", config, re.DOTALL
     )
     assert merge_match is not None, "Could not find dedup_merge_threshold default in config.py"
-    assert supersede_match is not None, "Could not find dedup_supersede_threshold default in config.py"
-    assert same_slot_match is not None, "Could not find dedup_supersede_same_slot_threshold in config.py"
+    assert supersede_match is not None, (
+        "Could not find dedup_supersede_threshold default in config.py"
+    )
+    assert same_slot_match is not None, (
+        "Could not find dedup_supersede_same_slot_threshold in config.py"
+    )
 
     shipped_merge = merge_match.group(1)
     shipped_supersede = supersede_match.group(1)
@@ -88,6 +94,8 @@ def test_memory_layer_doc_sync_contains_phase4d_closeout_terminology() -> None:
     )
 
     blocking_reason = cast(str, variance.get("blocking_reason", ""))
-    assert "zero" in blocking_reason.lower() or "no" in blocking_reason.lower() or "0" in blocking_reason, (
-        "VARIANCE.md blocking_reason should indicate zero eligible candidates"
-    )
+    assert (
+        "zero" in blocking_reason.lower()
+        or "no" in blocking_reason.lower()
+        or "0" in blocking_reason
+    ), "VARIANCE.md blocking_reason should indicate zero eligible candidates"

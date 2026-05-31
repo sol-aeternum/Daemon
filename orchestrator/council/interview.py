@@ -11,9 +11,9 @@ from orchestrator.council.config import load_roster
 def render_interview_message(config: CouncilConfig | None = None) -> str:
     """Render the council interview message with inline options."""
     roster = config.roster if config else load_roster("default")
-    preset = config.preset_name if config else "default"
+    preset = config.preset_name if config else "default"  # noqa: F841
     rounds = config.round_count if config else 2
-    audit = config.audit_enabled if config else False
+    audit = config.audit_enabled if config else False  # noqa: F841
 
     role_names = {
         "analyst": "Opus",
@@ -23,9 +23,7 @@ def render_interview_message(config: CouncilConfig | None = None) -> str:
         "auditor": "DeepSeek R1",
     }
 
-    roster_str = ", ".join(
-        f"{role} ({role_names.get(role, role)})" for role in roster.keys()
-    )
+    roster_str = ", ".join(f"{role} ({role_names.get(role, role)})" for role in roster.keys())
 
     msg = f"""🏛️ Council convened. Before I send this out:
 

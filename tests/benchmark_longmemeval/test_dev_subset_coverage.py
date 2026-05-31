@@ -57,6 +57,4 @@ def test_dev_subset_coverage_report_enforces_size_and_cell_floors() -> None:
     assert summary["required_cells"] == list(REQUIRED_CELLS)
     assert summary["selected_question_ids"] == list(EXPECTED_QUESTION_IDS)
     assert summary["selected_question_ids"] == selected_question_ids(fixture)
-    assert summary["required_cell_counts"] == {
-        cell: counts[cell] for cell in REQUIRED_CELLS
-    }
+    assert summary["required_cell_counts"] == {cell: counts[cell] for cell in REQUIRED_CELLS}

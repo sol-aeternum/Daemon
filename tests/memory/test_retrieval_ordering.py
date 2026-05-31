@@ -296,9 +296,7 @@ async def test_tied_score_ordering_stable_over_10_calls():
 
     expected = tuple(ids[:5])
     for i, r in enumerate(results):
-        assert r == expected, (
-            f"Call {i+1}/10 returned {r}, expected {expected}"
-        )
+        assert r == expected, f"Call {i + 1}/10 returned {r}, expected {expected}"
 
 
 # ---------------------------------------------------------------------------

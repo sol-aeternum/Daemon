@@ -437,8 +437,7 @@ class ConsultAdvisorTool(Tool):
         advisor_messages = [
             {
                 "role": "system",
-                "content": advisor_slot.system_prompt_override
-                or get_advisor_prompt(domain),
+                "content": advisor_slot.system_prompt_override or get_advisor_prompt(domain),
             },
             {
                 "role": "user",

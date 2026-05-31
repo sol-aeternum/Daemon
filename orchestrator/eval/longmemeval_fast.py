@@ -24,7 +24,7 @@ from tests.longmemeval.evaluate import (
     score_accuracy,
     write_results_jsonl,
 )
-from tests.longmemeval.ingest import TEST_USER_EMAIL, TEST_USER_ID, TEST_USER_NAME
+from tests.longmemeval.ingest import TEST_USER_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -81,9 +81,7 @@ def load_dataset(dataset_path: Path) -> list[dict[str, Any]]:
         with dataset_path.open() as handle:
             dataset = json.load(handle)
     except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"LongMemEval dataset is not valid JSON: {dataset_path}"
-        ) from exc
+        raise ValueError(f"LongMemEval dataset is not valid JSON: {dataset_path}") from exc
 
     if not isinstance(dataset, list):
         raise ValueError(f"LongMemEval dataset must be a JSON list: {dataset_path}")
@@ -161,9 +159,7 @@ def chunk_session_messages(
             if chunk_turns:
                 chunks.append("\n".join(chunk_turns))
                 overlap_count = min(overlap_turns, len(chunk_turns))
-                chunk_turns = (
-                    list(chunk_turns[-overlap_count:]) if overlap_count else []
-                )
+                chunk_turns = list(chunk_turns[-overlap_count:]) if overlap_count else []
                 chunk_len = _length(chunk_turns)
             chunks.append(formatted_turn)
             chunk_turns = []
@@ -175,9 +171,7 @@ def chunk_session_messages(
             if chunk_len + sep + turn_len > max_chars:
                 chunks.append("\n".join(chunk_turns))
                 overlap_count = min(overlap_turns, len(chunk_turns))
-                chunk_turns = (
-                    list(chunk_turns[-overlap_count:]) if overlap_count else []
-                )
+                chunk_turns = list(chunk_turns[-overlap_count:]) if overlap_count else []
                 chunk_len = _length(chunk_turns)
                 if turn_len <= max_chars:
                     chunk_turns.append(formatted_turn)
@@ -217,9 +211,7 @@ def build_question_chunks(
             else f"{question_id}_session_{session_index}"
         )
         for chunk_index, chunk_text in enumerate(
-            chunk_session_messages(
-                messages, max_chars=max_chars, overlap_turns=overlap_turns
-            )
+            chunk_session_messages(messages, max_chars=max_chars, overlap_turns=overlap_turns)
         ):
             chunks.append(
                 SessionChunk(
@@ -237,16 +229,12 @@ async def cleanup_benchmark_state(pool: asyncpg.Pool, user_id: uuid.UUID) -> Non
     _ = await pool.execute("DELETE FROM dream_log WHERE user_id = $1", user_id)
     _ = await pool.execute("DELETE FROM entities WHERE user_id = $1", user_id)
     _ = await pool.execute("DELETE FROM memories WHERE user_id = $1", user_id)
-    _ = await pool.execute(
-        "DELETE FROM memory_extraction_log WHERE user_id = $1", user_id
-    )
+    _ = await pool.execute("DELETE FROM memory_extraction_log WHERE user_id = $1", user_id)
     _ = await pool.execute("DELETE FROM messages WHERE user_id = $1", user_id)
     _ = await pool.execute("DELETE FROM conversations WHERE user_id = $1", user_id)
 
 
-async def ensure_benchmark_user(
-    pool: asyncpg.Pool, benchmark_user: BenchmarkUser
-) -> uuid.UUID:
+async def ensure_benchmark_user(pool: asyncpg.Pool, benchmark_user: BenchmarkUser) -> uuid.UUID:
     row = await pool.fetchrow(
         "SELECT id FROM users WHERE email = $1",
         benchmark_user.email,
@@ -349,9 +337,7 @@ async def ingest_question_chunks(
     chunk_max_chars: int,
     overlap_turns: int = DEFAULT_OVERLAP_TURNS,
 ) -> tuple[list[uuid.UUID], int]:
-    chunks = build_question_chunks(
-        entry, max_chars=chunk_max_chars, overlap_turns=overlap_turns
-    )
+    chunks = build_question_chunks(entry, max_chars=chunk_max_chars, overlap_turns=overlap_turns)
     if not chunks:
         return [], 0
 
@@ -402,9 +388,7 @@ class LongMemEvalFastRunner:
                 dataset_path=self.dataset_path,
             ),
         )
-        question_order = [
-            normalize_question_id(entry, idx) for idx, entry in enumerate(dataset)
-        ]
+        question_order = [normalize_question_id(entry, idx) for idx, entry in enumerate(dataset)]
 
         settings = get_settings()
         if not settings.database_url:
@@ -500,9 +484,7 @@ class LongMemEvalFastRunner:
                     await cleanup_benchmark_state(pool, benchmark_user_id)
 
                 ordered_results = [
-                    checkpoint_results[qid]
-                    for qid in question_order
-                    if qid in checkpoint_results
+                    checkpoint_results[qid] for qid in question_order if qid in checkpoint_results
                 ]
                 save_checkpoint(
                     self.checkpoint_path,
@@ -514,15 +496,9 @@ class LongMemEvalFastRunner:
         finally:
             await pool.close()
 
-        results = [
-            checkpoint_results[qid]
-            for qid in question_order
-            if qid in checkpoint_results
-        ]
+        results = [checkpoint_results[qid] for qid in question_order if qid in checkpoint_results]
         accuracy = score_accuracy(results)
-        logger.info(
-            "[fast] Complete: %s results written to %s", len(results), self.output_path
-        )
+        logger.info("[fast] Complete: %s results written to %s", len(results), self.output_path)
         logger.info("[fast] Accuracy snapshot: %s", accuracy)
         return results
 
@@ -532,9 +508,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m orchestrator.eval.longmemeval_fast",
         description="Standalone fast LongMemEval harness using direct memory inserts.",
     )
-    parser.add_argument(
-        "--dataset", type=Path, required=True, help="Path to dataset JSON."
-    )
+    parser.add_argument("--dataset", type=Path, required=True, help="Path to dataset JSON.")
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -565,9 +539,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_OVERLAP_TURNS,
         help="Number of turns to overlap between adjacent chunks.",
     )
-    parser.add_argument(
-        "--verbose", action="store_true", help="Enable verbose logging."
-    )
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
     return parser
 
 

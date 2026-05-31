@@ -7,7 +7,6 @@ from orchestrator.council.engine import (
     _parse_confidence,
     _get_message_reasoning,
 )
-from orchestrator.council.models import PerspectiveType, PerspectiveResponse
 
 
 class TestGenerateAgentIds:

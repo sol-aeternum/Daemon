@@ -15,7 +15,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import Any
 
 import litellm
 
@@ -440,9 +440,7 @@ async def extract_candidates_spacy(
         try:
             nlp = spacy.load("en_core_web_sm")
         except OSError:
-            logger.warning(
-                "spaCy en_core_web_sm model not found, skipping NER enrichment"
-            )
+            logger.warning("spaCy en_core_web_sm model not found, skipping NER enrichment")
             return []
 
         doc = nlp(content[:10000])  # Limit to first 10k chars
@@ -535,9 +533,7 @@ async def extract_entity_candidates(
     # Optional spaCy enrichment
     if use_spacy and _is_spacy_available():
         try:
-            spacy_candidates = await extract_candidates_spacy(
-                content, memory_id, memory_slot
-            )
+            spacy_candidates = await extract_candidates_spacy(content, memory_id, memory_slot)
             for cand in spacy_candidates:
                 if cand.normalized_key not in seen_keys:
                     candidates.append(cand)
@@ -751,9 +747,7 @@ async def confirm_merge_llm(
         if isinstance(response_data, dict):
             choices = response_data.get("choices")
             if isinstance(choices, list) and choices:
-                message = (
-                    choices[0].get("message") if isinstance(choices[0], dict) else None
-                )
+                message = choices[0].get("message") if isinstance(choices[0], dict) else None
                 if isinstance(message, dict):
                     content = message.get("content")
 
@@ -881,9 +875,7 @@ async def extract_and_resolve_entities(
     # Step 3: Resolve each candidate
     resolutions: list[EntityResolution] = []
     for candidate in all_candidates:
-        resolution = await resolve_candidate(
-            candidate, user_id, store, canonical_entities
-        )
+        resolution = await resolve_candidate(candidate, user_id, store, canonical_entities)
         resolutions.append(resolution)
 
     # Step 4: Separate ambiguous merges for batch confirmation
@@ -978,9 +970,7 @@ async def persist_extraction_result(
                 if alias_lookup_key not in existing_lookup_keys:
                     existing_lookup_keys.append(alias_lookup_key)
 
-            await store.update_entity_aliases(
-                canonical_id, existing_aliases, existing_lookup_keys
-            )
+            await store.update_entity_aliases(canonical_id, existing_aliases, existing_lookup_keys)
 
             if linked_memory_id:
                 await store.link_entity_to_memory(canonical_id, linked_memory_id)

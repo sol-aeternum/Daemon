@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -16,9 +15,7 @@ class ContentEncryption:
 
         if self.key:
             try:
-                self._cipher = Fernet(
-                    self.key.encode() if isinstance(self.key, str) else self.key
-                )
+                self._cipher = Fernet(self.key.encode() if isinstance(self.key, str) else self.key)
             except Exception as e:
                 logger.warning(
                     f"Failed to initialize encryption cipher: {e}. "
@@ -26,9 +23,7 @@ class ContentEncryption:
                 )
                 self._cipher = None
         else:
-            logger.warning(
-                "DAEMON_ENCRYPTION_KEY not set. Content will be stored in plaintext."
-            )
+            logger.warning("DAEMON_ENCRYPTION_KEY not set. Content will be stored in plaintext.")
 
     def encrypt(self, plaintext: str) -> str:
         if not self._cipher:
@@ -49,9 +44,7 @@ class ContentEncryption:
             decrypted_bytes = self._cipher.decrypt(ciphertext.encode())
             return decrypted_bytes.decode()
         except InvalidToken:
-            raise ValueError(
-                "Invalid ciphertext: decryption failed (wrong key or corrupted data)"
-            )
+            raise ValueError("Invalid ciphertext: decryption failed (wrong key or corrupted data)")
         except Exception as e:
             logger.error(f"Decryption failed: {e}. Returning ciphertext as-is.")
             return ciphertext

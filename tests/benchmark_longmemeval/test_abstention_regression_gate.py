@@ -39,8 +39,8 @@ def _normalized_effective_config(checkpoint: dict[str, Any]) -> dict[str, Any]:
 
 def test_abstention_regression_gate_is_enforced() -> None:
     manifest = _load_manifest()
-    off = _run_by_name(manifest, "off")
-    on = _run_by_name(manifest, "on")
+    off = _run_by_name(manifest, "off")  # noqa: F841
+    on = _run_by_name(manifest, "on")  # noqa: F841
     comparison = cast(dict[str, Any], manifest["comparison"])
     coverage_gate = cast(dict[str, Any], manifest["coverage_gate"])
 

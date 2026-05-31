@@ -67,6 +67,7 @@ REDIS_EXTRACT_PATTERNS = (
 @dataclass
 class ExtendedResetResult:
     """Result of an extended reset operation."""
+
     success: bool
     tables_cleared: dict[str, int] = field(default_factory=dict)
     extended_tables_cleared: dict[str, int] = field(default_factory=dict)
@@ -87,9 +88,7 @@ async def extended_cleanup_tables(pool: asyncpg.Pool) -> dict[str, int]:
     deleted: dict[str, int] = {}
     async with pool.acquire() as conn:
         for table in EXTENDED_RESET_TABLES:
-            result = await conn.execute(
-                f"DELETE FROM {table} WHERE user_id = $1", TEST_USER_ID
-            )
+            result = await conn.execute(f"DELETE FROM {table} WHERE user_id = $1", TEST_USER_ID)
             count_str = result.split()[-1] if result else "0"
             deleted[table] = int(count_str)
     return deleted
@@ -152,6 +151,7 @@ async def cleanup_runner_redis() -> dict[str, Any]:
 
     try:
         from orchestrator.config import get_settings
+
         settings = get_settings()
         redis_url = getattr(settings, "redis_url", None) or "redis://localhost:6379/0"
         client = redis.Redis.from_url(redis_url, decode_responses=True)
@@ -196,8 +196,11 @@ async def full_reset_with_verification(
     # Step 1: Run production reset (import lazily to avoid patching issues)
     try:
         from orchestrator.eval.runner import reset_canonical_benchmark
+
         summary = await reset_canonical_benchmark(
-            pool, checkpoint_path, cleanup_redis=False  # We handle redis below
+            pool,
+            checkpoint_path,
+            cleanup_redis=False,  # We handle redis below
         )
         result.tables_cleared = dict(summary.tables_cleared)
         result.total_rows_deleted = summary.total_rows_deleted
@@ -257,16 +260,12 @@ async def double_reset_for_confirmation(
     - second_result: ExtendedResetResult from second reset
     - confirmed_clean: True if second reset shows all_zero
     """
-    first_result = await full_reset_with_verification(
-        pool, checkpoint_path, cleanup_redis=True
-    )
+    first_result = await full_reset_with_verification(pool, checkpoint_path, cleanup_redis=True)
 
     # Small delay to allow any remaining async tasks to settle
     await asyncio.sleep(0.5)
 
-    second_result = await full_reset_with_verification(
-        pool, checkpoint_path, cleanup_redis=True
-    )
+    second_result = await full_reset_with_verification(pool, checkpoint_path, cleanup_redis=True)
 
     return {
         "first_result": {

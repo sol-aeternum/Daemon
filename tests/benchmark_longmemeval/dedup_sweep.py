@@ -169,9 +169,7 @@ def _expected_drift_warnings(thresholds: dict[str, float]) -> list[str]:
             "canonical.dedup.supersede_threshold: "
             f"pinned={CURRENT_THRESHOLDS['supersede']} effective={thresholds['supersede']}"
         )
-    warnings.append(
-        "shared.retrieval.call_contract.top_k_memories: pinned=5 effective=6"
-    )
+    warnings.append("shared.retrieval.call_contract.top_k_memories: pinned=5 effective=6")
     return warnings
 
 
@@ -205,9 +203,7 @@ def patched_benchmark_state(thresholds: dict[str, float]) -> Iterator[None]:
         config_module.get_settings.cache_clear()
         evaluate_module.TOP_K_MEMORIES = cast(int, original_values["evaluate_top_k"])
         runner_module.TOP_K_MEMORIES = cast(int, original_values["runner_top_k"])
-        retrieval_module.TEMPORAL_QUERY_FILTER_ENABLED = bool(
-            original_values["temporal_filter"]
-        )
+        retrieval_module.TEMPORAL_QUERY_FILTER_ENABLED = bool(original_values["temporal_filter"])
 
 
 def _coerce_fact_list(value: Any) -> list[dict[str, Any]]:
@@ -414,9 +410,7 @@ def _comparison_for_run(
         for label in current_protected
     }
     negative_protected_deltas = {
-        label: delta
-        for label, delta in protected_deltas.items()
-        if delta < 0.0
+        label: delta for label, delta in protected_deltas.items() if delta < 0.0
     }
     negative_target_deltas = {
         subset_name: values["delta_vs_current"]
@@ -435,8 +429,7 @@ def _comparison_for_run(
             f"{locked_failure_union['delta_vs_current']:+d}/{locked_failure_union['total']}"
         )
     regressions.extend(
-        f"protected_cell:{label} {delta:+.1%}"
-        for label, delta in negative_protected_deltas.items()
+        f"protected_cell:{label} {delta:+.1%}" for label, delta in negative_protected_deltas.items()
     )
     regressions.extend(
         f"approved_target:{subset_name} {delta:+d}"
@@ -505,8 +498,7 @@ def _build_run_summary(
         "qualifying_improvement": comparison["qualifying_improvement"],
         "memory_counts": memory_counts,
         "memory_count_delta_vs_current": {
-            key: memory_counts[key] - current_memory_counts[key]
-            for key in current_memory_counts
+            key: memory_counts[key] - current_memory_counts[key] for key in current_memory_counts
         },
         "replay_stats": replay_stats,
         "normalized_effective_config": _normalize_effective_config(checkpoint),
@@ -515,7 +507,9 @@ def _build_run_summary(
     return summary
 
 
-def _build_manifest_entry(run_name: str, output_dir: Path, summary: dict[str, Any]) -> dict[str, Any]:
+def _build_manifest_entry(
+    run_name: str, output_dir: Path, summary: dict[str, Any]
+) -> dict[str, Any]:
     return {
         "run_name": run_name,
         "output_dir": str(output_dir),
@@ -839,9 +833,7 @@ async def run_sweep() -> dict[str, Any]:
                 "run_summary_path": str(current_output_dir / RUN_SUMMARY_FILENAME),
                 **current_summary,
             },
-            "runs": [
-                _build_manifest_entry(CURRENT_RUN_NAME, current_output_dir, current_summary)
-            ],
+            "runs": [_build_manifest_entry(CURRENT_RUN_NAME, current_output_dir, current_summary)],
         }
 
         first_run_name, first_thresholds = SWEEP_RUNS[0]

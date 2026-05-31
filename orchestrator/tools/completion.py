@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import uuid
 from typing import Any, AsyncIterator, cast
@@ -11,7 +10,6 @@ from orchestrator.config import ProviderConfig, Settings
 from orchestrator.guardrails import strip_reasoning_fields_from_message
 from orchestrator.tools.registry import ToolRegistry
 from orchestrator.tools.executor import ToolExecutor
-from orchestrator.tools.parser import extract_tool_calls
 
 
 def _looks_like_tools_unsupported_error(err: Exception) -> bool:
@@ -112,7 +110,7 @@ def _extract_last_user_message(messages: list[dict[str, Any]]) -> str | None:
     return None
 
 
-from orchestrator.tools.retry import is_retry_request
+from orchestrator.tools.retry import is_retry_request  # noqa: E402
 
 
 def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -129,9 +127,7 @@ def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str
     return merged
 
 
-def _prefix_match_params(
-    model: str, params_by_prefix: dict[str, dict[str, Any]]
-) -> dict[str, Any]:
+def _prefix_match_params(model: str, params_by_prefix: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """Return params for the most specific matching model prefix."""
 
     if not model or not params_by_prefix:
@@ -206,9 +202,7 @@ def _prepare_call_params(
     if provider_config.api_key:
         call_params["api_key"] = provider_config.api_key
     elif provider_config.requires_auth:
-        raise RuntimeError(
-            f"{provider_config.name} requires an API key but none was provided"
-        )
+        raise RuntimeError(f"{provider_config.name} requires an API key but none was provided")
 
     if provider_config.extra_headers:
         call_params["extra_headers"] = provider_config.extra_headers
@@ -250,11 +244,7 @@ async def _accumulate_stream_with_tools(
         tool_calls = getattr(delta, "tool_calls", None) or delta.get("tool_calls")
         if tool_calls:
             for tc in tool_calls:
-                idx = (
-                    getattr(tc, "index", 0)
-                    if hasattr(tc, "index")
-                    else tc.get("index", 0)
-                )
+                idx = getattr(tc, "index", 0) if hasattr(tc, "index") else tc.get("index", 0)
 
                 if idx not in tool_calls_buffer:
                     tc_id = getattr(tc, "id", None) or tc.get("id", "")
@@ -315,9 +305,7 @@ async def completion_with_tools(
                 if not choices:
                     continue
 
-                delta = getattr(choices[0], "delta", None) or choices[0].get(
-                    "delta", {}
-                )
+                delta = getattr(choices[0], "delta", None) or choices[0].get("delta", {})
                 if not delta:
                     continue
 
@@ -325,19 +313,13 @@ async def completion_with_tools(
                 # Some providers emit `reasoning_content` / `thinking`, others stream `reasoning_details`.
                 reasoning = (
                     getattr(delta, "reasoning_content", None)
-                    or (
-                        delta.get("reasoning_content")
-                        if isinstance(delta, dict)
-                        else None
-                    )
+                    or (delta.get("reasoning_content") if isinstance(delta, dict) else None)
                     or getattr(delta, "thinking", None)
                     or (delta.get("thinking") if isinstance(delta, dict) else None)
                 )
                 if not reasoning:
                     reasoning_details = getattr(delta, "reasoning_details", None) or (
-                        delta.get("reasoning_details")
-                        if isinstance(delta, dict)
-                        else None
+                        delta.get("reasoning_details") if isinstance(delta, dict) else None
                     )
                     reasoning = _reasoning_text_from_details(reasoning_details)
 
@@ -360,15 +342,11 @@ async def completion_with_tools(
                     }
 
                 # 3. Handle Tool Calls
-                tool_calls_chunk = getattr(delta, "tool_calls", None) or delta.get(
-                    "tool_calls"
-                )
+                tool_calls_chunk = getattr(delta, "tool_calls", None) or delta.get("tool_calls")
                 if tool_calls_chunk:
                     for tc in tool_calls_chunk:
                         idx = (
-                            getattr(tc, "index", 0)
-                            if hasattr(tc, "index")
-                            else tc.get("index", 0)
+                            getattr(tc, "index", 0) if hasattr(tc, "index") else tc.get("index", 0)
                         )
 
                         if idx not in tool_calls_buffer:
@@ -381,9 +359,7 @@ async def completion_with_tools(
 
                         func = getattr(tc, "function", None) or tc.get("function", {})
                         func_name = getattr(func, "name", None) or func.get("name")
-                        func_args = getattr(func, "arguments", None) or func.get(
-                            "arguments"
-                        )
+                        func_args = getattr(func, "arguments", None) or func.get("arguments")
 
                         if func_name:
                             tool_calls_buffer[idx]["function"]["name"] = func_name
@@ -444,18 +420,17 @@ async def completion_with_tools(
                     except Exception:
                         parsed_args = {}
                     if not parsed_args.get("session_id"):
-                        last_session_id = (
-                            last_spawn_session_id
-                            or _extract_last_session_id(current_messages)
+                        last_session_id = last_spawn_session_id or _extract_last_session_id(
+                            current_messages
                         )
                         if last_session_id:
                             if func_name == "spawn_agent":
                                 parsed_args["session_id"] = last_session_id
                             elif isinstance(parsed_args.get("agents"), list):
                                 for agent_spec in parsed_args["agents"]:
-                                    if isinstance(
-                                        agent_spec, dict
-                                    ) and not agent_spec.get("session_id"):
+                                    if isinstance(agent_spec, dict) and not agent_spec.get(
+                                        "session_id"
+                                    ):
                                         agent_spec["session_id"] = last_session_id
                             func_args = json.dumps(parsed_args)
                             tc["function"]["arguments"] = func_args
@@ -471,17 +446,13 @@ async def completion_with_tools(
                 result = await executor.execute(func_name, func_args)
                 if func_name in {"spawn_agent", "spawn_multiple"}:
                     try:
-                        parsed_result = (
-                            json.loads(result) if isinstance(result, str) else result
-                        )
+                        parsed_result = json.loads(result) if isinstance(result, str) else result
                     except Exception:
                         parsed_result = None
                     if isinstance(parsed_result, dict):
                         metadata = parsed_result.get("metadata")
                         session_id = (
-                            metadata.get("session_id")
-                            if isinstance(metadata, dict)
-                            else None
+                            metadata.get("session_id") if isinstance(metadata, dict) else None
                         )
                         if not session_id and func_name == "spawn_multiple":
                             results = parsed_result.get("results")

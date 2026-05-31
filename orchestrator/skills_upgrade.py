@@ -188,9 +188,7 @@ def load_manifest() -> SkillManifest:
         data = json.loads(path.read_text(encoding="utf-8"))
         return SkillManifest.from_dict(data)
     except (json.JSONDecodeError, OSError) as exc:
-        logger.warning(
-            "Failed to load manifest %s: %s. Returning empty manifest.", path, exc
-        )
+        logger.warning("Failed to load manifest %s: %s. Returning empty manifest.", path, exc)
         return SkillManifest()
 
 
@@ -249,9 +247,7 @@ class SkillUpgradeService:
 
         for skill_id, path in current_files.items():
             try:
-                action = await self._process_skill(
-                    skill_id, path, manifest, repo_contents
-                )
+                action = await self._process_skill(skill_id, path, manifest, repo_contents)
                 actions.append(action)
             except Exception as exc:
                 logger.error("Error processing skill %s: %s", skill_id, exc)
@@ -284,9 +280,7 @@ class SkillUpgradeService:
             actions=actions,
             total_unchanged=sum(1 for a in actions if a.action == "unchanged"),
             total_silent_updates=sum(1 for a in actions if a.action == "silent_update"),
-            total_pending_updates=sum(
-                1 for a in actions if a.action == "pending_update"
-            ),
+            total_pending_updates=sum(1 for a in actions if a.action == "pending_update"),
             total_inserts=sum(1 for a in actions if a.action == "insert"),
             total_deprecated=sum(1 for a in actions if a.action == "deprecated"),
             total_errors=sum(1 for a in actions if a.action == "error"),
@@ -318,9 +312,7 @@ class SkillUpgradeService:
                 current_local_hash,
             )
 
-        snapshot_hash = (
-            compute_content_hash(snapshot_content) if snapshot_content else ""
-        )
+        snapshot_hash = compute_content_hash(snapshot_content) if snapshot_content else ""
 
         repo_changed = current_repo_hash != manifest_entry.repo_hash
         user_modified = current_local_hash != snapshot_hash
@@ -434,9 +426,7 @@ class SkillUpgradeService:
             allow_autonomous_edit=existing.get("allow_autonomous_edit", False)
             if existing
             else False,
-            trigger_conditions=existing.get("trigger_conditions", "")
-            if existing
-            else "",
+            trigger_conditions=existing.get("trigger_conditions", "") if existing else "",
             complexity_origin=existing.get("complexity_origin", 0) if existing else 0,
         )
 
@@ -505,9 +495,7 @@ class SkillUpgradeService:
             allow_autonomous_edit=existing.get("allow_autonomous_edit", False)
             if existing
             else False,
-            trigger_conditions=existing.get("trigger_conditions", "")
-            if existing
-            else "",
+            trigger_conditions=existing.get("trigger_conditions", "") if existing else "",
             complexity_origin=existing.get("complexity_origin", 0) if existing else 0,
         )
 
@@ -678,18 +666,14 @@ class SkillUpgradeService:
                 error="No pending update to dismiss",
             )
 
-        repo_version = pending.get(
-            "repo_version", projection.get("repo_version", "0.0.0")
-        )
+        repo_version = pending.get("repo_version", projection.get("repo_version", "0.0.0"))
         current_hash = projection.get("source_hash", "")
 
         await self._store.upsert_projection(
             skill_id=skill_id,
             name=projection.get("name", skill_id),
             description=projection.get("description", ""),
-            source_file_path=projection.get(
-                "source_file_path", str(SKILLS_DIR / f"{skill_id}.md")
-            ),
+            source_file_path=projection.get("source_file_path", str(SKILLS_DIR / f"{skill_id}.md")),
             source_hash=current_hash,
             enabled=projection.get("enabled", True),
             source_type=projection.get("source_type", "system"),
@@ -727,9 +711,7 @@ class SkillUpgradeService:
         )
 
 
-async def run_upgrade_sync(
-    db_pool: Any, repo_contents: dict[str, str]
-) -> UpgradeResult:
+async def run_upgrade_sync(db_pool: Any, repo_contents: dict[str, str]) -> UpgradeResult:
     store = SkillProjectionStore(db_pool)
     service = SkillUpgradeService(store)
     return await service.sync_repo_skills(repo_contents)

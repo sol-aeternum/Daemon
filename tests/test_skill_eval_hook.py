@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import uuid
 from datetime import timedelta
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,7 +11,7 @@ from orchestrator.skill_evaluator import (
     SkillEvaluationRequest,
     build_skill_evaluation_debounce_key,
 )
-from orchestrator.worker.jobs import run_skill_evaluation_job, SkillEvaluationJobResult
+from orchestrator.worker.jobs import run_skill_evaluation_job
 
 
 @pytest.mark.asyncio

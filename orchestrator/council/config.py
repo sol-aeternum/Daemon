@@ -86,9 +86,7 @@ def load_roster_with_metadata(preset: str = "default") -> dict[str, dict[str, An
     presets = data.get("presets", {}) if isinstance(data, dict) else {}
     roles = data.get("roles", {}) if isinstance(data, dict) else {}
     default_preset = presets.get("default", {}) if isinstance(presets, dict) else {}
-    preset_config = (
-        presets.get(preset, default_preset) if isinstance(presets, dict) else {}
-    )
+    preset_config = presets.get(preset, default_preset) if isinstance(presets, dict) else {}
     active_seats = preset_config.get("active_seats", [])
 
     role_map: dict[str, dict[str, Any]] = {}

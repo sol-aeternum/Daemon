@@ -42,9 +42,7 @@ class TestGetEntityExpandedCandidates:
         user_id = uuid.uuid4()
 
         mock_store = MagicMock()
-        mock_store.find_entities_by_alias = AsyncMock(
-            side_effect=Exception("Database error")
-        )
+        mock_store.find_entities_by_alias = AsyncMock(side_effect=Exception("Database error"))
 
         result = await _get_entity_expanded_candidates(mock_store, user_id, "Alice")
 
@@ -159,9 +157,7 @@ class TestAliasAwareRetrievalIntegration:
         )
 
         # Query "Bob" should expand to find the linked memory about Robert
-        result = await _get_entity_expanded_candidates(
-            mock_store, user_id, "Tell me about Bob"
-        )
+        result = await _get_entity_expanded_candidates(mock_store, user_id, "Tell me about Bob")
 
         assert len(result) == 1
         assert result[0]["id"] == memory_id
@@ -210,9 +206,7 @@ class TestAliasAwareRetrievalIntegration:
 
         mock_store.get_memory = AsyncMock(side_effect=mock_get_memory)
 
-        result = await _get_entity_expanded_candidates(
-            mock_store, user_id, "Tell me about Alice"
-        )
+        result = await _get_entity_expanded_candidates(mock_store, user_id, "Tell me about Alice")
 
         # Dream observation should be filtered out, only factual memory returned
         assert len(result) == 1
@@ -249,9 +243,7 @@ class TestAliasAwareRetrievalIntegration:
             }
         )
 
-        result = await _get_entity_expanded_candidates(
-            mock_store, user_id, "What about @alice?"
-        )
+        result = await _get_entity_expanded_candidates(mock_store, user_id, "What about @alice?")
 
         # Query extracts two candidates: "What" and "@alice"
         # Both are looked up via find_entities_by_alias

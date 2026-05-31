@@ -139,12 +139,8 @@ async def test_run_dreaming_skips_unchanged_families_and_logs_run() -> None:
                         "content": "User has consistent coffee rituals and quality-focused preferences.",
                         "confidence": 0.88,
                         "source_memory_ids": [
-                            str(
-                                store.get_dream_candidate_memories.return_value[0]["id"]
-                            ),
-                            str(
-                                store.get_dream_candidate_memories.return_value[1]["id"]
-                            ),
+                            str(store.get_dream_candidate_memories.return_value[0]["id"]),
+                            str(store.get_dream_candidate_memories.return_value[1]["id"]),
                         ],
                     }
                 ]
@@ -219,22 +215,15 @@ async def test_default_retrieval_excludes_dream_observations() -> None:
         user_id=uuid.uuid4(),
     )
 
-    assert (
-        store.search_memories.await_args.kwargs["include_dream_observations"] is False
-    )
-    assert (
-        store.search_memories_bm25.await_args.kwargs["include_dream_observations"]
-        is False
-    )
+    assert store.search_memories.await_args.kwargs["include_dream_observations"] is False
+    assert store.search_memories_bm25.await_args.kwargs["include_dream_observations"] is False
 
 
 @pytest.mark.asyncio
 async def test_dreaming_schedule_uses_user_timezone_when_present() -> None:
     store = AsyncMock()
     user_id = uuid.uuid4()
-    store.get_user_settings.return_value = {
-        "preferences": {"timezone": "Australia/Adelaide"}
-    }
+    store.get_user_settings.return_value = {"preferences": {"timezone": "Australia/Adelaide"}}
 
     should_run = await _user_matches_dream_schedule_hour(
         store,
@@ -498,9 +487,7 @@ class TestUserMatchesDreamScheduleHour:
         store = AsyncMock()
         user_id = uuid.uuid4()
         # User is in UTC-5 (New York), it's 3:30 UTC, so local is 22:30 previous day
-        store.get_user_settings.return_value = {
-            "preferences": {"timezone": "America/New_York"}
-        }
+        store.get_user_settings.return_value = {"preferences": {"timezone": "America/New_York"}}
 
         should_run = await _user_matches_dream_schedule_hour(
             store,
@@ -518,9 +505,7 @@ class TestUserMatchesDreamScheduleHour:
         store = AsyncMock()
         user_id = uuid.uuid4()
         # User is in UTC+10 (Brisbane), it's 03:30 UTC, so local is 13:30
-        store.get_user_settings.return_value = {
-            "preferences": {"timezone": "Australia/Brisbane"}
-        }
+        store.get_user_settings.return_value = {"preferences": {"timezone": "Australia/Brisbane"}}
 
         should_run = await _user_matches_dream_schedule_hour(
             store,
@@ -537,9 +522,7 @@ class TestUserMatchesDreamScheduleHour:
 
         store = AsyncMock()
         user_id = uuid.uuid4()
-        store.get_user_settings.return_value = {
-            "preferences": {"timezone": "Invalid/Timezone"}
-        }
+        store.get_user_settings.return_value = {"preferences": {"timezone": "Invalid/Timezone"}}
 
         # Should not raise, should fall back to server schedule (True when UTC hour matches)
         should_run = await _user_matches_dream_schedule_hour(

@@ -83,9 +83,7 @@ async def test_retrieve_memories_filters_below_min_score() -> None:
         },
     ]
 
-    result = await retrieve_memories(
-        store, [0.1] * 5, conversation_id=conversation_id, limit=5
-    )
+    result = await retrieve_memories(store, [0.1] * 5, conversation_id=conversation_id, limit=5)
 
     assert len(result) == 1
     assert result[0]["id"] == "m-good"
@@ -125,9 +123,7 @@ async def test_retrieve_memories_can_return_fewer_than_limit() -> None:
         },
     ]
 
-    result = await retrieve_memories(
-        store, [0.1] * 5, conversation_id=conversation_id, limit=5
-    )
+    result = await retrieve_memories(store, [0.1] * 5, conversation_id=conversation_id, limit=5)
 
     assert len(result) == 1
     assert result[0]["id"] == "m1"
@@ -158,9 +154,7 @@ async def test_retrieve_memories_respects_higher_limit_not_clamped_to_five() -> 
     ]
     store.search_memories_bm25.return_value = []
 
-    result = await retrieve_memories(
-        store, [0.1] * 5, conversation_id=conversation_id, limit=15
-    )
+    result = await retrieve_memories(store, [0.1] * 5, conversation_id=conversation_id, limit=15)
 
     assert len(result) == 12, (
         f"Expected 12 results (all above threshold) but got {len(result)}. "
@@ -169,9 +163,7 @@ async def test_retrieve_memories_respects_higher_limit_not_clamped_to_five() -> 
 
 
 @pytest.mark.asyncio
-async def test_retrieve_memories_entity_expansion_fallback_when_vector_bm25_empty() -> (
-    None
-):
+async def test_retrieve_memories_entity_expansion_fallback_when_vector_bm25_empty() -> None:
     # Bug 2 regression: entity-only queries must return results when vector/BM25 empty
     # Tests that _get_entity_expanded_candidates runs and returns linked memories
     # even when vector/BM25 return no candidates

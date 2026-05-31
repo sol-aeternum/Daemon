@@ -15,7 +15,6 @@ Run: PYTHONPATH=. python tests/benchmark_harness/ingestion_rerun.py
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import subprocess
@@ -98,7 +97,9 @@ _dedup.check_contradiction = _patched_check_contradiction
 print(f"[patched] orchestrator.memory.dedup.check_contradiction -> catches DedupBenchmarkSamplingError (advisory)")
 """
 
-RESET_CODE = PATCH_CODE + """
+RESET_CODE = (
+    PATCH_CODE
+    + """
 import asyncio, sys
 sys.path.insert(0, {!r})
 from orchestrator.eval.runner import reset_canonical_benchmark
@@ -126,8 +127,11 @@ async def main():
 
 asyncio.run(main())
 """.format(repr(str(PROJECT_ROOT)), repr(str(CHECKPOINT)), repr(str(RESULT_FILE)))
+)
 
-INGEST_CODE = PATCH_CODE + """
+INGEST_CODE = (
+    PATCH_CODE
+    + """
 import asyncio, sys, json
 sys.path.insert(0, {!r})
 from orchestrator.eval.runner import LongMemEvalRunner
@@ -148,6 +152,7 @@ runner = LongMemEvalRunner(
 asyncio.run(runner.ingest())
 print("INGEST_OK")
 """.format(repr(str(PROJECT_ROOT)), repr(str(OUTPUT_DIR)), repr(str(DATASET)))
+)
 
 
 def run_subprocess(code: str, label: str) -> tuple[int, str]:
@@ -209,8 +214,8 @@ def write_report(summary: dict[str, Any], reset_rc: int, ingest_rc: int, elapsed
     verdict = "PASS" if summary["errored_rate"] <= 5 else "FAIL"
     report = f"""# D5 — Step 3 Ingestion Rerun (Wave 0)
 
-**Generated:** {datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%S+00:00')}
-**Status:** {verdict} — ERRORED {summary['errored_rate']:.1f}% (halt rule: >5%)
+**Generated:** {datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S+00:00")}
+**Status:** {verdict} — ERRORED {summary["errored_rate"]:.1f}% (halt rule: >5%)
 
 ---
 
@@ -219,8 +224,8 @@ def write_report(summary: dict[str, Any], reset_rc: int, ingest_rc: int, elapsed
 | Item | Value |
 |---|---|
 | Dataset | `tests/benchmark_longmemeval/fixtures/dev_subset.json` |
-| Sessions | {summary['total_sessions']} |
-| ERRORED % | {summary['errored_rate']:.1f}% ({summary.get('errored_count', 0)} sessions) |
+| Sessions | {summary["total_sessions"]} |
+| ERRORED % | {summary["errored_rate"]:.1f}% ({summary.get("errored_count", 0)} sessions) |
 | Reset exit code | {reset_rc} |
 | Ingest exit code | {ingest_rc} |
 | Wall time | {elapsed:.0f}s |
@@ -229,21 +234,21 @@ def write_report(summary: dict[str, Any], reset_rc: int, ingest_rc: int, elapsed
 
 | Outcome | Count |
 |---|---|
-| completed | {outcome.get('completed', 0)} |
-| errored | {outcome.get('errored', 0)} |
-| empty | {outcome.get('empty', 0)} |
+| completed | {outcome.get("completed", 0)} |
+| errored | {outcome.get("errored", 0)} |
+| empty | {outcome.get("empty", 0)} |
 
 ## Status Counts (from checkpoint `status` field)
 
 | Status | Count |
 |---|---|
-| complete | {status.get('complete', 0)} |
-| extraction_failed | {status.get('extraction_failed', 0)} |
+| complete | {status.get("complete", 0)} |
+| extraction_failed | {status.get("extraction_failed", 0)} |
 
 ## Sample Errors (first 5)
 
 ```
-{chr(10).join(summary['sample_errors']) if summary['sample_errors'] else 'None'}
+{chr(10).join(summary["sample_errors"]) if summary["sample_errors"] else "None"}
 ```
 
 ## Patches Applied (in subprocess)
@@ -259,7 +264,7 @@ def write_report(summary: dict[str, Any], reset_rc: int, ingest_rc: int, elapsed
 ## Pass/Fail Verdict
 
 **ERRORED halt rule:** >5% → FAIL
-**Current ERRORED rate:** {summary['errored_rate']:.1f}% ({summary.get('errored_count', 0)}/{summary['total_sessions']})
+**Current ERRORED rate:** {summary["errored_rate"]:.1f}% ({summary.get("errored_count", 0)}/{summary["total_sessions"]})
 
 D5 result: **{verdict}**
 
@@ -294,13 +299,15 @@ def main() -> int:
 
     outcome = summary.get("outcome_counts", {})
     status = summary.get("status_counts", {})
-    print(f"\n[D5] Sessions: {summary['total_sessions']}, "
-          f"ERR {summary['errored_rate']:.1f}%, "
-          f"completed(outcome)={outcome.get('completed', 0)}, "
-          f"errored(outcome)={outcome.get('errored', 0)}, "
-          f"empty(outcome)={outcome.get('empty', 0)}, "
-          f"complete(status)={status.get('complete', 0)}, "
-          f"extraction_failed(status)={status.get('extraction_failed', 0)}")
+    print(
+        f"\n[D5] Sessions: {summary['total_sessions']}, "
+        f"ERR {summary['errored_rate']:.1f}%, "
+        f"completed(outcome)={outcome.get('completed', 0)}, "
+        f"errored(outcome)={outcome.get('errored', 0)}, "
+        f"empty(outcome)={outcome.get('empty', 0)}, "
+        f"complete(status)={status.get('complete', 0)}, "
+        f"extraction_failed(status)={status.get('extraction_failed', 0)}"
+    )
 
     write_report(summary, reset_rc, ingest_rc, elapsed)
 

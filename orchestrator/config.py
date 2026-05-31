@@ -51,9 +51,7 @@ class TierConfig(BaseSettings):
 
 
 class Settings(BaseSettings):
-    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
-        env_file=".env", extra="ignore"
-    )
+    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(env_file=".env", extra="ignore")
 
     env: str = "dev"
     log_level: str = "INFO"
@@ -347,9 +345,7 @@ class Settings(BaseSettings):
 
         return TierConfig(
             orchestrator=get_slot_config("orchestrator")
-            or ModelSlotConfig(
-                model="openrouter/moonshotai/kimi-k2.5", temperature=0.7
-            ),
+            or ModelSlotConfig(model="openrouter/moonshotai/kimi-k2.5", temperature=0.7),
             research_agent=get_slot_config("research"),
             code_agent=get_slot_config("code"),
             image_agent=get_slot_config("image"),
@@ -399,9 +395,7 @@ class Settings(BaseSettings):
                 api_key=getattr(self, f"{prefix.lower()}api_key", None),
                 model=getattr(self, f"{prefix.lower()}model", ""),
                 requires_auth=getattr(self, f"{prefix.lower()}requires_auth", True),
-                timeout_s=getattr(
-                    self, f"{prefix.lower()}timeout_s", self.request_timeout_s
-                ),
+                timeout_s=getattr(self, f"{prefix.lower()}timeout_s", self.request_timeout_s),
             )
 
         return ProviderConfig(

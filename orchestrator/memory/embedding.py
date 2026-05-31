@@ -135,9 +135,7 @@ async def _embed_with_retry(
             )
             data = payload.get("data")
             if not isinstance(data, list):
-                raise EmbeddingRequestError(
-                    "Invalid Voyage embedding response: missing data list"
-                )
+                raise EmbeddingRequestError("Invalid Voyage embedding response: missing data list")
             ordered = sorted(data, key=lambda item: int(item.get("index", 0)))
             embeddings = [list(item.get("embedding", [])) for item in ordered]
             if len(embeddings) != len(texts):
@@ -238,8 +236,6 @@ async def embed_text(text: str, model: str = DEFAULT_MODEL) -> list[float]:
     return await embed_query(text)
 
 
-async def embed_batch(
-    texts: list[str], model: str = DEFAULT_MODEL
-) -> list[list[float]]:
+async def embed_batch(texts: list[str], model: str = DEFAULT_MODEL) -> list[list[float]]:
     del model
     return await embed_documents(texts)

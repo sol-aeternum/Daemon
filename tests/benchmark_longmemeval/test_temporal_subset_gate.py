@@ -53,6 +53,4 @@ def test_temporal_subset_gate_artifact_is_consistent() -> None:
     )
 
     assert comparison["eligible_for_full_corpus_promotion"] is False
-    assert "should not advance to full-corpus promotion yet" in comparison[
-        "promotion_reason"
-    ]
+    assert "should not advance to full-corpus promotion yet" in comparison["promotion_reason"]

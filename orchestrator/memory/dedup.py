@@ -25,9 +25,7 @@ def _lazy_import_trust_signals():
         import importlib
 
         try:
-            _trust_signals = importlib.import_module(
-                "orchestrator.memory.trust_signals"
-            )
+            _trust_signals = importlib.import_module("orchestrator.memory.trust_signals")
         except ImportError:
             pass
     return _trust_signals
@@ -184,9 +182,7 @@ async def check_contradiction(
         if isinstance(response_data, dict):
             choices = response_data.get("choices")
             if isinstance(choices, list) and choices:
-                message = (
-                    choices[0].get("message") if isinstance(choices[0], dict) else None
-                )
+                message = choices[0].get("message") if isinstance(choices[0], dict) else None
                 if isinstance(message, dict):
                     content = message.get("content")
 
@@ -253,10 +249,7 @@ async def _close_current_related_candidates(
             continue
 
         similarity = float(candidate.get("similarity") or 0.0)
-        if (
-            candidate_family is None
-            and similarity >= _get_supersede_same_slot_threshold()
-        ):
+        if candidate_family is None and similarity >= _get_supersede_same_slot_threshold():
             await store.close_memory(candidate_id)
             closed_ids.add(candidate_id)
     return closed_ids
@@ -286,9 +279,7 @@ async def deduplicate_facts(
         embedding = (await embed_documents([embedding_input]))[0]
 
         min_similarity = (
-            _get_supersede_same_slot_threshold()
-            if fact_slot_family
-            else _get_supersede_threshold()
+            _get_supersede_same_slot_threshold() if fact_slot_family else _get_supersede_threshold()
         )
         if _is_current_slot(fact_slot):
             min_similarity = 0.0
@@ -311,9 +302,7 @@ async def deduplicate_facts(
                 and m.get("valid_to") is None
             ]
             if slot_matches:
-                exact_slot_matches = [
-                    m for m in slot_matches if m.get("memory_slot") == fact_slot
-                ]
+                exact_slot_matches = [m for m in slot_matches if m.get("memory_slot") == fact_slot]
                 if exact_slot_matches:
                     best_match = exact_slot_matches[0]
                     supersede_threshold = _get_supersede_same_slot_threshold()
@@ -536,9 +525,7 @@ async def deduplicate_facts(
                         )
                         normalized_new_id = _as_uuid_or_none(new_id)
                         if normalized_new_id is not None:
-                            current_family_keep_ids[fact_slot_family] = (
-                                normalized_new_id
-                            )
+                            current_family_keep_ids[fact_slot_family] = normalized_new_id
             else:
                 memory = await store.insert_memory(
                     user_id=user_id,
@@ -576,9 +563,7 @@ async def deduplicate_facts(
     for slot_family in current_slot_families:
         keep_id = current_family_keep_ids.get(slot_family)
         if keep_id is None:
-            logger.warning(
-                "Dedup post-close skipped family=%s keep_id=None", slot_family
-            )
+            logger.warning("Dedup post-close skipped family=%s keep_id=None", slot_family)
             continue
         logger.warning(
             "Dedup post-close executing family=%s keep_id=%s",

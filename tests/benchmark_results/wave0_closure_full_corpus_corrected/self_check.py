@@ -86,9 +86,15 @@ def derive_accuracy(results: list[JsonDict]) -> dict[str, float]:
 
 def main() -> int:
     base = Path(__file__).resolve().parent
-    dataset_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/tmp/longmemeval_s_reconstructed_runner_native.json")
+    dataset_path = (
+        Path(sys.argv[1])
+        if len(sys.argv) > 1
+        else Path("/tmp/longmemeval_s_reconstructed_runner_native.json")
+    )
     results_path = Path(sys.argv[2]) if len(sys.argv) > 2 else base / "longmemeval_results.jsonl"
-    checkpoint_path = Path(sys.argv[3]) if len(sys.argv) > 3 else base / "longmemeval_checkpoint.json"
+    checkpoint_path = (
+        Path(sys.argv[3]) if len(sys.argv) > 3 else base / "longmemeval_checkpoint.json"
+    )
     score_path = Path(sys.argv[4]) if len(sys.argv) > 4 else base / "longmemeval_score.json"
 
     dataset = load_json_list(dataset_path)
@@ -147,7 +153,9 @@ def main() -> int:
             judge_fingerprints[judge_fingerprint] += 1
 
         prompt_meta_obj = row.get("answer_prompt_metadata")
-        prompt_meta: JsonDict = cast(JsonDict, prompt_meta_obj) if isinstance(prompt_meta_obj, dict) else {}
+        prompt_meta: JsonDict = (
+            cast(JsonDict, prompt_meta_obj) if isinstance(prompt_meta_obj, dict) else {}
+        )
         provider_slug = str_field(prompt_meta, "provider_endpoint_slug")
         if provider_slug:
             provider_endpoint_slugs[provider_slug] += 1
@@ -173,8 +181,13 @@ def main() -> int:
     dataset_question_type_counts = Counter(str_field(row, "question_type") for row in dataset)
     derived_accuracy = derive_accuracy(results)
     score_accuracy_obj = score.get("accuracy")
-    score_accuracy = cast(JsonDict, score_accuracy_obj) if isinstance(score_accuracy_obj, dict) else {}
-    score_matches = all(abs(float_field(score_accuracy, cat) - derived_accuracy.get(cat, 0.0)) < 1e-12 for cat in ACCURACY_CATEGORIES)
+    score_accuracy = (
+        cast(JsonDict, score_accuracy_obj) if isinstance(score_accuracy_obj, dict) else {}
+    )
+    score_matches = all(
+        abs(float_field(score_accuracy, cat) - derived_accuracy.get(cat, 0.0)) < 1e-12
+        for cat in ACCURACY_CATEGORIES
+    )
 
     summary = {
         "dataset_path": str(dataset_path),
@@ -203,17 +216,34 @@ def main() -> int:
         "score_matches_derived_accuracy": score_matches,
         "score_result_count": score.get("result_count"),
         "checkpoint_score_status": nested_str_field(checkpoint, "phases", "score", "status"),
-        "checkpoint_score_completed_count": cast(object, cast(JsonDict, cast(JsonDict, checkpoint.get("phases", {})).get("score", {})).get("completed_count")),
-        "checkpoint_score_result_count": cast(object, cast(JsonDict, cast(JsonDict, checkpoint.get("phases", {})).get("score", {})).get("result_count")),
+        "checkpoint_score_completed_count": cast(
+            object,
+            cast(JsonDict, cast(JsonDict, checkpoint.get("phases", {})).get("score", {})).get(
+                "completed_count"
+            ),
+        ),
+        "checkpoint_score_result_count": cast(
+            object,
+            cast(JsonDict, cast(JsonDict, checkpoint.get("phases", {})).get("score", {})).get(
+                "result_count"
+            ),
+        ),
         "checkpoint_evaluate_status": nested_str_field(checkpoint, "phases", "evaluate", "status"),
-        "checkpoint_evaluate_completed_count": cast(object, cast(JsonDict, cast(JsonDict, checkpoint.get("phases", {})).get("evaluate", {})).get("completed_count")),
+        "checkpoint_evaluate_completed_count": cast(
+            object,
+            cast(JsonDict, cast(JsonDict, checkpoint.get("phases", {})).get("evaluate", {})).get(
+                "completed_count"
+            ),
+        ),
         "answer_models": dict(answer_models),
         "judge_models": dict(judge_models),
         "answer_fingerprints": dict(answer_fingerprints),
         "judge_fingerprints": dict(judge_fingerprints),
         "provider_endpoint_slugs_from_prompt_metadata": dict(provider_endpoint_slugs),
         "no_silent_model_fallback": len(answer_models) == 1 and len(judge_models) == 1,
-        "no_silent_provider_fallback": set(provider_endpoint_slugs) <= {"openai"} if provider_endpoint_slugs else True,
+        "no_silent_provider_fallback": set(provider_endpoint_slugs) <= {"openai"}
+        if provider_endpoint_slugs
+        else True,
     }
     json.dump(summary, sys.stdout, indent=2, sort_keys=True)
     _ = sys.stdout.write("\n")

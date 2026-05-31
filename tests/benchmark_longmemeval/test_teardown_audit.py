@@ -139,14 +139,10 @@ async def _wait_for_table_count(
         if await _count_rows(pool, table, user_id) == expected:
             return
         await asyncio.sleep(0.05)
-    raise AssertionError(
-        f"{table} count did not reach {expected} for audit user {user_id}"
-    )
+    raise AssertionError(f"{table} count did not reach {expected} for audit user {user_id}")
 
 
-async def _retrieval_log_null_conversation_count(
-    pool: asyncpg.Pool, user_id: uuid.UUID
-) -> int:
+async def _retrieval_log_null_conversation_count(pool: asyncpg.Pool, user_id: uuid.UUID) -> int:
     value = cast(
         int,
         await pool.fetchval(
@@ -223,7 +219,7 @@ The fast-lane audit deliberately held the background `store.log_retrieval()` tas
 ### Canonical interpretation
 
 - `conversations`, `messages`, `memories`, `memory_extraction_log`, and `retrieval_log` all grow from case 1 to case 2 instead of returning to zero.
-- The canonical retrieval rows were written with `conversation_id IS NULL` in both observed cases (`after case 1 settled = {canonical_null_logs['after_case1']}`, `after case 2 settled = {canonical_null_logs['after_case2']}`), so they are not tied to conversation deletion anyway.
+- The canonical retrieval rows were written with `conversation_id IS NULL` in both observed cases (`after case 1 settled = {canonical_null_logs["after_case1"]}`, `after case 2 settled = {canonical_null_logs["after_case2"]}`), so they are not tied to conversation deletion anyway.
 - Manually deleting the audit user returns every table to zero, which shows the residual rows come from **missing per-case teardown**, not from broken foreign-key cleanup.
 
 **Canonical verdict:** residual rows survive between benchmark cases because the canonical lane does not run teardown between cases. The only destructive cleanup is whole-user deletion, and `orchestrator/eval/runner.py` does not call it.
@@ -236,7 +232,7 @@ The fast-lane audit deliberately held the background `store.log_retrieval()` tas
 
 - `messages` and `memory_extraction_log` stay at zero for every fast-lane snapshot because `ingest_question_chunks()` direct-inserts `memories` and bypasses canonical message persistence and extraction logging.
 - After each fast case returns, the post-case cleanup removes the synchronous tables (`conversations`, `memories`, etc.) back to zero.
-- Releasing the delayed retrieval-log task **after** cleanup recreates a single `retrieval_log` row (`conversation_id IS NULL` count after case 1 release = {fast_null_logs['after_case1_release']}; after case 2 release = {fast_null_logs['after_case2_release']}). That row survives the post-case cleanup because it lands after the deletes have already run.
+- Releasing the delayed retrieval-log task **after** cleanup recreates a single `retrieval_log` row (`conversation_id IS NULL` count after case 1 release = {fast_null_logs["after_case1_release"]}; after case 2 release = {fast_null_logs["after_case2_release"]}). That row survives the post-case cleanup because it lands after the deletes have already run.
 - The next case's pre-cleanup deletes the leftover row from the prior case, and final user deletion returns every table to zero.
 
 **Fast verdict:** the fast lane has no stable leak in its synchronous tables, but `retrieval_log` can survive teardown through **async bleed** from the background persistence task. Any row left behind is finally removed by the next pre-case cleanup or, if it is the last case, by the end-of-run user deletion.
@@ -309,7 +305,9 @@ async def test_teardown_audit_writes_report(monkeypatch: pytest.MonkeyPatch) -> 
     async def fake_embed_query(_text: str) -> list[float]:
         return _test_vector(0.25)
 
-    async def fake_answer(_question_text: str, memories: list[dict[str, object]], **kwargs: Any) -> str:
+    async def fake_answer(
+        _question_text: str, memories: list[dict[str, object]], **kwargs: Any
+    ) -> str:
         if not memories:
             return "no-memory"
         content = memories[0].get("content")
@@ -328,9 +326,7 @@ async def test_teardown_audit_writes_report(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr("tests.longmemeval.evaluate.embed_query", fake_embed_query)
     monkeypatch.setattr("tests.longmemeval.evaluate.answer_with_llm", fake_answer)
     monkeypatch.setattr("tests.longmemeval.evaluate.judge_answer", fake_judge)
-    monkeypatch.setattr(
-        "orchestrator.eval.longmemeval_fast.embed_documents", fake_embed_documents
-    )
+    monkeypatch.setattr("orchestrator.eval.longmemeval_fast.embed_documents", fake_embed_documents)
 
     canonical_user_id: uuid.UUID | None = None
     fast_user_id: uuid.UUID | None = None
@@ -555,9 +551,7 @@ async def test_teardown_audit_writes_report(monkeypatch: pytest.MonkeyPatch) -> 
             ),
         ]
 
-        for index, (label, entry, question_text, reference) in enumerate(
-            fast_cases, start=1
-        ):
+        for index, (label, entry, question_text, reference) in enumerate(fast_cases, start=1):
             await cleanup_benchmark_state(pool, fast_user_id)
             fast_rows.append(
                 SnapshotRow(

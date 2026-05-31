@@ -83,9 +83,7 @@ async def test_fast_runner_inserts_direct_memories_and_resumes_checkpoint(
             self.closed: bool = False
             self.created_user_id: uuid.UUID | None = None
 
-        async def _fetchrow(
-            self, _query: str, *args: object
-        ) -> dict[str, object] | None:
+        async def _fetchrow(self, _query: str, *args: object) -> dict[str, object] | None:
             if "SELECT id FROM users WHERE email = $1" in _query:
                 return None
             if "INSERT INTO users" in _query:
@@ -102,22 +100,16 @@ async def test_fast_runner_inserts_direct_memories_and_resumes_checkpoint(
         def __init__(self, pool: FakePool, encryption: object) -> None:
             self.pool: FakePool = pool
             self.encryption: object = encryption
-            self.create_conversation: AsyncMock = AsyncMock(
-                side_effect=self._create_conversation
-            )
+            self.create_conversation: AsyncMock = AsyncMock(side_effect=self._create_conversation)
 
         async def _create_conversation(self, **_kwargs: object) -> dict[str, object]:
             return {"id": uuid.uuid4()}
 
-    expected_chunks = [
-        chunk.content for chunk in build_question_chunks(dataset[0], max_chars=85)
-    ]
+    expected_chunks = [chunk.content for chunk in build_question_chunks(dataset[0], max_chars=85)]
 
     fake_pool = FakePool()
     fake_store = FakeStore(fake_pool, object())
-    embed_documents_mock = AsyncMock(
-        return_value=[[0.1, 0.2] for _ in range(len(expected_chunks))]
-    )
+    embed_documents_mock = AsyncMock(return_value=[[0.1, 0.2] for _ in range(len(expected_chunks))])
     evaluate_single_mock = AsyncMock(
         return_value={
             "question_id": "q1",
@@ -175,9 +167,7 @@ async def test_fast_runner_inserts_direct_memories_and_resumes_checkpoint(
     assert await_call is not None
     assert await_call.kwargs["allowed_source_conversation_ids"]
     assert await_call.kwargs["log_retrieval"] is True
-    assert await_call.kwargs["user_id"] == uuid.UUID(
-        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-    )
+    assert await_call.kwargs["user_id"] == uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 
     first_insert_args = fake_pool.fetchrow.await_args_list[2].args[1:]
     first_insert_query = fake_pool.fetchrow.await_args_list[2].args[0]

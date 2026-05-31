@@ -33,9 +33,7 @@ def _make_runner(tmp_path: Path, dataset_path: Path) -> LongMemEvalRunner:
 def test_committed_benchmark_config_pin_matches_live_authority_defaults() -> None:
     committed_pin = json.loads(BENCHMARK_CONFIG_PIN_PATH.read_text())
 
-    assert committed_pin == build_longmemeval_pinned_config(
-        settings=_default_benchmark_settings()
-    )
+    assert committed_pin == build_longmemeval_pinned_config(settings=_default_benchmark_settings())
 
 
 def test_answer_prompt_sha256_tracks_aligned_contract_not_only_thin_prompt(
@@ -51,9 +49,7 @@ def test_answer_prompt_sha256_tracks_aligned_contract_not_only_thin_prompt(
     thin_hash = hashlib.sha256(thin_prompt.encode("utf-8")).hexdigest()
 
     assert answer_config["prompt_sha256"] != thin_hash
-    assert answer_config["prompt_contract_kind"] == (
-        "aligned_system_user_with_legacy_fallback_v1"
-    )
+    assert answer_config["prompt_contract_kind"] == ("aligned_system_user_with_legacy_fallback_v1")
     assert answer_config["active_message_roles"] == ["system", "user"]
     assert answer_config["legacy_fallback_message_roles"] == ["user"]
 
@@ -66,9 +62,9 @@ def test_answer_prompt_sha256_tracks_aligned_contract_not_only_thin_prompt(
         "orchestrator.eval.runner.build_assembled_system_prompt",
         fake_aligned_builder,
     )
-    aligned_hash = build_longmemeval_pinned_config(settings=settings)["shared"][
-        "answer"
-    ]["prompt_sha256"]
+    aligned_hash = build_longmemeval_pinned_config(settings=settings)["shared"]["answer"][
+        "prompt_sha256"
+    ]
     assert aligned_hash != original_hash
 
 
@@ -96,9 +92,7 @@ def test_runner_load_checkpoint_emits_effective_benchmark_config(
         "force_retrieval_logging": True,
         "benchmark_mode": False,
     }
-    assert effective_config["pinned_authority"] == json.loads(
-        BENCHMARK_CONFIG_PIN_PATH.read_text()
-    )
+    assert effective_config["pinned_authority"] == json.loads(BENCHMARK_CONFIG_PIN_PATH.read_text())
     assert checkpoint["benchmark_config_drift_warnings"] == []
 
 
@@ -120,11 +114,7 @@ def test_runner_load_checkpoint_warns_on_benchmark_config_drift(
         checkpoint = runner.load_checkpoint()
 
     warnings = checkpoint["benchmark_config_drift_warnings"]
+    assert any("shared.query_embedding.embedding_query_model" in warning for warning in warnings)
     assert any(
-        "shared.query_embedding.embedding_query_model" in warning
-        for warning in warnings
-    )
-    assert any(
-        "LongMemEval benchmark config drift detected" in record.message
-        for record in caplog.records
+        "LongMemEval benchmark config drift detected" in record.message for record in caplog.records
     )

@@ -50,9 +50,7 @@ class MemoryReembedRequest(BaseModel):
 
 def require_admin_api_key(settings: Settings, authorization: str | None) -> None:
     if not settings.daemon_admin_api_key:
-        raise HTTPException(
-            status_code=403, detail="Admin dreaming trigger is disabled"
-        )
+        raise HTTPException(status_code=403, detail="Admin dreaming trigger is disabled")
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token")
     token = authorization.removeprefix("Bearer ").strip()
@@ -343,9 +341,7 @@ async def consolidate_memories_endpoint(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to enqueue consolidation job: {e}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to enqueue consolidation job: {e}")
 
 
 @router.post("/dream")

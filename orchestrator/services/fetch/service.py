@@ -34,9 +34,7 @@ class FetchService:
         self.policy: FetchPolicy = policy or load_policy_from_env()
         self.cache: FetchCache = cache or FetchCache()
 
-        self.youtube_strategy: FetchStrategy | None = YouTubeTranscriptStrategy(
-            self.policy
-        )
+        self.youtube_strategy: FetchStrategy | None = YouTubeTranscriptStrategy(self.policy)
         self.direct_strategy: FetchStrategy | None = DirectFetchStrategy(self.policy)
         self.jina_strategy: FetchStrategy | None = JinaReaderStrategy(self.policy)
         self.crawl4ai_strategy: FetchStrategy | None = Crawl4AIStrategy(self.policy)

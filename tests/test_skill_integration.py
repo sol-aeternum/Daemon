@@ -34,8 +34,6 @@ from orchestrator.skill_evaluator import (
 )
 from orchestrator.skills_projection import compute_content_hash
 from orchestrator.worker.jobs import (
-    ConsolidationNudgeResults,
-    SkillEvaluationJobResult,
     run_consolidation_nudge_job,
     run_skill_evaluation_job,
 )
@@ -164,9 +162,7 @@ class TestSkillLifecycleCreate:
     """Tests for skill creation via qualifying turn evaluation."""
 
     @pytest.mark.asyncio
-    async def test_qualifying_turn_triggers_autonomous_skill_creation(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_qualifying_turn_triggers_autonomous_skill_creation(self, tmp_path: Path) -> None:
         """A qualifying turn (5+ tool calls) should result in a new autonomous skill."""
         assistant_message_id = uuid.uuid4()
         user_id = uuid.uuid4()
@@ -281,9 +277,7 @@ class TestSkillLifecycleRetrieve:
         assert "This is the full content" not in result
 
     @pytest.mark.asyncio
-    async def test_view_returns_full_content_and_increments_usage(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_view_returns_full_content_and_increments_usage(self, tmp_path: Path) -> None:
         """View should return full content and increment use_count."""
         skill_file = tmp_path / "usage-skill.md"
         skill_file.write_text(
@@ -314,9 +308,7 @@ class TestSkillLifecycleRefine:
     """Tests for skill refinement (patching) via evaluator."""
 
     @pytest.mark.asyncio
-    async def test_overlapping_autonomous_skill_triggers_refinement(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_overlapping_autonomous_skill_triggers_refinement(self, tmp_path: Path) -> None:
         """A qualifying turn overlapping with an existing autonomous skill should patch it."""
         assistant_message_id = uuid.uuid4()
         user_id = uuid.uuid4()
@@ -542,9 +534,7 @@ class TestSkillConsolidationIntegration:
                 },
             ]
 
-        async def mock_get_recent(
-            uid: uuid.UUID, limit: int = 20
-        ) -> list[dict[str, Any]]:
+        async def mock_get_recent(uid: uuid.UUID, limit: int = 20) -> list[dict[str, Any]]:
             return []
 
         async def mock_record_run(uid: uuid.UUID, count: int) -> None:
@@ -567,16 +557,10 @@ class TestSkillConsolidationIntegration:
         mock_store.get_total_conversation_count = AsyncMock(
             side_effect=mock_get_total_conversations
         )
-        mock_store.get_autonomous_skill_candidates = AsyncMock(
-            side_effect=mock_get_candidates
-        )
+        mock_store.get_autonomous_skill_candidates = AsyncMock(side_effect=mock_get_candidates)
         mock_store.get_recent_memories_for_user = AsyncMock(side_effect=mock_get_recent)
-        mock_store.record_consolidation_nudge_run = AsyncMock(
-            side_effect=mock_record_run
-        )
-        mock_store.log_consolidation_nudge_action = AsyncMock(
-            side_effect=mock_log_action
-        )
+        mock_store.record_consolidation_nudge_run = AsyncMock(side_effect=mock_record_run)
+        mock_store.log_consolidation_nudge_action = AsyncMock(side_effect=mock_log_action)
         mock_store.merge_autonomous_skills = AsyncMock(side_effect=mock_merge)
 
         return mock_store, merge_tracker
@@ -653,9 +637,7 @@ class TestSkillConsolidationIntegration:
         async def mock_get_candidates(min_skills: int) -> list[dict[str, Any]]:
             return []
 
-        async def mock_get_recent(
-            uid: uuid.UUID, limit: int = 20
-        ) -> list[dict[str, Any]]:
+        async def mock_get_recent(uid: uuid.UUID, limit: int = 20) -> list[dict[str, Any]]:
             return []
 
         async def mock_record_run(uid: uuid.UUID, count: int) -> None:
@@ -670,16 +652,10 @@ class TestSkillConsolidationIntegration:
         mock_store.get_total_conversation_count = AsyncMock(
             side_effect=mock_get_total_conversations
         )
-        mock_store.get_autonomous_skill_candidates = AsyncMock(
-            side_effect=mock_get_candidates
-        )
+        mock_store.get_autonomous_skill_candidates = AsyncMock(side_effect=mock_get_candidates)
         mock_store.get_recent_memories_for_user = AsyncMock(side_effect=mock_get_recent)
-        mock_store.record_consolidation_nudge_run = AsyncMock(
-            side_effect=mock_record_run
-        )
-        mock_store.log_consolidation_nudge_action = AsyncMock(
-            side_effect=mock_log_action
-        )
+        mock_store.record_consolidation_nudge_run = AsyncMock(side_effect=mock_record_run)
+        mock_store.log_consolidation_nudge_action = AsyncMock(side_effect=mock_log_action)
 
         test_settings = Settings(
             consolidation_nudge_enabled=True,
@@ -824,9 +800,7 @@ class TestSkillRegressionManualFlows:
         assert parsed["skill_id"] == "manual-new-skill"
 
     @pytest.mark.asyncio
-    async def test_autonomous_skill_patch_requires_caller_context(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_autonomous_skill_patch_requires_caller_context(self, tmp_path: Path) -> None:
         """Autonomous skill modification should require proper caller context."""
         from orchestrator.tools.skill_manage import SkillManageTool
 
@@ -919,7 +893,6 @@ class TestSkillProtectionIntegration:
     ) -> None:
         """System skill should prevent autonomous modification by default."""
         from orchestrator.tools.skill_manage import (
-            SkillManageTool,
             _check_modification_allowed,
         )
 
@@ -927,9 +900,7 @@ class TestSkillProtectionIntegration:
             "source_type": "system",
             "allow_autonomous_edit": False,
         }
-        allowed, reason = _check_modification_allowed(
-            projection, caller_autonomous=True
-        )
+        allowed, reason = _check_modification_allowed(projection, caller_autonomous=True)
         assert allowed is False
         assert "protected" in reason
 
@@ -944,9 +915,7 @@ class TestSkillProtectionIntegration:
             "source_type": "system",
             "allow_autonomous_edit": True,
         }
-        allowed, reason = _check_modification_allowed(
-            projection, caller_autonomous=True
-        )
+        allowed, reason = _check_modification_allowed(projection, caller_autonomous=True)
         assert allowed is True
 
     @pytest.mark.asyncio
@@ -958,9 +927,7 @@ class TestSkillProtectionIntegration:
             "source_type": "autonomous",
             "allow_autonomous_edit": False,  # Even if False, autonomous can modify
         }
-        allowed, reason = _check_modification_allowed(
-            projection, caller_autonomous=True
-        )
+        allowed, reason = _check_modification_allowed(projection, caller_autonomous=True)
         assert allowed is True
 
     @pytest.mark.asyncio
@@ -972,8 +939,6 @@ class TestSkillProtectionIntegration:
             "source_type": "system",
             "allow_autonomous_edit": False,
         }
-        allowed, reason = _check_modification_allowed(
-            projection, caller_autonomous=False
-        )
+        allowed, reason = _check_modification_allowed(projection, caller_autonomous=False)
         assert allowed is True
         assert reason == ""

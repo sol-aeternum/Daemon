@@ -2,8 +2,8 @@ from __future__ import annotations
 
 """Guardrails to keep persisted reasoning out of LLM/memory inputs."""
 
-from collections.abc import Mapping, Sequence
-from typing import cast
+from collections.abc import Mapping, Sequence  # noqa: E402
+from typing import cast  # noqa: E402
 
 
 REASONING_FIELDS = frozenset({"reasoning_text", "reasoning_duration_secs"})

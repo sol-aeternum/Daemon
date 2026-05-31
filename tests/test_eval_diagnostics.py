@@ -343,9 +343,7 @@ class TestBuildHumanReadableReport:
                     l0_included=False,
                     latency_ms=20,
                 ),
-                supporting_memory=SupportingMemoryInfo(
-                    True, [uuid.uuid4()], True, True
-                ),
+                supporting_memory=SupportingMemoryInfo(True, [uuid.uuid4()], True, True),
                 memories_used=5,
                 note="supporting memory was selected (1 match); LLM retrieved correct memory but produced wrong answer",
             )
@@ -371,9 +369,7 @@ class TestBuildHumanReadableReport:
                 judgment="incorrect",
                 failure_mode=FailureMode.RETRIEVAL_MISS,
                 evidence=None,
-                supporting_memory=SupportingMemoryInfo(
-                    True, [uuid.uuid4()], False, False
-                ),
+                supporting_memory=SupportingMemoryInfo(True, [uuid.uuid4()], False, False),
                 memories_used=0,
             )
         ]
@@ -496,9 +492,7 @@ class TestReportOutputFiles:
                     l0_included=True,
                     latency_ms=15,
                 ),
-                supporting_memory=SupportingMemoryInfo(
-                    True, [uuid.uuid4()], True, False
-                ),
+                supporting_memory=SupportingMemoryInfo(True, [uuid.uuid4()], True, False),
                 memories_used=3,
             )
         ]
@@ -507,12 +501,12 @@ class TestReportOutputFiles:
         report = build_human_readable_report(results, category_breakdown, summary)
 
         lines = report.split("\n")
-        assert any("Retrieval Diagnostics Report" in l for l in lines)
-        assert any("Failure Mode Summary" in l for l in lines)
-        assert any("Per-Category Breakdown" in l for l in lines)
-        assert any("Wrong Answer Details" in l for l in lines)
-        assert any("in_candidates=True" in l for l in lines)
-        assert any("in_selected=False" in l for l in lines)
+        assert any("Retrieval Diagnostics Report" in l for l in lines)  # noqa: E741
+        assert any("Failure Mode Summary" in l for l in lines)  # noqa: E741
+        assert any("Per-Category Breakdown" in l for l in lines)  # noqa: E741
+        assert any("Wrong Answer Details" in l for l in lines)  # noqa: E741
+        assert any("in_candidates=True" in l for l in lines)  # noqa: E741
+        assert any("in_selected=False" in l for l in lines)  # noqa: E741
 
 
 class TestFindSupportingMemories:
@@ -527,7 +521,7 @@ class TestFindSupportingMemories:
         they are excluded from default factual retrieval.
         """
         import uuid
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import MagicMock, patch
 
         user_id = uuid.uuid4()
         mock_store = MagicMock()

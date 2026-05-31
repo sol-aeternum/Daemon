@@ -6,7 +6,6 @@ import inspect
 import json
 import uuid
 from datetime import datetime
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -145,12 +144,14 @@ class TestAdvisorTracesEncryption:
         )
 
         call_args = mock_db_pool.fetchrow.call_args
-        sql_args = call_args[0]
+        sql_args = call_args[0]  # noqa: F841
 
         encrypt_call = mock_encryption.encrypt.call_args_list
         advisor_json_call = [c for c in encrypt_call if "advisor_id" in str(c)]
 
-        assert len(advisor_json_call) == 1, "advisor_traces should be JSON-serialized then encrypted"
+        assert len(advisor_json_call) == 1, (
+            "advisor_traces should be JSON-serialized then encrypted"
+        )
 
     @pytest.mark.asyncio
     async def test_insert_message_decrypts_and_parses_advisor_traces(
@@ -267,7 +268,9 @@ class TestAdvisorTracesEncryption:
         encrypt_call = mock_encryption.encrypt.call_args_list
         advisor_json_call = [c for c in encrypt_call if "advisor_id" in str(c)]
 
-        assert len(advisor_json_call) == 1, "advisor_traces should be JSON-serialized then encrypted"
+        assert len(advisor_json_call) == 1, (
+            "advisor_traces should be JSON-serialized then encrypted"
+        )
 
 
 class TestAdvisorTracesInMessageDTO:

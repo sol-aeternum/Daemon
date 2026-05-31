@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -178,9 +177,7 @@ async def test_build_memory_context_l0_enforces_token_budget() -> None:
     store.get_recent_summaries.return_value = []
 
     result = await build_memory_context(store, conversation_id)
-    l0_block = (
-        result.split("About this user:")[0] if "About this user:" in result else result
-    )
+    l0_block = result.split("About this user:")[0] if "About this user:" in result else result
     assert estimate_tokens(l0_block) <= L0_TOKEN_BUDGET * 1.5
 
 
@@ -204,7 +201,6 @@ async def test_build_memory_context_l0_and_l1_separate() -> None:
         {"content": "Previous session discussed Python", "category": "summary"},
     ]
 
-    from orchestrator.memory.retrieval import retrieve_memories
     from unittest.mock import patch
 
     async def mock_retrieve(*args, **kwargs):

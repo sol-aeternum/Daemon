@@ -115,7 +115,8 @@ class ChatRequest(BaseModel):
     )
     # Benchmark mode: disable memory_write tool to isolate extraction pipeline
     disable_memory_write: bool | None = Field(
-        default=None, description="Disable memory_write tool for benchmark isolation (default: None/false)"
+        default=None,
+        description="Disable memory_write tool for benchmark isolation (default: None/false)",
     )
 
 

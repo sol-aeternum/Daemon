@@ -56,7 +56,7 @@ from orchestrator.routes import (
     users,
     video_credits,
 )
-from orchestrator.models_cache import fetch_openrouter_models, get_fallback_model
+from orchestrator.models_cache import fetch_openrouter_models
 from orchestrator.model_router import select_model_tier
 from orchestrator.skills_store import build_skill_index
 from orchestrator.skills_projection import SkillProjectionStore
@@ -373,9 +373,7 @@ def _model_supports_vision(model_id: str) -> bool:
     return False
 
 
-def _normalize_model_for_provider(
-    model_id: str, provider_config: ProviderConfig
-) -> str:
+def _normalize_model_for_provider(model_id: str, provider_config: ProviderConfig) -> str:
     normalized = model_id.strip()
     if not normalized:
         return normalized
@@ -394,14 +392,10 @@ def _normalize_model_for_provider(
     return normalized
 
 
-def _get_vision_fallback_model(
-    settings: Settings, provider_config: ProviderConfig
-) -> str:
+def _get_vision_fallback_model(settings: Settings, provider_config: ProviderConfig) -> str:
     tier_config = settings.get_tier_config(settings.default_tier)
     if tier_config.image_agent and tier_config.image_agent.model:
-        return _normalize_model_for_provider(
-            tier_config.image_agent.model, provider_config
-        )
+        return _normalize_model_for_provider(tier_config.image_agent.model, provider_config)
     return _normalize_model_for_provider(settings.auto_fast_model, provider_config)
 
 
@@ -744,7 +738,7 @@ async def openai_list_models(
     Falls back to configured default model if OpenRouter API is unavailable.
     """
     models = []
-    timestamp = int(time.time())
+    timestamp = int(time.time())  # noqa: F841
 
     # Fetch OpenRouter models dynamically with caching
     try:
@@ -907,9 +901,7 @@ async def openai_chat_completions(
         db_pool = getattr(app_state, "db_pool", None)
         skills_block = await build_skill_index(db_pool=db_pool)
     except Exception:
-        logger.warning(
-            "Skills injection failed, continuing without skills", exc_info=True
-        )
+        logger.warning("Skills injection failed, continuing without skills", exc_info=True)
         skills_block = ""
     if skills_block and skills_block not in system_prompt:
         system_prompt = f"{system_prompt.rstrip()}\n\n{skills_block}"
@@ -921,13 +913,13 @@ async def openai_chat_completions(
 
         async def generator():
             try:
-                provider = provider_config.name
-                model = actual_model
+                provider = provider_config.name  # noqa: F841
+                model = actual_model  # noqa: F841
                 timestamp = int(time.time())
                 chunk_id = f"chatcmpl-{new_request_id()}"
 
                 # Stream chunks
-                token_count = 0
+                token_count = 0  # noqa: F841
                 content_buffer = ""
 
                 async for frame in stream_sse_chat(
@@ -949,9 +941,7 @@ async def openai_chat_completions(
                             if line.startswith("data: "):
                                 try:
                                     data = json.loads(line[6:])
-                                    delta_content = data.get("data", {}).get(
-                                        "delta", ""
-                                    )
+                                    delta_content = data.get("data", {}).get("delta", "")
                                     if delta_content:
                                         content_buffer += delta_content
                                         chunk = OpenAIChatStreamChunk(
@@ -1072,10 +1062,7 @@ async def openai_chat_completions(
                 usage=OpenAIUsage(
                     prompt_tokens=len(system_prompt) // 4 + len(last_message) // 4,
                     completion_tokens=len(final_content) // 4,
-                    total_tokens=(
-                        len(system_prompt) + len(last_message) + len(final_content)
-                    )
-                    // 4,
+                    total_tokens=(len(system_prompt) + len(last_message) + len(final_content)) // 4,
                 ),
             )
         except Exception as e:
@@ -1084,15 +1071,9 @@ async def openai_chat_completions(
 
 # ============== Generated Images Static Serving ==============
 
-GENERATED_IMAGES_DIR = (
-    Path(__file__).resolve().parent.parent / "data" / "generated_images"
-)
-GENERATED_AUDIO_DIR = (
-    Path(__file__).resolve().parent.parent / "data" / "generated_audio"
-)
-GENERATED_FILES_DIR = (
-    Path(__file__).resolve().parent.parent / "data" / "generated_files"
-)
+GENERATED_IMAGES_DIR = Path(__file__).resolve().parent.parent / "data" / "generated_images"
+GENERATED_AUDIO_DIR = Path(__file__).resolve().parent.parent / "data" / "generated_audio"
+GENERATED_FILES_DIR = Path(__file__).resolve().parent.parent / "data" / "generated_files"
 TTS_CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "tts_cache"
 TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1142,9 +1123,7 @@ async def serve_generated_file(filename: str) -> FileResponse:
     # Determine media type based on extension
     media_type = "application/octet-stream"  # default
     if safe_name.endswith(".docx"):
-        media_type = (
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     elif safe_name.endswith(".csv"):
         media_type = "text/csv"
     elif safe_name.endswith(".xlsx"):
@@ -1173,9 +1152,7 @@ async def text_to_speech(
     fmt = payload.format or "mp3"
     use_cache = payload.cache is not False
 
-    cache_key = hashlib.sha256(
-        f"{model}|{voice}|{speed}|{fmt}|{text}".encode("utf-8")
-    ).hexdigest()
+    cache_key = hashlib.sha256(f"{model}|{voice}|{speed}|{fmt}|{text}".encode("utf-8")).hexdigest()
     filename = f"{cache_key}.{fmt}"
     filepath = TTS_CACHE_DIR / filename
     if use_cache and filepath.exists():
@@ -1455,9 +1432,7 @@ async def chat(
 
     prepared_user_content: str | list[dict[str, Any]] = user_message
     if attachments:
-        prepared_user_content = _build_user_content_from_attachments(
-            user_message, attachments
-        )
+        prepared_user_content = _build_user_content_from_attachments(user_message, attachments)
     elif last_user_msg and isinstance(last_user_msg.get("content"), list):
         prepared_user_content = [
             part for part in last_user_msg.get("content", []) if isinstance(part, dict)
@@ -1519,9 +1494,7 @@ async def chat(
             if fallback_summary:
                 summary_block = fallback_summary.strip()
                 if user_message:
-                    user_message = (
-                        f"{user_message}\n\nVisual findings:\n{summary_block}"
-                    ).strip()
+                    user_message = (f"{user_message}\n\nVisual findings:\n{summary_block}").strip()
                 else:
                     user_message = f"Visual findings:\n{summary_block}"
                 prepared_user_content = user_message
@@ -1578,11 +1551,7 @@ async def chat(
                     conversation_exists = True
                 else:
                     # Create new conversation
-                    title = (
-                        user_message[:50] + "..."
-                        if len(user_message) > 50
-                        else user_message
-                    )
+                    title = user_message[:50] + "..." if len(user_message) > 50 else user_message
                     conv = await store.create_conversation(
                         user_id=user_id, pipeline=decision.pipeline, title=title
                     )
@@ -1590,11 +1559,7 @@ async def chat(
                     conversation_id = f"conv_{conversation_uuid}"
             except ValueError:
                 # Invalid UUID format, create new
-                title = (
-                    user_message[:50] + "..."
-                    if len(user_message) > 50
-                    else user_message
-                )
+                title = user_message[:50] + "..." if len(user_message) > 50 else user_message
                 conv = await store.create_conversation(
                     user_id=user_id, pipeline=decision.pipeline, title=title
                 )
@@ -1622,9 +1587,7 @@ async def chat(
                             _defer_by=0,
                         )
                     except Exception as enqueue_error:
-                        logger.warning(
-                            "Failed to enqueue title generation: %s", enqueue_error
-                        )
+                        logger.warning("Failed to enqueue title generation: %s", enqueue_error)
         except Exception as e:
             logger.warning(
                 "Conversation persistence failed, continuing without persistence: %s", e
@@ -1681,9 +1644,7 @@ async def chat(
         db_pool = getattr(app_state, "db_pool", None)
         skills_block = await build_skill_index(db_pool=db_pool)
     except Exception:
-        logger.warning(
-            "Skills injection failed, continuing without skills", exc_info=True
-        )
+        logger.warning("Skills injection failed, continuing without skills", exc_info=True)
         skills_block = ""
     if store and user_id and conversation_uuid:
         try:
@@ -1705,9 +1666,7 @@ async def chat(
             logger.warning("Memory injection failed, using base prompt", exc_info=True)
 
     if skills_block and skills_block not in assembled_system_prompt:
-        assembled_system_prompt = (
-            f"{assembled_system_prompt.rstrip()}\n\n{skills_block}"
-        )
+        assembled_system_prompt = f"{assembled_system_prompt.rstrip()}\n\n{skills_block}"
 
     if enforce_direct_vision_voice:
         assembled_system_prompt = (
@@ -1754,9 +1713,7 @@ async def chat(
                             conversation_id=conversation_uuid,
                             user_id=user_id,
                             role="assistant",
-                            content=_build_council_assistant_content(
-                                persisted_council_events
-                            ),
+                            content=_build_council_assistant_content(persisted_council_events),
                             model="council",
                             tool_results=[
                                 {
@@ -1823,9 +1780,7 @@ async def chat(
                             conversation_id=conversation_uuid,
                             user_id=user_id,
                             role="assistant",
-                            content=_build_council_assistant_content(
-                                persisted_council_events
-                            ),
+                            content=_build_council_assistant_content(persisted_council_events),
                             model="council",
                             tool_results=[
                                 {
@@ -1861,9 +1816,7 @@ async def chat(
                 )
                 return
 
-            trusted_spawn_context = _build_trusted_spawn_context(
-                settings, payload.metadata
-            )
+            trusted_spawn_context = _build_trusted_spawn_context(settings, payload.metadata)
             async for frame in stream_sse_chat(
                 settings=settings,
                 provider_config=provider_config,

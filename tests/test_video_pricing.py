@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 
 from config.video_pricing import estimate_cost
 
@@ -52,101 +51,69 @@ def test_unsupported_duration() -> None:
 
 def test_fal_kling_pricing_o3_pro() -> None:
     assert (
-        estimate_cost(
-            5, tier="pro", provider="fal", kling_model="o3-pro", audio_enabled=False
-        )
+        estimate_cost(5, tier="pro", provider="fal", kling_model="o3-pro", audio_enabled=False)
         == 10
     )
     assert (
-        estimate_cost(
-            10, tier="pro", provider="fal", kling_model="o3-pro", audio_enabled=False
-        )
+        estimate_cost(10, tier="pro", provider="fal", kling_model="o3-pro", audio_enabled=False)
         == 20
     )
     assert (
-        estimate_cost(
-            15, tier="pro", provider="fal", kling_model="o3-pro", audio_enabled=False
-        )
+        estimate_cost(15, tier="pro", provider="fal", kling_model="o3-pro", audio_enabled=False)
         == 30
     )
 
     assert (
-        estimate_cost(
-            5, tier="pro", provider="fal", kling_model="o3-pro", audio_enabled=True
-        )
-        == 10
+        estimate_cost(5, tier="pro", provider="fal", kling_model="o3-pro", audio_enabled=True) == 10
     )
     assert (
-        estimate_cost(
-            10, tier="pro", provider="fal", kling_model="o3-pro", audio_enabled=True
-        )
+        estimate_cost(10, tier="pro", provider="fal", kling_model="o3-pro", audio_enabled=True)
         == 20
     )
     assert (
-        estimate_cost(
-            15, tier="pro", provider="fal", kling_model="o3-pro", audio_enabled=True
-        )
+        estimate_cost(15, tier="pro", provider="fal", kling_model="o3-pro", audio_enabled=True)
         == 30
     )
 
 
 def test_fal_kling_pricing_v3_pro() -> None:
     assert (
-        estimate_cost(
-            5, tier="pro", provider="fal", kling_model="v3-pro", audio_enabled=False
-        )
+        estimate_cost(5, tier="pro", provider="fal", kling_model="v3-pro", audio_enabled=False)
         == 10
     )
     assert (
-        estimate_cost(
-            10, tier="pro", provider="fal", kling_model="v3-pro", audio_enabled=False
-        )
+        estimate_cost(10, tier="pro", provider="fal", kling_model="v3-pro", audio_enabled=False)
         == 20
     )
     assert (
-        estimate_cost(
-            15, tier="pro", provider="fal", kling_model="v3-pro", audio_enabled=False
-        )
+        estimate_cost(15, tier="pro", provider="fal", kling_model="v3-pro", audio_enabled=False)
         == 30
     )
 
     assert (
-        estimate_cost(
-            5, tier="pro", provider="fal", kling_model="v3-pro", audio_enabled=True
-        )
-        == 15
+        estimate_cost(5, tier="pro", provider="fal", kling_model="v3-pro", audio_enabled=True) == 15
     )
     assert (
-        estimate_cost(
-            10, tier="pro", provider="fal", kling_model="v3-pro", audio_enabled=True
-        )
+        estimate_cost(10, tier="pro", provider="fal", kling_model="v3-pro", audio_enabled=True)
         == 30
     )
     assert (
-        estimate_cost(
-            15, tier="pro", provider="fal", kling_model="v3-pro", audio_enabled=True
-        )
+        estimate_cost(15, tier="pro", provider="fal", kling_model="v3-pro", audio_enabled=True)
         == 45
     )
 
 
 def test_fal_kling_pricing_tier_discounts() -> None:
     assert (
-        estimate_cost(
-            10, tier="pro", provider="fal", kling_model="o3-pro", audio_enabled=False
-        )
+        estimate_cost(10, tier="pro", provider="fal", kling_model="o3-pro", audio_enabled=False)
         == 20
     )
     assert (
-        estimate_cost(
-            10, tier="max", provider="fal", kling_model="o3-pro", audio_enabled=False
-        )
+        estimate_cost(10, tier="max", provider="fal", kling_model="o3-pro", audio_enabled=False)
         == 16
     )
     assert (
-        estimate_cost(
-            10, tier="byok", provider="fal", kling_model="o3-pro", audio_enabled=False
-        )
+        estimate_cost(10, tier="byok", provider="fal", kling_model="o3-pro", audio_enabled=False)
         == 0
     )
 

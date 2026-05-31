@@ -22,8 +22,7 @@ DATASET = PROJECT_ROOT / "/tmp/longmemeval-review/data/longmemeval_s.json"
 
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from tests.benchmark_harness.guardrails import _canonical_outcome
-from tests.longmemeval.ingest import build_corpus_key, build_corpus_plan
+from tests.longmemeval.ingest import build_corpus_key, build_corpus_plan  # noqa: E402
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -37,7 +36,9 @@ def test_error_corpus_key_extraction():
     results = baseline["phases"]["ingest"]["results"]
     error_keys = {ck for ck, row in results.items() if row.get("status") == "error"}
     assert len(error_keys) == 7298, f"Expected 7298 error keys, got {len(error_keys)}"
-    assert all("error" not in row.get("status", "") for ck, row in results.items() if ck not in error_keys)
+    assert all(
+        "error" not in row.get("status", "") for ck, row in results.items() if ck not in error_keys
+    )
     print(f"  PASS: extracted {len(error_keys)} error corpus_keys")
 
 
@@ -51,6 +52,7 @@ def test_filtered_dataset_correctness():
         original_dataset = json.load(f)
 
     from tests.benchmark_harness.ingestion_rerun_recovery import build_filtered_dataset
+
     filtered = build_filtered_dataset(original_dataset, error_corpus_keys)
 
     total_filtered_sessions = sum(len(item["haystack_sessions"]) for item in filtered)
@@ -59,14 +61,16 @@ def test_filtered_dataset_correctness():
         for session_messages in item["haystack_sessions"]:
             unique_filtered_corpus_keys.add(build_corpus_key(session_messages))
     assert unique_filtered_corpus_keys == error_corpus_keys, (
-        f"Filtered dataset corpus_keys don't match error corpus_keys"
+        "Filtered dataset corpus_keys don't match error corpus_keys"
     )
     assert len(unique_filtered_corpus_keys) == 7298, (
         f"Expected 7298 unique sessions in filtered, got {len(unique_filtered_corpus_keys)}"
     )
-    print(f"  PASS: filtered dataset has {len(filtered)} questions, "
-          f"{total_filtered_sessions} raw sessions, "
-          f"{len(unique_filtered_corpus_keys)} unique corpus_keys")
+    print(
+        f"  PASS: filtered dataset has {len(filtered)} questions, "
+        f"{total_filtered_sessions} raw sessions, "
+        f"{len(unique_filtered_corpus_keys)} unique corpus_keys"
+    )
 
 
 def test_corpus_key_stability():
@@ -76,7 +80,7 @@ def test_corpus_key_stability():
     plan = build_corpus_plan(dataset)
     corpus_keys = {cs.corpus_key for cs in plan.corpus_sessions}
     assert len(corpus_keys) == 18475, f"Expected 18475 unique corpus_keys, got {len(corpus_keys)}"
-    print(f"  PASS: 18475 unique corpus_keys computed from dataset")
+    print("  PASS: 18475 unique corpus_keys computed from dataset")
 
 
 def test_amended_checkpoint_excludes_errors():
@@ -86,15 +90,21 @@ def test_amended_checkpoint_excludes_errors():
     error_corpus_keys = {ck for ck, row in results.items() if row.get("status") == "error"}
 
     from tests.benchmark_harness.ingestion_rerun_recovery import build_amended_checkpoint
+
     amended = build_amended_checkpoint(baseline, error_corpus_keys)
     amended_results = amended["phases"]["ingest"]["results"]
 
     assert len(amended_results) == 18475 - 7298, (
         f"Expected {18475 - 7298} rows in amended checkpoint, got {len(amended_results)}"
     )
-    assert not any(row.get("status") == "error" for row in amended_results.values()), \
+    assert not any(row.get("status") == "error" for row in amended_results.values()), (
         "amended checkpoint still contains error rows"
-    preserved = {ck: row for ck, row in results.items() if row.get("status") in ("complete", "extraction_failed")}
+    )
+    preserved = {
+        ck: row
+        for ck, row in results.items()
+        if row.get("status") in ("complete", "extraction_failed")
+    }
     assert len(preserved) == 11177, f"Expected 11177 preserved rows, got {len(preserved)}"
     for ck, row in preserved.items():
         assert amended_results[ck] == row, f"Preserved row mismatch for {ck}"
@@ -111,6 +121,7 @@ def test_filtered_dataset_produces_error_corpus_keys():
         original_dataset = json.load(f)
 
     from tests.benchmark_harness.ingestion_rerun_recovery import build_filtered_dataset
+
     filtered = build_filtered_dataset(original_dataset, error_corpus_keys)
 
     filtered_corpus_keys = set()
@@ -123,7 +134,9 @@ def test_filtered_dataset_produces_error_corpus_keys():
         f"  Missing from filtered: {error_corpus_keys - filtered_corpus_keys}\n"
         f"  Extra in filtered: {filtered_corpus_keys - error_corpus_keys}"
     )
-    print(f"  PASS: filtered dataset corpus_keys exactly match error corpus_keys ({len(filtered_corpus_keys)})")
+    print(
+        f"  PASS: filtered dataset corpus_keys exactly match error corpus_keys ({len(filtered_corpus_keys)})"
+    )
 
 
 def test_merge_checkpoints_produces_correct_totals():
@@ -133,23 +146,26 @@ def test_merge_checkpoints_produces_correct_totals():
     error_corpus_keys = {ck for ck, row in results.items() if row.get("status") == "error"}
 
     from tests.benchmark_harness.ingestion_rerun_recovery import build_amended_checkpoint
+
     amended = build_amended_checkpoint(baseline, error_corpus_keys)
 
     recovery_results = {
         ck: dict(row, status="complete", outcome="completed", error=None)
         for ck, row in amended["phases"]["ingest"]["results"].items()
     }
-    recovery_results.update({
-        ck: {
-            "session_id": f"recovered_{ck[:16]}",
-            "status": "complete",
-            "outcome": "completed",
-            "error": None,
-            "corpus_key": ck,
-            "raw_session_ids": [f"recovered_{ck[:16]}"],
+    recovery_results.update(
+        {
+            ck: {
+                "session_id": f"recovered_{ck[:16]}",
+                "status": "complete",
+                "outcome": "completed",
+                "error": None,
+                "corpus_key": ck,
+                "raw_session_ids": [f"recovered_{ck[:16]}"],
+            }
+            for ck in error_corpus_keys
         }
-        for ck in error_corpus_keys
-    })
+    )
     recovery_checkpoint = {
         "phases": {
             "ingest": {
@@ -160,15 +176,22 @@ def test_merge_checkpoints_produces_correct_totals():
     }
 
     from tests.benchmark_harness.ingestion_rerun_recovery import merge_checkpoints
+
     merged = merge_checkpoints(baseline, recovery_checkpoint)
     merged_results = merged["phases"]["ingest"]["results"]
 
-    assert len(merged_results) == 18475, f"Expected 18475 total rows after merge, got {len(merged_results)}"
+    assert len(merged_results) == 18475, (
+        f"Expected 18475 total rows after merge, got {len(merged_results)}"
+    )
     error_count = sum(1 for row in merged_results.values() if row.get("status") == "error")
     assert error_count == 0, f"Expected 0 error rows after merge, got {error_count}"
     complete_count = sum(1 for row in merged_results.values() if row.get("status") == "complete")
-    assert complete_count == 18475, f"Expected all 18475 complete after recovery, got {complete_count}"
-    print(f"  PASS: merged checkpoint has {len(merged_results)} rows, {complete_count} complete, {error_count} error")
+    assert complete_count == 18475, (
+        f"Expected all 18475 complete after recovery, got {complete_count}"
+    )
+    print(
+        f"  PASS: merged checkpoint has {len(merged_results)} rows, {complete_count} complete, {error_count} error"
+    )
 
 
 def test_guardrail_canonical_mapping():
@@ -178,23 +201,26 @@ def test_guardrail_canonical_mapping():
     error_corpus_keys = {ck for ck, row in results.items() if row.get("status") == "error"}
 
     from tests.benchmark_harness.ingestion_rerun_recovery import build_amended_checkpoint
+
     amended = build_amended_checkpoint(baseline, error_corpus_keys)
 
     recovery_results = {
         ck: dict(row, status="complete", outcome="completed", error=None)
         for ck, row in amended["phases"]["ingest"]["results"].items()
     }
-    recovery_results.update({
-        ck: {
-            "session_id": f"recovered_{ck[:16]}",
-            "status": "complete",
-            "outcome": "completed",
-            "error": None,
-            "corpus_key": ck,
-            "raw_session_ids": [f"recovered_{ck[:16]}"],
+    recovery_results.update(
+        {
+            ck: {
+                "session_id": f"recovered_{ck[:16]}",
+                "status": "complete",
+                "outcome": "completed",
+                "error": None,
+                "corpus_key": ck,
+                "raw_session_ids": [f"recovered_{ck[:16]}"],
+            }
+            for ck in error_corpus_keys
         }
-        for ck in error_corpus_keys
-    })
+    )
     recovery_checkpoint = {
         "phases": {
             "ingest": {
@@ -205,17 +231,26 @@ def test_guardrail_canonical_mapping():
     }
 
     from tests.benchmark_harness.ingestion_rerun_recovery import merge_checkpoints, summarize
+
     merged = merge_checkpoints(baseline, recovery_checkpoint)
     summary = summarize(merged)
 
-    assert summary["total_sessions"] == 18475, f"Expected 18475 total, got {summary['total_sessions']}"
-    assert summary["outcome_counts"]["completed"] == 18475, \
+    assert summary["total_sessions"] == 18475, (
+        f"Expected 18475 total, got {summary['total_sessions']}"
+    )
+    assert summary["outcome_counts"]["completed"] == 18475, (
         f"Expected all 18475 completed outcome, got {summary['outcome_counts']['completed']}"
-    assert summary["outcome_counts"]["errored"] == 0, \
+    )
+    assert summary["outcome_counts"]["errored"] == 0, (
         f"Expected 0 errored outcome, got {summary['outcome_counts']['errored']}"
-    assert summary["errored_rate"] == 0.0, f"Expected 0.0% errored rate, got {summary['errored_rate']}"
-    print(f"  PASS: canonical mapping produces errored_rate={summary['errored_rate']:.1f}% "
-          f"(would PASS G3 at 5% threshold)")
+    )
+    assert summary["errored_rate"] == 0.0, (
+        f"Expected 0.0% errored rate, got {summary['errored_rate']}"
+    )
+    print(
+        f"  PASS: canonical mapping produces errored_rate={summary['errored_rate']:.1f}% "
+        f"(would PASS G3 at 5% threshold)"
+    )
 
 
 def main() -> int:
@@ -227,7 +262,9 @@ def main() -> int:
     print(f"DATASET      : {DATASET}")
 
     if not (BASELINE_DIR / "longmemeval_checkpoint.json").exists():
-        print(f"\nERROR: Baseline checkpoint not found at {BASELINE_DIR / 'longmemeval_checkpoint.json'}")
+        print(
+            f"\nERROR: Baseline checkpoint not found at {BASELINE_DIR / 'longmemeval_checkpoint.json'}"
+        )
         print("Run the full-corpus baseline first, then recovery.")
         return 1
 

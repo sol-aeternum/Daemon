@@ -233,9 +233,7 @@ async def main() -> None:
 
         within_threshold = [p for p in high_similarity_pairs if p["same_scenario"]]
         cross_threshold.clear()
-        cross_threshold.extend(
-            p for p in high_similarity_pairs if not p["same_scenario"]
-        )
+        cross_threshold.extend(p for p in high_similarity_pairs if not p["same_scenario"])
 
         print(f"Found {len(high_similarity_pairs)} pairs >= {THRESHOLD}:")
         print()

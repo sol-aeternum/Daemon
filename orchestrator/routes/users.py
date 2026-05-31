@@ -56,9 +56,7 @@ async def update_settings(
     if update.preferences:
         current.setdefault("preferences", {})
         for key, value in update.preferences.items():
-            if isinstance(value, dict) and isinstance(
-                current["preferences"].get(key), dict
-            ):
+            if isinstance(value, dict) and isinstance(current["preferences"].get(key), dict):
                 current["preferences"][key].update(value)
             else:
                 current["preferences"][key] = value

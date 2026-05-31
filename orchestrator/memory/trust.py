@@ -7,10 +7,8 @@ with bulk UPDATE queries and floor/ceiling enforcement.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
-from typing import Any
+from datetime import datetime
 
-import asyncpg
 
 from orchestrator.memory.store import MemoryStore
 
@@ -27,20 +25,20 @@ async def boost_trust(
     store: MemoryStore,
 ) -> int:
     """Boost trust score for retrieved memories.
-    
+
     Increments trust_score by 0.05, capped at 1.0.
     Uses bulk UPDATE query for efficiency.
-    
+
     Args:
         memory_ids: List of memory UUIDs to boost
         store: MemoryStore instance
-        
+
     Returns:
         Number of rows updated
     """
     if not memory_ids:
         return 0
-    
+
     # Build bulk UPDATE query with CASE expression for ceiling enforcement
     query = f"""
         UPDATE memories
@@ -50,12 +48,12 @@ async def boost_trust(
         AND trust_score < {TRUST_CEILING}
         RETURNING id
     """
-    
+
     try:
         rows = await store._pool.fetch(query, memory_ids)
         return len(rows)
     except Exception as e:
-        logger = __import__('logging').getLogger(__name__)
+        logger = __import__("logging").getLogger(__name__)
         logger.error(f"boost_trust failed: {e}")
         return 0
 
@@ -65,20 +63,20 @@ async def penalize_trust(
     store: MemoryStore,
 ) -> int:
     """Penalize trust score for incorrect/outdated memories.
-    
+
     Decrements trust_score by 0.10, floored at 0.1.
     Uses bulk UPDATE query for efficiency.
-    
+
     Args:
         memory_ids: List of memory UUIDs to penalize
         store: MemoryStore instance
-        
+
     Returns:
         Number of rows updated
     """
     if not memory_ids:
         return 0
-    
+
     # Build bulk UPDATE query with GREATEST for floor enforcement
     query = f"""
         UPDATE memories
@@ -88,12 +86,12 @@ async def penalize_trust(
         AND trust_score > {TRUST_FLOOR}
         RETURNING id
     """
-    
+
     try:
         rows = await store._pool.fetch(query, memory_ids)
         return len(rows)
     except Exception as e:
-        logger = __import__('logging').getLogger(__name__)
+        logger = __import__("logging").getLogger(__name__)
         logger.error(f"penalize_trust failed: {e}")
         return 0
 
@@ -103,20 +101,20 @@ async def record_retrieval(
     store: MemoryStore,
 ) -> int:
     """Record retrieval timestamp for memories.
-    
+
     Updates last_retrieved_at to current timestamp.
     Uses bulk UPDATE query for efficiency.
-    
+
     Args:
         memory_ids: List of memory UUIDs to update
         store: MemoryStore instance
-        
+
     Returns:
         Number of rows updated
     """
     if not memory_ids:
         return 0
-    
+
     query = """
         UPDATE memories
         SET last_retrieved_at = NOW(),
@@ -124,12 +122,12 @@ async def record_retrieval(
         WHERE id = ANY($1::uuid[])
         RETURNING id
     """
-    
+
     try:
         rows = await store._pool.fetch(query, memory_ids)
         return len(rows)
     except Exception as e:
-        logger = __import__('logging').getLogger(__name__)
+        logger = __import__("logging").getLogger(__name__)
         logger.error(f"record_retrieval failed: {e}")
         return 0
 
@@ -139,30 +137,30 @@ async def get_trust_scores(
     store: MemoryStore,
 ) -> dict[uuid.UUID, float]:
     """Get current trust scores for memory IDs.
-    
+
     Helper for verification and testing.
-    
+
     Args:
         memory_ids: List of memory UUIDs to query
         store: MemoryStore instance
-        
+
     Returns:
         Dict mapping memory_id to trust_score
     """
     if not memory_ids:
         return {}
-    
+
     query = """
         SELECT id, trust_score
         FROM memories
         WHERE id = ANY($1::uuid[])
     """
-    
+
     try:
         rows = await store._pool.fetch(query, memory_ids)
         return {row["id"]: row["trust_score"] for row in rows}
     except Exception as e:
-        logger = __import__('logging').getLogger(__name__)
+        logger = __import__("logging").getLogger(__name__)
         logger.error(f"get_trust_scores failed: {e}")
         return {}
 
@@ -172,29 +170,29 @@ async def get_last_retrieved_at(
     store: MemoryStore,
 ) -> dict[uuid.UUID, datetime | None]:
     """Get last retrieval timestamps for memory IDs.
-    
+
     Helper for verification and testing.
-    
+
     Args:
         memory_ids: List of memory UUIDs to query
         store: MemoryStore instance
-        
+
     Returns:
         Dict mapping memory_id to last_retrieved_at
     """
     if not memory_ids:
         return {}
-    
+
     query = """
         SELECT id, last_retrieved_at
         FROM memories
         WHERE id = ANY($1::uuid[])
     """
-    
+
     try:
         rows = await store._pool.fetch(query, memory_ids)
         return {row["id"]: row["last_retrieved_at"] for row in rows}
     except Exception as e:
-        logger = __import__('logging').getLogger(__name__)
+        logger = __import__("logging").getLogger(__name__)
         logger.error(f"get_last_retrieved_at failed: {e}")
         return {}

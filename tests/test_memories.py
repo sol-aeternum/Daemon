@@ -54,9 +54,7 @@ def set_app_state(mock_app_state: AppState) -> None:
     app.state.app_state = mock_app_state
 
 
-def create_mock_memory(
-    memory_id: uuid.UUID | None = None, **overrides
-) -> dict[str, Any]:
+def create_mock_memory(memory_id: uuid.UUID | None = None, **overrides) -> dict[str, Any]:
     """Create a mock memory dict."""
     if memory_id is None:
         memory_id = uuid.uuid4()
@@ -378,9 +376,7 @@ async def test_reembed_memories_returns_detailed_counts(client, monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_reembed_memories_with_memory_ids_tracks_missing_ids(
-    client, monkeypatch
-) -> None:
+async def test_reembed_memories_with_memory_ids_tracks_missing_ids(client, monkeypatch) -> None:
     mock_store = AsyncMock()
     existing_id = uuid.uuid4()
     missing_id = uuid.uuid4()

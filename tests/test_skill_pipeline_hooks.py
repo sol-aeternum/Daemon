@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import timedelta
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -112,9 +111,7 @@ class TestPipelineHookIntegration:
                 frames.append(frame)
 
         skill_eval_calls = [
-            c
-            for c in call_tracker
-            if c["args"] and c["args"][0] == "run_skill_evaluation_job"
+            c for c in call_tracker if c["args"] and c["args"][0] == "run_skill_evaluation_job"
         ]
         assert len(skill_eval_calls) == 1, (
             f"Expected 1 skill eval call, got {len(skill_eval_calls)}"
@@ -245,9 +242,7 @@ class TestPipelineThresholdBehavior:
                 frames.append(frame)
 
         skill_eval_calls = [
-            c
-            for c in call_tracker
-            if c["args"] and c["args"][0] == "run_skill_evaluation_job"
+            c for c in call_tracker if c["args"] and c["args"][0] == "run_skill_evaluation_job"
         ]
         assert len(skill_eval_calls) == 0
 

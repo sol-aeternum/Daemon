@@ -29,7 +29,6 @@ from orchestrator.memory.titles import ConversationMessage, generate_conversatio
 from orchestrator.skill_evaluator import (
     SkillEvaluator,
     SkillEvaluationRequest,
-    build_skill_evaluation_debounce_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -210,18 +209,14 @@ async def extract_memories(
     raw_messages: list[dict[str, Any]]
     if messages_json is None:
         # Get the last extraction time for this conversation
-        last_extraction_time = await store_obj.get_last_extraction_time(
-            _as_uuid(conversation_id)
-        )
+        last_extraction_time = await store_obj.get_last_extraction_time(_as_uuid(conversation_id))
 
         # If there was a previous extraction, only fetch messages newer than that
         if last_extraction_time is not None:
             # We need to fetch messages with created_at > last_extraction_time
             # Since get_messages doesn't support this filter, we'll need to modify the approach
             # For now, we'll fetch the last 250 messages and filter them
-            all_messages = await store_obj.get_messages(
-                _as_uuid(conversation_id), limit=250
-            )
+            all_messages = await store_obj.get_messages(_as_uuid(conversation_id), limit=250)
             messages = [
                 msg
                 for msg in all_messages
@@ -229,9 +224,7 @@ async def extract_memories(
             ]
         else:
             # No previous extraction, fetch all messages
-            messages = await store_obj.get_messages(
-                _as_uuid(conversation_id), limit=250
-            )
+            messages = await store_obj.get_messages(_as_uuid(conversation_id), limit=250)
         raw_messages = [dict(message) for message in messages]
     else:
         raw_messages = _parse_raw_messages(messages_json)
@@ -298,16 +291,12 @@ async def generate_title(
 
     settings_obj = ctx.get("settings")
     settings = settings_obj if isinstance(settings_obj, Settings) else None
-    title_model = (
-        settings.title_model if settings else None
-    ) or "openrouter/openai/gpt-4o-mini"
+    title_model = (settings.title_model if settings else None) or "openrouter/openai/gpt-4o-mini"
 
     title = await generate_conversation_title(messages, model=title_model)
     if isinstance(store_obj, MemoryStore):
         try:
-            _ = await store_obj.update_conversation(
-                _as_uuid(conversation_id), title=title
-            )
+            _ = await store_obj.update_conversation(_as_uuid(conversation_id), title=title)
         except Exception:
             logger.warning("Failed to persist conversation title", exc_info=True)
 
@@ -348,9 +337,7 @@ async def generate_conversation_title_job(
 
     settings_obj = ctx.get("settings")
     settings = settings_obj if isinstance(settings_obj, Settings) else None
-    title_model = (
-        settings.title_model if settings else None
-    ) or "openrouter/openai/gpt-4o-mini"
+    title_model = (settings.title_model if settings else None) or "openrouter/openai/gpt-4o-mini"
     title = await generate_conversation_title(messages, model=title_model)
 
     try:
@@ -430,10 +417,8 @@ async def cleanup_generated_files(ctx: WorkerContext) -> dict[str, int]:
     """Delete generated files older than 24 hours."""
     from orchestrator.config import get_settings
 
-    settings = get_settings()
-    generated_files_dir = (
-        Path(__file__).resolve().parent.parent / "data" / "generated_files"
-    )
+    settings = get_settings()  # noqa: F841
+    generated_files_dir = Path(__file__).resolve().parent.parent / "data" / "generated_files"
 
     if not generated_files_dir.exists():
         return {"scanned": 0, "deleted": 0}
@@ -481,9 +466,7 @@ async def cleanup_generated_images(ctx: WorkerContext) -> dict[str, int]:
                     deleted += 1
                     logger.info(f"Deleted old generated image artifact: {item.name}")
             except Exception as e:
-                logger.warning(
-                    f"Failed to process generated image artifact {item.name}: {e}"
-                )
+                logger.warning(f"Failed to process generated image artifact {item.name}: {e}")
 
     return {"scanned": scanned, "deleted": deleted}
 
@@ -574,9 +557,7 @@ async def run_dreaming_job(
 
             dream_result = await run_dreaming(uid, store=store_obj)
             results["users_processed"] += 1
-            results["observations_created"] += int(
-                dream_result.get("observations_created", 0) or 0
-            )
+            results["observations_created"] += int(dream_result.get("observations_created", 0) or 0)
 
             status = str(dream_result.get("status") or "").lower()
             if status == "completed":
@@ -588,9 +569,7 @@ async def run_dreaming_job(
             else:
                 results["dream_runs_skipped"] += 1
         except Exception as error:
-            logger.warning(
-                "Dreaming job failed for user %s: %s", uid, error, exc_info=True
-            )
+            logger.warning("Dreaming job failed for user %s: %s", uid, error, exc_info=True)
             results["users_processed"] += 1
             results["dream_runs_failed"] += 1
             results["errors"].append(f"{uid}: {error}")
@@ -710,9 +689,7 @@ async def consolidate_memories(
             """
         )
         user_ids = [row["user_id"] for row in rows]
-        logger.info(
-            f"Found {len(user_ids)} users with eligible memories for consolidation"
-        )
+        logger.info(f"Found {len(user_ids)} users with eligible memories for consolidation")
 
     # Process each user
     for uid in user_ids:
@@ -723,15 +700,11 @@ async def consolidate_memories(
             for cluster in clusters:
                 try:
                     if not isinstance(cluster, MemoryCluster):
-                        logger.warning(
-                            f"Invalid cluster type for user {uid}: {type(cluster)}"
-                        )
+                        logger.warning(f"Invalid cluster type for user {uid}: {type(cluster)}")
                         continue
 
                     if len(cluster) < 3:
-                        logger.debug(
-                            f"Cluster too small, skipping: {len(cluster)} members"
-                        )
+                        logger.debug(f"Cluster too small, skipping: {len(cluster)} members")
                         continue
 
                     created = await consolidate_cluster(cluster, store, uid)
@@ -941,9 +914,7 @@ async def resolve_entities_job(
                 slot = memory.get("memory_slot")
                 memory_contents.append((content, memory_uuid, slot))
         except Exception as e:
-            logger.warning(
-                "Failed to fetch memory %s for entity resolution: %s", memory_uuid, e
-            )
+            logger.warning("Failed to fetch memory %s for entity resolution: %s", memory_uuid, e)
             continue
 
     if not memory_contents:
@@ -962,18 +933,14 @@ async def resolve_entities_job(
         )
 
         if extraction_result.resolutions:
-            entity_ids = await persist_extraction_result(
-                uid, store_obj, extraction_result
-            )
+            entity_ids = await persist_extraction_result(uid, store_obj, extraction_result)
             results["entities_created"] = len(entity_ids)
             results["entities_updated"] = len([e for e in entity_ids if e is not None])
 
         results["memories_processed"] = len(memory_contents)
 
     except Exception as e:
-        logger.warning(
-            "Entity resolution failed for user %s: %s", uid, e, exc_info=True
-        )
+        logger.warning("Entity resolution failed for user %s: %s", uid, e, exc_info=True)
         results["status"] = "error"
         results["errors"].append(f"entity_resolution_failed: {e}")
         results["error_count"] = len(results["errors"])
@@ -1010,11 +977,10 @@ async def run_consolidation_nudge_job(
     ctx: WorkerContext,
     user_id: str | uuid.UUID | None = None,
 ) -> ConsolidationNudgeResults:
-    from orchestrator.memory.embedding import embed_query
 
     store_obj = ctx.get("store")
     settings_obj = ctx.get("settings")
-    db_pool = ctx.get("db_pool")
+    db_pool = ctx.get("db_pool")  # noqa: F841
 
     if not isinstance(store_obj, MemoryStore):
         return ConsolidationNudgeResults(
@@ -1096,7 +1062,6 @@ async def _process_user_consolidation_nudge(
 ) -> dict[str, Any]:
     from orchestrator.consolidation_nudge_prompts import (
         build_consolidation_nudge_prompt,
-        parse_consolidation_actions,
     )
 
     actions: list[ConsolidationNudgeAction] = []
@@ -1106,9 +1071,7 @@ async def _process_user_consolidation_nudge(
     duplicates_merged = 0
     stale_flagged = 0
 
-    conversation_delta = await store.get_user_conversation_count_since_last_nudge(
-        user_id
-    )
+    conversation_delta = await store.get_user_conversation_count_since_last_nudge(user_id)
     if conversation_delta < interval:
         return {
             "skills_reviewed": 0,
@@ -1174,9 +1137,7 @@ async def _process_user_consolidation_nudge(
         if action_type == "merge":
             target_id = action.get("target_skill_id")
             if target_id and target_id in autonomous_skill_ids:
-                merge_result = await _apply_merge_action(
-                    skill_id, target_id, store, user_id
-                )
+                merge_result = await _apply_merge_action(skill_id, target_id, store, user_id)
                 if merge_result["merged"]:
                     duplicates_merged += 1
                     actions.append(
@@ -1256,7 +1217,7 @@ async def _process_user_consolidation_nudge(
                         action_type="flag_stale",
                         skill_id=skill_id,
                         target_skill_id=None,
-                        reason=action.get("reason", f"stale by model assessment"),
+                        reason=action.get("reason", "stale by model assessment"),
                         similarity=None,
                         status="recorded",
                     )
@@ -1444,7 +1405,7 @@ async def _find_duplicate_autonomous_skills(
             norm_b = sum(b * b for b in other_skill["embedding"]) ** 0.5
             dot = sum(a * b for a, b in zip(query_emb, other_skill["embedding"]))
             similarity = dot / (norm_a * norm_b + 1e-8)
-            cosine_distance = 1 - similarity
+            cosine_distance = 1 - similarity  # noqa: F841
 
             if similarity >= 0.90:
                 group.append(other_skill)

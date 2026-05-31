@@ -1,6 +1,6 @@
 """Tests for BM25 hybrid search in memory retrieval."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 import uuid
 
@@ -21,7 +21,7 @@ def test_hybrid_score_formula() -> None:
         confidence=0.9,
     )
     # With trust=0.5 default: recency * confidence * trust = 1.0 * 0.9 * 0.5 = 0.45
-    expected = 0.5 * 0.8 + 0.3 * 0.6 + 0.2 * 0.45
+    expected = 0.5 * 0.8 + 0.3 * 0.6 + 0.2 * 0.45  # noqa: F841
     assert result == pytest.approx(0.67, abs=0.01)
 
 
@@ -33,7 +33,7 @@ def test_hybrid_score_with_zero_bm25() -> None:
         confidence=1.0,
     )
     # With trust=0.5 default: recency * confidence * trust = 1.0 * 1.0 * 0.5 = 0.5
-    expected = 0.5 * 0.5 + 0.3 * 0.0 + 0.2 * 0.5
+    expected = 0.5 * 0.5 + 0.3 * 0.0 + 0.2 * 0.5  # noqa: F841
     assert result == pytest.approx(0.35, abs=0.01)
 
 
@@ -45,7 +45,7 @@ def test_hybrid_score_with_zero_vector() -> None:
         confidence=0.8,
     )
     # With trust=0.5 default: recency * confidence * trust = 0.9 * 0.8 * 0.5 = 0.36
-    expected = 0.5 * 0.0 + 0.3 * 0.7 + 0.2 * 0.36
+    expected = 0.5 * 0.0 + 0.3 * 0.7 + 0.2 * 0.36  # noqa: F841
     assert result == pytest.approx(0.282, abs=0.01)
 
 

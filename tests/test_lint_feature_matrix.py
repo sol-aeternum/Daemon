@@ -36,9 +36,7 @@ def count_feature_rows(matrix_text: str) -> int:
         if pipe_lines_seen <= 2:
             continue
         feature = cells[0]
-        if bool(re.fullmatch(r"\*\*[^*]+\*\*", feature)) and all(
-            c == "—" for c in cells[1:]
-        ):
+        if bool(re.fullmatch(r"\*\*[^*]+\*\*", feature)) and all(c == "—" for c in cells[1:]):
             continue
         count += 1
     return count
@@ -111,7 +109,9 @@ class TestLintNegative:
     def test_invalid_client_vocabulary_fails(self, tmp_path: Path):
         """Negative: client cell uses a term not in Legend vocabulary."""
         matrix = _make_minimal_matrix()
-        matrix += "| Feature A | Notavalid | Not started | Not started | Not started | Some dep | No |\n"
+        matrix += (
+            "| Feature A | Notavalid | Not started | Not started | Not started | Some dep | No |\n"
+        )
         self._assert_failure_contains(tmp_path, matrix, "must use Legend vocabulary")
 
     def test_bad_header_fails(self, tmp_path: Path):
@@ -128,7 +128,9 @@ class TestLintNegative:
             "|---|---|---|---|---|---|---|",
             "|---|---|---|oops|---|---|---|",
         )
-        self._assert_failure_contains(tmp_path, matrix, "delimiter row must contain only hyphen groups")
+        self._assert_failure_contains(
+            tmp_path, matrix, "delimiter row must contain only hyphen groups"
+        )
 
     def test_wrong_column_count_fails(self, tmp_path: Path):
         """Negative: row has wrong number of columns (6 instead of 7)."""
@@ -140,9 +142,7 @@ class TestLintNegative:
         """Negative: backend dependency cell cannot be empty."""
         matrix = _make_minimal_matrix()
         for index in range(20):
-            matrix += (
-                f"| Feature {index} | Not started | Not started | Not started | Not started | Some dep {index} | No |\n"
-            )
+            matrix += f"| Feature {index} | Not started | Not started | Not started | Not started | Some dep {index} | No |\n"
         matrix = matrix.replace("| Some dep 0 |", "|  |", 1)
         self._assert_failure_contains(tmp_path, matrix, "Backend dependency must be non-empty")
 
@@ -151,10 +151,10 @@ class TestLintNegative:
         matrix = _make_minimal_matrix()
         matrix += "| **Category Name** | — | — | — | — | service | No |\n"
         for index in range(20):
-            matrix += (
-                f"| Feature {index} | Not started | Not started | Not started | Not started | Some dep {index} | No |\n"
-            )
-        self._assert_failure_contains(tmp_path, matrix, "category separator rows must use a bold Feature cell")
+            matrix += f"| Feature {index} | Not started | Not started | Not started | Not started | Some dep {index} | No |\n"
+        self._assert_failure_contains(
+            tmp_path, matrix, "category separator rows must use a bold Feature cell"
+        )
 
     def test_feature_row_floor_fails(self, tmp_path: Path):
         """Negative: matrices below the minimum populated feature-row floor fail."""
@@ -166,9 +166,7 @@ class TestLintNegative:
         """Negative: Wedge required? cell has invalid value (not Yes/No)."""
         matrix = _make_minimal_matrix()
         for index in range(19):
-            matrix += (
-                f"| Feature {index} | Not started | Not started | Not started | Not started | Some dep {index} | No |\n"
-            )
+            matrix += f"| Feature {index} | Not started | Not started | Not started | Not started | Some dep {index} | No |\n"
         matrix += "| Feature 19 | Not started | Not started | Not started | Not started | Some dep 19 | Maybe |\n"
         result = self._run_in_temp_repo(tmp_path, matrix)
         assert result.returncode == 1

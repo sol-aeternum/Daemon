@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 from orchestrator.memory.store import MemoryStore
 
@@ -18,10 +17,12 @@ _boost_trust = None
 _penalize_trust = None
 _record_retrieval = None
 
+
 def _lazy_import_trust_funcs():
     global _boost_trust, _penalize_trust, _record_retrieval
     if _boost_trust is None:
         import importlib
+
         trust_module = importlib.import_module("orchestrator.memory.trust")
         _boost_trust = getattr(trust_module, "boost_trust", None)
         _penalize_trust = getattr(trust_module, "penalize_trust", None)
@@ -40,21 +41,21 @@ async def record_retrieved_memories(
     store: MemoryStore,
 ) -> bool:
     """Record retrieved memory IDs on the conversation for trust tracking.
-    
+
     Called after orchestrator generates a response with memory context.
     Stores the memory IDs in conversations.last_retrieved_memory_ids (JSONB).
-    
+
     Args:
         conversation_id: UUID of the conversation
         memory_ids: List of retrieved memory UUIDs
         store: MemoryStore instance
-        
+
     Returns:
         True if recording succeeded
     """
     if not memory_ids:
         return True
-    
+
     try:
         # Update conversation with retrieved memory IDs (direct SQL to avoid pyright issues)
         # Serialize to JSON for PostgreSQL JSONB column
@@ -69,15 +70,16 @@ async def record_retrieved_memories(
             conversation_id,
             memory_ids_json,
         )
-        
+
         # Also record retrieval timestamps on the memories themselves
         _, _, _record_retrieval = _lazy_import_trust_funcs()
         if _record_retrieval:
             await _record_retrieval(memory_ids, store)
-        
+
         return True
     except Exception as e:
         import logging
+
         logger = logging.getLogger(__name__)
         logger.warning(f"Failed to record retrieved memories: {e}")
         return False
@@ -90,17 +92,17 @@ async def apply_implicit_positive_signal(
     correction_occurred: bool = False,
 ) -> int:
     """Apply implicit positive trust boost if no correction occurred.
-    
+
     Called on the NEXT user turn (delayed by one turn).
     Retrieves the last_retrieved_memory_ids from conversation and
     applies boost_trust if no memory_write correction tool was called.
-    
+
     Args:
         conversation_id: UUID of the conversation
         store: MemoryStore instance
         user_id: UUID of the user (for authorization)
         correction_occurred: Whether a memory_write correction tool was called
-        
+
     Returns:
         Number of memories boosted
     """
@@ -120,13 +122,13 @@ async def apply_implicit_positive_signal(
         except Exception:
             pass
         return 0
-    
+
     try:
         # Get the conversation to find last retrieved memory IDs
         conversation = await store.get_conversation(conversation_id)
         if not conversation:
             return 0
-        
+
         raw_ids = conversation.get("last_retrieved_memory_ids", [])
         # JSONB columns come back as strings from asyncpg - parse them
         if isinstance(raw_ids, str):
@@ -138,7 +140,7 @@ async def apply_implicit_positive_signal(
             memory_ids = raw_ids
         if not memory_ids:
             return 0
-        
+
         # Convert to proper UUID objects (handle both string and UUID types)
         uuid_list = []
         for mid in memory_ids:
@@ -150,11 +152,11 @@ async def apply_implicit_positive_signal(
             except (ValueError, TypeError):
                 # Skip invalid UUIDs
                 continue
-        
+
         # Apply boost
         _boost_trust, _, _ = _lazy_import_trust_funcs()
         boosted_count = await _boost_trust(uuid_list, store) if _boost_trust else 0
-        
+
         # Clear the recorded memory IDs after applying boost (direct SQL)
         # (one-shot per conversation turn)
         await store._pool.execute(
@@ -166,11 +168,12 @@ async def apply_implicit_positive_signal(
             """,
             conversation_id,
         )
-        
+
         return boosted_count
-        
+
     except Exception as e:
         import logging
+
         logger = logging.getLogger(__name__)
         logger.warning(f"Failed to apply implicit positive signal: {e}")
         return 0
@@ -181,21 +184,21 @@ async def apply_explicit_negative_signal(
     store: MemoryStore,
 ) -> bool:
     """Apply explicit negative trust penalty for superseded memories.
-    
+
     Called when a memory is superseded via dedup.
     Checks if the superseded memory was recently retrieved
     (within last 3 user turns or 30 minutes).
-    
+
     Args:
         superseded_memory_id: UUID of the memory being superseded
         store: MemoryStore instance
-        
+
     Returns:
         True if penalty was applied
     """
     try:
         pool = store._pool
-        
+
         # Get the memory to check last_retrieved_at and user_id
         row = await pool.fetchrow(
             """
@@ -205,24 +208,24 @@ async def apply_explicit_negative_signal(
             """,
             superseded_memory_id,
         )
-        
+
         if not row:
             return False
-        
+
         last_retrieved = row.get("last_retrieved_at")
         if not last_retrieved:
             # Memory was never retrieved - no penalty needed
             return False
-        
+
         user_id = row.get("user_id")
         is_recent = False
-        
+
         # Check 1: Wall-clock recency (fallback)
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(minutes=RECENT_RETRIEVAL_WINDOW_MINUTES)
         if last_retrieved >= cutoff:
             is_recent = True
-        
+
         # Check 2: Conversation turn recency (primary)
         # Count user messages since last_retrieval for this user
         if user_id and not is_recent:
@@ -240,18 +243,19 @@ async def apply_explicit_negative_signal(
             )
             if turn_row and turn_row["message_count"] <= RECENT_TURN_COUNT:
                 is_recent = True
-        
+
         if not is_recent:
             return False
-        
+
         # Apply penalty
         _, _penalize_trust, _ = _lazy_import_trust_funcs()
         if _penalize_trust:
             await _penalize_trust([superseded_memory_id], store)
         return True
-        
+
     except Exception as e:
         import logging
+
         logger = logging.getLogger(__name__)
         logger.warning(f"Failed to apply explicit negative signal: {e}")
         return False

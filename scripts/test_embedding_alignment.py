@@ -104,9 +104,7 @@ async def run_alignment_test():
     print(f"Embedding dimensions:     {settings.embedding_dimensions}")
     print()
 
-    db_url = os.environ.get(
-        "DATABASE_URL", "postgresql://postgres:postgres@postgres:5432/daemon"
-    )
+    db_url = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@postgres:5432/daemon")
     print("Connecting to database...")
 
     db_pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
@@ -159,9 +157,7 @@ async def run_alignment_test():
         print(f"  Query embedding dimension: {len(query_vec_lite)}")
 
         # 2. Embed memory text with voyage-4-lite (same model baseline)
-        print(
-            "\n[2/3] Embedding memory text with voyage-4-lite (same model baseline)..."
-        )
+        print("\n[2/3] Embedding memory text with voyage-4-lite (same model baseline)...")
         memory_embedding_lite = await _embed_texts(
             [memory_content],
             model=settings.embedding_query_model,
@@ -189,20 +185,20 @@ async def run_alignment_test():
 
         # Same-model similarity
         same_model_sim = cosine_similarity(query_vec_lite, memory_vec_lite)
-        print(f"\n1. SAME-MODEL SIMILARITY (baseline)")
-        print(f"   Query (voyage-4-lite) vs Memory (voyage-4-lite)")
+        print("\n1. SAME-MODEL SIMILARITY (baseline)")
+        print("   Query (voyage-4-lite) vs Memory (voyage-4-lite)")
         print(f"   Similarity: {same_model_sim:.4f}")
 
         # Cross-model similarity: query-lite vs stored-large
         cross_model_sim = cosine_similarity(query_vec_lite, stored_embedding)
-        print(f"\n2. CROSS-MODEL SIMILARITY (actual retrieval)")
-        print(f"   Query (voyage-4-lite) vs Stored Memory (voyage-4-large)")
+        print("\n2. CROSS-MODEL SIMILARITY (actual retrieval)")
+        print("   Query (voyage-4-lite) vs Stored Memory (voyage-4-large)")
         print(f"   Similarity: {cross_model_sim:.4f}")
 
         # Fresh cross-model similarity
         fresh_cross_sim = cosine_similarity(query_vec_lite, memory_vec_large)
-        print(f"\n3. FRESH CROSS-MODEL SIMILARITY")
-        print(f"   Query (voyage-4-lite) vs Fresh Memory (voyage-4-large)")
+        print("\n3. FRESH CROSS-MODEL SIMILARITY")
+        print("   Query (voyage-4-lite) vs Fresh Memory (voyage-4-large)")
         print(f"   Similarity: {fresh_cross_sim:.4f}")
 
         # Analysis
@@ -210,16 +206,12 @@ async def run_alignment_test():
         print("ANALYSIS")
         print("=" * 70)
 
-        print(f"\nExpected behavior:")
-        print(
-            f"  - Same-model similarity should be HIGH (0.70+) for semantically related texts"
-        )
-        print(
-            f"  - Cross-model similarity should be similar to same-model if models are aligned"
-        )
-        print(f"  - Large gap (>0.15) suggests embedding space misalignment")
+        print("\nExpected behavior:")
+        print("  - Same-model similarity should be HIGH (0.70+) for semantically related texts")
+        print("  - Cross-model similarity should be similar to same-model if models are aligned")
+        print("  - Large gap (>0.15) suggests embedding space misalignment")
 
-        print(f"\nGap analysis:")
+        print("\nGap analysis:")
         gap_same_vs_cross = abs(same_model_sim - cross_model_sim)
         gap_same_vs_fresh = abs(same_model_sim - fresh_cross_sim)
 
@@ -228,23 +220,19 @@ async def run_alignment_test():
 
         if same_model_sim < 0.5:
             print(
-                f"\n  ⚠️  LOW same-model similarity suggests query/memory are not semantically related"
+                "\n  ⚠️  LOW same-model similarity suggests query/memory are not semantically related"
             )
-            print(f"      Consider using a different test memory/query pair")
+            print("      Consider using a different test memory/query pair")
 
         if gap_same_vs_cross > 0.15 or gap_same_vs_fresh > 0.15:
-            print(
-                f"\n  ❌ LARGE GAP detected - asymmetric embedding may be misaligned!"
-            )
-            print(
-                f"      The query and document models may not share compatible embedding spaces"
-            )
+            print("\n  ❌ LARGE GAP detected - asymmetric embedding may be misaligned!")
+            print("      The query and document models may not share compatible embedding spaces")
         else:
             print(
-                f"\n  ✅ Similarity scores are aligned - asymmetric embedding appears to work correctly"
+                "\n  ✅ Similarity scores are aligned - asymmetric embedding appears to work correctly"
             )
 
-        print(f"\n" + "=" * 70)
+        print("\n" + "=" * 70)
         print("SUMMARY")
         print("=" * 70)
         print(f"""

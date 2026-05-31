@@ -81,9 +81,7 @@ class TestPersistExtractionNewEntities:
 
         mock_store.insert_entity = mock_insert_entity
 
-        entity_ids = await persist_extraction_result(
-            user_id, mock_store, extraction_result
-        )
+        entity_ids = await persist_extraction_result(user_id, mock_store, extraction_result)
 
         # BUG: before fix, both Alice and Bob went into one bucket (None) and only
         # ONE entity was created, with Bob as an alias of Alice.
@@ -154,9 +152,7 @@ class TestEntityExpandedCandidatesEligibility:
         assert memory_id not in returned_ids, (
             f"Deleted memory {memory_id} was returned but should have been excluded"
         )
-        assert other_memory_id in returned_ids, (
-            f"Active memory {other_memory_id} was not returned"
-        )
+        assert other_memory_id in returned_ids, f"Active memory {other_memory_id} was not returned"
 
     @pytest.mark.asyncio
     async def test_local_only_memory_excluded_when_include_local_false(self):
@@ -349,6 +345,4 @@ class TestPersistExtractionLinksNewEntitiesForRetrieval:
 
         await persist_extraction_result(user_id, mock_store, extraction_result)
 
-        mock_store.link_entity_to_memory.assert_called_once_with(
-            new_entity_id, memory_id
-        )
+        mock_store.link_entity_to_memory.assert_called_once_with(new_entity_id, memory_id)
