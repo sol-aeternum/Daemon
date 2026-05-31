@@ -16,6 +16,30 @@ Personal multi-agent AI assistant. FastAPI backend orchestrates LLM calls via Op
 - **Update docs with code.** If you fix a bug in CURRENT_ISSUES.md or complete a ROADMAP.md item, update the doc in the same change.
 - **Don't add dependencies without asking.** Especially frontend — bundle size matters for PWA.
 
+## Quality Gates (Definition of Done)
+No task is complete until it passes the project's automated gates. Run them before claiming done. Existing debt may be recorded as blocker inventory in `TRIAGE.md` or dedicated baseline files (e.g., `.basedpyright/baseline.json`); do not weaken or remove gates.
+
+### Backend Gates
+- **Lint**: `uv run ruff check .`
+- **Format**: `uv run ruff format --check .`
+- **Type Check**: `uv run basedpyright`
+- **Security (SAST)**: `uv run bandit -r orchestrator providers scripts tests`
+- **Security (SCA)**: `uv run pip-audit`
+- **Tests**: `PYTHONPATH=. uv run pytest -q`
+
+### Frontend Gates (run from `frontend/`)
+- **Install**: `npm ci`
+- **Type Check**: `npm run type-check`
+- **Lint**: `npm run lint`
+- **Format**: `npm run format:check`
+- **Security (SCA)**: `npm run audit:ci`
+- **Tests**: `npm run test:run`
+- **Build**: `npm run build`
+
+### Aggregate & Infrastructure Gates
+- **Feature Matrix**: `python scripts/lint_feature_matrix.py`
+- **Pre-commit**: `uv run pre-commit run --all-files` (includes gitleaks; commitlint runs as a commit-msg hook)
+
 ## Tech Stack
 - **Backend:** Python 3.11+, FastAPI, LiteLLM, asyncpg, arq, cryptography (Fernet)
 - **Frontend:** Next.js 16, React 19, Vercel AI SDK 4, Tailwind CSS 3, lucide-react
@@ -57,7 +81,7 @@ migrations/             # PostgreSQL migrations (13 applied)
 - SSE events are typed: token, thinking, routing, tool_call, tool_result, final, error, done.
 - Tier model assignments are env-var configurable. Don't hardcode model strings in logic.
 - Frontend uses `useChat` from Vercel AI SDK — ErrorBoundary wraps ChatContent for crash recovery.
-- No test suite yet. If you add tests, use pytest + pytest-asyncio for backend, Playwright for frontend.
+- Backend tests use pytest + pytest-asyncio; frontend tests use Vitest and Playwright.
 
 ## Recent Fixes (as of Feb 2026)
 - ✅ Memory extraction now writes `status="active"` — pipeline is fully operational

@@ -1,5 +1,17 @@
 # TRIAGE.md
 
+## 2026-05-31 05:18 UTC — TOML diagnostics unavailable for pyproject changes
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Task 3 — Backend ruff config, autofix, and format ratchet
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Required changed-file diagnostics could not run on the modified root `pyproject.toml` because this environment has no LSP server configured for `.toml` files. Ruff gate verification still covered the TOML configuration by loading it successfully for `uv run ruff check .` and `uv run ruff format --check .`.
+- **Evidence**: `lsp_diagnostics(filePath="/home/sol/daemon/pyproject.toml", severity="error")` returned `Error: No LSP server configured for extension: .toml` and listed available servers: `typescript, deno, vue, eslint, oxlint, biome, gopls, ruby-lsp, basedpyright, pyright...`.
+- **Likely cause**: OpenCode LSP configuration in this workspace does not include a TOML language server (confidence 98%).
+- **Suggested action**: Add a TOML LSP server to the workspace tooling if `pyproject.toml` changes are expected to satisfy changed-file diagnostics without relying on tool-specific validators.
+- **Seen again**: 2026-05-31 during Task 6 pre-commit config verification when `lsp_diagnostics(filePath="/home/sol/daemon/pyproject.toml", severity="error")` again returned `No LSP server configured for extension: .toml`; `uv run pre-commit validate-config`, `uv run ruff check .`, and `uv run basedpyright` were used as tool-native validators instead.
+
 ## 2026-05-27 UTC — Repository LSP error scan surfaced unrelated dirty-tree Python errors
 - **Severity**: warning
 - **Scope**: project
@@ -97,6 +109,104 @@
 - **Likely cause**: The workspace/tooling configuration expects Biome for JSON diagnostics, but the binary is unavailable in the current shell/runtime (confidence 97%).
 - **Suggested action**: Install `@biomejs/biome` or adjust the diagnostics/tooling configuration so JSON artifact checks do not depend on an unavailable server.
 - **Seen again**: 2026-05-27 during Task 8 artifact verification when `lsp_diagnostics` on `.sisyphus/evidence/task-8-stability.json` again returned `LSP server 'biome' is configured but NOT INSTALLED` / `Command not found: biome`.
+- **Seen again**: 2026-05-31 during Task 3 Ruff verification when `lsp_diagnostics(filePath="/home/sol/daemon/tests", severity="error")` selected the configured Biome route and returned `LSP server 'biome' is configured but NOT INSTALLED` / `Command not found: biome`.
+- **Seen again**: 2026-05-31 during Task 5 frontend tooling verification when `lsp_diagnostics(filePath="/home/sol/daemon/frontend/package.json", severity="all")` again returned `LSP server 'biome' is configured but NOT INSTALLED` / `Command not found: biome`; changed `.mjs` config diagnostics succeeded.
+- **Seen again**: 2026-05-31 during Task 5 final diagnostics when `lsp_diagnostics(filePath="/home/sol/daemon/frontend/package-lock.json", severity="all")` again returned `LSP server 'biome' is configured but NOT INSTALLED` / `Command not found: biome`; `npm ci` was used as the lockfile/package validator instead.
+- **Seen again**: 2026-05-31 during Task 6 pre-commit config verification when `lsp_diagnostics` on `frontend/package.json` and `frontend/package-lock.json` again returned `LSP server 'biome' is configured but NOT INSTALLED` / `Command not found: biome`; `npm --prefix frontend exec commitlint -- --version` and commitlint/pre-commit hook execution validated the package changes instead.
+
+## 2026-05-31 05:55 UTC — LSP Diagnostics Unavailable For .prettierignore
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Task 5 — Frontend strict TS, ESLint flat config, Prettier, and scripts
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Changed-file diagnostics could not run for `frontend/.prettierignore` because this OpenCode LSP configuration has no server for extensionless ignore files. Prettier itself consumed the ignore file during `npm run format:check`.
+- **Evidence**: `lsp_diagnostics(filePath="/home/sol/daemon/frontend/.prettierignore", severity="all")` returned `Error: No LSP server configured for extension:` and listed available servers; `.sisyphus/evidence/task-5-frontend-positive.txt` shows `prettier --check .` executed with exit code 1 due existing formatting debt, not ignore-file parse failure.
+- **Likely cause**: Local LSP tooling coverage gap for extensionless config/ignore files (confidence 99%).
+- **Suggested action**: Use tool-native validation for ignore/config files or configure an appropriate LSP if extensionless files must satisfy diagnostics checks.
+
+## 2026-05-31 05:54 UTC — Frontend ESLint Gate Surfaces Existing React/Next Lint Debt
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 5 — Frontend strict TS, ESLint flat config, Prettier, and scripts
+- **Category**: build-error
+- **Blocked current task**: yes — `npm run lint` is wired but cannot pass until the existing app lint debt is remediated or deliberately baselined in a separate task
+- **What happened**: Replacing `next lint` with direct `eslint . --max-warnings 0` successfully invokes ESLint flat config, but the first real run reports 39 existing problems (28 errors, 11 warnings) across frontend app/components/hooks files.
+- **Evidence**: `.sisyphus/evidence/task-5-frontend-positive.txt` shows `npm run lint` exit code 1 with examples: `app/artifacts/page.tsx:193:55 react-hooks/purity`, `app/chats/page.tsx:54:7 react-hooks/set-state-in-effect`, `components/council/CouncilInterviewCard.tsx:35:47 react-hooks/rules-of-hooks`; `.sisyphus/evidence/task-5-eslint-negative.txt` shows the temporary probe added one additional `task-5-eslint-probe.tsx:5:5 react-hooks/rules-of-hooks` error and restored to the same 39-problem state after deletion.
+- **Seen again**: 2026-05-31T06:31Z during Task 7 local CI parity; `.sisyphus/evidence/task-7-ci-local-parity.txt` shows `cd frontend && npm run lint` exit code 1 with existing React/Next lint errors.
+- **Likely cause**: `next lint` was previously broken, so the repository accumulated lint debt that direct ESLint now reveals (confidence 95%).
+- **Suggested action**: Commission a frontend lint-remediation/baseline task; do not weaken Task 5's ESLint config to hide these findings.
+
+## 2026-05-31 05:54 UTC — Frontend Typecheck, Build, And Tests Blocked By Advisor Event Contract Drift
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: Task 5 — Frontend strict TS, ESLint flat config, Prettier, and scripts
+- **Category**: build-error
+- **Blocked current task**: yes — `npm run type-check`, `npm run build`, and `npm run test:run` are wired but fail on pre-existing app/test contract drift
+- **What happened**: The new `type-check` script runs `next typegen && tsc --noEmit`, but TypeScript and Next build fail because advisor event tests/code reference exports and event variants that are absent from `lib/events.ts`; Vitest fails 19 advisor/tool-log tests for the same drift. The typecheck also reports stale `.next/types` references for removed routes such as `app/api/v1/auth/[...path]/route.js` and `app/settings/devices/page.js`.
+- **Evidence**: `.sisyphus/evidence/task-5-frontend-positive.txt` shows `npm run type-check` exit code 2 with `lib/advisorEvents.ts(3,21): error TS2305: Module '"./events"' has no exported member 'isAdvisorEvent'`; `npm run build` exit code 1 with the same missing export; `npm run test:run` exit code 1 with 3 failed test files / 19 failed tests including `(0 , isAdvisorEvent) is not a function` and `(0 , isAdvisorStartEvent) is not a function`.
+- **Seen again**: 2026-05-31T06:31Z during Task 7 local CI parity; `.sisyphus/evidence/task-7-ci-local-parity.txt` shows `npm run type-check` exit 2, `npm run test:run` exit 1, and `npm run build` exit 1 on the same advisor-event contract drift family.
+- **Likely cause**: Advisor SSE/event implementation and tests are ahead of or drifted from the typed `ChatEvent` contract in `frontend/lib/events.ts`, plus stale generated Next type artifacts remain in `.next/types` (confidence 90%).
+- **Suggested action**: Commission a frontend advisor event contract repair and generated-type cleanup task, then rerun `npm run type-check`, `npm run test:run`, and `npm run build`.
+
+## 2026-05-31 05:54 UTC — Frontend Prettier Gate Finds Existing Formatting Debt
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 5 — Frontend strict TS, ESLint flat config, Prettier, and scripts
+- **Category**: config
+- **Blocked current task**: yes — `npm run format:check` is wired but cannot pass until formatting debt is remediated or a baseline strategy is approved
+- **What happened**: The new Prettier check ran successfully as a gate but reported code style issues in 120 existing frontend files. Task 5 scope forbids broad app-code reformatting unless required, so this was recorded as a blocker inventory instead of auto-writing changes.
+- **Evidence**: `.sisyphus/evidence/task-5-frontend-positive.txt` shows `npm run format:check` exit code 1 and `Code style issues found in 120 files. Run Prettier with --write to fix.`
+- **Seen again**: 2026-05-31T06:31Z during Task 7 local CI parity; `.sisyphus/evidence/task-7-ci-local-parity.txt` shows `cd frontend && npm run format:check` exit code 1 with existing formatting warnings.
+- **Likely cause**: The frontend previously had no formatter config or Prettier gate, so existing files do not match the newly established Prettier style (confidence 98%).
+- **Suggested action**: Commission a dedicated mechanical frontend formatting task, or establish a formatting baseline strategy before requiring this gate in CI.
+
+## 2026-05-31 05:54 UTC — Frontend npm audit Reports 26 Vulnerabilities
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: Task 5 — Frontend strict TS, ESLint flat config, Prettier, and scripts
+- **Category**: security
+- **Blocked current task**: yes — `npm run audit:ci` is wired but exits non-zero on current dependency vulnerabilities
+- **What happened**: `npm audit --audit-level=high` reports 26 vulnerabilities (4 low, 8 moderate, 14 high). Some fixes require breaking changes, including `ai@6.0.193`, `next@16.2.6`, or `next-pwa@2.0.2`, so Task 5 records the inventory rather than upgrading runtime dependencies.
+- **Evidence**: `.sisyphus/evidence/task-5-frontend-positive.txt` shows `npm run audit:ci` exit code 1 with high-severity advisories for `@ai-sdk/provider-utils`, `@babel/plugin-transform-modules-systemjs`, `fast-uri`, `flatted`, `lodash`, `minimatch`, `next`, `picomatch`, `rollup`, `serialize-javascript`, and `vite`.
+- **Likely cause**: Current frontend direct/transitive dependency versions include known vulnerable packages; several remediation paths cross major/runtime dependency boundaries outside Task 5 scope (confidence 95%).
+- **Suggested action**: Commission a frontend dependency remediation task using npm-managed upgrades and explicit regression testing for Next/PWA/AI SDK flows.
+- **Seen again**: 2026-05-31 during Task 6 when `npm install --save-dev @commitlint/cli @commitlint/config-conventional` completed but again reported `26 vulnerabilities (4 low, 8 moderate, 14 high)`; commitlint installation proceeded, and vulnerability remediation remains out of scope for Task 6.
+- **Seen again**: 2026-05-31T06:31Z during Task 7 local CI parity; `.sisyphus/evidence/task-7-ci-local-parity.txt` shows `npm ci` reporting 26 vulnerabilities and `npm run audit:ci` exiting 1.
+
+## 2026-05-31 05:54 UTC — npm ci Emits Deprecated Frontend Dependency Warnings
+- **Severity**: warning
+- **Scope**: upstream
+- **Encountered during**: Task 5 — Frontend strict TS, ESLint flat config, Prettier, and scripts
+- **Category**: deprecation
+- **Blocked current task**: no — install succeeds, but warnings indicate dependency maintenance debt
+- **What happened**: `npm ci` succeeded but emitted deprecation warnings for multiple transitive/frontend packages including `@types/dompurify`, `inflight`, `rimraf@2`, `rollup-plugin-terser`, `glob@7`, and Workbox packages.
+- **Evidence**: `.sisyphus/evidence/task-5-frontend-positive.txt` lines 2-28 show `npm ci` exit code 0 and the warning list.
+- **Likely cause**: Existing frontend dependency graph includes older transitive packages, especially from PWA/build tooling (confidence 90%).
+- **Suggested action**: Address during the same frontend dependency remediation task as the npm audit findings.
+
+## 2026-05-31 06:17 UTC — Gitleaks Negative Probe Requires Staged Content
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Task 6 — Root pre-commit config
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Running `uv run pre-commit run gitleaks --files .task6-gitleaks-probe.txt` against an unstaged temporary fake-secret file exited 0, because the configured gitleaks hook scans staged git content. Staging only the probe file and rerunning `uv run pre-commit run gitleaks` correctly blocked the fake AWS-style credentials with exit code 1.
+- **Evidence**: `.sisyphus/evidence/task-6-gitleaks-negative.txt` shows the first `--files` run passed, then the staged retry failed with `RuleID: aws-access-token`, `RuleID: generic-api-key`, and `leaks found: 2`; cleanup removed `.task6-gitleaks-probe.txt` and `grep` found no planted fake secret strings afterward.
+- **Likely cause**: The official gitleaks pre-commit hook is optimized for staged commit protection rather than arbitrary unstaged file scanning (confidence 95%).
+- **Suggested action**: For future negative probes of this hook, stage the temporary probe file, run the hook, then unstage/delete the probe file and verify no residue.
+
+## 2026-05-31 06:18 UTC — Pre-commit Temporarily Stashed Existing Dirty Tree During Hook Probes
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Task 6 — Root pre-commit config
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: `uv run pre-commit run gitleaks` and the explicit commit-msg hook validation emitted `[WARNING] Unstaged files detected.` and temporarily stashed/restored the broad pre-existing dirty tree while running against staged or commit-msg inputs. The hook runs completed and pre-commit restored the changes.
+- **Evidence**: `.sisyphus/evidence/task-6-gitleaks-negative.txt` shows `[INFO] Stashing unstaged files to /home/sol/.cache/pre-commit/patch1780208249-4012044` followed by `[INFO] Restored changes...`; `.sisyphus/evidence/task-6-precommit-positive.txt` shows the same pattern for `patch1780208317-4013104` during commitlint validation.
+- **Likely cause**: The repository had a broad inherited unstaged diff from prior tasks, and pre-commit isolates staged checks from unstaged working-tree content by design (confidence 99%).
+- **Suggested action**: Keep future hook probes aware that pre-commit may stash/restore dirty trees; run from a clean tree when possible for simpler evidence.
+- **Seen again**: 2026-05-31T07:23Z during Task 11 commitlint hook verification; `uv run pre-commit run commitlint --hook-stage commit-msg --commit-msg-filename /tmp/opencode/task11-commit-msg.txt` emitted `[WARNING] Unstaged files detected.`, stashed to `/home/sol/.cache/pre-commit/patch1780212170-4071487`, passed, and restored changes.
 
 ## 2026-04-14 12:44 — LiteLLM Printed Repeated Provider Help During One-Scenario Benchmark Run
 - **Severity**: warning
@@ -1032,3 +1142,116 @@
 - **Evidence**: `remote: warning: File .cleanup/2026-05-06/safety-net/untracked_archive/tests/benchmark_results/wave0_full_corpus_recovery/longmemeval_filtered_dataset.json is 91.64 MB; this is larger than GitHub's recommended maximum file size of 50.00 MB`
 - **Likely cause**: Large benchmark recovery artifact was included in the pre-existing cleanup archive committed to preserve local work (confidence 95%).
 - **Suggested action**: Review whether large benchmark/archive artifacts should be moved to external artifact storage or Git LFS in a separate cleanup task.
+
+
+## 2026-05-31T05:36:14Z — pip-audit Reports 29 Vulnerabilities In Current Python Lockset
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: Task 4 (Backend Pyright gate + grandfather baseline and SCA tool)
+- **Category**: security
+- **Blocked current task**: no — Task 4 requires inventory without suppression; future CI SCA gate would fail until remediated
+- **What happened**: `uv run pip-audit` exited 1 and reported 29 known vulnerabilities across 13 installed packages. No findings were suppressed or ignored.
+- **Evidence**: Command output: `Found 29 known vulnerabilities in 13 packages`; affected packages and fixes: aiohttp 3.13.3 -> 3.13.4 (10 CVEs), cryptography 46.0.5 -> 46.0.6/46.0.7 (PYSEC-2026-35/36), idna 3.11 -> 3.15 (CVE-2026-45409), litellm 1.81.1 -> 1.83.0/1.83.7 (5 findings), lxml 6.0.2 -> 6.1.0, pygments 2.19.2 -> 2.20.0, pyjwt 2.11.0 -> 2.12.0, pytest 9.0.2 -> 9.0.3, python-dotenv 1.2.1 -> 1.2.2, python-multipart 0.0.22 -> 0.0.26/0.0.27, requests 2.32.5 -> 2.33.0, starlette 0.50.0 -> 1.0.1, urllib3 2.6.3 -> 2.7.0. Full output recorded in `.sisyphus/evidence/task-4-pip-audit.txt`.
+- **Seen again**: 2026-05-31T06:31Z during Task 7 local CI parity; `.sisyphus/evidence/task-7-ci-local-parity.txt` shows `uv run pip-audit` exit code 1 with `Found 29 known vulnerabilities in 13 packages`.
+- **Likely cause**: Current locked dependency versions lag newly published vulnerability advisories; several are transitive dependencies of FastAPI/LiteLLM/aiohttp stack (confidence 90%).
+- **Suggested action**: Plan a dedicated dependency-upgrade/remediation task using uv-managed upgrades, then rerun `uv run pip-audit` without suppressions.
+
+## 2026-05-31T06:31Z — Whole-Suite Pytest Collection Has Additional Import Drift
+
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: Task 7 — CI workflow local parity
+- **Category**: test-failure
+- **Blocked current task**: no — Task 7 records blocker inventory and must not fix test/app drift
+- **What happened**: `PYTHONPATH=. uv run pytest -q` exited 2 during collection. In addition to the known `tests/test_video_e2e.py:596` syntax error, collection reports multiple import drifts for benchmark/advisor/router symbols.
+- **Evidence**: `.sisyphus/evidence/task-7-ci-local-parity.txt` shows import errors for `get_benchmark_tracking` from `orchestrator.memory.extraction`, `BenchmarkProviderError` from `tests.longmemeval.evaluate`, `BENCHMARK_CONFIG_PIN_PATH` from `orchestrator.eval.runner`, `BenchmarkSamplingError` from `orchestrator.memory.extraction`, `_detect_temporal_query_window` from `orchestrator.memory.retrieval`, `create_advisor_registry` from `orchestrator.tools.builtin`, and `classify_message` from `orchestrator.model_router`, followed by `tests/test_video_e2e.py:596` `SyntaxError: unmatched ')'`.
+- **Likely cause**: Existing test modules reference benchmark/advisor/router APIs that have moved or been removed while the project-wide pytest gate was absent or already blocked by earlier collection failures (confidence 85%).
+- **Suggested action**: Commission a focused test collection repair task after Task 7; keep CI pytest command intact so these failures remain visible.
+
+## 2026-05-31T06:31Z — Next Build Regenerated Service Worker Artifact
+
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Task 7 — CI workflow local parity
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Running the frontend build as part of local CI parity modified generated `frontend/public/sw.js`, which is outside Task 7's allowed file set. The generated file was restored immediately.
+- **Evidence**: `git status --short -- frontend/public/sw.js` showed `M frontend/public/sw.js` after `cd frontend && npm run build`; `git checkout -- frontend/public/sw.js` was run and subsequent `git diff -- frontend/public/sw.js` was empty.
+- **Likely cause**: Next PWA/Workbox build updates the generated precache manifest as a side effect of `next build` (confidence 95%).
+- **Suggested action**: Treat `frontend/public/sw.js` as generated drift during local build verification; restore it after parity runs unless a task explicitly owns service-worker output updates.
+
+## 2026-05-31T06:43Z — Bandit SAST Command Wired But Tool Missing
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 7 — Bandit/SAST CI gap fix
+- **Category**: security
+- **Blocked current task**: no — Task 7 fix wires the workflow step and records the missing dependency; dependency addition is explicitly out of scope
+- **What happened**: The backend CI workflow now includes `Bandit SAST`, but the local parity command `uv run bandit -r orchestrator providers scripts tests` exits 2 because `bandit` is not installed in the uv-managed environment.
+- **Evidence**: `.sisyphus/evidence/task-7-ci-local-parity.txt` shows `error: Failed to spawn: bandit` and `Caused by: No such file or directory (os error 2)`. `pyproject.toml` dev dependencies currently include basedpyright, pip-audit, pre-commit, pytest, pytest-asyncio, and ruff, but not Bandit.
+- **Likely cause**: Task 7 requires Bandit/SAST wiring, but prior dependency setup tasks did not add Bandit to the uv dev dependency group (confidence 99%).
+- **Suggested action**: Commission a dependency/tooling task to add Bandit via uv and lock it, then rerun `uv run bandit -r orchestrator providers scripts tests` without suppressing findings.
+- **Resolution applied**: 2026-05-31T07:23Z during Task 11 Oracle blocker remediation, `uv add --dev bandit` added `bandit>=1.9.4` to `pyproject.toml` and locked `bandit==1.9.4` plus `stevedore==5.8.0` in `uv.lock`; `uv sync --locked` now succeeds before Bandit runs.
+- **Seen again**: 2026-05-31T07:21Z during Task 11 Oracle review; `uv run bandit -r orchestrator providers scripts tests` again returned `error: Failed to spawn: bandit` / `Caused by: No such file or directory (os error 2)`, confirming the SAST gate is wired but non-runnable before dependency remediation.
+
+
+## 2026-05-31T05:36:14Z — Changed-File LSP Diagnostics Unavailable For Task 4 Config Artifacts
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Task 4 (Backend Pyright gate + grandfather baseline and SCA tool)
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: `lsp_diagnostics` succeeded for the restored Python probe file but could not validate config/generated artifacts touched by Task 4. `pyproject.toml` reported no TOML LSP configured, `.basedpyright/baseline.json` routed to Biome but Biome is not installed, and `uv.lock` reported no `.lock` LSP configured.
+- **Evidence**: `pyproject.toml`: `No LSP server configured for extension: .toml`; `.basedpyright/baseline.json`: `LSP server 'biome' is configured but NOT INSTALLED. Command not found: biome`; `uv.lock`: `No LSP server configured for extension: .lock`.
+- **Likely cause**: Local agent LSP tooling lacks TOML/lockfile servers and has stale Biome configuration for JSON files (confidence 98%).
+- **Suggested action**: Install/configure Biome or route JSON diagnostics to an available server, and add TOML/lockfile diagnostics support if future CI-tooling tasks require LSP coverage for generated config artifacts.
+
+
+## 2026-05-31T07:21Z — Pre-commit all-files does not run commitlint hook
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 11 — Oracle review of gate configuration
+- **Category**: config
+- **Blocked current task**: yes — AGENTS/CI parity claim says the documented pre-commit command includes commitlint, but the command does not execute commit-msg hooks
+- **What happened**: `.pre-commit-config.yaml` correctly places `commitlint` on the `commit-msg` stage, but `uv run pre-commit run --all-files` and CI's default pre-commit stage do not run that hook. The root `AGENTS.md` aggregate gate text therefore overstates what the documented command covers.
+- **Evidence**: `uv run pre-commit run commitlint --all-files --hook-stage pre-commit` returned `No hook with id commitlint in stage pre-commit`; `.pre-commit-config.yaml:18-23` shows `stages: [commit-msg]`; `AGENTS.md:41` says `uv run pre-commit run --all-files` includes gitleaks and commitlint.
+- **Likely cause**: Pre-commit stage semantics were conflated: `--all-files` runs the pre-commit stage by default, while commit-message validation needs `--hook-stage commit-msg --commit-msg-filename ...` or a real commit-msg hook invocation (confidence 99%).
+- **Suggested action**: Either document commitlint as a commit-msg hook separate from the all-files gate, or add an explicit CI command that validates commit messages/non-vacuously invokes commitlint.
+- **Resolution applied**: 2026-05-31T07:23Z during Task 11 Oracle blocker remediation, `AGENTS.md:41` was changed to say `uv run pre-commit run --all-files` includes gitleaks and that commitlint runs as a separate commit-msg hook; explicit commit-msg hook probe passed.
+
+
+## 2026-05-31T07:21Z — Requested delegate_task background agents unavailable in this tool context
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Task 11 — Oracle review of gate configuration
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: The task requested parallel background `delegate_task` explore/librarian agents, but this execution context exposes no `delegate_task` tool. Review proceeded with direct parallel Read/Grep/AST-grep/LSP/Bash checks instead.
+- **Evidence**: Available tool namespace includes `background_output`/`background_cancel` but no launcher or `delegate_task` operation; no delegate call was possible without fabricating a tool.
+- **Likely cause**: This Oracle consultation environment has a reduced tool surface compared with the orchestrator's delegation-capable agent environment (confidence 95%).
+- **Suggested action**: If subagent evidence is mandatory for future Task 11 reviews, invoke the review from an agent context that includes `delegate_task`.
+
+
+## 2026-05-31T07:23Z — Bandit SAST Gate Runs And Surfaces Existing Findings
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 11 — Oracle blocker remediation for gate configuration
+- **Category**: security
+- **Blocked current task**: no — the gate-configuration blocker was resolved; the remaining non-zero exit is first-run SAST blocker inventory outside the review-fix scope
+- **What happened**: After adding Bandit as a uv dev dependency, `uv sync --locked` succeeded and `uv run bandit -r orchestrator providers scripts tests` executed instead of failing to spawn. The first real scan exited non-zero with 2,980 low-severity and 30 medium-severity findings, plus one skipped file due an existing syntax error.
+- **Evidence**: `/home/sol/.local/share/opencode/tool-output/tool_e7ce914a0001u6KASx3gOD0czr` lines 1-4 show `uv sync --locked` then Bandit execution; lines 188-201 include a representative `B608` medium SQL-construction finding in `orchestrator/memory/store.py:516`; lines 30842-30853 summarize `Low: 2980`, `Medium: 30`, `High: 0`, and `Files skipped (1): tests/test_video_e2e.py (syntax error while parsing AST from file)`.
+- **Likely cause**: Bandit is now scanning the existing full backend/tests corpus for the first time, so long-lived test asserts (`B101`) and several medium-confidence code patterns are being surfaced (confidence 95%).
+- **Suggested action**: Keep the gate wired and non-suppressed for this baseline PR; commission a separate SAST triage/baselining/remediation task if CI must be made green without weakening the current review scope.
+
+
+## 2026-05-31T07:33Z — Atlas Gitleaks All-files Hook Transiently Reported Modified Files
+
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Task 11 — Oracle review of gate configuration Atlas QA follow-up
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Atlas observed a transient `uv run pre-commit run gitleaks --all-files` verification failure where the pre-commit wrapper reported that files were modified by the hook, even though gitleaks itself reported no secrets. A controlled rerun passed, and comparing git status before and after showed no working-tree status changes, so this is captured as non-blocking verification noise rather than a gate behavior change.
+- **Evidence**: Initial observed failure: `gitleaks...Failed - hook id: gitleaks - files were modified by this hook`, while gitleaks itself reported `no leaks found`. Rerun: `gitleaks...Passed`. Status comparison: `STATUS_CHANGED= False`, `ADDED_STATUS_LINES= <none>`, `REMOVED_STATUS_LINES= <none>`.
+- **Likely cause**: The gitleaks/pre-commit hook likely touched or normalized transient hook-managed state without leaving tracked working-tree changes, and pre-commit reported the first run as modified-files even though no leak was found (confidence 75%).
+- **Suggested action**: Keep Task 11 `APPROVE`; if this recurs, capture the exact pre/post status and hook output again before considering any hook configuration change.
