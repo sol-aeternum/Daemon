@@ -196,12 +196,29 @@ _ENV_VAR_RE = re.compile(r'`([A-Z_][A-Z0-9_]*)`')
 
 
 def get_env_var_facts(root: Path) -> dict[str, list[str]]:
+    env_vars: set[str] = set()
+    env_var_pattern = re.compile(r'^([A-Z_][A-Z0-9_]*)=', re.MULTILINE)
+    for file_path in [root / ".env.example", root / "docker-compose.yml"]:
+        if file_path.exists():
+            text = file_path.read_text(encoding="utf-8")
+            for m in env_var_pattern.finditer(text):
+                env_vars.add(m.group(1))
+    return {"env_vars": sorted(env_vars)}
+
+
+_TIER_PRICE_RE = re.compile(r'#\s*Tier:\s*(FREE|STARTER|PRO|MAX|BYOK)\s*\(([^)]+)\)', re.IGNORECASE)
+
+
+def get_tier_prices(root: Path) -> dict[str, str]:
     config_path = root / "orchestrator" / "config.py"
     text = config_path.read_text(encoding="utf-8")
-    env_vars: set[str] = set()
-    for m in _ENV_VAR_RE.finditer(text):
-        env_vars.add(m.group(1))
-    return {"env_vars": sorted(env_vars)}
+    prices: dict[str, str] = {}
+    for m in _TIER_PRICE_RE.finditer(text):
+        price = m.group(2)
+        if not price.endswith("/mo"):
+            price = price + "/mo"
+        prices[m.group(1).lower()] = price
+    return {"tier_prices": prices}
 
 
 def extract_all_facts(root: Path) -> dict[str, Any]:
@@ -213,6 +230,7 @@ def extract_all_facts(root: Path) -> dict[str, Any]:
         "feature_states": get_feature_states(root),
         "env_vars": get_env_var_facts(root),
         "tier_defaults": get_tier_facts(root),
+        "tier_prices": get_tier_prices(root),
     }
 
 
@@ -229,6 +247,9 @@ class CheckId(str, Enum):
     DEDUP_SUPERSEDE_SAME_SLOT = "dedup_supersede_same_slot_threshold"
     VIDEO_PROVIDERS = "video_providers"
     TIER_MODEL = "tier_model"
+    TIER_PRICE = "tier_price"
+    ROUTE = "route"
+    ENV_VAR = "env_var"
 
 
 @dataclass
@@ -306,6 +327,104 @@ class CheckResult:
     expected: str | None = None
     observed: str | None = None
     message: str | None = None
+
+
+_TIER_PRICE_TABLE_RE = re.compile(
+    r'^\|\s*\*\*([A-Za-z]+)\*\*\s*\|\s*(\$[\d]+/mo)\s*\|',
+    re.IGNORECASE,
+)
+
+
+def _check_tier_prices(doc_content: str, source_prices: dict[str, str]) -> CheckResult:
+    if not source_prices:
+        return CheckResult(CheckId.TIER_PRICE, True)
+    lines = doc_content.splitlines()
+    doc_prices: dict[str, str] = {}
+    for line in lines:
+        m = _TIER_PRICE_TABLE_RE.match(line.strip())
+        if m:
+            tier = m.group(1).lower()
+            price = m.group(2)
+            doc_prices[tier] = price
+    if not doc_prices:
+        return CheckResult(CheckId.TIER_PRICE, True)
+    mismatches = []
+    for tier, src_price in source_prices.items():
+        doc_price = doc_prices.get(tier)
+        if doc_price is None:
+            mismatches.append(f"{tier}: missing (source has {src_price})")
+        elif doc_price != src_price:
+            mismatches.append(f"{tier}: expected {src_price}, got {doc_price}")
+    if mismatches:
+        return CheckResult(
+            CheckId.TIER_PRICE, False,
+            str(source_prices),
+            str(doc_prices),
+            "; ".join(mismatches),
+        )
+    return CheckResult(CheckId.TIER_PRICE, True)
+
+
+_ROUTE_TABLE_RE = re.compile(r'`(/[^`]+)`')
+
+
+def _normalize_route(route: str) -> str:
+    normalized = route.strip()
+    normalized = re.sub(r'\{[^}]+\}', '{id}', normalized)
+    return normalized
+
+
+def _check_routes(doc_content: str, source_routes: dict[str, list[str]]) -> CheckResult:
+    if not source_routes:
+        return CheckResult(CheckId.ROUTE, True)
+    all_source: set[str] = set()
+    for paths in source_routes.values():
+        for p in paths:
+            all_source.add(_normalize_route(p))
+    if not all_source:
+        return CheckResult(CheckId.ROUTE, True)
+    doc_routes: list[str] = []
+    for m in _ROUTE_TABLE_RE.finditer(doc_content):
+        route = m.group(1).strip()
+        if route.startswith('/') and ('{' in route or route.count('/') >= 2):
+            doc_routes.append(route)
+    if not doc_routes:
+        return CheckResult(CheckId.ROUTE, True)
+    stale: list[str] = []
+    for route in doc_routes:
+        if _normalize_route(route) not in all_source:
+            stale.append(route)
+    if stale:
+        return CheckResult(
+            CheckId.ROUTE, False,
+            f"all source routes: {len(all_source)} paths",
+            f"stale: {', '.join(sorted(stale))}",
+            f"documented route(s) not found in source: {', '.join(sorted(stale))}",
+        )
+    return CheckResult(CheckId.ROUTE, True)
+
+
+_ENV_DOC_RE = re.compile(r'`([A-Z_][A-Z0-9_]*)`')
+
+
+def _check_env_vars(doc_content: str, source_vars: list[str]) -> CheckResult:
+    if not source_vars:
+        return CheckResult(CheckId.ENV_VAR, True)
+    source_set = set(source_vars)
+    doc_vars = [m.group(1) for m in _ENV_DOC_RE.finditer(doc_content) if m.group(1) not in (
+        "EMBEDDING_DOCUMENT_MODEL", "EMBEDDING_QUERY_MODEL", "EMBEDDING_DIMENSIONS"
+    )]
+    if not doc_vars:
+        return CheckResult(CheckId.ENV_VAR, True)
+    stale: list[str] = [v for v in doc_vars if v not in source_set]
+    if stale:
+        return CheckResult(
+            CheckId.ENV_VAR, False,
+            f"source env vars: {', '.join(sorted(source_set))}",
+            f"documented stale: {', '.join(sorted(stale))}",
+            f"env var(s) not found in source: {', '.join(sorted(stale))}",
+        )
+    return CheckResult(CheckId.ENV_VAR, True)
 
 
 def _check_migration_count(doc_content: str, expected: int) -> CheckResult:
@@ -768,6 +887,42 @@ def check_document(
                     findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"\*\*[A-Z]+\*\*"),
                                            CheckId.TIER_MODEL, "mismatch",
                                            tres.expected, tres.observed, tres.message or f"tier model mismatch"))
+
+    tier_prices = facts.get("tier_prices", {}).get("tier_prices", {})
+    if tier_prices:
+        res = _check_tier_prices(text, tier_prices)
+        if not res.passed:
+            exc = _match_exception(exceptions, CheckId.TIER_PRICE, str(doc_path))
+            if exc and exc.expires >= today:
+                exc.suppressed_finding = True
+            else:
+                findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"\$\d+/mo"),
+                                       CheckId.TIER_PRICE, "mismatch",
+                                       res.expected, res.observed, res.message or "tier price mismatch"))
+
+    route_facts = facts.get("routes", {}).get("routes", {})
+    if route_facts:
+        res = _check_routes(text, route_facts)
+        if not res.passed:
+            exc = _match_exception(exceptions, CheckId.ROUTE, str(doc_path))
+            if exc and exc.expires >= today:
+                exc.suppressed_finding = True
+            else:
+                findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"`/"),
+                                       CheckId.ROUTE, "mismatch",
+                                       res.expected, res.observed, res.message or "route mismatch"))
+
+    env_facts = facts.get("env_vars", {}).get("env_vars", [])
+    if env_facts and doc_path.name in ("TECHNICAL_SPECS.md", "PROJECT_CONTEXT.md"):
+        res = _check_env_vars(text, env_facts)
+        if not res.passed:
+            exc = _match_exception(exceptions, CheckId.ENV_VAR, str(doc_path))
+            if exc and exc.expires >= today:
+                exc.suppressed_finding = True
+            else:
+                findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"[A-Z_][A-Z0-9_]*"),
+                                       CheckId.ENV_VAR, "mismatch",
+                                       res.expected, res.observed, res.message or "env var mismatch"))
 
     all_active_exceptions = [exc for exc in exceptions if exc.expires >= today]
     return findings, all_active_exceptions

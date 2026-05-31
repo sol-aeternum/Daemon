@@ -67,7 +67,7 @@ The `/chat` endpoint streams Server-Sent Events with typed frames:
 | `routing` | `data.model`, `data.tier` | Model selection notification |
 | `tool_call` | `data.name`, `data.arguments` | Tool invocation |
 | `tool_result` | `data.name`, `data.result` | Tool response |
-| `final` | `data.message`, `data.usage` | Completed response |
+| `final` | `data.text`, `data.model`, `data.finish_reason`, `data.usage` (optional), `data.timing` (optional) | Completed response |
 | `error` | `data.code`, `data.message` | Error |
 | `done` | `data.ok` | Stream complete |
 
@@ -75,7 +75,7 @@ The `/chat` endpoint streams Server-Sent Events with typed frames:
 
 ## Database Schema
 
-PostgreSQL 16 with pgvector extension. 30 migrations in `/migrations/`.
+PostgreSQL 16 with pgvector extension. 30 migrations in the `migrations/` directory.
 
 ### Core Tables
 - **`users`**: Settings and profile data.
@@ -119,12 +119,12 @@ Hybrid search combining:
 |----------|-----------|
 | **Chat** | `/chat` (SSE), `/v1/chat/completions` (OpenAI), `/chat/completions` |
 | **Models** | `/v1/models`, `/v1/catalog`, `/providers` |
-| **Conversations** | `/conversations` (CRUD), `/conversations/{id}/messages` |
-| **Memories** | `/memories` (CRUD), `/memories/export`, `/memories/import`, `/memories/reembed`, `/memories/consolidate`, `/memories/dream` |
-| **Skills** | `/skills` (CRUD), `/skills/upload`, `/skills/admin/sync` |
+| **Conversations** | `/{conversation_id}` (CRUD) |
+| **Memories** | `/{memory_id}` (CRUD), `/export`, `/import`, `/reembed`, `/consolidate`, `/dream` |
+| **Skills** | `/{skill_id}` (CRUD), `/upload`, `/admin/sync` |
 | **Audio** | `/tts`, `/stt`, `/audio/token`, `/audio/scribe-token`, `/sound-effects` |
-| **Video** | `/video-credits/balance`, `/video-credits/estimate`, `/video-credits/transactions` |
-| **System** | `/health` (simple), `/status` (detailed), `/generated-images/{fn}`, `/generated-audio/{fn}`, `/generated-files/{fn}` |
+| **Video** | `/balance`, `/estimate`, `/transactions` |
+| **System** | `/health`, `/generated-images/{filename}`, `/generated-audio/{filename}`, `/generated-files/{filename}` |
 
 ---
 

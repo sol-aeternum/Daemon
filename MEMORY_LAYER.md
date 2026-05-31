@@ -241,7 +241,7 @@ L0 memories bypass embedding-based retrieval entirely. They are always prepended
 | Document (memory writes) | `voyage-4-large` | `input_type="document"` | 1024 |
 | Query (retrieval) | `voyage-4-lite` | `input_type="query"` | 1024 |
 
-Retry logic: 3 attempts with exponential backoff (1s → 2s → 4s). Module-level counters `_retry_count` and `_last_retry_at` are exposed via the `/status` endpoint.
+Retry logic: 3 attempts with exponential backoff (1s → 2s → 4s). Module-level counters `_retry_count` and `_last_retry_at` are internal.
 
 ---
 
