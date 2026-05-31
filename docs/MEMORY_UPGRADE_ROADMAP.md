@@ -147,7 +147,7 @@ Pure prompt/injection changes. Zero schema, zero re-embed, zero new dependencies
   - `orchestrator/memory/extraction.py` — concatenate extracted atomic fact with context facts and entity names before embedding
   - `orchestrator/memory/store.py` — ensure `content` (encrypted) and `embedding_text` (for the vector) are stored separately; the **embedded key** is augmented, the **stored content** stays atomic
   - `orchestrator/memory/embedding.py` — pass the augmented key, not the raw content
-  - **Migration**: re-embed all existing memories with augmented keys (existing `re_embed` endpoint at `/reembed` — extend to build augmented keys from existing data)
+  - **Migration**: re-embed all existing memories with augmented keys (existing `re_embed` endpoint at `/memories/reembed` — extend to build augmented keys from existing data)
 
 **Embedding text format:**
 ```

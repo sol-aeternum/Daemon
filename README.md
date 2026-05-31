@@ -141,12 +141,12 @@ Benchmarking runs from the host shell against localhost-exposed container servic
 | `/v1/models` | GET | List available models (OpenAI-compatible) |
 | `/v1/chat/completions` | POST | Chat completion, streaming and non-streaming |
 | `/chat` | POST | Native Daemon chat with SSE streaming |
-| `/conversations` | GET/POST | Conversation CRUD (uses `/{conversation_id}`) |
-| `/memories` | GET/POST/DELETE | Memory management (uses `/{memory_id}`) |
-| `/skills` | GET/POST | Skills management (uses `/{skill_id}`) |
-| `/me/settings` | GET/PUT | User preferences |
-| `/balance` | GET | Video credit balance |
-| `/transactions` | GET | Video credit transactions |
+| `/conversations` | GET/POST | Conversation CRUD (uses `/conversations/{conversation_id}`) |
+| `/memories` | GET/POST/DELETE | Memory management (uses `/memories/{memory_id}`) |
+| `/skills` | GET/POST | Skills management (uses `/skills/{skill_id}`) |
+| `/users/me/settings` | GET/PUT | User preferences |
+| `/video-credits/balance` | GET | Video credit balance |
+| `/video-credits/transactions` | GET | Video credit transactions |
 | `/health` | GET | Health check |
 
 ## Status

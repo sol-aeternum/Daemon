@@ -119,12 +119,12 @@ Hybrid search combining:
 |----------|-----------|
 | **Chat** | `/chat` (SSE), `/v1/chat/completions` (OpenAI), `/chat/completions` |
 | **Models** | `/v1/models`, `/v1/catalog`, `/providers` |
-| **Conversations** | `/{conversation_id}` (CRUD) |
-| **Memories** | `/{memory_id}` (CRUD), `/export`, `/import`, `/reembed`, `/consolidate`, `/dream` |
-| **Skills** | `/{skill_id}` (CRUD), `/upload`, `/admin/sync` |
+| **Conversations** | `/conversations/{conversation_id}` (CRUD) |
+| **Memories** | `/memories/{memory_id}` (CRUD), `/memories/export`, `/memories/import`, `/memories/reembed`, `/memories/consolidate`, `/memories/dream` |
+| **Skills** | `/skills/{skill_id}` (CRUD), `/skills/upload`, `/skills/admin/sync` |
 | **Audio** | `/tts`, `/stt`, `/audio/token`, `/audio/scribe-token`, `/sound-effects` |
-| **Video** | `/balance`, `/estimate`, `/transactions` |
-| **System** | `/health`, `/generated-images/{filename}`, `/generated-audio/{filename}`, `/generated-files/{filename}` |
+| **Video** | `/video-credits/balance`, `/video-credits/estimate`, `/video-credits/transactions` |
+| **System** | `/status`, `/health`, `/generated-images/{filename}`, `/generated-audio/{filename}`, `/generated-files/{filename}` |
 
 ---
 

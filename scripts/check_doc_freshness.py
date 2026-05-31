@@ -139,7 +139,12 @@ def get_tier_facts(root: Path) -> dict[str, dict[str, str]]:
     return tiers
 
 
-_ROUTE_DEF_RE = re.compile(r'(?:@app\.|router\.)(get|post|put|patch|delete|options)\s*\(\s*["\']([^"\']+)["\']')
+_ROUTE_DEF_RE = re.compile(r'(@app\.|router\.)(get|post|put|patch|delete|options)\s*\(\s*["\']([^"\']*)["\']')
+_ROUTER_PREFIX_RE = re.compile(r'router\s*=\s*APIRouter\s*\(\s*prefix\s*=\s*["\']([^"\']+)["\']')
+
+
+def _strip_trailing_slash(path: str) -> str:
+    return path.rstrip('/')
 
 
 def get_route_facts(root: Path) -> dict[str, Any]:
@@ -147,13 +152,20 @@ def get_route_facts(root: Path) -> dict[str, Any]:
     routes_dir = root / "orchestrator" / "routes"
     routes: dict[str, list[str]] = {}
 
-    for path in [main_path] + list(routes_dir.glob("*.py")):
+    for path in [main_path] + sorted(routes_dir.glob("*.py")):
         if not path.exists():
             continue
         text = path.read_text(encoding="utf-8")
+
+        prefix_match = _ROUTER_PREFIX_RE.search(text)
+        prefix = _strip_trailing_slash(prefix_match.group(1)) if prefix_match else None
+
         for m in _ROUTE_DEF_RE.finditer(text):
-            method = m.group(1).upper()
-            path_val = m.group(2)
+            decorator = m.group(1)
+            method = m.group(2).upper()
+            path_val = m.group(3)
+            if decorator == "router." and prefix is not None:
+                path_val = prefix + path_val
             routes.setdefault(method, []).append(path_val)
 
     return {"routes": routes}
@@ -209,7 +221,7 @@ def get_env_var_facts(root: Path) -> dict[str, list[str]]:
 _TIER_PRICE_RE = re.compile(r'#\s*Tier:\s*(FREE|STARTER|PRO|MAX|BYOK)\s*\(([^)]+)\)', re.IGNORECASE)
 
 
-def get_tier_prices(root: Path) -> dict[str, str]:
+def get_tier_prices(root: Path) -> dict[str, Any]:
     config_path = root / "orchestrator" / "config.py"
     text = config_path.read_text(encoding="utf-8")
     prices: dict[str, str] = {}

@@ -512,3 +512,87 @@ python scripts/lint_feature_matrix.py                            # OK: 60 featur
 ### Commit Pushed
 - `5cef462c` — fix(lint): 4 context-mining reviewer blockers from PR #6 (inline latest migration, PROJECT_CONTEXT tier table, combined Research/Code, AES-GCM wording)
 - `[follow-up]` — fix(lint): LSP type error, bare Opus 4.6 suffix match, PROJECT_CONTEXT false positive guard, MEMORY_LAYER AES-GCM wording
+
+---
+
+## Atlas Verification Addendum 6 (Jun 2026)
+
+### Context
+Follow-up verification after `afae82cb`. Four issues found by Atlas and fixed in this patch.
+
+### Issues Fixed
+
+#### 1. LSP Type Error — `get_tier_prices()` return type annotation
+**Problem:** `get_tier_prices()` annotated as `-> dict[str, str]` but returns `{"tier_prices": prices}` (nested `dict[str, dict[str, str]]`).
+
+**Fix:** Changed return annotation to `dict[str, Any]`.
+
+#### 2. Route Extraction Ignored Router Prefixes
+**Problem:** `get_route_facts()` extracted decorator paths (e.g., `/balance`) without combining them with `APIRouter(prefix=...)`. This caused `afae82cb` to change docs to module-relative paths (`/balance`, `/reembed`, `/me/settings`) because those matched the extracted (but incorrect) source routes.
+
+**Fix:** Added `_ROUTER_PREFIX_RE` to extract `router = APIRouter(prefix="...")` per file. Route files combine prefix + decorator path to produce full public routes. Also fixed empty-path handling (e.g., `@router.get("")` in `system.py` → `/status`) by changing `[^"\']+` to `[^"\']*`.
+
+**Source route truth (43 routes extracted):**
+- `/video-credits/balance`, `/video-credits/transactions`, `/video-credits/estimate`, `/video-credits/grant`
+- `/memories/{memory_id}`, `/memories/export`, `/memories/import`, `/memories/reembed`, `/memories/consolidate`, `/memories/dream`
+- `/users/me/settings`, `/users/me/settings/presets`
+- `/conversations/{conversation_id}`
+- `/skills/{skill_id}`, `/skills/upload`, `/skills/admin/sync`
+- `/status`
+- `/health`, `/chat`, `/v1/chat/completions`, `/v1/models`, etc.
+
+#### 3. Docs Degraded to Module-Relative Paths
+**Problem:** `afae82cb` changed docs to module-relative paths because route extraction didn't combine prefixes. Docs were "degraded" from full public paths.
+
+**Fix:** Restored public paths in docs:
+- `docs/TECHNICAL_SPECS.md`: Memories row → `/memories/{memory_id}`, `/memories/export`, etc. (was `/{memory_id}`, `/export`); Video row → `/video-credits/balance`, `/video-credits/estimate`, `/video-credits/transactions` (was `/balance`, `/estimate`, `/transactions`); Skills row → `/skills/{skill_id}`, `/skills/upload`, `/skills/admin/sync` (was `/{skill_id}`, `/upload`, `/admin/sync`); Conversations row → `/conversations/{conversation_id}` (was `/{conversation_id}`); added `/status` to System row
+- `README.md`: `/me/settings` → `/users/me/settings`; `/balance` → `/video-credits/balance`; `/transactions` → `/video-credits/transactions`; parenthetical `{conversation_id}` → `/conversations/{conversation_id}`, etc.
+- `docs/MEMORY_UPGRADE_ROADMAP.md`: `/reembed` → `/memories/reembed` (line 150)
+
+#### 4. Missing Addendum 6
+**Problem:** `afae82cb` did not add an evidence addendum.
+
+**Fix:** This addendum documents all fixes, source truths, and gate outputs.
+
+### Verification
+
+#### Standard Gates
+```bash
+python scripts/check_doc_freshness.py --mode report --format text  # No drift detected.
+python scripts/check_doc_freshness.py --mode fail --format text  # No drift detected.
+python scripts/check_doc_freshness.py --mode fail --files README.md AGENTS.md  # No drift detected.
+python -m py_compile scripts/check_doc_freshness.py             # Compile OK
+python scripts/lint_feature_matrix.py                            # OK: 60 feature rows validated
+```
+
+#### Fixture Suite (24/24)
+| Fixture | Expected | Actual |
+|---------|----------|--------|
+| `inline_latest_backtick_stale` | Exit 1 | Exit 1 ✅ |
+| `inline_latest_no_backtick_stale` | Exit 1 | Exit 1 ✅ |
+| `migration_historical_no_latest_label` | Exit 0 | Exit 0 ✅ |
+| `tier_price_stale_free` | Exit 1 | Exit 1 ✅ |
+| `tier_price_current_all_tiers` | Exit 0 | Exit 0 ✅ |
+| `tier_price_stale_wrong_max` | Exit 1 | Exit 1 ✅ |
+| `route_stale_video_credits_prefix` | Exit 1 | Exit 1 ✅ |
+| `route_stale_reembed_typo` | Exit 1 | Exit 1 ✅ |
+| `route_stale_conversations_id_messages` | Exit 1 | Exit 1 ✅ |
+| `route_current_public_paths` | Exit 0 | Exit 0 ✅ |
+| `route_single_segment_reembed_NOT_checked` | Exit 0 | Exit 0 ✅ |
+| `route_single_segment_balance_NOT_checked` | Exit 0 | Exit 0 ✅ |
+| `env_var_stale_in_TECHNICAL_SPECS` | Exit 1 | Exit 1 ✅ |
+| `env_var_current_in_TECHNICAL_SPECS` | Exit 0 | Exit 0 ✅ |
+| `env_var_stale_in_other_file_NOT_scoped` | Exit 0 | Exit 0 ✅ |
+| `emb_doc_exact_stale_voyage4` | Exit 1 | Exit 1 ✅ |
+| `emb_doc_exact_ok` | Exit 0 | Exit 0 ✅ |
+| `generic_embedding_prose` | Exit 0 | Exit 0 ✅ |
+| `provider_markdown_ok` | Exit 0 | Exit 0 ✅ |
+| `provider_markdown_missing` | Exit 1 | Exit 1 ✅ |
+| `tier_stale_claude3_haiku` | Exit 1 | Exit 1 ✅ |
+| `techspec_max_research_code_combined_current` | Exit 0 | Exit 0 ✅ |
+| `techspec_max_research_code_missing_opus` | Exit 1 | Exit 1 ✅ |
+| `active_exception_visible` | Report exit 0, `(ACTIVE)` | ACTIVE visible ✅ |
+
+### Commit Pushed
+- `afae82cb` — fix: add tier price, route, and env var freshness checks; correct SSE final event docs
+- `[follow-up]` — fix: LSP type annotation, router prefix combination in route extraction, restore public paths in docs, add Addendum 6 evidence
