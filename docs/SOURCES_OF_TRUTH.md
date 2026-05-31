@@ -13,7 +13,7 @@ Daemon uses a tiered hierarchy to resolve contradictions. When two sources disag
 | **T0** | **Code & Config** | The ultimate truth. If the code does X, any doc saying Y is stale. | `orchestrator/config.py`, `migrations/*.sql`, `docker-compose.yml`, `orchestrator/routes/*.py` |
 | **T1** | **Curated Gated Specs** | High-fidelity technical specifications that are manually maintained but strictly gated against T0 drift. | `MEMORY_LAYER.md`, `docs/FEATURE_MATRIX.md`, `docs/TECHNICAL_SPECS.md` |
 | **T3** | **Operational Rollups** | Curated summaries of live operational data. They derive from raw logs but provide a higher-level view. | `docs/CURRENT_ISSUES.md` |
-| **T2** | **Narrative Status Docs** | Low-fidelity status updates, roadmaps, and project context. These are the most likely to drift and should be treated as secondary to T1. | `docs/ROADMAP.md`, `docs/PROJECT_CONTEXT.md` |
+| **T2** | **Narrative Status Docs** | Low-fidelity status updates and roadmaps. These are the most likely to drift and should be treated as secondary to T1. | `docs/ROADMAP.md` |
 
 ### The Role of CURRENT_ISSUES.md
 `docs/CURRENT_ISSUES.md` is classified as a **T3 Operational Rollup**. It is the curated interface for understanding active system anomalies. Its primary input is the raw `TRIAGE.md` log, but it is not a narrative document (T2) or a static spec (T1).
