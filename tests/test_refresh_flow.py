@@ -57,21 +57,34 @@ class MockConn:
                     }
                     return self._pool._sessions[token_hash]
             return None
-        if "SELECT client_kind" in sql and "refresh_token_hash" in sql and "refresh_consumed_at IS NULL" in sql:
+        if (
+            "SELECT client_kind" in sql
+            and "refresh_token_hash" in sql
+            and "refresh_consumed_at IS NULL" in sql
+        ):
             token_hash = args[0]
             if token_hash in self._pool._sessions:
                 row = self._pool._sessions[token_hash]
                 if self._is_session_valid(row):
                     return row
             return None
-        if "SELECT" in sql and "refresh_consumed_at" in sql and "UPDATE" not in sql and "refresh_token_hash" in sql:
+        if (
+            "SELECT" in sql
+            and "refresh_consumed_at" in sql
+            and "UPDATE" not in sql
+            and "refresh_token_hash" in sql
+        ):
             token_hash = args[0]
             if token_hash in self._pool._sessions:
                 row = self._pool._sessions[token_hash]
                 if row.get("refresh_consumed_at") is not None:
                     return row
             return None
-        if "SELECT" in sql and "refresh_token_hash" in sql and "id, user_id, device_id, client_kind" in sql:
+        if (
+            "SELECT" in sql
+            and "refresh_token_hash" in sql
+            and "id, user_id, device_id, client_kind" in sql
+        ):
             token_hash = args[0]
             if token_hash in self._pool._sessions:
                 row = self._pool._sessions[token_hash]
@@ -141,10 +154,12 @@ class MockPool:
 
 def make_mock_init(mock_pool):
     import orchestrator.main as main_module
+
     original_init = main_module.init_app_state
 
     async def mock_init(settings):
         from orchestrator.db import AppState
+
         state = AppState(settings=settings)
         state.db_pool = mock_pool
         state.redis = None
@@ -159,6 +174,7 @@ def make_mock_init(mock_pool):
 
 def restore_init(original):
     import orchestrator.main as main_module
+
     main_module.init_app_state = original
 
 
@@ -175,8 +191,16 @@ async def setup_env(monkeypatch):
     get_settings.cache_clear()
 
 
-def _make_session(token_hash, user_id, device_id, client_kind, consumed=False,
-                  expired=False, session_revoked=False, device_revoked=False):
+def _make_session(
+    token_hash,
+    user_id,
+    device_id,
+    client_kind,
+    consumed=False,
+    expired=False,
+    session_revoked=False,
+    device_revoked=False,
+):
     now = datetime.now(timezone.utc)
     if expired:
         refresh_expires_at = now - timedelta(hours=1)
@@ -245,9 +269,7 @@ class TestConsumedRefreshReuse:
         refresh_hash = hash_token(refresh_token)
         consumed_session = _make_session(refresh_hash, user_id, device_id, "web", consumed=True)
         active_hash = hash_token(generate_token())
-        active_session = _make_session(
-            active_hash, user_id, device_id2, "web", consumed=False
-        )
+        active_session = _make_session(active_hash, user_id, device_id2, "web", consumed=False)
         devices = {
             str(device_id): {"id": device_id, "user_id": user_id, "revoked_at": None},
             str(device_id2): {"id": device_id2, "user_id": user_id, "revoked_at": None},
@@ -275,8 +297,7 @@ class TestConsumedRefreshReuse:
                     assert mock_pool._devices[str(device_id)]["revoked_at"] is not None
                     assert mock_pool._sessions[refresh_hash]["revoked_at"] is not None
                     assert any(
-                        "device_id=" + str(device_id) in record.message
-                        for record in caplog.records
+                        "device_id=" + str(device_id) in record.message for record in caplog.records
                     )
                     assert not any(
                         refresh_token in record.message or refresh_hash in record.message
@@ -495,9 +516,7 @@ class TestExpiredBadRevokedRefresh:
         device_id = uuid.uuid4()
         refresh_token = generate_token()
         refresh_hash = hash_token(refresh_token)
-        expired_session = _make_session(
-            refresh_hash, user_id, device_id, "web", expired=True
-        )
+        expired_session = _make_session(refresh_hash, user_id, device_id, "web", expired=True)
         devices = {str(device_id): {"id": device_id, "user_id": user_id, "revoked_at": None}}
         mock_pool = MockPool(sessions={refresh_hash: expired_session}, devices=devices)
         original = make_mock_init(mock_pool)
@@ -554,7 +573,13 @@ class TestExpiredBadRevokedRefresh:
         refresh_token = generate_token()
         refresh_hash = hash_token(refresh_token)
         valid_session = _make_session(refresh_hash, user_id, device_id, "web")
-        devices = {str(device_id): {"id": device_id, "user_id": user_id, "revoked_at": datetime.now(timezone.utc)}}
+        devices = {
+            str(device_id): {
+                "id": device_id,
+                "user_id": user_id,
+                "revoked_at": datetime.now(timezone.utc),
+            }
+        }
         mock_pool = MockPool(sessions={refresh_hash: valid_session}, devices=devices)
         original = make_mock_init(mock_pool)
         try:
@@ -580,9 +605,7 @@ class TestExpiredBadRevokedRefresh:
         device_id = uuid.uuid4()
         refresh_token = generate_token()
         refresh_hash = hash_token(refresh_token)
-        expired_session = _make_session(
-            refresh_hash, user_id, device_id, "web", expired=True
-        )
+        expired_session = _make_session(refresh_hash, user_id, device_id, "web", expired=True)
         devices = {str(device_id): {"id": device_id, "user_id": user_id, "revoked_at": None}}
         mock_pool = MockPool(sessions={refresh_hash: expired_session}, devices=devices)
         original = make_mock_init(mock_pool)
@@ -746,6 +769,8 @@ class TestWebRefreshCSRF:
                     )
 
                     assert response.status_code == 403, response.text
-                    assert "CSRF" in response.json()["detail"] or "origin" in response.json()["detail"]
+                    assert (
+                        "CSRF" in response.json()["detail"] or "origin" in response.json()["detail"]
+                    )
         finally:
             restore_init(original)

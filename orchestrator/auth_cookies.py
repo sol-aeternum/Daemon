@@ -49,9 +49,7 @@ def make_refresh_cookie_config(
     environment: str,
 ) -> RefreshCookieConfig:
     if environment == "production" and not cookie_secure:
-        raise CookiePolicyError(
-            "daemon_cookie_secure=false is not allowed in production"
-        )
+        raise CookiePolicyError("daemon_cookie_secure=false is not allowed in production")
     if environment == "development" and not cookie_secure:
         # The __Host- prefix is only valid with Secure.  For explicit
         # insecure development over plain HTTP/LAN, use an unprefixed

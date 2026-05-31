@@ -37,7 +37,10 @@ class MockConn:
 
     async def fetchrow(self, sql, *args):
         # Device list query
-        if "SELECT id, display_name, platform, created_at, last_seen_at, revoked_at" in sql and "user_id" in sql:
+        if (
+            "SELECT id, display_name, platform, created_at, last_seen_at, revoked_at" in sql
+            and "user_id" in sql
+        ):
             user_id = args[0]
             if user_id != SINGLETON_ID:
                 return None
@@ -63,7 +66,10 @@ class MockConn:
 
     async def fetch(self, sql, *args):
         # Device list query - returns list
-        if "SELECT id, display_name, platform, created_at, last_seen_at, revoked_at" in sql and "user_id" in sql:
+        if (
+            "SELECT id, display_name, platform, created_at, last_seen_at, revoked_at" in sql
+            and "user_id" in sql
+        ):
             user_id = args[0]
             result = []
             for d in self._pool._devices.values():
@@ -129,10 +135,12 @@ class MockPool:
 
 def make_mock_init(mock_pool):
     import orchestrator.main as main_module
+
     original_init = main_module.init_app_state
 
     async def mock_init(settings):
         from orchestrator.db import AppState
+
         state = AppState(settings=settings)
         state.db_pool = mock_pool
         state.redis = None
@@ -147,6 +155,7 @@ def make_mock_init(mock_pool):
 
 def restore_init(original):
     import orchestrator.main as main_module
+
     main_module.init_app_state = original
 
 
@@ -167,7 +176,9 @@ def make_auth_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _make_device(device_id, user_id, display_name, platform="web", revoked_at=None, last_seen_at=None):
+def _make_device(
+    device_id, user_id, display_name, platform="web", revoked_at=None, last_seen_at=None
+):
     now = datetime.now(timezone.utc)
     return {
         "id": device_id,
@@ -183,6 +194,7 @@ def _make_device(device_id, user_id, display_name, platform="web", revoked_at=No
 # ---------------------------------------------------------------------------
 # GET /v1/auth/devices
 # ---------------------------------------------------------------------------
+
 
 class TestListDevicesRequiresAuth:
     @pytest.mark.asyncio
@@ -225,7 +237,9 @@ class TestListDevicesOwnOnly:
 
         devices = {
             str(my_device_id): _make_device(my_device_id, user_id, "My Phone", "native"),
-            str(other_device_id): _make_device(other_device_id, other_user_id, "Other User Device", "web"),
+            str(other_device_id): _make_device(
+                other_device_id, other_user_id, "Other User Device", "web"
+            ),
         }
 
         mock_pool = MockPool(devices=devices)
@@ -243,6 +257,7 @@ class TestListDevicesOwnOnly:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=user_id,
                             device_id=my_device_id,
@@ -251,6 +266,7 @@ class TestListDevicesOwnOnly:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 
@@ -300,6 +316,7 @@ class TestListDevicesCurrentFlag:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=user_id,
                             device_id=my_device_id,
@@ -308,6 +325,7 @@ class TestListDevicesCurrentFlag:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 
@@ -341,7 +359,10 @@ class TestListDevicesRevokedExclusion:
         devices = {
             str(active_id): _make_device(active_id, user_id, "Active Device", "web"),
             str(revoked_id): _make_device(
-                revoked_id, user_id, "Revoked Device", "native",
+                revoked_id,
+                user_id,
+                "Revoked Device",
+                "native",
                 revoked_at=datetime.now(timezone.utc) - timedelta(days=1),
             ),
         }
@@ -361,6 +382,7 @@ class TestListDevicesRevokedExclusion:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=user_id,
                             device_id=active_id,
@@ -369,6 +391,7 @@ class TestListDevicesRevokedExclusion:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 
@@ -398,7 +421,10 @@ class TestListDevicesRevokedExclusion:
         devices = {
             str(active_id): _make_device(active_id, user_id, "Active Device", "web"),
             str(revoked_id): _make_device(
-                revoked_id, user_id, "Revoked Device", "native",
+                revoked_id,
+                user_id,
+                "Revoked Device",
+                "native",
                 revoked_at=datetime.now(timezone.utc) - timedelta(days=1),
             ),
         }
@@ -418,6 +444,7 @@ class TestListDevicesRevokedExclusion:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=user_id,
                             device_id=active_id,
@@ -426,6 +453,7 @@ class TestListDevicesRevokedExclusion:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 
@@ -454,6 +482,7 @@ class TestListDevicesRevokedExclusion:
 # ---------------------------------------------------------------------------
 # DELETE /v1/auth/devices/{id}
 # ---------------------------------------------------------------------------
+
 
 class TestRevokeDeviceRequiresAuth:
     @pytest.mark.asyncio
@@ -498,7 +527,9 @@ class TestRevokeDeviceCrossUser:
 
         devices = {
             str(my_device_id): _make_device(my_device_id, user_id, "My Phone", "native"),
-            str(other_device_id): _make_device(other_device_id, other_user_id, "Other User Device", "web"),
+            str(other_device_id): _make_device(
+                other_device_id, other_user_id, "Other User Device", "web"
+            ),
         }
 
         mock_pool = MockPool(devices=devices)
@@ -516,6 +547,7 @@ class TestRevokeDeviceCrossUser:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=user_id,
                             device_id=my_device_id,
@@ -524,6 +556,7 @@ class TestRevokeDeviceCrossUser:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 
@@ -559,6 +592,7 @@ class TestRevokeDeviceMalformedId:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=SINGLETON_ID,
                             device_id=pool._device_id,
@@ -567,17 +601,24 @@ class TestRevokeDeviceMalformedId:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 
                 transport = ASGITransport(app=app)
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
-                    for malformed in ["not-a-uuid", "12345", "zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz"]:
+                    for malformed in [
+                        "not-a-uuid",
+                        "12345",
+                        "zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz",
+                    ]:
                         response = await client.delete(
                             f"/v1/auth/devices/{malformed}",
                             headers=make_auth_headers(access_token),
                         )
-                        assert response.status_code == 404, f"Expected 404 for {malformed}, got {response.status_code}"
+                        assert response.status_code == 404, (
+                            f"Expected 404 for {malformed}, got {response.status_code}"
+                        )
 
                 auth_module._verify_access_token = original_verify
         finally:
@@ -628,6 +669,7 @@ class TestRevokeDeviceOwnDevice:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=user_id,
                             device_id=my_device_id,
@@ -636,6 +678,7 @@ class TestRevokeDeviceOwnDevice:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 
@@ -677,7 +720,10 @@ class TestRevokeDeviceIdempotent:
 
         devices = {
             str(my_device_id): _make_device(
-                my_device_id, user_id, "My Phone", "native",
+                my_device_id,
+                user_id,
+                "My Phone",
+                "native",
                 revoked_at=datetime.now(timezone.utc) - timedelta(days=1),
             ),
         }
@@ -697,6 +743,7 @@ class TestRevokeDeviceIdempotent:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=user_id,
                             device_id=my_device_id,
@@ -705,6 +752,7 @@ class TestRevokeDeviceIdempotent:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 
@@ -725,7 +773,9 @@ class TestRevokeDeviceIdempotent:
 
 class TestRevokeDeviceCurrentDeviceClearsCookie:
     @pytest.mark.asyncio
-    async def test_revoke_current_web_device_with_cookie_clears_cookie(self, setup_env, monkeypatch):
+    async def test_revoke_current_web_device_with_cookie_clears_cookie(
+        self, setup_env, monkeypatch
+    ):
         user_id = SINGLETON_ID
         my_device_id = uuid.uuid4()
 
@@ -748,6 +798,7 @@ class TestRevokeDeviceCurrentDeviceClearsCookie:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=user_id,
                             device_id=my_device_id,
@@ -756,6 +807,7 @@ class TestRevokeDeviceCurrentDeviceClearsCookie:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 
@@ -775,7 +827,9 @@ class TestRevokeDeviceCurrentDeviceClearsCookie:
             restore_init(original)
 
     @pytest.mark.asyncio
-    async def test_revoke_current_native_device_without_cookie_does_not_clear_cookie(self, setup_env, monkeypatch):
+    async def test_revoke_current_native_device_without_cookie_does_not_clear_cookie(
+        self, setup_env, monkeypatch
+    ):
         user_id = SINGLETON_ID
         my_device_id = uuid.uuid4()
 
@@ -798,6 +852,7 @@ class TestRevokeDeviceCurrentDeviceClearsCookie:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=user_id,
                             device_id=my_device_id,
@@ -806,6 +861,7 @@ class TestRevokeDeviceCurrentDeviceClearsCookie:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 
@@ -827,7 +883,9 @@ class TestRevokeDeviceCurrentDeviceClearsCookie:
             restore_init(original)
 
     @pytest.mark.asyncio
-    async def test_revoke_current_device_with_other_device_remaining_succeeds(self, setup_env, monkeypatch):
+    async def test_revoke_current_device_with_other_device_remaining_succeeds(
+        self, setup_env, monkeypatch
+    ):
         user_id = SINGLETON_ID
         my_device_id = uuid.uuid4()
         other_device_id = uuid.uuid4()
@@ -861,6 +919,7 @@ class TestRevokeDeviceCurrentDeviceClearsCookie:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=user_id,
                             device_id=my_device_id,
@@ -869,6 +928,7 @@ class TestRevokeDeviceCurrentDeviceClearsCookie:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 

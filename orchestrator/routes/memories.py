@@ -5,7 +5,12 @@ from pydantic import BaseModel
 import uuid
 from typing import Any, Literal
 
-from orchestrator.auth import AuthenticatedDevice, AdminOrDeviceAuth, require_admin_or_device_auth, require_device_auth
+from orchestrator.auth import (
+    AuthenticatedDevice,
+    AdminOrDeviceAuth,
+    require_admin_or_device_auth,
+    require_device_auth,
+)
 from orchestrator.config import get_settings
 from orchestrator.db import get_app_state, AppState
 from orchestrator.memory.embedding import embed_documents
@@ -45,7 +50,6 @@ class MemoryReembedRequest(BaseModel):
     ] = "active"
     memory_ids: list[uuid.UUID] | None = None
     batch_size: int = 50
-
 
 
 @router.get("")

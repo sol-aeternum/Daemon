@@ -12,7 +12,12 @@ from fastapi import (
     UploadFile,
 )
 
-from orchestrator.auth import AuthenticatedDevice, AdminOrDeviceAuth, require_admin_or_device_auth, require_device_auth
+from orchestrator.auth import (
+    AuthenticatedDevice,
+    AdminOrDeviceAuth,
+    require_admin_or_device_auth,
+    require_device_auth,
+)
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
@@ -26,7 +31,6 @@ from orchestrator.skills_upgrade import (
 )
 
 router = APIRouter(prefix="/skills", tags=["skills"])
-
 
 
 def _safe_isoformat(value: Any) -> str | None:

@@ -110,9 +110,7 @@ async def test_user_settings_use_authenticated_user(authenticated_app, monkeypat
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get(
-            "/users/me/settings", headers=make_auth_headers("valid-token")
-        )
+        response = await client.get("/users/me/settings", headers=make_auth_headers("valid-token"))
 
     assert response.status_code == 200
     store.get_user_settings.assert_called_once_with(auth_user_id)

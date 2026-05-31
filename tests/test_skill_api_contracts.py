@@ -65,9 +65,7 @@ def app_with_mock_db(
     mock_app_state.video_credits_dal = MagicMock()
     cast(Any, app).state.app_state = mock_app_state
 
-    app.dependency_overrides[skills_router.require_device_auth] = (
-        lambda: fake_authenticated_device
-    )
+    app.dependency_overrides[skills_router.require_device_auth] = lambda: fake_authenticated_device
 
     return app
 
@@ -1217,9 +1215,9 @@ class TestAdminSyncRoute:
             authenticated_device=fake_authenticated_device,
             is_admin=False,
         )
-        app_with_mock_db.dependency_overrides[
-            skills_router.require_admin_or_device_auth
-        ] = lambda: non_admin_auth
+        app_with_mock_db.dependency_overrides[skills_router.require_admin_or_device_auth] = lambda: (
+            non_admin_auth
+        )
 
         test_client = TestClient(app_with_mock_db)
         response = test_client.post(

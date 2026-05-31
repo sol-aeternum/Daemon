@@ -23,6 +23,7 @@ def require_admin_api_key(settings: Settings, authorization: str | None) -> None
     if token != settings.daemon_admin_api_key:
         raise HTTPException(status_code=403, detail="Invalid admin bearer token")
 
+
 def get_bound_tier(settings: Settings) -> str:
     tier = settings.default_tier.lower().strip()
     if tier not in VALID_TIERS:
@@ -79,9 +80,7 @@ async def get_transactions(
     if app_state.video_credits_dal is None:
         raise HTTPException(status_code=503, detail="Video credits service unavailable")
 
-    transactions = await app_state.video_credits_dal.get_transactions(
-        auth.user_id, limit, offset
-    )
+    transactions = await app_state.video_credits_dal.get_transactions(auth.user_id, limit, offset)
     # Get total count for pagination
     db_pool = app_state.db_pool
     if db_pool is None:

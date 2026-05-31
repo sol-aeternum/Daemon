@@ -30,9 +30,7 @@ class TestRefreshCookieConfig:
         assert COOKIE_NAME == "__Host-daemon_refresh"
 
     def test_production_cookie_is_secure(self):
-        config = make_refresh_cookie_config(
-            cookie_secure=True, environment="production"
-        )
+        config = make_refresh_cookie_config(cookie_secure=True, environment="production")
         assert config.name == "__Host-daemon_refresh"
         assert config.http_only is True
         assert config.secure is True
@@ -40,9 +38,7 @@ class TestRefreshCookieConfig:
         assert config.path == "/"
 
     def test_development_insecure_cookie_uses_unprefixed_name(self):
-        config = make_refresh_cookie_config(
-            cookie_secure=False, environment="development"
-        )
+        config = make_refresh_cookie_config(cookie_secure=False, environment="development")
         assert config.name == INSECURE_DEVELOPMENT_COOKIE_NAME
         assert (
             get_refresh_cookie_name(cookie_secure=False, environment="development")
@@ -54,9 +50,7 @@ class TestRefreshCookieConfig:
         assert config.path == "/"
 
     def test_development_secure_cookie_true(self):
-        config = make_refresh_cookie_config(
-            cookie_secure=True, environment="development"
-        )
+        config = make_refresh_cookie_config(cookie_secure=True, environment="development")
         assert config.secure is True
 
     def test_production_insecure_cookie_rejected(self):
@@ -67,9 +61,7 @@ class TestRefreshCookieConfig:
 
 class TestBuildRefreshCookie:
     def test_production_cookie_string(self):
-        config = make_refresh_cookie_config(
-            cookie_secure=True, environment="production"
-        )
+        config = make_refresh_cookie_config(cookie_secure=True, environment="production")
         result = build_refresh_cookie("test_refresh_token_value", config)
         cookie = result["Set-Cookie"]
         assert "__Host-daemon_refresh=test_refresh_token_value" in cookie
@@ -80,9 +72,7 @@ class TestBuildRefreshCookie:
         assert "Domain=" not in cookie
 
     def test_development_insecure_cookie_omits_secure(self):
-        config = make_refresh_cookie_config(
-            cookie_secure=False, environment="development"
-        )
+        config = make_refresh_cookie_config(cookie_secure=False, environment="development")
         result = build_refresh_cookie("test_refresh_token_value", config)
         cookie = result["Set-Cookie"]
         assert "daemon_refresh=test_refresh_token_value" in cookie
@@ -93,18 +83,14 @@ class TestBuildRefreshCookie:
         assert "Domain=" not in cookie
 
     def test_cookie_with_max_age(self):
-        config = make_refresh_cookie_config(
-            cookie_secure=True, environment="production"
-        )
+        config = make_refresh_cookie_config(cookie_secure=True, environment="production")
         result = build_refresh_cookie("token", config, max_age=86400)
         assert "Max-Age=86400" in result["Set-Cookie"]
 
 
 class TestClearRefreshCookie:
     def test_clear_cookie_has_max_age_zero(self):
-        config = make_refresh_cookie_config(
-            cookie_secure=True, environment="production"
-        )
+        config = make_refresh_cookie_config(cookie_secure=True, environment="production")
         result = clear_refresh_cookie(config)
         assert "Max-Age=0" in result["Set-Cookie"]
         assert "HttpOnly" in result["Set-Cookie"]
@@ -243,32 +229,24 @@ class TestCSRFOriginGuard:
 class TestCORSDenyByDefault:
     def test_empty_origins_string_parses_to_empty_list(self):
         settings = Settings(daemon_allowed_origins="")
-        parsed = [
-            o.strip() for o in settings.daemon_allowed_origins.split(",") if o.strip()
-        ]
+        parsed = [o.strip() for o in settings.daemon_allowed_origins.split(",") if o.strip()]
         assert parsed == []
 
     def test_single_origin_parses_correctly(self):
         settings = Settings(daemon_allowed_origins="https://app.daemon.ai")
-        parsed = [
-            o.strip() for o in settings.daemon_allowed_origins.split(",") if o.strip()
-        ]
+        parsed = [o.strip() for o in settings.daemon_allowed_origins.split(",") if o.strip()]
         assert parsed == ["https://app.daemon.ai"]
 
     def test_multiple_origins_parse_correctly(self):
         settings = Settings(
             daemon_allowed_origins="https://app.daemon.ai, https://staging.daemon.ai"
         )
-        parsed = [
-            o.strip() for o in settings.daemon_allowed_origins.split(",") if o.strip()
-        ]
+        parsed = [o.strip() for o in settings.daemon_allowed_origins.split(",") if o.strip()]
         assert parsed == ["https://app.daemon.ai", "https://staging.daemon.ai"]
 
     def test_whitespace_only_origins_parses_to_empty(self):
         settings = Settings(daemon_allowed_origins="   ,  ")
-        parsed = [
-            o.strip() for o in settings.daemon_allowed_origins.split(",") if o.strip()
-        ]
+        parsed = [o.strip() for o in settings.daemon_allowed_origins.split(",") if o.strip()]
         assert parsed == []
 
 

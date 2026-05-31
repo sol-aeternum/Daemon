@@ -44,13 +44,13 @@ def validate_and_get_pepper(settings: Settings) -> str:
         if not pepper:
             raise PepperValidationError(
                 "daemon_auth_pepper is required in production. "
-                "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+                'Generate one with: python -c "import secrets; print(secrets.token_urlsafe(32))"'
             )
         if len(pepper) < MIN_PEPPER_CHARS:
             raise PepperValidationError(
                 f"daemon_auth_pepper is too weak in production. "
                 f"Got {len(pepper)} chars, need at least {MIN_PEPPER_CHARS}. "
-                "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+                'Generate one with: python -c "import secrets; print(secrets.token_urlsafe(32))"'
             )
         return pepper
 

@@ -100,10 +100,12 @@ class MockPool:
 
 def make_mock_init(mock_pool):
     import orchestrator.main as main_module
+
     original_init = main_module.init_app_state
 
     async def mock_init(settings):
         from orchestrator.db import AppState
+
         state = AppState(settings=settings)
         state.db_pool = mock_pool
         state.redis = None
@@ -118,6 +120,7 @@ def make_mock_init(mock_pool):
 
 def restore_init(original):
     import orchestrator.main as main_module
+
     main_module.init_app_state = original
 
 
@@ -135,7 +138,9 @@ async def setup_env(monkeypatch):
 
 class TestStartupNoDeviceLogsToken:
     @pytest.mark.asyncio
-    async def test_startup_logs_setup_token_when_no_active_devices(self, setup_env, monkeypatch, caplog):
+    async def test_startup_logs_setup_token_when_no_active_devices(
+        self, setup_env, monkeypatch, caplog
+    ):
         mock_pool = MockPool(active_device_count=0)
         original = make_mock_init(mock_pool)
         try:
@@ -150,7 +155,9 @@ class TestStartupNoDeviceLogsToken:
 
 class TestStartupActiveDeviceSuppressesToken:
     @pytest.mark.asyncio
-    async def test_startup_does_not_log_token_when_active_devices_exist(self, setup_env, monkeypatch, caplog):
+    async def test_startup_does_not_log_token_when_active_devices_exist(
+        self, setup_env, monkeypatch, caplog
+    ):
         mock_pool = MockPool(active_device_count=1)
         original = make_mock_init(mock_pool)
         try:
@@ -411,8 +418,12 @@ class TestConcurrentSetup:
                     success_count = statuses.count(200)
                     already_complete_count = statuses.count(409)
 
-                    assert success_count == 1, f"Expected exactly 1 success, got {success_count}: {statuses}"
-                    assert already_complete_count == 2, f"Expected 2 already_complete, got {already_complete_count}: {statuses}"
+                    assert success_count == 1, (
+                        f"Expected exactly 1 success, got {success_count}: {statuses}"
+                    )
+                    assert already_complete_count == 2, (
+                        f"Expected 2 already_complete, got {already_complete_count}: {statuses}"
+                    )
         finally:
             restore_init(original)
 

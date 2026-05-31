@@ -183,6 +183,7 @@ async def _check_first_boot_setup(state: AppState) -> None:
         )
         if active_count == 0:
             from orchestrator.auth_tokens import generate_setup_token, hash_token
+
             plaintext = generate_setup_token()
             state.setup_token_hash = hash_token(plaintext)
             logger.info(
@@ -212,6 +213,7 @@ async def _check_first_boot_setup(state: AppState) -> None:
                         "UPDATE sessions SET revoked_at = NOW() WHERE revoked_at IS NULL"
                     )
                 from orchestrator.auth_tokens import generate_setup_token, hash_token
+
                 plaintext = generate_setup_token()
                 state.setup_token_hash = hash_token(plaintext)
                 logger.info(
