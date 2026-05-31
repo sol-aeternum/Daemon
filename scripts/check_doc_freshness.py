@@ -407,16 +407,16 @@ def _check_video_providers(doc_content: str, valid_providers: frozenset[str]) ->
     singular_patterns = [
         (r'\bprovider:\s*([a-z]+)',),
         (r'\bvideo\s+provider:\s*([a-z]+)',),
-        (r'\*\*Providers\*\*:\s*`([a-z]+)`',),
-        (r'\*\*Video\s+Providers\*\*:\s*`([a-z]+)`',),
     ]
     # Plural/list forms: capture raw comma-separated names, brace-enclosed set, or markdown backtick lists
     plural_patterns = [
         (r'\bproviders:\s*([a-z, ]+)',),
         (r'\bvideo\s+providers:\s*([a-z, ]+)',),
         (r'\bVALID_VIDEO_PROVIDERS\s*=\s*\{([^}]+)\}',),
-        (r'\*\*Providers\*\*:\s*`([^`]+?)`',),
-        (r'\*\*Video\s+Providers\*\*:\s*`([^`]+?)`',),
+    ]
+    plural_backtick_label_patterns = [
+        r'\*\*Providers\*\*:',
+        r'\*\*Video\s+Providers\*\*:',
     ]
 
     singular_claims: set[str] = set()
@@ -431,11 +431,23 @@ def _check_video_providers(doc_content: str, valid_providers: frozenset[str]) ->
         for m in re.finditer(pat, doc_content, re.IGNORECASE):
             if m.lastindex and m.lastindex >= 1:
                 raw = m.group(1)
-                # Extract individual provider names (quoted or unquoted, comma-separated)
                 names = re.findall(r'["\']?([a-z]+)["\']?', raw, re.IGNORECASE)
                 for n in names:
                     if n.lower() not in singular_claims:
                         plural_claims.add(n.lower())
+
+    # Markdown bold plural labels: find the label, extract all backtick names on the SAME LINE
+    for label_pat in plural_backtick_label_patterns:
+        for m in re.finditer(label_pat, doc_content, re.IGNORECASE):
+            # Limit remainder to current line only (next newline or end of document)
+            line_end = doc_content.find('\n', m.end())
+            if line_end == -1:
+                line_end = len(doc_content)
+            remainder = doc_content[m.end():line_end]
+            names = re.findall(r'`([a-z]+)`', remainder, re.IGNORECASE)
+            for n in names:
+                if n.lower() not in singular_claims:
+                    plural_claims.add(n.lower())
 
     # Singular claims: validate each is in the valid set
     for claim in singular_claims:
@@ -472,17 +484,18 @@ def _check_video_providers(doc_content: str, valid_providers: frozenset[str]) ->
 
 
 # Tier table row regex: | **TIER** | model | model | model | model | model | model |
+# Only matches actual tier names (FREE, STARTER, PRO, MAX, BYOK)
 _TIER_TABLE_ROW_RE = re.compile(
-    r'^\|\s*\*\*([A-Z]+)\*\*\s*\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|'
+    r'^\|\s*\*\*(FREE|STARTER|PRO|MAX|BYOK)\*\*\s*\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|'
 )
 
-# Map from tier name in docs to tier name in config
+# Map from tier name in docs (uppercase from table) to tier name in config
 _TIER_NAME_MAP = {
-    "FREE": "free",
-    "STARTER": "starter",
-    "PRO": "pro",
-    "MAX": "max",
-    "BYOK": "byok",
+    "free": "free",
+    "starter": "starter",
+    "pro": "pro",
+    "max": "max",
+    "byok": "byok",
 }
 
 # Slot names in the tier table (order must match the regex above)
@@ -490,12 +503,11 @@ _TIER_SLOTS = ["orchestrator", "research", "image", "reader", "embeddings", "vid
 
 
 def _normalize_model_name(model: str) -> str:
-    """Strip provider prefix and normalize model name for comparison."""
     normalized = model.lower()
     for prefix in ["openrouter/", "openai/", "anthropic/", "google/", "x-ai/", "deepseek/"]:
         if normalized.startswith(prefix):
             normalized = normalized[len(prefix):]
-    normalized = normalized.replace("-", " ").replace("_", " ")
+    normalized = normalized.replace("/", " ").replace("-", " ").replace("_", " ")
     return normalized.strip()
 
 
@@ -529,7 +541,7 @@ def _check_tier_defaults(doc_content: str, tier_defaults: dict[str, dict[str, st
         doc_slots = tier_claims.get(tier_name, {})
         for slot, config_model in slots.items():
             doc_model = doc_slots.get(slot, "").strip('*_')
-            if not doc_model or doc_model.lower() in ("_none_", "disabled", "n/a"):
+            if not doc_model or doc_model.lower() in ("_none_", "disabled", "n/a", "—"):
                 doc_model = ""
 
             if not config_model:
@@ -538,8 +550,11 @@ def _check_tier_defaults(doc_content: str, tier_defaults: dict[str, dict[str, st
                 continue
 
             config_normalized = _normalize_model_name(config_model)
-            if doc_model and config_normalized not in _normalize_model_name(doc_model):
-                if config_normalized not in _normalize_model_name(doc_model).replace(" ", ""):
+            if doc_model:
+                doc_normalized = _normalize_model_name(doc_model)
+                # Check if ANY doc word appears in the config (allows multi-model docs like "A / B")
+                doc_words = set(doc_normalized.split())
+                if doc_words and not any(w in config_normalized for w in doc_words):
                     results.append(CheckResult(
                         CheckId.TIER_MODEL, False,
                         config_model,
