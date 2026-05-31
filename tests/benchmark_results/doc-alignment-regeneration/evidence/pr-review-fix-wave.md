@@ -295,3 +295,75 @@ python scripts/check_doc_freshness.py --mode fail --files README.md AGENTS.md  #
 python -m py_compile scripts/check_doc_freshness.py                  # Compile OK
 python scripts/lint_feature_matrix.py                                 # OK: 60 feature rows validated
 ```
+
+---
+
+## Atlas Verification Addendum 3 (Jun 2026)
+
+### Issues Fixed (5 blockers)
+
+#### 1. Embedding Exact Match
+**Problem:** Embedding doc/query model checks used substring containment (`expected in observed or observed in expected`), allowing `voyage-4` to pass against `voyage-4-large`.
+
+**Fix:** Changed to exact `_normalize_model_name()` equality comparison. Both sides normalized (lowercased, `/`-` ` replaced) then compared.
+
+```python
+# Before (substring):
+if expected.lower() not in observed.lower() and observed.lower() not in expected.lower():
+
+# After (exact):
+if _normalize_model_name(observed) != _normalize_model_name(expected):
+```
+
+#### 2. Tier Model Validation — Strengthened Overlap
+**Problem:** Single-word `any()` overlap allowed `Claude 3 Haiku` to match `openrouter/anthropic/claude-3.5-sonnet` via shared "claude".
+
+**Fix:** Require at least 2 content words to overlap. `Claude 3 Haiku` vs `claude-3.5-sonnet` → overlap = {"claude"} = 1 → FAIL. `Claude 3.5 Sonnet` vs `claude-3.5-sonnet` → overlap = {"claude","3.5","sonnet"} = 3 → PASS.
+
+#### 3. Latest Migration — Structured Claims Only
+**Problem:** `_check_migration_latest` scanned every migration filename mention, causing `001_initial_schema.sql` in historical context to fail.
+
+**Fix:** New pattern `(?:latest\s+(?:migration|db)|most\s+recent|newest)\s*[:\->=]\s*(\d{2,3}_\w+(?:\.sql)?)` only matches explicit latest-claim labels. Historical mentions pass silently.
+
+#### 4. Memory Links in docs/ Subdirectory
+**Problem:** `docs/PROJECT_CONTEXT.md` and `docs/TECHNICAL_SPECS.md` used `[MEMORY_LAYER.md](MEMORY_LAYER.md)` — broken relative link from `docs/` to root.
+
+**Fix:** Changed to `../MEMORY_LAYER.md` in both files.
+
+#### 5. @document Spawn Schema
+**Problem:** `spawn_agent` and `spawn_multiple` tool schemas omitted `document` from `agent_type` enum despite `DocumentSubagent` being registered and README advertising `@document`.
+
+**Fix:** Added `"document"` to both enum arrays at `spawn.py:178` and `spawn.py:293`.
+
+### Fixture Verification (Jun 2026)
+
+| Fixture | Expected | Actual |
+|---------|----------|--------|
+| `emb_doc_exact_stale_voyage4` (`**EMBEDDING_DOCUMENT_MODEL**: voyage-4`) | Exit 1 | Exit 1 ✅ |
+| `emb_doc_exact_ok` (voyage-4-large/lite, 1024) | Exit 0 | Exit 0 ✅ |
+| `emb_query_exact_stale_voyage4` | Exit 1 | Exit 1 ✅ |
+| `tier_same_family_haiku_stale` (PRO/Research = Claude 3 Haiku) | Exit 1 | Exit 1 ✅ |
+| `migration_historical_001_passes` | Exit 0 | Exit 0 ✅ |
+| `migration_latest_stale_structured` | Exit 1 | Exit 1 ✅ |
+| `generic_embedding_prose` | Exit 0 | Exit 0 ✅ |
+| `migration_count_second_stale` | Exit 1 | Exit 1 ✅ |
+| `dedup_swapped` | Exit 1 | Exit 1 ✅ |
+| `provider_markdown_ok` | Exit 0 | Exit 0 ✅ |
+| `provider_markdown_missing` | Exit 1 | Exit 1 ✅ |
+| `tier_stale_wrong` | Exit 1 | Exit 1 ✅ |
+| `active_exception_visible` | Report exit 0, `(ACTIVE)` visible | ACTIVE visible ✅ |
+
+### Standard Gate Verification
+
+```bash
+python scripts/check_doc_freshness.py --mode report --format text  # No drift detected.
+python scripts/check_doc_freshness.py --mode fail --format text     # No drift detected.
+python scripts/check_doc_freshness.py --mode fail --files README.md AGENTS.md  # No drift detected.
+python -m py_compile scripts/check_doc_freshness.py                  # Compile OK
+python scripts/lint_feature_matrix.py                                 # OK: 60 feature rows validated
+```
+
+### Commits Pushed
+- `e06b8d9b` — fix(linter): exact embedding match, stricter tier overlap, structured migration latest
+- `1e8bd5c2` — fix(docs): fix MEMORY_LAYER.md links in docs/ subdirectory
+- `4cfa762d` — fix(schema): add document to spawn tool agent_type enums
