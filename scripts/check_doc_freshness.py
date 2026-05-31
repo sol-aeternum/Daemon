@@ -321,7 +321,11 @@ def _check_migration_count(doc_content: str, expected: int) -> CheckResult:
 
 
 def _check_migration_latest(doc_content: str, expected: str) -> CheckResult:
-    matches = re.findall(r'\b(0\d{2}_\w+\.sql|\d{2}_\w+\.sql)\b', doc_content)
+    latest_claim_pattern = re.compile(
+        r'(?:latest\s+(?:migration|db)|most\s+recent|newest)\s*[:\->=]\s*(\d{2,3}_\w+(?:\.sql)?)',
+        re.IGNORECASE,
+    )
+    matches = latest_claim_pattern.findall(doc_content)
     if not matches:
         return CheckResult(CheckId.MIGRATION_LATEST, True)
     for observed in matches:
@@ -337,7 +341,7 @@ def _check_embedding_doc_model(doc_content: str, expected: str) -> CheckResult:
     if not m:
         return CheckResult(CheckId.EMBEDDING_DOC_MODEL, True)
     observed = m.group(1).strip()
-    if expected.lower() not in observed.lower() and observed.lower() not in expected.lower():
+    if _normalize_model_name(observed) != _normalize_model_name(expected):
         return CheckResult(CheckId.EMBEDDING_DOC_MODEL, False, expected, observed,
                           f"embedding doc model mismatch: expected {expected}, found {observed}")
     return CheckResult(CheckId.EMBEDDING_DOC_MODEL, True)
@@ -348,7 +352,7 @@ def _check_embedding_query_model(doc_content: str, expected: str) -> CheckResult
     if not m:
         return CheckResult(CheckId.EMBEDDING_QUERY_MODEL, True)
     observed = m.group(1).strip()
-    if expected.lower() not in observed.lower() and observed.lower() not in expected.lower():
+    if _normalize_model_name(observed) != _normalize_model_name(expected):
         return CheckResult(CheckId.EMBEDDING_QUERY_MODEL, False, expected, observed,
                           f"embedding query model mismatch: expected {expected}, found {observed}")
     return CheckResult(CheckId.EMBEDDING_QUERY_MODEL, True)
@@ -552,9 +556,10 @@ def _check_tier_defaults(doc_content: str, tier_defaults: dict[str, dict[str, st
             config_normalized = _normalize_model_name(config_model)
             if doc_model:
                 doc_normalized = _normalize_model_name(doc_model)
-                # Check if ANY doc word appears in the config (allows multi-model docs like "A / B")
                 doc_words = set(doc_normalized.split())
-                if doc_words and not any(w in config_normalized for w in doc_words):
+                config_words = set(config_normalized.split())
+                overlap = doc_words & config_words
+                if doc_words and len(overlap) < 2:
                     results.append(CheckResult(
                         CheckId.TIER_MODEL, False,
                         config_model,
