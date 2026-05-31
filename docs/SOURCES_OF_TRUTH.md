@@ -24,25 +24,25 @@ Daemon uses a tiered hierarchy to resolve contradictions. When two sources disag
 
 Every markdown file in the repository is classified under this hierarchy to determine its governance and gating requirements.
 
-| File | Classification | Role |
-|------|----------------|------|
-| `MEMORY_LAYER.md` | **T1** | Authoritative memory architecture spec. |
-| `docs/FEATURE_MATRIX.md` | **T1** | Authoritative user-visible feature state. |
-| `docs/TECHNICAL_SPECS.md` | **T1** | Technical implementation details (schema, API, tiers). |
-| `docs/PROJECT_CONTEXT.md` | **T1** | Architecture summary and implementation status. |
-| `docs/OPEN_QUESTIONS.md` | **T1** | Decision log and unresolved technical questions. |
-| `docs/MEMORY_UPGRADE_ROADMAP.md` | **T1** | Technical research and wave planning for memory. |
-| `docs/PROJECT_BRIEF.md` | **ungated-reference** | High-level project overview. |
-| `docs/CURRENT_ISSUES.md` | **T3** | **Operational-rollup** of active system issues. |
-| `docs/ROADMAP.md` | **T2** | **Pointer** to active plans and product direction. |
-| `TRIAGE.md` | **raw-log** | Append-only diagnostic capture. |
-| `frontend/PWA_CHECKLIST.md` | **raw-log** | Build failure and environment report. |
-| `README.md` | **ungated-reference** | High-level project overview. |
-| `QUICKSTART.md` | **ungated-reference** | Procedural setup instructions. |
-| `AGENTS.md` | **ungated-reference** | Agent instructions and behavior rules. |
-| `.github/pull_request_template.md` | **ungated-reference** | PR checklist template. |
-| `docs/interactive-artifact-examples.md` | **ungated-reference** | Example code and artifact usage. |
-| `frontend/PWA_SETUP.md` | **ungated-reference** | Procedural PWA setup guide. |
+| File | Tier | Owner/Source | Classification | Derived-from/Authority |
+|------|------|--------------|----------------|------------------------|
+| `MEMORY_LAYER.md` | T1 | Engineering | gated | `orchestrator/config.py`, `orchestrator/memory/` |
+| `docs/FEATURE_MATRIX.md` | T1 | Product/Eng | gated | Code implementation state |
+| `docs/TECHNICAL_SPECS.md` | T1 | Engineering | gated | `orchestrator/`, `migrations/`, `docker-compose.yml` |
+| `docs/PROJECT_CONTEXT.md` | T1 | Engineering | gated | `truth_set.md`, `docs/FEATURE_MATRIX.md` |
+| `docs/OPEN_QUESTIONS.md` | T1 | Engineering | gated | Decision log / `truth_set.md` |
+| `docs/MEMORY_UPGRADE_ROADMAP.md` | T1 | Engineering | gated | `MEMORY_LAYER.md`, Wave plans |
+| `docs/CURRENT_ISSUES.md` | T3 | Engineering | operational-rollup | `TRIAGE.md` |
+| `docs/ROADMAP.md` | T2 | Product | pointer | `.sisyphus/plans/`, `docs/MEMORY_UPGRADE_ROADMAP.md` |
+| `TRIAGE.md` | N/A | Engineering | raw-log | Diagnostic capture |
+| `frontend/PWA_CHECKLIST.md` | N/A | Engineering | raw-log | Build environment report |
+| `README.md` | N/A | Engineering | ungated-reference | Project overview |
+| `QUICKSTART.md` | N/A | Engineering | ungated-reference | Setup instructions |
+| `AGENTS.md` | N/A | Engineering | ungated-reference | Agent behavior rules |
+| `.github/pull_request_template.md` | N/A | Engineering | ungated-reference | PR template |
+| `docs/interactive-artifact-examples.md` | N/A | Engineering | ungated-reference | Example code |
+| `frontend/PWA_SETUP.md` | N/A | Engineering | ungated-reference | PWA guide |
+| `docs/PROJECT_BRIEF.md` | N/A | Product | ungated-reference | Product narrative |
 
 ---
 
@@ -72,6 +72,9 @@ Documentation should never "freeze" a volatile fact by hardcoding it without a s
 ## 4. Drift Gating and Exceptions
 
 The `scripts/check_doc_freshness.py` linter enforces alignment between T0/T1 sources and gated documentation.
+
+### Linter Scope
+The linter gates **high-confidence structured facts only** (e.g., version numbers, counts, specific config values) and does **NOT** semantically validate prose or general narrative claims.
 
 ### Staleness Budget and Freshness
 - **Gated Docs (T1)**: Must be 100% aligned with T0 at every commit.
