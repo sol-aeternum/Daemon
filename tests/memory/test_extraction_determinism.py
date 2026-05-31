@@ -10,8 +10,6 @@ from orchestrator.memory.extraction import (
     reset_benchmark_tracking,
     get_benchmark_tracking,
     BENCHMARK_SEED,
-    BENCHMARK_MODE,
-    EXTRACTION_TEMPERATURE,
 )
 from orchestrator.memory.dedup import (
     check_contradiction,
@@ -19,7 +17,6 @@ from orchestrator.memory.dedup import (
     reset_dedup_benchmark_tracking,
     get_dedup_benchmark_tracking,
     DEDUP_BENCHMARK_SEED,
-    DEDUP_BENCHMARK_MODE,
     CONTRADICTION_TEMPERATURE,
 )
 
@@ -72,9 +69,7 @@ class TestExtractionBenchmarkSampling:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Extraction passes temperature=0.0 in benchmark mode."""
-        litellm_mock = AsyncMock(
-            return_value=MockResponse('{"facts": []}')
-        )
+        litellm_mock = AsyncMock(return_value=MockResponse('{"facts": []}'))
         monkeypatch.setattr("litellm.acompletion", litellm_mock)
 
         await extract_facts_from_text(
@@ -90,9 +85,7 @@ class TestExtractionBenchmarkSampling:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Extraction passes seed=BENCHMARK_SEED in benchmark mode."""
-        litellm_mock = AsyncMock(
-            return_value=MockResponse('{"facts": []}')
-        )
+        litellm_mock = AsyncMock(return_value=MockResponse('{"facts": []}'))
         monkeypatch.setattr("litellm.acompletion", litellm_mock)
 
         await extract_facts_from_text(
@@ -168,13 +161,9 @@ class TestExtractionBenchmarkSampling:
         assert "fp_second" in str(exc_info.value)
 
     @pytest.mark.asyncio
-    async def test_extraction_non_benchmark_no_seed(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_extraction_non_benchmark_no_seed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Non-benchmark extraction does not inject seed."""
-        litellm_mock = AsyncMock(
-            return_value=MockResponse('{"facts": []}')
-        )
+        litellm_mock = AsyncMock(return_value=MockResponse('{"facts": []}'))
         monkeypatch.setattr("litellm.acompletion", litellm_mock)
 
         await extract_facts_from_text(
@@ -412,9 +401,7 @@ class TestExtractionBenchmarkModeActivation:
         """When BENCHMARK_MODE env var is False, extract_facts_from_text does not use benchmark mode."""
         import orchestrator.memory.extraction as extraction_module
 
-        litellm_mock = AsyncMock(
-            return_value=MockResponse('{"facts": []}')
-        )
+        litellm_mock = AsyncMock(return_value=MockResponse('{"facts": []}'))
         monkeypatch.setattr("litellm.acompletion", litellm_mock)
         monkeypatch.setattr(
             extraction_module,

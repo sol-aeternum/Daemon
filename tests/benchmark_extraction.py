@@ -117,7 +117,7 @@ _load_dotenv()
 DEFAULT_WAIT = 50  # seconds to wait for extraction pipeline
 DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001"
 # Fresh benchmark user per run (isolated from stale test data)
-import uuid as _uuid
+import uuid as _uuid  # noqa: E402
 
 
 def _fresh_benchmark_user() -> str:
@@ -473,9 +473,7 @@ async def replay_benchmark_conversation(
             db_pool=pool,
             encryption=ContentEncryption(os.environ.get("DAEMON_ENCRYPTION_KEY")),
         )
-        conversation = await store.create_conversation(
-            _uuid.UUID(user_id), title="Benchmark"
-        )
+        conversation = await store.create_conversation(_uuid.UUID(user_id), title="Benchmark")
         conversation_id = str(conversation["id"])
         conversation_uuid = _uuid.UUID(conversation_id)
         transcript_so_far: list[str] = []
@@ -618,9 +616,7 @@ SCENARIOS: list[Scenario] = [
             # "User mainly codes in TypeScript" won't contain "python".
             ExpectedFact(["python"], "primary language", min_confidence=0.75),
             ExpectedFact(["typescript"], "secondary language", min_confidence=0.75),
-            ExpectedFact(
-                ["neovim"], "editor preference", expected_category="preference"
-            ),
+            ExpectedFact(["neovim"], "editor preference", expected_category="preference"),
         ],
     ),
     # ── S2: Ephemeral vs Durable ──────────────────────────────────────────
@@ -655,9 +651,7 @@ SCENARIOS: list[Scenario] = [
             ExpectedFact(["tesla", "model 3"], "current vehicle", min_confidence=0.85),
         ],
         dedup_checks=[
-            DedupCheck(
-                "Corolla", should_be_active=False, description="Corolla superseded"
-            ),
+            DedupCheck("Corolla", should_be_active=False, description="Corolla superseded"),
             DedupCheck("Tesla", should_be_active=True, description="Tesla active"),
         ],
     ),
@@ -671,9 +665,7 @@ SCENARIOS: list[Scenario] = [
             "For Daemon I need to fix the memory system — extracted memories aren't being promoted to active status properly.",
         ],
         expected=[
-            ExpectedFact(
-                ["daemon", "ai assistant"], "project", expected_category="project"
-            ),
+            ExpectedFact(["daemon", "ai assistant"], "project", expected_category="project"),
             ExpectedFact(
                 ["rust"],
                 "learning goal",
@@ -704,13 +696,9 @@ SCENARIOS: list[Scenario] = [
             ExpectedFact(["shellfish"], "allergy (definite)", min_confidence=0.88),
             ExpectedFact(["lactose"], "intolerance (hedged)", max_confidence=0.75),
             ExpectedFact(["girlfriend"], "has girlfriend", min_confidence=0.80),
-            ExpectedFact(
-                ["girlfriend", "cat"], "girlfriend wants cat", min_confidence=0.75
-            ),
+            ExpectedFact(["girlfriend", "cat"], "girlfriend wants cat", min_confidence=0.75),
             ExpectedFact(["cat"], "considering cat (hedged)", max_confidence=0.80),
-            ExpectedFact(
-                ["japan", "october"], "Japan trip (hedged)", max_confidence=0.75
-            ),
+            ExpectedFact(["japan", "october"], "Japan trip (hedged)", max_confidence=0.75),
         ],
     ),
     # ── S6: Realistic Multi-Turn Session ──────────────────────────────────
@@ -729,9 +717,7 @@ SCENARIOS: list[Scenario] = [
         expected=[
             ExpectedFact(["9950x3d"], "CPU choice", min_confidence=0.80),
             ExpectedFact(["be quiet", "light base"], "case"),
-            ExpectedFact(
-                ["cachyos"], "distro preference", expected_category="preference"
-            ),
+            ExpectedFact(["cachyos"], "distro preference", expected_category="preference"),
             # v2.2: \b word-boundary matching now correctly matches "Arch" as a
             # standalone word without false-matching "March". This was the primary
             # motivator for the v2.2 matching overhaul.
@@ -801,16 +787,14 @@ def match_fact(expected: ExpectedFact, memories: list[dict[str, Any]]) -> MatchR
             result = MatchResult(expected=expected, matched_memory=mem)
             conf = mem.get("confidence", 0)
             if expected.min_confidence and conf < expected.min_confidence:
-                result.confidence_warning = (
-                    f"confidence {conf:.2f} < min {expected.min_confidence}"
-                )
+                result.confidence_warning = f"confidence {conf:.2f} < min {expected.min_confidence}"
             if expected.max_confidence < 1.0 and conf > expected.max_confidence:
-                result.confidence_warning = f"confidence {conf:.2f} > max {expected.max_confidence} (hedging failed)"
+                result.confidence_warning = (
+                    f"confidence {conf:.2f} > max {expected.max_confidence} (hedging failed)"
+                )
             cat = mem.get("category", "")
             if expected.expected_category and cat != expected.expected_category:
-                result.category_warning = (
-                    f"expected category={expected.expected_category}"
-                )
+                result.category_warning = f"expected category={expected.expected_category}"
             return result
     return MatchResult(expected=expected)
 
@@ -855,7 +839,7 @@ def run_scenario(
             print(f"  🗑 Wiped {wiped} memories from previous scenario")
         flushed = flush_redis_db()
         if flushed:
-            print(f"  🧹 Redis DB flushed")
+            print("  🧹 Redis DB flushed")
         redis_wiped = wipe_redis_extract_keys()
         if redis_wiped > 0:
             print(f"  🧹 Cleared {redis_wiped} Redis extraction key(s)")
@@ -882,22 +866,14 @@ def run_scenario(
     active_memories = [m for m in all_memories if m.get("valid_to") is None]
 
     # Separate extracted memories (from extraction pipeline) from user_created (tool side-effects)
-    extracted_memories = [
-        m for m in active_memories if m.get("source_type") == "extracted"
-    ]
-    user_created_memories = [
-        m for m in active_memories if m.get("source_type") == "user_created"
-    ]
+    extracted_memories = [m for m in active_memories if m.get("source_type") == "extracted"]
+    user_created_memories = [m for m in active_memories if m.get("source_type") == "user_created"]
 
     # Debug: show user_created memories if any
     if user_created_memories:
-        print(
-            f"  📋 {len(user_created_memories)} user_created memory(ies) - not scored:"
-        )
+        print(f"  📋 {len(user_created_memories)} user_created memory(ies) - not scored:")
         for mem in user_created_memories:
-            print(
-                f"    → '{mem['content'][:60]}...' (source_type={mem.get('source_type')})"
-            )
+            print(f"    → '{mem['content'][:60]}...' (source_type={mem.get('source_type')})")
 
     # Use only extracted memories for scoring
     scoring_memories = extracted_memories
@@ -950,21 +926,15 @@ def run_scenario(
             if all(_keyword_matches(kw, mem["content"]) for kw in noise_kws):
                 result.fp += 1
                 print(f"  ✗ NOISE: '{mem['content']}' matched {noise_kws}")
-                result.noise_matches.append(
-                    {"keywords": noise_kws, "content": mem["content"]}
-                )
+                result.noise_matches.append({"keywords": noise_kws, "content": mem["content"]})
 
     # ── Adversarial check ─────────────────────────────────────────────────
     if scenario.is_adversarial and scoring_memories:
         result.adversarial_fail = True
         result.fp = len(scoring_memories)
-        print(
-            f"  ✗ ADVERSARIAL FAIL: {len(scoring_memories)} memories extracted from noise"
-        )
+        print(f"  ✗ ADVERSARIAL FAIL: {len(scoring_memories)} memories extracted from noise")
         for mem in scoring_memories:
-            print(
-                f"    → '{mem['content']}' (cat={mem['category']}, conf={mem['confidence']:.2f})"
-            )
+            print(f"    → '{mem['content']}' (cat={mem['category']}, conf={mem['confidence']:.2f})")
 
     # ── Unaccounted extractions ───────────────────────────────────────────
     unaccounted = [m for m in scoring_memories if m.get("id") not in matched_ids]
@@ -1031,12 +1001,8 @@ def run_scenario(
 
     # ── Score ─────────────────────────────────────────────────────────────
     total_pos = result.tp + result.fp
-    result.precision = (
-        result.tp / total_pos if total_pos > 0 else (1.0 if result.fn == 0 else 0.0)
-    )
-    result.recall = (
-        result.tp / (result.tp + result.fn) if (result.tp + result.fn) > 0 else 1.0
-    )
+    result.precision = result.tp / total_pos if total_pos > 0 else (1.0 if result.fn == 0 else 0.0)
+    result.recall = result.tp / (result.tp + result.fn) if (result.tp + result.fn) > 0 else 1.0
 
     print(
         f"\n  Score: TP={result.tp} FP={result.fp} FN={result.fn} P={result.precision:.2f} R={result.recall:.2f}"
@@ -1083,9 +1049,7 @@ def print_summary(results: list[ScenarioResult]) -> tuple[float, float, int]:
             ("Precision", "right"),
             ("Recall", "right"),
         ]:
-            table.add_column(
-                col, justify=j, style="bold" if col == "Scenario" else None
-            )
+            table.add_column(col, justify=j, style="bold" if col == "Scenario" else None)
 
         for r in results:
             table.add_row(
@@ -1114,12 +1078,8 @@ def print_summary(results: list[ScenarioResult]) -> tuple[float, float, int]:
     except ImportError:
         print("\n--- Results ---")
         for r in results:
-            print(
-                f"  {r.name}: TP={r.tp} FP={r.fp} FN={r.fn} P={r.precision:.2f} R={r.recall:.2f}"
-            )
-        print(
-            f"  TOTAL: TP={total_tp} FP={total_fp} FN={total_fn} P={total_p:.2f} R={total_r:.2f}"
-        )
+            print(f"  {r.name}: TP={r.tp} FP={r.fp} FN={r.fn} P={r.precision:.2f} R={r.recall:.2f}")
+        print(f"  TOTAL: TP={total_tp} FP={total_fp} FN={total_fn} P={total_p:.2f} R={total_r:.2f}")
 
     return total_p, total_r, adversarial_fp
 
@@ -1130,9 +1090,7 @@ def print_summary(results: list[ScenarioResult]) -> tuple[float, float, int]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Daemon Memory Extraction Benchmark v2.4"
-    )
+    parser = argparse.ArgumentParser(description="Daemon Memory Extraction Benchmark v2.4")
     parser.add_argument(
         "--no-wipe",
         action="store_true",
@@ -1181,9 +1139,7 @@ def main() -> None:
     else:
         scenarios = SCENARIOS
 
-    db_display = (
-        effective_db_url.split("@")[-1] if "@" in effective_db_url else effective_db_url
-    )
+    db_display = effective_db_url.split("@")[-1] if "@" in effective_db_url else effective_db_url
     print("Daemon Memory Extraction Benchmark v2.4")
     print("Mode: deterministic transcript replay (no /chat assistant generation)")
     print(f"Database: {db_display}")
@@ -1203,7 +1159,7 @@ def main() -> None:
             print(f"🗑 Initial wipe: {wiped} memories cleared")
         flushed = flush_redis_db()
         if flushed:
-            print(f"  🧹 Redis DB flushed")
+            print("  🧹 Redis DB flushed")
         redis_wiped = wipe_redis_extract_keys()
         if redis_wiped > 0:
             print(f"🧹 Initial redis wipe: {redis_wiped} extraction key(s) cleared")
@@ -1227,9 +1183,7 @@ def main() -> None:
     print(f"  {'✓' if adversarial_fp == 0 else '✗'} Adversarial = 0 extractions")
 
     passed = total_p >= 0.90 and total_r >= 0.90 and adversarial_fp == 0
-    print(
-        f"\n  {'✅ BENCHMARK PASSED' if passed else '❌ BENCHMARK FAILED — see details above'}"
-    )
+    print(f"\n  {'✅ BENCHMARK PASSED' if passed else '❌ BENCHMARK FAILED — see details above'}")
 
     # Build output
     output: dict[str, Any] = {

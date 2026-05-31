@@ -28,9 +28,7 @@ class _SSEEnvelope(BaseModel):
     data: dict[str, object]
 
 
-def _extract_sse_event_envelopes(
-    response_text: str, event_name: str
-) -> list[_SSEEnvelope]:
+def _extract_sse_event_envelopes(response_text: str, event_name: str) -> list[_SSEEnvelope]:
     envelopes: list[_SSEEnvelope] = []
 
     for frame in response_text.split("\n\n"):

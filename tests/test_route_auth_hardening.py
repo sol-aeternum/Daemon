@@ -41,14 +41,16 @@ async def authenticated_client(monkeypatch):
     session_id = uuid.uuid4()
 
     conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value={
-        "user_id": user_id,
-        "device_id": device_id,
-        "session_id": session_id,
-        "session_revoked_at": None,
-        "access_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
-        "device_revoked_at": None,
-    })
+    conn.fetchrow = AsyncMock(
+        return_value={
+            "user_id": user_id,
+            "device_id": device_id,
+            "session_id": session_id,
+            "session_revoked_at": None,
+            "access_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
+            "device_revoked_at": None,
+        }
+    )
     conn.fetchval = AsyncMock(return_value=datetime.now(timezone.utc))
     conn.execute = AsyncMock()
 
@@ -92,9 +94,7 @@ class TestConversationsRoutesAreProtected:
 
     @pytest.mark.asyncio
     async def test_patch_returns_401(self, client):
-        response = await client.patch(
-            f"/conversations/{uuid.uuid4()}", json={"title": "test"}
-        )
+        response = await client.patch(f"/conversations/{uuid.uuid4()}", json={"title": "test"})
         assert response.status_code == 401
 
     @pytest.mark.asyncio
@@ -116,16 +116,12 @@ class TestMemoriesRoutesAreProtected:
 
     @pytest.mark.asyncio
     async def test_import_returns_401(self, client):
-        response = await client.post(
-            "/memories/import", json={"memories": []}
-        )
+        response = await client.post("/memories/import", json={"memories": []})
         assert response.status_code == 401
 
     @pytest.mark.asyncio
     async def test_reembed_returns_401(self, client):
-        response = await client.post(
-            "/memories/reembed", json={"status": "active"}
-        )
+        response = await client.post("/memories/reembed", json={"status": "active"})
         assert response.status_code == 401
 
     @pytest.mark.asyncio
@@ -145,9 +141,7 @@ class TestMemoriesRoutesAreProtected:
 
     @pytest.mark.asyncio
     async def test_update_returns_401(self, client):
-        response = await client.patch(
-            f"/memories/{uuid.uuid4()}", json={"content": "updated"}
-        )
+        response = await client.patch(f"/memories/{uuid.uuid4()}", json={"content": "updated"})
         assert response.status_code == 401
 
     @pytest.mark.asyncio
@@ -186,9 +180,7 @@ class TestSkillsRoutesAreProtected:
 
     @pytest.mark.asyncio
     async def test_create_returns_401(self, client):
-        response = await client.post(
-            "/skills", json={"name": "test", "description": ""}
-        )
+        response = await client.post("/skills", json={"name": "test", "description": ""})
         assert response.status_code == 401
 
     @pytest.mark.asyncio
@@ -202,16 +194,12 @@ class TestSkillsRoutesAreProtected:
 
     @pytest.mark.asyncio
     async def test_update_returns_401(self, client):
-        response = await client.put(
-            "/skills/skill-123", json={"name": "updated"}
-        )
+        response = await client.put("/skills/skill-123", json={"name": "updated"})
         assert response.status_code == 401
 
     @pytest.mark.asyncio
     async def test_toggle_enabled_returns_401(self, client):
-        response = await client.patch(
-            "/skills/skill-123/enabled", json={"enabled": True}
-        )
+        response = await client.patch("/skills/skill-123/enabled", json={"enabled": True})
         assert response.status_code == 401
 
     @pytest.mark.asyncio
@@ -228,9 +216,7 @@ class TestSkillsRoutesAreProtected:
 
     @pytest.mark.asyncio
     async def test_pending_update_returns_401(self, client):
-        response = await client.post(
-            "/skills/skill-123/pending-update", json={"action": "dismiss"}
-        )
+        response = await client.post("/skills/skill-123/pending-update", json={"action": "dismiss"})
         assert response.status_code == 401
 
     @pytest.mark.asyncio
@@ -252,9 +238,7 @@ class TestUsersRoutesAreProtected:
 
     @pytest.mark.asyncio
     async def test_update_settings_returns_401(self, client):
-        response = await client.patch(
-            "/users/me/settings", json={"preferences": {}}
-        )
+        response = await client.patch("/users/me/settings", json={"preferences": {}})
         assert response.status_code == 401
 
     @pytest.mark.asyncio

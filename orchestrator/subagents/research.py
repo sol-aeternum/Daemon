@@ -17,7 +17,9 @@ class ResearchSubagent(BaseSubagent):
     """Research subagent that performs parallel web searches and synthesizes results."""
 
     agent_type = SubagentType.RESEARCH
-    description = "Performs parallel web searches and synthesizes findings into a comprehensive report"
+    description = (
+        "Performs parallel web searches and synthesizes findings into a comprehensive report"
+    )
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         """Initialize research subagent."""
@@ -27,9 +29,7 @@ class ResearchSubagent(BaseSubagent):
         self.base_url = "https://api.search.brave.com/res/v1/web/search"
         self.max_concurrent = 3  # Max parallel searches
 
-    async def execute(
-        self, task: str, context: dict[str, Any] | None = None
-    ) -> SubagentResult:
+    async def execute(self, task: str, context: dict[str, Any] | None = None) -> SubagentResult:
         """Execute research task with parallel searches.
 
         Strategy:
@@ -62,9 +62,7 @@ class ResearchSubagent(BaseSubagent):
             },
             metadata={
                 "total_queries": len(queries),
-                "successful_searches": sum(
-                    1 for r in search_results if "error" not in r
-                ),
+                "successful_searches": sum(1 for r in search_results if "error" not in r),
             },
         )
 
@@ -80,9 +78,7 @@ class ResearchSubagent(BaseSubagent):
         if "news" in task_lower or "latest" in task_lower or "recent" in task_lower:
             queries.append(f"latest news {task}")
             queries.append(f"recent developments {task}")
-        elif (
-            "how to" in task_lower or "tutorial" in task_lower or "guide" in task_lower
-        ):
+        elif "how to" in task_lower or "tutorial" in task_lower or "guide" in task_lower:
             queries.append(f"tutorial {task}")
             queries.append(f"best practices {task}")
         elif "compare" in task_lower or "vs" in task_lower or "versus" in task_lower:
@@ -154,18 +150,13 @@ class ResearchSubagent(BaseSubagent):
                 # Fetch full content for top results
                 fetch_service = FetchService()
                 fetch_tasks = [fetch_service.fetch(url) for url in urls_to_fetch[:5]]
-                fetch_results = await asyncio.gather(
-                    *fetch_tasks, return_exceptions=True
-                )
+                fetch_results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
 
                 # Add full content to results
                 for i, fetch_result in enumerate(fetch_results):
                     if i < len(results):
                         # Check if fetch was successful and not an exception
-                        if (
-                            not isinstance(fetch_result, Exception)
-                            and fetch_result is not None
-                        ):
+                        if not isinstance(fetch_result, Exception) and fetch_result is not None:
                             # Type check to satisfy LSP - fetch_result is a FetchResult here
                             if isinstance(fetch_result, FetchResult):
                                 results[i]["full_content"] = fetch_result.content
@@ -240,15 +231,11 @@ class ResearchSubagent(BaseSubagent):
                 if full_content:
                     # Truncate full content to reasonable length for synthesis
                     content_preview = (
-                        full_content[:500] + "..."
-                        if len(full_content) > 500
-                        else full_content
+                        full_content[:500] + "..." if len(full_content) > 500 else full_content
                     )
                     lines.append(f"  {content_preview}")
                 else:
-                    lines.append(
-                        f"  {top_result.get('description', 'No description')[:200]}..."
-                    )
+                    lines.append(f"  {top_result.get('description', 'No description')[:200]}...")
 
                 lines.append(f"  Source: {top_result.get('url', 'Unknown')}")
                 lines.append("")
@@ -262,9 +249,7 @@ class ResearchSubagent(BaseSubagent):
         )
 
         for i, source in enumerate(all_sources[:10], 1):
-            lines.append(
-                f"{i}. [{source.get('title', 'Untitled')}]({source.get('url', '')})"
-            )
+            lines.append(f"{i}. [{source.get('title', 'Untitled')}]({source.get('url', '')})")
 
         if len(all_sources) > 10:
             lines.append(f"\n... and {len(all_sources) - 10} more sources")

@@ -37,7 +37,10 @@ class MockPool:
                 revoked_at = session.get("revoked_at")
 
                 if refresh_expires_at is not None and revoked_at is not None:
-                    if refresh_expires_at < now - grace_interval or revoked_at < now - grace_interval:
+                    if (
+                        refresh_expires_at < now - grace_interval
+                        or revoked_at < now - grace_interval
+                    ):
                         to_delete.append(session_id)
                 elif refresh_expires_at is not None:
                     if refresh_expires_at < now - grace_interval:
@@ -104,10 +107,12 @@ def _make_session(
 
 def make_mock_init(mock_pool):
     import orchestrator.main as main_module
+
     original_init = main_module.init_app_state
 
     async def mock_init(settings):
         from orchestrator.db import AppState
+
         state = AppState(settings=settings)
         state.db_pool = mock_pool
         state.redis = None
@@ -122,6 +127,7 @@ def make_mock_init(mock_pool):
 
 def restore_init(original):
     import orchestrator.main as main_module
+
     main_module.init_app_state = original
 
 
@@ -143,7 +149,9 @@ class TestCleanupStaleSessions:
         from orchestrator.session_cleanup import cleanup_stale_sessions
 
         mock_pool = MockPool(sessions=sessions)
-        deleted = await cleanup_stale_sessions(cast(asyncpg.Pool | None, cast(object, mock_pool)), grace_days)
+        deleted = await cleanup_stale_sessions(
+            cast(asyncpg.Pool | None, cast(object, mock_pool)), grace_days
+        )
         return deleted, mock_pool._deleted_ids
 
     def _get_ids_remaining(self, sessions, deleted_ids):
@@ -291,6 +299,7 @@ class TestRealCleanupLoopInterruptible:
         from orchestrator.session_cleanup import _session_cleanup_loop
 
         import orchestrator.session_cleanup as sc
+
         original = sc.cleanup_stale_sessions
 
         cleanup_run_times = []
@@ -340,6 +349,7 @@ class TestRealCleanupLoopInterruptible:
             return 0
 
         import orchestrator.session_cleanup as sc
+
         original = sc.cleanup_stale_sessions
         sc.cleanup_stale_sessions = mock_cleanup
 
@@ -389,9 +399,8 @@ class TestCleanupTaskLifecycle:
                 return 0
 
             import orchestrator.main as main_module
-            monkeypatch.setattr(
-                main_module, "cleanup_stale_sessions", mock_cleanup_stale_sessions
-            )
+
+            monkeypatch.setattr(main_module, "cleanup_stale_sessions", mock_cleanup_stale_sessions)
 
             loop_task = None
 
@@ -425,7 +434,9 @@ class TestCleanupRetentionPolicy:
         from orchestrator.session_cleanup import cleanup_stale_sessions
 
         mock_pool = MockPool(sessions=sessions)
-        deleted = await cleanup_stale_sessions(cast(asyncpg.Pool | None, cast(object, mock_pool)), grace_days)
+        deleted = await cleanup_stale_sessions(
+            cast(asyncpg.Pool | None, cast(object, mock_pool)), grace_days
+        )
         return deleted, mock_pool._deleted_ids
 
     @pytest.mark.asyncio

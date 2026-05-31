@@ -65,14 +65,12 @@ class Crawl4AIStrategy:
                     markdown_content = result_item.get("markdown", "")
 
                     if not markdown_content:
-                        logger.warning(
-                            f"No markdown content in Crawl4AI response for {url}"
-                        )
+                        logger.warning(f"No markdown content in Crawl4AI response for {url}")
                         return None
 
-                    if isinstance(
-                        markdown_content, str
-                    ) and not self.policy.content_is_valid(markdown_content):
+                    if isinstance(markdown_content, str) and not self.policy.content_is_valid(
+                        markdown_content
+                    ):
                         logger.debug(f"Content validation failed for {url}")
                         return None
 

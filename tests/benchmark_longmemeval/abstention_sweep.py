@@ -89,8 +89,7 @@ LOCKED_ABSTENTION_FAILURE_IDS = tuple(
 SECONDARY_TEMPORAL_GENERATION_ERROR_IDS = tuple(
     str(entry["question_id"])
     for entry in _taxonomy_entries()
-    if str(entry["stage"]) == "generation-error"
-    and str(entry["category"]) == "temporal-reasoning"
+    if str(entry["stage"]) == "generation-error" and str(entry["category"]) == "temporal-reasoning"
 )
 
 
@@ -260,8 +259,7 @@ def _build_run_summary(
         "locked_failure_union": {
             "total": len(locked_failure_union_ids),
             "correct": sum(
-                judgments.get(question_id) == "correct"
-                for question_id in locked_failure_union_ids
+                judgments.get(question_id) == "correct" for question_id in locked_failure_union_ids
             ),
         },
         "secondary_cell": {
@@ -279,7 +277,9 @@ def _build_run_summary(
     return summary
 
 
-def _build_manifest_entry(run_name: str, output_dir: Path, summary: dict[str, Any]) -> dict[str, Any]:
+def _build_manifest_entry(
+    run_name: str, output_dir: Path, summary: dict[str, Any]
+) -> dict[str, Any]:
     return {
         "run_name": run_name,
         "output_dir": str(output_dir),
@@ -294,11 +294,9 @@ def _build_manifest_entry(run_name: str, output_dir: Path, summary: dict[str, An
 
 def _comparison(off: dict[str, Any], on: dict[str, Any]) -> dict[str, Any]:
     negative_protected_cell_deltas = {
-        label: on["protected_cells"][label]["accuracy"]
-        - off["protected_cells"][label]["accuracy"]
+        label: on["protected_cells"][label]["accuracy"] - off["protected_cells"][label]["accuracy"]
         for label in off["protected_cells"]
-        if on["protected_cells"][label]["accuracy"]
-        < off["protected_cells"][label]["accuracy"]
+        if on["protected_cells"][label]["accuracy"] < off["protected_cells"][label]["accuracy"]
     }
     false_abstention_delta = (
         on["false_abstention_metrics"]["count"] - off["false_abstention_metrics"]["count"]
@@ -323,9 +321,7 @@ def _comparison(off: dict[str, Any], on: dict[str, Any]) -> dict[str, Any]:
         )
     return {
         "strict_accuracy_delta_on_minus_off": on["strict_accuracy"] - off["strict_accuracy"],
-        "abstention_accuracy_delta_on_minus_off": on["protected_cells"]["abstention"][
-            "accuracy"
-        ]
+        "abstention_accuracy_delta_on_minus_off": on["protected_cells"]["abstention"]["accuracy"]
         - off["protected_cells"]["abstention"]["accuracy"],
         "locked_abstention_failure_delta_on_minus_off": on["abstention_metrics"][
             "locked_failure_correct"
@@ -423,7 +419,9 @@ def build_analysis_markdown(manifest: dict[str, Any]) -> str:
                 "",
             ]
         )
-        for label, delta in cast(dict[str, float], comparison["negative_protected_cell_deltas"]).items():
+        for label, delta in cast(
+            dict[str, float], comparison["negative_protected_cell_deltas"]
+        ).items():
             lines.append(f"- `{label}`: `{delta:+.1%}`")
         lines.append("")
 
@@ -534,7 +532,9 @@ async def run_sweep() -> dict[str, Any]:
             cast(list[dict[str, Any]], manifest["runs"]),
             key=lambda run: str(run["run_name"]),
         )
-        runs_by_name = {str(run["run_name"]): run for run in cast(list[dict[str, Any]], manifest["runs"])}
+        runs_by_name = {
+            str(run["run_name"]): run for run in cast(list[dict[str, Any]], manifest["runs"])
+        }
         manifest["comparison"] = _comparison(runs_by_name["off"], runs_by_name["on"])
         write_json(OUTPUT_ROOT / MANIFEST_FILENAME, manifest)
         (OUTPUT_ROOT / ANALYSIS_FILENAME).write_text(build_analysis_markdown(manifest))

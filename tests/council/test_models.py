@@ -4,7 +4,6 @@ import pytest
 from orchestrator.council.models import (
     CouncilConfig,
     CouncilSession,
-    CouncilRound,
     CouncilOutput,
     AuditFinding,
     PerspectiveType,

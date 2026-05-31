@@ -7,14 +7,17 @@ from fastapi import (
     Depends,
     File,
     Form,
-    Header,
     HTTPException,
     Request,
     UploadFile,
 )
 
-from orchestrator.auth import AuthenticatedDevice, AdminOrDeviceAuth, require_admin_or_device_auth, require_device_auth
-from orchestrator.config import Settings, get_settings
+from orchestrator.auth import (
+    AuthenticatedDevice,
+    AdminOrDeviceAuth,
+    require_admin_or_device_auth,
+    require_device_auth,
+)
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
@@ -122,16 +125,12 @@ async def list_skills(
                     proj = await store.get_projection(skill["id"])
                     if proj:
                         skill["source_type"] = proj.get("source_type")
-                        skill["allow_autonomous_edit"] = proj.get(
-                            "allow_autonomous_edit"
-                        )
+                        skill["allow_autonomous_edit"] = proj.get("allow_autonomous_edit")
                         skill["repo_version"] = proj.get("repo_version")
                         skill["local_version"] = proj.get("local_version")
                         skill["pending_update"] = proj.get("pending_update")
                         skill["use_count"] = proj.get("use_count")
-                        skill["last_used_at"] = _safe_isoformat(
-                            proj.get("last_used_at")
-                        )
+                        skill["last_used_at"] = _safe_isoformat(proj.get("last_used_at"))
                 except Exception:
                     continue
     return {"skills": skills}
@@ -194,9 +193,7 @@ async def upload_skill(
         raw_bytes = await file.read()
         markdown = raw_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise HTTPException(
-            status_code=400, detail="Skill file must be UTF-8 markdown"
-        ) from exc
+        raise HTTPException(status_code=400, detail="Skill file must be UTF-8 markdown") from exc
 
     try:
         result = skills_store.import_skill_markdown(
@@ -352,9 +349,7 @@ async def handle_pending_update(
         }
 
     else:
-        raise HTTPException(
-            status_code=400, detail="Invalid action. Use 'apply' or 'dismiss'"
-        )
+        raise HTTPException(status_code=400, detail="Invalid action. Use 'apply' or 'dismiss'")
 
 
 @router.get("/{skill_id}/download")

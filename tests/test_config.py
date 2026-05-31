@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from orchestrator.config import Settings, get_settings
+from orchestrator.config import Settings
 
 
 def test_background_reasoning_model_default() -> None:
@@ -11,19 +11,13 @@ def test_background_reasoning_model_default() -> None:
 
 def test_background_reasoning_model_env_override() -> None:
     """Test BACKGROUND_REASONING_MODEL can be overridden via env var."""
-    settings = Settings(
-        background_reasoning_model="openrouter/anthropic/claude-3.5-sonnet"
-    )
-    assert (
-        settings.background_reasoning_model == "openrouter/anthropic/claude-3.5-sonnet"
-    )
+    settings = Settings(background_reasoning_model="openrouter/anthropic/claude-3.5-sonnet")
+    assert settings.background_reasoning_model == "openrouter/anthropic/claude-3.5-sonnet"
 
 
 def test_background_reasoning_model_from_env(monkeypatch) -> None:
     """Test BACKGROUND_REASONING_MODEL loaded from env var."""
-    monkeypatch.setenv(
-        "BACKGROUND_REASONING_MODEL", "openrouter/google/gemini-2.5-flash"
-    )
+    monkeypatch.setenv("BACKGROUND_REASONING_MODEL", "openrouter/google/gemini-2.5-flash")
     settings = Settings()
     assert settings.background_reasoning_model == "openrouter/google/gemini-2.5-flash"
 

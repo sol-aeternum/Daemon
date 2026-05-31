@@ -188,9 +188,7 @@ async def setup_endpoint(
 
     async with app_state.db_pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                "SELECT pg_advisory_xact_lock(hashtext('daemon:first_boot_setup'))"
-            )
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('daemon:first_boot_setup'))")
 
             active_count = await conn.fetchval(
                 "SELECT COUNT(*) FROM devices WHERE revoked_at IS NULL"
@@ -203,9 +201,7 @@ async def setup_endpoint(
                 )
 
             user_id = await _find_or_create_singleton_user(conn)
-            access_token, refresh_token = await _create_first_device_and_session(
-                conn, user_id
-            )
+            access_token, refresh_token = await _create_first_device_and_session(conn, user_id)
 
     app_state.setup_token_hash = None
 
@@ -332,9 +328,7 @@ async def enroll_complete_endpoint(
             sec_fetch_site=request.headers.get("Sec-Fetch-Site"),
             referer=request.headers.get("Referer"),
             allowed_origins=[
-                o.strip()
-                for o in settings.daemon_allowed_origins.split(",")
-                if o.strip()
+                o.strip() for o in settings.daemon_allowed_origins.split(",") if o.strip()
             ],
             public_origin=settings.daemon_public_origin,
             has_cookie=has_cookie,
@@ -391,10 +385,7 @@ async def enroll_complete_endpoint(
                 """,
                 pending_row["created_by_device_id"],
             )
-            if (
-                creating_device_row is None
-                or creating_device_row["revoked_at"] is not None
-            ):
+            if creating_device_row is None or creating_device_row["revoked_at"] is not None:
                 raise HTTPException(
                     status_code=401,
                     detail="Invalid enrollment session",
@@ -531,9 +522,7 @@ async def enroll_complete_endpoint(
     )
 
 
-@router.post(
-    "/refresh", response_model=RefreshResponse, response_model_exclude_none=True
-)
+@router.post("/refresh", response_model=RefreshResponse, response_model_exclude_none=True)
 async def refresh_endpoint(
     request: Request,
     response: Response,
@@ -585,9 +574,7 @@ async def refresh_endpoint(
             sec_fetch_site=request.headers.get("Sec-Fetch-Site"),
             referer=request.headers.get("Referer"),
             allowed_origins=[
-                o.strip()
-                for o in settings.daemon_allowed_origins.split(",")
-                if o.strip()
+                o.strip() for o in settings.daemon_allowed_origins.split(",") if o.strip()
             ],
             public_origin=settings.daemon_public_origin,
             has_cookie=True,
@@ -600,9 +587,7 @@ async def refresh_endpoint(
 
     # Resolve token value based on mode
     presented_token = (
-        body_token
-        if body_token is not None
-        else _refresh_cookie_value(request, settings)
+        body_token if body_token is not None else _refresh_cookie_value(request, settings)
     )
     assert presented_token is not None, "presented_token must be set at this point"
     token_hash = hash_token(presented_token)
@@ -807,9 +792,7 @@ class DeviceListResponse(BaseModel):
     devices: list[DeviceResponse]
 
 
-@router.get(
-    "/devices", response_model=DeviceListResponse, response_model_exclude_none=True
-)
+@router.get("/devices", response_model=DeviceListResponse, response_model_exclude_none=True)
 async def list_devices_endpoint(
     request: Request,
     auth: AuthenticatedDevice = Depends(require_device_auth),
@@ -853,9 +836,7 @@ async def list_devices_endpoint(
             display_name=row["display_name"],
             platform=row["platform"],
             created_at=row["created_at"].isoformat(),
-            last_seen_at=(
-                row["last_seen_at"].isoformat() if row["last_seen_at"] else None
-            ),
+            last_seen_at=(row["last_seen_at"].isoformat() if row["last_seen_at"] else None),
             revoked_at=row["revoked_at"].isoformat() if row["revoked_at"] else None,
             current=(row["id"] == auth.device_id),
             revoked=(row["revoked_at"] is not None),

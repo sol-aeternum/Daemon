@@ -107,9 +107,7 @@ def _extract_section(markdown: str, heading: str) -> str:
     return match.group("body").strip()
 
 
-def _parse_standard_markdown_skill(
-    filename: str, markdown: str
-) -> tuple[str, str, bool, str]:
+def _parse_standard_markdown_skill(filename: str, markdown: str) -> tuple[str, str, bool, str]:
     stripped = markdown.strip()
     if not stripped:
         raise ValueError("Skill markdown file is empty")
@@ -161,9 +159,7 @@ def _serialize_skill_to_markdown(
     )
 
 
-def _skill_from_path(
-    path: Path, projection: dict[str, Any] | None = None
-) -> SkillDetail:
+def _skill_from_path(path: Path, projection: dict[str, Any] | None = None) -> SkillDetail:
     skill_id = path.stem
     raw = path.read_text(encoding="utf-8")
     metadata, body = _parse_frontmatter(raw)
@@ -180,9 +176,7 @@ def _skill_from_path(
         "content": body.strip(),
         # Projection-backed metadata (None until backfilled)
         "source_type": projection.get("source_type") if projection else None,
-        "allow_autonomous_edit": projection.get("allow_autonomous_edit")
-        if projection
-        else None,
+        "allow_autonomous_edit": projection.get("allow_autonomous_edit") if projection else None,
         "repo_version": projection.get("repo_version") if projection else None,
         "local_version": projection.get("local_version") if projection else None,
         "pending_update": projection.get("pending_update") if projection else None,
@@ -201,9 +195,7 @@ def _skill_from_path(
 def list_skills() -> list[SkillSummary]:
     ensure_skills_dir()
     skills: list[SkillSummary] = []
-    for path in sorted(
-        SKILLS_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True
-    ):
+    for path in sorted(SKILLS_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
         detail = _skill_from_path(path)
         skills.append(
             {
@@ -261,9 +253,7 @@ def update_skill(
 ) -> SkillDetail:
     current = get_skill(skill_id)
     next_name = name if name is not None else current["name"]
-    next_description = (
-        description if description is not None else current["description"]
-    )
+    next_description = description if description is not None else current["description"]
     next_content = content if content is not None else current["content"]
     next_enabled = enabled if enabled is not None else current["enabled"]
     path = _skill_path(skill_id)
@@ -319,15 +309,11 @@ def import_skill_markdown(
         if not raw_name:
             raise ValueError("Skill frontmatter must include a non-empty 'name' field")
         if not description:
-            raise ValueError(
-                "Skill frontmatter must include a non-empty 'description' field"
-            )
+            raise ValueError("Skill frontmatter must include a non-empty 'description' field")
 
         instructions = body.strip()
         if not instructions:
-            raise ValueError(
-                "Skill markdown must include instructions content below frontmatter"
-            )
+            raise ValueError("Skill markdown must include instructions content below frontmatter")
 
         enabled = _parse_enabled_value(metadata.get("enabled"))
     else:
@@ -339,9 +325,7 @@ def import_skill_markdown(
     skill_id = normalize_skill_id(raw_name)
     path = _skill_path(skill_id)
     if path.exists() and not overwrite:
-        raise FileExistsError(
-            f"Skill '{skill_id}' already exists. Enable overwrite to replace it"
-        )
+        raise FileExistsError(f"Skill '{skill_id}' already exists. Enable overwrite to replace it")
 
     serialized = _serialize_skill(
         name=raw_name,
@@ -403,7 +387,7 @@ async def build_skill_index(
 
             store = SkillProjectionStore(db_pool)
             projections = await store.list_projections(enabled=True, limit=100)
-            skill_ids_in_projection = {p["skill_id"] for p in projections}
+            skill_ids_in_projection = {p["skill_id"] for p in projections}  # noqa: F841
             projection_map = {p["skill_id"]: p for p in projections}
 
             for summary in list_skills():
@@ -415,9 +399,7 @@ async def build_skill_index(
                     summary["source_type"] = proj.get("source_type")
                     summary["use_count"] = proj.get("use_count")
                     summary["last_used_at"] = (
-                        proj["last_used_at"].isoformat()
-                        if proj.get("last_used_at")
-                        else None
+                        proj["last_used_at"].isoformat() if proj.get("last_used_at") else None
                     )
                 summaries.append(summary)
         except Exception:

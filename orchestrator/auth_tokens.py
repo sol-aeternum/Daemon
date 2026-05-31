@@ -70,13 +70,9 @@ def normalize_enrollment_code(code: str) -> str:
     stripped = code.strip()
     digits_only = stripped.replace("-", "").replace(" ", "")
     if len(digits_only) != 8:
-        raise ValueError(
-            f"Enrollment code must contain exactly 8 digits, got: {code!r}"
-        )
+        raise ValueError(f"Enrollment code must contain exactly 8 digits, got: {code!r}")
     if not digits_only.isdecimal():
-        raise ValueError(
-            f"Enrollment code must contain only digits, got: {code!r}"
-        )
+        raise ValueError(f"Enrollment code must contain only digits, got: {code!r}")
     return digits_only
 
 

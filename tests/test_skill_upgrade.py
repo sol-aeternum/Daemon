@@ -27,8 +27,6 @@ from orchestrator.skills_upgrade import (
     SkillManifestEntry,
     SkillUpgradeService,
     _now_iso,
-    _save_snapshot,
-    _load_snapshot,
     load_manifest,
     save_manifest,
 )
@@ -128,7 +126,7 @@ class TestUpgradeServiceNewSkill:
         local_content = repo_content
         skill_file = tmp_path / "new-repo-skill.md"
         skill_file.write_text(local_content)
-        repo_hash = compute_content_hash(repo_content)
+        repo_hash = compute_content_hash(repo_content)  # noqa: F841
         local_hash = compute_content_hash(local_content)
         pool = _make_mock_db_pool()
         pool.fetchrow.return_value = MockRecord(
@@ -162,9 +160,7 @@ class TestUpgradeServiceNewSkill:
                 AsyncMock(return_value=[0.1] * 1024),
             ):
                 service = SkillUpgradeService(store)
-                result = await service.sync_repo_skills(
-                    {"new-repo-skill": repo_content}
-                )
+                result = await service.sync_repo_skills({"new-repo-skill": repo_content})
 
         assert result.total_inserts == 1
         insert_action = next(a for a in result.actions if a.action == "insert")
@@ -239,9 +235,7 @@ class TestUpgradeServiceUnchanged:
 
 class TestUpgradeServiceSilentUpdate:
     @pytest.mark.asyncio
-    async def test_repo_update_on_unmodified_skill_silent_update(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_repo_update_on_unmodified_skill_silent_update(self, tmp_path: Path) -> None:
         old_content = (
             "---\nname: Upgradable Skill\ndescription: Upgradable\nenabled: true\n"
             "repo_version: 1.0.0\nlocal_version: 1.0.0\n---\n"
@@ -253,7 +247,7 @@ class TestUpgradeServiceSilentUpdate:
             "# Upgradable Skill\n\nNew content from repo."
         )
         old_hash = compute_content_hash(old_content)
-        new_hash = compute_content_hash(new_content)
+        new_hash = compute_content_hash(new_content)  # noqa: F841
 
         skill_file = tmp_path / "upgradable-skill.md"
         skill_file.write_text(old_content)
@@ -306,9 +300,7 @@ class TestUpgradeServiceSilentUpdate:
                 AsyncMock(return_value=[0.1] * 1024),
             ):
                 service = SkillUpgradeService(store)
-                result = await service.sync_repo_skills(
-                    {"upgradable-skill": new_content}
-                )
+                result = await service.sync_repo_skills({"upgradable-skill": new_content})
 
         assert result.total_silent_updates == 1
         silent_action = next(a for a in result.actions if a.action == "silent_update")
@@ -320,9 +312,7 @@ class TestUpgradeServiceSilentUpdate:
 
 class TestUpgradeServicePendingUpdate:
     @pytest.mark.asyncio
-    async def test_locally_modified_skill_gets_pending_update(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_locally_modified_skill_gets_pending_update(self, tmp_path: Path) -> None:
         old_content = (
             "---\nname: Modified Skill\ndescription: Modified\nenabled: true\n"
             "repo_version: 1.0.0\nlocal_version: 1.0.0\n---\n"
@@ -392,9 +382,7 @@ class TestUpgradeServicePendingUpdate:
                 AsyncMock(return_value=[0.1] * 1024),
             ):
                 service = SkillUpgradeService(store)
-                result = await service.sync_repo_skills(
-                    {"modified-skill": new_repo_content}
-                )
+                result = await service.sync_repo_skills({"modified-skill": new_repo_content})
 
         assert result.total_pending_updates == 1
         pending_action = next(a for a in result.actions if a.action == "pending_update")
@@ -464,9 +452,7 @@ class TestUpgradeServiceDeprecate:
         assert result.actions == []
 
     @pytest.mark.asyncio
-    async def test_removed_repo_skill_deprecated_not_deleted(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_removed_repo_skill_deprecated_not_deleted(self, tmp_path: Path) -> None:
         """When a specific skill is removed from repo (repo still has other skills), deprecate it."""
         other_skill_content = (
             "---\nname: Other Skill\ndescription: Other\nenabled: true\n"
@@ -521,9 +507,7 @@ class TestUpgradeServiceDeprecate:
         store = SkillProjectionStore(pool)
         with patch("orchestrator.skills_upgrade.SKILLS_DIR", tmp_path):
             service = SkillUpgradeService(store)
-            result = await service.sync_repo_skills(
-                {"other-skill": other_skill_content}
-            )
+            result = await service.sync_repo_skills({"other-skill": other_skill_content})
 
         assert result.total_deprecated == 1
         deprecate_action = next(a for a in result.actions if a.action == "deprecated")
@@ -689,9 +673,7 @@ class TestDismissPendingUpdate:
 
 
 class TestLoadRepoContents:
-    def test_load_repo_contents_returns_empty_when_dir_missing(
-        self, tmp_path: Path
-    ) -> None:
+    def test_load_repo_contents_returns_empty_when_dir_missing(self, tmp_path: Path) -> None:
         with patch(
             "orchestrator.skills_upgrade.REPO_SKILLS_DIR",
             tmp_path / "nonexistent",
@@ -721,9 +703,7 @@ class TestLoadRepoContents:
         assert "another-skill" in result
         assert result["test-skill"].startswith("---\nname: Test Skill")
 
-    def test_load_repo_contents_skips_files_without_frontmatter(
-        self, tmp_path: Path
-    ) -> None:
+    def test_load_repo_contents_skips_files_without_frontmatter(self, tmp_path: Path) -> None:
         repo_dir = tmp_path / "repo_skills"
         repo_dir.mkdir()
         (repo_dir / "valid-skill.md").write_text(

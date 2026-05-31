@@ -70,8 +70,6 @@ class HttpRequestTool(Tool):
                 )
 
         except httpx.HTTPStatusError as e:
-            return json.dumps(
-                {"error": f"HTTP {e.response.status_code}: {e.response.text[:200]}"}
-            )
+            return json.dumps({"error": f"HTTP {e.response.status_code}: {e.response.text[:200]}"})
         except Exception as e:
             return json.dumps({"error": f"Request failed: {str(e)}"})

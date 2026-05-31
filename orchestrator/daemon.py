@@ -11,8 +11,7 @@ import uuid
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from orchestrator.config import ProviderConfig, Settings, TierConfig, ModelSlotConfig
-from orchestrator.guardrails import strip_reasoning_fields_from_message
+from orchestrator.config import ProviderConfig, Settings
 from orchestrator.services.fetch.url_extract import extract_urls
 from orchestrator.tools.builtin import create_default_registry
 from orchestrator.tools.completion import completion_with_tools
@@ -29,9 +28,7 @@ def _lazy_import_trust_signals():
         try:
             import importlib
 
-            _trust_signals_module = importlib.import_module(
-                "orchestrator.memory.trust_signals"
-            )
+            _trust_signals_module = importlib.import_module("orchestrator.memory.trust_signals")
         except ImportError:
             pass
         _trust_module_imported = True
@@ -86,9 +83,7 @@ def build_openai_messages_from_history(
     return messages
 
 
-def with_runtime_datetime_context(
-    system_prompt: str, now_utc: datetime | None = None
-) -> str:
+def with_runtime_datetime_context(system_prompt: str, now_utc: datetime | None = None) -> str:
     current_utc = now_utc or datetime.now(timezone.utc)
     current_local = current_utc.astimezone(_RUNTIME_DATETIME_ZONE)
 
@@ -136,9 +131,7 @@ def _extract_session_id_from_result(result: Any) -> str | None:
 def _extract_delta_text(chunk: Any) -> str:
     try:
         choices = (
-            chunk.get("choices")
-            if isinstance(chunk, dict)
-            else getattr(chunk, "choices", None)
+            chunk.get("choices") if isinstance(chunk, dict) else getattr(chunk, "choices", None)
         )
         if not choices:
             return ""
@@ -201,9 +194,7 @@ def _reasoning_text_from_details(reasoning_details: Any) -> str:
 def _extract_delta_reasoning(chunk: Any) -> str:
     try:
         choices = (
-            chunk.get("choices")
-            if isinstance(chunk, dict)
-            else getattr(chunk, "choices", None)
+            chunk.get("choices") if isinstance(chunk, dict) else getattr(chunk, "choices", None)
         )
         if not choices:
             return ""
@@ -218,9 +209,7 @@ def _extract_delta_reasoning(chunk: Any) -> str:
 
         if isinstance(delta, dict):
             direct = (
-                delta.get("reasoning_content")
-                or delta.get("reasoning")
-                or delta.get("thinking")
+                delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
             )
             details = delta.get("reasoning_details")
         else:
@@ -312,9 +301,7 @@ async def stream_sse_chat(
     effective_system_prompt = with_runtime_datetime_context(system_prompt)
 
     if history_messages:
-        messages = build_openai_messages_from_history(
-            effective_system_prompt, history_messages
-        )
+        messages = build_openai_messages_from_history(effective_system_prompt, history_messages)
     else:
         messages = build_openai_messages(effective_system_prompt, user_message)
 
@@ -435,17 +422,11 @@ async def stream_sse_chat(
                         )
 
                         # Periodic persistence of incremental content
-                        if (
-                            memory_store
-                            and conversation_uuid
-                            and user_id
-                            and assistant_message_id
-                        ):
+                        if memory_store and conversation_uuid and user_id and assistant_message_id:
                             current_time = now
                             if (
                                 _last_persist_s is None
-                                or (current_time - _last_persist_s)
-                                >= _persist_interval_s
+                                or (current_time - _last_persist_s) >= _persist_interval_s
                             ):
                                 try:
                                     await memory_store.update_message_content(
@@ -454,19 +435,14 @@ async def stream_sse_chat(
                                     )
                                     _last_persist_s = current_time
                                 except Exception as e:
-                                    logger.warning(
-                                        "Failed to persist incremental content: %s", e
-                                    )
+                                    logger.warning("Failed to persist incremental content: %s", e)
 
                     elif event_type == "thinking":
                         delta_reasoning = event.get("content")
                         if not isinstance(delta_reasoning, str) or not delta_reasoning:
                             continue
 
-                        if (
-                            not reasoning_parts
-                            or reasoning_parts[-1] != delta_reasoning
-                        ):
+                        if not reasoning_parts or reasoning_parts[-1] != delta_reasoning:
                             reasoning_parts.append(delta_reasoning)
 
                         if first_reasoning_time is None:
@@ -549,9 +525,7 @@ async def stream_sse_chat(
                             ),
                         )
                     elif event_type == "error":
-                        error_message = str(
-                            event.get("error") or "Tool execution failed"
-                        )
+                        error_message = str(event.get("error") or "Tool execution failed")
                         logger.warning(
                             "Tool pipeline reported recoverable error: %s",
                             error_message,
@@ -835,22 +809,12 @@ async def stream_sse_chat(
                             _defer_by=timedelta(seconds=30),
                         )
                     except Exception as extract_error:
-                        logger.warning(
-                            "Failed to enqueue memory extraction: %s", extract_error
-                        )
+                        logger.warning("Failed to enqueue memory extraction: %s", extract_error)
 
                 tool_call_count = len(persisted_tool_calls)
-                if (
-                    queue is not None
-                    and assistant_message_id is not None
-                    and tool_call_count >= 5
-                ):
+                if queue is not None and assistant_message_id is not None and tool_call_count >= 5:
                     try:
-                        import time as time_module
-
-                        debounce_key = (
-                            f"skill_eval:{conversation_uuid}:{assistant_message_id}"
-                        )
+                        debounce_key = f"skill_eval:{conversation_uuid}:{assistant_message_id}"
                         await queue.enqueue_job(
                             "run_skill_evaluation_job",
                             str(user_id),
@@ -861,9 +825,7 @@ async def stream_sse_chat(
                             _defer_by=timedelta(seconds=30),
                         )
                     except Exception as skill_eval_error:
-                        logger.warning(
-                            "Failed to enqueue skill evaluation: %s", skill_eval_error
-                        )
+                        logger.warning("Failed to enqueue skill evaluation: %s", skill_eval_error)
             except Exception as e:
                 logger.warning("Failed to persist final message: %s", e)
 
@@ -882,7 +844,5 @@ async def stream_sse_chat(
         logger.error("Unexpected error in stream_sse_chat: %s", e, exc_info=True)
         yield sse(
             "error",
-            make_envelope(
-                "error", {"message": "Internal server error"}, evt_id="evt_error"
-            ),
+            make_envelope("error", {"message": "Internal server error"}, evt_id="evt_error"),
         )

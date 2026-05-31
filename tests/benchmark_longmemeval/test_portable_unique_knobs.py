@@ -67,7 +67,10 @@ def test_portable_unique_knobs_skip_artifact_exists_and_records_no_rerun() -> No
     summary = _load_skipped_summary()
 
     assert "Implementation was intentionally skipped after the required portability audit" in text
-    assert "Distinct portable historical candidates remaining after 3a-3g reconciliation: **none**." in text
+    assert (
+        "Distinct portable historical candidates remaining after 3a-3g reconciliation: **none**."
+        in text
+    )
     assert "Benchmark rerun executed: **no**." in text
     assert summary["status"] == "skipped_no_distinct_portable_candidate"
     assert summary["distinct_portable_candidate_remaining"] is False

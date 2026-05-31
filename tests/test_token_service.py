@@ -21,7 +21,9 @@ class TestGenerateToken:
 
     def test_token_is_base64url_safe(self):
         token = generate_token()
-        assert all(c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for c in token)
+        assert all(
+            c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for c in token
+        )
 
     def test_consecutive_tokens_differ(self):
         tokens = [generate_token() for _ in range(10)]
@@ -71,7 +73,9 @@ class TestGenerateSetupToken:
 
     def test_setup_token_is_base64url_safe(self):
         token = generate_setup_token()
-        assert all(c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for c in token)
+        assert all(
+            c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for c in token
+        )
 
     def test_setup_token_differs_from_access_token(self):
         access = generate_token()

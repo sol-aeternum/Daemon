@@ -23,13 +23,9 @@ class StubStore:
         del args, kwargs
         raise AssertionError("get_messages should not be called in dedup unit tests")
 
-    async def get_conversation(
-        self, *args: Any, **kwargs: Any
-    ) -> dict[str, Any] | None:
+    async def get_conversation(self, *args: Any, **kwargs: Any) -> dict[str, Any] | None:
         del args, kwargs
-        raise AssertionError(
-            "get_conversation should not be called in dedup unit tests"
-        )
+        raise AssertionError("get_conversation should not be called in dedup unit tests")
 
 
 @final
@@ -111,9 +107,7 @@ async def test_find_best_match_ignores_semantic_overlap_without_name_match() -> 
 
 
 @pytest.mark.asyncio
-async def test_find_best_match_prefers_exact_normalized_name_over_word_set_match() -> (
-    None
-):
+async def test_find_best_match_prefers_exact_normalized_name_over_word_set_match() -> None:
     draft = _build_draft()
     evaluator, _, _ = _make_evaluator(
         [

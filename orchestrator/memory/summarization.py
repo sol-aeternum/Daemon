@@ -45,10 +45,7 @@ async def generate_summary(
     """
     # Format messages for prompt
     formatted_messages = "\n\n".join(
-        [
-            f"{msg.get('role', 'unknown').upper()}: {msg.get('content', '')}"
-            for msg in messages
-        ]
+        [f"{msg.get('role', 'unknown').upper()}: {msg.get('content', '')}" for msg in messages]
     )
 
     # Build prompt
@@ -98,9 +95,7 @@ async def generate_summary(
     if content is None and isinstance(response_data, dict):
         choices = response_data.get("choices")
         if isinstance(choices, list) and choices:
-            message = (
-                choices[0].get("message") if isinstance(choices[0], dict) else None
-            )
+            message = choices[0].get("message") if isinstance(choices[0], dict) else None
             if isinstance(message, dict):
                 content = message.get("content")
 

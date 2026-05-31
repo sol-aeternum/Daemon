@@ -92,7 +92,10 @@ class MockConn:
             if pending_id in self._pool._pending_enrollments:
                 row = self._pool._pending_enrollments[pending_id]
                 if "created_by_device_id" not in row:
-                    row = {**row, "created_by_device_id": getattr(self._pool, "_device_id", uuid.uuid4())}
+                    row = {
+                        **row,
+                        "created_by_device_id": getattr(self._pool, "_device_id", uuid.uuid4()),
+                    }
                 return row
             return None
         if "SELECT revoked_at FROM devices" in sql:
@@ -152,10 +155,12 @@ class MockPool:
 
 def make_mock_init(mock_pool):
     import orchestrator.main as main_module
+
     original_init = main_module.init_app_state
 
     async def mock_init(settings):
         from orchestrator.db import AppState
+
         state = AppState(settings=settings)
         state.db_pool = mock_pool
         state.redis = None
@@ -170,6 +175,7 @@ def make_mock_init(mock_pool):
 
 def restore_init(original):
     import orchestrator.main as main_module
+
     main_module.init_app_state = original
 
 
@@ -244,6 +250,7 @@ class TestEnrollHappyPath:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=SINGLETON_ID,
                             device_id=pool._device_id,
@@ -252,6 +259,7 @@ class TestEnrollHappyPath:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 
@@ -341,6 +349,7 @@ class TestEnrollHappyPath:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=SINGLETON_ID,
                             device_id=pool._device_id,
@@ -349,6 +358,7 @@ class TestEnrollHappyPath:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 
@@ -448,6 +458,7 @@ class TestWrongAttemptsAndReplay:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=SINGLETON_ID,
                             device_id=pool._device_id,
@@ -456,6 +467,7 @@ class TestWrongAttemptsAndReplay:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 
@@ -561,6 +573,7 @@ class TestWrongAttemptsAndReplay:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=SINGLETON_ID,
                             device_id=pool._device_id,
@@ -569,6 +582,7 @@ class TestWrongAttemptsAndReplay:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 
@@ -644,6 +658,7 @@ class TestExpiredAndConsumed:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=SINGLETON_ID,
                             device_id=pool._device_id,
@@ -652,6 +667,7 @@ class TestExpiredAndConsumed:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 
@@ -713,6 +729,7 @@ class TestExpiredAndConsumed:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=SINGLETON_ID,
                             device_id=pool._device_id,
@@ -721,6 +738,7 @@ class TestExpiredAndConsumed:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 
@@ -782,6 +800,7 @@ class TestMalformedPendingId:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=SINGLETON_ID,
                             device_id=pool._device_id,
@@ -790,6 +809,7 @@ class TestMalformedPendingId:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 
@@ -811,7 +831,9 @@ class TestMalformedPendingId:
                                 "client_kind": "native",
                             },
                         )
-                        assert response.status_code == 401, f"Expected 401 for {malformed_id}, got {response.status_code}"
+                        assert response.status_code == 401, (
+                            f"Expected 401 for {malformed_id}, got {response.status_code}"
+                        )
 
                 auth_module._verify_access_token = original_verify
         finally:
@@ -839,6 +861,7 @@ class TestMalformedCode:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=SINGLETON_ID,
                             device_id=pool._device_id,
@@ -847,6 +870,7 @@ class TestMalformedCode:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 
@@ -886,7 +910,9 @@ class TestMalformedCode:
                                 "client_kind": "native",
                             },
                         )
-                        assert response.status_code == 401, f"Expected 401 for code={malformed_code!r}, got {response.status_code}"
+                        assert response.status_code == 401, (
+                            f"Expected 401 for code={malformed_code!r}, got {response.status_code}"
+                        )
 
                 auth_module._verify_access_token = original_verify
         finally:
@@ -901,9 +927,6 @@ class TestNoPlaintextCode:
         try:
             async with app.router.lifespan_context(app):
                 state = app.state.app_state
-                settings = get_settings()
-                pepper = validate_and_get_pepper(settings)
-
                 access_token = "test-access-token-noplaintext"
                 state.db_pool._access_token = access_token
                 state.db_pool._access_token_hash = hash_token(access_token)
@@ -914,6 +937,7 @@ class TestNoPlaintextCode:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=SINGLETON_ID,
                             device_id=pool._device_id,
@@ -922,6 +946,7 @@ class TestNoPlaintextCode:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 
@@ -973,6 +998,7 @@ class TestRevokedCreatorDevice:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=SINGLETON_ID,
                             device_id=pool._device_id,
@@ -981,6 +1007,7 @@ class TestRevokedCreatorDevice:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 
@@ -1072,6 +1099,7 @@ class TestWebEnrollCookiePolicyErrorBeforeDbMutation:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=SINGLETON_ID,
                             device_id=pool._device_id,
@@ -1080,6 +1108,7 @@ class TestWebEnrollCookiePolicyErrorBeforeDbMutation:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 
@@ -1120,7 +1149,10 @@ class TestWebEnrollCookiePolicyErrorBeforeDbMutation:
 
                     # Must return 500 before device/session creation and pending consumption
                     assert complete_response.status_code == 500, complete_response.text
-                    assert "daemon_cookie_secure=false is not allowed in production" in complete_response.text
+                    assert (
+                        "daemon_cookie_secure=false is not allowed in production"
+                        in complete_response.text
+                    )
 
                     # Verify NO device was created
                     assert mock_pool._device_created is False
@@ -1165,6 +1197,7 @@ class TestWebEnrollCookiePolicyErrorBeforeDbMutation:
                 async def mock_verify(pool, token):
                     if token == access_token:
                         from orchestrator.auth import AuthenticatedDevice
+
                         return AuthenticatedDevice(
                             user_id=SINGLETON_ID,
                             device_id=pool._device_id,
@@ -1173,6 +1206,7 @@ class TestWebEnrollCookiePolicyErrorBeforeDbMutation:
                     return None
 
                 import orchestrator.auth as auth_module
+
                 original_verify = auth_module._verify_access_token
                 auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
 

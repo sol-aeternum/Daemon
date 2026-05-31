@@ -37,9 +37,7 @@ FIXED_DOCUMENT = (
     "Mach 1 performance variant."
 )
 
-FIXED_QUERY = (
-    "What is the range of the Ford Mustang Mach-E electric vehicle?"
-)
+FIXED_QUERY = "What is the range of the Ford Mustang Mach-E electric vehicle?"
 
 
 def cosine_sim(a: list[float], b: list[float]) -> float:
@@ -94,6 +92,7 @@ async def call_voyage(
     api_key: str,
 ) -> list[list[float]]:
     import httpx
+
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
             "https://api.voyageai.com/v1/embeddings",
@@ -216,14 +215,14 @@ def write_markdown_report(
 
 ## Method
 
-A fixed document string and a fixed query string are each embedded {document_result['num_calls']}
+A fixed document string and a fixed query string are each embedded {document_result["num_calls"]}
 times directly against the Voyage API (no production code paths):
 
-- **Document set:** `voyage-4-large`, `input_type=document`, {document_result['num_calls']} calls
-- **Query set:** `voyage-4-lite`, `input_type=query`, {query_result['num_calls']} calls
+- **Document set:** `voyage-4-large`, `input_type=document`, {document_result["num_calls"]} calls
+- **Query set:** `voyage-4-lite`, `input_type=query`, {query_result["num_calls"]} calls
 
 For each set, all pairwise cosine similarities are computed, and byte-identity is checked
-across all unique pairs ({document_result['num_calls']} calls → {document_result['num_calls'] * (document_result['num_calls'] - 1) // 2} pairs per set).
+across all unique pairs ({document_result["num_calls"]} calls → {document_result["num_calls"] * (document_result["num_calls"] - 1) // 2} pairs per set).
 
 ---
 
@@ -239,19 +238,19 @@ across all unique pairs ({document_result['num_calls']} calls → {document_resu
 
 ### Document — voyage-4-large
 
-- **Calls:** {document_result['num_calls']}
-- **Pairs evaluated:** {document_result['pairwise_cosine'].get('pair_count', 'N/A')}
-- **Cosine min / max / mean:** [{document_result['pairwise_cosine'].get('min', 'N/A')}, {document_result['pairwise_cosine'].get('max', 'N/A')}] / {document_result['pairwise_cosine'].get('mean', 'N/A')}
-- **Byte-identical pairs:** {document_result['byte_identity'].get('identical_pairs', 'N/A')} / {document_result['byte_identity'].get('total_pairs', 'N/A')}
-- **Non-identical pairs:** {document_result['byte_identity'].get('non_identical_pairs', 'N/A')}
+- **Calls:** {document_result["num_calls"]}
+- **Pairs evaluated:** {document_result["pairwise_cosine"].get("pair_count", "N/A")}
+- **Cosine min / max / mean:** [{document_result["pairwise_cosine"].get("min", "N/A")}, {document_result["pairwise_cosine"].get("max", "N/A")}] / {document_result["pairwise_cosine"].get("mean", "N/A")}
+- **Byte-identical pairs:** {document_result["byte_identity"].get("identical_pairs", "N/A")} / {document_result["byte_identity"].get("total_pairs", "N/A")}
+- **Non-identical pairs:** {document_result["byte_identity"].get("non_identical_pairs", "N/A")}
 
 ### Query — voyage-4-lite
 
-- **Calls:** {query_result['num_calls']}
-- **Pairs evaluated:** {query_result['pairwise_cosine'].get('pair_count', 'N/A')}
-- **Cosine min / max / mean:** [{query_result['pairwise_cosine'].get('min', 'N/A')}, {query_result['pairwise_cosine'].get('max', 'N/A')}] / {query_result['pairwise_cosine'].get('mean', 'N/A')}
-- **Byte-identical pairs:** {query_result['byte_identity'].get('identical_pairs', 'N/A')} / {query_result['byte_identity'].get('total_pairs', 'N/A')}
-- **Non-identical pairs:** {query_result['byte_identity'].get('non_identical_pairs', 'N/A')}
+- **Calls:** {query_result["num_calls"]}
+- **Pairs evaluated:** {query_result["pairwise_cosine"].get("pair_count", "N/A")}
+- **Cosine min / max / mean:** [{query_result["pairwise_cosine"].get("min", "N/A")}, {query_result["pairwise_cosine"].get("max", "N/A")}] / {query_result["pairwise_cosine"].get("mean", "N/A")}
+- **Byte-identical pairs:** {query_result["byte_identity"].get("identical_pairs", "N/A")} / {query_result["byte_identity"].get("total_pairs", "N/A")}
+- **Non-identical pairs:** {query_result["byte_identity"].get("non_identical_pairs", "N/A")}
 
 ---
 
@@ -277,16 +276,32 @@ async def main() -> None:
         print("WARNING: VOYAGE_API_KEY not set — diagnostic cannot run against real API.")
         print("         Writing placeholder report...")
         doc_result = {
-            "model": "voyage-4-large", "input_type": "document",
-            "num_calls": 10, "vector_count": 10, "vector_dimension": 0,
+            "model": "voyage-4-large",
+            "input_type": "document",
+            "num_calls": 10,
+            "vector_count": 10,
+            "vector_dimension": 0,
             "pairwise_cosine": {"min": None, "max": None, "mean": None, "pair_count": 45},
-            "byte_identity": {"all_identical": False, "identical_pairs": 0, "non_identical_pairs": 45, "total_pairs": 45},
+            "byte_identity": {
+                "all_identical": False,
+                "identical_pairs": 0,
+                "non_identical_pairs": 45,
+                "total_pairs": 45,
+            },
         }
         query_result = {
-            "model": "voyage-4-lite", "input_type": "query",
-            "num_calls": 10, "vector_count": 10, "vector_dimension": 0,
+            "model": "voyage-4-lite",
+            "input_type": "query",
+            "num_calls": 10,
+            "vector_count": 10,
+            "vector_dimension": 0,
             "pairwise_cosine": {"min": None, "max": None, "mean": None, "pair_count": 45},
-            "byte_identity": {"all_identical": False, "identical_pairs": 0, "non_identical_pairs": 45, "total_pairs": 45},
+            "byte_identity": {
+                "all_identical": False,
+                "identical_pairs": 0,
+                "non_identical_pairs": 45,
+                "total_pairs": 45,
+            },
         }
         write_markdown_report(doc_result, query_result, elapsed_s=0.0, api_key_present=False)
         return

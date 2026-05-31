@@ -9,7 +9,6 @@ import pytest
 from fastapi import HTTPException
 
 from orchestrator.auth import (
-    AuthenticatedDevice,
     _extract_bearer_token,
     _verify_access_token,
     require_device_auth,
@@ -37,16 +36,17 @@ class TestExtractBearerToken:
 
 
 class TestVerifyAccessToken:
-
     def _make_pool_mock(self, fetchrow_result):
         pool = MagicMock()
         conn = AsyncMock()
         conn.fetchrow = AsyncMock(return_value=fetchrow_result)
         conn.fetchval = AsyncMock(return_value=datetime.now(timezone.utc))
         conn.execute = AsyncMock()
+
         @asynccontextmanager
         async def mock_acquire():
             yield conn
+
         pool.acquire = MagicMock(side_effect=mock_acquire)
         return pool
 
@@ -55,14 +55,16 @@ class TestVerifyAccessToken:
         user_id = uuid.uuid4()
         device_id = uuid.uuid4()
         session_id = uuid.uuid4()
-        pool = self._make_pool_mock({
-            "user_id": user_id,
-            "device_id": device_id,
-            "session_id": session_id,
-            "session_revoked_at": None,
-            "access_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
-            "device_revoked_at": None,
-        })
+        pool = self._make_pool_mock(
+            {
+                "user_id": user_id,
+                "device_id": device_id,
+                "session_id": session_id,
+                "session_revoked_at": None,
+                "access_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
+                "device_revoked_at": None,
+            }
+        )
         token = "valid-access-token-abc123"
         result = await _verify_access_token(pool, token)
         assert result is not None
@@ -78,40 +80,46 @@ class TestVerifyAccessToken:
 
     @pytest.mark.asyncio
     async def test_revoked_session_returns_none(self):
-        pool = self._make_pool_mock({
-            "user_id": uuid.uuid4(),
-            "device_id": uuid.uuid4(),
-            "session_id": uuid.uuid4(),
-            "session_revoked_at": datetime.now(timezone.utc) - timedelta(hours=1),
-            "access_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
-            "device_revoked_at": None,
-        })
+        pool = self._make_pool_mock(
+            {
+                "user_id": uuid.uuid4(),
+                "device_id": uuid.uuid4(),
+                "session_id": uuid.uuid4(),
+                "session_revoked_at": datetime.now(timezone.utc) - timedelta(hours=1),
+                "access_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
+                "device_revoked_at": None,
+            }
+        )
         result = await _verify_access_token(pool, "some-token")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_expired_access_token_returns_none(self):
-        pool = self._make_pool_mock({
-            "user_id": uuid.uuid4(),
-            "device_id": uuid.uuid4(),
-            "session_id": uuid.uuid4(),
-            "session_revoked_at": None,
-            "access_expires_at": datetime.now(timezone.utc) - timedelta(hours=1),
-            "device_revoked_at": None,
-        })
+        pool = self._make_pool_mock(
+            {
+                "user_id": uuid.uuid4(),
+                "device_id": uuid.uuid4(),
+                "session_id": uuid.uuid4(),
+                "session_revoked_at": None,
+                "access_expires_at": datetime.now(timezone.utc) - timedelta(hours=1),
+                "device_revoked_at": None,
+            }
+        )
         result = await _verify_access_token(pool, "some-token")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_revoked_device_returns_none(self):
-        pool = self._make_pool_mock({
-            "user_id": uuid.uuid4(),
-            "device_id": uuid.uuid4(),
-            "session_id": uuid.uuid4(),
-            "session_revoked_at": None,
-            "access_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
-            "device_revoked_at": datetime.now(timezone.utc) - timedelta(hours=1),
-        })
+        pool = self._make_pool_mock(
+            {
+                "user_id": uuid.uuid4(),
+                "device_id": uuid.uuid4(),
+                "session_id": uuid.uuid4(),
+                "session_revoked_at": None,
+                "access_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
+                "device_revoked_at": datetime.now(timezone.utc) - timedelta(hours=1),
+            }
+        )
         result = await _verify_access_token(pool, "some-token")
         assert result is None
 
@@ -120,21 +128,27 @@ class TestVerifyAccessToken:
         executed_sql = []
         pool = MagicMock()
         conn = AsyncMock()
-        conn.fetchrow = AsyncMock(return_value={
-            "user_id": uuid.uuid4(),
-            "device_id": uuid.uuid4(),
-            "session_id": uuid.uuid4(),
-            "session_revoked_at": None,
-            "access_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
-            "device_revoked_at": None,
-        })
+        conn.fetchrow = AsyncMock(
+            return_value={
+                "user_id": uuid.uuid4(),
+                "device_id": uuid.uuid4(),
+                "session_id": uuid.uuid4(),
+                "session_revoked_at": None,
+                "access_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
+                "device_revoked_at": None,
+            }
+        )
         conn.fetchval = AsyncMock(return_value=datetime.now(timezone.utc))
+
         async def mock_execute(sql, *args):
             executed_sql.append(sql)
+
         conn.execute = mock_execute
+
         @asynccontextmanager
         async def mock_acquire():
             yield conn
+
         pool.acquire = MagicMock(side_effect=mock_acquire)
         result = await _verify_access_token(pool, "some-token")
         assert result is not None
@@ -148,14 +162,16 @@ class TestVerifyAccessToken:
     @pytest.mark.asyncio
     async def test_hash_token_is_deterministic(self):
         token = "test-token-xyz"
-        pool = self._make_pool_mock({
-            "user_id": uuid.uuid4(),
-            "device_id": uuid.uuid4(),
-            "session_id": uuid.uuid4(),
-            "session_revoked_at": None,
-            "access_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
-            "device_revoked_at": None,
-        })
+        pool = self._make_pool_mock(
+            {
+                "user_id": uuid.uuid4(),
+                "device_id": uuid.uuid4(),
+                "session_id": uuid.uuid4(),
+                "session_revoked_at": None,
+                "access_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
+                "device_revoked_at": None,
+            }
+        )
         result1 = await _verify_access_token(pool, token)
         result2 = await _verify_access_token(pool, token)
         assert result1 is not None
@@ -164,7 +180,6 @@ class TestVerifyAccessToken:
 
 
 class TestRequireDeviceAuthDependency:
-
     @pytest.mark.asyncio
     async def test_missing_auth_header_raises_401(self):
         request = MagicMock()
@@ -210,9 +225,11 @@ class TestRequireDeviceAuthDependency:
         conn.fetchrow = AsyncMock(return_value=None)
         conn.fetchval = AsyncMock(return_value=datetime.now(timezone.utc))
         conn.execute = AsyncMock()
+
         @asynccontextmanager
         async def mock_acquire():
             yield conn
+
         pool.acquire = MagicMock(side_effect=mock_acquire)
         app_state.db_pool = pool
         request.app.state.app_state = app_state
@@ -230,19 +247,23 @@ class TestRequireDeviceAuthDependency:
         app_state = MagicMock()
         pool = MagicMock()
         conn = AsyncMock()
-        conn.fetchrow = AsyncMock(return_value={
-            "user_id": user_id,
-            "device_id": device_id,
-            "session_id": session_id,
-            "session_revoked_at": None,
-            "access_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
-            "device_revoked_at": None,
-        })
+        conn.fetchrow = AsyncMock(
+            return_value={
+                "user_id": user_id,
+                "device_id": device_id,
+                "session_id": session_id,
+                "session_revoked_at": None,
+                "access_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
+                "device_revoked_at": None,
+            }
+        )
         conn.fetchval = AsyncMock(return_value=datetime.now(timezone.utc))
         conn.execute = AsyncMock()
+
         @asynccontextmanager
         async def mock_acquire():
             yield conn
+
         pool.acquire = MagicMock(side_effect=mock_acquire)
         app_state.db_pool = pool
         request.app.state.app_state = app_state

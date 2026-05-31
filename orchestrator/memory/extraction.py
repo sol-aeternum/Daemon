@@ -7,13 +7,13 @@ import uuid
 from collections.abc import Mapping, Sequence
 
 logger = logging.getLogger(__name__)
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass  # noqa: E402
+from typing import Any  # noqa: E402
 
-import litellm
+import litellm  # noqa: E402
 
-from orchestrator.config import get_settings
-from orchestrator.memory.store import MemoryStore
+from orchestrator.config import get_settings  # noqa: E402
+from orchestrator.memory.store import MemoryStore  # noqa: E402
 
 
 def _get_provider_call_params(model: str) -> dict[str, Any]:
@@ -325,10 +325,7 @@ def calibrate_confidence(fact: ExtractedFact) -> ExtractedFact:
         calibrated.confidence = HEDGE_OVERRIDE_CONFIDENCE
         return calibrated
 
-    if (
-        STRONG_WORDS_PATTERN.search(calibrated.content)
-        and calibrated.confidence <= 0.85
-    ):
+    if STRONG_WORDS_PATTERN.search(calibrated.content) and calibrated.confidence <= 0.85:
         calibrated.confidence = STRONG_OVERRIDE_CONFIDENCE
 
     return calibrated
@@ -370,9 +367,9 @@ def validate_fact(fact: ExtractedFact) -> bool:
     if not USER_SUBJECT_PATTERN.search(content):
         logger.debug("Extraction validation rejected fact: missing user subject")
         return False
-    if GENERAL_KNOWLEDGE_PREFIX_PATTERN.search(
+    if GENERAL_KNOWLEDGE_PREFIX_PATTERN.search(content) and not USER_SUBJECT_PATTERN.search(
         content
-    ) and not USER_SUBJECT_PATTERN.search(content):
+    ):
         logger.debug("Extraction validation rejected fact: general-knowledge prefix")
         return False
     for pattern in FILLER_PATTERNS:
@@ -446,9 +443,7 @@ async def extract_facts_from_text(
         if isinstance(response_data, dict):
             choices = response_data.get("choices")
             if isinstance(choices, list) and choices:
-                message = (
-                    choices[0].get("message") if isinstance(choices[0], dict) else None
-                )
+                message = choices[0].get("message") if isinstance(choices[0], dict) else None
                 if isinstance(message, dict):
                     content = message.get("content")
 
@@ -505,7 +500,7 @@ async def extract_facts_from_text(
             rejected_count=rejected_count,
             slot_coverage=slot_coverage,
         )
-    except Exception as e:
+    except Exception:
         logger.error("Extraction error", exc_info=True)
         return ExtractionOutcome(
             facts=[],
@@ -538,10 +533,7 @@ async def process_extraction(
 
     should_retry = len(text.strip()) >= 80 and (
         not outcome.facts
-        or (
-            outcome.calibrated_count > 0
-            and outcome.rejected_count >= outcome.calibrated_count
-        )
+        or (outcome.calibrated_count > 0 and outcome.rejected_count >= outcome.calibrated_count)
     )
     if should_retry:
         retry_used = True
@@ -599,9 +591,7 @@ async def process_extraction(
         import importlib
 
         summary_module = importlib.import_module("orchestrator.memory.summary")
-        generate_or_update_summary = getattr(
-            summary_module, "generate_or_update_summary"
-        )
+        generate_or_update_summary = getattr(summary_module, "generate_or_update_summary")
         await generate_or_update_summary(conversation_id, store)
     except Exception:
         pass

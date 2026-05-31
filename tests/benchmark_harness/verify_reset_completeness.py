@@ -25,14 +25,15 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import dotenv
-dotenv.load_dotenv()
-os.environ['DATABASE_URL'] = 'postgresql://daemon:daemon@127.0.0.1:5432/daemon'
-os.environ['BENCHMARK_MODE'] = '1'
+import dotenv  # noqa: E402
 
-import asyncpg
-from orchestrator.config import get_settings
-from tests.benchmark_harness.reset_verify_helper import (
+dotenv.load_dotenv()
+os.environ["DATABASE_URL"] = "postgresql://daemon:daemon@127.0.0.1:5432/daemon"
+os.environ["BENCHMARK_MODE"] = "1"
+
+import asyncpg  # noqa: E402
+from orchestrator.config import get_settings  # noqa: E402
+from tests.benchmark_harness.reset_verify_helper import (  # noqa: E402
     double_reset_for_confirmation,
     get_table_row_counts,
     TEST_USER_ID,
@@ -41,10 +42,10 @@ from tests.benchmark_harness.reset_verify_helper import (
 
 async def main():
     settings = get_settings()
-    pool = await asyncpg.create_pool(
-        dsn=settings.database_url, min_size=1, max_size=3
+    pool = await asyncpg.create_pool(dsn=settings.database_url, min_size=1, max_size=3)
+    checkpoint_path = (
+        PROJECT_ROOT / "tests" / "benchmark_results" / "_r4_verify" / "checkpoint.json"
     )
-    checkpoint_path = PROJECT_ROOT / "tests" / "benchmark_results" / "_r4_verify" / "checkpoint.json"
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
     print("=" * 60)
@@ -73,7 +74,7 @@ async def main():
     print(f"  tables_cleared: {first['tables_cleared']}")
     print(f"  extended_tables_cleared: {first['extended_tables_cleared']}")
     print(f"  row_counts_after_reset: {first['row_counts_after_reset']}")
-    if first['error']:
+    if first["error"]:
         print(f"  error: {first['error']}")
     print()
 
@@ -83,7 +84,7 @@ async def main():
     print(f"  total_rows_deleted: {second['total_rows_deleted']}")
     print(f"  all_zero: {second['all_zero']}")
     print(f"  row_counts_after_reset: {second['row_counts_after_reset']}")
-    if second['error']:
+    if second["error"]:
         print(f"  error: {second['error']}")
     print()
 
@@ -97,9 +98,15 @@ async def main():
         print("PASS: All tables reach zero after double-reset.")
         print()
         print("Key findings:")
-        print(f"  - skill_consolidation_log cleared: {first['extended_tables_cleared'].get('skill_consolidation_log', 0)} rows deleted")
-        print(f"  - skill_nudge_user_state cleared: {first['extended_tables_cleared'].get('skill_nudge_user_state', 0)} rows deleted")
-        print(f"  - Total rows deleted across both resets: {first['total_rows_deleted'] + second['total_rows_deleted']}")
+        print(
+            f"  - skill_consolidation_log cleared: {first['extended_tables_cleared'].get('skill_consolidation_log', 0)} rows deleted"
+        )
+        print(
+            f"  - skill_nudge_user_state cleared: {first['extended_tables_cleared'].get('skill_nudge_user_state', 0)} rows deleted"
+        )
+        print(
+            f"  - Total rows deleted across both resets: {first['total_rows_deleted'] + second['total_rows_deleted']}"
+        )
     else:
         print("FAIL: Non-zero tables remain after double-reset.")
         print()
@@ -129,4 +136,5 @@ async def main():
 
 if __name__ == "__main__":
     import os
+
     sys.exit(asyncio.run(main()))

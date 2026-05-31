@@ -65,9 +65,7 @@ MIN_FINAL_SCORE_VALUES: tuple[float, ...] = (0.05, 0.10, 0.15, 0.20, 0.25)
 
 
 def expected_min_score_warnings(min_final_score: float) -> list[str]:
-    warnings = [
-        "shared.retrieval.call_contract.top_k_memories: pinned=5 effective=6"
-    ]
+    warnings = ["shared.retrieval.call_contract.top_k_memories: pinned=5 effective=6"]
     if not math.isclose(min_final_score, CURRENT_MIN_FINAL_SCORE, abs_tol=1e-9):
         warnings.append(
             "shared.retrieval.ranking.min_final_score: "
@@ -245,9 +243,7 @@ def _comparison_for_run(
         for label in current_protected
     }
     negative_protected_deltas = {
-        label: delta
-        for label, delta in protected_deltas.items()
-        if delta < 0.0
+        label: delta for label, delta in protected_deltas.items() if delta < 0.0
     }
     negative_target_deltas = {
         subset_name: values["delta_vs_current"]
@@ -266,8 +262,7 @@ def _comparison_for_run(
             f"{locked_failure_union['delta_vs_current']:+d}/{locked_failure_union['total']}"
         )
     regressions.extend(
-        f"protected_cell:{label} {delta:+.1%}"
-        for label, delta in negative_protected_deltas.items()
+        f"protected_cell:{label} {delta:+.1%}" for label, delta in negative_protected_deltas.items()
     )
     regressions.extend(
         f"target_cell:{subset_name} {delta:+d}"
@@ -275,8 +270,7 @@ def _comparison_for_run(
     )
 
     qualifying_improvement = (
-        target_cells[PRIMARY_TARGET_SUBSET]["delta_vs_current"] > 0
-        and not regressions
+        target_cells[PRIMARY_TARGET_SUBSET]["delta_vs_current"] > 0 and not regressions
     )
 
     return {
@@ -353,9 +347,7 @@ def _build_manifest_entry(
     }
 
 
-def _recommendation(
-    current: dict[str, Any], runs: list[dict[str, Any]]
-) -> dict[str, Any]:
+def _recommendation(current: dict[str, Any], runs: list[dict[str, Any]]) -> dict[str, Any]:
     qualifying = [run for run in runs if run["qualifying_improvement"]]
     if not qualifying:
         best_primary = max(
@@ -550,9 +542,7 @@ async def run_sweep() -> dict[str, Any]:
 
             if _run_is_complete(output_dir):
                 summary = read_json(output_dir / RUN_SUMMARY_FILENAME)
-                manifest["runs"].append(
-                    _build_manifest_entry(min_final_score, output_dir, summary)
-                )
+                manifest["runs"].append(_build_manifest_entry(min_final_score, output_dir, summary))
                 continue
 
             checkpoint_path = output_dir / CHECKPOINT_FILENAME
@@ -586,15 +576,11 @@ async def run_sweep() -> dict[str, Any]:
                 subsets=subsets,
                 output_dir=output_dir,
             )
-            manifest["runs"].append(
-                _build_manifest_entry(min_final_score, output_dir, summary)
-            )
+            manifest["runs"].append(_build_manifest_entry(min_final_score, output_dir, summary))
             write_json(OUTPUT_ROOT / MANIFEST_FILENAME, manifest)
 
         manifest["runs"] = sorted(manifest["runs"], key=lambda run: run["min_final_score"])
-        manifest["recommendation"] = _recommendation(
-            current_manifest_summary, manifest["runs"]
-        )
+        manifest["recommendation"] = _recommendation(current_manifest_summary, manifest["runs"])
         write_json(OUTPUT_ROOT / MANIFEST_FILENAME, manifest)
         (OUTPUT_ROOT / ANALYSIS_FILENAME).write_text(build_analysis_markdown(manifest))
         return manifest

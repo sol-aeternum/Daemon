@@ -143,18 +143,14 @@ class TestSkillProjectionStore:
         mock_db_pool.fetchrow.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_get_projection_returns_none_when_missing(
-        self, mock_db_pool: AsyncMock
-    ) -> None:
+    async def test_get_projection_returns_none_when_missing(self, mock_db_pool: AsyncMock) -> None:
         store = SkillProjectionStore(mock_db_pool)
         mock_db_pool.fetchrow.return_value = None
         result = await store.get_projection("nonexistent")
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_delete_projection_returns_true(
-        self, mock_db_pool: AsyncMock
-    ) -> None:
+    async def test_delete_projection_returns_true(self, mock_db_pool: AsyncMock) -> None:
         store = SkillProjectionStore(mock_db_pool)
         mock_db_pool.execute.return_value = "DELETE 1"
         result = await store.delete_projection("skill-to-delete")
@@ -179,18 +175,14 @@ class TestSkillProjectionStore:
         assert "use_count = use_count + 1" in call_args[0]
 
     @pytest.mark.asyncio
-    async def test_projection_exists_returns_true(
-        self, mock_db_pool: AsyncMock
-    ) -> None:
+    async def test_projection_exists_returns_true(self, mock_db_pool: AsyncMock) -> None:
         store = SkillProjectionStore(mock_db_pool)
         mock_db_pool.fetchval.return_value = True
         result = await store.projection_exists("existing-skill")
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_update_autonomous_edit_updates_flag(
-        self, mock_db_pool: AsyncMock
-    ) -> None:
+    async def test_update_autonomous_edit_updates_flag(self, mock_db_pool: AsyncMock) -> None:
         store = SkillProjectionStore(mock_db_pool)
         mock_db_pool.execute.return_value = "UPDATE 1"
 
@@ -285,9 +277,7 @@ class TestSkillProjectionStore:
         assert isinstance(passed_pending_update, dict)
 
     @pytest.mark.asyncio
-    async def test_set_pending_update_passes_dict_not_string(
-        self, mock_db_pool: AsyncMock
-    ) -> None:
+    async def test_set_pending_update_passes_dict_not_string(self, mock_db_pool: AsyncMock) -> None:
         store = SkillProjectionStore(mock_db_pool)
         mock_db_pool.execute.return_value = "UPDATE 1"
         pending_update = {"repo_version": "3.0.0", "repo_hash": "def"}
@@ -298,9 +288,7 @@ class TestSkillProjectionStore:
         assert isinstance(passed_update, dict)
 
     @pytest.mark.asyncio
-    async def test_upsert_uses_jsonb_cast_for_pending_update(
-        self, mock_db_pool: AsyncMock
-    ) -> None:
+    async def test_upsert_uses_jsonb_cast_for_pending_update(self, mock_db_pool: AsyncMock) -> None:
         store = SkillProjectionStore(mock_db_pool)
         pending_update = {"repo_version": "2.0.0"}
         mock_db_pool.fetchrow.return_value = MockRecord(
@@ -390,9 +378,7 @@ class TestSkillSyncService:
         assert result.error is not None and "not found" in result.error
 
     @pytest.mark.asyncio
-    async def test_delete_skill_projection_removes_row(
-        self, mock_db_pool: AsyncMock
-    ) -> None:
+    async def test_delete_skill_projection_removes_row(self, mock_db_pool: AsyncMock) -> None:
         store = SkillProjectionStore(mock_db_pool)
         mock_db_pool.execute.return_value = "DELETE 1"
         service = SkillSyncService(store)
@@ -460,9 +446,7 @@ class TestSkillSyncService:
         assert "db-only" in result.orphaned
 
     @pytest.mark.asyncio
-    async def test_reconcile_detects_drifted(
-        self, mock_db_pool: AsyncMock, tmp_path: Path
-    ) -> None:
+    async def test_reconcile_detects_drifted(self, mock_db_pool: AsyncMock, tmp_path: Path) -> None:
         skill_file = tmp_path / "drifted.md"
         skill_file.write_text("# Drifted\n\nContent.")
         store = SkillProjectionStore(mock_db_pool)
@@ -489,9 +473,7 @@ class TestSkillSyncService:
         assert result.error is not None and "No drift detected" in result.error
 
     @pytest.mark.asyncio
-    async def test_resync_all_drifted(
-        self, mock_db_pool: AsyncMock, tmp_path: Path
-    ) -> None:
+    async def test_resync_all_drifted(self, mock_db_pool: AsyncMock, tmp_path: Path) -> None:
         skill_file = tmp_path / "drifted-a.md"
         skill_file.write_text("# Drifted A\n\nContent.")
         skill_file2 = tmp_path / "drifted-b.md"
@@ -534,9 +516,7 @@ class TestSkillSyncService:
         assert all(r.action == "upsert" for r in results)
 
     @pytest.mark.asyncio
-    async def test_backfill_existing_skills(
-        self, mock_db_pool: AsyncMock, tmp_path: Path
-    ) -> None:
+    async def test_backfill_existing_skills(self, mock_db_pool: AsyncMock, tmp_path: Path) -> None:
         skill_file = tmp_path / "existing-skill.md"
         skill_file.write_text(
             "---\nname: Existing Skill\ndescription: An existing skill\nenabled: true\n---\n# Existing Skill\n\nContent."
@@ -611,9 +591,7 @@ class TestSkillSyncService:
                     "orchestrator.skills_sync.embed_skill_content",
                     AsyncMock(side_effect=RuntimeError("Embedding failed")),
                 ):
-                    mock_db_pool.fetchrow.side_effect = RuntimeError(
-                        "DB error during upsert"
-                    )
+                    mock_db_pool.fetchrow.side_effect = RuntimeError("DB error during upsert")
                     results = await service.backfill_existing_skills()
         assert len(results) == 1
         assert results[0].success is False

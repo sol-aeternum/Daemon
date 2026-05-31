@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from typing import Any, Dict, Optional
@@ -142,9 +141,7 @@ class FalKlingClient:
             raise FalKlingError("FAL_KEY not configured")
 
         try:
-            endpoint = self._get_model_endpoint(
-                job.kling_model, bool(job.source_image_url)
-            )
+            endpoint = self._get_model_endpoint(job.kling_model, bool(job.source_image_url))
 
             result = await fal_client.result_async(
                 endpoint,
@@ -164,9 +161,7 @@ class FalKlingClient:
                         audio_enabled=job.audio_enabled,
                     )
 
-            raise FalKlingError(
-                "Video generation job failed or returned invalid result"
-            )
+            raise FalKlingError("Video generation job failed or returned invalid result")
 
         except Exception as e:
             raise FalKlingError(f"Failed to poll video generation job: {str(e)}")

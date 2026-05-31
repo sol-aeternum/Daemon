@@ -2,7 +2,7 @@
 
 import pytest
 from unittest.mock import patch, AsyncMock
-from orchestrator.memory.summarization import generate_summary, should_summarize
+from orchestrator.memory.summarization import generate_summary
 
 
 @pytest.mark.asyncio

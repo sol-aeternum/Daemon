@@ -93,9 +93,7 @@ class TestDocumentIntegration:
                         "_execute_sandbox",
                         return_value={"success": True, "file_path": temp_path},
                     ):
-                        with patch.object(
-                            agent, "_persist_file", return_value=Path(temp_path)
-                        ):
+                        with patch.object(agent, "_persist_file", return_value=Path(temp_path)):
                             result = await agent.execute(
                                 "Create a simple document", {"format": "docx"}
                             )
@@ -150,12 +148,8 @@ class TestDocumentIntegration:
                         "_execute_sandbox",
                         return_value={"success": True, "file_path": temp_path},
                     ):
-                        with patch.object(
-                            agent, "_persist_file", return_value=Path(temp_path)
-                        ):
-                            result1 = await agent.execute(
-                                "Create a document", {"format": "docx"}
-                            )
+                        with patch.object(agent, "_persist_file", return_value=Path(temp_path)):
+                            result1 = await agent.execute("Create a document", {"format": "docx"})
                             assert result1.success is True
 
                             result2 = await agent.execute(
@@ -263,12 +257,8 @@ class TestDocumentSkillLoading:
             "content": long_content,
         }
 
-        with patch(
-            "orchestrator.skills_store.list_skills", return_value=[skill_summary]
-        ):
-            with patch(
-                "orchestrator.skills_store.get_skill", return_value=skill_detail
-            ):
+        with patch("orchestrator.skills_store.list_skills", return_value=[skill_summary]):
+            with patch("orchestrator.skills_store.get_skill", return_value=skill_detail):
                 block = build_enabled_skills_block()
 
         assert ("x" * 2000) in block

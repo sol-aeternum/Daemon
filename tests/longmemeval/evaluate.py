@@ -36,7 +36,6 @@ import argparse
 import asyncio
 import json
 import logging
-import sys
 import uuid
 from pathlib import Path
 from typing import Any
@@ -448,9 +447,7 @@ def print_results(results: list[dict[str, Any]], accuracy: dict[str, float]) -> 
         judgment = result["judgment"]
         hypothesis = result["hypothesis"][:60]
 
-        status = (
-            "✓" if judgment == "correct" else "✗" if judgment == "incorrect" else "~"
-        )
+        status = "✓" if judgment == "correct" else "✗" if judgment == "incorrect" else "~"
         print(f"{status} [{category}] {qid}: {judgment}")
         print(f"  Hypothesis: {hypothesis}...")
 
@@ -489,24 +486,19 @@ async def run_evaluation(
         # Process questions
         questions = dataset if limit is None else dataset[:limit]
         question_order = [
-            str(entry.get("question_id", f"q{idx}"))
-            for idx, entry in enumerate(questions)
+            str(entry.get("question_id", f"q{idx}")) for idx, entry in enumerate(questions)
         ]
 
         print(f"Evaluating {len(questions)} questions...")
         if checkpoint_results:
-            print(
-                f"Resuming from checkpoint: {len(checkpoint_results)} completed questions"
-            )
+            print(f"Resuming from checkpoint: {len(checkpoint_results)} completed questions")
         if force_retrieval_logging:
             logger.info("LongMemEval benchmark forcing retrieval logging ON")
 
         for idx, entry in enumerate(questions):
             question_id = str(entry.get("question_id", f"q{idx}"))
             if question_id in checkpoint_results:
-                print(
-                    f"[{idx + 1}/{len(questions)}] {question_id}... SKIP (checkpoint)"
-                )
+                print(f"[{idx + 1}/{len(questions)}] {question_id}... SKIP (checkpoint)")
                 continue
 
             question_text = entry.get("question", "")
@@ -540,9 +532,7 @@ async def run_evaluation(
                 }
 
             ordered_checkpoint_results = [
-                checkpoint_results[qid]
-                for qid in question_order
-                if qid in checkpoint_results
+                checkpoint_results[qid] for qid in question_order if qid in checkpoint_results
             ]
             save_checkpoint(
                 checkpoint_path,
@@ -550,11 +540,7 @@ async def run_evaluation(
                 results=ordered_checkpoint_results,
             )
 
-        results = [
-            checkpoint_results[qid]
-            for qid in question_order
-            if qid in checkpoint_results
-        ]
+        results = [checkpoint_results[qid] for qid in question_order if qid in checkpoint_results]
     finally:
         await pool.close()
 
@@ -594,10 +580,7 @@ def main():
         "--checkpoint",
         type=Path,
         default=None,
-        help=(
-            "Optional checkpoint file path "
-            f"(default: <output-dir>/{CHECKPOINT_FILENAME})"
-        ),
+        help=(f"Optional checkpoint file path (default: <output-dir>/{CHECKPOINT_FILENAME})"),
     )
     parser.add_argument(
         "--limit",

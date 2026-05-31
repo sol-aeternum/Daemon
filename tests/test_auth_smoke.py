@@ -68,10 +68,16 @@ class MockConn:
             return session_id
         if "INSERT INTO pending_enrollments" in sql:
             return None
+
         def _get_pending(pending_id):
             key_str = str(pending_id)
-            key_uuid = uuid.UUID(key_str) if key_str not in self._pool._pending_enrollments else pending_id
-            return self._pool._pending_enrollments.get(key_str) or self._pool._pending_enrollments.get(key_uuid)
+            key_uuid = (
+                uuid.UUID(key_str) if key_str not in self._pool._pending_enrollments else pending_id
+            )
+            return self._pool._pending_enrollments.get(
+                key_str
+            ) or self._pool._pending_enrollments.get(key_uuid)
+
         if "SELECT id, user_id, code_verifier_hash" in sql and "WHERE id =" in sql:
             pending_id = args[0]
             return _get_pending(pending_id)
@@ -108,21 +114,32 @@ class MockConn:
                 row = self._pool._sessions[token_hash]
                 if row["refresh_consumed_at"] is None and row["revoked_at"] is None:
                     device_key = row["device_id"]
-                    device = self._pool._devices.get(str(device_key)) or self._pool._devices.get(device_key)
+                    device = self._pool._devices.get(str(device_key)) or self._pool._devices.get(
+                        device_key
+                    )
                     if device and device.get("revoked_at") is not None:
                         return None
                     if row["refresh_expires_at"] > datetime.now(timezone.utc):
                         row["refresh_consumed_at"] = datetime.now(timezone.utc)
                         return row
             return None
-        if "SELECT" in sql and "refresh_consumed_at" in sql and "UPDATE" not in sql and "refresh_token_hash" in sql:
+        if (
+            "SELECT" in sql
+            and "refresh_consumed_at" in sql
+            and "UPDATE" not in sql
+            and "refresh_token_hash" in sql
+        ):
             token_hash = args[0]
             if token_hash in self._pool._sessions:
                 row = self._pool._sessions[token_hash]
                 if row.get("refresh_consumed_at") is not None:
                     return row
             return None
-        if "SELECT" in sql and "refresh_token_hash" in sql and "id, user_id, device_id, client_kind" in sql:
+        if (
+            "SELECT" in sql
+            and "refresh_token_hash" in sql
+            and "id, user_id, device_id, client_kind" in sql
+        ):
             token_hash = args[0]
             if token_hash in self._pool._sessions:
                 row = self._pool._sessions[token_hash]
@@ -136,7 +153,9 @@ class MockConn:
             token_hash = args[0]
             if token_hash in self._pool._sessions:
                 row = self._pool._sessions[token_hash]
-                device = self._pool._devices.get(str(row["device_id"])) or self._pool._devices.get(row["device_id"])
+                device = self._pool._devices.get(str(row["device_id"])) or self._pool._devices.get(
+                    row["device_id"]
+                )
                 if device is None:
                     return None
                 if device.get("revoked_at") is not None:
@@ -158,11 +177,16 @@ class MockConn:
         if "SELECT id, user_id, code_verifier_hash" in sql and "WHERE id =" in sql:
             pending_id = args[0]
             key_str = str(pending_id)
-            entry = self._pool._pending_enrollments.get(key_str) or self._pool._pending_enrollments.get(pending_id)
+            entry = self._pool._pending_enrollments.get(
+                key_str
+            ) or self._pool._pending_enrollments.get(pending_id)
             return entry
         if "SELECT id FROM users" in sql:
             return {"id": SINGLETON_ID}
-        if "SELECT id, display_name, platform, created_at, last_seen_at, revoked_at" in sql and "user_id" in sql:
+        if (
+            "SELECT id, display_name, platform, created_at, last_seen_at, revoked_at" in sql
+            and "user_id" in sql
+        ):
             user_id = args[0]
             result = []
             for d in self._pool._devices.values():
@@ -186,21 +210,32 @@ class MockConn:
                 row = self._pool._sessions[token_hash]
                 if row["refresh_consumed_at"] is None and row["revoked_at"] is None:
                     device_key = row["device_id"]
-                    device = self._pool._devices.get(str(device_key)) or self._pool._devices.get(device_key)
+                    device = self._pool._devices.get(str(device_key)) or self._pool._devices.get(
+                        device_key
+                    )
                     if device and device.get("revoked_at") is not None:
                         return None
                     if row["refresh_expires_at"] > datetime.now(timezone.utc):
                         row["refresh_consumed_at"] = datetime.now(timezone.utc)
                         return row
             return None
-        if "SELECT" in sql and "refresh_consumed_at" in sql and "UPDATE" not in sql and "refresh_token_hash" in sql:
+        if (
+            "SELECT" in sql
+            and "refresh_consumed_at" in sql
+            and "UPDATE" not in sql
+            and "refresh_token_hash" in sql
+        ):
             token_hash = args[0]
             if token_hash in self._pool._sessions:
                 row = self._pool._sessions[token_hash]
                 if row.get("refresh_consumed_at") is not None:
                     return row
             return None
-        if "SELECT" in sql and "refresh_token_hash" in sql and "id, user_id, device_id, client_kind" in sql:
+        if (
+            "SELECT" in sql
+            and "refresh_token_hash" in sql
+            and "id, user_id, device_id, client_kind" in sql
+        ):
             token_hash = args[0]
             if token_hash in self._pool._sessions:
                 row = self._pool._sessions[token_hash]
@@ -210,7 +245,10 @@ class MockConn:
         return None
 
     async def fetch(self, sql, *args):
-        if "SELECT id, display_name, platform, created_at, last_seen_at, revoked_at" in sql and "user_id" in sql:
+        if (
+            "SELECT id, display_name, platform, created_at, last_seen_at, revoked_at" in sql
+            and "user_id" in sql
+        ):
             user_id = args[0]
             result = []
             for d in self._pool._devices.values():
@@ -348,6 +386,7 @@ def make_mock_init(mock_pool):
 
 def restore_init(original_init, original_check):
     import orchestrator.main as main_module
+
     main_module.init_app_state = original_init
     main_module._check_first_boot_setup = original_check
 
@@ -423,7 +462,10 @@ class TestAuthDeviceLifecycleSmoke:
                     device_a_sessions = []
                     for s in pool._sessions.values():
                         sid = s["id"]
-                        if sid not in seen_ids and s["device_id"] == pool._devices[device_a_id]["id"]:
+                        if (
+                            sid not in seen_ids
+                            and s["device_id"] == pool._devices[device_a_id]["id"]
+                        ):
                             seen_ids.add(sid)
                             device_a_sessions.append(s)
                     assert len(device_a_sessions) == 1
@@ -457,7 +499,6 @@ class TestAuthDeviceLifecycleSmoke:
 
                     match2 = re.search(r"__Host-daemon_refresh=([^;]+)", new_cookie_header)
                     assert match2
-                    raw_refresh_a2 = match2.group(1)
 
                     resp = await client.post(
                         "/v1/auth/enroll/start",
@@ -551,7 +592,10 @@ class TestAuthDeviceLifecycleSmoke:
                     device_b_sessions = []
                     for s in pool._sessions.values():
                         sid = s["id"]
-                        if sid not in seen_ids_b and s["device_id"] == pool._devices[device_b_id]["id"]:
+                        if (
+                            sid not in seen_ids_b
+                            and s["device_id"] == pool._devices[device_b_id]["id"]
+                        ):
                             seen_ids_b.add(sid)
                             device_b_sessions.append(s)
                     assert len(device_b_sessions) == 1

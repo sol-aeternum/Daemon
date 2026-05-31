@@ -9,7 +9,6 @@ These tests verify that:
 
 from __future__ import annotations
 
-import json
 import uuid
 from datetime import datetime
 from typing import Any
@@ -224,9 +223,7 @@ async def test_chat_history_excludes_streaming_messages(client, monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_chat_uses_frontend_messages_when_no_db_history(
-    client, monkeypatch
-) -> None:
+async def test_chat_uses_frontend_messages_when_no_db_history(client, monkeypatch) -> None:
     """Test that frontend messages are used when conversation doesn't exist in DB.
 
     Scenario:

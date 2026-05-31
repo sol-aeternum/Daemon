@@ -83,10 +83,7 @@ class FetchPolicy(BaseModel):
 
         # Check content type if provided
         if content_type and self.allowed_content_types:
-            if not any(
-                allowed_type in content_type
-                for allowed_type in self.allowed_content_types
-            ):
+            if not any(allowed_type in content_type for allowed_type in self.allowed_content_types):
                 return False
 
         # Check for error signatures in short content
@@ -112,9 +109,7 @@ def load_policy_from_env() -> FetchPolicy:
 
     allowed_content_types_env = os.getenv("FETCH_ALLOWED_CONTENT_TYPES")
     if allowed_content_types_env:
-        allowed_content_types = [
-            ct.strip() for ct in allowed_content_types_env.split(",")
-        ]
+        allowed_content_types = [ct.strip() for ct in allowed_content_types_env.split(",")]
 
     max_depth_env = os.getenv("FETCH_MAX_DEPTH")
     if max_depth_env:

@@ -139,9 +139,7 @@ class TestPersistExtractionResult:
         assert call_kwargs["canonical_name"] == "Alice"
         assert len(entity_ids) == 1
         # Bug 3 fix: link_entity_to_memory must be called for new entities
-        mock_store.link_entity_to_memory.assert_called_once_with(
-            new_entity_id, memory_id
-        )
+        mock_store.link_entity_to_memory.assert_called_once_with(new_entity_id, memory_id)
 
     @pytest.mark.asyncio
     async def test_adds_alias_to_merged_entity(self) -> None:
@@ -239,10 +237,6 @@ class TestResolveEntitiesJobWiring:
 
     @pytest.mark.asyncio
     async def test_job_processes_memories_and_creates_entities(self) -> None:
-        from orchestrator.memory.entities import (
-            CandidateMention,
-            EntityResolution,
-        )
         from orchestrator.memory.store import MemoryStore
         from orchestrator.worker.jobs import resolve_entities_job
 
@@ -337,9 +331,7 @@ class TestEntityAliasPersistenceRegression:
                 return ciphertext
 
         mock_pool = MagicMock()
-        stored_aliases = json.dumps(
-            f"MOCK_TOKEN_{json.dumps(['Bob', 'Bobby', 'Bobby2'])}"
-        )
+        stored_aliases = json.dumps(f"MOCK_TOKEN_{json.dumps(['Bob', 'Bobby', 'Bobby2'])}")
         stored_row = {
             "id": entity_id,
             "user_id": uuid.uuid4(),

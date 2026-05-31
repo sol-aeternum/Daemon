@@ -3,19 +3,16 @@
 from __future__ import annotations
 
 import json
-import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import pytest_asyncio
 
 from orchestrator.tools.skill_manage import (
     SkillManageTool,
     _check_modification_allowed,
-    _PROTECTED_SOURCE_TYPES,
 )
 
 
@@ -58,32 +55,24 @@ def tool(mock_db_pool: AsyncMock) -> SkillManageTool:
 class TestCheckModificationAllowed:
     def test_direct_user_bypass(self) -> None:
         projection = {"source_type": "system", "allow_autonomous_edit": False}
-        allowed, reason = _check_modification_allowed(
-            projection, caller_autonomous=False
-        )
+        allowed, reason = _check_modification_allowed(projection, caller_autonomous=False)
         assert allowed is True
         assert reason == ""
 
     def test_autonomous_can_modify_autonomous_skill(self) -> None:
         projection = {"source_type": "autonomous", "allow_autonomous_edit": False}
-        allowed, reason = _check_modification_allowed(
-            projection, caller_autonomous=True
-        )
+        allowed, reason = _check_modification_allowed(projection, caller_autonomous=True)
         assert allowed is True
 
     def test_autonomous_cannot_modify_system_skill_without_flag(self) -> None:
         projection = {"source_type": "system", "allow_autonomous_edit": False}
-        allowed, reason = _check_modification_allowed(
-            projection, caller_autonomous=True
-        )
+        allowed, reason = _check_modification_allowed(projection, caller_autonomous=True)
         assert allowed is False
         assert "protected" in reason
 
     def test_autonomous_can_modify_system_skill_with_flag(self) -> None:
         projection = {"source_type": "system", "allow_autonomous_edit": True}
-        allowed, reason = _check_modification_allowed(
-            projection, caller_autonomous=True
-        )
+        allowed, reason = _check_modification_allowed(projection, caller_autonomous=True)
         assert allowed is True
 
     def test_autonomous_can_modify_with_override_flag(self) -> None:
@@ -95,16 +84,12 @@ class TestCheckModificationAllowed:
 
     def test_autonomous_cannot_modify_imported_skill(self) -> None:
         projection = {"source_type": "imported", "allow_autonomous_edit": False}
-        allowed, reason = _check_modification_allowed(
-            projection, caller_autonomous=True
-        )
+        allowed, reason = _check_modification_allowed(projection, caller_autonomous=True)
         assert allowed is False
 
     def test_autonomous_cannot_modify_manual_skill(self) -> None:
         projection = {"source_type": "manual", "allow_autonomous_edit": False}
-        allowed, reason = _check_modification_allowed(
-            projection, caller_autonomous=True
-        )
+        allowed, reason = _check_modification_allowed(projection, caller_autonomous=True)
         assert allowed is False
 
     def test_no_projection_fails_closed_for_autonomous(self) -> None:
@@ -204,9 +189,7 @@ class TestSkillManageToolList:
 
 class TestSkillManageToolView:
     @pytest.mark.asyncio
-    async def test_view_returns_full_content(
-        self, tool: SkillManageTool, tmp_path: Path
-    ) -> None:
+    async def test_view_returns_full_content(self, tool: SkillManageTool, tmp_path: Path) -> None:
         skill_file = tmp_path / "view-test.md"
         skill_file.write_text(
             "---\nname: View Test\ndescription: Testing view\nenabled: true\n---\n# View Test\n\nThis is the content."
@@ -224,9 +207,7 @@ class TestSkillManageToolView:
         assert "description" in parsed
 
     @pytest.mark.asyncio
-    async def test_view_increments_usage(
-        self, tool: SkillManageTool, tmp_path: Path
-    ) -> None:
+    async def test_view_increments_usage(self, tool: SkillManageTool, tmp_path: Path) -> None:
         skill_file = tmp_path / "usage-test.md"
         skill_file.write_text(
             "---\nname: Usage Test\ndescription: Testing usage\nenabled: true\n---\n# Usage Test\n\nContent."
@@ -265,9 +246,7 @@ class TestSkillManageToolView:
 
 class TestSkillManageToolCreate:
     @pytest.mark.asyncio
-    async def test_create_skill_success(
-        self, tool: SkillManageTool, tmp_path: Path
-    ) -> None:
+    async def test_create_skill_success(self, tool: SkillManageTool, tmp_path: Path) -> None:
         mock_db_pool = AsyncMock()
         tool = SkillManageTool(db_pool=mock_db_pool)
         mock_db_pool.fetchrow.return_value = MockRecord(
@@ -395,9 +374,7 @@ class TestSkillManageToolPatch:
         assert "Old content here" not in content
 
     @pytest.mark.asyncio
-    async def test_patch_requires_old_text(
-        self, tool: SkillManageTool, tmp_path: Path
-    ) -> None:
+    async def test_patch_requires_old_text(self, tool: SkillManageTool, tmp_path: Path) -> None:
         mock_db_pool = AsyncMock()
         tool = SkillManageTool(db_pool=mock_db_pool)
 
@@ -411,9 +388,7 @@ class TestSkillManageToolPatch:
         assert "old_text" in parsed["error"]
 
     @pytest.mark.asyncio
-    async def test_patch_old_text_not_found(
-        self, tool: SkillManageTool, tmp_path: Path
-    ) -> None:
+    async def test_patch_old_text_not_found(self, tool: SkillManageTool, tmp_path: Path) -> None:
         skill_file = tmp_path / "notfound-test.md"
         skill_file.write_text(
             "---\nname: NotFound Test\ndescription: Testing\nenabled: true\n---\n# NotFound Test\n\nContent."
@@ -664,9 +639,7 @@ class TestSkillManageToolMissingProjectionProtection:
             return dict(synced_projection)
 
         with patch.object(tool._sync_service, "sync_skill", mock_sync_skill):
-            with patch.object(
-                tool._projection_store, "get_projection", mock_get_projection
-            ):
+            with patch.object(tool._projection_store, "get_projection", mock_get_projection):
                 with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):
                     result = await tool.execute(
                         action="patch",

@@ -74,9 +74,7 @@ async def main() -> None:
                 USER_ID,
             )
             all_memory_total = await conn.fetchval("SELECT count(*) FROM memories")
-            all_user_count = await conn.fetchval(
-                "SELECT count(DISTINCT user_id) FROM memories"
-            )
+            all_user_count = await conn.fetchval("SELECT count(DISTINCT user_id) FROM memories")
             vector_prefilter_count = await conn.fetchval(
                 "SELECT count(*) FROM memories WHERE user_id = $1 AND status != 'deleted' AND tier != 'l0' AND valid_to IS NULL AND local_only = FALSE AND embedding IS NOT NULL",
                 USER_ID,
@@ -207,9 +205,7 @@ async def main() -> None:
         )
         print(
             "Tier distribution: "
-            + str(
-                [(row["tier_label"], row["memory_count"]) for row in user_tier_counts]
-            )
+            + str([(row["tier_label"], row["memory_count"]) for row in user_tier_counts])
         )
         print(
             f"Embedding stats: with_embedding={user_embedding_stats['with_embedding']} without_embedding={user_embedding_stats['without_embedding']} with_tsv={user_embedding_stats['with_tsv']}"
@@ -296,9 +292,7 @@ async def main() -> None:
             if not memory_id:
                 continue
             if memory_id in candidate_map:
-                candidate_map[memory_id]["bm25_score"] = _as_float(
-                    row.get("bm25_score"), 0.0
-                )
+                candidate_map[memory_id]["bm25_score"] = _as_float(row.get("bm25_score"), 0.0)
                 candidate_map[memory_id]["source"] = "hybrid"
             else:
                 entry = dict(row)

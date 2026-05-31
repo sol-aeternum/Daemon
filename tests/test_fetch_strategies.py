@@ -1,4 +1,3 @@
-import asyncio
 from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -345,16 +344,10 @@ class TestFetchService:
 
         assert result is not None
         assert result.strategy_used == "archive"
-        fetch_service.direct_strategy.fetch.assert_called_once_with(
-            "https://example.com"
-        )
+        fetch_service.direct_strategy.fetch.assert_called_once_with("https://example.com")
         fetch_service.jina_strategy.fetch.assert_called_once_with("https://example.com")
-        fetch_service.crawl4ai_strategy.fetch.assert_called_once_with(
-            "https://example.com"
-        )
-        fetch_service.archive_strategy.fetch.assert_called_once_with(
-            "https://example.com"
-        )
+        fetch_service.crawl4ai_strategy.fetch.assert_called_once_with("https://example.com")
+        fetch_service.archive_strategy.fetch.assert_called_once_with("https://example.com")
 
     @pytest.mark.asyncio
     async def test_cache_hit(self, fetch_service):
@@ -475,9 +468,7 @@ class TestFetchService:
         fetch_service.cache.get = AsyncMock(return_value=None)
         fetch_service.cache.set = AsyncMock(return_value=True)
 
-        result = await fetch_service.fetch(
-            "https://www.youtube.com/watch?v=abc123", extract="text"
-        )
+        result = await fetch_service.fetch("https://www.youtube.com/watch?v=abc123", extract="text")
 
         assert result is not None
         assert result.strategy_used == "youtube"

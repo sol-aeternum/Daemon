@@ -17,9 +17,7 @@ from orchestrator.memory.extraction import (
         ("User is thinking about switching jobs", 0.90, 0.65),
     ],
 )
-def test_calibrate_confidence_hedges(
-    content: str, confidence: float, expected: float
-) -> None:
+def test_calibrate_confidence_hedges(content: str, confidence: float, expected: float) -> None:
     fact = ExtractedFact(content=content, category="fact", confidence=confidence)
     calibrated = calibrate_confidence(fact)
     assert calibrated.confidence == pytest.approx(expected)
@@ -62,9 +60,7 @@ def test_calibrate_confidence_mixed_signal_prefers_hedge() -> None:
 
 
 def test_calibrate_confidence_neutral_unchanged() -> None:
-    fact = ExtractedFact(
-        content="User works remotely", category="fact", confidence=0.81
-    )
+    fact = ExtractedFact(content="User works remotely", category="fact", confidence=0.81)
     calibrated = calibrate_confidence(fact)
     assert calibrated.confidence == pytest.approx(0.81)
 

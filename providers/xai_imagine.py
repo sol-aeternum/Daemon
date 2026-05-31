@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
 
 import httpx
 from pydantic import BaseModel
@@ -246,9 +245,7 @@ class XAIImagineClient:
         async with httpx.AsyncClient() as client:
             for attempt in range(self.max_retries):
                 try:
-                    response = await client.get(
-                        endpoint, headers=headers, timeout=self.timeout
-                    )
+                    response = await client.get(endpoint, headers=headers, timeout=self.timeout)
 
                     if response.status_code == 200:
                         data = response.json()

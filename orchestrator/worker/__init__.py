@@ -2,7 +2,7 @@ from orchestrator.worker.jobs import (
     enqueue_with_debounce,
     extract_memories,
     garbage_collect,
-    generate_summary_job,
+    generate_summary_job,  # noqa: F401
     generate_title,
 )
 from orchestrator.worker.settings import WorkerSettings

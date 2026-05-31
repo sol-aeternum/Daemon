@@ -169,9 +169,7 @@ def _extract_usage(response: object) -> UsagePayload:
     usage_mapping = _as_mapping(usage)
     if usage_mapping is not None:
         usage_payload["prompt_tokens"] = _int_value(usage_mapping.get("prompt_tokens"))
-        usage_payload["completion_tokens"] = _int_value(
-            usage_mapping.get("completion_tokens")
-        )
+        usage_payload["completion_tokens"] = _int_value(usage_mapping.get("completion_tokens"))
         usage_payload["total_tokens"] = _int_value(usage_mapping.get("total_tokens"))
     elif usage is not None:
         usage_object = cast(UsageObject, usage)
@@ -289,10 +287,7 @@ def _extract_message(response: object) -> object | None:
 
 
 def _warning_text(max_tool_rounds: int) -> str:
-    return (
-        "Warning: council tool loop stopped after reaching "
-        f"max_tool_rounds={max_tool_rounds}."
-    )
+    return f"Warning: council tool loop stopped after reaching max_tool_rounds={max_tool_rounds}."
 
 
 async def _run_tool_executor(

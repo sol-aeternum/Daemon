@@ -1,0 +1,30 @@
+default_install_hook_types: [pre-commit, commit-msg]
+
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --force-exclude
+        language: system
+        types_or: [python, pyi]
+        files: ^(orchestrator|providers|scripts|tests)/.*\.py$
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        files: ^(orchestrator|providers|scripts|tests)/.*\.py$
+      - id: commitlint
+        name: commitlint
+        entry: bash -c 'msg_file=$(realpath "$1") && cd frontend && npx --no -- commitlint --edit "$msg_file"' --
+        language: system
+        stages: [commit-msg]
+        pass_filenames: true
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.24.2
+    hooks:
+      - id: gitleaks
+        name: gitleaks
+        args: [--redact]

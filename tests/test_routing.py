@@ -247,7 +247,9 @@ class TestRepresentativeCases:
 
     def test_write_a_python_script_complex(self) -> None:
         """'write a Python script that...' → complex (COMPLEXITY_SIGNALS)."""
-        assert classify_message("write a Python script that downloads files from a URL") == "complex"
+        assert (
+            classify_message("write a Python script that downloads files from a URL") == "complex"
+        )
 
     def test_model_resolution_trivial_flash_lite(self) -> None:
         """Trivial → Flash-Lite model."""

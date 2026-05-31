@@ -48,11 +48,13 @@ def canonicalize_facts(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Normalize fact list for comparison: sort by content, strip confidence drift."""
     normalized = []
     for f in facts:
-        normalized.append({
-            "content": f.get("content", "").strip(),
-            "category": f.get("category", "").strip(),
-            "slot": f.get("slot"),
-        })
+        normalized.append(
+            {
+                "content": f.get("content", "").strip(),
+                "category": f.get("category", "").strip(),
+                "slot": f.get("slot"),
+            }
+        )
     normalized.sort(key=lambda x: (x["content"], x["category"], str(x["slot"])))
     return normalized
 
@@ -204,9 +206,7 @@ def write_report(
     canon_example = determinism.get("canonical_first", [])
     example_rows = []
     for f in canon_example[:5]:
-        example_rows.append(
-            f"| {f['content'][:60]} | {f['category']} | {f['slot'] or ''} |"
-        )
+        example_rows.append(f"| {f['content'][:60]} | {f['category']} | {f['slot'] or ''} |")
     example_table = "\n".join(example_rows)
 
     content = f"""# F2 — Extraction Output Determinism Measurement (Wave 0)
@@ -241,11 +241,11 @@ def write_report(
 
 | Metric | Value |
 |---|---|
-| Total runs | {determinism['total_runs']} |
-| Total pairs | {determinism['total_pairs']} |
-| Canonically identical pairs | {determinism['byte_identical_pairs']} |
-| Non-identical pairs | {determinism['non_identical_pairs']} |
-| All runs canonically identical? | **{"YES" if determinism['all_canonically_identical'] else "NO"}** |
+| Total runs | {determinism["total_runs"]} |
+| Total pairs | {determinism["total_pairs"]} |
+| Canonically identical pairs | {determinism["byte_identical_pairs"]} |
+| Non-identical pairs | {determinism["non_identical_pairs"]} |
+| All runs canonically identical? | **{"YES" if determinism["all_canonically_identical"] else "NO"}** |
 
 ---
 
@@ -289,7 +289,7 @@ async def main() -> None:
     print("=" * 60)
     print(f"Project root : {PROJECT_ROOT}")
     print(f"Runs         : {NUM_RUNS}")
-    print(f"Provider     : openai (via provider.order override)")
+    print("Provider     : openai (via provider.order override)")
     print("-" * 60)
 
     original_slug, patched_slug = apply_extraction_provider_override()
@@ -310,8 +310,10 @@ async def main() -> None:
     elapsed = time.monotonic() - t0
 
     determinism = compute_determinism(runs)
-    print(f"\nDeterminism: all_identical={determinism['all_canonically_identical']}, "
-          f"non_identical_pairs={determinism['non_identical_pairs']}/{determinism['total_pairs']}")
+    print(
+        f"\nDeterminism: all_identical={determinism['all_canonically_identical']}, "
+        f"non_identical_pairs={determinism['non_identical_pairs']}/{determinism['total_pairs']}"
+    )
 
     write_report(runs, determinism, elapsed, original_slug, patched_slug)
 

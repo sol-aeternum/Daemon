@@ -61,7 +61,9 @@ def test_single_variable_min_score_only_changes_threshold() -> None:
     normalized = [_normalized_effective_config(checkpoint) for checkpoint in checkpoints]
 
     for checkpoint, threshold in zip(checkpoints, MIN_FINAL_SCORE_VALUES, strict=True):
-        assert checkpoint["benchmark_config_drift_warnings"] == expected_min_score_warnings(threshold)
+        assert checkpoint["benchmark_config_drift_warnings"] == expected_min_score_warnings(
+            threshold
+        )
 
     assert normalized[1:] == [normalized[0]] * (len(normalized) - 1)
 

@@ -7,7 +7,7 @@ import sys
 import tempfile
 import uuid
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -98,9 +98,7 @@ async def test_document_subagent_execute_code_generation_failure(document_subage
             "_generate_code",
             return_value={"success": False, "error": "Generation failed"},
         ):
-            result = await document_subagent.execute(
-                "Create a document", {"format": "docx"}
-            )
+            result = await document_subagent.execute("Create a document", {"format": "docx"})
 
             assert result.success is False
     assert "Generation failed" in result.error
@@ -120,9 +118,7 @@ async def test_document_subagent_execute_empty_code(document_subagent):
             "_generate_code",
             return_value={"success": True, "code": ""},
         ):
-            result = await document_subagent.execute(
-                "Create a document", {"format": "docx"}
-            )
+            result = await document_subagent.execute("Create a document", {"format": "docx"})
 
             assert result.success is False
             assert "LLM returned empty code" in result.error
@@ -148,9 +144,7 @@ async def test_document_subagent_execute_code_execution_failure(document_subagen
                 "_execute_sandbox",
                 return_value={"success": False, "error": "Execution failed"},
             ):
-                result = await document_subagent.execute(
-                    "Create a document", {"format": "docx"}
-                )
+                result = await document_subagent.execute("Create a document", {"format": "docx"})
 
                 assert result.success is False
     assert "Execution failed" in result.error
@@ -176,9 +170,7 @@ async def test_document_subagent_execute_file_not_found(document_subagent):
                 "_execute_sandbox",
                 return_value={"success": True, "file_path": "/tmp/nonexistent.docx"},
             ):
-                result = await document_subagent.execute(
-                    "Create a document", {"format": "docx"}
-                )
+                result = await document_subagent.execute("Create a document", {"format": "docx"})
 
                 assert result.success is False
                 assert "Generated file not found" in result.error
@@ -364,9 +356,7 @@ async def test_document_subagent_execute_passes_filename_hint(document_subagent)
 
         assert result.success is True
         assert mock_persist.call_count == 1
-        assert (
-            mock_persist.call_args.kwargs["filename_hint"] == "quarterly-status-report"
-        )
+        assert mock_persist.call_args.kwargs["filename_hint"] == "quarterly-status-report"
     finally:
         os.unlink(tmp_file_path)
 
@@ -377,9 +367,7 @@ def test_document_subagent_persist_file_uses_slug_filename(document_subagent):
         source_path.write_bytes(b"docx")
         generated_dir = Path(tmp_dir) / "generated_files"
 
-        with patch(
-            "orchestrator.subagents.document.GENERATED_FILES_DIR", generated_dir
-        ):
+        with patch("orchestrator.subagents.document.GENERATED_FILES_DIR", generated_dir):
             persisted = document_subagent._persist_file(
                 str(source_path),
                 "docx",
@@ -396,9 +384,7 @@ def test_document_subagent_persist_file_collision_suffix(document_subagent):
         source_path.write_bytes(b"docx")
         generated_dir = Path(tmp_dir) / "generated_files"
 
-        with patch(
-            "orchestrator.subagents.document.GENERATED_FILES_DIR", generated_dir
-        ):
+        with patch("orchestrator.subagents.document.GENERATED_FILES_DIR", generated_dir):
             first = document_subagent._persist_file(
                 str(source_path),
                 "docx",
@@ -422,9 +408,7 @@ def test_document_subagent_persist_file_uuid_fallback(document_subagent):
         source_path.write_bytes(b"docx")
         generated_dir = Path(tmp_dir) / "generated_files"
 
-        with patch(
-            "orchestrator.subagents.document.GENERATED_FILES_DIR", generated_dir
-        ):
+        with patch("orchestrator.subagents.document.GENERATED_FILES_DIR", generated_dir):
             persisted = document_subagent._persist_file(
                 str(source_path),
                 "docx",
@@ -458,9 +442,7 @@ async def test_document_subagent_load_document_skill_docx():
                 "_execute_sandbox",
                 return_value={"success": True, "file_path": "/tmp/test.docx"},
             ):
-                with patch.object(
-                    agent, "_persist_file", return_value=Path("/tmp/test.docx")
-                ):
+                with patch.object(agent, "_persist_file", return_value=Path("/tmp/test.docx")):
                     await agent.execute("Create a document", {"format": "docx"})
 
                     mock_load.assert_called_once_with("docx")
@@ -489,9 +471,7 @@ async def test_document_subagent_load_document_skill_csv():
                 "_execute_sandbox",
                 return_value={"success": True, "file_path": "/tmp/test.csv"},
             ):
-                with patch.object(
-                    agent, "_persist_file", return_value=Path("/tmp/test.csv")
-                ):
+                with patch.object(agent, "_persist_file", return_value=Path("/tmp/test.csv")):
                     await agent.execute("Create a document", {"format": "csv"})
 
                     mock_load.assert_called_once_with("csv")
@@ -578,9 +558,7 @@ async def test_document_subagent_execute_docx_missing_dependency_message():
     mock_result.stdout = ""
     mock_result.stderr = "ModuleNotFoundError: No module named 'docx'"
 
-    with patch(
-        "orchestrator.subagents.document.subprocess.run", return_value=mock_result
-    ):
+    with patch("orchestrator.subagents.document.subprocess.run", return_value=mock_result):
         result = await agent._execute_sandbox("from docx import Document", "docx")
 
     assert result["success"] is False

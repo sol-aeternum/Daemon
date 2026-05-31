@@ -72,15 +72,13 @@ async def test_chat_stream_emits_done_mock_mode(client, monkeypatch):
     assert "event: final" in body
     assert "event: done" in body
     # Should contain mock content (tokens emitted character by character)
-    assert '"text":"("' in body or '"text":"("' in body.replace('"', '')
+    assert '"text":"("' in body or '"text":"("' in body.replace('"', "")
     assert '"text":"m"' in body  # Part of "(mock)"
     assert '"text":"o"' in body  # Part of "(mock)"
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_emits_tool_events_via_completion_pipeline(
-    client, monkeypatch
-):
+async def test_chat_stream_emits_tool_events_via_completion_pipeline(client, monkeypatch):
     monkeypatch.setenv("MOCK_LLM", "false")
     monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
     get_settings.cache_clear()
@@ -101,12 +99,8 @@ async def test_chat_stream_emits_tool_events_via_completion_pipeline(
         yield {"type": "content_delta", "content": "Done"}
         yield {"type": "done"}
 
-    monkeypatch.setattr(
-        daemon_module, "create_default_registry", lambda **_kwargs: object()
-    )
-    monkeypatch.setattr(
-        daemon_module, "completion_with_tools", fake_completion_with_tools
-    )
+    monkeypatch.setattr(daemon_module, "create_default_registry", lambda **_kwargs: object())
+    monkeypatch.setattr(daemon_module, "completion_with_tools", fake_completion_with_tools)
 
     response = await client.post(
         "/chat",
@@ -139,12 +133,8 @@ async def test_chat_stream_handles_tool_pipeline_error_gracefully(client, monkey
             "error": "Request failed: [Errno -2] Name or service not known",
         }
 
-    monkeypatch.setattr(
-        daemon_module, "create_default_registry", lambda **_kwargs: object()
-    )
-    monkeypatch.setattr(
-        daemon_module, "completion_with_tools", fake_completion_with_tools
-    )
+    monkeypatch.setattr(daemon_module, "create_default_registry", lambda **_kwargs: object())
+    monkeypatch.setattr(daemon_module, "completion_with_tools", fake_completion_with_tools)
 
     response = await client.post(
         "/chat",
@@ -178,12 +168,8 @@ async def test_chat_stream_resolves_pending_tool_calls_before_done(client, monke
         }
         yield {"type": "done"}
 
-    monkeypatch.setattr(
-        daemon_module, "create_default_registry", lambda **_kwargs: object()
-    )
-    monkeypatch.setattr(
-        daemon_module, "completion_with_tools", fake_completion_with_tools
-    )
+    monkeypatch.setattr(daemon_module, "create_default_registry", lambda **_kwargs: object())
+    monkeypatch.setattr(daemon_module, "completion_with_tools", fake_completion_with_tools)
 
     response = await client.post(
         "/chat",
@@ -200,7 +186,9 @@ async def test_chat_stream_resolves_pending_tool_calls_before_done(client, monke
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_provides_fallback_message_when_no_content_after_tools(client, monkeypatch):
+async def test_chat_stream_provides_fallback_message_when_no_content_after_tools(
+    client, monkeypatch
+):
     monkeypatch.setenv("MOCK_LLM", "false")
     monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
     get_settings.cache_clear()
@@ -218,12 +206,8 @@ async def test_chat_stream_provides_fallback_message_when_no_content_after_tools
         }
         yield {"type": "done"}
 
-    monkeypatch.setattr(
-        daemon_module, "create_default_registry", lambda **_kwargs: object()
-    )
-    monkeypatch.setattr(
-        daemon_module, "completion_with_tools", fake_completion_with_tools
-    )
+    monkeypatch.setattr(daemon_module, "create_default_registry", lambda **_kwargs: object())
+    monkeypatch.setattr(daemon_module, "completion_with_tools", fake_completion_with_tools)
 
     response = await client.post(
         "/chat",
@@ -351,9 +335,7 @@ async def test_chat_with_provider_selection_mock_mode(client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_chat_per_message_model_override_bypasses_auto_routing(
-    client, monkeypatch
-):
+async def test_chat_per_message_model_override_bypasses_auto_routing(client, monkeypatch):
     monkeypatch.setenv("MOCK_LLM", "true")
     monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
     get_settings.cache_clear()
@@ -399,3 +381,25 @@ async def test_chat_per_message_model_override_bypasses_auto_routing(
     assert routing["model"] == explicit_model
     assert routing["tier"] == "explicit"
     assert routing["reason"] == f"user_selected:{explicit_model}"
+
+
+@pytest.mark.asyncio
+async def test_api_key_authentication(client, monkeypatch):
+    """Test that API key authentication works when configured."""
+    monkeypatch.setenv("DAEMON_API_KEY", "test-secret-key")
+    get_settings.cache_clear()
+
+    # Request without key should fail
+    response = await client.get("/health")
+    assert response.status_code == 200  # Health is public
+
+    response = await client.get("/providers")
+    assert response.status_code == 401
+
+    # Request with wrong key should fail
+    response = await client.get("/providers", headers={"Authorization": "Bearer wrong-key"})
+    assert response.status_code == 401
+
+    # Request with correct key should succeed
+    response = await client.get("/providers", headers={"Authorization": "Bearer test-secret-key"})
+    assert response.status_code == 200

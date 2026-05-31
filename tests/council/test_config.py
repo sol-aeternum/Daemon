@@ -1,6 +1,5 @@
 """Tests for council config."""
 
-import pytest
 from orchestrator.council.config import load_roster
 
 

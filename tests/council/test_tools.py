@@ -51,9 +51,7 @@ class TestCouncilCompletionWithTools:
         # Mock responses
         tool_call_response = create_mock_response(
             content="Let me check the weather",
-            tool_calls=[
-                create_mock_tool_call("call_1", "get_weather", '{"city": "NYC"}')
-            ],
+            tool_calls=[create_mock_tool_call("call_1", "get_weather", '{"city": "NYC"}')],
             prompt_tokens=15,
             completion_tokens=25,
             cost_usd=0.0015,
@@ -88,9 +86,7 @@ class TestCouncilCompletionWithTools:
             assert usage["completion_tokens"] == 35
             assert usage["total_tokens"] == 80
             assert usage["cost_usd"] == 0.0023
-            tool_executor.execute.assert_awaited_once_with(
-                "get_weather", '{"city": "NYC"}'
-            )
+            tool_executor.execute.assert_awaited_once_with("get_weather", '{"city": "NYC"}')
 
     @pytest.mark.asyncio
     async def test_multiple_sequential_tool_calls(self):
@@ -132,9 +128,7 @@ class TestCouncilCompletionWithTools:
         with patch("orchestrator.council.tools.litellm.acompletion", mock_acompletion):
             # Create a mock tool executor object with an execute method
             tool_executor = MagicMock()
-            tool_executor.execute = AsyncMock(
-                side_effect=["Result 1", "Result 2", "Result 3"]
-            )
+            tool_executor.execute = AsyncMock(side_effect=["Result 1", "Result 2", "Result 3"])
             messages = [{"role": "user", "content": "Execute the plan"}]
             tools = [
                 {"type": "function", "function": {"name": "step_one"}},
@@ -222,15 +216,10 @@ class TestCouncilCompletionWithTools:
                 max_tool_rounds=5,
             )
 
-            assert (
-                "Warning: council tool loop stopped after reaching max_tool_rounds=5"
-                in result
-            )
+            assert "Warning: council tool loop stopped after reaching max_tool_rounds=5" in result
             assert usage["prompt_tokens"] == total_prompt_tokens
             assert usage["completion_tokens"] == total_completion_tokens
-            assert (
-                usage["total_tokens"] == total_prompt_tokens + total_completion_tokens
-            )
+            assert usage["total_tokens"] == total_prompt_tokens + total_completion_tokens
             assert usage["cost_usd"] == round(total_cost, 12)
             assert tool_executor.execute.await_count == 5
 

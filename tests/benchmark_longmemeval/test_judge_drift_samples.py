@@ -9,19 +9,13 @@ from typing import cast
 BENCHMARK_RESULTS_DIR = Path("tests/benchmark_results")
 
 CURRENT_RESULTS = (
-    BENCHMARK_RESULTS_DIR
-    / "longmemeval_optimized_retry"
-    / "longmemeval_fast_results.jsonl"
+    BENCHMARK_RESULTS_DIR / "longmemeval_optimized_retry" / "longmemeval_fast_results.jsonl"
 )
 HISTORICAL_RESULTS = (
-    BENCHMARK_RESULTS_DIR
-    / "longmemeval_tier2_fast"
-    / "longmemeval_fast_results.jsonl"
+    BENCHMARK_RESULTS_DIR / "longmemeval_tier2_fast" / "longmemeval_fast_results.jsonl"
 )
 JUDGE_RESTORE_RESULTS = (
-    BENCHMARK_RESULTS_DIR
-    / "longmemeval_optimized_judge_restore"
-    / "longmemeval_fast_results.jsonl"
+    BENCHMARK_RESULTS_DIR / "longmemeval_optimized_judge_restore" / "longmemeval_fast_results.jsonl"
 )
 
 STRICTNESS_SAMPLES = {
@@ -105,10 +99,7 @@ def test_current_vs_judge_restore_strictness_totals_are_stable() -> None:
     current = _load_results(CURRENT_RESULTS)
     judge_restore = _load_results(JUDGE_RESTORE_RESULTS)
 
-    flips = Counter(
-        (current[qid]["judgment"], judge_restore[qid]["judgment"])
-        for qid in current
-    )
+    flips = Counter((current[qid]["judgment"], judge_restore[qid]["judgment"]) for qid in current)
 
     assert flips[("correct", "partially_correct")] == 149
     assert flips[("correct", "incorrect")] == 23
@@ -122,19 +113,15 @@ def test_historical_bundle_leniency_totals_on_current_failures_are_stable() -> N
     current = _load_results(CURRENT_RESULTS)
     historical = _load_results(HISTORICAL_RESULTS)
 
-    non_correct_qids = [
-        qid for qid, row in current.items() if row["judgment"] != "correct"
-    ]
+    non_correct_qids = [qid for qid, row in current.items() if row["judgment"] != "correct"]
     lenient_qids = [
         qid
         for qid in non_correct_qids
-        if JUDGMENT_ORDER[historical[qid]["judgment"]]
-        > JUDGMENT_ORDER[current[qid]["judgment"]]
+        if JUDGMENT_ORDER[historical[qid]["judgment"]] > JUDGMENT_ORDER[current[qid]["judgment"]]
     ]
 
     transitions = Counter(
-        (current[qid]["judgment"], historical[qid]["judgment"])
-        for qid in lenient_qids
+        (current[qid]["judgment"], historical[qid]["judgment"]) for qid in lenient_qids
     )
 
     assert len(non_correct_qids) == 161

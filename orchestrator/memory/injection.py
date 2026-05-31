@@ -19,15 +19,13 @@ def _lazy_import_trust_signals():
         import importlib
 
         try:
-            _trust_signals = importlib.import_module(
-                "orchestrator.memory.trust_signals"
-            )
+            _trust_signals = importlib.import_module("orchestrator.memory.trust_signals")
         except ImportError:
             pass
     return _trust_signals
 
 
-from orchestrator.prompts import DAEMON_SYSTEM_PROMPT
+from orchestrator.prompts import DAEMON_SYSTEM_PROMPT  # noqa: E402
 
 MAX_MEMORY_ITEMS = 5
 MAX_SUMMARY_ITEMS = 3
@@ -106,9 +104,7 @@ def _format_l0_block(l0_memories: list[dict[str, object]]) -> str:
         return ""
     lines = ["[FROZEN MEMORIES]"]
     for memory in l0_memories:
-        text = _truncate_to_chars(
-            _normalize_content(memory.get("content")), MAX_L0_CHARS
-        )
+        text = _truncate_to_chars(_normalize_content(memory.get("content")), MAX_L0_CHARS)
         if text:
             lines.append(f"- {text}")
     return "\n".join(lines)
@@ -185,9 +181,7 @@ async def build_memory_context(
 
     if estimate_tokens(l0_block) > L0_TOKEN_BUDGET:
         l0_lines = l0_block.split("\n")
-        while (
-            estimate_tokens("\n".join(l0_lines)) > L0_TOKEN_BUDGET and len(l0_lines) > 1
-        ):
+        while estimate_tokens("\n".join(l0_lines)) > L0_TOKEN_BUDGET and len(l0_lines) > 1:
             l0_lines.pop()
         l0_block = "\n".join(l0_lines)
 
@@ -212,9 +206,7 @@ async def build_memory_context(
 
     if query_text:
         try:
-            query_embedding = await asyncio.wait_for(
-                embed_query(query_text), timeout=8.0
-            )
+            query_embedding = await asyncio.wait_for(embed_query(query_text), timeout=8.0)
             retrieved = await retrieve_memories_for_text(
                 store=store,
                 query_text=query_text,
@@ -338,9 +330,7 @@ async def assemble_system_prompt(
 
 # Re-export get_l0_memories for backward compatibility / QA testing
 # This is a method on MemoryStore, exposed here for convenience
-async def get_l0_memories(
-    store: MemoryStore, user_id: uuid.UUID
-) -> list[dict[str, Any]]:
+async def get_l0_memories(store: MemoryStore, user_id: uuid.UUID) -> list[dict[str, Any]]:
     """Get L0 memories for a user.
 
     This is a wrapper around MemoryStore.get_l0_memories for backward compatibility.

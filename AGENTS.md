@@ -17,6 +17,30 @@ Personal multi-agent AI assistant. FastAPI backend orchestrates LLM calls via Op
 - **Don't add dependencies without asking.** Especially frontend — bundle size matters for PWA.
 - **Done means the gates pass.** No task is complete until it satisfies the Definition of Done below.
 
+## Quality Gates (Definition of Done)
+No task is complete until it passes the project's automated gates. Run them before claiming done. Existing debt may be recorded as blocker inventory in `TRIAGE.md` or dedicated baseline files (e.g., `.basedpyright/baseline.json`); do not weaken or remove gates.
+
+### Backend Gates
+- **Lint**: `uv run ruff check .`
+- **Format**: `uv run ruff format --check .`
+- **Type Check**: `uv run basedpyright --level error`
+- **Security (SAST)**: `uv run bandit -r orchestrator providers scripts tests`
+- **Security (SCA)**: `uv run pip-audit`
+- **Tests**: `PYTHONPATH=. uv run pytest -q`
+
+### Frontend Gates (run from `frontend/`)
+- **Install**: `npm ci`
+- **Type Check**: `npm run type-check`
+- **Lint**: `npm run lint`
+- **Format**: `npm run format:check`
+- **Security (SCA)**: `npm run audit:ci`
+- **Tests**: `npm run test:run`
+- **Build**: `npm run build`
+
+### Aggregate & Infrastructure Gates
+- **Feature Matrix**: `python scripts/lint_feature_matrix.py`
+- **Pre-commit**: `uv run pre-commit run --all-files` (includes gitleaks; commitlint runs as a commit-msg hook)
+
 ## Tech Stack
 - **Backend:** Python 3.11+, FastAPI, LiteLLM, asyncpg, arq, cryptography (Fernet)
 - **Frontend:** Next.js 16, React 19, Vercel AI SDK 4, Tailwind CSS 3, lucide-react
@@ -58,33 +82,36 @@ migrations/             # PostgreSQL migrations (13 applied)
 - SSE events are typed: token, thinking, routing, tool_call, tool_result, final, error, done.
 - Tier model assignments are env-var configurable. Don't hardcode model strings in logic.
 - Frontend uses `useChat` from Vercel AI SDK — ErrorBoundary wraps ChatContent for crash recovery.
-- **Test suite is growing** (pytest + pytest-asyncio backend; Playwright planned for frontend). New backend code ships with tests; new frontend behaviour ships with at least a smoke test.
-- **Conventional Commits** for all commit messages (`feat:`, `fix:`, `chore:`, `refactor:`, ...). commitlint enforces this.
-- **Reproducible installs only.** Use the locked path (`uv sync --locked` backend / `npm ci` frontend). Never `pip install` ad hoc and never hand-edit a lockfile — let the package manager and Renovate own them.
+ - Backend tests use pytest + pytest-asyncio; frontend tests use Vitest and Playwright.
+ - **Test suite is growing** (pytest + pytest-asyncio backend; Playwright planned for frontend). New backend code ships with tests; new frontend behaviour ships with at least a smoke test.
+ - **Conventional Commits** for all commit messages (`feat:`, `fix:`, `chore:`, `refactor:`, ...). commitlint enforces this.
+ - **Reproducible installs only.** Use the locked path (`uv sync --locked` backend / `npm ci` frontend). Never `pip install` ad hoc and never hand-edit a lockfile — let the package manager and Renovate own them.
 
-## Definition of Done — Quality Gates
-No change is complete until it passes the project's automated quality gates. Run them locally before declaring a task done; once CI lands (see the `ci-tooling-baseline` plan) these run on every PR and are required to merge. Backend lives in `orchestrator/`; frontend in `frontend/`.
+ ## Definition of Done — Quality Gates
+ No change is complete until it passes the project's automated quality gates. Run them locally before declaring a task done; once CI lands (see the `ci-tooling-baseline` plan) these run on every PR and are required to merge. Backend lives in `orchestrator/`; frontend in `frontend/`.
 
-**Backend (`orchestrator/`):**
-- `ruff check .` — lint (autofix with `--fix`)
-- `ruff format --check .` — formatting
-- `mypy .` — strict type check (new code must be clean; existing errors are grandfathered via the baseline — ratchet, not rewrite)
-- `bandit -r .` — security static analysis
-- `pytest -q` — tests
+ **Backend (`orchestrator/`):**
+ - `uv run ruff check .` — lint (autofix with `--fix`)
+ - `uv run ruff format --check .` — formatting
+ - `uv run basedpyright --level error` — strict error-level type check (new errors must be clean; existing diagnostics are grandfathered via the baseline — ratchet, not rewrite)
+ - `uv run bandit -r .` — security static analysis
+ - `PYTHONPATH=. uv run pytest -q` — tests
 
-**Frontend (`frontend/`):**
-- `npx tsc --noEmit` — type check (Next 16 `build` does NOT type-check; run this explicitly)
-- `npm run lint` — eslint (NOT `next lint`; removed in Next 16)
-- `npm run format:check` — formatting
-- `npm test` — tests
-- `npm run build` — production build
+ **Frontend (`frontend/`):**
+ - `npm run type-check` — type check (Next 16 `build` does NOT type-check; run this explicitly)
+ - `npm run lint` — eslint (NOT `next lint`; removed in Next 16)
+ - `npm run format:check` — formatting
+ - `npm run audit:ci` — security SCA
+ - `npm run test:run` — tests
+ - `npm run build` — production build
 
-**Repo-wide:**
-- `python scripts/lint_feature_matrix.py` — feature-matrix validation (this is the CI integration the Feature Matrix section previously flagged as a follow-up)
+ **Repo-wide:**
+ - `python scripts/lint_feature_matrix.py` — feature-matrix validation (this is the CI integration the Feature Matrix section previously flagged as a follow-up)
+ - `uv run pre-commit run --all-files` — pre-commit hooks (gitleaks; commitlint runs as a commit-msg hook)
 
-Run backend commands through the project's package manager — `uv run …` is the recommended runner; if the repo hasn't migrated to uv yet, substitute your current runner (venv / `poetry run`) and treat migrating to uv as a tracked improvement. **Tool versions are pinned in the backend dependency manifest (`pyproject.toml` or equivalent), `frontend/package.json`, and the lockfiles — those files are the source of truth.** Do not restate versions anywhere else, including in this file.
+ Run backend commands through the project's package manager — `uv run …` is the recommended runner. **Tool versions are pinned in the backend dependency manifest (`pyproject.toml` or equivalent), `frontend/package.json`, and the lockfiles — those files are the source of truth.** Do not restate versions anywhere else, including in this file.
 
-Gate config lives in: `.pre-commit-config.yaml`, `.github/workflows/ci.yml`, `.github/workflows/codeql.yml`, `renovate.json`.
+ Gate config lives in: `.pre-commit-config.yaml`, `.github/workflows/ci.yml`, `.github/workflows/codeql.yml`, `renovate.json`.
 
 ## Recent Fixes (as of Feb 2026)
 - ✅ Memory extraction now writes `status="active"` — pipeline is fully operational

@@ -15,14 +15,12 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, TypedDict
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
-import asyncpg
 import pytest
 
-import db.video_credits as video_credits_module
 from config.video_pricing import estimate_cost
-from db.video_credits import Result, VideoCreditsDAL
+from db.video_credits import VideoCreditsDAL
 from orchestrator.subagents.image import ImageSubagent
 from providers.fal_kling import (
     VideoJob,
@@ -166,16 +164,14 @@ class FakeConnection:
         normalized = " ".join(query.split()).lower()
         if (
             "insert into video_credit_balances" in normalized
-            and "do update set balance = video_credit_balances.balance - $3"
-            in normalized
+            and "do update set balance = video_credit_balances.balance - $3" in normalized
         ):
             user_id, current_balance, amount = args
             self.state.balances[user_id] = current_balance - amount
             return "UPDATE 1"
         if (
             "insert into video_credit_balances" in normalized
-            and "do update set balance = video_credit_balances.balance + $2"
-            in normalized
+            and "do update set balance = video_credit_balances.balance + $2" in normalized
         ):
             user_id, amount = args[0], args[1]
             self.state.balances[user_id] = self.state.balances.get(user_id, 0) + amount
@@ -289,7 +285,7 @@ async def test_kling_e2e_success_path(
     kling_provider.client = mock_client
 
     # Override the provider selection to use our mock
-    original_provider = subagent.provider
+    original_provider = subagent.provider  # noqa: F841
     subagent.provider = kling_provider
 
     # Step 3: Request video generation with fal provider
@@ -618,15 +614,11 @@ async def test_kling_e2e_model_and_audio_variations(
         "kling_model": "o3-pro",
         "audio_enabled": True,
     }
-    result_o3_with_audio = await subagent.execute(
-        "generate a video", context_o3_with_audio
-    )
+    result_o3_with_audio = await subagent.execute("generate a video", context_o3_with_audio)
 
     assert result_o3_with_audio.success is True
     assert result_o3_with_audio.data is not None
-    assert (
-        result_o3_with_audio.data["video_url"] == "https://cdn.fal.ai/o3-with-audio.mp4"
-    )
+    assert result_o3_with_audio.data["video_url"] == "https://cdn.fal.ai/o3-with-audio.mp4"
 
     balance_after_o3_with_audio = await video_credits_dal.get_balance(test_user_id)
     o3_with_audio_cost = estimate_cost(5, "pro", "fal", "o3-pro", True)
@@ -666,15 +658,11 @@ async def test_kling_e2e_model_and_audio_variations(
         "kling_model": "v3-pro",
         "audio_enabled": True,
     }
-    result_v3_with_audio = await subagent.execute(
-        "generate a video", context_v3_with_audio
-    )
+    result_v3_with_audio = await subagent.execute("generate a video", context_v3_with_audio)
 
     assert result_v3_with_audio.success is True
     assert result_v3_with_audio.data is not None
-    assert (
-        result_v3_with_audio.data["video_url"] == "https://cdn.fal.ai/v3-with-audio.mp4"
-    )
+    assert result_v3_with_audio.data["video_url"] == "https://cdn.fal.ai/v3-with-audio.mp4"
 
     final_balance = await video_credits_dal.get_balance(test_user_id)
     v3_with_audio_cost = estimate_cost(5, "pro", "fal", "v3-pro", True)

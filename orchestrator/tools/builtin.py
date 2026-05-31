@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 import json
 from typing import Any
 
@@ -113,9 +113,7 @@ class CalculateTool(Tool):
             tree = ast.parse(expression, mode="eval")
             for node in ast.walk(tree):
                 if not isinstance(node, ALLOWED_NODES):
-                    return json.dumps(
-                        {"error": f"Disallowed expression: {type(node).__name__}"}
-                    )
+                    return json.dumps({"error": f"Disallowed expression: {type(node).__name__}"})
             result = eval(compile(tree, "<string>", "eval"), {"__builtins__": {}}, {})
             return json.dumps({"expression": expression, "result": result})
         except Exception as e:
@@ -131,8 +129,6 @@ def create_default_registry(
     disable_memory_write: bool = False,
 ):
     from orchestrator.tools.registry import ToolRegistry
-    from orchestrator.tools.web_search import WebSearchTool
-    from orchestrator.tools.web_fetch import WebFetchTool
     from orchestrator.tools.http_request import HttpRequestTool
     from orchestrator.tools.notification import NotificationSendTool
     from orchestrator.tools.reminder import ReminderSetTool, ReminderListTool
@@ -147,9 +143,7 @@ def create_default_registry(
     registry.register(NotificationSendTool())
     registry.register(ReminderSetTool())
     registry.register(ReminderListTool())
-    registry.register(
-        SpawnAgentTool(db_pool=db_pool, trusted_spawn_context=trusted_spawn_context)
-    )
+    registry.register(SpawnAgentTool(db_pool=db_pool, trusted_spawn_context=trusted_spawn_context))
     registry.register(
         SpawnMultipleTool(db_pool=db_pool, trusted_spawn_context=trusted_spawn_context)
     )

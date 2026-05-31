@@ -203,10 +203,10 @@ def write_report(
 
 | Metric | Value |
 |---|---|
-| Total runs | {stability['total_runs']} |
-| Runs with fingerprint | {stability['runs_with_fingerprint']} |
-| Unique fingerprints | {stability['unique_fingerprints']} |
-| Unique models | {stability['unique_models']} |
+| Total runs | {stability["total_runs"]} |
+| Runs with fingerprint | {stability["runs_with_fingerprint"]} |
+| Unique fingerprints | {stability["unique_fingerprints"]} |
+| Unique models | {stability["unique_models"]} |
 | Fingerprint drift detected? | **{drift_status}** |
 
 ---
@@ -240,7 +240,7 @@ async def main() -> None:
     print(f"Project root : {PROJECT_ROOT}")
     print(f"Runs         : {NUM_RUNS}")
     print(f"Seed         : {SEED}")
-    print(f"Provider     : openai (via provider.order override)")
+    print("Provider     : openai (via provider.order override)")
     print("-" * 60)
 
     original_slug, patched_slug = apply_extraction_provider_override()
@@ -253,7 +253,7 @@ async def main() -> None:
         result = await run_single_extraction(i)
         runs.append(result)
         fp = result["fingerprint"]
-        model = result["model"]
+        model = result["model"]  # noqa: F841
         facts = result["fact_count"]
         err = result["error"]
         status = f"ERROR: {err[:40]}" if err else f"fp={fp[-20:] if fp else 'None'}, facts={facts}"
@@ -262,9 +262,11 @@ async def main() -> None:
     elapsed = time.monotonic() - t0
 
     stability = compute_fingerprint_stability(runs)
-    print(f"\nStability: drift={stability['fingerprint_drift']}, "
-          f"unique_fps={stability['unique_fingerprints']}, "
-          f"unique_models={stability['unique_models']}")
+    print(
+        f"\nStability: drift={stability['fingerprint_drift']}, "
+        f"unique_fps={stability['unique_fingerprints']}, "
+        f"unique_models={stability['unique_models']}"
+    )
 
     write_report(runs, stability, elapsed, original_slug, patched_slug)
 

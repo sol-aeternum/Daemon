@@ -3,7 +3,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Any
-import uuid
 
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.db import get_app_state, AppState
@@ -59,9 +58,7 @@ async def update_settings(
     if update.preferences:
         current.setdefault("preferences", {})
         for key, value in update.preferences.items():
-            if isinstance(value, dict) and isinstance(
-                current["preferences"].get(key), dict
-            ):
+            if isinstance(value, dict) and isinstance(current["preferences"].get(key), dict):
                 current["preferences"][key].update(value)
             else:
                 current["preferences"][key] = value

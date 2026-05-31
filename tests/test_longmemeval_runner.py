@@ -87,9 +87,7 @@ def test_load_runner_checkpoint_rejects_legacy_checkpoint_version(
         )
     )
 
-    with pytest.raises(
-        ValueError, match="corpus-first LongMemEval harness requires version 2"
-    ):
+    with pytest.raises(ValueError, match="corpus-first LongMemEval harness requires version 2"):
         load_runner_checkpoint(checkpoint_path, dataset_path=tmp_path / "dataset.json")
 
 
@@ -156,9 +154,7 @@ async def test_ingest_resumes_from_checkpoint(
         "orchestrator.eval.runner.asyncpg.create_pool",
         AsyncMock(return_value=mock_pool),
     )
-    monkeypatch.setattr(
-        "orchestrator.eval.runner.ContentEncryption", lambda key: object()
-    )
+    monkeypatch.setattr("orchestrator.eval.runner.ContentEncryption", lambda key: object())
     monkeypatch.setattr(
         "orchestrator.eval.runner.MemoryStore", lambda db_pool, encryption: MagicMock()
     )
@@ -166,9 +162,7 @@ async def test_ingest_resumes_from_checkpoint(
         "orchestrator.eval.runner.create_test_user", AsyncMock(return_value="user-id")
     )
 
-    ingest_session_mock = AsyncMock(
-        return_value={"session_id": "session-2", "status": "complete"}
-    )
+    ingest_session_mock = AsyncMock(return_value={"session_id": "session-2", "status": "complete"})
     monkeypatch.setattr("orchestrator.eval.runner.ingest_session", ingest_session_mock)
 
     results = await runner.ingest()
@@ -257,9 +251,7 @@ async def test_evaluate_resumes_from_checkpoint_and_writes_results(
         "orchestrator.eval.runner.asyncpg.create_pool",
         AsyncMock(return_value=mock_pool),
     )
-    monkeypatch.setattr(
-        "orchestrator.eval.runner.ContentEncryption", lambda key: object()
-    )
+    monkeypatch.setattr("orchestrator.eval.runner.ContentEncryption", lambda key: object())
     monkeypatch.setattr(
         "orchestrator.eval.runner.MemoryStore", lambda pool, encryption: MagicMock()
     )
@@ -275,17 +267,15 @@ async def test_evaluate_resumes_from_checkpoint_and_writes_results(
             "memories_used": 1,
         }
     )
-    monkeypatch.setattr(
-        "orchestrator.eval.runner.evaluate_single", evaluate_single_mock
-    )
+    monkeypatch.setattr("orchestrator.eval.runner.evaluate_single", evaluate_single_mock)
 
     results = await runner.evaluate()
 
     assert evaluate_single_mock.await_count == 1
     assert evaluate_single_mock.await_args_list[0].kwargs["question_id"] == "q2"
-    assert evaluate_single_mock.await_args_list[0].kwargs[
-        "allowed_source_conversation_ids"
-    ] == [uuid.UUID(shared_conversation_id)]
+    assert evaluate_single_mock.await_args_list[0].kwargs["allowed_source_conversation_ids"] == [
+        uuid.UUID(shared_conversation_id)
+    ]
     assert [result["question_id"] for result in results] == ["q1", "q2"]
     assert runner.output_path.exists()
     assert len(runner.output_path.read_text().splitlines()) == 2
@@ -338,9 +328,7 @@ async def test_run_reuses_shared_corpus_across_multiple_questions(
         "orchestrator.eval.runner.asyncpg.create_pool",
         AsyncMock(return_value=mock_pool),
     )
-    monkeypatch.setattr(
-        "orchestrator.eval.runner.ContentEncryption", lambda key: object()
-    )
+    monkeypatch.setattr("orchestrator.eval.runner.ContentEncryption", lambda key: object())
     monkeypatch.setattr(
         "orchestrator.eval.runner.MemoryStore", lambda db_pool, encryption: MagicMock()
     )
@@ -369,12 +357,8 @@ async def test_run_reuses_shared_corpus_across_multiple_questions(
         }
 
     monkeypatch.setattr("orchestrator.eval.runner.ingest_session", fake_ingest_session)
-    monkeypatch.setattr(
-        "orchestrator.eval.runner.evaluate_single", fake_evaluate_single
-    )
-    monkeypatch.setattr(
-        "orchestrator.eval.runner.print_results", lambda results, accuracy: None
-    )
+    monkeypatch.setattr("orchestrator.eval.runner.evaluate_single", fake_evaluate_single)
+    monkeypatch.setattr("orchestrator.eval.runner.print_results", lambda results, accuracy: None)
 
     payload = await runner.run()
 
@@ -421,9 +405,7 @@ def test_score_uses_checkpoint_results_and_writes_summary(
             }
         )
     )
-    monkeypatch.setattr(
-        "orchestrator.eval.runner.print_results", lambda results, accuracy: None
-    )
+    monkeypatch.setattr("orchestrator.eval.runner.print_results", lambda results, accuracy: None)
 
     payload = runner.score()
 
@@ -469,9 +451,7 @@ def test_load_runner_checkpoint_missing_phases_get_defaults(tmp_path: Path) -> N
         )
     )
 
-    result = load_runner_checkpoint(
-        checkpoint_path, dataset_path=tmp_path / "dataset.json"
-    )
+    result = load_runner_checkpoint(checkpoint_path, dataset_path=tmp_path / "dataset.json")
 
     assert "phases" in result
     assert "ingest" in result["phases"]
@@ -510,9 +490,7 @@ def test_load_runner_checkpoint_preserves_existing_results_on_missing_phases(
         )
     )
 
-    result = load_runner_checkpoint(
-        checkpoint_path, dataset_path=tmp_path / "dataset.json"
-    )
+    result = load_runner_checkpoint(checkpoint_path, dataset_path=tmp_path / "dataset.json")
 
     assert "evaluate" in result["phases"]
     assert "score" in result["phases"]
@@ -567,9 +545,7 @@ def test_score_falls_back_to_jsonl_when_evaluate_results_empty(
         )
     )
 
-    monkeypatch.setattr(
-        "orchestrator.eval.runner.print_results", lambda results, accuracy: None
-    )
+    monkeypatch.setattr("orchestrator.eval.runner.print_results", lambda results, accuracy: None)
 
     payload = runner.score()
 

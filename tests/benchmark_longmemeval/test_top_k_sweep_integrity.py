@@ -31,9 +31,7 @@ def _normalized_effective_config(checkpoint: dict[str, Any]) -> dict[str, Any]:
     effective["runtime"]["output_path"] = "<output>"
     effective["runtime"]["checkpoint_path"] = "<checkpoint>"
     effective["runtime"]["score_path"] = "<score>"
-    effective["pinned_authority"]["shared"]["retrieval"]["call_contract"].pop(
-        "top_k_memories"
-    )
+    effective["pinned_authority"]["shared"]["retrieval"]["call_contract"].pop("top_k_memories")
     return effective
 
 
@@ -67,9 +65,9 @@ def test_single_variable_top_k_only_changes_return_limit() -> None:
     assert normalized[1:] == [normalized[0]] * (len(normalized) - 1)
 
     observed_top_k = [
-        checkpoint["benchmark_effective_config"]["pinned_authority"]["shared"][
-            "retrieval"
-        ]["call_contract"]["top_k_memories"]
+        checkpoint["benchmark_effective_config"]["pinned_authority"]["shared"]["retrieval"][
+            "call_contract"
+        ]["top_k_memories"]
         for checkpoint in checkpoints
     ]
     assert observed_top_k == list(TOP_K_VALUES)

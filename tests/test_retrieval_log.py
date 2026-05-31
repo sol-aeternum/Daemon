@@ -384,9 +384,7 @@ async def test_retrieve_memories_logs_when_config_flag_enabled(mock_store):
     mock_settings.retrieval_logging_enabled = True
     mock_settings.retrieval_logging_debug = False
 
-    with patch(
-        "orchestrator.memory.retrieval.get_settings", return_value=mock_settings
-    ):
+    with patch("orchestrator.memory.retrieval.get_settings", return_value=mock_settings):
         await retrieve_memories(
             mock_store,
             embedding,
@@ -422,9 +420,7 @@ async def test_retrieve_memories_logs_when_config_debug_flag_enabled(mock_store)
     mock_settings.retrieval_logging_enabled = False
     mock_settings.retrieval_logging_debug = True
 
-    with patch(
-        "orchestrator.memory.retrieval.get_settings", return_value=mock_settings
-    ):
+    with patch("orchestrator.memory.retrieval.get_settings", return_value=mock_settings):
         await retrieve_memories(
             mock_store,
             embedding,
@@ -460,9 +456,7 @@ async def test_retrieve_memories_does_not_log_when_both_flags_false(mock_store):
     mock_settings.retrieval_logging_enabled = False
     mock_settings.retrieval_logging_debug = False
 
-    with patch(
-        "orchestrator.memory.retrieval.get_settings", return_value=mock_settings
-    ):
+    with patch("orchestrator.memory.retrieval.get_settings", return_value=mock_settings):
         await retrieve_memories(
             mock_store,
             embedding,
@@ -497,9 +491,7 @@ async def test_retrieve_memories_logs_when_both_flags_true(mock_store):
     mock_settings.retrieval_logging_enabled = True
     mock_settings.retrieval_logging_debug = True
 
-    with patch(
-        "orchestrator.memory.retrieval.get_settings", return_value=mock_settings
-    ):
+    with patch("orchestrator.memory.retrieval.get_settings", return_value=mock_settings):
         await retrieve_memories(
             mock_store,
             embedding,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import os
@@ -11,7 +10,6 @@ from typing import Any, Dict, Tuple
 import uuid
 
 import httpx
-from openai import AsyncOpenAI
 
 from orchestrator.subagents.base import BaseSubagent, SubagentResult, SubagentType
 from providers.xai_imagine import XAIImagineClient, XAIImagineError
@@ -43,9 +41,7 @@ class ImageProvider(ABC):
         """
         pass
 
-    async def generate_video(
-        self, prompt: str, duration: int, **kwargs
-    ) -> Dict[str, Any]:
+    async def generate_video(self, prompt: str, duration: int, **kwargs) -> Dict[str, Any]:
         """Generate a video from a prompt.
 
         Args:
@@ -112,9 +108,7 @@ class OpenRouterImageProvider(ImageProvider):
                     if isinstance(error_json, dict):
                         error_detail = error_json.get("error", error_detail)
                         if isinstance(error_detail, dict):
-                            error_detail = error_detail.get(
-                                "message", str(error_detail)
-                            )
+                            error_detail = error_detail.get("message", str(error_detail))
                 except Exception:
                     pass  # Keep original text if JSON parsing fails
 
@@ -136,9 +130,7 @@ class OpenRouterImageProvider(ImageProvider):
             logger.debug(f"[IMAGE DEBUG] Full response: {json.dumps(data, indent=2)}")
 
             if data.get("error"):
-                logger.error(
-                    f"[IMAGE DEBUG] API error in response: {data.get('error')}"
-                )
+                logger.error(f"[IMAGE DEBUG] API error in response: {data.get('error')}")
                 raise RuntimeError(f"API error: {data.get('error')}")
 
             choices = data.get("choices") or []
@@ -160,48 +152,34 @@ class OpenRouterImageProvider(ImageProvider):
 
             if images:
                 image_info = images[0] or {}
-                logger.debug(
-                    f"[IMAGE DEBUG] Image info keys: {list(image_info.keys())}"
-                )
-                logger.debug(
-                    f"[IMAGE DEBUG] Image info: {json.dumps(image_info, indent=2)}"
-                )
+                logger.debug(f"[IMAGE DEBUG] Image info keys: {list(image_info.keys())}")
+                logger.debug(f"[IMAGE DEBUG] Image info: {json.dumps(image_info, indent=2)}")
                 image_url = (image_info.get("image_url") or {}).get("url") or ""
             else:
                 content = message.get("content")
                 logger.debug(f"[IMAGE DEBUG] Content field type: {type(content)}")
 
                 if content and isinstance(content, str):
-                    logger.debug(
-                        f"[IMAGE DEBUG] Content is string, length: {len(content)}"
-                    )
+                    logger.debug(f"[IMAGE DEBUG] Content is string, length: {len(content)}")
                     if content.startswith("data:image"):
                         logger.info("[IMAGE DEBUG] Found image data in content field")
                         image_url = content
-                    elif content.startswith("https://") or content.startswith(
-                        "http://"
-                    ):
+                    elif content.startswith("https://") or content.startswith("http://"):
                         logger.info("[IMAGE DEBUG] Found image URL in content field")
                         image_url = content
                 elif content and isinstance(content, list):
-                    logger.debug(
-                        f"[IMAGE DEBUG] Content is list with {len(content)} items"
-                    )
+                    logger.debug(f"[IMAGE DEBUG] Content is list with {len(content)} items")
                     for part in content:
                         if isinstance(part, dict):
                             if part.get("type") == "image_url":
                                 image_url = part.get("image_url", {}).get("url", "")
                                 if image_url:
-                                    logger.info(
-                                        "[IMAGE DEBUG] Found image_url in content list"
-                                    )
+                                    logger.info("[IMAGE DEBUG] Found image_url in content list")
                                     break
                             elif "image_url" in part:
                                 image_url = part["image_url"]
                                 if image_url:
-                                    logger.info(
-                                        "[IMAGE DEBUG] Found image_url in content part"
-                                    )
+                                    logger.info("[IMAGE DEBUG] Found image_url in content part")
                                     break
 
             if not image_url:
@@ -217,9 +195,7 @@ class OpenRouterImageProvider(ImageProvider):
 
             if image_url.startswith("data:") and "base64," in image_url:
                 image_base64 = image_url.split("base64,", 1)[1]
-                logger.debug(
-                    f"[IMAGE DEBUG] Extracted base64, length: {len(image_base64)}"
-                )
+                logger.debug(f"[IMAGE DEBUG] Extracted base64, length: {len(image_base64)}")
 
             width, height = self._parse_size(size)
 
@@ -279,14 +255,10 @@ class XAIImageProvider(ImageProvider):
         except XAIImagineError as e:
             raise RuntimeError(f"xAI Imagine error: {str(e)}") from e
 
-    async def generate_video(
-        self, prompt: str, duration: int, **kwargs
-    ) -> Dict[str, Any]:
+    async def generate_video(self, prompt: str, duration: int, **kwargs) -> Dict[str, Any]:
         """Generate a video using xAI Imagine."""
         try:
-            video_job = await self.client.generate_video(
-                prompt=prompt, duration_seconds=duration
-            )
+            video_job = await self.client.generate_video(prompt=prompt, duration_seconds=duration)
             video_result = await self.client.poll_video_job(video_job.job_id)
 
             return {
@@ -305,6 +277,7 @@ class FalKlingProvider(ImageProvider):
         """Initialize fal.ai Kling provider."""
         from providers.fal_kling import FalKlingClient, FalKlingError
 
+        self._error_cls: type[Exception] = FalKlingError
         self.client = FalKlingClient()
         if api_key:
             self.client.api_key = api_key
@@ -315,13 +288,9 @@ class FalKlingProvider(ImageProvider):
         Raises:
             NotImplementedError: Kling is video-only provider
         """
-        raise NotImplementedError(
-            "Image generation not supported by fal.ai Kling provider"
-        )
+        raise NotImplementedError("Image generation not supported by fal.ai Kling provider")
 
-    async def generate_video(
-        self, prompt: str, duration: int, **kwargs
-    ) -> Dict[str, Any]:
+    async def generate_video(self, prompt: str, duration: int, **kwargs) -> Dict[str, Any]:
         """Generate a video using fal.ai Kling."""
         try:
             # Extract additional parameters from kwargs
@@ -346,7 +315,7 @@ class FalKlingProvider(ImageProvider):
                 "duration": video_result.duration_seconds,
                 "provider": "fal",
             }
-        except FalKlingError as e:
+        except self._error_cls as e:
             raise RuntimeError(f"fal.ai Kling video error: {str(e)}") from e
 
     def _size_to_aspect_ratio(self, size: str) -> str:
@@ -396,9 +365,7 @@ class ImageSubagent(BaseSubagent):
     """Image generation subagent using multiple providers."""
 
     agent_type = SubagentType.IMAGE
-    description = (
-        "Generates images from text prompts using AI (multiple providers supported)"
-    )
+    description = "Generates images from text prompts using AI (multiple providers supported)"
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         """Initialize image subagent."""
@@ -443,17 +410,12 @@ class ImageSubagent(BaseSubagent):
                 openrouter_base_url = openrouter_base_url[: -len("/chat/completions")]
             if openrouter_base_url.endswith("/images/generations"):
                 openrouter_base_url = openrouter_base_url[: -len("/images/generations")]
-            if (
-                "openrouter.ai" in openrouter_base_url
-                and "/api/v1" not in openrouter_base_url
-            ):
+            if "openrouter.ai" in openrouter_base_url and "/api/v1" not in openrouter_base_url:
                 openrouter_base_url = "https://openrouter.ai/api/v1"
 
             openrouter_model = (
                 config_dict.get("image_model") if config_dict else None
-            ) or os.environ.get(
-                "OPENROUTER_IMAGE_MODEL", "google/gemini-2.5-flash-image"
-            )
+            ) or os.environ.get("OPENROUTER_IMAGE_MODEL", "google/gemini-2.5-flash-image")
 
             if not openrouter_api_key:
                 raise ValueError("OPENROUTER_API_KEY not configured")
@@ -462,9 +424,7 @@ class ImageSubagent(BaseSubagent):
                 openrouter_api_key, openrouter_base_url, openrouter_model
             )
 
-    async def execute(
-        self, task: str, context: dict[str, Any] | None = None
-    ) -> SubagentResult:
+    async def execute(self, task: str, context: dict[str, Any] | None = None) -> SubagentResult:
         """Execute image or video generation task.
 
         Args:
@@ -484,9 +444,7 @@ class ImageSubagent(BaseSubagent):
         else:
             return await self._generate_image(enhanced_prompt, context_payload)
 
-    async def _generate_image(
-        self, prompt: str, context: dict[str, Any]
-    ) -> SubagentResult:
+    async def _generate_image(self, prompt: str, context: dict[str, Any]) -> SubagentResult:
         try:
             size = context.get("size", "1024x1024")
             image_result = await self.provider.generate_image(prompt, size)
@@ -526,9 +484,7 @@ class ImageSubagent(BaseSubagent):
                 error=f"Image generation failed: {str(e)}",
             )
 
-    async def _generate_video(
-        self, prompt: str, context: dict[str, Any]
-    ) -> SubagentResult:
+    async def _generate_video(self, prompt: str, context: dict[str, Any]) -> SubagentResult:
         # Get user ID and tier from context
         user_id_str = context.get("user_id")
         tier = context.get("tier", "free").lower()
@@ -672,9 +628,7 @@ class ImageSubagent(BaseSubagent):
             # Refund credits on failure
             refund_result = None
             if transaction_id:
-                refund_result = await video_credits_dal.refund_transaction(
-                    transaction_id
-                )
+                refund_result = await video_credits_dal.refund_transaction(transaction_id)
 
             return self._create_result(
                 success=False,
@@ -708,7 +662,7 @@ class ImageSubagent(BaseSubagent):
     def _enhance_prompt(self, task: str, context: dict[str, Any]) -> str:
         """Enhance user prompt with style/size preferences from context."""
         style = context.get("style", "")
-        size = context.get("size", "1024x1024")
+        size = context.get("size", "1024x1024")  # noqa: F841
 
         enhanced = task
 
@@ -736,9 +690,7 @@ class ImageSubagent(BaseSubagent):
         if isinstance(result, dict):
             data = result.get("data") if isinstance(result.get("data"), dict) else {}
             if isinstance(data, dict):
-                last_prompt = (
-                    data.get("prompt") if isinstance(data.get("prompt"), str) else ""
-                )
+                last_prompt = data.get("prompt") if isinstance(data.get("prompt"), str) else ""
 
         previous = last_prompt or last_task
         if not previous:
@@ -757,10 +709,7 @@ class ImageSubagent(BaseSubagent):
             "try again",
             "redo",
         ]
-        if (
-            any(marker in lowered for marker in followup_markers)
-            or len(task.split()) <= 6
-        ):
+        if any(marker in lowered for marker in followup_markers) or len(task.split()) <= 6:
             return f"{task}. Previous request: {previous}"
 
         return task

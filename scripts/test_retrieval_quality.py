@@ -21,12 +21,10 @@ TEST_USER_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")
 async def main():
     """Run diagnostic retrieval test."""
     # Get connection settings from environment
-    db_url = os.getenv(
-        "DATABASE_URL", "postgresql://daemon:daemon@postgres:5432/daemon"
-    )
+    db_url = os.getenv("DATABASE_URL", "postgresql://daemon:daemon@postgres:5432/daemon")
     encryption_key = os.getenv("ENCRYPTION_KEY", "test-key-for-development-only")
 
-    print(f"Connecting to database...")
+    print("Connecting to database...")
     pool = await asyncpg.create_pool(db_url)
 
     try:
@@ -92,9 +90,7 @@ async def main():
             content = str(memory.get("content", ""))[:80] + "..."
 
             print(f"\n{i}. Final Score: {final_score:.4f}")
-            print(
-                f"   Vector Sim: {vector_sim:.4f} | BM25: {bm25_score:.4f} | Source: {source}"
-            )
+            print(f"   Vector Sim: {vector_sim:.4f} | BM25: {bm25_score:.4f} | Source: {source}")
             print(f"   Category: {category}")
             print(f"   Content: {content}")
 

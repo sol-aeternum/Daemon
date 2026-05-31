@@ -204,9 +204,7 @@ def _extract_json_object(raw_text: str) -> dict[str, Any] | None:
     if not cleaned:
         return None
     if cleaned.startswith("```"):
-        lines = [
-            line for line in cleaned.splitlines() if not line.strip().startswith("```")
-        ]
+        lines = [line for line in cleaned.splitlines() if not line.strip().startswith("```")]
         cleaned = "\n".join(lines).strip()
 
     candidates = [cleaned]
@@ -297,9 +295,7 @@ def _turn_has_failures(assistant_message: dict[str, Any]) -> bool:
     if not isinstance(tool_results, list):
         return False
     return any(
-        _is_failed_tool_result(
-            entry.get("result") if isinstance(entry, dict) else entry
-        )
+        _is_failed_tool_result(entry.get("result") if isinstance(entry, dict) else entry)
         for entry in tool_results
     )
 
@@ -431,8 +427,8 @@ class SkillEvaluator:
         self._projection_store: SkillProjectionProtocol | None = projection_store or (
             SkillProjectionStore(db_pool) if db_pool is not None else None
         )
-        self._skill_manage_tool: SkillManageProtocol = (
-            skill_manage_tool or SkillManageTool(db_pool=db_pool)
+        self._skill_manage_tool: SkillManageProtocol = skill_manage_tool or SkillManageTool(
+            db_pool=db_pool
         )
         self._completion_callable: CompletionCallable = completion_callable
         self._query_embedder: EmbeddingCallable = query_embedder
@@ -749,9 +745,7 @@ class SkillEvaluator:
                 reason="refinement prompt did not return a valid decision",
             )
 
-        trigger_conditions = (
-            refinement.trigger_conditions.strip() or draft.trigger_conditions
-        )
+        trigger_conditions = refinement.trigger_conditions.strip() or draft.trigger_conditions
 
         if refinement.decision == "NO_CHANGE":
             return SkillEvaluationResult(
@@ -857,9 +851,7 @@ class SkillEvaluator:
             assistant_response=str(turn.assistant_message.get("content") or "").strip(),
             tool_trace=turn.tool_trace,
             existing_skill_name=str(existing_skill.get("name") or "").strip(),
-            existing_skill_description=str(
-                existing_skill.get("description") or ""
-            ).strip(),
+            existing_skill_description=str(existing_skill.get("description") or "").strip(),
             existing_skill_markdown=str(existing_skill.get("content") or "").strip(),
             candidate_name=draft.name,
             candidate_description=draft.description,

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import os
 import shutil
@@ -24,9 +22,7 @@ logger = logging.getLogger(__name__)
 DOCUMENT_MODEL = "anthropic/claude-sonnet-4.5"
 
 # Directory for generated files
-GENERATED_FILES_DIR = (
-    Path(__file__).resolve().parent.parent.parent / "data" / "generated_files"
-)
+GENERATED_FILES_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "generated_files"
 
 
 class DocumentSubagent(BaseSubagent):
@@ -48,9 +44,7 @@ class DocumentSubagent(BaseSubagent):
         self.model = DOCUMENT_MODEL
         self.timeout = 120.0
 
-    async def execute(
-        self, task: str, context: dict[str, Any] | None = None
-    ) -> SubagentResult:
+    async def execute(self, task: str, context: dict[str, Any] | None = None) -> SubagentResult:
         """Execute document generation task.
 
         Args:
@@ -79,9 +73,7 @@ class DocumentSubagent(BaseSubagent):
             )
 
         # Build prompt for code generation
-        system_prompt = self._build_code_generation_prompt(
-            task, skill_content, context_payload
-        )
+        system_prompt = self._build_code_generation_prompt(task, skill_content, context_payload)
 
         output_file: str | None = None
         cleanup_output_file = False
@@ -123,9 +115,7 @@ class DocumentSubagent(BaseSubagent):
 
             # Persist to generated_files directory
             filename_hint_value = context_payload.get("filename")
-            filename_hint = (
-                filename_hint_value if isinstance(filename_hint_value, str) else ""
-            )
+            filename_hint = filename_hint_value if isinstance(filename_hint_value, str) else ""
             persisted_path = self._persist_file(
                 output_file,
                 doc_format,
@@ -335,9 +325,7 @@ IMPORTANT:
                         ),
                     }
 
-                persisted_tmp = tempfile.NamedTemporaryFile(
-                    suffix=f".{doc_format}", delete=False
-                )
+                persisted_tmp = tempfile.NamedTemporaryFile(suffix=f".{doc_format}", delete=False)
                 persisted_tmp_path = Path(persisted_tmp.name)
                 persisted_tmp.close()
                 shutil.copy2(output_file, persisted_tmp_path)

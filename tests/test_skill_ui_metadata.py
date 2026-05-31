@@ -688,7 +688,7 @@ Content.
         for i in range(3):
             skill_file = tmp_path / f"skill{i}.md"
             has_pending = i < 2
-            pending = {"repo_version": "2.0.0"} if has_pending else None
+            pending = {"repo_version": "2.0.0"} if has_pending else None  # noqa: F841
 
             skill_file.write_text(f"""---
 name: Skill {i}
@@ -838,9 +838,7 @@ Debug content.
                 assert "description" in skill
                 assert "id" in skill
                 assert skill["name"] == "Python Debugging Helper"
-                assert (
-                    skill["description"] == "Helps debug Python code with stack traces"
-                )
+                assert skill["description"] == "Helps debug Python code with stack traces"
                 assert skill["id"] == "python-debug"
 
     def test_list_includes_source_type_for_filtering(
@@ -876,9 +874,7 @@ Content.
                 source_hash=f"hash_{actual_type}",
                 enabled=True,
                 source_type=actual_type,
-                created_by="system"
-                if actual_type in ("system", "autonomous")
-                else "user",
+                created_by="system" if actual_type in ("system", "autonomous") else "user",
                 origin_url="",
                 embedding=None,
                 repo_version="1.0.0",
@@ -1003,9 +999,7 @@ Content.
                 response = client.get("/skills")
                 data = response.json()
 
-                skills_with_pending = [
-                    s for s in data["skills"] if s.get("pending_update")
-                ]
+                skills_with_pending = [s for s in data["skills"] if s.get("pending_update")]
                 assert len(skills_with_pending) == 1
                 assert "skill-pending-0" in skills_with_pending[0]["id"]
 
@@ -1051,9 +1045,7 @@ Content.
                 response = client.get("/skills")
                 data = response.json()
 
-                skills_with_sparkles = [
-                    s for s in data["skills"] if s.get("allow_autonomous_edit")
-                ]
+                skills_with_sparkles = [s for s in data["skills"] if s.get("allow_autonomous_edit")]
                 assert len(skills_with_sparkles) == 1
                 assert "skill-auto-0" in skills_with_sparkles[0]["id"]
 
@@ -1294,9 +1286,7 @@ Content.
                 source_hash=f"hash_{skill_id}",
                 enabled=True,
                 source_type=source_type,
-                created_by="system"
-                if source_type in ("system", "autonomous")
-                else "user",
+                created_by="system" if source_type in ("system", "autonomous") else "user",
                 origin_url="",
                 embedding=None,
                 repo_version="1.0.0",

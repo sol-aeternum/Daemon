@@ -25,7 +25,7 @@ from httpx import ASGITransport, AsyncClient
 from orchestrator.config import get_settings
 from orchestrator.main import app
 from orchestrator.db import AppState
-from orchestrator.auth import AuthenticatedDevice, require_device_auth
+from orchestrator.auth import AuthenticatedDevice
 from orchestrator.routes import memories as memories_router
 
 
@@ -66,9 +66,7 @@ async def auth_client(monkeypatch):
         session_id=uuid.UUID("33333333-3333-3333-3333-333333333333"),
     )
 
-    app.dependency_overrides[memories_router.require_device_auth] = (
-        lambda: fake_device
-    )
+    app.dependency_overrides[memories_router.require_device_auth] = lambda: fake_device
 
     async with app.router.lifespan_context(app):
         transport = ASGITransport(app=app)
@@ -91,9 +89,7 @@ def set_app_state(mock_app_state: AppState) -> None:
     app.state.app_state = mock_app_state
 
 
-def create_mock_memory(
-    memory_id: uuid.UUID | None = None, **overrides
-) -> dict[str, Any]:
+def create_mock_memory(memory_id: uuid.UUID | None = None, **overrides) -> dict[str, Any]:
     """Create a mock memory dict."""
     if memory_id is None:
         memory_id = uuid.uuid4()
@@ -545,14 +541,16 @@ async def test_post_memories_dream_device_no_user_id_enqueues_own(client, monkey
     device_user_id = uuid.uuid4()
 
     conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value={
-        "user_id": device_user_id,
-        "device_id": uuid.uuid4(),
-        "session_id": uuid.uuid4(),
-        "session_revoked_at": None,
-        "access_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
-        "device_revoked_at": None,
-    })
+    conn.fetchrow = AsyncMock(
+        return_value={
+            "user_id": device_user_id,
+            "device_id": uuid.uuid4(),
+            "session_id": uuid.uuid4(),
+            "session_revoked_at": None,
+            "access_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
+            "device_revoked_at": None,
+        }
+    )
     conn.fetchval = AsyncMock(return_value=datetime.now(timezone.utc))
     conn.execute = AsyncMock()
 
@@ -601,14 +599,16 @@ async def test_post_memories_dream_device_different_user_forbidden(client, monke
     other_user_id = uuid.uuid4()
 
     conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value={
-        "user_id": device_user_id,
-        "device_id": uuid.uuid4(),
-        "session_id": uuid.uuid4(),
-        "session_revoked_at": None,
-        "access_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
-        "device_revoked_at": None,
-    })
+    conn.fetchrow = AsyncMock(
+        return_value={
+            "user_id": device_user_id,
+            "device_id": uuid.uuid4(),
+            "session_id": uuid.uuid4(),
+            "session_revoked_at": None,
+            "access_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
+            "device_revoked_at": None,
+        }
+    )
     conn.fetchval = AsyncMock(return_value=datetime.now(timezone.utc))
     conn.execute = AsyncMock()
 
@@ -651,14 +651,16 @@ async def test_post_memories_dream_device_own_user_id_succeeds(client, monkeypat
     device_user_id = uuid.uuid4()
 
     conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value={
-        "user_id": device_user_id,
-        "device_id": uuid.uuid4(),
-        "session_id": uuid.uuid4(),
-        "session_revoked_at": None,
-        "access_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
-        "device_revoked_at": None,
-    })
+    conn.fetchrow = AsyncMock(
+        return_value={
+            "user_id": device_user_id,
+            "device_id": uuid.uuid4(),
+            "session_id": uuid.uuid4(),
+            "session_revoked_at": None,
+            "access_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
+            "device_revoked_at": None,
+        }
+    )
     conn.fetchval = AsyncMock(return_value=datetime.now(timezone.utc))
     conn.execute = AsyncMock()
 

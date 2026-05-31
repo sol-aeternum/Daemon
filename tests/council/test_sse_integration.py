@@ -20,9 +20,7 @@ async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncClient,
 
     async with app.router.lifespan_context(app):
         transport = ASGITransport(app=app)
-        async with AsyncClient(
-            transport=transport, base_url="http://test"
-        ) as http_client:
+        async with AsyncClient(transport=transport, base_url="http://test") as http_client:
             yield http_client
 
 
@@ -133,9 +131,7 @@ async def test_normal_message_bypasses_council_branch(
     client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    mock_handle = AsyncMock(
-        side_effect=AssertionError("council path should not execute")
-    )
+    mock_handle = AsyncMock(side_effect=AssertionError("council path should not execute"))
     monkeypatch.setattr("orchestrator.council.sse.handle_council_command", mock_handle)
 
     response = await client.post(

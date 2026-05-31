@@ -39,13 +39,13 @@ Updated Summary (2-3 sentences):"""
 
 def _normalize_model_for_provider(model_id: str) -> str:
     """Normalize model ID for OpenRouter provider.
-    
+
     Ensures model has proper openrouter/ prefix.
     """
     if model_id.startswith("openrouter/"):
         return model_id
     if model_id.startswith("opencode/"):
-        return f"openrouter/{model_id[len('opencode/'):]}"
+        return f"openrouter/{model_id[len('opencode/') :]}"
     return f"openrouter/{model_id}"
 
 
@@ -92,7 +92,7 @@ async def generate_or_update_summary(
         messages = await store.get_messages(conversation_id, limit=100)
         if not messages:
             return None
-        is_incremental = False
+        is_incremental = False  # noqa: F841
 
     # Format messages for prompt (last 20 for context window)
     formatted_messages = "\n\n".join(
@@ -105,7 +105,7 @@ async def generate_or_update_summary(
     # Get settings and provider config
     settings = get_settings()
     provider_config = settings.get_provider_config("openrouter")
-    
+
     # Normalize model for provider
     model = _normalize_model_for_provider(settings.auto_fast_model)
 
@@ -159,6 +159,7 @@ async def generate_or_update_summary(
     except Exception as e:
         # Log error but don't fail
         import logging
+
         logger = logging.getLogger(__name__)
         logger.error(f"Summary generation failed for {conversation_id}: {e}")
         return None

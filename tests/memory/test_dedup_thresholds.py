@@ -73,14 +73,28 @@ class TestThresholdBranchBehavior:
 
         # Mock store returning a single candidate with 0.5 similarity
         mock_store = MagicMock(spec=MemoryStore)
-        mock_store.search_memories = AsyncMock(return_value=[
-            {"id": "00000000-0000-0000-0000-000000000001", "content": "existing", "similarity": 0.5, "valid_to": None, "memory_slot": None}
-        ])
+        mock_store.search_memories = AsyncMock(
+            return_value=[
+                {
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "content": "existing",
+                    "similarity": 0.5,
+                    "valid_to": None,
+                    "memory_slot": None,
+                }
+            ]
+        )
         mock_store.touch_memory = AsyncMock()
-        mock_store.insert_memory = AsyncMock(return_value={"id": "00000000-0000-0000-0000-000000000002", "content": "test fact"})
-        mock_store.supersede_memory = AsyncMock(return_value={"id": "00000000-0000-0000-0000-000000000003", "content": "test fact"})
+        mock_store.insert_memory = AsyncMock(
+            return_value={"id": "00000000-0000-0000-0000-000000000002", "content": "test fact"}
+        )
+        mock_store.supersede_memory = AsyncMock(
+            return_value={"id": "00000000-0000-0000-0000-000000000003", "content": "test fact"}
+        )
 
-        with patch("orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock) as mock_embed:
+        with patch(
+            "orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock
+        ) as mock_embed:
             mock_embed.return_value = [[0.1] * 1024]
 
             # Case A: merge_threshold=0.0 → any candidate merges (similarity 0.5 >= 0.0)
@@ -97,16 +111,28 @@ class TestThresholdBranchBehavior:
                     conversation_id=None,
                 )
                 # With merge threshold 0.0 and similarity 0.5, should merge
-                assert len(result.merged) == 1, "merge threshold 0.0 should trigger merge at similarity 0.5"
+                assert len(result.merged) == 1, (
+                    "merge threshold 0.0 should trigger merge at similarity 0.5"
+                )
                 assert len(result.superseded) == 0
                 assert len(result.new) == 0
 
             # Case B: merge_threshold=1.0 → no merge possible (0.5 < 1.0), falls to supersede
             mock_store.reset_mock()
-            mock_store.search_memories = AsyncMock(return_value=[
-                {"id": "00000000-0000-0000-0000-000000000001", "content": "existing", "similarity": 0.5, "valid_to": None, "memory_slot": None}
-            ])
-            mock_store.supersede_memory = AsyncMock(return_value={"id": "00000000-0000-0000-0000-000000000003", "content": "test fact"})
+            mock_store.search_memories = AsyncMock(
+                return_value=[
+                    {
+                        "id": "00000000-0000-0000-0000-000000000001",
+                        "content": "existing",
+                        "similarity": 0.5,
+                        "valid_to": None,
+                        "memory_slot": None,
+                    }
+                ]
+            )
+            mock_store.supersede_memory = AsyncMock(
+                return_value={"id": "00000000-0000-0000-0000-000000000003", "content": "test fact"}
+            )
 
             with patch("orchestrator.memory.dedup.get_settings") as mock_settings:
                 mock_settings.return_value.dedup_merge_threshold = 1.0
@@ -122,7 +148,9 @@ class TestThresholdBranchBehavior:
                 )
                 # With merge threshold 1.0, similarity 0.5 can't merge → supersede
                 assert len(result.merged) == 0
-                assert len(result.superseded) == 1, "merge threshold 1.0 should skip merge, similarity 0.5 >= 0.0 supersedes"
+                assert len(result.superseded) == 1, (
+                    "merge threshold 1.0 should skip merge, similarity 0.5 >= 0.0 supersedes"
+                )
                 assert len(result.new) == 0
 
     @pytest.mark.asyncio
@@ -146,18 +174,32 @@ class TestThresholdBranchBehavior:
         fact = SlottedFact(content="test", category="test")
 
         mock_store = MagicMock(spec=MemoryStore)
-        mock_store.search_memories = AsyncMock(return_value=[
-            {"id": "00000000-0000-0000-0000-000000000001", "content": "existing", "similarity": 0.7, "valid_to": None, "memory_slot": "vehicle.current"}
-        ])
+        mock_store.search_memories = AsyncMock(
+            return_value=[
+                {
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "content": "existing",
+                    "similarity": 0.7,
+                    "valid_to": None,
+                    "memory_slot": "vehicle.current",
+                }
+            ]
+        )
         mock_store.touch_memory = AsyncMock()
-        mock_store.insert_memory = AsyncMock(return_value={"id": "00000000-0000-0000-0000-000000000002", "content": "test"})
-        mock_store.supersede_memory = AsyncMock(return_value={"id": "00000000-0000-0000-0000-000000000003", "content": "test"})
+        mock_store.insert_memory = AsyncMock(
+            return_value={"id": "00000000-0000-0000-0000-000000000002", "content": "test"}
+        )
+        mock_store.supersede_memory = AsyncMock(
+            return_value={"id": "00000000-0000-0000-0000-000000000003", "content": "test"}
+        )
         mock_store.close_memory = AsyncMock()
         mock_store._pool = MagicMock()
         mock_store._pool.fetch = AsyncMock(return_value=[])
         mock_store._pool.execute = AsyncMock()
 
-        with patch("orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock) as mock_embed:
+        with patch(
+            "orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock
+        ) as mock_embed:
             mock_embed.return_value = [[0.1] * 1024]
 
             # With same_slot_threshold=0.0, similarity 0.7 would supersede
@@ -174,4 +216,6 @@ class TestThresholdBranchBehavior:
                     conversation_id=None,
                 )
                 # Merge=1.0 blocks merge; same_slot threshold 0.0 → 0.7 supersedes
-                assert len(result.superseded) == 1, "same_slot threshold 0.0 should allow supersede at similarity 0.7"
+                assert len(result.superseded) == 1, (
+                    "same_slot threshold 0.0 should allow supersede at similarity 0.7"
+                )
