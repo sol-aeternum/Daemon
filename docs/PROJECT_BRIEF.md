@@ -1,73 +1,57 @@
-# Project Daemon: Personal Multi-Agent Assistant
+# Project Brief — Daemon
 
-## Overview
+> **Verified-against-commit**: `3155d69fa1eb1939cf5c737018242fc119480d6c`
+> **Last updated**: 2026-05-31
+> **Upstream Sources**: `tests/benchmark_results/doc-alignment-regeneration/truth_set.md`, `docs/SOURCES_OF_TRUTH.md`, `docs/FEATURE_MATRIX.md`, `MEMORY_LAYER.md`, `orchestrator/config.py`, `docker-compose.yml`, `migrations/`
 
-Mobile-first personal assistant with multi-model orchestration via OpenRouter. Tier-based model configuration allows flexible model assignment without code changes. FastAPI backend orchestrates LLM calls and spawns specialized subagents. Next.js 16 frontend provides streaming chat with voice I/O. PostgreSQL + pgvector provides persistent memory across conversations.
+## Product Thesis
 
-**Core principle:** Daemon is the assistant — it responds directly most of the time, spawning subagents only when specialized capability is needed. Not a router that delegates everything.
+Daemon is a multi-provider LLM orchestration platform designed to provide a unified, intelligent interface for personal AI assistance. It sits between multiple LLM providers and a custom frontend, adding critical capabilities that single-provider solutions lack: tiered cross-provider routing, persistent conversational memory, specialized subagent task decomposition, and a typed real-time event protocol.
 
----
+## Intended Audience & User Value
 
-## Current State
+Daemon is built for users who prioritize ownership and flexibility in their AI interactions.
 
-**Phase 1 (Cloud Orchestration):** Complete. Streaming chat, subagent framework, voice I/O, 88-model selection, tool registry.
+- **Provider Independence**: Switch between LLM providers (via OpenRouter) without losing conversation history or changing your interface.
+- **Persistent Memory**: Own your conversational context with a pgvector-backed memory pipeline that extracts and retrieves facts across sessions.
+- **Intelligent Routing**: Automatically route queries to the most appropriate model based on complexity, cost, and capability tiers.
+- **Specialized Subagents**: Delegate complex tasks to dedicated agents for research, media generation, and document processing.
+- **Privacy & Control**: Run the entire stack via Docker, with encrypted-at-rest storage and a clear path toward local inference.
 
-**Phase 2 (Memory System):** ~80% complete. Infrastructure operational (PostgreSQL, pgvector, Redis, arq, encryption). Critical bug: extracted memories write as "pending" but retrieval filters by "active" — pipeline runs but output is invisible. See CURRENT_ISSUES.md.
+## Architecture Overview
 
-**Phase 3 (Local Pipeline):** Blocked on RTX 5090 acquisition. Pre-router parsing implemented, inference code not.
+Daemon's architecture is designed for durability and modularity, separating orchestration logic from model providers and client surfaces.
 
-**Frontend:** Work in progress. Core chat functional, steady feature additions. Needs markdown rendering, theme unification, conversation switching fix.
+- **Backend**: A FastAPI-based orchestrator that manages routing, streaming, subagent spawning, and the memory pipeline.
+- **Frontend**: A modern Next.js 16 PWA utilizing the Vercel AI SDK for a responsive, streaming chat experience with integrated voice I/O.
+- **Memory Layer**: A PostgreSQL database with the `pgvector` extension for semantic search, supported by Redis and `arq` for background processing.
+- **Fetch Service**: A dedicated `crawl4ai` service for robust, multi-strategy web content retrieval.
+- **Infrastructure**: Fully containerized deployment via Docker Compose, ensuring a reproducible environment across cloud and local setups.
 
----
+For detailed technical specifications and infrastructure details, refer to [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) and [TECHNICAL_SPECS.md](TECHNICAL_SPECS.md).
 
-## Architecture
+## Capability Overview
 
-Tier-based model configuration with 5 tiers. Model assignments are env-var configurable placeholders — the tier structure is real architecture, specific models are fluid.
+Daemon provides a comprehensive suite of features for advanced AI assistance.
 
-| Tier | Orchestrator (current) | Subagents |
-|------|----------------------|-----------|
-| Free | Kimi K2.5 | None |
-| Starter | Kimi K2.5 | Sonnet, Gemini |
-| Pro (default) | Kimi K2.5 | Full suite |
-| Max | Claude 4.6 Opus | Premium |
-| BYOK | Kimi K2.5 | User-configured |
+- **Chat & Routing**: Real-time token streaming with typed SSE events, supporting both native and OpenAI-compatible endpoints with tier-based model assignment.
+- **Persistent Memory**: Automated fact extraction, hybrid semantic/lexical retrieval, and bitemporal memory management. Detailed in [../MEMORY_LAYER.md](../MEMORY_LAYER.md).
+- **Subagent Framework**: Specialized agents for web research (`@research`), image and video generation (`@image`), audio processing (`@audio`), and document generation (`@document`).
+- **Multimodal Studio**: Dedicated interfaces for high-fidelity media generation with integrated credit management.
+- **Voice Interaction**: Streaming text-to-speech and speech-to-text for a hands-free assistant experience.
 
-**Backend:** FastAPI + LiteLLM + asyncpg + arq + Fernet encryption
-**Frontend:** Next.js 16 + Vercel AI SDK 4 + React 19 + PWA
-**Infrastructure:** Docker Compose (5 services: backend, worker, frontend, postgres, redis)
+Current feature implementation status across all platforms is maintained in the [FEATURE_MATRIX.md](FEATURE_MATRIX.md).
 
----
+## Documentation & Sources of Truth
 
-## Key Design Decisions
+Daemon maintains a strict documentation hierarchy to ensure accuracy and prevent drift between code and narrative.
 
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Model assignment | Config, not code | Swap models via env vars as landscape evolves |
-| Orchestrator style | Direct response + tool use | Daemon is the assistant, not a classifier |
-| Local routing | Manual `/local` flag | Zero false negatives, user decides privacy boundary |
-| Frontend | Next.js 16 + Vercel AI SDK | Open WebUI lacked orchestration state concepts |
-| Memory | PostgreSQL + pgvector + encryption | Persistent, searchable, encrypted at rest |
+- **Feature Scope**: [FEATURE_MATRIX.md](FEATURE_MATRIX.md) defines the authoritative state of all user-visible features.
+- **Technical Specs**: [TECHNICAL_SPECS.md](TECHNICAL_SPECS.md) covers API contracts, schemas, and system prompts.
+- **Architecture Context**: [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) provides a high-level view of the system's current implementation state.
+- **Roadmap**: [ROADMAP.md](ROADMAP.md) outlines the product direction and active execution plans.
+- **Governance**: [SOURCES_OF_TRUTH.md](SOURCES_OF_TRUTH.md) defines the documentation hierarchy and freshness rules.
 
----
+## Getting Started
 
-## Hardware (Pending)
-
-RTX 5090 32GB build for local inference. Enables Qwen 72B Q5_K_M (~22GB VRAM) + FLUX Dev (~12GB) concurrent operation. Cloud pipeline is fully functional standalone.
-
-- GPU: ASUS TUF 5090 @ $5999 AUD
-- CPU: AMD 9950X3D
-- RAM: Kingston Fury Beast Black 64GB 6000 CL36
-- Case: Be Quiet Light Base 500 non-LX
-
----
-
-## Key Documents
-
-| Document | Contents |
-|----------|----------|
-| PROJECT_CONTEXT.md | Detailed architecture, decisions, current state |
-| ROADMAP.md | Phased implementation plan with status |
-| CURRENT_ISSUES.md | Known bugs and issues ranked by severity |
-| OPEN_QUESTIONS.md | Unresolved decisions |
-| TECHNICAL_SPECS.md | System prompts, schemas, API specs |
-| HARDWARE_CONTEXT.md | GPU/build decisions |
+To set up a local instance of Daemon and begin interacting with the assistant, follow the instructions in the [../QUICKSTART.md](../QUICKSTART.md).

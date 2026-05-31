@@ -29,7 +29,7 @@ Commercial LLM products lock you into a single provider, a single model, and the
 │  ┌────▼────────────┐  ┌──────────────────────────┐  │
 │  │ Memory Layer    │  │ Subagent Orchestrator    │  │
 │  │ (pgvector)      │  │ @research @image @audio  │  │
-│  │                 │  │ @code @reader            │  │
+│  │                 │  │ @document @code @reader   │  │
 │  └─────────────────┘  └──────────────────────────┘  │
 └──────────────────────────────────────────────────────┘
                        │
@@ -119,10 +119,11 @@ Benchmarking runs from the host shell against localhost-exposed container servic
 
 ### Subagents
 - `@research` — Brave Search web search
-- `@image` — Image and video generation (xAI Imagine API)
+- `@image` — Image generation (xAI) and video generation (xAI, fal.ai/Kling)
 - `@audio` — ElevenLabs TTS/STT/sound effects
-- `@code` — Code generation and analysis
-- `@reader` — Document reading
+- `@document` — Document file generation
+- `@code` — Code generation (experimental, not fully implemented)
+- `@reader` — Document reading (experimental, not fully implemented)
 
 ### Frontend
 - Next.js 16 PWA with streaming chat (Vercel AI SDK `useChat`)
@@ -143,6 +144,7 @@ Benchmarking runs from the host shell against localhost-exposed container servic
 | `/conversations` | GET/POST | Conversation CRUD |
 | `/conversations/{id}/messages` | GET/POST | Message history |
 | `/memories` | GET/POST/DELETE | Memory management |
+| `/skills` | GET/POST | Skills management (list, create, upload, update, delete) |
 | `/users/settings` | GET/PUT | User preferences |
 | `/video-credits` | GET/POST | Video credit balance and transactions |
 | `/health` | GET | Health check |
