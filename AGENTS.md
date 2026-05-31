@@ -49,7 +49,7 @@ frontend/
   hooks/                # React hooks (useConversationHistory, useChat wrappers)
   lib/events.ts         # Typed SSE event definitions
 docs/                   # Project documentation (keep in sync)
-migrations/             # PostgreSQL migrations (13 applied)
+migrations/             # PostgreSQL migrations
 ```
 
 ## Conventions

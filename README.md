@@ -72,7 +72,7 @@ Daemon/
 │   ├── hooks/          # React hooks (useChat wrappers, audio, events)
 │   └── lib/events.ts   # Typed SSE event definitions
 ├── providers/          # Provider client implementations
-├── migrations/         # PostgreSQL migrations (13 applied)
+├── migrations/         # PostgreSQL migrations
 ├── tests/              # Test suite (pytest + playwright)
 ├── scripts/             # Utility scripts
 ├── data/                # Runtime data (generated files, etc.)
