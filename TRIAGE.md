@@ -1381,6 +1381,7 @@
 - **Evidence**: `npm ci` warned `Unsupported engine { package: '@commitlint/cli@21.0.2', required: { node: '>=22.12.0' }, current: { node: 'v20.20.2', npm: '11.4.2' } }`.
 - **Likely cause**: Host/container Node version is older than the workflow-pinned Node runtime (confidence 99%).
 - **Suggested action**: Use Node 24 locally when validating commitlint/frontend gates, or rely on the workflow setup-node step for CI parity.
+- **Seen again**: 2026-05-31T10:25:43Z during PR follow-up basedpyright verification; `npm ci` completed but emitted the same `EBADENGINE Unsupported engine` warnings for `@commitlint/*@21` under local Node `v20.20.2`.
 
 ## [2026-05-31T10:05:00Z] — PyYAML Missing In Backend Environment For Ad Hoc Workflow Validation
 - **Severity**: info
@@ -1403,3 +1404,15 @@
 - **Evidence**: `uv run pre-commit run --all-files` failed with `An unexpected error has occurred: URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`; `/root/.cache/pre-commit/pre-commit.log` shows the blocked request while opening `https://go.dev/dl/?mode=json`; `SKIP=gitleaks uv run pre-commit run --all-files` passed ruff hooks and skipped gitleaks.
 - **Likely cause**: The local container's outbound proxy blocks Go toolchain discovery for pre-commit's golang language environment (confidence 90%).
 - **Suggested action**: Validate gitleaks in CI or in a host with Go/pre-commit network access; do not weaken the hook config for this host limitation.
+- **Seen again**: 2026-05-31T10:26:58Z during PR follow-up basedpyright verification; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` and the explicit commitlint hook passed.
+
+## 2026-05-31T10:24:30Z — BasedPyright config consolidation surfaced benchmark harness typing debt
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: PR follow-up — fix final remaining basedpyright error
+- **Category**: build-error
+- **Blocked current task**: yes
+- **What happened**: Running the basedpyright gate while validating the requested final fix revealed the root `pyproject.toml` had separate `[tool.pyright]` and `[tool.basedpyright]` sections that basedpyright rejects when used as the explicit project config. After consolidating the configuration, the stricter standard-mode config surfaced unbaselined dictionary `update` typing errors in `tests/benchmark_harness/verify_recovery_logic.py`.
+- **Evidence**: `uv run basedpyright --level error -p pyproject.toml` printed `Pyproject file cannot have both pyright and basedpyright sections. pick one` and exited `3`; after config consolidation, `uv run basedpyright --level error` reported `tests/benchmark_harness/verify_recovery_logic.py:156:5 - error: No overloads for "update" match the provided arguments` plus the same pattern at lines 157, 211, and 212.
+- **Likely cause**: The default command had been loading `pyrightconfig.json`, hiding the invalid pyproject basedpyright config; once the config was unified, dict inference for recovery result rows was too narrow for later inserting list-valued `raw_session_ids` rows (confidence 95%).
+- **Suggested action**: Keep basedpyright settings in one `[tool.basedpyright]` section and keep `pyrightconfig.json` synchronized for editor/default CLI discovery; continue ratcheting the baseline as real errors are fixed.

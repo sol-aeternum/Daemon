@@ -149,7 +149,7 @@ def test_merge_checkpoints_produces_correct_totals():
 
     amended = build_amended_checkpoint(baseline, error_corpus_keys)
 
-    recovery_results = {
+    recovery_results: dict[str, dict[str, object]] = {
         ck: dict(row, status="complete", outcome="completed", error=None)
         for ck, row in amended["phases"]["ingest"]["results"].items()
     }
@@ -204,7 +204,7 @@ def test_guardrail_canonical_mapping():
 
     amended = build_amended_checkpoint(baseline, error_corpus_keys)
 
-    recovery_results = {
+    recovery_results: dict[str, dict[str, object]] = {
         ck: dict(row, status="complete", outcome="completed", error=None)
         for ck, row in amended["phases"]["ingest"]["results"].items()
     }

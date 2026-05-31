@@ -51,10 +51,8 @@ extend-exclude = ["tests/test_video_e2e.py"]
 [tool.ruff.lint]
 extend-select = ["RUF100"]
 
-[tool.pyright]
-venvPath = "."
-venv = ".uv-venv"
-typeCheckingMode = "standard"
-
 [tool.basedpyright]
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "standard"
 baselineFile = ".basedpyright/baseline.json"
