@@ -102,10 +102,13 @@ No tags created, deleted, or modified. See `evidence/task-20-tags.md`.
 ## Git State
 
 - **Branch**: `doc-alignment-regeneration-2026-05-29`
-- **Commits unique to branch**: 7 (Task 6 + fix, plus 4 additional plan commits)
+- **Commits unique to branch**: 6 (Task 6 + fix, plus 4 additional plan commits)
   - `ff0e950c` docs: define documentation sources of truth
   - `4fad2839` docs: fix Task 6 verification failures in SOURCES_OF_TRUTH.md and evidence
-  - Plus commits for Tasks 2-5, 7-19 (committed as part of plan execution)
+  - `d2da9774` docs(audit): record investigation artifacts and evidence
+  - `cf71155e` docs: regenerate narrative docs from source truth
+  - `9c566d10` ci(docs): add doc-freshness linter, pre-commit hook, and CI workflow
+  - `39396c80` chore(docs): close documentation alignment and commit all evidence
 - **`git status --porcelain`**: Empty after closeout commits
 - **`python scripts/check_doc_freshness.py --mode fail`**: Exit 0 (aligned tree)
 

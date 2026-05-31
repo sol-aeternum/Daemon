@@ -189,9 +189,9 @@ No `*_drift_fixture_tmp*` files found in the repository.
 | Bucket | Count | Status |
 |--------|-------|--------|
 | Already committed (Task 6) | 3 files | ✓ |
-| Intended — to be committed (investigation) | 51 paths | Pending |
-| Intended — to be committed (doc regeneration) | 6 files | Pending |
-| Intended — to be committed (tooling) | 4 files | Pending |
+| Intended — committed (investigation) | 51 paths | ✓ |
+| Intended — committed (doc regeneration) | 6 files | ✓ |
+| Intended — committed (tooling) | 4 files | ✓ |
 | Deleted-at-signoff | 0 files | N/A |
 
 **All paths classified. No unexpected files.**
