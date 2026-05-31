@@ -235,3 +235,63 @@ python scripts/check_doc_freshness.py --mode fail --files README.md AGENTS.md  #
 python -m py_compile scripts/check_doc_freshness.py                  # Compile OK
 python scripts/lint_feature_matrix.py                                 # OK: 60 feature rows validated
 ```
+
+---
+
+## Atlas Verification Addendum 2 (Jun 2026)
+
+### Issue: Plain Embedding Claim Forms Not Detected
+
+Atlas fixture runs found three false negatives in embedding claim detection:
+
+| Fixture | Input | Expected | Actual (before) |
+|---------|-------|----------|-----------------|
+| `plain_embedding_doc_stale` | `embedding_document_model: "voyage-3"` | Exit 1 | Exit 0 |
+| `plain_embedding_query_stale` | `embedding_query_model: "voyage-3-lite"` | Exit 1 | Exit 0 |
+| `plain_embedding_dim_stale` | `embedding_dimensions: 512` | Exit 1 | Exit 0 |
+
+Root cause: `_EMBEDDING_DOC_MODEL_CLAIM_RE` and siblings only matched `**EMBEDDING...**` bold GFM form. Plain labels (`embedding_document_model:`, `EMBEDDING_DOCUMENT_MODEL:`) were silently ignored.
+
+### Fix Applied
+
+Extended the three embedding claim regexes to accept all three label forms via alternation:
+
+```python
+# Before (bold-only):
+r'\*\*EMBEDDING_DOCUMENT_MODEL\*\*[:=\s]+(?:["\'])?([a-z0-9-]+)...'
+
+# After (bold + uppercase + lowercase):
+r'(?:\*\*EMBEDDING_DOCUMENT_MODEL\*\*|EMBEDDING_DOCUMENT_MODEL|embedding_document_model)[:=\s]+(?:["\'])?([a-z0-9-]+)...'
+```
+
+Same pattern applied to `EMBEDDING_QUERY_MODEL` / `embedding_query_model` and `EMBEDDING_DIMENSIONS` / `embedding_dimensions`.
+
+### Fixture Verification
+
+| Fixture | Expected | Actual |
+|---------|----------|--------|
+| `generic_embedding_prose` | Exit 0 | Exit 0 ✅ |
+| `bold_embedding_ok` (voyage-4-large/lite, 1024) | Exit 0 | Exit 0 ✅ |
+| `bold_embedding_stale` (voyage-3) | Exit 1 | Exit 1 ✅ |
+| `plain_embedding_doc_stale` (`embedding_document_model: "voyage-3"`) | Exit 1 | Exit 1 ✅ |
+| `plain_embedding_doc_stale_upper` (`EMBEDDING_DOCUMENT_MODEL: "voyage-3"`) | Exit 1 | Exit 1 ✅ |
+| `plain_embedding_doc_stale_noquotes` (`embedding_document_model: voyage-3`) | Exit 1 | Exit 1 ✅ |
+| `plain_embedding_query_stale` | Exit 1 | Exit 1 ✅ |
+| `plain_embedding_dim_stale` | Exit 1 | Exit 1 ✅ |
+| `migration_count_second_stale` | Exit 1 | Exit 1 ✅ |
+| `migration_latest_second_stale` | Exit 1 | Exit 1 ✅ |
+| `dedup_swapped` | Exit 1 | Exit 1 ✅ |
+| `provider_markdown_ok` | Exit 0 | Exit 0 ✅ |
+| `provider_markdown_missing` | Exit 1 | Exit 1 ✅ |
+| `tier_stale_wrong` | Exit 1 | Exit 1 ✅ |
+| `active_exception_visible` (with non-suppressing exception) | Report exit 0, `(ACTIVE)` visible | `(ACTIVE)` visible ✅ |
+
+### Standard Gate Verification
+
+```bash
+python scripts/check_doc_freshness.py --mode report --format text  # No drift detected.
+python scripts/check_doc_freshness.py --mode fail --format text     # No drift detected.
+python scripts/check_doc_freshness.py --mode fail --files README.md AGENTS.md  # No drift detected.
+python -m py_compile scripts/check_doc_freshness.py                  # Compile OK
+python scripts/lint_feature_matrix.py                                 # OK: 60 feature rows validated
+```
