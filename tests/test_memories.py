@@ -25,7 +25,7 @@ from httpx import ASGITransport, AsyncClient
 from orchestrator.config import get_settings
 from orchestrator.main import app
 from orchestrator.db import AppState
-from orchestrator.auth import AuthenticatedDevice, require_device_auth
+from orchestrator.auth import AuthenticatedDevice
 from orchestrator.routes import memories as memories_router
 
 

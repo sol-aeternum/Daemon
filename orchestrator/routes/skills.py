@@ -7,14 +7,12 @@ from fastapi import (
     Depends,
     File,
     Form,
-    Header,
     HTTPException,
     Request,
     UploadFile,
 )
 
 from orchestrator.auth import AuthenticatedDevice, AdminOrDeviceAuth, require_admin_or_device_auth, require_device_auth
-from orchestrator.config import Settings, get_settings
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 

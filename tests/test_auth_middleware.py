@@ -9,7 +9,6 @@ import pytest
 from fastapi import HTTPException
 
 from orchestrator.auth import (
-    AuthenticatedDevice,
     _extract_bearer_token,
     _verify_access_token,
     require_device_auth,

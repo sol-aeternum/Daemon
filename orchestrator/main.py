@@ -62,7 +62,7 @@ from orchestrator.routes import (
     video_credits,
 )
 from orchestrator.routes.auth_setup import router as auth_setup_router
-from orchestrator.models_cache import fetch_openrouter_models, get_fallback_model
+from orchestrator.models_cache import fetch_openrouter_models
 from orchestrator.model_router import select_model_tier
 from orchestrator.skills_store import build_skill_index
 from orchestrator.skills_projection import SkillProjectionStore

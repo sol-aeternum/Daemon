@@ -12,7 +12,6 @@ from orchestrator.auth_cookies import (
     make_refresh_cookie_config,
 )
 from orchestrator.auth_csrf import (
-    CSRFGuardResult,
     OriginStatus,
     check_csrf_origin,
 )
