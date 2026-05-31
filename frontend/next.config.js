@@ -5,29 +5,14 @@ const withPWA = require('next-pwa')({
   skipWaiting: true,
   disable: process.env.NODE_ENV === 'development',
   runtimeCaching: [
-    // API responses: Network-first with timeout fallback
+    // Same-origin API routes: NetworkOnly — never cache authenticated responses.
     {
-      urlPattern: /\/api\/chat/,
-      handler: 'NetworkFirst',
+      urlPattern: ({ url }) =>
+        url.origin === self.location.origin &&
+        url.pathname.startsWith('/api/'),
+      handler: 'NetworkOnly',
       options: {
-        cacheName: 'api-chat-cache',
-        expiration: {
-          maxEntries: 32,
-          maxAgeSeconds: 24 * 60 * 60, // 24 hours
-        },
-        networkTimeoutSeconds: 10,
-      },
-    },
-    {
-      urlPattern: /\/api\/.*/,
-      handler: 'NetworkFirst',
-      options: {
-        cacheName: 'api-data-cache',
-        expiration: {
-          maxEntries: 32,
-          maxAgeSeconds: 24 * 60 * 60, // 24 hours
-        },
-        networkTimeoutSeconds: 10,
+        cacheName: 'api-no-cache',
       },
     },
     // Static assets: Cache-first, long cache
@@ -66,9 +51,11 @@ const withPWA = require('next-pwa')({
         },
       },
     },
-    // Default fallback for other routes (Network First)
+    // Catch-all: matches any request that is NOT same-origin /api/.
+    // The predicate explicitly excludes same-origin /api/*.
     {
-      urlPattern: /^https?.*/,
+      urlPattern: ({ url }) =>
+        !(url.origin === self.location.origin && url.pathname.startsWith('/api/')),
       handler: 'NetworkFirst',
       options: {
         cacheName: 'others',
