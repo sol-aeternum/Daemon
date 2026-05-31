@@ -102,7 +102,7 @@ No tags created, deleted, or modified. See `evidence/task-20-tags.md`.
 ## Git State
 
 - **Branch**: `doc-alignment-regeneration-2026-05-29`
-- **Commits unique to branch**: 8 (6 plan commits + 2 evidence-fix commits)
+- **Commits unique to branch**: 9 (6 plan commits + 3 evidence-fix commits)
   - `ff0e950c` docs: define documentation sources of truth
   - `4fad2839` docs: fix Task 6 verification failures in SOURCES_OF_TRUTH.md and evidence
   - `d2da9774` docs(audit): record investigation artifacts and evidence
@@ -111,6 +111,7 @@ No tags created, deleted, or modified. See `evidence/task-20-tags.md`.
   - `39396c80` chore(docs): close documentation alignment and commit all evidence
   - `e6e57caa` fix(evidence): correct commit count and disposition status in Task 20 closeout
   - `29b0f1a5` fix(evidence): update closeout commit count to 7 including evidence-fix commit
+  - `6a79eb3c` fix(evidence): correct closeout commit count to 8
 - **`git status --porcelain`**: Empty after closeout commits
 - **`python scripts/check_doc_freshness.py --mode fail`**: Exit 0 (aligned tree)
 
