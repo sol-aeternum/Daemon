@@ -322,7 +322,7 @@ def _check_migration_count(doc_content: str, expected: int) -> CheckResult:
 
 def _check_migration_latest(doc_content: str, expected: str) -> CheckResult:
     latest_claim_pattern = re.compile(
-        r'(?:latest\s+(?:migration|db)|most\s+recent|newest)\s*[:\->=]\s*(\d{2,3}_\w+(?:\.sql)?)',
+        r'(?:latest(?:\s+(?:migration|db))?|most\s+recent|newest)[:\s]+`?(\d{2,3}_\w+(?:\.sql)?)`?',
         re.IGNORECASE,
     )
     matches = latest_claim_pattern.findall(doc_content)
@@ -488,12 +488,13 @@ def _check_video_providers(doc_content: str, valid_providers: frozenset[str]) ->
 
 
 # Tier table row regex: | **TIER** | model | model | model | model | model | model |
-# Only matches actual tier names (FREE, STARTER, PRO, MAX, BYOK)
+# Matches actual tier names (FREE, STARTER, PRO, MAX, BYOK) in any case variant
 _TIER_TABLE_ROW_RE = re.compile(
-    r'^\|\s*\*\*(FREE|STARTER|PRO|MAX|BYOK)\*\*\s*\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|'
+    r'^\|\s*\*\*(FREE|STARTER|PRO|MAX|BYOK)\*\*\s*\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|',
+    re.IGNORECASE,
 )
 
-# Map from tier name in docs (uppercase from table) to tier name in config
+# Map from tier name in docs to tier name in config
 _TIER_NAME_MAP = {
     "free": "free",
     "starter": "starter",
@@ -503,28 +504,40 @@ _TIER_NAME_MAP = {
 }
 
 # Slot names in the tier table (order must match the regex above)
-_TIER_SLOTS = ["orchestrator", "research", "image", "reader", "embeddings", "video"]
+_TIER_SLOTS = ["orchestrator", "research", "code", "image", "reader", "embeddings", "video"]
+
+
+# PROJECT_CONTEXT tier table: mixed-case tier names and 4 data columns (price, orchestrator, subagents, video)
+_TIER_TABLE_ROW_RE_PLAIN = re.compile(
+    r'^\|\s*\*\*(Free|Starter|Pro|Max|BYOK)\*\*\s*\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|',
+    re.IGNORECASE,
+)
+
+# Map for PROJECT_CONTEXT mixed-case tier names
+_TIER_NAME_MAP_PLAIN = {
+    "free": "free",
+    "starter": "starter",
+    "pro": "pro",
+    "max": "max",
+    "byok": "byok",
+}
 
 
 def _normalize_model_name(model: str) -> str:
     normalized = model.lower()
-    # Recursively strip all known provider prefixes
-    prefixes = ["openrouter/", "openai/", "anthropic/", "google/", "x-ai/", "deepseek/", "moonshotai/"]
     while True:
         stripped = False
-        for prefix in prefixes:
+        for prefix in ["openrouter/", "openai/", "anthropic/", "google/", "x-ai/", "deepseek/", "moonshotai/"]:
             if normalized.startswith(prefix):
                 normalized = normalized[len(prefix):]
                 stripped = True
                 break
         if not stripped:
             break
-    # Strip provider-specific model suffixes before separator normalization
     for suffix in ["-image", "-video", "-instruct", "-chat", "-preview"]:
         if normalized.endswith(suffix):
             normalized = normalized[:-len(suffix)]
             break
-    # Normalize separators to spaces
     normalized = normalized.replace("/", " ").replace("-", " ").replace("_", " ")
     return normalized.strip()
 
@@ -533,10 +546,13 @@ def _check_tier_defaults(doc_content: str, tier_defaults: dict[str, dict[str, st
     """
     Validate tier table model claims against config.py defaults.
 
-    For each tier-slot-model claim found in the tier table, check:
-    1. If config has a non-empty default, the doc model name must appear within it.
-    2. If config has an empty default ("") and doc has a non-empty claim, this may be
-       intentional (BYOK embeddings = voyage-4-large); allow it but note it.
+    Two table formats are supported:
+    - TECHNICAL_SPECS: 6-slot columns (orchestrator, research, image, reader, embeddings, video)
+    - PROJECT_CONTEXT: 4-slot columns (orchestrator, subagents, video + embedded reader/embeddings)
+
+    For each tier-slot-model claim found, the doc model name must exactly match
+    the normalized config alias. Multi-option cells (e.g. "Claude 3.5 Sonnet / Opus 4.6")
+    are split on "/" and each option is validated against its corresponding slot.
     """
     results = []
     lines = doc_content.splitlines()
@@ -544,35 +560,77 @@ def _check_tier_defaults(doc_content: str, tier_defaults: dict[str, dict[str, st
     tier_claims: dict[str, dict[str, str]] = {}
 
     for line in lines:
-        m = _TIER_TABLE_ROW_RE.match(line.strip())
-        if not m:
-            continue
-        tier_doc_name = m.group(1)
-        tier_config_name = _TIER_NAME_MAP.get(tier_doc_name.lower())
-        if not tier_config_name:
+        line_stripped = line.strip()
+        # Try TECHNICAL_SPECS 6-slot format first
+        m = _TIER_TABLE_ROW_RE.match(line_stripped)
+        if m:
+            tier_doc_name = m.group(1)
+            tier_config_name = _TIER_NAME_MAP.get(tier_doc_name.lower())
+            if tier_config_name:
+                raw = [g.strip() for g in m.groups()[1:]]
+                if "/" in raw[1]:
+                    p1, p2 = [x.strip() for x in raw[1].split("/")]
+                    cells = [raw[0], p1, p2] + raw[2:]
+                else:
+                    cells = [raw[0], raw[1], None] + raw[2:]
+                tier_claims[tier_config_name] = dict(zip(_TIER_SLOTS, cells))
             continue
 
-        values = [g.strip() for g in m.groups()[1:]]
-        tier_claims[tier_config_name] = dict(zip(_TIER_SLOTS, values))
+        m2 = _TIER_TABLE_ROW_RE_PLAIN.match(line_stripped)
+        if m2:
+            tier_doc_name = m2.group(1)
+            tier_config_name = _TIER_NAME_MAP_PLAIN.get(tier_doc_name.lower())
+            if not tier_config_name:
+                continue
+            _, orchestrator, _subagents, video = [g.strip() for g in m2.groups()[1:]]
+            tier_claims[tier_config_name] = {
+                "orchestrator": orchestrator.strip("`"),
+                "research": None,
+                "code": None,
+                "image": None,
+                "reader": None,
+                "embeddings": None,
+                "video": video,
+            }
 
     for tier_name, slots in tier_defaults.items():
         doc_slots = tier_claims.get(tier_name, {})
         for slot, config_model in slots.items():
-            doc_model = doc_slots.get(slot, "").strip('*_')
+            doc_model_raw = doc_slots.get(slot)
+            research_alias = _normalize_model_name(slots.get("research") or "")
+            code_alias = _normalize_model_name(slots.get("code") or "")
+
+            if (doc_model_raw is None and slot == "code" and research_alias != code_alias
+                    and config_model and ("research" in doc_slots or "code" in doc_slots)):
+                results.append(CheckResult(
+                    CheckId.TIER_MODEL, False,
+                    config_model,
+                    "",
+                    f"tier {tier_name} {slot} mismatch: expected {config_model}",
+                ))
+                continue
+
+            if doc_model_raw is None:
+                continue
+
+            doc_model = doc_model_raw.strip('*_`')
             if not doc_model or doc_model.lower() in ("_none_", "disabled", "n/a", "—"):
                 doc_model = ""
 
             if not config_model:
-                # Config has empty default; doc may or may not claim a model
-                # Allow non-empty claims (BYOK embeddings = voyage-4-large is documented)
                 continue
 
             config_alias = _normalize_model_name(config_model)
+
             if doc_model:
                 doc_options = [opt.strip() for opt in doc_model.split("/")]
-                matched = any(
-                    _normalize_model_name(opt) == config_alias
-                    for opt in doc_options
+                matched = (
+                    any(_normalize_model_name(opt) == config_alias for opt in doc_options)
+                    or (
+                        len(doc_options) == 1
+                        and research_alias != code_alias
+                        and _normalize_model_name(doc_options[0]) in (research_alias, code_alias)
+                    )
                 )
                 if not matched:
                     results.append(CheckResult(

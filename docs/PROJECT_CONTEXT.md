@@ -69,7 +69,7 @@ Daemon uses a tier-based model configuration system. Specific model assignments 
 ### Phase 2: Memory System ✅
 - **Storage**: PostgreSQL + pgvector with 30 migrations applied (latest: `030_add_advisor_traces.sql`).
 - **Pipeline**: Extraction (GPT-4o-mini) → Embedding (Voyage 4) → Dedup → Retrieval (Hybrid).
-- **Encryption**: Fernet (AES-256-GCM) for messages and memories.
+- **Encryption**: Fernet for messages and memories.
 - **Background Jobs**: Extraction, summary, consolidation, dreaming.
 
 ### Video Generation + Credits ✅
