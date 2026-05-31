@@ -1,0 +1,41 @@
+name: Documentation Freshness
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - docs/**
+      - '*.md'
+      - orchestrator/config.py
+      - orchestrator/routes/**
+      - orchestrator/main.py
+      - orchestrator/memory/**
+      - migrations/**
+      - scripts/check_doc_freshness.py
+      - .github/workflows/docs-freshness.yml
+      - .pre-commit-config.yaml
+  pull_request:
+    paths:
+      - docs/**
+      - '*.md'
+      - orchestrator/config.py
+      - orchestrator/routes/**
+      - orchestrator/main.py
+      - orchestrator/memory/**
+      - migrations/**
+      - scripts/check_doc_freshness.py
+      - .github/workflows/docs-freshness.yml
+      - .pre-commit-config.yaml
+
+jobs:
+  doc-freshness:
+    name: Check doc freshness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python scripts/check_doc_freshness.py --mode fail
