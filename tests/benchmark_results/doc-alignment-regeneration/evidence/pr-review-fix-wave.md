@@ -367,3 +367,84 @@ python scripts/lint_feature_matrix.py                                 # OK: 60 f
 - `e06b8d9b` — fix(linter): exact embedding match, stricter tier overlap, structured migration latest
 - `1e8bd5c2` — fix(docs): fix MEMORY_LAYER.md links in docs/ subdirectory
 - `4cfa762d` — fix(schema): add document to spawn tool agent_type enums
+
+---
+
+## Atlas Verification Addendum 4 (Jun 2026)
+
+### Issue: `len(overlap) >= 2` Still Too Loose for Tier Models
+
+Atlas noted that `e06b8d9b`'s `len(overlap) < 2` rule still allowed `Claude 3.5 Haiku` to match `openrouter/anthropic/claude-3.5-sonnet` via 2-word overlap (`claude` + `3.5`). Codex comment `3330918351` requires exact tier model matching.
+
+### Fix Applied
+
+**Tier model validation now uses exact normalized alias comparison.**
+
+#### `_normalize_model_name()` upgrade:
+- Recursively strips all known provider prefixes (`openrouter/`, `moonshotai/`, `google/`, `anthropic/`, etc.) until none remain
+- Strips provider-specific suffixes (`-image`, `-video`, `-instruct`, `-chat`, `-preview`) before separator normalization
+- Normalizes separators to spaces
+
+#### Alias derivation examples:
+| Config model ID | Alias |
+|-----------------|-------|
+| `openrouter/moonshotai/kimi-k2.5` | `kimi k2.5` |
+| `openrouter/anthropic/claude-3.5-sonnet` | `claude 3.5 sonnet` |
+| `openrouter/anthropic/claude-opus-4.6` | `claude opus 4.6` |
+| `google/gemini-2.5-flash-image` | `gemini 2.5 flash` (suffix stripped) |
+| `openrouter/google/gemini-2.0-pro-exp` | `gemini 2.0 pro exp` |
+| `voyage-4-large` | `voyage 4 large` |
+| `fal` | `fal` |
+
+#### `_check_tier_defaults()` upgrade:
+- Each doc slot value is split on `/` into individual options
+- Each option is normalized and compared for exact equality against the config alias
+- At least one option must match exactly (for multi-model cells like `Claude 3.5 Sonnet / Opus 4.6`)
+- This supersedes the `len(overlap) >= 2` word-overlap approach
+
+### Stale Detection Results
+
+| Doc claim | Config alias | Match | Result |
+|-----------|-------------|-------|--------|
+| `Claude 3 Haiku` | `claude 3.5 sonnet` | `claude 3 haiku` ≠ `claude 3.5 sonnet` | FAIL ✅ |
+| `Claude 3.5 Haiku` | `claude 3.5 sonnet` | `claude 3.5 haiku` ≠ `claude 3.5 sonnet` | FAIL ✅ |
+| `Claude` | `claude 3.5 sonnet` | `claude` ≠ `claude 3.5 sonnet` | FAIL ✅ |
+| `Claude 3.5 Sonnet` | `claude 3.5 sonnet` | exact match | PASS ✅ |
+| `Kimi K2.5` | `kimi k2.5` | exact match | PASS ✅ |
+| `Gemini 2.5 Flash` | `gemini 2.5 flash` | exact match | PASS ✅ |
+| `Claude 3.5 Sonnet / Opus 4.6` | `claude 3.5 sonnet` | first option matches | PASS ✅ |
+
+### Fixture Verification
+
+| Fixture | Expected | Actual |
+|---------|----------|--------|
+| `current_PRO_tier_table` | Exit 0 | Exit 0 ✅ |
+| `current_STARTER_tier_table` | Exit 0 | Exit 0 ✅ |
+| `current_MAX_tier_multioption` | Exit 0 | Exit 0 ✅ |
+| `current_FREE_tier` | Exit 0 | Exit 0 ✅ |
+| `tier_stale_claude3_haiku` | Exit 1 | Exit 1 ✅ |
+| `tier_stale_claude35_haiku` | Exit 1 | Exit 1 ✅ |
+| `tier_stale_claude_only` | Exit 1 | Exit 1 ✅ |
+| `tier_stale_wrong_model` | Exit 1 | Exit 1 ✅ |
+| `emb_doc_exact_stale_voyage4` | Exit 1 | Exit 1 ✅ |
+| `emb_doc_exact_ok` | Exit 0 | Exit 0 ✅ |
+| `generic_embedding_prose` | Exit 0 | Exit 0 ✅ |
+| `migration_historical_001_passes` | Exit 0 | Exit 0 ✅ |
+| `migration_latest_stale_structured` | Exit 1 | Exit 1 ✅ |
+| `migration_count_second_stale` | Exit 1 | Exit 1 ✅ |
+| `provider_markdown_ok` | Exit 0 | Exit 0 ✅ |
+| `provider_markdown_missing` | Exit 1 | Exit 1 ✅ |
+| `active_exception_visible` | Report exit 0, `(ACTIVE)` | ACTIVE visible ✅ |
+
+### Standard Gate Verification
+
+```bash
+python scripts/check_doc_freshness.py --mode report --format text  # No drift detected.
+python scripts/check_doc_freshness.py --mode fail --format text     # No drift detected.
+python scripts/check_doc_freshness.py --mode fail --files README.md AGENTS.md  # No drift detected.
+python -m py_compile scripts/check_doc_freshness.py                  # Compile OK
+python scripts/lint_feature_matrix.py                                 # OK: 60 feature rows validated
+```
+
+### Commit Pushed
+- `d7d85feb` — fix(linter): exact tier model alias matching, superseding len(overlap)>=2
