@@ -228,8 +228,8 @@ def get_tier_prices(root: Path) -> dict[str, Any]:
     tiers = settings.list_available_tiers()
     prices: dict[str, str] = {}
     for tier in tiers:
-        tier_id = tier["id"]
-        price_val = tier["price"]
+        tier_id = str(tier["id"])
+        price_val = int(tier["price"])
         prices[tier_id] = f"${price_val}/mo"
     return {"tier_prices": prices}
 
