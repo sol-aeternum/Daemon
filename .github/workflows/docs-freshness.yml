@@ -8,6 +8,7 @@ on:
     paths:
       - docs/**
       - '*.md'
+      - docker-compose.yml
       - orchestrator/config.py
       - orchestrator/routes/**
       - orchestrator/main.py
@@ -20,6 +21,7 @@ on:
     paths:
       - docs/**
       - '*.md'
+      - docker-compose.yml
       - orchestrator/config.py
       - orchestrator/routes/**
       - orchestrator/main.py

@@ -62,7 +62,7 @@ The `/chat` endpoint streams Server-Sent Events with typed frames:
 
 | Event Type | Data Fields | Description |
 |------------|-------------|-------------|
-| `token` | `data.delta` | Incremental text token |
+| `token` | `data.text` | Incremental text token (compat: `data.delta` accepted by bridge) |
 | `thinking` | `data.content`, `id` | Model thinking/reasoning content |
 | `routing` | `data.model`, `data.tier` | Model selection notification |
 | `tool_call` | `data.name`, `data.arguments` | Tool invocation |

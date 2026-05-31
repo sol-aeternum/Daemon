@@ -57,7 +57,7 @@ Daemon uses a tier-based model configuration system. Specific model assignments 
 | **Max** | $29/mo | `claude-opus-4.6` | Sonnet 3.5, Gemini Flash | Enabled (fal) |
 | **BYOK** | $9/mo | `kimi-k2.5` | User-configured | Enabled (fal) |
 
-*Note: Default video provider is `fal` (Kling). BYOK users bypass credits using their own keys.*
+*Note: Default video provider is `fal` (Kling) via config.py; runtime selection depends on `video_provider` propagation. BYOK users bypass credits using their own keys.*
 
 ## Implementation Status
 
