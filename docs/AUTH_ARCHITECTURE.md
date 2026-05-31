@@ -50,10 +50,10 @@ Session cleanup keeps consumed rows long enough for reuse detection, then delete
 FastAPI is the only component that sets or clears auth cookies. Next.js API routes/proxies pass browser `Cookie` headers to FastAPI and pass through every FastAPI `Set-Cookie` header without comma-folding or rewriting.
 
 ### Decision 16 — Web refresh cookie is `__Host-daemon_refresh`
-The production web refresh cookie is named `__Host-daemon_refresh` and uses `Path=/; Secure; HttpOnly; SameSite=Strict` with no `Domain` attribute.
+The production and secure-development web refresh cookie is named `__Host-daemon_refresh` and uses `Path=/; Secure; HttpOnly; SameSite=Strict` with no `Domain` attribute.
 
 ### Decision 17 — Insecure cookies are development-gated
-`DAEMON_COOKIE_SECURE=false` is allowed only when `DAEMON_ENVIRONMENT=development` and must log a warning. Production cookies are always `Secure`.
+`DAEMON_COOKIE_SECURE=false` is allowed only when `DAEMON_ENVIRONMENT=development` and must log a warning. In insecure development, FastAPI uses the unprefixed `daemon_refresh` cookie without `Secure` because browsers reject insecure `__Host-` cookies. Production cookies are always `Secure`.
 
 ### Decision 18 — Cookie-backed endpoints require CSRF/origin checks
 Cookie-backed setup, enrollment completion, and refresh endpoints enforce CSRF checks with `Sec-Fetch-Site`, `Origin`, and `Referer`/origin fallback. Cross-site and `Origin: null` requests are rejected; sensitive absent-header cases fail closed.

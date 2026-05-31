@@ -90,7 +90,7 @@ This means recovery requires server restart access — a self-hosted deployment'
 During development with `DAEMON_ENVIRONMENT=development`:
 
 - `DAEMON_AUTH_PEPPER` is optional. If absent, Daemon generates a per-process random pepper and logs a warning. **All pending enrollments created with a development ephemeral pepper are invalidated after every server restart.** Enrollments must be re-initiated after each restart.
-- Insecure cookies (`Secure=false`) are allowed with `DAEMON_COOKIE_SECURE=false`. Do not use these settings in production.
+- Insecure cookies (`Secure=false`) are allowed with `DAEMON_COOKIE_SECURE=false`. In that mode, Daemon uses the development-only `daemon_refresh` cookie name instead of `__Host-daemon_refresh`, because browsers require `Secure` for `__Host-` cookies. Do not use these settings in production.
 - CORS is relaxed for localhost origins.
 
 ### `DAEMON_AUTH_PEPPER` Requirements
@@ -119,12 +119,12 @@ Daemon's web authentication uses a split-token design:
 | Token | Storage | Lifetime |
 |-------|---------|----------|
 | `access_token` | JavaScript memory only | 30 minutes |
-| `refresh_token` | `__Host-daemon_refresh` HttpOnly cookie | 90 days, rotating |
+| `refresh_token` | `__Host-daemon_refresh` HttpOnly cookie (`daemon_refresh` only for insecure development) | 90 days, rotating |
 
 ### What This Means
 
 - The **access token** is never stored in `localStorage`, `sessionStorage`, or any browser storage. JavaScript holds it in memory for the duration of the browser session. Closing the tab or browser clears it.
-- The **refresh token** is set as an `HttpOnly; Secure; SameSite=Strict` cookie named `__Host-daemon_refresh`. JavaScript cannot read it — not even via `document.cookie`. This blocks XSS attacks from stealing the refresh token.
+- The **refresh token** is set as an `HttpOnly; Secure; SameSite=Strict` cookie named `__Host-daemon_refresh` in production and secure development. JavaScript cannot read it — not even via `document.cookie`. This blocks XSS attacks from stealing the refresh token. In explicit insecure development (`DAEMON_ENVIRONMENT=development` plus `DAEMON_COOKIE_SECURE=false`), the cookie is named `daemon_refresh` and omits `Secure` so plain-HTTP setup works.
 - On every authenticated request, the frontend automatically refreshes the access token if it is expired or near expiry, using the HttpOnly cookie — no JavaScript involvement required.
 - The `__Host-` prefix enforces that the cookie is locked to the exact host, has `Path=/`, and requires `Secure`. No `Domain` attribute is set, preventing the cookie from being sent to subdomains.
 

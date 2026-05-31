@@ -1194,3 +1194,46 @@
 - **Evidence**: `orchestrator/subagents/document.py:135-142` returns `data.file_url` as `/generated-files/{persisted_path.name}`; `frontend/app/page.tsx:1249` always renders `<ToolCallLog events={msgEvents} />`; `frontend/components/ToolCallBlock.tsx:115-123` converts the raw result to `resultText`; `frontend/components/ToolCallBlock.tsx:418-423` renders `Output:` with `{resultText}`. Safe delivery evidence remains: `orchestrator/main.py:1202-1206` requires device auth for `/generated-files/{filename}`, `frontend/src/components/FilePreview.tsx:74-83` gets protected URLs with auth headers, and `frontend/components/FileDownloadCard.tsx:60-68` downloads via auth fetch/blob.
 - **Likely cause**: Preview/download fixes protected fetch/render paths but did not redact protected artifact URLs from the generic debug/tool-result display (confidence 94%).
 - **Suggested action**: Redact protected generated paths from generic tool-result JSON rendering or render structured document metadata without `file_url`, while retaining authenticated preview/download behavior.
+## [2026-05-31T03:24:00Z] — Frontend build missing installed qrcode.react module
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: PR #4 Codex review fixes for auth cookies and service worker cache policy
+- **Category**: dependency
+- **Blocked current task**: no
+- **What happened**: `npm run build` failed because webpack could not resolve `qrcode.react`, even though `frontend/package.json` and `frontend/package-lock.json` list the dependency. Local `node_modules` is incomplete/stale.
+- **Evidence**: `Module not found: Can't resolve 'qrcode.react'`; `node -e "require.resolve('qrcode.react')"` returned `Cannot find module 'qrcode.react'`.
+- **Likely cause**: The checked-out workspace's `frontend/node_modules` was not installed from the current lockfile (85% confidence).
+- **Suggested action**: Refresh frontend dependencies with `npm install` or `npm ci` before running production builds.
+
+## [2026-05-31T03:25:53Z] — npm registry denied qrcode.react install
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: PR #4 Codex review fixes for auth cookies and service worker cache policy
+- **Category**: dependency
+- **Blocked current task**: no
+- **What happened**: Attempting to refresh existing frontend dependencies with `npm install` failed while fetching `qrcode.react@4.2.0` from npm.
+- **Evidence**: `npm error 403 403 Forbidden - GET https://registry.npmjs.org/qrcode.react/-/qrcode.react-4.2.0.tgz`.
+- **Likely cause**: The execution environment's npm registry policy or authentication blocks fetching this package (80% confidence).
+- **Suggested action**: Run dependency install in a development environment with npm registry access, or verify package access policy for `qrcode.react`.
+
+## [2026-05-31T03:28:00Z] — Pytest requires explicit repository PYTHONPATH
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR #4 Codex review fixes for auth cookies and service worker cache policy
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Running pytest directly from the repository root could not import the local `orchestrator` package from `tests/conftest.py`.
+- **Evidence**: `ModuleNotFoundError: No module named 'orchestrator'` from `tests/conftest.py:8` after `pytest tests/test_auth_cookies_csrf.py`.
+- **Likely cause**: Test invocation does not automatically add the repository root to `PYTHONPATH` in this environment (75% confidence).
+- **Suggested action**: Document or configure pytest with `pythonpath = .`, or invoke tests as `PYTHONPATH=. pytest ...`.
+
+## [2026-05-31T03:28:20Z] — Backend test environment missing pydantic
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: PR #4 Codex review fixes for auth cookies and service worker cache policy
+- **Category**: dependency
+- **Blocked current task**: no
+- **What happened**: Retrying the auth cookie test with `PYTHONPATH=.` reached project imports but failed because the Python environment does not have `pydantic` installed.
+- **Evidence**: `orchestrator/config.py:8: in <module> from pydantic import Field` followed by `ModuleNotFoundError: No module named 'pydantic'`.
+- **Likely cause**: Backend test dependencies are not installed in the active Python environment (90% confidence).
+- **Suggested action**: Install backend requirements in the test environment before running pytest.

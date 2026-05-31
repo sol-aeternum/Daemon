@@ -26,11 +26,11 @@ from pydantic import BaseModel
 
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.auth_cookies import (
-    COOKIE_NAME,
     CookiePolicyError,
     RefreshCookieConfig,
     build_refresh_cookie,
     clear_refresh_cookie,
+    get_refresh_cookie_name,
     make_refresh_cookie_config,
 )
 from orchestrator.auth_csrf import check_csrf_origin
@@ -131,6 +131,17 @@ async def _create_first_device_and_session(
     return access_token, refresh_token
 
 
+def _refresh_cookie_name(settings) -> str:
+    return get_refresh_cookie_name(
+        cookie_secure=settings.daemon_cookie_secure,
+        environment=settings.daemon_environment,
+    )
+
+
+def _refresh_cookie_value(request: Request, settings) -> str | None:
+    return request.cookies.get(_refresh_cookie_name(settings))
+
+
 @router.post("/setup", response_model=SetupResponse)
 async def setup_endpoint(
     request: Request,
@@ -146,9 +157,11 @@ async def setup_endpoint(
         request_origin=request.headers.get("Origin"),
         sec_fetch_site=request.headers.get("Sec-Fetch-Site"),
         referer=request.headers.get("Referer"),
-        allowed_origins=[o.strip() for o in settings.daemon_allowed_origins.split(",") if o.strip()],
+        allowed_origins=[
+            o.strip() for o in settings.daemon_allowed_origins.split(",") if o.strip()
+        ],
         public_origin=settings.daemon_public_origin,
-        has_cookie=request.cookies.get(COOKIE_NAME) is not None,
+        has_cookie=_refresh_cookie_value(request, settings) is not None,
     )
     if not csrf_result.allowed:
         raise HTTPException(
@@ -282,7 +295,11 @@ async def enroll_start_endpoint(
     )
 
 
-@router.post("/enroll/complete", response_model=EnrollCompleteResponse, response_model_exclude_none=True)
+@router.post(
+    "/enroll/complete",
+    response_model=EnrollCompleteResponse,
+    response_model_exclude_none=True,
+)
 async def enroll_complete_endpoint(
     request: Request,
     response: Response,
@@ -301,7 +318,7 @@ async def enroll_complete_endpoint(
     settings = get_settings()
     pepper = validate_and_get_pepper(settings)
 
-    has_cookie = request.cookies.get(COOKIE_NAME) is not None
+    has_cookie = _refresh_cookie_value(request, settings) is not None
 
     if body.client_kind == "native" and has_cookie:
         raise HTTPException(
@@ -314,7 +331,11 @@ async def enroll_complete_endpoint(
             request_origin=request.headers.get("Origin"),
             sec_fetch_site=request.headers.get("Sec-Fetch-Site"),
             referer=request.headers.get("Referer"),
-            allowed_origins=[o.strip() for o in settings.daemon_allowed_origins.split(",") if o.strip()],
+            allowed_origins=[
+                o.strip()
+                for o in settings.daemon_allowed_origins.split(",")
+                if o.strip()
+            ],
             public_origin=settings.daemon_public_origin,
             has_cookie=has_cookie,
         )
@@ -370,7 +391,10 @@ async def enroll_complete_endpoint(
                 """,
                 pending_row["created_by_device_id"],
             )
-            if creating_device_row is None or creating_device_row["revoked_at"] is not None:
+            if (
+                creating_device_row is None
+                or creating_device_row["revoked_at"] is not None
+            ):
                 raise HTTPException(
                     status_code=401,
                     detail="Invalid enrollment session",
@@ -507,7 +531,9 @@ async def enroll_complete_endpoint(
     )
 
 
-@router.post("/refresh", response_model=RefreshResponse, response_model_exclude_none=True)
+@router.post(
+    "/refresh", response_model=RefreshResponse, response_model_exclude_none=True
+)
 async def refresh_endpoint(
     request: Request,
     response: Response,
@@ -535,7 +561,7 @@ async def refresh_endpoint(
     settings = get_settings()
 
     body_token = body.refresh_token if body is not None else None
-    has_cookie = request.cookies.get(COOKIE_NAME) is not None
+    has_cookie = _refresh_cookie_value(request, settings) is not None
 
     # Determine mode and validate no mixed usage
     if has_cookie and body_token is not None:
@@ -558,7 +584,11 @@ async def refresh_endpoint(
             request_origin=request.headers.get("Origin"),
             sec_fetch_site=request.headers.get("Sec-Fetch-Site"),
             referer=request.headers.get("Referer"),
-            allowed_origins=[o.strip() for o in settings.daemon_allowed_origins.split(",") if o.strip()],
+            allowed_origins=[
+                o.strip()
+                for o in settings.daemon_allowed_origins.split(",")
+                if o.strip()
+            ],
             public_origin=settings.daemon_public_origin,
             has_cookie=True,
         )
@@ -569,7 +599,11 @@ async def refresh_endpoint(
             )
 
     # Resolve token value based on mode
-    presented_token = body_token if body_token is not None else request.cookies.get(COOKIE_NAME)
+    presented_token = (
+        body_token
+        if body_token is not None
+        else _refresh_cookie_value(request, settings)
+    )
     assert presented_token is not None, "presented_token must be set at this point"
     token_hash = hash_token(presented_token)
 
@@ -773,7 +807,9 @@ class DeviceListResponse(BaseModel):
     devices: list[DeviceResponse]
 
 
-@router.get("/devices", response_model=DeviceListResponse, response_model_exclude_none=True)
+@router.get(
+    "/devices", response_model=DeviceListResponse, response_model_exclude_none=True
+)
 async def list_devices_endpoint(
     request: Request,
     auth: AuthenticatedDevice = Depends(require_device_auth),
@@ -817,7 +853,9 @@ async def list_devices_endpoint(
             display_name=row["display_name"],
             platform=row["platform"],
             created_at=row["created_at"].isoformat(),
-            last_seen_at=row["last_seen_at"].isoformat() if row["last_seen_at"] else None,
+            last_seen_at=(
+                row["last_seen_at"].isoformat() if row["last_seen_at"] else None
+            ),
             revoked_at=row["revoked_at"].isoformat() if row["revoked_at"] else None,
             current=(row["id"] == auth.device_id),
             revoked=(row["revoked_at"] is not None),
@@ -831,7 +869,10 @@ async def list_devices_endpoint(
 @router.delete(
     "/devices/{device_id}",
     status_code=204,
-    responses={204: {"description": "Device revoked or already revoked"}, 404: {"description": "Device not found"}},
+    responses={
+        204: {"description": "Device revoked or already revoked"},
+        404: {"description": "Device not found"},
+    },
 )
 async def revoke_device_endpoint(
     request: Request,
@@ -849,7 +890,7 @@ async def revoke_device_endpoint(
         raise HTTPException(status_code=404, detail="Device not found")
 
     settings = get_settings()
-    has_refresh_cookie = request.cookies.get(COOKIE_NAME) is not None
+    has_refresh_cookie = _refresh_cookie_value(request, settings) is not None
 
     async with app_state.db_pool.acquire() as conn:
         async with conn.transaction():

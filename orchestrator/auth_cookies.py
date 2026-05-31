@@ -6,20 +6,20 @@ Architecture decisions followed:
   - Decision 17: Insecure cookies are development-gated
 
 Cookie attributes:
-  - Name: __Host-daemon_refresh
+  - Name: __Host-daemon_refresh in secure mode; daemon_refresh only for insecure development
   - HttpOnly: always
   - SameSite=Strict: always
   - Path=/: always
   - Domain: never (rejected by spec)
-   - Secure: always (required for __Host- prefix; DAEMON_COOKIE_SECURE=false raises CookiePolicyError in production)
+  - Secure: production/secure mode only; DAEMON_COOKIE_SECURE=false raises CookiePolicyError in production
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-
 COOKIE_NAME = "__Host-daemon_refresh"
+INSECURE_DEVELOPMENT_COOKIE_NAME = "daemon_refresh"
 
 
 class CookiePolicyError(Exception):
@@ -35,6 +35,15 @@ class RefreshCookieConfig:
     path: str
 
 
+def get_refresh_cookie_name(
+    cookie_secure: bool,
+    environment: str,
+) -> str:
+    if environment == "development" and not cookie_secure:
+        return INSECURE_DEVELOPMENT_COOKIE_NAME
+    return COOKIE_NAME
+
+
 def make_refresh_cookie_config(
     cookie_secure: bool,
     environment: str,
@@ -44,14 +53,17 @@ def make_refresh_cookie_config(
             "daemon_cookie_secure=false is not allowed in production"
         )
     if environment == "development" and not cookie_secure:
-        # __Host- prefix always requires Secure; DAEMON_COOKIE_SECURE=false
-        # cannot make __Host-daemon_refresh insecure because __Host- requires Secure.
-        secure = COOKIE_NAME.startswith("__Host-")
+        # The __Host- prefix is only valid with Secure.  For explicit
+        # insecure development over plain HTTP/LAN, use an unprefixed
+        # cookie name so browsers actually persist the refresh token.
+        name = get_refresh_cookie_name(cookie_secure, environment)
+        secure = False
     else:
+        name = get_refresh_cookie_name(cookie_secure, environment)
         secure = True
 
     return RefreshCookieConfig(
-        name=COOKIE_NAME,
+        name=name,
         http_only=True,
         secure=secure,
         same_site="Strict",
