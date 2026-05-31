@@ -63,6 +63,8 @@ type AuthEventType = "refresh-needed" | "cleared" | "refreshed";
 interface AuthEvent {
   type: AuthEventType;
   tabId: string;
+  accessToken?: string;
+  expiresAt?: number;
 }
 
 let _tabId: string | null = null;
@@ -75,7 +77,7 @@ function _getTabId(): string {
 
 let _channel: BroadcastChannel | null = null;
 
-function _getChannel(): BroadcastChannel | null {
+export function _getChannel(): BroadcastChannel | null {
   if (typeof window === "undefined") return null;
   if (_channel) return _channel;
   try {
@@ -86,13 +88,146 @@ function _getChannel(): BroadcastChannel | null {
   }
 }
 
-function _broadcastAuthEvent(type: AuthEventType): void {
+function _broadcastAuthEvent(
+  type: AuthEventType,
+  accessToken?: string,
+  expiresAt?: number,
+): void {
   const channel = _getChannel();
   if (!channel) return;
-  const event: AuthEvent = { type, tabId: _getTabId() };
+  const event: AuthEvent = { type, tabId: _getTabId(), accessToken, expiresAt };
   try {
     channel.postMessage(event);
-  } catch {}
+  } catch {
+    return;
+  }
+}
+
+const _LOCK_KEY = "daemon:refresh-lock";
+const _LOCK_LEASE_MS = 15_000;
+const _LOCK_SETTLE_MIN_MS = 25;
+const _LOCK_SETTLE_JITTER_MS = 25;
+const _LOCK_POLL_INTERVAL_MS = 100;
+const _LOCK_WAIT_TIMEOUT_MS = 30_000;
+
+interface LockState {
+  ownerTabId: string;
+  nonce: string;
+  expiresAt: number;
+}
+
+function _getLockState(): LockState | null {
+  if (typeof localStorage === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(_LOCK_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as LockState;
+    if (typeof parsed.ownerTabId !== "string" || typeof parsed.nonce !== "string" || typeof parsed.expiresAt !== "number") {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function _sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function _lockMatches(state: LockState | null, lock: LockState): boolean {
+  return state?.ownerTabId === lock.ownerTabId && state.nonce === lock.nonce;
+}
+
+async function _tryAcquireLocalStorageLock(): Promise<LockState | null> {
+  const myTabId = _getTabId();
+  const existing = _getLockState();
+  if (existing && existing.expiresAt > Date.now()) {
+    return null;
+  }
+
+  const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  const lock: LockState = { ownerTabId: myTabId, nonce, expiresAt: Date.now() + _LOCK_LEASE_MS };
+
+  try {
+    localStorage.setItem(_LOCK_KEY, JSON.stringify(lock));
+  } catch {
+    return null;
+  }
+
+  await _sleep(_LOCK_SETTLE_MIN_MS + Math.floor(Math.random() * _LOCK_SETTLE_JITTER_MS));
+
+  const state = _getLockState();
+  if (!_lockMatches(state, lock)) {
+    return null;
+  }
+  return lock;
+}
+
+async function _waitForRefreshCompletion(): Promise<RefreshResult | null> {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + _LOCK_WAIT_TIMEOUT_MS;
+    let timerId: ReturnType<typeof setTimeout> | null = null;
+    let done = false;
+
+    const cleanup = () => {
+      if (timerId !== null) {
+        clearTimeout(timerId);
+        timerId = null;
+      }
+      done = true;
+      unsubscribe();
+    };
+
+    const resolveOnce = (value: RefreshResult | null) => {
+      if (done) return;
+      cleanup();
+      resolve(value);
+    };
+
+    const handler = (type: AuthEventType, _tabId: string) => {
+      if (type === "refreshed") {
+        resolveOnce({ success: hasValidAccessToken() });
+        return;
+      }
+      if (type === "cleared") {
+        resolveOnce({ success: false, error: "Session expired" });
+        return;
+      }
+    };
+
+    const poll = () => {
+      if (done) return;
+      const state = _getLockState();
+      if (hasValidAccessToken()) {
+        resolveOnce({ success: true });
+        return;
+      }
+      if (!state || Date.now() > state.expiresAt) {
+        resolveOnce(null);
+        return;
+      }
+      if (Date.now() >= deadline) {
+        resolveOnce(null);
+        return;
+      }
+      timerId = setTimeout(poll, _LOCK_POLL_INTERVAL_MS);
+    };
+
+    const unsubscribe = listenForAuthEvents(handler);
+    poll();
+  });
+}
+
+async function _releaseLocalStorageLock(lock: LockState): Promise<void> {
+  try {
+    const state = _getLockState();
+    if (_lockMatches(state, lock)) {
+      localStorage.removeItem(_LOCK_KEY);
+    }
+  } catch {
+    return;
+  }
 }
 
 export function listenForAuthEvents(
@@ -102,12 +237,26 @@ export function listenForAuthEvents(
   if (!channel) return () => {};
 
   const handler = (e: MessageEvent<unknown>) => {
-    const event = e.data as AuthEvent;
-    if (event && typeof event === "object" && "type" in event && "tabId" in event) {
-      if (event.tabId !== _getTabId()) {
-        callback(event.type as AuthEventType, event.tabId);
+    const raw = e.data;
+    if (!raw || typeof raw !== "object") return;
+    const event = raw as Record<string, unknown>;
+    if (typeof event.type !== "string" || typeof event.tabId !== "string") return;
+    if (event.tabId === _getTabId()) return;
+
+    const type = event.type as AuthEventType;
+    const tabId = event.tabId;
+
+    if (type === "refreshed") {
+      const accessToken = event.accessToken as string | undefined;
+      const expiresAt = event.expiresAt as number | undefined;
+      if (typeof accessToken === "string" && typeof expiresAt === "number" && expiresAt > Date.now()) {
+        setAccessToken(accessToken, expiresAt);
       }
+    } else if (type === "cleared") {
+      clearLocalAuthState();
     }
+
+    callback(type, tabId);
   };
 
   channel.addEventListener("message", handler);
@@ -135,6 +284,10 @@ export async function refreshAccessToken(): Promise<RefreshResult> {
     try {
       let result: RefreshResult | null = null;
       await navigator.locks.request("daemon-refresh", async () => {
+        if (hasValidAccessToken()) {
+          result = { success: true };
+          return;
+        }
         if (_refreshPromise) {
           result = await _refreshPromise;
           return;
@@ -155,12 +308,28 @@ export async function refreshAccessToken(): Promise<RefreshResult> {
     return _refreshPromise;
   }
 
-  _refreshPromise = doRefresh();
-  try {
-    return await _refreshPromise;
-  } finally {
-    _refreshPromise = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const acquired = await _tryAcquireLocalStorageLock();
+    if (!acquired) {
+      const waited = await _waitForRefreshCompletion();
+      if (waited) return waited;
+      if (hasValidAccessToken()) return { success: true };
+      continue;
+    }
+
+    try {
+      if (hasValidAccessToken()) {
+        return { success: true };
+      }
+      _refreshPromise = doRefresh();
+      return await _refreshPromise;
+    } finally {
+      _refreshPromise = null;
+      await _releaseLocalStorageLock(acquired);
+    }
   }
+
+  return { success: false, error: "Refresh coordination timed out" };
 }
 
 async function doRefresh(): Promise<RefreshResult> {
@@ -180,7 +349,7 @@ async function doRefresh(): Promise<RefreshResult> {
       const expiresIn = (data.expires_in as number) || 1800;
       const expiresAtMs = Date.now() + expiresIn * 1000;
       setAccessToken(accessToken, expiresAtMs);
-      _broadcastAuthEvent("refreshed");
+      _broadcastAuthEvent("refreshed", accessToken, expiresAtMs);
       return { success: true };
     } catch {
       return { success: false, error: "Invalid refresh response" };
