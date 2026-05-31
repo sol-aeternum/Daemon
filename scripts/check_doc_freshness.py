@@ -549,8 +549,7 @@ def get_gated_docs(root: Path) -> list[Path]:
                     classification = parts[3].strip().lower()
                     if classification == "gated" and file_col:
                         file_path = root / file_col.strip().strip("`")
-                        if file_path.exists():
-                            gated.append(file_path)
+                        gated.append(file_path)
             elif line.startswith("##"):
                 break
 
@@ -612,7 +611,7 @@ def main() -> int:
     if args.format == "json":
         print(format_json(all_findings, all_exceptions, all_malformed, facts))
     else:
-        if all_findings or all_malformed:
+        if all_findings or all_malformed or all_exceptions:
             print(format_text(all_findings, all_exceptions, all_malformed))
         else:
             print("No drift detected.")
