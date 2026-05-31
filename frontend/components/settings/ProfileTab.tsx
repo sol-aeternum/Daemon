@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { SkeletonLine, SkeletonBlock, SkeletonCircle } from '@/components/ui/Skeleton';
 import { User, Save, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import { ensureAuthHeader } from '@/lib/auth';
 
 interface UserSettings {
   preferences?: {
@@ -38,9 +39,10 @@ export default function ProfileTab() {
     process.env.NEXT_PUBLIC_API_URL ||
     (process.env.NODE_ENV === 'development' ? 'http://localhost:8000' : '');
 
-  const getAuthHeaders = useCallback((): Record<string, string> => {
-    const apiKey = typeof window !== 'undefined' ? localStorage.getItem('daemon_api_key') || '' : '';
-    return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+  const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
+    const header = await ensureAuthHeader();
+    if (!header) return {};
+    return { Authorization: header };
   }, []);
 
   const apiCandidates = useCallback(
@@ -99,7 +101,7 @@ export default function ProfileTab() {
     const fetchSettings = async () => {
       try {
         const response = await fetchWithFallback('/users/me/settings', {
-          headers: getAuthHeaders(),
+          headers: await getAuthHeaders(),
         });
 
         if (!response.ok) {
@@ -138,7 +140,7 @@ export default function ProfileTab() {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
-          ...getAuthHeaders(),
+          ...(await getAuthHeaders()),
         },
         body: JSON.stringify({
           preferences: {

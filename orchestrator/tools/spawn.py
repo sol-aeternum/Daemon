@@ -235,12 +235,17 @@ class SpawnAgentTool(Tool):
             "tier",
             "user_id",
             "source_mode",
-            "reference_image_url",
             "reference_image_id",
+            "video_provider",
+            "kling_model",
+            "audio_enabled",
         ):
             value = trusted_video.get(key)
             if value is not None:
                 merged_context[key] = value
+        reference_image_url = trusted_video.get("reference_image_url")
+        if reference_image_url is not None:
+            merged_context["source_image_url"] = reference_image_url
         return merged_context
 
     async def execute(self, **kwargs: Any) -> str:
@@ -337,12 +342,17 @@ class SpawnMultipleTool(Tool):
             "tier",
             "user_id",
             "source_mode",
-            "reference_image_url",
             "reference_image_id",
+            "video_provider",
+            "kling_model",
+            "audio_enabled",
         ):
             value = trusted_video.get(key)
             if value is not None:
                 merged_context[key] = value
+        reference_image_url = trusted_video.get("reference_image_url")
+        if reference_image_url is not None:
+            merged_context["source_image_url"] = reference_image_url
         return merged_context
 
     async def execute(self, **kwargs: Any) -> str:

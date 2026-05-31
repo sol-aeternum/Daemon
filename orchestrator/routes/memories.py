@@ -1,17 +1,16 @@
 """Memory API routes."""
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Header
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 import uuid
 from typing import Any, Literal
 
+from orchestrator.auth import AuthenticatedDevice, AdminOrDeviceAuth, require_admin_or_device_auth, require_device_auth
 from orchestrator.config import get_settings, Settings
 from orchestrator.db import get_app_state, AppState
 from orchestrator.memory.embedding import embed_documents
 
 router = APIRouter(prefix="/memories", tags=["memories"])
-
-DEFAULT_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
 class MemoryCreate(BaseModel):
@@ -48,18 +47,6 @@ class MemoryReembedRequest(BaseModel):
     batch_size: int = 50
 
 
-def require_admin_api_key(settings: Settings, authorization: str | None) -> None:
-    if not settings.daemon_admin_api_key:
-        raise HTTPException(
-            status_code=403, detail="Admin dreaming trigger is disabled"
-        )
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing bearer token")
-    token = authorization.removeprefix("Bearer ").strip()
-    if token != settings.daemon_admin_api_key:
-        raise HTTPException(status_code=403, detail="Invalid admin bearer token")
-
-
 @router.get("")
 async def list_memories(
     category: str | None = None,
@@ -68,6 +55,7 @@ async def list_memories(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     app_state: AppState = Depends(get_app_state),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
     """List memories with optional filters."""
     store = app_state.memory_store
@@ -75,7 +63,7 @@ async def list_memories(
         raise HTTPException(status_code=503, detail="Memory store unavailable")
 
     memories = await store.list_memories(
-        user_id=DEFAULT_USER_ID,
+        user_id=auth.user_id,
         category=category,
         confirmed=confirmed,
         search=search,
@@ -91,12 +79,13 @@ async def list_memories(
 async def export_memories(
     data: MemoryExportRequest,
     app_state: AppState = Depends(get_app_state),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
     store = app_state.memory_store
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
 
-    memories = await store.export_memories(DEFAULT_USER_ID, status=data.status)
+    memories = await store.export_memories(auth.user_id, status=data.status)
     return {"memories": memories}
 
 
@@ -104,12 +93,13 @@ async def export_memories(
 async def import_memories(
     data: MemoryImportRequest,
     app_state: AppState = Depends(get_app_state),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
     store = app_state.memory_store
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
 
-    inserted = await store.import_memories(DEFAULT_USER_ID, data.memories)
+    inserted = await store.import_memories(auth.user_id, data.memories)
     return {"inserted": inserted}
 
 
@@ -117,6 +107,7 @@ async def import_memories(
 async def reembed_memories(
     data: MemoryReembedRequest,
     app_state: AppState = Depends(get_app_state),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
     store = app_state.memory_store
     if store is None:
@@ -127,12 +118,12 @@ async def reembed_memories(
         memories: list[dict[str, Any]] = []
         for memory_id in data.memory_ids:
             memory = await store.get_memory(memory_id)
-            if memory:
+            if memory and memory.get("user_id") == auth.user_id:
                 memories.append(memory)
             else:
                 missing_ids += 1
     else:
-        memories = await store.export_memories(DEFAULT_USER_ID, status=data.status)
+        memories = await store.export_memories(auth.user_id, status=data.status)
 
     requested = len(data.memory_ids) if data.memory_ids else len(memories)
     if not memories:
@@ -191,8 +182,9 @@ async def delete_all_memories(
     hard: bool = False,
     confirm: bool = False,
     app_state: AppState = Depends(get_app_state),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
-    """Delete all memories for the default user. Requires confirm=true."""
+    """Delete all memories for the authenticated user. Requires confirm=true."""
     if not confirm:
         raise HTTPException(
             status_code=400,
@@ -201,7 +193,7 @@ async def delete_all_memories(
     store = app_state.memory_store
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
-    deleted = await store.delete_all_memories(DEFAULT_USER_ID, hard=hard)
+    deleted = await store.delete_all_memories(auth.user_id, hard=hard)
     return {"deleted": deleted, "hard": hard}
 
 
@@ -209,6 +201,7 @@ async def delete_all_memories(
 async def get_memory(
     memory_id: uuid.UUID,
     app_state: AppState = Depends(get_app_state),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
     """Get single memory."""
     store = app_state.memory_store
@@ -216,7 +209,7 @@ async def get_memory(
         raise HTTPException(status_code=503, detail="Memory store unavailable")
     memory = await store.get_memory(memory_id)
 
-    if not memory:
+    if not memory or memory.get("user_id") != auth.user_id:
         raise HTTPException(status_code=404, detail="Memory not found")
 
     return memory
@@ -226,6 +219,7 @@ async def get_memory(
 async def create_memory(
     data: MemoryCreate,
     app_state: AppState = Depends(get_app_state),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
     """Create new memory."""
     store = app_state.memory_store
@@ -235,7 +229,7 @@ async def create_memory(
 
     memory_id = await dedup_and_store(
         store=store,
-        user_id=DEFAULT_USER_ID,
+        user_id=auth.user_id,
         content=data.content,
         source_type="user_created",
         category=data.category,
@@ -250,11 +244,15 @@ async def update_memory(
     memory_id: uuid.UUID,
     data: MemoryUpdate,
     app_state: AppState = Depends(get_app_state),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
     """Update memory content."""
     store = app_state.memory_store
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
+    existing = await store.get_memory(memory_id)
+    if not existing or existing.get("user_id") != auth.user_id:
+        raise HTTPException(status_code=404, detail="Memory not found")
     await store.update_memory(memory_id, content=data.content)
     return {"status": "updated"}
 
@@ -264,11 +262,15 @@ async def delete_memory(
     memory_id: uuid.UUID,
     hard: bool = False,
     app_state: AppState = Depends(get_app_state),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
     """Delete memory (soft or hard)."""
     store = app_state.memory_store
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
+    existing = await store.get_memory(memory_id)
+    if not existing or existing.get("user_id") != auth.user_id:
+        raise HTTPException(status_code=404, detail="Memory not found")
     await store.delete_memory(memory_id, soft=not hard)
     return {"status": "deleted", "hard": hard}
 
@@ -278,11 +280,15 @@ async def confirm_memory(
     memory_id: uuid.UUID,
     data: MemoryConfirm,
     app_state: AppState = Depends(get_app_state),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
     """Confirm or reject a memory."""
     store = app_state.memory_store
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
+    existing = await store.get_memory(memory_id)
+    if not existing or existing.get("user_id") != auth.user_id:
+        raise HTTPException(status_code=404, detail="Memory not found")
     confirmed = data.status == "confirmed"
     await store.confirm_memory(memory_id, confirmed=confirmed)
     return {"status": data.status}
@@ -300,6 +306,7 @@ class DreamRequest(BaseModel):
 async def consolidate_memories_endpoint(
     data: ConsolidateRequest | None = None,
     app_state: AppState = Depends(get_app_state),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
     """Manually trigger memory consolidation for a user or all users.
 
@@ -318,13 +325,13 @@ async def consolidate_memories_endpoint(
             detail="Redis unavailable - cannot enqueue consolidation job",
         )
 
-    target_user_id = data.user_id if data else None
+    target_user_id = auth.user_id
 
     try:
         # Enqueue the consolidation job
         job = await app_state.redis.enqueue_job(
             "consolidate_memories",
-            str(target_user_id) if target_user_id else None,
+            str(target_user_id),
             _job_id=f"consolidate:{target_user_id or 'all'}:{uuid.uuid4().hex[:8]}",
         )
 
@@ -338,7 +345,7 @@ async def consolidate_memories_endpoint(
         return {
             "status": "enqueued",
             "job_id": job.job_id,
-            "user_id": str(target_user_id) if target_user_id else "all",
+            "user_id": str(target_user_id),
         }
     except HTTPException:
         raise
@@ -352,11 +359,15 @@ async def consolidate_memories_endpoint(
 async def dream_memories_endpoint(
     data: DreamRequest | None = None,
     app_state: AppState = Depends(get_app_state),
-    settings: Settings = Depends(get_settings),
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    auth: AdminOrDeviceAuth = Depends(require_admin_or_device_auth),
 ):
-    """Admin/debug endpoint to enqueue a dreaming run for one user or all users."""
-    require_admin_api_key(settings, authorization)
+    """Admin/debug endpoint to enqueue a dreaming run for one user or all users.
+
+    Authorization rules:
+    - Admin API key: may specify any user_id, or omit it to target all users.
+    - Device auth: may only target auth.user_id (own user). If user_id is omitted,
+      defaults to auth.user_id. Requesting a different user's ID returns 403.
+    """
 
     if app_state.redis is None:
         raise HTTPException(
@@ -364,7 +375,18 @@ async def dream_memories_endpoint(
             detail="Redis unavailable - cannot enqueue dreaming job",
         )
 
-    target_user_id = data.user_id if data else None
+    device = auth.authenticated_device
+
+    if auth.is_admin:
+        target_user_id = data.user_id if data else None
+    else:
+        requested_user_id = data.user_id if data else None
+        if requested_user_id is not None and requested_user_id != device.user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Device auth cannot target another user",
+            )
+        target_user_id = device.user_id
 
     try:
         job = await app_state.redis.enqueue_job(

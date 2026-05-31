@@ -2,6 +2,7 @@
 
 import { useCallback } from "react";
 import { useStudio } from "../StudioProvider";
+import { ensureAuthHeader } from "@/lib/auth";
 
 interface GenerationPayload {
   model_id: string;
@@ -105,9 +106,13 @@ export function useImageGeneration() {
         }
       }
 
+      const authHeader = await ensureAuthHeader();
+      const hdrs = new Headers();
+      hdrs.set("Content-Type", "application/json");
+      if (authHeader) hdrs.set("Authorization", authHeader);
       const response = await fetch("/api/images/generate", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: hdrs,
         body: JSON.stringify(requestPayload),
       });
 

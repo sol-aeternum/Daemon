@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useStudio } from "../StudioProvider";
 import type { StudioModel } from "../types";
+import { ensureAuthHeader } from "@/lib/auth";
 
 const DEFAULT_USER_TIER: StudioModel["tier_minimum"] = "starter";
 const TIER_STORAGE_KEY = "daemon_tier";
@@ -42,10 +43,12 @@ export function ModelSelector() {
       setIsLoading(true);
       setError(null);
       try {
+        const authHeader = await ensureAuthHeader();
+        const headers = new Headers();
+        headers.set("X-Daemon-Tier", userTier);
+        if (authHeader) headers.set("Authorization", authHeader);
         const response = await fetch(`/api/images/models?tier=${encodeURIComponent(userTier)}`, {
-          headers: {
-            "X-Daemon-Tier": userTier,
-          },
+          headers,
         });
         if (!response.ok) {
           throw new Error(`Failed to load models (${response.status})`);

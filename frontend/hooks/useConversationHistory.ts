@@ -3,6 +3,7 @@
 import { Message } from "ai";
 import { useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { getAuthHeader, refreshIfNeeded } from "@/lib/auth";
 
 export interface Conversation {
   id: string;
@@ -44,9 +45,12 @@ export function useConversationHistory() {
     process.env.NEXT_PUBLIC_API_URL ||
     (process.env.NODE_ENV === "development" ? "http://localhost:8000" : "");
 
-  const getAuthHeaders = useCallback((): Record<string, string> => {
-    const apiKey = typeof window !== "undefined" ? localStorage.getItem("daemon_api_key") || "" : "";
-    return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+  const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
+    const header = getAuthHeader();
+    if (header) return { Authorization: header };
+    const token = await refreshIfNeeded();
+    if (token) return { Authorization: `Bearer ${token}` };
+    return {};
   }, []);
 
   const apiCandidates = useCallback(
@@ -108,7 +112,7 @@ export function useConversationHistory() {
   const fetchConversations = useCallback(async () => {
     try {
       const response = await apiFetch("/conversations?limit=100", {
-        headers: getAuthHeaders(),
+        headers: await getAuthHeaders(),
       });
       if (!response.ok) {
         setConversations([]);
@@ -154,7 +158,7 @@ export function useConversationHistory() {
     try {
       const response = await apiFetch("/conversations", {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) },
         body: JSON.stringify({ title: "New conversation" }),
       });
       
@@ -205,7 +209,7 @@ export function useConversationHistory() {
         if (Object.keys(payload).length > 0) {
             await apiFetch(`/conversations/${id}`, {
                 method: "PATCH",
-                headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+                headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) },
                 body: JSON.stringify(payload),
             });
         }
@@ -234,7 +238,7 @@ export function useConversationHistory() {
       try {
         const response = await apiFetch(`/conversations/${id}`, {
           method: "DELETE",
-          headers: getAuthHeaders(),
+          headers: await getAuthHeaders(),
         });
 
         if (!response.ok) {
@@ -255,7 +259,7 @@ export function useConversationHistory() {
     async (id: string): Promise<Conversation | null> => {
       try {
         const response = await apiFetch(`/conversations/${id}`, {
-          headers: getAuthHeaders(),
+          headers: await getAuthHeaders(),
         });
         if (!response.ok) {
           return null;

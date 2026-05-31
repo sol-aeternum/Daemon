@@ -1,5 +1,63 @@
 # TRIAGE.md
 
+## 2026-05-31 UTC — Vitest emits Node localStorage experimental warning in auth tests
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR #4 newest review-comment fix verification
+- **Category**: dependency
+- **Blocked current task**: no
+- **What happened**: The targeted frontend auth test suite passed, but Node/Vitest emitted an experimental warning because the runtime localStorage backing file was not configured. The test explicitly installs a mocked `globalThis.localStorage`, so this warning did not affect assertions.
+- **Evidence**: `npm test -- --run __tests__/auth.test.ts` passed `19 tests` and printed `(node:3845559) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.`
+- **Likely cause**: Current Vitest/jsdom/Node runtime exposes a localStorage-related experimental warning unless Node is launched with `--localstorage-file`, even when tests provide their own localStorage mock (confidence 80%).
+- **Suggested action**: If the warning becomes noisy, configure the frontend test runner with an explicit localStorage file or suppress the Node experimental warning for this test environment.
+
+## 2026-05-29 UTC — Studio Kling provider value is not accepted or forwarded by backend video paths
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: PR #4 final context gate rereview
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: The Studio UI exposes and submits `videoProvider === "kling"`, but the backend video-credit estimate route only accepts providers `"xai"` and `"fal"`; the trusted video generation context also does not forward provider/model/audio fields to the image subagent. This means selecting Kling in Studio can fail credit estimation with `Invalid provider` and generated video requests cannot reliably preserve the selected Kling options.
+- **Evidence**: `frontend/app/studio/page.tsx:200-205` sends `provider: videoProvider`; `frontend/app/studio/page.tsx:323-326` defines the UI option `{ id: "kling", label: "Kling 3.0" }`; `orchestrator/routes/video_credits.py:136-157` defines `VALID_VIDEO_PROVIDERS = {"xai", "fal"}` and rejects anything else; `orchestrator/main.py:271-280` builds trusted video context without `provider`, `kling_model`, or `audio_enabled`; `orchestrator/tools/spawn.py:232-244` forwards only duration/tier/user/source/reference fields.
+- **Likely cause**: Frontend uses user-facing provider id `kling` while backend/provider pricing code uses canonical provider id `fal`, and the trusted spawn context whitelist was not updated for the Kling model/audio fields (confidence 95%).
+- **Suggested action**: Normalize the Studio provider value to backend canonical `fal` before credit/video requests, or update backend credit/spawn handling to explicitly map `kling -> fal` and forward `kling_model`/`audio_enabled` through the trusted context.
+
+## 2026-05-29 UTC — Aggregate auth suite fails user-scoping tests under production pepper environment
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: PR #4 final security rereview gate
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: The aggregate auth/backend pytest command failed only in `tests/test_auth_user_scoping.py` setup because its `authenticated_app` fixture does not set `DAEMON_ENVIRONMENT=development`; in the current shell, settings resolved to production without `DAEMON_AUTH_PEPPER`, so app lifespan startup rejected the missing production pepper. The narrower generated-artifact route hardening suite still passed.
+- **Evidence**: `PYTHONPATH=. uv run pytest tests/test_auth_smoke.py tests/test_auth_middleware.py tests/test_auth_cookies_csrf.py tests/test_setup_flow.py tests/test_enrollment_flow.py tests/test_refresh_flow.py tests/test_device_management.py tests/test_auth_user_scoping.py tests/test_route_auth_hardening.py -q` ended `158 passed, 35 warnings, 5 errors`; each error raised `orchestrator.auth_pepper.PepperValidationError: daemon_auth_pepper is required in production` from `orchestrator/main.py:99` / `orchestrator/auth_pepper.py:45` while setting up `tests/test_auth_user_scoping.py:27`.
+- **Likely cause**: `tests/test_auth_user_scoping.py` omits the `DAEMON_ENVIRONMENT=development` monkeypatch used by other auth route fixtures, making it sensitive to host/project environment defaults (confidence 92%).
+- **Suggested action**: Update the `authenticated_app` fixture in `tests/test_auth_user_scoping.py` to set `DAEMON_ENVIRONMENT=development` (or provide a test pepper) before clearing settings, then rerun the aggregate auth suite.
+
+## 2026-05-28 UTC — Frontend build blocked by pre-existing advisorEvents.ts type error
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 17 setup page verification (Playwright screenshot)
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: `npm run build` in `frontend/` fails with `./lib/advisorEvents.ts:3:21 Type error: Module '"./events"' has no exported member 'isAdvisorEvent'`. This prevents building the frontend and thus prevents launching the dev server for a Playwright screenshot.
+- **Evidence**: `next build --webpack` output shows `Failed to compile.` at `./lib/advisorEvents.ts:3:21`.
+- **Likely cause**: Pre-existing frontend issue where `lib/advisorEvents.ts` imports `isAdvisorEvent` from `lib/events.ts`, but `events.ts` does not export that symbol. Documented in task context as "lib/advisorEvents.ts missing advisor guards and 19 advisor/tool-call test failures" (confidence 95%).
+- **Suggested action**: Fix `lib/events.ts` to export `isAdvisorEvent` or remove the broken import from `lib/advisorEvents.ts`. Out of scope for Task 17.
+- **Seen again**: 2026-05-28 during PR #4 review-fix QA when `npm run build` in `frontend/` failed at the same `./lib/advisorEvents.ts:3:21` missing `isAdvisorEvent` export after successful webpack compilation.
+- **Seen again**: 2026-05-31 during PR #4 newest review-comment fix verification when `npx tsc --noEmit --project tsconfig.json --pretty false` failed only in the known advisor/tool-call event debt files: `__tests__/advisor-events.test.ts`, `__tests__/tool-call-log.test.ts`, and `lib/advisorEvents.ts`; changed files had clean LSP diagnostics and targeted auth tests passed.
+
+## 2026-05-28T12:56:31Z — Broad memories route tests now fail unauthorized after auth hardening
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: PR #4 review-fix QA targeted backend verification
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: `PYTHONPATH=. uv run pytest tests/test_memories.py -q` failed 15 existing memory route tests because the routes now return `401 Unauthorized` before the mocked store assertions. Dream-specific tests in the same file still pass with `-k dream`, so this appears isolated to legacy unauthenticated memories endpoint expectations rather than the dream endpoint itself.
+- **Evidence**: Failures include `tests/test_memories.py::test_get_memories_returns_memories_array` with `assert 401 == 200`, `tests/test_memories.py::test_get_memory_by_id_not_found` with `assert 401 == 404`, `tests/test_memories.py::test_get_memories_unavailable_store` with `assert 401 == 503`, and `tests/test_memories.py::test_reembed_memories_rejects_unknown_status` with `assert 401 == 422`. Summary: `15 failed, 8 passed, 15 warnings in 3.01s`.
+- **Likely cause**: Auth/device-model hardening now protects memory routes, but older broad route tests were not updated to enroll/authenticate a test device or assert the new auth-first behavior (confidence 90%).
+- **Suggested action**: Update the non-dream memories route tests to use the repo's authenticated test-client helpers or split explicit unauthenticated `401` contract tests from authenticated store-behavior tests.
+
 ## 2026-05-27 UTC — Repository LSP error scan surfaced unrelated dirty-tree Python errors
 - **Severity**: warning
 - **Scope**: project
@@ -30,6 +88,8 @@
 - **Blocked current task**: no
 - **What happened**: Required changed-file diagnostics could not run on the two modified Markdown artifacts because this environment has no LSP server configured for the `.md` extension.
 - **Evidence**: `lsp_diagnostics` on `tests/benchmark_results/harness_parity_baseline_stability.md` and `.sisyphus/notepads/longmemeval-parity-baseline-completion/learnings.md` returned `Error: No LSP server configured for extension: .md`.
+- **Seen again**: 2026-05-28 during PR #4 review-fix QA when `lsp_diagnostics` on `TRIAGE.md` and `.sisyphus/notepads/pr-4-review-fix-qa/learnings.md` returned `Error: No LSP server configured for extension: .md`.
+- **Seen again**: 2026-05-29 during generated-audio protection verification when `lsp_diagnostics` on the updated `TRIAGE.md` returned `Error: No LSP server configured for extension: .md`.
 - **Likely cause**: OpenCode LSP configuration in this workspace defines language servers for code and JSON-oriented extensions but does not include a Markdown-capable server such as Marksman (confidence 98%).
 - **Suggested action**: Add a Markdown LSP server to the workspace tooling if artifact-only tasks are expected to satisfy the changed-file diagnostics requirement without fallback checks.
 
@@ -110,6 +170,19 @@
 - **Likely cause**: LiteLLM emitted provider-resolution/help output during repeated extraction-model calls even though the configured model still returned usable benchmark results (confidence 70%).
 - **Suggested action**: If this keeps cluttering benchmark output, inspect the active LiteLLM/provider configuration for extraction-model resolution and suppress or redirect this help-text noise in benchmark runs.
 - **Seen again**: 2026-04-16 during autonomous-skill-creation Task 13 when `PYTHONPATH=. python tests/benchmark_extraction.py --json --no-save` passed but printed `Provider List: https://docs.litellm.ai/docs/providers` repeatedly throughout the 8-scenario run.
+
+## 2026-05-28T02:05Z — httpx per-request cookies deprecation still emitted by auth tests
+
+- **Severity**: warning
+- **Scope**: upstream
+- **Encountered during**: Task 21 amendment verification
+- **Category**: dependency
+- **Blocked current task**: no
+- **What happened**: Targeted auth pytest runs passed, but existing tests still emit `httpx` deprecation warnings because they use per-request `cookies={...}` arguments. The warning appears in enrollment, refresh, device-management, and route-hardening suites.
+- **Evidence**: `DeprecationWarning: Setting per-request cookies=<...> is being deprecated, because the expected behaviour on cookie persistence is ambiguous. Set cookies directly on the client instance instead.` from `/home/sol/.local/lib/python3.14/site-packages/httpx/_client.py:1859` and `:1966` during `pytest tests/test_route_auth_hardening.py -q` and `pytest tests/test_auth_middleware.py tests/test_auth_cookies_csrf.py tests/test_setup_flow.py tests/test_enrollment_flow.py tests/test_refresh_flow.py tests/test_device_management.py tests/test_auth_user_scoping.py -q`.
+- **Likely cause**: Existing tests were written against older `httpx` behavior and have not yet been updated to set cookies on the client/session instead of passing them per request (confidence 96%).
+- **Suggested action**: Update affected auth tests to use client-level cookie state before `httpx` removes per-request cookie support.
+- **Seen again**: 2026-05-29 during generated-audio protection verification when `PYTHONPATH=. uv run pytest tests/test_route_auth_hardening.py -q` passed but emitted the same httpx per-request cookies deprecation warnings in `TestCookieOnlyAuthRejected`.
 
 ## 2026-04-16 03:40 — Extraction Benchmark Dedup Supersession Still Leaves Corolla Facts Active
 - **Severity**: warning
@@ -366,12 +439,14 @@
 - **Seen again**: 2026-04-16 during autonomous-skill-creation Task 11 focused suite verification when `PYTHONPATH=. pytest tests/test_skill_extraction_prompt.py tests/test_skill_dedup.py tests/test_skill_injection.py tests/test_skill_manage.py tests/test_skill_protection.py tests/test_skill_api_contracts.py -q` passed with 88 tests but still emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 - **Seen again**: 2026-04-16 during autonomous-skill-creation Task 13 when both `PYTHONPATH=. pytest tests/test_skill*.py -q` (194 passed) and `PYTHONPATH=. pytest tests -q -k memory` emitted the same LiteLLM/arq `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 - **Seen again**: 2026-04-16 during whole-repo audit verification when `PYTHONPATH=. pytest -q` emitted the same LiteLLM/arq `asyncio.iscoroutinefunction` deprecation warnings before failing on unrelated test collection syntax errors.
+- **Seen again**: 2026-05-28 during PR #4 review-fix QA when `PYTHONPATH=. uv run pytest tests/test_route_auth_hardening.py tests/test_skill_api_contracts.py -q`, `PYTHONPATH=. uv run pytest tests/test_dreaming.py -q`, and dream-focused memories tests passed but emitted the same LiteLLM/arq `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 - **What happened**: Pytest emitted repeated deprecation warnings from third-party dependencies that still call `asyncio.iscoroutinefunction`, which is deprecated on Python 3.14 and scheduled for removal in Python 3.16.
 - **Evidence**:
   - `/home/sol/daemon/.venv/lib/python3.14/site-packages/litellm/litellm_core_utils/logging_utils.py:273: DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction() instead`
   - `/home/sol/daemon/.venv/lib/python3.14/site-packages/arq/cron.py:178: DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction() instead`
 - **Likely cause**: Current pinned versions of LiteLLM and arq are not yet updated for Python 3.14's coroutine-inspection deprecation path (confidence 95%).
 - **Suggested action**: Track dependency updates or pin compatible versions before Python 3.16 removes the deprecated API.
+- **Seen again**: 2026-05-29 during generated-audio protection verification when `PYTHONPATH=. uv run pytest tests/test_route_auth_hardening.py -q` passed but emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 
 ## 2026-04-10 12:30 — BasedPyright Warning Debt In Dreaming-Touched Python Modules
 - **Severity**: warning
@@ -492,6 +567,25 @@
 - **Seen again**: 2026-04-10 during F4 scope fidelity rerun on current repository state.
 - **Likely cause**: Local/tooling environment is missing the configured Biome binary required for JS/TS/JSON diagnostics (confidence 99%).
 - **Suggested action**: Install `@biomejs/biome` or adjust tooling configuration before relying on LSP cleanliness for frontend/test files.
+
+## 2026-05-27 UTC — auth-device-model branch missing Task 13 commit and auth test files
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: Task 14 — legacy API-key removal verification
+- **Category**: config
+- **Blocked current task**: yes
+- **What happened**: The current branch `auth-device-model-2026-05-27` is not descended from the expected Task 13 commit `6a8f64e6`, and all auth test files committed by Task 13 are absent from the working tree. Task 14 edits are applied atop an unexpected base, making safe commit/closure impossible without branch history reconciliation.
+- **Evidence**:
+  - `git branch --show-current` → `auth-device-model-2026-05-27`
+  - `git rev-parse HEAD` → `cf1e163239e76feec95aacebd0d865046b5e4c5a`
+  - `git rev-parse origin/auth-device-model-2026-05-27` → `cf1e163239e76feec95aacebd0d865046b5e4c5a`
+  - `git show --stat --oneline 6a8f64e6` → commit exists
+  - `git branch -a --contains 6a8f64e6` → no containing branch output (commit not reachable from current branch)
+  - `git ls-files tests/test_enrollment_flow.py tests/test_refresh_flow.py tests/test_device_management.py tests/test_session_cleanup.py` → no files tracked
+  - Directory listing confirms those expected auth test files are absent
+- **Likely cause**: Branch history was rewritten or Task 13 was never merged to the current branch; plan assumed prior auth commits were present in the working tree (confidence 97%).
+- **Suggested action**: Investigate whether Task 13 commit `6a8f64e6` should be cherry-picked or merged into `auth-device-model-2026-05-27`, and restore the auth test files before closing Task 14.
+- **Note**: Verification also surfaced unrelated failures: `npm run build` failed on `lib/advisorEvents.ts` (missing `isAdvisorEvent` export), and `npm run test:run` failed 19 existing advisor/tool-call tests. Changed-file LSP diagnostics and Task 14 grep acceptance passed. These advisor/test failures are pre-existing and separate from the branch mismatch.
 
 ## 2026-04-10 00:00 — Pre-existing BasedPyright Errors Outside Changed Tier2 Files
 - **Severity**: warning
@@ -1032,3 +1126,165 @@
 - **Evidence**: `remote: warning: File .cleanup/2026-05-06/safety-net/untracked_archive/tests/benchmark_results/wave0_full_corpus_recovery/longmemeval_filtered_dataset.json is 91.64 MB; this is larger than GitHub's recommended maximum file size of 50.00 MB`
 - **Likely cause**: Large benchmark recovery artifact was included in the pre-existing cleanup archive committed to preserve local work (confidence 95%).
 - **Suggested action**: Review whether large benchmark/archive artifacts should be moved to external artifact storage or Git LFS in a separate cleanup task.
+
+## 2026-05-28T20:04:00Z — pycache permission denied during syntax verification
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Task 14 — legacy API-key removal final verification
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: `python -m py_compile` on modified Python files failed with `Permission denied: __pycache__/*.pyc` due to container host-user vs container-process user mismatch (container root vs host user).
+- **Evidence**: `PermissionError: [Errno 13] Permission denied: 'orchestrator/__pycache__/main.cpython-314.pyc.140168641807248'`
+- **Likely cause**: Host user's permissions don't match container's pycache directory ownership (confidence 95%).
+- **Suggested action**: Use `python -c "import ..."` syntax check instead of `py_compile` for verification in containerized environments.
+
+
+## 2026-05-28T14:42:37Z — ast-grep pattern parse failure during auth review
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR #4 backend/admin auth slice review
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: `ast_grep_search` failed on a Python query that was intended to enumerate route function definitions, so the search fell back to grep/LSP.
+- **Evidence**: `Error: Cannot parse query as a valid pattern. Help: The pattern either fails to parse or contains error. Please refer to pattern syntax guide. See also: https://ast-grep.github.io/guide/pattern-syntax.html` and `Multiple AST nodes are detected. Please check the pattern source 'async def µNAME(µµµ) { µµµ }'.`
+- **Likely cause**: The query was not a valid complete AST pattern for the Python parser (confidence 99%).
+- **Suggested action**: Use a complete Python AST pattern or switch to grep/LSP for route enumeration.
+## 2026-05-29 UTC — Mis-typed InlineArtifact path during search
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR #4 auth-device-model frontend artifact-consumption search
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: A read attempt targeted `frontend/components/InlineArtifact.tsx`, but the file does not exist at that path; the actual component lives at `frontend/components/chat/InlineArtifact.tsx`.
+- **Evidence**: `File not found: /home/sol/daemon/frontend/components/InlineArtifact.tsx`
+- **Likely cause**: Search/inspection path typo during broader artifact-pattern review (confidence 99%).
+- **Suggested action**: Use the `components/chat/InlineArtifact.tsx` path for any future inspection.
+
+
+
+## 2026-05-29 UTC — LSP workspace symbol search rejected directory input
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR #4 auth-device-model security review context gathering
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: An initial workspace symbol lookup used a directory path with `lsp_symbols`, and the tool rejected it with `Directory paths are not supported by this LSP tool`.
+- **Evidence**: `Error: Directory paths are not supported by this LSP tool. Use lsp_diagnostics with the 'extension' parameter for directory diagnostics.`
+- **Likely cause**: Tool misuse rather than a repository issue (confidence 99%).
+- **Suggested action**: Use file paths for `lsp_symbols` or switch to `lsp_diagnostics` for directory-level checks.
+
+## 2026-05-29 UTC — Kling V3 model selection still drifts between estimate and spawn execution
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: PR #4 final context gate rerun after Kling video/credit context fix
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: The Studio `provider=kling` estimate path now works, but the trusted spawn path forwards raw frontend model IDs such as `kling-v3-pro` instead of normalizing them to the fal client's bare `v3-pro`/`o3-pro` values. As a result, the credit estimate can price V3 Pro with audio while the actual fal client silently falls back invalid `kling-v3-pro` to O3 Pro.
+- **Evidence**: `frontend/app/studio/page.tsx:349-350` exposes `kling-o3-pro`/`kling-v3-pro`; `frontend/app/studio/hooks/useVideoGeneration.ts:235-236` posts that raw `kling_model`; `orchestrator/main.py:277-280` stores `video_meta.get("kling_model")` unchanged; `orchestrator/tools/spawn.py:239-248` and `orchestrator/tools/spawn.py:346-355` forward it unchanged; `providers/fal_kling.py:95-96` falls back any model not in `["o3-pro", "v3-pro"]` to `o3-pro`; probe output: `estimate_cost(... kling_model="v3-pro", audio_enabled=True) == 15` but raw `kling-v3-pro` gives `10`.
+- **Likely cause**: The credit-estimate route added Kling model normalization, but the trusted spawn/context execution path did not share the same normalizer (confidence 96%).
+- **Suggested action**: Normalize `kling_model` to `o3-pro`/`v3-pro` when building trusted spawn context (or before image subagent cost/provider dispatch), and add a regression test for Studio `kling-v3-pro` + audio through spawn context.
+
+## 2026-05-29 UTC — Generated document file_url remains visible in expanded tool result JSON
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: PR #4 final context gate rerun after Kling video/credit context fix
+- **Category**: security
+- **Blocked current task**: yes
+- **What happened**: Generated document delivery and previews use auth/blob/proxy paths, but the generic tool-result expander still renders raw result JSON. Document subagent results include `file_url: "/generated-files/..."`, so expanding a document tool result exposes the raw protected generated path in the frontend UI.
+- **Evidence**: `orchestrator/subagents/document.py:135-142` returns `data.file_url` as `/generated-files/{persisted_path.name}`; `frontend/app/page.tsx:1249` always renders `<ToolCallLog events={msgEvents} />`; `frontend/components/ToolCallBlock.tsx:115-123` converts the raw result to `resultText`; `frontend/components/ToolCallBlock.tsx:418-423` renders `Output:` with `{resultText}`. Safe delivery evidence remains: `orchestrator/main.py:1202-1206` requires device auth for `/generated-files/{filename}`, `frontend/src/components/FilePreview.tsx:74-83` gets protected URLs with auth headers, and `frontend/components/FileDownloadCard.tsx:60-68` downloads via auth fetch/blob.
+- **Likely cause**: Preview/download fixes protected fetch/render paths but did not redact protected artifact URLs from the generic debug/tool-result display (confidence 94%).
+- **Suggested action**: Redact protected generated paths from generic tool-result JSON rendering or render structured document metadata without `file_url`, while retaining authenticated preview/download behavior.
+## [2026-05-31T03:24:00Z] — Frontend build missing installed qrcode.react module
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: PR #4 Codex review fixes for auth cookies and service worker cache policy
+- **Category**: dependency
+- **Blocked current task**: no
+- **What happened**: `npm run build` failed because webpack could not resolve `qrcode.react`, even though `frontend/package.json` and `frontend/package-lock.json` list the dependency. Local `node_modules` is incomplete/stale.
+- **Evidence**: `Module not found: Can't resolve 'qrcode.react'`; `node -e "require.resolve('qrcode.react')"` returned `Cannot find module 'qrcode.react'`.
+- **Likely cause**: The checked-out workspace's `frontend/node_modules` was not installed from the current lockfile (85% confidence).
+- **Suggested action**: Refresh frontend dependencies with `npm install` or `npm ci` before running production builds.
+
+## [2026-05-31T03:25:53Z] — npm registry denied qrcode.react install
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: PR #4 Codex review fixes for auth cookies and service worker cache policy
+- **Category**: dependency
+- **Blocked current task**: no
+- **What happened**: Attempting to refresh existing frontend dependencies with `npm install` failed while fetching `qrcode.react@4.2.0` from npm.
+- **Evidence**: `npm error 403 403 Forbidden - GET https://registry.npmjs.org/qrcode.react/-/qrcode.react-4.2.0.tgz`.
+- **Likely cause**: The execution environment's npm registry policy or authentication blocks fetching this package (80% confidence).
+- **Suggested action**: Run dependency install in a development environment with npm registry access, or verify package access policy for `qrcode.react`.
+
+## [2026-05-31T03:28:00Z] — Pytest requires explicit repository PYTHONPATH
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR #4 Codex review fixes for auth cookies and service worker cache policy
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Running pytest directly from the repository root could not import the local `orchestrator` package from `tests/conftest.py`.
+- **Evidence**: `ModuleNotFoundError: No module named 'orchestrator'` from `tests/conftest.py:8` after `pytest tests/test_auth_cookies_csrf.py`.
+- **Likely cause**: Test invocation does not automatically add the repository root to `PYTHONPATH` in this environment (75% confidence).
+- **Suggested action**: Document or configure pytest with `pythonpath = .`, or invoke tests as `PYTHONPATH=. pytest ...`.
+
+## [2026-05-31T03:28:20Z] — Backend test environment missing pydantic
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: PR #4 Codex review fixes for auth cookies and service worker cache policy
+- **Category**: dependency
+- **Blocked current task**: no
+- **What happened**: Retrying the auth cookie test with `PYTHONPATH=.` reached project imports but failed because the Python environment does not have `pydantic` installed.
+- **Evidence**: `orchestrator/config.py:8: in <module> from pydantic import Field` followed by `ModuleNotFoundError: No module named 'pydantic'`.
+- **Likely cause**: Backend test dependencies are not installed in the active Python environment (90% confidence).
+- **Suggested action**: Install backend requirements in the test environment before running pytest.
+
+## 2026-05-31 04:02 UTC — Targeted Vitest run emits npm http-proxy config warning
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR #4 Studio video SSE endpoint review fix verification
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: The targeted frontend Vitest run passed, but npm printed a warning about an unknown `http-proxy` environment config before invoking Vitest.
+- **Evidence**: `npm test -- --run __tests__/studio-video-generation.test.ts` printed `npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.` and then passed `2 tests`.
+- **Likely cause**: The shell/container npm environment appears to include a legacy or nonstandard `http-proxy` config key that current npm tolerates but plans to reject later (confidence 80%).
+- **Suggested action**: Inspect npm config/environment variables for `http-proxy` and replace it with supported proxy settings if needed.
+- **Seen again**: 2026-05-31 04:03 UTC during the rerun of `npm test -- --run __tests__/studio-video-generation.test.ts`; tests still passed.
+- **Seen again**: 2026-05-31 04:03 UTC during the edit-cleanup command whose Python step failed but whose test step still passed.
+- **Seen again**: 2026-05-31 04:04 UTC during `npx tsc --noEmit --pretty false`, before the typecheck failed on unrelated project errors.
+- **Seen again**: 2026-05-31 04:03 UTC during the final targeted rerun of `npm test -- --run __tests__/studio-video-generation.test.ts`; tests still passed.
+- **Seen again**: 2026-05-31 04:04 UTC during another cleanup attempt whose Python step failed but whose targeted test still passed.
+- **Seen again**: 2026-05-31 04:05 UTC during the final targeted rerun of `npm test -- --run __tests__/studio-video-generation.test.ts`; tests still passed.
+
+## 2026-05-31 04:00 UTC — Broad ripgrep command included missing test path
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR #4 Studio video SSE endpoint review fix inspection
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: A broad search command returned exit code 2 because it included a top-level `tests` path that does not exist in this checkout context, even though it still printed useful frontend matches.
+- **Evidence**: `rg -n "useVideoGeneration|video_generating|/api/chat|raw /chat|parseSseFrame" frontend __tests__ tests -S` printed `rg: __tests__: No such file or directory (os error 2)`.
+- **Likely cause**: The repository's frontend tests live under `frontend/__tests__`, and there is no root-level `__tests__` directory in this checkout (confidence 95%).
+- **Suggested action**: Scope future searches to existing directories such as `frontend`, `orchestrator`, and root files unless a path is confirmed first.
+
+## 2026-05-31 04:03 UTC — Patch command used frontend working directory with repo-relative path
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR #4 Studio video SSE endpoint review fix cleanup
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: A cleanup command attempted to edit `frontend/app/studio/hooks/useVideoGeneration.ts` while the shell working directory was already `frontend`, causing the Python edit step to fail before the subsequent targeted test ran and passed.
+- **Evidence**: Python printed `FileNotFoundError: [Errno 2] No such file or directory: 'frontend/app/studio/hooks/useVideoGeneration.ts'`; the same shell invocation then ran `npm test -- --run __tests__/studio-video-generation.test.ts` and passed `2 tests`.
+- **Likely cause**: The command mixed root-relative file paths with a frontend working directory (confidence 99%).
+- **Suggested action**: Use repository-root working directory for repo-relative edit scripts, or shorten paths when running from package subdirectories.
+- **Seen again**: 2026-05-31 04:04 UTC during a second edit command with the same mixed working-directory/path issue; the subsequent targeted test still passed.
+
+## 2026-05-31 04:04 UTC — Frontend typecheck fails on pre-existing advisor event type drift
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: PR #4 Studio video SSE endpoint review fix verification
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: A full frontend TypeScript check failed on advisor event tests and `lib/advisorEvents.ts` type mismatches unrelated to the Studio video endpoint candidate change. The targeted Studio video test still passes.
+- **Evidence**: `npx tsc --noEmit --pretty false` exited with code 2 and reported errors including `__tests__/advisor-events.test.ts(4,3): error TS2305: Module '"../lib/events"' has no exported member 'isAdvisorEndEvent'.`, multiple `Type '"advisor_start"' is not assignable to type ...` errors, and `lib/advisorEvents.ts(521,25): error TS2352: Conversion of type ... to type 'ChatEvent' may be a mistake`.
+- **Likely cause**: Advisor event tests/helpers appear to expect event union members and type guards that are not currently exported by `lib/events.ts` (confidence 90%).
+- **Suggested action**: Reconcile advisor event schema exports with `lib/advisorEvents.ts` and `__tests__/advisor-events.test.ts`, or exclude stale tests from the typecheck if intentionally obsolete.

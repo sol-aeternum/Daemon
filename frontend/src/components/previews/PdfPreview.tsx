@@ -66,15 +66,16 @@ export function PdfPreview({ url, filename }: PdfPreviewProps) {
   }, [url]);
 
   const handleDownload = useCallback(() => {
+    if (!objectUrl) return;
     const link = document.createElement("a");
-    link.href = objectUrl || url;
+    link.href = objectUrl;
     link.download = filename || "document.pdf";
     link.target = "_blank";
     link.rel = "noopener noreferrer";
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-  }, [objectUrl, url, filename]);
+  }, [objectUrl, filename]);
 
   if (isLoading) {
     return (
@@ -125,15 +126,15 @@ export function PdfPreview({ url, filename }: PdfPreviewProps) {
         </button>
       </div>
 
-      {/* PDF iframe */}
-      <div className="overflow-auto max-h-[340px]">
-        <iframe
-          src={objectUrl || url}
-          title={filename || "PDF Preview"}
-          className="w-full min-h-[340px] bg-[var(--color-bg-secondary)]"
-        />
-
-      </div>
+      {objectUrl ? (
+        <div className="overflow-auto max-h-[340px]">
+          <iframe
+            src={objectUrl}
+            title={filename || "PDF Preview"}
+            className="w-full min-h-[340px] bg-[var(--color-bg-secondary)]"
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

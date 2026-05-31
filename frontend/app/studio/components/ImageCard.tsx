@@ -2,6 +2,8 @@
 
 import { Download, Image as ImageIcon, Loader2 } from "lucide-react";
 import type { StudioGeneration } from "../types";
+import { useAuthenticatedImageUrl, isProtectedPath } from "@/hooks/useAuthenticatedImageUrl";
+import { ensureAuthHeader } from "@/lib/auth";
 
 interface ImageCardProps {
   generation: StudioGeneration;
@@ -12,17 +14,59 @@ interface ImageCardProps {
 export function ImageCard({ generation, onOpen, onUseAsReference }: ImageCardProps) {
   const isLoading = generation.status === "queued" || generation.status === "generating";
   const isError = generation.status === "error";
+  const { displayUrl, loading: imageLoading, error: imageError } = useAuthenticatedImageUrl(generation.imageUrl);
+
+  const handleDownload = async () => {
+    if (!generation.imageUrl) return;
+    let objectUrl: string | null = null;
+    let cleanupAnchor: HTMLAnchorElement | null = null;
+    try {
+      const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const fullUrl = generation.imageUrl.startsWith("/") ? `${apiBaseUrl}${generation.imageUrl}` : generation.imageUrl;
+      const isProtected = isProtectedPath(generation.imageUrl);
+      const headers: HeadersInit = {};
+      if (isProtected) {
+        const authHeader = await ensureAuthHeader();
+        if (authHeader) headers["Authorization"] = authHeader;
+      }
+      const response = await fetch(fullUrl, { headers });
+      if (!response.ok) throw new Error(`Download failed: ${response.status}`);
+      const blob = await response.blob();
+      objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = `${generation.modelId}-${generation.id}.png`;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      document.body.appendChild(link);
+      cleanupAnchor = link;
+      link.click();
+    } finally {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      if (cleanupAnchor && cleanupAnchor.parentNode) {
+        cleanupAnchor.parentNode.removeChild(cleanupAnchor);
+      }
+    }
+  };
 
   return (
     <article className="overflow-hidden rounded-xl border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)]">
       <div className="aspect-square bg-[var(--color-bg-tertiary)]">
         {generation.imageUrl ? (
-          <img
-            src={generation.imageUrl}
-            alt={generation.prompt}
-            className="h-full w-full object-cover"
-            onClick={() => onOpen(generation)}
-          />
+          imageLoading ? (
+            <div className="flex h-full items-center justify-center text-[var(--color-text-muted)]">
+              <Loader2 className="h-6 w-6 animate-spin" />
+            </div>
+          ) : imageError ? (
+            <div className="flex h-full items-center justify-center text-[var(--color-text-muted)] text-sm">Failed to load</div>
+          ) : displayUrl ? (
+            <img
+              src={displayUrl}
+              alt={generation.prompt}
+              className="h-full w-full object-cover cursor-pointer"
+              onClick={() => onOpen(generation)}
+            />
+          ) : null
         ) : (
           <div className="flex h-full items-center justify-center text-[var(--color-text-muted)]">
             {isLoading ? <Loader2 className="h-6 w-6 animate-spin" /> : <ImageIcon className="h-6 w-6" />}
@@ -53,13 +97,13 @@ export function ImageCard({ generation, onOpen, onUseAsReference }: ImageCardPro
             >
               Use reference
             </button>
-            <a
-              href={generation.imageUrl}
-              download={`${generation.modelId}-${generation.id}.png`}
+            <button
+              type="button"
+              onClick={handleDownload}
               className="inline-flex items-center justify-center rounded-md border border-[var(--color-border-primary)] px-2 py-1 text-[var(--color-text-primary)]"
             >
               <Download className="h-3 w-3" />
-            </a>
+            </button>
           </div>
         )}
       </div>

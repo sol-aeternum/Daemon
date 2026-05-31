@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useCallback, useState, useEffect } from "react";
+import { getAuthHeader, refreshIfNeeded } from "@/lib/auth";
 
 interface UseSttOptions {
   onTranscript?: (text: string) => void;
@@ -93,8 +94,14 @@ export function useStt(options: UseSttOptions = {}) {
       });
       streamRef.current = stream;
       
-      // Get token
-      const tokenResponse = await fetch("/api/audio/scribe-token");
+      let authHeader = getAuthHeader();
+      if (!authHeader) {
+        await refreshIfNeeded();
+        authHeader = getAuthHeader();
+      }
+      const tokenResponse = await fetch("/api/audio/scribe-token", {
+        headers: authHeader ? { Authorization: authHeader } : {},
+      });
       if (!tokenResponse.ok) throw new Error("Failed to get Scribe token");
       const { token } = await tokenResponse.json();
       
