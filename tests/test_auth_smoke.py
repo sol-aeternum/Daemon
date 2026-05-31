@@ -499,7 +499,6 @@ class TestAuthDeviceLifecycleSmoke:
 
                     match2 = re.search(r"__Host-daemon_refresh=([^;]+)", new_cookie_header)
                     assert match2
-                    raw_refresh_a2 = match2.group(1)
 
                     resp = await client.post(
                         "/v1/auth/enroll/start",

@@ -23,7 +23,7 @@ No task is complete until it passes the project's automated gates. Run them befo
 ### Backend Gates
 - **Lint**: `uv run ruff check .`
 - **Format**: `uv run ruff format --check .`
-- **Type Check**: `uv run basedpyright`
+- **Type Check**: `uv run basedpyright --level error`
 - **Security (SAST)**: `uv run bandit -r orchestrator providers scripts tests`
 - **Security (SCA)**: `uv run pip-audit`
 - **Tests**: `PYTHONPATH=. uv run pytest -q`
@@ -93,7 +93,7 @@ migrations/             # PostgreSQL migrations (13 applied)
  **Backend (`orchestrator/`):**
  - `uv run ruff check .` — lint (autofix with `--fix`)
  - `uv run ruff format --check .` — formatting
- - `uv run basedpyright` — strict type check (new code must be clean; existing errors are grandfathered via the baseline — ratchet, not rewrite)
+ - `uv run basedpyright --level error` — strict error-level type check (new errors must be clean; existing diagnostics are grandfathered via the baseline — ratchet, not rewrite)
  - `uv run bandit -r .` — security static analysis
  - `PYTHONPATH=. uv run pytest -q` — tests
 

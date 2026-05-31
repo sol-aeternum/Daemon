@@ -927,9 +927,6 @@ class TestNoPlaintextCode:
         try:
             async with app.router.lifespan_context(app):
                 state = app.state.app_state
-                settings = get_settings()
-                pepper = validate_and_get_pepper(settings)
-
                 access_token = "test-access-token-noplaintext"
                 state.db_pool._access_token = access_token
                 state.db_pool._access_token_hash = hash_token(access_token)

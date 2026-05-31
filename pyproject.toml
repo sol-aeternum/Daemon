@@ -55,3 +55,6 @@ extend-select = ["RUF100"]
 venvPath = "."
 venv = ".uv-venv"
 typeCheckingMode = "standard"
+
+[tool.basedpyright]
+baselineFile = ".basedpyright/baseline.json"

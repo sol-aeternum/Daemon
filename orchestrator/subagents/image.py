@@ -275,8 +275,9 @@ class FalKlingProvider(ImageProvider):
 
     def __init__(self, api_key: str) -> None:
         """Initialize fal.ai Kling provider."""
-        from providers.fal_kling import FalKlingClient
+        from providers.fal_kling import FalKlingClient, FalKlingError
 
+        self._error_cls: type[Exception] = FalKlingError
         self.client = FalKlingClient()
         if api_key:
             self.client.api_key = api_key
@@ -314,7 +315,7 @@ class FalKlingProvider(ImageProvider):
                 "duration": video_result.duration_seconds,
                 "provider": "fal",
             }
-        except FalKlingError as e:  # noqa: F821
+        except self._error_cls as e:
             raise RuntimeError(f"fal.ai Kling video error: {str(e)}") from e
 
     def _size_to_aspect_ratio(self, size: str) -> str:
