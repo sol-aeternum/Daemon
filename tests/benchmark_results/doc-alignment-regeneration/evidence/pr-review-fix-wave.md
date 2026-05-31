@@ -596,3 +596,59 @@ python scripts/lint_feature_matrix.py                            # OK: 60 featur
 ### Commit Pushed
 - `afae82cb` — fix: add tier price, route, and env var freshness checks; correct SSE final event docs
 - `[follow-up]` — fix: LSP type annotation, router prefix combination in route extraction, restore public paths in docs, add Addendum 6 evidence
+
+---
+
+## Atlas Verification Addendum 7 (Jun 2026)
+
+### Context
+Follow-up verification after `28e354f8`. Two issues found by Atlas and fixed in this patch.
+
+### Issues Fixed
+
+#### 1. Tier Prices from Decorative Comments Instead of Runtime Source
+**Problem:** `get_tier_prices()` derived tier subscription prices from `# Tier: ...` comments in `config.py` rather than the runtime `Settings.list_available_tiers()` method.
+
+**Fix:** Changed `get_tier_prices()` to import `get_settings()` from `orchestrator.config` and call `settings.list_available_tiers()`, extracting integer `price` fields and formatting as `$N/mo` strings. This is the authoritative runtime source.
+
+**Source truth from `Settings.list_available_tiers()`:**
+- free: `$0/mo`, starter: `$9/mo`, pro: `$19/mo`, max: `$29/mo`, byok: `$9/mo`
+
+#### 2. Provider-Qualified Model IDs Crash Research/Code Cell Parsing
+**Problem:** `_check_tier_defaults()` at line 703 (now ~line 706) used `raw[1].split("/")` to split the Research/Code combined cell. With provider-qualified model IDs like `openrouter/anthropic/claude-3.5-sonnet / openrouter/anthropic/claude-opus-4.6`, bare `/` splitting produces many parts, causing `ValueError: too many values to unpack`.
+
+**Fix:** Changed to split on ` / ` (space-slash-space), the actual separator between the two model choices in the combined cell. This correctly handles provider-qualified model IDs containing internal slashes.
+
+### Verification
+
+#### Standard Gates
+```bash
+python scripts/check_doc_freshness.py --mode report --format text  # No drift detected.
+python scripts/check_doc_freshness.py --mode fail --format text  # No drift detected.
+python scripts/check_doc_freshness.py --mode fail --files README.md AGENTS.md  # No drift detected.
+python -m py_compile scripts/check_doc_freshness.py             # Compile OK
+python scripts/lint_feature_matrix.py                            # OK: 60 feature rows validated
+```
+
+#### Fixture Suite (14/14)
+| Fixture | Expected | Actual |
+|---------|----------|--------|
+| `tier_price_current_all_tiers` | Exit 0 | Exit 0 ✅ |
+| `tier_price_stale_free` | Exit 1 | Exit 1 ✅ |
+| `tier_price_stale_max` | Exit 1 | Exit 1 ✅ |
+| `provider_qualified_combined_correct` | Exit 0 | Exit 0 ✅ |
+| `provider_qualified_combined_wrong_code` | Exit 1 | Exit 1 ✅ |
+| `provider_qualified_combined_wrong_research` | Exit 1 | Exit 1 ✅ |
+| `techspec_max_research_code_combined_current` | Exit 0 | Exit 0 ✅ |
+| `techspec_max_research_code_missing_opus` | Exit 1 | Exit 1 ✅ |
+| `tier_stale_claude3_haiku` | Exit 1 | Exit 1 ✅ |
+| `emb_doc_exact_ok` | Exit 0 | Exit 0 ✅ |
+| `route_current_public_paths` | Exit 0 | Exit 0 ✅ |
+| `route_stale_video_credits_prefix` | Exit 1 | Exit 1 ✅ |
+| `env_var_stale_in_TECHNICAL_SPECS` | Exit 1 | Exit 1 ✅ |
+| `env_var_current_in_TECHNICAL_SPECS` | Exit 0 | Exit 0 ✅ |
+
+### Commit Pushed
+- `28e354f8` — fix(lint): LSP type annotation and router prefix route extraction
+- `[follow-up]` — fix: tier prices from Settings.list_available_tiers(), provider-qualified model ID splitting on ` / ` not bare `/`, add Addendum 7 evidence
+

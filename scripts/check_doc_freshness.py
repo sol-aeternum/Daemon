@@ -222,14 +222,15 @@ _TIER_PRICE_RE = re.compile(r'#\s*Tier:\s*(FREE|STARTER|PRO|MAX|BYOK)\s*\(([^)]+
 
 
 def get_tier_prices(root: Path) -> dict[str, Any]:
-    config_path = root / "orchestrator" / "config.py"
-    text = config_path.read_text(encoding="utf-8")
+    sys.path.insert(0, str(root))
+    from orchestrator.config import get_settings
+    settings = get_settings()
+    tiers = settings.list_available_tiers()
     prices: dict[str, str] = {}
-    for m in _TIER_PRICE_RE.finditer(text):
-        price = m.group(2)
-        if not price.endswith("/mo"):
-            price = price + "/mo"
-        prices[m.group(1).lower()] = price
+    for tier in tiers:
+        tier_id = tier["id"]
+        price_val = tier["price"]
+        prices[tier_id] = f"${price_val}/mo"
     return {"tier_prices": prices}
 
 
@@ -699,8 +700,9 @@ def _check_tier_defaults(doc_content: str, tier_defaults: dict[str, dict[str, st
             tier_config_name = _TIER_NAME_MAP.get(tier_doc_name.lower())
             if tier_config_name:
                 raw = [g.strip() for g in m.groups()[1:]]
-                if "/" in raw[1]:
-                    p1, p2 = [x.strip() for x in raw[1].split("/")]
+                if " / " in raw[1]:
+                    parts = [x.strip() for x in raw[1].split(" / ")]
+                    p1, p2 = parts[0], parts[1]
                     cells = [raw[0], p1, p2] + raw[2:]
                 else:
                     cells = [raw[0], raw[1], None] + raw[2:]
