@@ -175,7 +175,7 @@ class SpawnAgentTool(Tool):
             "agent_type": {
                 "type": "string",
                 "description": "Type of subagent to spawn",
-                "enum": ["research", "image", "audio", "code", "reader"],
+                "enum": ["research", "image", "audio", "code", "reader", "document"],
             },
             "task": {
                 "type": "string",
@@ -290,7 +290,7 @@ class SpawnMultipleTool(Tool):
                     "properties": {
                         "agent_type": {
                             "type": "string",
-                            "enum": ["research", "image", "audio", "code", "reader"],
+                            "enum": ["research", "image", "audio", "code", "reader", "document"],
                         },
                         "task": {
                             "type": "string",
