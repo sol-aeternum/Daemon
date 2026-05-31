@@ -182,3 +182,56 @@ python scripts/lint_feature_matrix.py
 ## Deliberately Deferred
 
 **3330450209 (video default)**: No app-code change made. The documentation-only fix addresses the overstatement. No evidence of incomplete config propagation in runtime code. Config propagation in the image/video subagent is functioning as designed.
+
+---
+
+## Atlas Verification Addendum (Jun 2026)
+
+### Issue: Two False Negatives Found by Atlas
+
+After initial push, Atlas ran verification fixtures and found two false negatives in the linter:
+
+1. **Provider markdown plural not detected**: `**Providers**: `fal`` was treated as singular and silently skipped from plural_claims, causing `fal`-only claims to pass when they should fail.
+
+2. **Tier model check not running**: `_TIER_NAME_MAP` had uppercase keys ("FREE", "PRO", etc.) but lookup used `tier_doc_name.lower()` returning lowercase, causing all tier checks to silently skip.
+
+### Fixes Applied
+
+#### Provider markdown plural fix:
+- Removed `\*\*Providers\*\*:\s*\`([a-z]+)\`` from `singular_patterns` — bold plural label should NEVER be treated as singular
+- Added `plural_backtick_label_patterns` approach: match bold label, extract ALL backtick-quoted names on the SAME LINE only
+- Key bug: `doc_content[m.end():]` extended to end of entire document, picking up Docker Compose service names from later lines; fixed by limiting to `\n`-delimited line boundary
+
+#### Tier model check fixes:
+- **Map keys**: Changed `_TIER_NAME_MAP` keys from uppercase to lowercase, fixing `.get(tier_doc_name.lower())` lookup
+- **Regex too broad**: `[A-Z]+` matched feature matrix bold headers like `**Conversations**`; changed to alternation `(FREE|STARTER|PRO|MAX|BYOK)`
+- **Slash not normalized**: `openrouter/moonshotai/kimi-k2.5` split into `{"moonshotai/kimi", "k2.5"}` as words; added `/` to the replacement set
+- **Em-dash not handled**: `| **BYOK** | — | ...` (FEATURE_MATRIX.md section header) was treated as non-empty value; added `"—"` to the empty/placeholder set
+- **Word-overlap too strict**: Using `doc_words.issubset(config_words)` required ALL doc words to appear in config, failing multi-model claims like "Claude 3.5 Sonnet / Opus 4.6"; changed to `any(w in config_normalized for w in doc_words)` — a stale "Wrong Model" still fails because no doc word overlaps with the config string
+
+### Fixture Verification (Atlas-reproduced)
+
+| Fixture | Input | Expected | Actual |
+|---------|-------|----------|--------|
+| provider_markdown_missing | `**Providers**: `fal`` (only fal) | Exit 1 | Exit 1 ✅ |
+| tier_stale | `| **PRO** | Wrong Model | ...` | Exit 1 | Exit 1 ✅ |
+| generic_embedding_prose | "embedding model choice..." | Exit 0 | Exit 0 ✅ |
+| bold_embedding_ok | `**EMBEDDING_DOCUMENT_MODEL**: voyage-4-large` | Exit 0 | Exit 0 ✅ |
+| bold_embedding_stale | `**EMBEDDING_DOCUMENT_MODEL**: voyage-3` | Exit 1 | Exit 1 ✅ |
+| query_stale | `**EMBEDDING_QUERY_MODEL**: voyage-3-lite` | Exit 1 | Exit 1 ✅ |
+| dim_stale | `**EMBEDDING_DIMENSIONS**: 512` | Exit 1 | Exit 1 ✅ |
+| migration_count_second_stale | "30...13" migrations | Exit 1 | Exit 1 ✅ |
+| migration_latest_second_stale | "030_...; 013_..." | Exit 1 | Exit 1 ✅ |
+| dedup_swapped | merge=0.65, same_slot=0.90 | Exit 1 | Exit 1 ✅ |
+| provider_markdown_ok | `**Providers**: `fal` `xai`` | Exit 0 | Exit 0 ✅ |
+| active_exception_visible | Non-suppressing exception | Report shows ACTIVE | ACTIVE visible ✅ |
+
+### Standard Gate Verification
+
+```bash
+python scripts/check_doc_freshness.py --mode report --format text  # No drift detected.
+python scripts/check_doc_freshness.py --mode fail --format text     # No drift detected.
+python scripts/check_doc_freshness.py --mode fail --files README.md AGENTS.md  # No drift detected.
+python -m py_compile scripts/check_doc_freshness.py                  # Compile OK
+python scripts/lint_feature_matrix.py                                 # OK: 60 feature rows validated
+```
