@@ -508,9 +508,23 @@ _TIER_SLOTS = ["orchestrator", "research", "image", "reader", "embeddings", "vid
 
 def _normalize_model_name(model: str) -> str:
     normalized = model.lower()
-    for prefix in ["openrouter/", "openai/", "anthropic/", "google/", "x-ai/", "deepseek/"]:
-        if normalized.startswith(prefix):
-            normalized = normalized[len(prefix):]
+    # Recursively strip all known provider prefixes
+    prefixes = ["openrouter/", "openai/", "anthropic/", "google/", "x-ai/", "deepseek/", "moonshotai/"]
+    while True:
+        stripped = False
+        for prefix in prefixes:
+            if normalized.startswith(prefix):
+                normalized = normalized[len(prefix):]
+                stripped = True
+                break
+        if not stripped:
+            break
+    # Strip provider-specific model suffixes before separator normalization
+    for suffix in ["-image", "-video", "-instruct", "-chat", "-preview"]:
+        if normalized.endswith(suffix):
+            normalized = normalized[:-len(suffix)]
+            break
+    # Normalize separators to spaces
     normalized = normalized.replace("/", " ").replace("-", " ").replace("_", " ")
     return normalized.strip()
 
@@ -553,13 +567,14 @@ def _check_tier_defaults(doc_content: str, tier_defaults: dict[str, dict[str, st
                 # Allow non-empty claims (BYOK embeddings = voyage-4-large is documented)
                 continue
 
-            config_normalized = _normalize_model_name(config_model)
+            config_alias = _normalize_model_name(config_model)
             if doc_model:
-                doc_normalized = _normalize_model_name(doc_model)
-                doc_words = set(doc_normalized.split())
-                config_words = set(config_normalized.split())
-                overlap = doc_words & config_words
-                if doc_words and len(overlap) < 2:
+                doc_options = [opt.strip() for opt in doc_model.split("/")]
+                matched = any(
+                    _normalize_model_name(opt) == config_alias
+                    for opt in doc_options
+                )
+                if not matched:
                     results.append(CheckResult(
                         CheckId.TIER_MODEL, False,
                         config_model,
