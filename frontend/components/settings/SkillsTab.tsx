@@ -22,6 +22,7 @@ import {
   User,
   Code,
 } from 'lucide-react';
+import { ensureAuthHeader } from '@/lib/auth';
 
 type ActionStatus = 'idle' | 'loading' | 'success' | 'error';
 type FilterType = 'all' | 'system' | 'imported' | 'manual' | 'autonomous';
@@ -78,24 +79,22 @@ export default function SkillsTab() {
   const [showFilters, setShowFilters] = useState(false);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
 
-  const getAuthHeaders = useCallback(() => {
-    const apiKey = typeof window !== 'undefined' ? localStorage.getItem('daemon_api_key') || '' : '';
-    const headers: Record<string, string> = {};
-
-    if (apiKey) {
-      headers.Authorization = `Bearer ${apiKey}`;
-    }
-
-    return headers;
+  const getAuthHeaders = useCallback(async (): Promise<HeadersInit> => {
+    const header = await ensureAuthHeader();
+    if (!header) return [];
+    return { Authorization: header };
   }, []);
 
-  const getJsonHeaders = useCallback(
-    () => ({
-      'Content-Type': 'application/json',
-      ...getAuthHeaders(),
-    }),
-    [getAuthHeaders]
-  );
+  const getJsonHeaders = useCallback(async (): Promise<HeadersInit> => {
+      const authHeader = await ensureAuthHeader();
+      if (authHeader) {
+        return {
+          'Content-Type': 'application/json',
+          Authorization: authHeader,
+        };
+      }
+      return { 'Content-Type': 'application/json' };
+    }, []);
 
   const fetchWithTimeout = useCallback(
     async (path: string, init: RequestInit = {}, timeoutMs = 12000) => {
@@ -141,7 +140,7 @@ export default function SkillsTab() {
     setIsLoadingList(true);
     try {
       const response = await fetchWithTimeout('/skills', {
-        headers: getAuthHeaders(),
+        headers: await getAuthHeaders(),
       });
       if (!response.ok) {
         setSkills([]);
@@ -166,14 +165,14 @@ export default function SkillsTab() {
     } finally {
       setIsLoadingList(false);
     }
-  }, [fetchWithTimeout, getAuthHeaders, selectedId]);
+  }, [fetchWithTimeout, selectedId]);
 
   const fetchSkillDetail = useCallback(
     async (skillId: string) => {
       setIsLoadingDetail(true);
       try {
         const response = await fetchWithTimeout(`/skills/${skillId}`, {
-          headers: getAuthHeaders(),
+          headers: await getAuthHeaders(),
         });
         if (!response.ok) {
           const detail = await getErrorDetail(response, 'Failed to load selected skill.');
@@ -192,7 +191,7 @@ export default function SkillsTab() {
         setIsLoadingDetail(false);
       }
     },
-    [fetchWithTimeout, getAuthHeaders]
+    [fetchWithTimeout]
   );
 
   useEffect(() => {
@@ -243,7 +242,7 @@ export default function SkillsTab() {
     try {
       const response = await fetchWithTimeout('/skills', {
         method: 'POST',
-        headers: getJsonHeaders(),
+        headers: await getJsonHeaders(),
         body: JSON.stringify({
           name: nextName,
           description: 'Describe when this skill should be used.',
@@ -281,7 +280,7 @@ export default function SkillsTab() {
     try {
       const response = await fetchWithTimeout(`/skills/${selectedId}`, {
         method: 'PUT',
-        headers: getJsonHeaders(),
+        headers: await getJsonHeaders(),
         body: JSON.stringify({
           name: draft.name,
           description: draft.description,
@@ -320,7 +319,7 @@ export default function SkillsTab() {
     try {
       const response = await fetchWithTimeout(`/skills/${selectedId}/enabled`, {
         method: 'PATCH',
-        headers: getJsonHeaders(),
+        headers: await getJsonHeaders(),
         body: JSON.stringify({ enabled }),
       });
 
@@ -350,7 +349,7 @@ export default function SkillsTab() {
     try {
       const response = await fetchWithTimeout(`/skills/${selectedId}/autonomous-edit`, {
         method: 'PATCH',
-        headers: getJsonHeaders(),
+        headers: await getJsonHeaders(),
         body: JSON.stringify({ allow_autonomous_edit }),
       });
 
@@ -379,7 +378,7 @@ export default function SkillsTab() {
     try {
       const response = await fetchWithTimeout(`/skills/${selectedId}/pending-update`, {
         method: 'POST',
-        headers: getJsonHeaders(),
+        headers: await getJsonHeaders(),
         body: JSON.stringify({ action }),
       });
 
@@ -411,7 +410,7 @@ export default function SkillsTab() {
     try {
       const response = await fetchWithTimeout(`/skills/${selectedId}`, {
         method: 'DELETE',
-        headers: getAuthHeaders(),
+        headers: await getAuthHeaders(),
       });
 
       if (!response.ok) {
@@ -439,7 +438,7 @@ export default function SkillsTab() {
     try {
       const response = await fetchWithTimeout(`/skills/${selectedId}/download`, {
         method: 'GET',
-        headers: getAuthHeaders(),
+        headers: await getAuthHeaders(),
       });
 
       if (!response.ok) {
@@ -496,7 +495,7 @@ export default function SkillsTab() {
     try {
       const response = await fetchWithTimeout('/skills/upload', {
         method: 'POST',
-        headers: getAuthHeaders(),
+        headers: await getAuthHeaders(),
         body: formData,
       });
 

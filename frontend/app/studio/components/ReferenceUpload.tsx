@@ -3,6 +3,8 @@
 import { useRef, useState } from "react";
 import { Upload } from "lucide-react";
 import { useStudio } from "../StudioProvider";
+import { ensureAuthHeader } from "@/lib/auth";
+import { useAuthenticatedImageUrl } from "@/hooks/useAuthenticatedImageUrl";
 
 export function ReferenceUpload() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -18,8 +20,13 @@ export function ReferenceUpload() {
       const form = new FormData();
       form.append("file", file);
 
+      const authHeader = await ensureAuthHeader();
+      const headers = new Headers();
+      if (authHeader) headers.set("Authorization", authHeader);
+
       const response = await fetch("/api/images/upload-reference", {
         method: "POST",
+        headers,
         body: form,
       });
       if (!response.ok) {
@@ -93,7 +100,7 @@ export function ReferenceUpload() {
 
         {referenceImage && (
           <div className="space-y-2 rounded-lg border border-[var(--color-border-primary)] p-2">
-            <img src={referenceImage.url} alt="Reference" className="h-24 w-full rounded-md object-cover" />
+            <ReferenceImagePreview url={referenceImage.url} />
             <button
               type="button"
               className="w-full rounded-md border border-[var(--color-border-primary)] px-2 py-1 text-xs text-[var(--color-text-secondary)]"
@@ -108,4 +115,16 @@ export function ReferenceUpload() {
       </div>
     </section>
   );
+}
+
+function ReferenceImagePreview({ url }: { url: string }) {
+  const { displayUrl, loading, error } = useAuthenticatedImageUrl(url);
+
+  if (loading) {
+    return <div className="h-24 w-full rounded-md bg-[var(--color-bg-tertiary)] animate-pulse" />;
+  }
+  if (error || !displayUrl) {
+    return <div className="h-24 w-full rounded-md bg-[var(--color-bg-tertiary)] flex items-center justify-center text-[var(--color-text-muted)] text-xs">Failed to load</div>;
+  }
+  return <img src={displayUrl} alt="Reference" className="h-24 w-full rounded-md object-cover" />;
 }

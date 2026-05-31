@@ -23,7 +23,6 @@ from fastapi import (
     FastAPI,
     File,
     Form,
-    Header,
     HTTPException,
     Request,
     UploadFile,
@@ -31,6 +30,8 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
+from orchestrator.auth import AuthenticatedDevice, require_device_auth
+from orchestrator.auth_pepper import PepperValidationError, validate_and_get_pepper
 from orchestrator.council.sse import stream_council, stream_council_interview_response
 from orchestrator.config import ProviderConfig, Settings, get_settings
 from orchestrator.daemon import (
@@ -48,6 +49,10 @@ from orchestrator.db import (
     get_app_state,
     init_app_state,
 )
+from orchestrator.session_cleanup import (
+    cleanup_stale_sessions,
+    start_session_cleanup_task,
+)
 from orchestrator.routes import (
     conversations,
     memories,
@@ -56,7 +61,8 @@ from orchestrator.routes import (
     users,
     video_credits,
 )
-from orchestrator.models_cache import fetch_openrouter_models
+from orchestrator.routes.auth_setup import router as auth_setup_router
+from orchestrator.models_cache import fetch_openrouter_models, get_fallback_model
 from orchestrator.model_router import select_model_tier
 from orchestrator.skills_store import build_skill_index
 from orchestrator.skills_projection import SkillProjectionStore
@@ -88,15 +94,47 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+
+    try:
+        validate_and_get_pepper(settings)
+    except PepperValidationError as exc:
+        logger.critical("Production pepper validation failed: %s", exc)
+        raise
+
     state = await init_app_state(settings)
     app.state.app_state = state
     logger.info("AppState initialised")
 
+    cleanup_task = None
+    cleanup_shutdown_event = None
+
     if state.db_pool is not None:
         asyncio.create_task(_backfill_skill_projections(state.db_pool))
         asyncio.create_task(_sync_repo_skills(state.db_pool))
+        await _check_first_boot_setup(state)
+
+        try:
+            deleted = await cleanup_stale_sessions(
+                state.db_pool,
+                settings.daemon_session_cleanup_grace_days,
+            )
+            if deleted > 0:
+                logger.info("Startup session cleanup deleted %d stale sessions", deleted)
+        except Exception:
+            logger.warning("Startup session cleanup failed", exc_info=True)
+
+        cleanup_task, cleanup_shutdown_event = await start_session_cleanup_task(
+            state.db_pool,
+            settings.daemon_session_cleanup_grace_days,
+            settings.daemon_session_cleanup_interval_seconds,
+        )
 
     yield
+
+    if cleanup_shutdown_event is not None:
+        cleanup_shutdown_event.set()
+    if cleanup_task is not None:
+        await asyncio.shield(cleanup_task)
     await close_app_state(state)
     logger.info("AppState shut down")
 
@@ -136,26 +174,66 @@ async def _sync_repo_skills(db_pool: asyncpg.Pool) -> None:
         logger.warning("Repo skill sync failed", exc_info=True)
 
 
+async def _check_first_boot_setup(state: AppState) -> None:
+    if state.db_pool is None:
+        return
+    try:
+        active_count = await state.db_pool.fetchval(
+            "SELECT COUNT(*) FROM devices WHERE revoked_at IS NULL"
+        )
+        if active_count == 0:
+            from orchestrator.auth_tokens import generate_setup_token, hash_token
+            plaintext = generate_setup_token()
+            state.setup_token_hash = hash_token(plaintext)
+            logger.info(
+                ">>> Daemon setup required. Open http://<host>:<port>/setup and enter token: %s",
+                plaintext,
+            )
+        else:
+            has_valid_session = await state.db_pool.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM sessions s
+                    JOIN devices d ON d.id = s.device_id
+                    WHERE d.revoked_at IS NULL
+                      AND s.refresh_consumed_at IS NULL
+                      AND s.refresh_expires_at > NOW()
+                      AND s.revoked_at IS NULL
+                )
+                """
+            )
+            if not has_valid_session:
+                async with state.db_pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE devices SET revoked_at = NOW() WHERE revoked_at IS NULL"
+                    )
+                    await conn.execute(
+                        "UPDATE sessions SET revoked_at = NOW() WHERE revoked_at IS NULL"
+                    )
+                from orchestrator.auth_tokens import generate_setup_token, hash_token
+                plaintext = generate_setup_token()
+                state.setup_token_hash = hash_token(plaintext)
+                logger.info(
+                    ">>> Daemon recovery: all sessions expired. Open http://<host>:<port>/setup and enter token: %s",
+                    plaintext,
+                )
+    except Exception:
+        logger.warning("First-boot setup check failed", exc_info=True)
+
+
 app = FastAPI(title="daemon-orchestrator", lifespan=lifespan)
 
-# Enable CORS for web clients
+# CORS deny-by-default: use daemon_allowed_origins, filter empty strings.
+# An empty list means no cross-origin requests are allowed.
+_cors_allowed = [o.strip() for o in get_settings().daemon_allowed_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=get_settings().cors_allowed_origins.split(","),
+    allow_origins=_cors_allowed,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-def require_api_key(settings: Settings, authorization: str | None) -> None:
-    if not settings.daemon_api_key:
-        return
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing bearer token")
-    token = authorization.removeprefix("Bearer ").strip()
-    if token != settings.daemon_api_key:
-        raise HTTPException(status_code=401, detail="Invalid bearer token")
 
 
 DEFAULT_BILLING_USER_ID = "00000000-0000-0000-0000-000000000001"
@@ -219,6 +297,25 @@ def _build_trusted_spawn_context(
         else None
     )
 
+    raw_provider = video_meta.get("provider")
+    video_provider = None
+    kling_model = None
+    audio_enabled = None
+    if isinstance(raw_provider, str) and raw_provider.strip():
+        provider_lower = raw_provider.lower().strip()
+        if provider_lower == "kling":
+            video_provider = "fal"
+            raw_kling_model = video_meta.get("kling_model")
+            if isinstance(raw_kling_model, str):
+                model_lower = raw_kling_model.lower().strip()
+                if model_lower == "kling-v3-pro":
+                    kling_model = "v3-pro"
+                elif model_lower in ("kling-o3-pro", "o3-pro"):
+                    kling_model = "o3-pro"
+            audio_enabled = video_meta.get("audio_enabled")
+        elif provider_lower in ("xai", "fal"):
+            video_provider = provider_lower
+
     return {
         "video": {
             "mode": "video",
@@ -228,6 +325,9 @@ def _build_trusted_spawn_context(
             "source_mode": source_mode,
             "reference_image_url": reference_image_url,
             "reference_image_id": reference_image_id,
+            "video_provider": video_provider,
+            "kling_model": kling_model,
+            "audio_enabled": audio_enabled,
         }
     }
 
@@ -652,10 +752,9 @@ async def test_tools(
     request: Request,
     app_state: AppState = Depends(get_app_state),
     settings: Settings = Depends(get_settings),
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> StreamingResponse:
     """Test endpoint for tool calling. Sends a message that triggers get_time tool."""
-    require_api_key(settings, authorization)
 
     body = await request.json()
     user_message = body.get("message", "What time is it right now?")
@@ -696,10 +795,9 @@ async def test_tools(
 @app.get("/providers")
 async def list_providers(
     settings: Settings = Depends(get_settings),
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> dict[str, list[str] | str]:
     """List all available LLM providers."""
-    require_api_key(settings, authorization)
     providers = settings.list_available_providers()
     return {
         "providers": providers,
@@ -846,10 +944,10 @@ async def chat_completions_redirect(
     payload: OpenAIChatRequest,
     request: Request,
     settings: Settings = Depends(get_settings),
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
     """Redirect /chat/completions to /v1/chat/completions for Open WebUI compatibility."""
-    return await openai_chat_completions(payload, request, settings, authorization)
+    return await openai_chat_completions(payload, request, settings, auth)
 
 
 @app.post("/v1/chat/completions", response_model=None)
@@ -857,10 +955,9 @@ async def openai_chat_completions(
     payload: OpenAIChatRequest,
     request: Request,
     settings: Settings = Depends(get_settings),
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> StreamingResponse | OpenAIChatResponse:
     """OpenAI-compatible chat completions endpoint for Open WebUI integration."""
-    require_api_key(settings, authorization)
 
     # Extract the last user message
     user_messages = [m for m in payload.messages if m.role == "user"]
@@ -1079,7 +1176,10 @@ TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @app.get("/generated-images/{filename}")
-async def serve_generated_image(filename: str) -> FileResponse:
+async def serve_generated_image(
+    filename: str,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
+) -> FileResponse:
     """Serve a generated image file from disk."""
     # Sanitize filename to prevent path traversal
     safe_name = Path(filename).name
@@ -1095,7 +1195,10 @@ async def serve_generated_image(filename: str) -> FileResponse:
 
 
 @app.get("/generated-audio/{filename}")
-async def serve_generated_audio(filename: str) -> FileResponse:
+async def serve_generated_audio(
+    filename: str,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
+) -> FileResponse:
     """Serve a generated audio file from disk (TTS or sound effects)."""
     safe_name = Path(filename).name
     # Check TTS cache first, then generated audio directory
@@ -1113,7 +1216,10 @@ async def serve_generated_audio(filename: str) -> FileResponse:
 
 
 @app.get("/generated-files/{filename}")
-async def serve_generated_file(filename: str) -> FileResponse:
+async def serve_generated_file(
+    filename: str,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
+) -> FileResponse:
     """Serve a generated document file from disk."""
     safe_name = Path(filename).name
     filepath = GENERATED_FILES_DIR / safe_name
@@ -1138,10 +1244,8 @@ async def serve_generated_file(filename: str) -> FileResponse:
 async def text_to_speech(
     payload: TtsRequest,
     settings: Settings = Depends(get_settings),
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> dict[str, Any]:
-    require_api_key(settings, authorization)
-
     text = (payload.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="Text is required")
@@ -1217,7 +1321,7 @@ async def text_to_speech(
 @app.get("/audio/token")
 async def get_audio_token(
     settings: Settings = Depends(get_settings),
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> dict[str, Any]:
     """Return scoped ElevenLabs token for frontend WebSocket streaming.
 
@@ -1228,8 +1332,6 @@ async def get_audio_token(
     Returns a scoped single-use token instead of the raw API key
     to prevent key exposure in the browser.
     """
-    require_api_key(settings, authorization)
-
     eleven_api_key = os.environ.get("ELEVENLABS_API_KEY")
     if not eleven_api_key:
         raise HTTPException(status_code=500, detail="ElevenLabs API key not configured")
@@ -1260,10 +1362,8 @@ async def get_audio_token(
 @app.get("/audio/scribe-token")
 async def get_scribe_token(
     settings: Settings = Depends(get_settings),
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> dict[str, Any]:
-    require_api_key(settings, authorization)
-
     eleven_api_key = os.environ.get("ELEVENLABS_API_KEY")
     if not eleven_api_key:
         raise HTTPException(status_code=500, detail="ElevenLabs API key not configured")
@@ -1296,10 +1396,8 @@ async def speech_to_text(
     model: str = Form("scribe_v2"),
     language: str | None = Form(None),
     settings: Settings = Depends(get_settings),
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> dict[str, Any]:
-    require_api_key(settings, authorization)
-
     eleven_api_key = os.environ.get("ELEVENLABS_API_KEY")
     if not eleven_api_key:
         raise HTTPException(status_code=500, detail="ElevenLabs API key missing")
@@ -1341,10 +1439,8 @@ async def generate_sound_effect(
     text: str = Form(...),
     duration_seconds: float = Form(2.0),
     settings: Settings = Depends(get_settings),
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> FileResponse:
-    require_api_key(settings, authorization)
-
     eleven_api_key = os.environ.get("ELEVENLABS_API_KEY")
     if not eleven_api_key:
         raise HTTPException(status_code=500, detail="ElevenLabs API key missing")
@@ -1387,10 +1483,8 @@ async def chat(
     request: Request,
     settings: Settings = Depends(get_settings),
     app_state: AppState = Depends(get_app_state),
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> StreamingResponse:
-    require_api_key(settings, authorization)
-
     conversation_id = payload.conversation_id or new_conversation_id()
     # Warn if no conversation_id was provided - should not happen in normal frontend flow
     if not payload.conversation_id:
@@ -1528,14 +1622,7 @@ async def chat(
 
     # Initialize persistence with graceful degradation
     store = app_state.memory_store if app_state else None
-    # Use payload user_id if provided (for benchmark isolation), otherwise use default
-    if payload.user_id:
-        try:
-            user_id = uuid.UUID(payload.user_id.replace("user_", ""))
-        except ValueError:
-            user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
-    else:
-        user_id = uuid.UUID("00000000-0000-0000-0000-000000000001") if store else None
+    user_id = auth.user_id if store else None
     conversation_uuid = None
     conversation_exists = False
 
@@ -1546,7 +1633,7 @@ async def chat(
             try:
                 conv_uuid = uuid.UUID(conversation_id.replace("conv_", ""))
                 existing = await store.get_conversation(conv_uuid)
-                if existing:
+                if existing and existing.get("user_id") == user_id:
                     conversation_uuid = conv_uuid
                     conversation_exists = True
                 else:
@@ -1917,4 +2004,5 @@ app.include_router(skills.router)
 app.include_router(system.router)
 app.include_router(users.router)
 app.include_router(video_credits.router)
+app.include_router(auth_setup_router)
 app.include_router(getattr(image_api_router, "router"))

@@ -22,6 +22,28 @@ function normalizePathSegments(path: string[] | undefined): string {
   return encodeURIComponent(segment);
 }
 
+function buildProxyHeaders(req: Request): Headers {
+  const requestHeaders = new Headers(req.headers);
+
+  if (!req.headers.get("authorization")) {
+    requestHeaders.delete("Authorization");
+  }
+  requestHeaders.delete("host");
+  requestHeaders.delete("content-length");
+
+  const xForwardedHost = req.headers.get("x-forwarded-host");
+  if (xForwardedHost && !requestHeaders.has("x-forwarded-host")) {
+    requestHeaders.set("X-Forwarded-Host", xForwardedHost);
+  }
+
+  const xForwardedProto = req.headers.get("x-forwarded-proto");
+  if (xForwardedProto && !requestHeaders.has("x-forwarded-proto")) {
+    requestHeaders.set("X-Forwarded-Proto", xForwardedProto);
+  }
+
+  return requestHeaders;
+}
+
 async function proxyRequest(req: Request, context: RouteContext): Promise<Response> {
   const method = req.method.toUpperCase();
   const requestUrl = new URL(req.url);
@@ -51,23 +73,7 @@ async function proxyRequest(req: Request, context: RouteContext): Promise<Respon
     }
   }
 
-  const authHeader = req.headers.get("authorization");
-  const authToken = authHeader?.replace(/^Bearer\s+/i, "").trim();
-  const daemonApiKey = process.env.DAEMON_API_KEY?.trim();
-  const authorization = authToken
-    ? `Bearer ${authToken}`
-    : daemonApiKey
-      ? `Bearer ${daemonApiKey}`
-      : null;
-
-  const requestHeaders = new Headers(req.headers);
-  if (authorization) {
-    requestHeaders.set("Authorization", authorization);
-  } else {
-    requestHeaders.delete("Authorization");
-  }
-  requestHeaders.delete("host");
-  requestHeaders.delete("content-length");
+  const requestHeaders = buildProxyHeaders(req);
 
   const body =
     method === "GET" || method === "HEAD"
@@ -82,6 +88,7 @@ async function proxyRequest(req: Request, context: RouteContext): Promise<Respon
       backendRes = await fetch(`${apiUrl}/video-credits/${normalizedPath}${search}`, {
         method,
         headers: requestHeaders,
+        credentials: "include",
         body,
       });
       break;
@@ -100,8 +107,14 @@ async function proxyRequest(req: Request, context: RouteContext): Promise<Respon
     );
   }
 
-  const responseHeaders = new Headers(backendRes.headers);
-  responseHeaders.delete("content-encoding");
+  const responseHeaders = new Headers();
+  backendRes.headers.forEach((value, key) => {
+    if (key.toLowerCase() === "set-cookie") {
+      responseHeaders.append(key, value);
+    } else if (key.toLowerCase() !== "content-encoding") {
+      responseHeaders.set(key, value);
+    }
+  });
 
   return new Response(backendRes.body, {
     status: backendRes.status,

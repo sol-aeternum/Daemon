@@ -2,6 +2,7 @@
 
 import { useRef, useState, useCallback } from "react";
 import { Volume2, VolumeX } from "lucide-react";
+import { getAuthHeader, refreshIfNeeded } from "@/lib/auth";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { TtsSettings, DEFAULT_TTS_SETTINGS } from "../lib/constants";
 import { useAudioPlayback } from "./AudioPlaybackProvider";
@@ -42,7 +43,14 @@ export function TextToSpeechButton({ text, streamingText }: TextToSpeechButtonPr
     const currentSettings = rawSettings ? JSON.parse(rawSettings) : DEFAULT_TTS_SETTINGS;
     
     try {
-      const tokenResponse = await fetch("/api/audio/token");
+      let authHeader = getAuthHeader();
+      if (!authHeader) {
+        await refreshIfNeeded();
+        authHeader = getAuthHeader();
+      }
+      const tokenResponse = await fetch("/api/audio/token", {
+        headers: authHeader ? { Authorization: authHeader } : {},
+      });
       if (!tokenResponse.ok) throw new Error("Failed to get audio token");
       const { token } = await tokenResponse.json();
       
@@ -156,9 +164,17 @@ export function TextToSpeechButton({ text, streamingText }: TextToSpeechButtonPr
     const currentSettings = rawSettings ? JSON.parse(rawSettings) : DEFAULT_TTS_SETTINGS;
 
     try {
+      let authHeader = getAuthHeader();
+      if (!authHeader) {
+        await refreshIfNeeded();
+        authHeader = getAuthHeader();
+      }
       const response = await fetch("/api/tts", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(authHeader ? { Authorization: authHeader } : {}),
+        },
         body: JSON.stringify({
           text,
           voice: currentSettings.voice ?? DEFAULT_TTS_SETTINGS.voice,

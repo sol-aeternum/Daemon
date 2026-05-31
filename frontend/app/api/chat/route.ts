@@ -5,6 +5,65 @@ const API_URLS = [
   "http://localhost:8000",
 ].filter((url): url is string => Boolean(url));
 
+function buildProxyHeaders(req: Request): Headers {
+  const headers = new Headers();
+  headers.set("Content-Type", "application/json");
+
+  const authHeader = req.headers.get("authorization");
+  if (authHeader) {
+    headers.set("Authorization", authHeader);
+  }
+
+  const cookie = req.headers.get("cookie");
+  if (cookie) headers.set("Cookie", cookie);
+
+  const origin = req.headers.get("origin");
+  if (origin) headers.set("Origin", origin);
+
+  const referer = req.headers.get("referer");
+  if (referer) headers.set("Referer", referer);
+
+  const secFetchSite = req.headers.get("sec-fetch-site");
+  if (secFetchSite) headers.set("Sec-Fetch-Site", secFetchSite);
+
+  const host = req.headers.get("host");
+  if (host) headers.set("Host", host);
+
+  const xForwardedHost = req.headers.get("x-forwarded-host");
+  if (xForwardedHost) headers.set("X-Forwarded-Host", xForwardedHost);
+
+  const xForwardedProto = req.headers.get("x-forwarded-proto");
+  if (xForwardedProto) headers.set("X-Forwarded-Proto", xForwardedProto);
+
+  return headers;
+}
+
+function extractTextContent(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (
+          part
+          && typeof part === "object"
+          && "type" in part
+          && (part as { type?: unknown }).type === "text"
+          && "text" in part
+          && typeof (part as { text?: unknown }).text === "string"
+        ) {
+          return (part as { text: string }).text;
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+  }
+  return "";
+}
+
 export async function POST(req: Request) {
   const { messages, id, model, attachments, metadata, provider } = await req.json();
 
@@ -16,45 +75,10 @@ export async function POST(req: Request) {
     content: m.content,
   }));
 
-  const extractTextContent = (content: unknown): string => {
-    if (typeof content === "string") {
-      return content;
-    }
-    if (Array.isArray(content)) {
-      return content
-        .map((part) => {
-          if (
-            part
-            && typeof part === "object"
-            && "type" in part
-            && (part as { type?: unknown }).type === "text"
-            && "text" in part
-            && typeof (part as { text?: unknown }).text === "string"
-          ) {
-            return (part as { text: string }).text;
-          }
-          return "";
-        })
-        .filter(Boolean)
-        .join("\n")
-        .trim();
-    }
-    return "";
-  };
-
   const lastUserMessage = [...normalizedMessages].reverse().find((m) => m.role === "user");
   const lastUserText = extractTextContent(lastUserMessage?.content);
 
-  const authHeader = req.headers.get("authorization");
-  const hasServerApiKey = Boolean(process.env.DAEMON_API_KEY?.trim());
-  const authorization = authHeader?.trim() || null;
-
-  if (!authorization && hasServerApiKey) {
-    return new Response(JSON.stringify({ error: "Missing bearer token" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
+  const proxyHeaders = buildProxyHeaders(req);
 
   let backendRes: Response | null = null;
   let lastError: Error | null = null;
@@ -63,10 +87,8 @@ export async function POST(req: Request) {
     try {
       backendRes = await fetch(`${apiUrl}/chat`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(authorization ? { Authorization: authorization } : {}),
-        },
+        headers: proxyHeaders,
+        credentials: "include",
         body: JSON.stringify({
           message: lastUserText,
           conversation_id: id || null,
@@ -83,7 +105,17 @@ export async function POST(req: Request) {
     }
   }
 
+  const responseHeaders = new Headers();
+  if (backendRes) {
+    backendRes.headers.forEach((value, key) => {
+      if (key.toLowerCase() === "set-cookie") {
+        responseHeaders.append("Set-Cookie", value);
+      }
+    });
+  }
+
   return createDataStreamResponse({
+    headers: responseHeaders,
     execute: async (dataStream) => {
       if (!backendRes) {
         dataStream.write(

@@ -12,6 +12,64 @@
 - **Suggested action**: Add a TOML LSP server to the workspace tooling if `pyproject.toml` changes are expected to satisfy changed-file diagnostics without relying on tool-specific validators.
 - **Seen again**: 2026-05-31 during Task 6 pre-commit config verification when `lsp_diagnostics(filePath="/home/sol/daemon/pyproject.toml", severity="error")` again returned `No LSP server configured for extension: .toml`; `uv run pre-commit validate-config`, `uv run ruff check .`, and `uv run basedpyright` were used as tool-native validators instead.
 
+## 2026-05-31 UTC — Vitest emits Node localStorage experimental warning in auth tests
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR #4 newest review-comment fix verification
+- **Category**: dependency
+- **Blocked current task**: no
+- **What happened**: The targeted frontend auth test suite passed, but Node/Vitest emitted an experimental warning because the runtime localStorage backing file was not configured. The test explicitly installs a mocked `globalThis.localStorage`, so this warning did not affect assertions.
+- **Evidence**: `npm test -- --run __tests__/auth.test.ts` passed `19 tests` and printed `(node:3845559) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.`
+- **Likely cause**: Current Vitest/jsdom/Node runtime exposes a localStorage-related experimental warning unless Node is launched with `--localstorage-file`, even when tests provide their own localStorage mock (confidence 80%).
+- **Suggested action**: If the warning becomes noisy, configure the frontend test runner with an explicit localStorage file or suppress the Node experimental warning for this test environment.
+
+## 2026-05-29 UTC — Studio Kling provider value is not accepted or forwarded by backend video paths
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: PR #4 final context gate rereview
+- **Category**: runtime-error
+- **Blocked current task**: yes
+- **What happened**: The Studio UI exposes and submits `videoProvider === "kling"`, but the backend video-credit estimate route only accepts providers `"xai"` and `"fal"`; the trusted video generation context also does not forward provider/model/audio fields to the image subagent. This means selecting Kling in Studio can fail credit estimation with `Invalid provider` and generated video requests cannot reliably preserve the selected Kling options.
+- **Evidence**: `frontend/app/studio/page.tsx:200-205` sends `provider: videoProvider`; `frontend/app/studio/page.tsx:323-326` defines the UI option `{ id: "kling", label: "Kling 3.0" }`; `orchestrator/routes/video_credits.py:136-157` defines `VALID_VIDEO_PROVIDERS = {"xai", "fal"}` and rejects anything else; `orchestrator/main.py:271-280` builds trusted video context without `provider`, `kling_model`, or `audio_enabled`; `orchestrator/tools/spawn.py:232-244` forwards only duration/tier/user/source/reference fields.
+- **Likely cause**: Frontend uses user-facing provider id `kling` while backend/provider pricing code uses canonical provider id `fal`, and the trusted spawn context whitelist was not updated for the Kling model/audio fields (confidence 95%).
+- **Suggested action**: Normalize the Studio provider value to backend canonical `fal` before credit/video requests, or update backend credit/spawn handling to explicitly map `kling -> fal` and forward `kling_model`/`audio_enabled` through the trusted context.
+
+## 2026-05-29 UTC — Aggregate auth suite fails user-scoping tests under production pepper environment
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: PR #4 final security rereview gate
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: The aggregate auth/backend pytest command failed only in `tests/test_auth_user_scoping.py` setup because its `authenticated_app` fixture does not set `DAEMON_ENVIRONMENT=development`; in the current shell, settings resolved to production without `DAEMON_AUTH_PEPPER`, so app lifespan startup rejected the missing production pepper. The narrower generated-artifact route hardening suite still passed.
+- **Evidence**: `PYTHONPATH=. uv run pytest tests/test_auth_smoke.py tests/test_auth_middleware.py tests/test_auth_cookies_csrf.py tests/test_setup_flow.py tests/test_enrollment_flow.py tests/test_refresh_flow.py tests/test_device_management.py tests/test_auth_user_scoping.py tests/test_route_auth_hardening.py -q` ended `158 passed, 35 warnings, 5 errors`; each error raised `orchestrator.auth_pepper.PepperValidationError: daemon_auth_pepper is required in production` from `orchestrator/main.py:99` / `orchestrator/auth_pepper.py:45` while setting up `tests/test_auth_user_scoping.py:27`.
+- **Likely cause**: `tests/test_auth_user_scoping.py` omits the `DAEMON_ENVIRONMENT=development` monkeypatch used by other auth route fixtures, making it sensitive to host/project environment defaults (confidence 92%).
+- **Suggested action**: Update the `authenticated_app` fixture in `tests/test_auth_user_scoping.py` to set `DAEMON_ENVIRONMENT=development` (or provide a test pepper) before clearing settings, then rerun the aggregate auth suite.
+
+## 2026-05-28 UTC — Frontend build blocked by pre-existing advisorEvents.ts type error
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 17 setup page verification (Playwright screenshot)
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: `npm run build` in `frontend/` fails with `./lib/advisorEvents.ts:3:21 Type error: Module '"./events"' has no exported member 'isAdvisorEvent'`. This prevents building the frontend and thus prevents launching the dev server for a Playwright screenshot.
+- **Evidence**: `next build --webpack` output shows `Failed to compile.` at `./lib/advisorEvents.ts:3:21`.
+- **Likely cause**: Pre-existing frontend issue where `lib/advisorEvents.ts` imports `isAdvisorEvent` from `lib/events.ts`, but `events.ts` does not export that symbol. Documented in task context as "lib/advisorEvents.ts missing advisor guards and 19 advisor/tool-call test failures" (confidence 95%).
+- **Suggested action**: Fix `lib/events.ts` to export `isAdvisorEvent` or remove the broken import from `lib/advisorEvents.ts`. Out of scope for Task 17.
+- **Seen again**: 2026-05-28 during PR #4 review-fix QA when `npm run build` in `frontend/` failed at the same `./lib/advisorEvents.ts:3:21` missing `isAdvisorEvent` export after successful webpack compilation.
+- **Seen again**: 2026-05-31 during PR #4 newest review-comment fix verification when `npx tsc --noEmit --project tsconfig.json --pretty false` failed only in the known advisor/tool-call event debt files: `__tests__/advisor-events.test.ts`, `__tests__/tool-call-log.test.ts`, and `lib/advisorEvents.ts`; changed files had clean LSP diagnostics and targeted auth tests passed.
+
+## 2026-05-28T12:56:31Z — Broad memories route tests now fail unauthorized after auth hardening
+
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: PR #4 review-fix QA targeted backend verification
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: `PYTHONPATH=. uv run pytest tests/test_memories.py -q` failed 15 existing memory route tests because the routes now return `401 Unauthorized` before the mocked store assertions. Dream-specific tests in the same file still pass with `-k dream`, so this appears isolated to legacy unauthenticated memories endpoint expectations rather than the dream endpoint itself.
+- **Evidence**: Failures include `tests/test_memories.py::test_get_memories_returns_memories_array` with `assert 401 == 200`, `tests/test_memories.py::test_get_memory_by_id_not_found` with `assert 401 == 404`, `tests/test_memories.py::test_get_memories_unavailable_store` with `assert 401 == 503`, and `tests/test_memories.py::test_reembed_memories_rejects_unknown_status` with `assert 401 == 422`. Summary: `15 failed, 8 passed, 15 warnings in 3.01s`.
+- **Likely cause**: Auth/device-model hardening now protects memory routes, but older broad route tests were not updated to enroll/authenticate a test device or assert the new auth-first behavior (confidence 90%).
+- **Suggested action**: Update the non-dream memories route tests to use the repo's authenticated test-client helpers or split explicit unauthenticated `401` contract tests from authenticated store-behavior tests.
+
 ## 2026-05-27 UTC — Repository LSP error scan surfaced unrelated dirty-tree Python errors
 - **Severity**: warning
 - **Scope**: project
@@ -42,6 +100,8 @@
 - **Blocked current task**: no
 - **What happened**: Required changed-file diagnostics could not run on the two modified Markdown artifacts because this environment has no LSP server configured for the `.md` extension.
 - **Evidence**: `lsp_diagnostics` on `tests/benchmark_results/harness_parity_baseline_stability.md` and `.sisyphus/notepads/longmemeval-parity-baseline-completion/learnings.md` returned `Error: No LSP server configured for extension: .md`.
+- **Seen again**: 2026-05-28 during PR #4 review-fix QA when `lsp_diagnostics` on `TRIAGE.md` and `.sisyphus/notepads/pr-4-review-fix-qa/learnings.md` returned `Error: No LSP server configured for extension: .md`.
+- **Seen again**: 2026-05-29 during generated-audio protection verification when `lsp_diagnostics` on the updated `TRIAGE.md` returned `Error: No LSP server configured for extension: .md`.
 - **Likely cause**: OpenCode LSP configuration in this workspace defines language servers for code and JSON-oriented extensions but does not include a Markdown-capable server such as Marksman (confidence 98%).
 - **Suggested action**: Add a Markdown LSP server to the workspace tooling if artifact-only tasks are expected to satisfy the changed-file diagnostics requirement without fallback checks.
 
@@ -220,6 +280,19 @@
 - **Likely cause**: LiteLLM emitted provider-resolution/help output during repeated extraction-model calls even though the configured model still returned usable benchmark results (confidence 70%).
 - **Suggested action**: If this keeps cluttering benchmark output, inspect the active LiteLLM/provider configuration for extraction-model resolution and suppress or redirect this help-text noise in benchmark runs.
 - **Seen again**: 2026-04-16 during autonomous-skill-creation Task 13 when `PYTHONPATH=. python tests/benchmark_extraction.py --json --no-save` passed but printed `Provider List: https://docs.litellm.ai/docs/providers` repeatedly throughout the 8-scenario run.
+
+## 2026-05-28T02:05Z — httpx per-request cookies deprecation still emitted by auth tests
+
+- **Severity**: warning
+- **Scope**: upstream
+- **Encountered during**: Task 21 amendment verification
+- **Category**: dependency
+- **Blocked current task**: no
+- **What happened**: Targeted auth pytest runs passed, but existing tests still emit `httpx` deprecation warnings because they use per-request `cookies={...}` arguments. The warning appears in enrollment, refresh, device-management, and route-hardening suites.
+- **Evidence**: `DeprecationWarning: Setting per-request cookies=<...> is being deprecated, because the expected behaviour on cookie persistence is ambiguous. Set cookies directly on the client instance instead.` from `/home/sol/.local/lib/python3.14/site-packages/httpx/_client.py:1859` and `:1966` during `pytest tests/test_route_auth_hardening.py -q` and `pytest tests/test_auth_middleware.py tests/test_auth_cookies_csrf.py tests/test_setup_flow.py tests/test_enrollment_flow.py tests/test_refresh_flow.py tests/test_device_management.py tests/test_auth_user_scoping.py -q`.
+- **Likely cause**: Existing tests were written against older `httpx` behavior and have not yet been updated to set cookies on the client/session instead of passing them per request (confidence 96%).
+- **Suggested action**: Update affected auth tests to use client-level cookie state before `httpx` removes per-request cookie support.
+- **Seen again**: 2026-05-29 during generated-audio protection verification when `PYTHONPATH=. uv run pytest tests/test_route_auth_hardening.py -q` passed but emitted the same httpx per-request cookies deprecation warnings in `TestCookieOnlyAuthRejected`.
 
 ## 2026-04-16 03:40 — Extraction Benchmark Dedup Supersession Still Leaves Corolla Facts Active
 - **Severity**: warning
@@ -476,12 +549,14 @@
 - **Seen again**: 2026-04-16 during autonomous-skill-creation Task 11 focused suite verification when `PYTHONPATH=. pytest tests/test_skill_extraction_prompt.py tests/test_skill_dedup.py tests/test_skill_injection.py tests/test_skill_manage.py tests/test_skill_protection.py tests/test_skill_api_contracts.py -q` passed with 88 tests but still emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 - **Seen again**: 2026-04-16 during autonomous-skill-creation Task 13 when both `PYTHONPATH=. pytest tests/test_skill*.py -q` (194 passed) and `PYTHONPATH=. pytest tests -q -k memory` emitted the same LiteLLM/arq `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 - **Seen again**: 2026-04-16 during whole-repo audit verification when `PYTHONPATH=. pytest -q` emitted the same LiteLLM/arq `asyncio.iscoroutinefunction` deprecation warnings before failing on unrelated test collection syntax errors.
+- **Seen again**: 2026-05-28 during PR #4 review-fix QA when `PYTHONPATH=. uv run pytest tests/test_route_auth_hardening.py tests/test_skill_api_contracts.py -q`, `PYTHONPATH=. uv run pytest tests/test_dreaming.py -q`, and dream-focused memories tests passed but emitted the same LiteLLM/arq `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 - **What happened**: Pytest emitted repeated deprecation warnings from third-party dependencies that still call `asyncio.iscoroutinefunction`, which is deprecated on Python 3.14 and scheduled for removal in Python 3.16.
 - **Evidence**:
   - `/home/sol/daemon/.venv/lib/python3.14/site-packages/litellm/litellm_core_utils/logging_utils.py:273: DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction() instead`
   - `/home/sol/daemon/.venv/lib/python3.14/site-packages/arq/cron.py:178: DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction() instead`
 - **Likely cause**: Current pinned versions of LiteLLM and arq are not yet updated for Python 3.14's coroutine-inspection deprecation path (confidence 95%).
 - **Suggested action**: Track dependency updates or pin compatible versions before Python 3.16 removes the deprecated API.
+- **Seen again**: 2026-05-29 during generated-audio protection verification when `PYTHONPATH=. uv run pytest tests/test_route_auth_hardening.py -q` passed but emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 
 ## 2026-04-10 12:30 — BasedPyright Warning Debt In Dreaming-Touched Python Modules
 - **Severity**: warning
@@ -602,6 +677,25 @@
 - **Seen again**: 2026-04-10 during F4 scope fidelity rerun on current repository state.
 - **Likely cause**: Local/tooling environment is missing the configured Biome binary required for JS/TS/JSON diagnostics (confidence 99%).
 - **Suggested action**: Install `@biomejs/biome` or adjust tooling configuration before relying on LSP cleanliness for frontend/test files.
+
+## 2026-05-27 UTC — auth-device-model branch missing Task 13 commit and auth test files
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: Task 14 — legacy API-key removal verification
+- **Category**: config
+- **Blocked current task**: yes
+- **What happened**: The current branch `auth-device-model-2026-05-27` is not descended from the expected Task 13 commit `6a8f64e6`, and all auth test files committed by Task 13 are absent from the working tree. Task 14 edits are applied atop an unexpected base, making safe commit/closure impossible without branch history reconciliation.
+- **Evidence**:
+  - `git branch --show-current` → `auth-device-model-2026-05-27`
+  - `git rev-parse HEAD` → `cf1e163239e76feec95aacebd0d865046b5e4c5a`
+  - `git rev-parse origin/auth-device-model-2026-05-27` → `cf1e163239e76feec95aacebd0d865046b5e4c5a`
+  - `git show --stat --oneline 6a8f64e6` → commit exists
+  - `git branch -a --contains 6a8f64e6` → no containing branch output (commit not reachable from current branch)
+  - `git ls-files tests/test_enrollment_flow.py tests/test_refresh_flow.py tests/test_device_management.py tests/test_session_cleanup.py` → no files tracked
+  - Directory listing confirms those expected auth test files are absent
+- **Likely cause**: Branch history was rewritten or Task 13 was never merged to the current branch; plan assumed prior auth commits were present in the working tree (confidence 97%).
+- **Suggested action**: Investigate whether Task 13 commit `6a8f64e6` should be cherry-picked or merged into `auth-device-model-2026-05-27`, and restore the auth test files before closing Task 14.
+- **Note**: Verification also surfaced unrelated failures: `npm run build` failed on `lib/advisorEvents.ts` (missing `isAdvisorEvent` export), and `npm run test:run` failed 19 existing advisor/tool-call tests. Changed-file LSP diagnostics and Task 14 grep acceptance passed. These advisor/test failures are pre-existing and separate from the branch mismatch.
 
 ## 2026-04-10 00:00 — Pre-existing BasedPyright Errors Outside Changed Tier2 Files
 - **Severity**: warning
@@ -1143,7 +1237,6 @@
 - **Likely cause**: Large benchmark recovery artifact was included in the pre-existing cleanup archive committed to preserve local work (confidence 95%).
 - **Suggested action**: Review whether large benchmark/archive artifacts should be moved to external artifact storage or Git LFS in a separate cleanup task.
 
-
 ## 2026-05-31T05:36:14Z — pip-audit Reports 29 Vulnerabilities In Current Python Lockset
 - **Severity**: critical
 - **Scope**: project
@@ -1177,81 +1270,48 @@
 - **Blocked current task**: no
 - **What happened**: Running the frontend build as part of local CI parity modified generated `frontend/public/sw.js`, which is outside Task 7's allowed file set. The generated file was restored immediately.
 - **Evidence**: `git status --short -- frontend/public/sw.js` showed `M frontend/public/sw.js` after `cd frontend && npm run build`; `git checkout -- frontend/public/sw.js` was run and subsequent `git diff -- frontend/public/sw.js` was empty.
-- **Likely cause**: Next PWA/Workbox build updates the generated precache manifest as a side effect of `next build` (confidence 95%).
-- **Suggested action**: Treat `frontend/public/sw.js` as generated drift during local build verification; restore it after parity runs unless a task explicitly owns service-worker output updates.
 
-## 2026-05-31T06:43Z — Bandit SAST Command Wired But Tool Missing
-
+## 2026-05-28T20:04:00Z — pycache permission denied during syntax verification
 - **Severity**: warning
-- **Scope**: project
-- **Encountered during**: Task 7 — Bandit/SAST CI gap fix
-- **Category**: security
-- **Blocked current task**: no — Task 7 fix wires the workflow step and records the missing dependency; dependency addition is explicitly out of scope
-- **What happened**: The backend CI workflow now includes `Bandit SAST`, but the local parity command `uv run bandit -r orchestrator providers scripts tests` exits 2 because `bandit` is not installed in the uv-managed environment.
-- **Evidence**: `.sisyphus/evidence/task-7-ci-local-parity.txt` shows `error: Failed to spawn: bandit` and `Caused by: No such file or directory (os error 2)`. `pyproject.toml` dev dependencies currently include basedpyright, pip-audit, pre-commit, pytest, pytest-asyncio, and ruff, but not Bandit.
-- **Likely cause**: Task 7 requires Bandit/SAST wiring, but prior dependency setup tasks did not add Bandit to the uv dev dependency group (confidence 99%).
-- **Suggested action**: Commission a dependency/tooling task to add Bandit via uv and lock it, then rerun `uv run bandit -r orchestrator providers scripts tests` without suppressing findings.
-- **Resolution applied**: 2026-05-31T07:23Z during Task 11 Oracle blocker remediation, `uv add --dev bandit` added `bandit>=1.9.4` to `pyproject.toml` and locked `bandit==1.9.4` plus `stevedore==5.8.0` in `uv.lock`; `uv sync --locked` now succeeds before Bandit runs.
-- **Seen again**: 2026-05-31T07:21Z during Task 11 Oracle review; `uv run bandit -r orchestrator providers scripts tests` again returned `error: Failed to spawn: bandit` / `Caused by: No such file or directory (os error 2)`, confirming the SAST gate is wired but non-runnable before dependency remediation.
+- **Scope**: host
+- **Encountered during**: Task 14 — legacy API-key removal final verification
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: `python -m py_compile` on modified Python files failed with `Permission denied: __pycache__/*.pyc` due to container host-user vs container-process user mismatch (container root vs host user).
+- **Evidence**: `PermissionError: [Errno 13] Permission denied: 'orchestrator/__pycache__/main.cpython-314.pyc.140168641807248'`
+- **Likely cause**: Host user's permissions don't match container's pycache directory ownership (confidence 95%).
+- **Suggested action**: Use `python -c "import ..."` syntax check instead of `py_compile` for verification in containerized environments.
 
 
-## 2026-05-31T05:36:14Z — Changed-File LSP Diagnostics Unavailable For Task 4 Config Artifacts
+## 2026-05-28T14:42:37Z — ast-grep pattern parse failure during auth review
 - **Severity**: info
 - **Scope**: tooling
-- **Encountered during**: Task 4 (Backend Pyright gate + grandfather baseline and SCA tool)
-- **Category**: config
+- **Encountered during**: PR #4 backend/admin auth slice review
+- **Category**: other
 - **Blocked current task**: no
-- **What happened**: `lsp_diagnostics` succeeded for the restored Python probe file but could not validate config/generated artifacts touched by Task 4. `pyproject.toml` reported no TOML LSP configured, `.basedpyright/baseline.json` routed to Biome but Biome is not installed, and `uv.lock` reported no `.lock` LSP configured.
-- **Evidence**: `pyproject.toml`: `No LSP server configured for extension: .toml`; `.basedpyright/baseline.json`: `LSP server 'biome' is configured but NOT INSTALLED. Command not found: biome`; `uv.lock`: `No LSP server configured for extension: .lock`.
-- **Likely cause**: Local agent LSP tooling lacks TOML/lockfile servers and has stale Biome configuration for JSON files (confidence 98%).
-- **Suggested action**: Install/configure Biome or route JSON diagnostics to an available server, and add TOML/lockfile diagnostics support if future CI-tooling tasks require LSP coverage for generated config artifacts.
-
-
-## 2026-05-31T07:21Z — Pre-commit all-files does not run commitlint hook
-- **Severity**: warning
-- **Scope**: project
-- **Encountered during**: Task 11 — Oracle review of gate configuration
-- **Category**: config
-- **Blocked current task**: yes — AGENTS/CI parity claim says the documented pre-commit command includes commitlint, but the command does not execute commit-msg hooks
-- **What happened**: `.pre-commit-config.yaml` correctly places `commitlint` on the `commit-msg` stage, but `uv run pre-commit run --all-files` and CI's default pre-commit stage do not run that hook. The root `AGENTS.md` aggregate gate text therefore overstates what the documented command covers.
-- **Evidence**: `uv run pre-commit run commitlint --all-files --hook-stage pre-commit` returned `No hook with id commitlint in stage pre-commit`; `.pre-commit-config.yaml:18-23` shows `stages: [commit-msg]`; `AGENTS.md:41` says `uv run pre-commit run --all-files` includes gitleaks and commitlint.
-- **Likely cause**: Pre-commit stage semantics were conflated: `--all-files` runs the pre-commit stage by default, while commit-message validation needs `--hook-stage commit-msg --commit-msg-filename ...` or a real commit-msg hook invocation (confidence 99%).
-- **Suggested action**: Either document commitlint as a commit-msg hook separate from the all-files gate, or add an explicit CI command that validates commit messages/non-vacuously invokes commitlint.
-- **Resolution applied**: 2026-05-31T07:23Z during Task 11 Oracle blocker remediation, `AGENTS.md:41` was changed to say `uv run pre-commit run --all-files` includes gitleaks and that commitlint runs as a separate commit-msg hook; explicit commit-msg hook probe passed.
-
-
-## 2026-05-31T07:21Z — Requested delegate_task background agents unavailable in this tool context
+- **What happened**: `ast_grep_search` failed on a Python query that was intended to enumerate route function definitions, so the search fell back to grep/LSP.
+- **Evidence**: `Error: Cannot parse query as a valid pattern. Help: The pattern either fails to parse or contains error. Please refer to pattern syntax guide. See also: https://ast-grep.github.io/guide/pattern-syntax.html` and `Multiple AST nodes are detected. Please check the pattern source 'async def µNAME(µµµ) { µµµ }'.`
+- **Likely cause**: The query was not a valid complete AST pattern for the Python parser (confidence 99%).
+- **Suggested action**: Use a complete Python AST pattern or switch to grep/LSP for route enumeration.
+## 2026-05-29 UTC — Mis-typed InlineArtifact path during search
 - **Severity**: info
 - **Scope**: tooling
-- **Encountered during**: Task 11 — Oracle review of gate configuration
-- **Category**: config
+- **Encountered during**: PR #4 auth-device-model frontend artifact-consumption search
+- **Category**: other
 - **Blocked current task**: no
-- **What happened**: The task requested parallel background `delegate_task` explore/librarian agents, but this execution context exposes no `delegate_task` tool. Review proceeded with direct parallel Read/Grep/AST-grep/LSP/Bash checks instead.
-- **Evidence**: Available tool namespace includes `background_output`/`background_cancel` but no launcher or `delegate_task` operation; no delegate call was possible without fabricating a tool.
-- **Likely cause**: This Oracle consultation environment has a reduced tool surface compared with the orchestrator's delegation-capable agent environment (confidence 95%).
-- **Suggested action**: If subagent evidence is mandatory for future Task 11 reviews, invoke the review from an agent context that includes `delegate_task`.
+- **What happened**: A read attempt targeted `frontend/components/InlineArtifact.tsx`, but the file does not exist at that path; the actual component lives at `frontend/components/chat/InlineArtifact.tsx`.
+- **Evidence**: `File not found: /home/sol/daemon/frontend/components/InlineArtifact.tsx`
+- **Likely cause**: Search/inspection path typo during broader artifact-pattern review (confidence 99%).
+- **Suggested action**: Use the `components/chat/InlineArtifact.tsx` path for any future inspection.
 
 
-## 2026-05-31T07:23Z — Bandit SAST Gate Runs And Surfaces Existing Findings
+## 2026-05-31 04:04 UTC — Frontend typecheck fails on pre-existing advisor event type drift
 - **Severity**: warning
 - **Scope**: project
-- **Encountered during**: Task 11 — Oracle blocker remediation for gate configuration
-- **Category**: security
-- **Blocked current task**: no — the gate-configuration blocker was resolved; the remaining non-zero exit is first-run SAST blocker inventory outside the review-fix scope
-- **What happened**: After adding Bandit as a uv dev dependency, `uv sync --locked` succeeded and `uv run bandit -r orchestrator providers scripts tests` executed instead of failing to spawn. The first real scan exited non-zero with 2,980 low-severity and 30 medium-severity findings, plus one skipped file due an existing syntax error.
-- **Evidence**: `/home/sol/.local/share/opencode/tool-output/tool_e7ce914a0001u6KASx3gOD0czr` lines 1-4 show `uv sync --locked` then Bandit execution; lines 188-201 include a representative `B608` medium SQL-construction finding in `orchestrator/memory/store.py:516`; lines 30842-30853 summarize `Low: 2980`, `Medium: 30`, `High: 0`, and `Files skipped (1): tests/test_video_e2e.py (syntax error while parsing AST from file)`.
-- **Likely cause**: Bandit is now scanning the existing full backend/tests corpus for the first time, so long-lived test asserts (`B101`) and several medium-confidence code patterns are being surfaced (confidence 95%).
-- **Suggested action**: Keep the gate wired and non-suppressed for this baseline PR; commission a separate SAST triage/baselining/remediation task if CI must be made green without weakening the current review scope.
-
-
-## 2026-05-31T07:33Z — Atlas Gitleaks All-files Hook Transiently Reported Modified Files
-
-- **Severity**: info
-- **Scope**: tooling
-- **Encountered during**: Task 11 — Oracle review of gate configuration Atlas QA follow-up
-- **Category**: config
+- **Encountered during**: PR #4 Studio video SSE endpoint review fix verification
+- **Category**: build-error
 - **Blocked current task**: no
-- **What happened**: Atlas observed a transient `uv run pre-commit run gitleaks --all-files` verification failure where the pre-commit wrapper reported that files were modified by the hook, even though gitleaks itself reported no secrets. A controlled rerun passed, and comparing git status before and after showed no working-tree status changes, so this is captured as non-blocking verification noise rather than a gate behavior change.
-- **Evidence**: Initial observed failure: `gitleaks...Failed - hook id: gitleaks - files were modified by this hook`, while gitleaks itself reported `no leaks found`. Rerun: `gitleaks...Passed`. Status comparison: `STATUS_CHANGED= False`, `ADDED_STATUS_LINES= <none>`, `REMOVED_STATUS_LINES= <none>`.
-- **Likely cause**: The gitleaks/pre-commit hook likely touched or normalized transient hook-managed state without leaving tracked working-tree changes, and pre-commit reported the first run as modified-files even though no leak was found (confidence 75%).
-- **Suggested action**: Keep Task 11 `APPROVE`; if this recurs, capture the exact pre/post status and hook output again before considering any hook configuration change.
+- **What happened**: A full frontend TypeScript check failed on advisor event tests and `lib/advisorEvents.ts` type mismatches unrelated to the Studio video endpoint candidate change. The targeted Studio video test still passes.
+- **Evidence**: `npx tsc --noEmit --pretty false` exited with code 2 and reported errors including `__tests__/advisor-events.test.ts(4,3): error TS2305: Module '"../lib/events"' has no exported member 'isAdvisorEndEvent'.`, multiple `Type '"advisor_start"' is not assignable to type ...` errors, and `lib/advisorEvents.ts(521,25): error TS2352: Conversion of type ... to type 'ChatEvent' may be a mistake`.
+- **Likely cause**: Advisor event tests/helpers appear to expect event union members and type guards that are not currently exported by `lib/events.ts` (confidence 90%).
+- **Suggested action**: Reconcile advisor event schema exports with `lib/advisorEvents.ts` and `__tests__/advisor-events.test.ts`, or exclude stale tests from the typecheck if intentionally obsolete.

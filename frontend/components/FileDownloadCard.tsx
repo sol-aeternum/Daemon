@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { FileText, Table, File, Download } from "lucide-react";
+import { ensureAuthHeader } from "@/lib/auth";
 
 interface FileDownloadCardProps {
   filename: string;
@@ -52,15 +53,33 @@ export function FileDownloadCard({
   trailingAction,
   className,
 }: FileDownloadCardProps) {
-  const handleDownload = () => {
-    const link = document.createElement("a");
-    link.href = fileUrl;
-    link.download = filename;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  const handleDownload = async () => {
+    let objectUrl: string | null = null;
+    let cleanupAnchor: HTMLAnchorElement | null = null;
+    try {
+      const authHeader = await ensureAuthHeader();
+      const headers = new Headers();
+      if (authHeader) {
+        headers.set("Authorization", authHeader);
+      }
+      const response = await fetch(fileUrl, { headers });
+      if (!response.ok) throw new Error(`Download failed: ${response.status}`);
+      const blob = await response.blob();
+      objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = filename;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      document.body.appendChild(link);
+      cleanupAnchor = link;
+      link.click();
+    } finally {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      if (cleanupAnchor && cleanupAnchor.parentNode) {
+        cleanupAnchor.parentNode.removeChild(cleanupAnchor);
+      }
+    }
   };
 
   return (
