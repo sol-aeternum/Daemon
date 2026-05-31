@@ -49,6 +49,10 @@ _EMBEDDING_DIM_RE = re.compile(r'embedding_dimensions:\s*int\s*=\s*(\d+)')
 _DEDUP_MERGE_RE = re.compile(r"dedup_merge_threshold:\s*float\s*=\s*Field\s*\(\s*default\s*=\s*([\d.]+)")
 _DEDUP_SUPERSEDE_GENERIC_RE = re.compile(r"dedup_supersede_threshold:\s*float\s*=\s*Field\s*\(\s*default\s*=\s*([\d.]+)")
 _DEDUP_SUPERSEDE_SAME_SLOT_RE = re.compile(r"dedup_supersede_same_slot_threshold:\s*float\s*=\s*Field\s*\(\s*default\s*=\s*([\d.]+)")
+_EMBEDDING_DOC_MODEL_CLAIM_RE = re.compile(
+    r'embedding_document_model[:=]\s*"([^"]+)"',
+    re.IGNORECASE,
+)
 
 
 def get_embedding_facts(root: Path) -> dict[str, Any]:
@@ -288,7 +292,7 @@ def _check_migration_latest(doc_content: str, expected: str) -> CheckResult:
 
 
 def _check_embedding_doc_model(doc_content: str, expected: str) -> CheckResult:
-    m = re.search(r'embedding.*model.*?[`"]?([^`"\n]+)[`"]?', doc_content, re.IGNORECASE)
+    m = _EMBEDDING_DOC_MODEL_CLAIM_RE.search(doc_content)
     if not m:
         return CheckResult(CheckId.EMBEDDING_DOC_MODEL, True)
     observed = m.group(1).strip()
@@ -443,7 +447,7 @@ def check_document(
             exc.suppressed_finding = True
             updated_exceptions.append(exc)
         else:
-            findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"embedding.*model"),
+            findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"embedding_document_model"),
                                    CheckId.EMBEDDING_DOC_MODEL, "mismatch",
                                    res.expected, res.observed, res.message or "embedding doc model mismatch"))
 

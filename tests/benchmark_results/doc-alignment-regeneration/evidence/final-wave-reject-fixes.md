@@ -164,3 +164,69 @@ python -m py_compile scripts/check_doc_freshness.py
 ls migrations/*.sql 2>/dev/null | wc -l
 # Expected: 30
 ```
+
+---
+
+## F1 Rerun — Embedding Doc Model Prose False Positive
+
+### Issue
+After F1 fixes were applied, Atlas rerun rejected because:
+```
+/home/sol/daemon/AGENTS.md:150 [CheckId.EMBEDDING_DOC_MODEL]
+expected='voyage-4-large' observed='choice, retrieval scoring — none of these are matrix entries.'
+embedding doc model mismatch
+```
+
+AGENTS.md line 150 contains:
+```
+**Internal infrastructure is out of scope.** The matrix tracks user-visible capabilities only.
+Memory dedup thresholds, embedding model choice, retrieval scoring — none of these are matrix entries.
+```
+
+The original regex `r'embedding.*model.*?[`"]?([^`"\n]+)[`"]?'` matched:
+- `embedding.*model` matched "embedding model"
+- `[^`"\n]+` captured "choice, retrieval scoring — none of these are matrix entries."
+
+This was prose describing what is NOT in the feature matrix, not a structured embedding document model claim.
+
+### Fix Applied
+```python
+# scripts/check_doc_freshness.py — _EMBEDDING_DOC_MODEL_CLAIM_RE
+# Before:
+_EMBEDDING_DOC_MODEL_CLAIM_RE = re.compile(
+    r'embedding.*model.*?[`"]?([^`"\n]+)[`"]?',
+    re.IGNORECASE,
+)
+
+# After:
+_EMBEDDING_DOC_MODEL_CLAIM_RE = re.compile(
+    r'embedding_document_model[:=]\s*"([^"]+)"',
+    re.IGNORECASE,
+)
+```
+
+Key changes:
+1. Requires specific attribute name `embedding_document_model` (not generic `embedding.*model`)
+2. Requires `:` or `=` separator (not just whitespace)
+3. Requires a double-quoted value
+
+This matches only structured claims like `embedding_document_model: "voyage-4-large"` and rejects prose like "embedding model choice".
+
+### Verification
+```bash
+# Root-doc focused command — should exit 0
+python scripts/check_doc_freshness.py --mode fail --files README.md AGENTS.md
+# Expected: No drift detected.
+
+# Structured stale claim still caught — stale voyage-3 would fail
+# (tested via temp fixture /tmp/opencode/test_stale_embedding_claim.md)
+
+# Compile check
+python -m py_compile scripts/check_doc_freshness.py
+# Expected: Compile OK
+```
+
+### Files Changed
+| File | Change |
+|------|--------|
+| `scripts/check_doc_freshness.py` | Fixed embedding doc model regex to require specific attribute name |
