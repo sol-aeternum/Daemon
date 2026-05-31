@@ -102,19 +102,10 @@ No tags created, deleted, or modified. See `evidence/task-20-tags.md`.
 ## Git State
 
 - **Branch**: `doc-alignment-regeneration-2026-05-29`
-- **Commits unique to branch**: 10 (6 plan commits + 4 evidence-fix commits)
-  - `ff0e950c` docs: define documentation sources of truth
-  - `4fad2839` docs: fix Task 6 verification failures in SOURCES_OF_TRUTH.md and evidence
-  - `d2da9774` docs(audit): record investigation artifacts and evidence
-  - `cf71155e` docs: regenerate narrative docs from source truth
-  - `9c566d10` ci(docs): add doc-freshness linter, pre-commit hook, and CI workflow
-  - `39396c80` chore(docs): close documentation alignment and commit all evidence
-  - `e6e57caa` fix(evidence): correct commit count and disposition status in Task 20 closeout
-  - `29b0f1a5` fix(evidence): update closeout commit count to 7 including evidence-fix commit
-  - `6a79eb3c` fix(evidence): correct closeout commit count to 8
-  - `8eb6b4f7` fix(evidence): correct closeout commit count to 9
+- **`git log --oneline main..HEAD`**: All commits are plan, evidence, or closeout-correction commits. Run live command to inspect current count. Plan commits include Tasks 2-19 artifacts. Evidence-fix commits (e6e57caa, 29b0f1a5, 6a79eb3c, 8eb6b4f7, 4b4aef6d) correct stale count wording; they do not represent new work.
 - **`git status --porcelain`**: Empty after closeout commits
 - **`python scripts/check_doc_freshness.py --mode fail`**: Exit 0 (aligned tree)
+- **Note on commit count**: Exact `git log main..HEAD` count is intentionally not frozen in this document. Each evidence-fix commit updates this file, which changes the count. The live command is authoritative.
 
 ---
 
