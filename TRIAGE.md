@@ -1,5 +1,16 @@
 # TRIAGE.md
 
+## 2026-05-31 UTC — Vitest emits Node localStorage experimental warning in auth tests
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR #4 newest review-comment fix verification
+- **Category**: dependency
+- **Blocked current task**: no
+- **What happened**: The targeted frontend auth test suite passed, but Node/Vitest emitted an experimental warning because the runtime localStorage backing file was not configured. The test explicitly installs a mocked `globalThis.localStorage`, so this warning did not affect assertions.
+- **Evidence**: `npm test -- --run __tests__/auth.test.ts` passed `19 tests` and printed `(node:3845559) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.`
+- **Likely cause**: Current Vitest/jsdom/Node runtime exposes a localStorage-related experimental warning unless Node is launched with `--localstorage-file`, even when tests provide their own localStorage mock (confidence 80%).
+- **Suggested action**: If the warning becomes noisy, configure the frontend test runner with an explicit localStorage file or suppress the Node experimental warning for this test environment.
+
 ## 2026-05-29 UTC — Studio Kling provider value is not accepted or forwarded by backend video paths
 - **Severity**: warning
 - **Scope**: project
@@ -33,6 +44,7 @@
 - **Likely cause**: Pre-existing frontend issue where `lib/advisorEvents.ts` imports `isAdvisorEvent` from `lib/events.ts`, but `events.ts` does not export that symbol. Documented in task context as "lib/advisorEvents.ts missing advisor guards and 19 advisor/tool-call test failures" (confidence 95%).
 - **Suggested action**: Fix `lib/events.ts` to export `isAdvisorEvent` or remove the broken import from `lib/advisorEvents.ts`. Out of scope for Task 17.
 - **Seen again**: 2026-05-28 during PR #4 review-fix QA when `npm run build` in `frontend/` failed at the same `./lib/advisorEvents.ts:3:21` missing `isAdvisorEvent` export after successful webpack compilation.
+- **Seen again**: 2026-05-31 during PR #4 newest review-comment fix verification when `npx tsc --noEmit --project tsconfig.json --pretty false` failed only in the known advisor/tool-call event debt files: `__tests__/advisor-events.test.ts`, `__tests__/tool-call-log.test.ts`, and `lib/advisorEvents.ts`; changed files had clean LSP diagnostics and targeted auth tests passed.
 
 ## 2026-05-28T12:56:31Z — Broad memories route tests now fail unauthorized after auth hardening
 
