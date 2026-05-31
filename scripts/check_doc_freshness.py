@@ -557,7 +557,7 @@ def _check_tier_defaults(doc_content: str, tier_defaults: dict[str, dict[str, st
     results = []
     lines = doc_content.splitlines()
 
-    tier_claims: dict[str, dict[str, str]] = {}
+    tier_claims: dict[str, dict[str, str | None]] = {}
 
     for line in lines:
         line_stripped = line.strip()
@@ -601,7 +601,7 @@ def _check_tier_defaults(doc_content: str, tier_defaults: dict[str, dict[str, st
             code_alias = _normalize_model_name(slots.get("code") or "")
 
             if (doc_model_raw is None and slot == "code" and research_alias != code_alias
-                    and config_model and ("research" in doc_slots or "code" in doc_slots)):
+                    and config_model and doc_slots.get("research") is not None):
                 results.append(CheckResult(
                     CheckId.TIER_MODEL, False,
                     config_model,
@@ -629,7 +629,13 @@ def _check_tier_defaults(doc_content: str, tier_defaults: dict[str, dict[str, st
                     or (
                         len(doc_options) == 1
                         and research_alias != code_alias
-                        and _normalize_model_name(doc_options[0]) in (research_alias, code_alias)
+                        and (
+                            _normalize_model_name(doc_options[0]) in (research_alias, code_alias)
+                            or (slot == "code" and (
+                                _normalize_model_name(doc_options[0]) == code_alias
+                                or code_alias.endswith(_normalize_model_name(doc_options[0]))
+                            ))
+                        )
                     )
                 )
                 if not matched:

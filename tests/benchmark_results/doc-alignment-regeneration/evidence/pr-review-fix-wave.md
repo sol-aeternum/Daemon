@@ -448,3 +448,67 @@ python scripts/lint_feature_matrix.py                                 # OK: 60 f
 
 ### Commit Pushed
 - `d7d85feb` — fix(linter): exact tier model alias matching, superseding len(overlap)>=2
+
+---
+
+## Atlas Verification Addendum 5 (Jun 2026)
+
+### Context
+Reviewer re-verified after `5cef462c` commit. Three additional issues found and fixed in a follow-up patch.
+
+### Issues Fixed
+
+#### 1. LSP Type Error — Optional slot values in tier_claims dict
+**Problem:** `tier_claims` typed `dict[str, dict[str, str]]` but assigned `None` for optional slots (research, code, image, etc.) in PROJECT_CONTEXT 4-column parsing.
+
+**Fix:** Changed type annotation to `dict[str, dict[str, str | None]]`.
+
+#### 2. TECHNICAL_SPECS False Positive — Bare "Opus 4.6" in code slot
+**Problem:** Combined Research/Code cell `Claude 3.5 Sonnet / Opus 4.6` splits second part into code slot as `Opus 4.6`. The bare-cell fallback compared `doc_options[0]` (which is `Opus 4.6` normalized: `opus 4.6`) against `research_alias` (`claude 3.5 sonnet`), not `code_alias` (`claude opus 4.6`). These don't match, causing a false FAIL.
+
+**Fix:** Added `or (slot == "code" and (code_alias.endswith(_normalize_model_name(doc_options[0]))))` to the bare-cell exception. This allows bare code names like `Opus 4.6` to match config `claude opus 4.6` when they share the same suffix.
+
+#### 3. PROJECT_CONTEXT False Positive — CODE_MISSING from 4-column table
+**Problem:** PROJECT_CONTEXT 4-column table (orchestrator, subagents, video) has no combined Research/Code cell, but the parser explicitly sets `research: None, code: None` for all tiers. The `CODE_MISSING` guard checked `("research" in doc_slots or "code" in doc_slots)` — both keys exist (with `None` values), so the guard passed and a spurious finding was emitted for MAX tier.
+
+**Fix:** Changed guard to `doc_slots.get("research") is not None`. Only fires when the doc actually claims a combined Research/Code cell in a 7-column TECHNICAL_SPECS-style row.
+
+#### 4. MEMORY_LAYER.md AES-GCM Wording
+**Problem:** `MEMORY_LAYER.md:16` said `Fernet (AES-256-GCM)` but source code (`orchestrator/memory/encryption.py`) uses `cryptography.fernet.Fernet`. Fernet is AES-128-CBC, not AES-256-GCM. This is a doc/source contradiction.
+
+**Fix:** Changed `Fernet (AES-256-GCM)` to `Fernet` in MEMORY_LAYER.md and PROJECT_CONTEXT.md. `cryptography.fernet.Fernet` is the authoritative implementation reference.
+
+### Verification
+
+#### Standard Gates
+```bash
+python scripts/check_doc_freshness.py --mode report --format text  # No drift detected.
+python scripts/check_doc_freshness.py --mode fail --format text  # No drift detected.
+python scripts/check_doc_freshness.py --mode fail --files README.md AGENTS.md  # No drift detected.
+python -m py_compile scripts/check_doc_freshness.py             # Compile OK
+python scripts/lint_feature_matrix.py                            # OK: 60 feature rows validated
+```
+
+#### Fixture Suite (16/16)
+| Fixture | Expected | Actual |
+|---------|----------|--------|
+| `inline_latest_backtick_stale` | Exit 1 | Exit 1 ✅ |
+| `inline_latest_no_backtick_stale` | Exit 1 | Exit 1 ✅ |
+| `migration_historical_no_latest_label` | Exit 0 | Exit 0 ✅ |
+| `projctx_free_tier_current` | Exit 0 | Exit 0 ✅ |
+| `projctx_pro_tier_stale_orchestrator` | Exit 1 | Exit 1 ✅ |
+| `techspec_max_research_code_combined_current` | Exit 0 | Exit 0 ✅ |
+| `techspec_max_research_code_missing_opus` | Exit 1 | Exit 1 ✅ |
+| `emb_doc_exact_stale_voyage4` | Exit 1 | Exit 1 ✅ |
+| `emb_doc_exact_ok` | Exit 0 | Exit 0 ✅ |
+| `generic_embedding_prose` | Exit 0 | Exit 0 ✅ |
+| `migration_count_second_stale` | Exit 1 | Exit 1 ✅ |
+| `migration_latest_stale_structured` | Exit 1 | Exit 1 ✅ |
+| `provider_markdown_ok` | Exit 0 | Exit 0 ✅ |
+| `provider_markdown_missing` | Exit 1 | Exit 1 ✅ |
+| `tier_stale_claude3_haiku` | Exit 1 | Exit 1 ✅ |
+| `active_exception_visible` | Report exit 0, `(ACTIVE)` | ACTIVE visible ✅ |
+
+### Commit Pushed
+- `5cef462c` — fix(lint): 4 context-mining reviewer blockers from PR #6 (inline latest migration, PROJECT_CONTEXT tier table, combined Research/Code, AES-GCM wording)
+- `[follow-up]` — fix(lint): LSP type error, bare Opus 4.6 suffix match, PROJECT_CONTEXT false positive guard, MEMORY_LAYER AES-GCM wording

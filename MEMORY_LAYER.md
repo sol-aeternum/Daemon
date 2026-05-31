@@ -13,7 +13,7 @@ Daemon's memory system captures, stores, and retrieves durable facts about users
 ### Technology
 
 - **PostgreSQL 16** with `pgvector` extension — direct asyncpg (no ORM)
-- **Fernet (AES-256-GCM)** encryption applied at the application layer before write — all `content` fields encrypted transparently
+- **Fernet** encryption applied at the application layer before write — all `content` fields encrypted transparently
 - **Embeddings stored as plaintext** vectors so pgvector can index and search them
 
 ### Encryption
