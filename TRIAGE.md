@@ -1315,3 +1315,25 @@
 - **Evidence**: `npx tsc --noEmit --pretty false` exited with code 2 and reported errors including `__tests__/advisor-events.test.ts(4,3): error TS2305: Module '"../lib/events"' has no exported member 'isAdvisorEndEvent'.`, multiple `Type '"advisor_start"' is not assignable to type ...` errors, and `lib/advisorEvents.ts(521,25): error TS2352: Conversion of type ... to type 'ChatEvent' may be a mistake`.
 - **Likely cause**: Advisor event tests/helpers appear to expect event union members and type guards that are not currently exported by `lib/events.ts` (confidence 90%).
 - **Suggested action**: Reconcile advisor event schema exports with `lib/advisorEvents.ts` and `__tests__/advisor-events.test.ts`, or exclude stale tests from the typecheck if intentionally obsolete.
+
+## [2026-05-31T08:59:30Z] — CodeQL Actions Node 20 Deprecation Warnings
+- **Severity**: warning
+- **Scope**: upstream
+- **Encountered during**: F3 Real Manual QA for ci-tooling-baseline PR #5
+- **Category**: deprecation
+- **Blocked current task**: no
+- **What happened**: Live CodeQL check annotations for PR #5 passed but emitted GitHub Actions deprecation warnings for Node.js 20 and CodeQL Action v3.
+- **Evidence**: `gh api repos/sol-aeternum/Daemon/check-runs/78712719260/annotations --paginate` and `gh api repos/sol-aeternum/Daemon/check-runs/78712719252/annotations --paginate` returned warnings: "Node.js 20 actions are deprecated" and "CodeQL Action v3 will be deprecated in December 2026."
+- **Likely cause**: GitHub runner/action lifecycle moving CodeQL JavaScript actions from Node 20 toward Node 24 and future CodeQL Action v4 (confidence 95%).
+- **Suggested action**: Track GitHub's CodeQL Action v4 migration window separately; do not change this CI baseline PR unless commissioned.
+
+## [2026-05-31T09:00:00Z] — Safe Gate Probes Run On Local Main Surface Non-PR Debt
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: F3 Real Manual QA for ci-tooling-baseline PR #5
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Selected safe local gate probes were run from the required clean local `main` checkout, not the PR branch. `python scripts/lint_feature_matrix.py` passed, but `uv run ruff format --check .`, `uv run basedpyright`, and Renovate validation were not representative of PR-branch CI state because `main` lacks PR branch config/artifacts and still exposes known project debt.
+- **Evidence**: `uv run ruff format --check .` failed parsing `tests/test_video_e2e.py:596` and reported 127 files would reformat; `uv run basedpyright` reported 328 errors / 9870 warnings; `npx --yes --package renovate renovate-config-validator --strict renovate.json` returned `ERROR: File does not exist "file": "renovate.json"`; `python scripts/lint_feature_matrix.py` returned `OK: 60 feature rows validated`.
+- **Likely cause**: F3 guardrail requires local HEAD remain on clean `main`, while CI baseline tooling files are intentionally only on PR branch `ci-tooling-baseline-2026-05-28`; whole-repo local gates on main therefore measure pre-baseline project debt rather than PR branch behavior (confidence 95%).
+- **Suggested action**: For future manual QA, prefer live PR checks and `gh api` check-run/log data for branch-specific CI state unless explicitly switching to the PR branch is allowed.
