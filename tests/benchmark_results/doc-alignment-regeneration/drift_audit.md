@@ -332,3 +332,37 @@ Build failure report accurately documents: next-pwa not installed, sharp not ins
 5. **README.md**: Add `@document` subagent, correct `@code`/`@reader` to "experimental", add `/skills` endpoint to API table
 6. **FEATURE_MATRIX.md**: Maintain as PR-gated source of truth — no changes needed from this audit
 7. **MEMORY_LAYER.md**: Maintain as PR-gated source of truth — no changes needed from this audit
+
+---
+
+## F1 Addendum — Final Wave Correction (2026-06-01)
+
+**Finding**: F1 final wave rejected on grounds of stale `13 applied` migration count in root README and AGENTS.
+
+### Root-Doc Migration Count Issue
+
+The original `drift_audit.md` stated `root_README` had DRIFT-14 (subagent list) and DRIFT-15 (missing `/skills` endpoint) but did **not** flag the migration count. For `root_AGENTS`, the audit claimed "ZERO DRIFT — No Structured Claims Found."
+
+Both claims were **incorrect**:
+
+- **README.md:75** contained `migrations/ # PostgreSQL migrations (13 applied)` — stale; actual count is 30
+- **AGENTS.md:52** contained `migrations/ # PostgreSQL migrations (13 applied)` — stale; actual count is 30
+
+### Correction Applied
+
+Both files updated to remove `(13 applied)`:
+- `README.md`: `migrations/ # PostgreSQL migrations (13 applied)` → `migrations/ # PostgreSQL migrations`
+- `AGENTS.md`: `migrations/ # PostgreSQL migrations (13 applied)` → `migrations/ # PostgreSQL migrations`
+
+### Audit Correction
+
+The claim "ZERO DRIFT — No Structured Claims Found" for `root_AGENTS` in the original audit is hereby **retracted**. The original audit scope did not include volatile count checks for ungated-reference docs. The F1 final wave correctly identified this as a drift finding requiring correction.
+
+### Source of Truth Verification
+
+```bash
+$ ls migrations/*.sql 2>/dev/null | wc -l
+30
+```
+
+Actual migration count: **30** (not 13)
