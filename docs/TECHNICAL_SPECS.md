@@ -94,7 +94,7 @@ Latest migration: `030_add_advisor_traces.sql`.
 
 ## Memory Pipeline
 
-Daemon uses a multi-stage pipeline for durable fact management. See [MEMORY_LAYER.md](MEMORY_LAYER.md) for full architecture.
+Daemon uses a multi-stage pipeline for durable fact management. See [MEMORY_LAYER.md](../MEMORY_LAYER.md) for full architecture.
 
 ### Extraction & Dedup
 - **Extraction**: GPT-4o-mini extracts facts from conversation turns.

@@ -99,7 +99,7 @@ Daemon uses a tier-based model configuration system. Specific model assignments 
 
 ## Memory Layer
 
-For detailed architecture, see [MEMORY_LAYER.md](MEMORY_LAYER.md).
+For detailed architecture, see [MEMORY_LAYER.md](../MEMORY_LAYER.md).
 
 - **Embeddings**: `voyage-4-large` (1024d) for documents, `voyage-4-lite` (1024d) for queries.
 - **Dedup Thresholds**:
