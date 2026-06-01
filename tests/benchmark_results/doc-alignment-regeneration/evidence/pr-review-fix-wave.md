@@ -1193,7 +1193,7 @@ AST parse: OK ✅
 
 ## Addendum 20 — PR #6 Review Comments `3337562067`, `3337562070`, `3337562071` (June 2026)
 
-**Commit:** `76ef659d` (prior wave).
+**Commit:** `a693698e`.
 
 ### Comment `3337562067` — TECHNICAL_SPECS Free Video
 **Problem:** `docs/TECHNICAL_SPECS.md` Free tier video cell showed `fal`, but `get_tier_config("free").tier_video_enabled=False`.
@@ -1214,7 +1214,7 @@ AST parse: OK ✅
 
 ## Addendum 21 — PR #6 Review Comments `3331002823`, `3331002825`, `3331218573`, `3331423951` (June 2026)
 
-**Commits:** `f73afd0b` (code fixes) + `{NEW_COMMIT}` (TECHNICAL_SPECS.md Max alias + evidence).
+**Commits:** `f73afd0b` (env-var suffix filter, PROJECT_CONTEXT invented slots) + `eaae3ce1` (TECHNICAL_SPECS Max alias + evidence).
 
 ### Comment `3331002823` — Max Code Model Alias Not Spelled Out
 **Problem:** `docs/TECHNICAL_SPECS.md` line 48 showed `Claude 3.5 Sonnet / Opus 4.6` for the MAX Research/Code cell. The bare `Opus 4.6` relied on suffix-stripping in the alias-matching logic rather than being explicitly the full model name.
@@ -1226,17 +1226,19 @@ AST parse: OK ✅
 
 **Fix:** Removed the per-slot None initializations from `tier_claims` in the PROJECT_CONTEXT branch. The dict now only contains `"orchestrator"` and `"video"` keys, which are the only two columns in the PROJECT_CONTEXT 4-column summary table. Research/code/image/reader/embeddings are never set, so no false slot-invention is possible.
 
-### Comment `3331218573` — `document` Absent from Advertised Schemas; Trusted Context Auth Gate Preserved
+### Comment `3331218573` — Env-Var Matching Over-Constrained to Structured Sections
+**Problem:** `_check_env_vars()` was flagging non-env-var uppercase tokens like `CLUSTER_SIMILARITY_THRESHOLD` and `DAEMON_SYSTEM_PROMPT` as stale env-var claims because `_ENV_VAR_RE` extracted ALL backtick-quoted uppercase tokens, not just env vars.
+
+**Fix (commit `f73afd0b`):** Added `_ENV_VAR_SUFFIXES` frozenset (`KEY`, `URL`, `TOKEN`, `SECRET`, `PATH`, `DB`, `PORT`, `HOST`, `PASSWORD`, `NAME`, `ID`, `MODEL`, `SETTING`, `VAR`, `TYPE`). `_is_env_var_name()` returns True only if the token's final underscore-separated segment is a known env-var suffix. Tokens like `CLUSTER_SIMILARITY_THRESHOLD` and `DAEMON_SYSTEM_PROMPT` are now correctly ignored. Also removed unused `_ENV_VAR_NAME_RE`.
+
+### Comment `3331423951` — `document` Absent from Advertised Schemas; Trusted Context Auth Gate Preserved
 **Problem:** Reviewer noted `document` appeared in `spawn_agent` and `spawn_multiple` tool schema enums but should be removed from advertised schemas while preserving the trusted-context spawn path.
 
-**Fix (commit `a693698e`):** Removed `"document"` from both `spawn_agent` and `spawn_multiple` tool schema enums. Updated `SpawnAgentTool.description` to remove "document reading or document generation" from the description. Runtime authorization gate `_document_spawn_allowed()` retained — trusted-context callers (e.g. council) can still spawn document agents; untrusted callers receive `document spawn rejected` error.
-
-### Comment `3331423951` — Same as `3331218573`
-**Status:** Addressed by the same fix as comment `3331218573` above.
+**Fix (commit `f73afd0b`):** Removed `"document"` from both `spawn_agent` and `spawn_multiple` tool schema enums. Updated `SpawnAgentTool.description` to remove "document reading or document generation". Runtime authorization gate `_document_spawn_allowed()` retained — trusted-context callers (e.g. council) can still spawn document agents; untrusted callers receive `document spawn rejected` error.
 
 ### Files Modified
 - `docs/TECHNICAL_SPECS.md`: MAX Research/Code `Opus 4.6` → `Claude Opus 4.6`
-- `orchestrator/tools/spawn.py`: `document` removed from `spawn_agent` and `spawn_multiple` tool schema enums; description updated (commit `a693698e`)
+- `orchestrator/tools/spawn.py`: `document` removed from `spawn_agent` and `spawn_multiple` tool schema enums; description updated (commit `f73afd0b`)
 - `scripts/check_doc_freshness.py`: `_ENV_VAR_SUFFIXES` frozenset added; `_is_env_var_name()` suffix filter in `_check_env_vars()`; `_ENV_VAR_NAME_RE` regex removed (unused); `tier_claims` per-slot None init removed from PROJECT_CONTEXT branch
 
 ### Gates
@@ -1258,20 +1260,4 @@ AST parse: OK ✅
 | P6: `document` absent from both schema enums | not found | not found ✅ |
 | P7: `VOYAGE_API_KEY` recognized as env var | True | True ✅ |
 | P8: `CLUSTER_SIMILARITY_THRESHOLD` NOT recognized as env var | False | False ✅ |
-
-### Files Modified
-- `docs/TECHNICAL_SPECS.md`: Free video `fal` → `Disabled`
-- `docs/MEMORY_LAYER.md`: Removed backticks from `CLUSTER_SIMILARITY_THRESHOLD` and `DAEMON_SYSTEM_PROMPT` prose mentions
-- `scripts/check_doc_freshness.py`: Removed MEMORY_LAYER.md from env var sources; regex captures status cell; status validation in `_check_subagent_table()`; tightened `tier_video_enabled=False` video claim check
-
-### Verification
-| Probe | Expected | Actual |
-|-------|----------|--------|
-| P1: TECHNICAL_SPECS Free video `Disabled` (correct) | 0 failures | 0 ✅ |
-| P2: TECHNICAL_SPECS Free video `fal` (wrong) | 1 failure | 1 ✅ |
-| P3: MEMORY_LAYER VOYAGE_API_KEY removed → B5 fails | failure | failure ✅ |
-| P4: @research `Reserved` with correct impl (wrong status) | 1 failure | 1 ✅ |
-| P5: @research `Implemented` with correct impl (correct) | 0 failures | 0 ✅ |
-| P6: @research `Implemented` WrongSubagent (wrong impl) | 1 failure | 1 ✅ |
-| Standard gates: `--mode fail`, py_compile, lint_feature_matrix | pass | pass ✅ |
 
