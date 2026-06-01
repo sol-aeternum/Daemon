@@ -494,8 +494,6 @@ def _check_routes(doc_content: str, source_routes: dict[str, list[str]]) -> Chec
 
     stale_paths: list[str] = []
     for route, _ in doc_route_methods:
-        if '{' in route:
-            continue
         if _normalize_route(route) not in all_source:
             stale_paths.append(route)
     if stale_paths:
@@ -506,10 +504,9 @@ def _check_routes(doc_content: str, source_routes: dict[str, list[str]]) -> Chec
             f"documented route(s) not found in source: {', '.join(sorted(stale_paths))}",
         )
 
-    # Check method claims
     method_failures: list[str] = []
     for route, doc_methods in doc_route_methods:
-        if '{' in route:
+        if '{' in route and re.search(r'\{[a-z_]+\}', route):
             continue
         if not doc_methods:
             continue

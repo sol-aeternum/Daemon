@@ -83,7 +83,7 @@ Daemon uses a tier-based model configuration system. Specific model assignments 
 - **Settings**: Voice preferences, model selector, memory management.
 
 ### Phase 3: Local Pipeline (Blocked)
-- Pre-router `/local` flag implemented.
+- Pre-router `/local` flag parsed but not wired to local inference routing.
 - Inference code pending hardware (RTX 5090).
 
 ## Infrastructure

@@ -1061,4 +1061,45 @@ Final live PR #6 context-review blockers at HEAD `96206121`. Two blockers.
 | Workflow `orchestrator/tools/**` | present | present ✅ |
 | Workflow `orchestrator/subagents/**` | present | present ✅ |
 
+---
+
+## Atlas Verification Addendum 14 (Jun 2026)
+
+### Context
+Final PR #6 context-review blockers at HEAD `2195db94`. Three blockers.
+
+### Issues Fixed
+
+#### 1. Parameterized Route Validation: `/definitely-missing/{id}` Passed
+**Problem:** `if '{' in route: continue` unconditionally skipped ALL routes containing `{...}` in the stale_paths check. This let `/definitely-missing/{id}` pass while `/definitely-missing` correctly failed.
+
+**Fix:** Removed unconditional skip. Now normalizes `{...}` to `{id}` via `_normalize_route()` before checking against `all_source`. Also narrowed the method-check guard from `{'{' in route: continue` to `re.search(r'\{[a-z_]+\}', route): continue` — only skips description-style refs like `{conversation_id}`, not placeholders like `{id}`.
+
+#### 2. README @image Wording: xAI for Images (Wrong)
+**Problem:** README.md:122 said `@image — Image generation (xAI)`. Source truth: `orchestrator/subagents/image.py` uses `OpenRouterImageProvider` (Gemini) for images; xAI and fal are video providers.
+
+**Fix:** Changed to `@image — Image generation (OpenRouter/Gemini) and video generation (xAI, fal.ai/Kling)`.
+
+#### 3. PROJECT_CONTEXT /local Wording: Overstates Wiring
+**Problem:** "Pre-router `/local` flag implemented" overstates the runtime wiring. `route_message()` parses the flag but `local_requested` is not used in the chat path to route to local inference.
+
+**Fix:** Changed to "Pre-router `/local` flag parsed but not wired to local inference routing." — accurate about parsing vs actual routing.
+
+### Verification
+
+| Probe | Expected | Actual |
+|-------|----------|--------|
+| `/definitely-missing/{id}` (stale param) | FAIL | FAIL ✅ |
+| `/conversations/{conversation_id}` GET (valid param) | PASS | PASS ✅ |
+| `/skills/{skill_id}` GET/PATCH/PUT (valid param) | PASS | PASS ✅ |
+| `/memories/{memory_id}` GET/DELETE (valid param) | PASS | PASS ✅ |
+| `/local` in prose (not route table) | PASS | PASS ✅ |
+| `GET/BOGUS` for `/skills` | FAIL | FAIL ✅ |
+| `/bogus` GET | FAIL | FAIL ✅ |
+| `/bogus/export` in multi-route cell | FAIL | FAIL ✅ |
+| README @image wording | "OpenRouter/Gemini" | "OpenRouter/Gemini" ✅ |
+| PROJECT_CONTEXT /local | "parsed but not wired" | "parsed but not wired" ✅ |
+| Standard gates: `--mode report/fail`, py_compile, lint_feature_matrix | pass | pass ✅ |
+| LSP diagnostics | 0 errors | 0 errors ✅ |
+
 

@@ -119,7 +119,7 @@ Benchmarking runs from the host shell against localhost-exposed container servic
 
 ### Subagents
 - `@research` — Brave Search web search
-- `@image` — Image generation (xAI) and video generation (xAI, fal.ai/Kling)
+- `@image` — Image generation (OpenRouter/Gemini) and video generation (xAI, fal.ai/Kling)
 - `@audio` — ElevenLabs TTS/STT/sound effects
 - `@document` — Document file generation
 - `@code` — Code generation (experimental, not fully implemented)
