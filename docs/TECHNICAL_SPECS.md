@@ -42,11 +42,11 @@ All model assignments are env-var overridable via `TIER_{NAME}_{SLOT}_MODEL`.
 
 | Tier | Orchestrator | Research/Code | Image | Reader | Embeddings | Video |
 |------|--------------|---------------|-------|--------|------------|-------|
-| **FREE** | Kimi K2.5 | _none_ | _none_ | _none_ | _none_ | Disabled |
+| **FREE** | Kimi K2.5 | _none_ | openrouter | _none_ | _none_ | fal |
 | **STARTER** | Kimi K2.5 | Claude 3.5 Sonnet | Gemini 2.5 Flash | Gemini 2.0 Pro Exp | Voyage 4 Large | fal |
 | **PRO** | Kimi K2.5 | Claude 3.5 Sonnet | Gemini 2.5 Flash | Gemini 2.0 Pro Exp | Voyage 4 Large | fal |
 | **MAX** | Claude Opus 4.6 | Claude 3.5 Sonnet / Opus 4.6 | Gemini 2.5 Flash | Gemini 2.0 Pro Exp | Voyage 4 Large | fal |
-| **BYOK** | Kimi K2.5 | _none_ | _none_ | _none_ | _none_ | fal |
+| **BYOK** | Kimi K2.5 | _none_ | openrouter | _none_ | _none_ | fal |
 
 *Note: Image models are accessed via OpenRouter. Video provider `fal` uses Kling models.*
 
@@ -119,9 +119,9 @@ Hybrid search combining:
 |----------|-----------|
 | **Chat** | `/chat` (SSE), `/v1/chat/completions` (OpenAI), `/chat/completions` |
 | **Models** | `/v1/models`, `/v1/catalog`, `/providers` |
-| **Conversations** | `/conversations/{conversation_id}` (CRUD) |
-| **Memories** | `/memories/{memory_id}` (CRUD), `/memories/export`, `/memories/import`, `/memories/reembed`, `/memories/consolidate`, `/memories/dream` |
-| **Skills** | `/skills/{skill_id}` (CRUD), `/skills/upload`, `/skills/admin/sync` |
+| **Conversations** | `/conversations/{conversation_id}` (GET/PATCH/DELETE) |
+| **Memories** | `/memories/{memory_id}` (GET/PATCH/DELETE), `/memories/export`, `/memories/import`, `/memories/reembed`, `/memories/consolidate`, `/memories/dream` |
+| **Skills** | `/skills/{skill_id}` (GET/PUT/PATCH/DELETE), `/skills/upload`, `/skills/admin/sync` |
 | **Audio** | `/tts`, `/stt`, `/audio/token`, `/audio/scribe-token`, `/sound-effects` |
 | **Video** | `/video-credits/balance`, `/video-credits/estimate`, `/video-credits/transactions` |
 | **System** | `/status`, `/health`, `/generated-images/{filename}`, `/generated-audio/{filename}`, `/generated-files/{filename}` |

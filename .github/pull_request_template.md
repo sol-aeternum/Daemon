@@ -14,7 +14,7 @@ Does this PR add, remove, or change a user-visible feature?
 Does this PR touch a source-of-truth or governance file?
 
 - [ ] No — this PR does not touch `orchestrator/config.py`, `migrations/`, `orchestrator/memory/**`, provider config, routes, or feature-status docs
-- [ ] Yes — and I have run `scripts/check_doc_freshness.py --mode fail` and updated all gated docs
+- [ ] Yes — and I have run `python scripts/check_doc_freshness.py --mode fail` and updated all gated docs
 
 ## Checklist
 

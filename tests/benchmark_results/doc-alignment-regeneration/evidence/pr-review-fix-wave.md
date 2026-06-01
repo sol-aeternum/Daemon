@@ -1061,75 +1061,61 @@ Final live PR #6 context-review blockers at HEAD `96206121`. Two blockers.
 
 ---
 
-## Atlas Verification Addendum 16 (Jun 2026)
+## Atlas Verification Addendum 17 (Jun 2026)
 
 ### Context
-Addendum 15 declared "Decision: Option A — document accurately without architectural changes" for the `document` spawn exposure blocker. That decision was later superseded: the user selected **Option B** (gate document spawning behind trusted context) and this was implemented across two commits.
-
-### Supersession
-Addendum 15 §3 (`document` Spawn Exposure — Option A) is superseded by this addendum. The architectural decision is now Option B.
-
-### What Was Implemented
-
-**Commit `320f42b5`** — `orchestrator/tools/spawn.py`:
-- `SpawnAgentTool` and `SpawnMultipleTool` now gate `SubagentType.DOCUMENT` behind `_document_spawn_allowed()`.
-- Untrusted single document spawn returns `{"error": "document agent requires explicit authorization", "hint": "trusted_spawn_context with document.enabled=true is required"}`.
-- Untrusted multi document spawn appends the agent to `rejected` with `_spawn_rejected` marker; valid agents still spawn.
-- Trusted context `{'document': {'enabled': True}}` permits document spawn.
-- Non-document agents (`research`, `audio`, `image`, `code`, `reader`) are unaffected.
-
-**Commit `7367cdd1`** — `orchestrator/tools/spawn.py`:
-- `get_subagent_manager()` deferred until after `valid_spawns` is confirmed non-empty. All-rejected requests (including untrusted document) return before manager initialization.
-- Invalid agent type rejections store `_orig_agent_type` in the error dict; rejected records use it instead of falling back to `at.value` (IMAGE).
-
-### Verification
-
-| Probe | Expected | Actual |
-|-------|----------|--------|
-| Untrusted single document spawn | `error` with authorization message | `error`: "document agent requires explicit authorization" ✅ |
-| Trusted document spawn (stubbed manager) | No error | No error ✅ |
-| Multi untrusted: doc rejected + research/audio run | `agents_spawned=2`, `rejected=[1 doc record]` | matches ✅ |
-| Multi trusted: both run | `agents_spawned=2`, `rejected=[]` | matches ✅ |
-| All-rejected multi (no valid agents) | No manager call | `manager_calls=0` ✅ |
-| Invalid agent type "badtype" | `rejected[0].agent_type="badtype"` | `"badtype"` ✅ |
-| Mixed invalid+valid multi | `agents_spawned=2`, `rejected` has `"badtype"` | matches ✅ |
-| Non-document agents (research, audio, image, code, reader) untrusted | No error | No error ✅ |
-| Standard gates: `--mode fail`, py_compile, lint_feature_matrix | pass | pass ✅ |
-
-
----
-
-## Atlas Verification Addendum 15 (Jun 2026)
-
-### Context
-Final PR #6 context-review blockers at HEAD `59b5df4c`. Three blockers addressed.
+Six substantive blockers from final context review `bg_7ab600ac`.
 
 ### Issues Fixed
 
-#### 1. `@audio` Wording: TTS/STT Listed But Not From `@audio`
-**Problem:** PROJECT_CONTEXT.md:117 said `@audio — ElevenLabs TTS/STT/SFX`. Source truth: `AudioSubagent` (`orchestrator/subagents/audio.py:1`) is "sound effects generation via ElevenLabs" — sound-effects only. TTS/STT are separate routes (`/audio/token`, `/audio/scribe-token`) in `main.py`.
+#### B1: PR Template Non-Executable Command
+**Problem:** `.github/pull_request_template.md:17` used bare `scripts/check_doc_freshness.py --mode fail` which is not an executable command form.
 
-**Fix:** Changed to `ElevenLabs SFX`. TTS/STTS are separate endpoints, not `@audio` subagent.
+**Fix:** Changed to `python scripts/check_doc_freshness.py --mode fail`.
 
-#### 2. `feature_states` Extraction: Dead Code
-**Problem:** `extract_all_facts()` at line 283 called `get_feature_states(root)`, but `check_document()` never consumed `feature_states` — no validation of feature matrix state claims existed.
+#### B2: Workflow Path Filters Missing Source-Truth Inputs
+**Problem:** `.github/workflows/docs-freshness.yml` path filters omitted: `tests/benchmark_results/doc-alignment-regeneration/truth_set.md`, `orchestrator/prompts.py`, `orchestrator/council/**`, `orchestrator/commands/council.py`, `orchestrator/services/fetch/**`.
 
-**Fix:** Removed `get_feature_states()` function and its `extract_all_facts` entry. Eliminates dead code with no loss of coverage.
+**Fix:** Added all five missing paths to both `push` and `pull_request` path filters.
 
-#### 3. `document` Spawn Exposure: Documentation Accuracy
-**Problem:** `DocumentSubagent` ("Generate and run Python code") was documented as "File generation (.docx, .csv)" — understatement of actual capability and security implications.
+#### B3: Subagent Table Not Validated
+**Problem:** `check_document()` had no check for PROJECT_CONTEXT Subagents table. All cells set to `WrongSubagent` produced `failure_count: 0`.
 
-**Decision:** Option A — document accurately without architectural changes. Changed to `Python code generation + execution`. This accurately reflects the agent's actual behavior without breaking functionality or requiring trust-model changes.
+**Fix:** Added `_check_subagent_table()` using `get_subagent_facts()` which derives implementation status from `SubagentType` attribute presence in `orchestrator/subagents/*.py` files. Also validates Implementation column against source-derived descriptions.
+
+#### B4: Tier Video/Image Provider Drift Not Detected
+**Problem:** `_check_tier_defaults()` only checked model slots. FREE tier claiming "Disabled" for video (while config has `fal`) or "_none_" for image (while config has `openrouter`) produced no failure.
+
+**Fix:** Added `tier_image_provider` extraction from `config.py` via `_TIER_IMAGE_PROVIDER_RE`. Video provider check now fails when docs say "Disabled"/"n/a"/"—" but config has a provider. Image provider check fails when docs say "_none_" but config has a provider.
+
+#### B5: MEMORY_LAYER.md Env Vars Not Validated
+**Problem:** `MEMORY_LAYER.md` has a structured bash code block with env vars, but env validation only covered `TECHNICAL_SPECS.md` and `PROJECT_CONTEXT.md`.
+
+**Fix:** `get_env_var_facts()` now also extracts from `MEMORY_LAYER.md` bash blocks and prose references (`DAEMON_SYSTEM_PROMPT`, `CLUSTER_SIMILARITY_THRESHOLD`). `check_document()` now checks `MEMORY_LAYER.md` env vars.
+
+#### B6: TECHNICAL_SPECS CRUD Overstatement for Item Routes
+**Problem:** TECHNICAL_SPECS listed `/conversations/{conversation_id}` as "(CRUD)" and `/skills/{skill_id}` as "(CRUD)" — conversations support GET/PATCH/DELETE only, skills support GET/PUT/PATCH/DELETE.
+
+**Fix:** Changed to specific method lists: `(GET/PATCH/DELETE)` for conversations, `(GET/PUT/PATCH/DELETE)` for skills.
+
+### Additional Doc Fixes (Tier Tables)
+
+- TECHNICAL_SPECS.md tier table: FREE video changed from `Disabled` to `fal`; FREE/BYOK image changed from `_none_` to `openrouter` (matching actual config defaults).
+- PROJECT_CONTEXT.md tier table: FREE video changed from `Disabled` to `Enabled (fal)` (matching actual config).
 
 ### Verification
 
 | Probe | Expected | Actual |
 |-------|----------|--------|
-| `@audio` in PROJECT_CONTEXT | "ElevenLabs SFX" | "ElevenLabs SFX" ✅ |
-| TTS/STT routes exist in source | `/audio/token`, `/audio/scribe-token` | present ✅ |
-| `feature_states` in `extract_all_facts()` | absent | absent ✅ |
-| `@document` implementation | "Python code generation + execution" | correct ✅ |
+| B1: PR template command | `python scripts/...` | `python scripts/...` ✅ |
+| B2: workflow paths include missing inputs | present | present ✅ |
+| B3: `@research WrongSubagent` in table | FAIL | FAIL ✅ |
+| B3a: correct implementation | pass | pass ✅ |
+| B4: FREE video Disabled vs fal config | FAIL | FAIL ✅ |
+| B4b: FREE image _none_ vs openrouter | FAIL | FAIL ✅ |
+| B5: MEMORY_LAYER.md env check | no false positive | no false positive ✅ |
+| B6: `/conversations/{id}` CRUD wording | specific methods | specific methods ✅ |
 | Standard gates: `--mode report/fail`, py_compile, lint_feature_matrix | pass | pass ✅ |
-| LSP diagnostics | 0 errors | 0 errors ✅ |
+
 
 

@@ -51,7 +51,7 @@ Daemon uses a tier-based model configuration system. Specific model assignments 
 
 | Tier | Price | Orchestrator Model (Default) | Subagents | Video |
 |------|-------|------------------------------|-----------|-------|
-| **Free** | $0/mo | `kimi-k2.5` | None | Disabled |
+| **Free** | $0/mo | `kimi-k2.5` | None | Enabled (fal) |
 | **Starter** | $9/mo | `kimi-k2.5` | Sonnet 3.5, Gemini Flash | Enabled (fal) |
 | **Pro** | $19/mo | `kimi-k2.5` | Sonnet 3.5, Gemini Flash | Enabled (fal) |
 | **Max** | $29/mo | `claude-opus-4.6` | Sonnet 3.5, Gemini Flash | Enabled (fal) |

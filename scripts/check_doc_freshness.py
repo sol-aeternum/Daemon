@@ -124,6 +124,9 @@ _TIER_MODEL_RE = re.compile(
 _TIER_VIDEO_PROVIDER_RE = re.compile(
     r'tier_([a-z]+)_video_provider\s*:\s*str\s*=\s*"([^"]+)"'
 )
+_TIER_IMAGE_PROVIDER_RE = re.compile(
+    r'tier_([a-z]+)_image_provider\s*:\s*str\s*=\s*"([^"]+)"'
+)
 _AUTO_FAST_MODEL_RE = re.compile(r'auto_fast_model\s*:\s*str\s*=\s*"([^"]+)"')
 _AUTO_REASONING_MODEL_RE = re.compile(r'auto_reasoning_model\s*:\s*str\s*=\s*"([^"]+)"')
 
@@ -146,7 +149,12 @@ def get_tier_facts(root: Path) -> dict[str, Any]:
         tier_name = m.group(1)
         provider = m.group(2)
         video_providers[tier_name] = provider
-    return {"tiers": tiers, "video_providers": video_providers}
+    image_providers: dict[str, str] = {}
+    for m in _TIER_IMAGE_PROVIDER_RE.finditer(text):
+        tier_name = m.group(1)
+        provider = m.group(2)
+        image_providers[tier_name] = provider
+    return {"tiers": tiers, "video_providers": video_providers, "image_providers": image_providers}
 
 
 def get_auto_routing_facts(root: Path) -> dict[str, str]:
@@ -220,6 +228,23 @@ def get_env_var_facts(root: Path) -> dict[str, list[str]]:
                 env_vars.add(m.group(1))
             for m in docker_list_pattern.finditer(text):
                 env_vars.add(m.group(1))
+    memory_layer = root / "MEMORY_LAYER.md"
+    if memory_layer.exists():
+        text = memory_layer.read_text(encoding="utf-8")
+        in_bash_block = False
+        for line in text.splitlines():
+            if line.strip().startswith("```bash"):
+                in_bash_block = True
+                continue
+            if line.strip().startswith("```") and in_bash_block:
+                in_bash_block = False
+                continue
+            if in_bash_block:
+                m = env_var_pattern.match(line.lstrip())
+                if m:
+                    env_vars.add(m.group(1))
+        for m in _ENV_VAR_RE.finditer(text):
+            env_vars.add(m.group(1))
     return {"env_vars": sorted(env_vars)}
 
 
@@ -250,7 +275,39 @@ def extract_all_facts(root: Path) -> dict[str, Any]:
         "tier_prices": get_tier_prices(root),
         "auto_routing": get_auto_routing_facts(root),
         "docker": get_docker_facts(root),
+        "subagents": get_subagent_facts(root),
     }
+
+
+_SUBAGENT_IMPL_NOTES = {
+    "research": "Brave Search + synthesis",
+    "image": "xAI (images/video), fal/Kling (video)",
+    "audio": "ElevenLabs SFX",
+    "document": "Python code generation + execution",
+}
+
+
+def get_subagent_facts(root: Path) -> dict[str, dict[str, str]]:
+    subagents_dir = root / "orchestrator" / "subagents"
+    implemented: set[str] = set()
+    for py_file in subagents_dir.glob("*.py"):
+        if py_file.name.startswith("_"):
+            continue
+        text = py_file.read_text(encoding="utf-8")
+        if re.search(r"^\s*agent_type\s*=\s*SubagentType\.", text, re.MULTILINE):
+            name = py_file.stem
+            if name != "base":
+                implemented.add(name)
+
+    result: dict[str, dict[str, str]] = {}
+    for name in ("research", "image", "audio", "document", "code", "reader"):
+        if name in implemented:
+            result[name] = {"status": "implemented", "note": _SUBAGENT_IMPL_NOTES.get(name, "")}
+        elif name in ("code", "reader"):
+            result[name] = {"status": "reserved", "note": ""}
+        else:
+            result[name] = {"status": "not_implemented", "note": ""}
+    return result
 
 
 
@@ -267,12 +324,14 @@ class CheckId(str, Enum):
     VIDEO_PROVIDERS = "video_providers"
     TIER_MODEL = "tier_model"
     TIER_VIDEO_PROVIDER = "tier_video_provider"
+    TIER_IMAGE_PROVIDER = "tier_image_provider"
     TIER_PRICE = "tier_price"
     ROUTE = "route"
     ENV_VAR = "env_var"
     AUTO_FAST_MODEL = "auto_fast_model"
     AUTO_REASONING_MODEL = "auto_reasoning_model"
     DOCKER_SERVICE_COUNT = "docker_service_count"
+    SUBAGENT_STATUS = "subagent_status"
 
 
 @dataclass
@@ -887,7 +946,12 @@ def _normalize_model_name(model: str) -> str:
     return normalized.strip()
 
 
-def _check_tier_defaults(doc_content: str, tier_defaults: dict[str, dict[str, str]], tier_video_providers: dict[str, str] | None = None) -> list[CheckResult]:
+def _check_tier_defaults(
+    doc_content: str,
+    tier_defaults: dict[str, dict[str, str]],
+    tier_video_providers: dict[str, str] | None = None,
+    tier_image_providers: dict[str, str] | None = None,
+) -> list[CheckResult]:
     """
     Validate tier table model claims against config.py defaults.
 
@@ -898,6 +962,10 @@ def _check_tier_defaults(doc_content: str, tier_defaults: dict[str, dict[str, st
     For each tier-slot-model claim found, the doc model name must exactly match
     the normalized config alias. Multi-option cells (e.g. "Claude 3.5 Sonnet / Opus 4.6")
     are split on "/" and each option is validated against its corresponding slot.
+
+    Provider drift detection:
+    - Video: docs say "Disabled"/"n/a"/"—" but config has tier_X_video_provider → FAIL
+    - Image: docs say "_none_" but config has tier_X_image_provider → FAIL
     """
     results = []
     lines = doc_content.splitlines()
@@ -1015,7 +1083,13 @@ def _check_tier_defaults(doc_content: str, tier_defaults: dict[str, dict[str, st
             doc_slots = tier_claims.get(tier_name, {})
             doc_raw = (doc_slots.get("video") or "").strip("` \t")
             doc_lower = doc_raw.lower()
-            if not doc_lower or doc_lower in ("disabled", "n/a", "—"):
+            if doc_lower in ("disabled", "n/a", "—") or not doc_lower:
+                results.append(CheckResult(
+                    CheckId.TIER_VIDEO_PROVIDER, False,
+                    config_provider,
+                    doc_raw or "(empty)",
+                    f"tier {tier_name} video: config has provider but docs say '{doc_raw}'",
+                ))
                 continue
             embedded_m = re.search(r'\(([^)]+)\)', doc_raw)
             provider_claimed = embedded_m.group(1).strip() if embedded_m else doc_raw
@@ -1025,6 +1099,18 @@ def _check_tier_defaults(doc_content: str, tier_defaults: dict[str, dict[str, st
                     config_provider,
                     provider_claimed,
                     f"tier {tier_name} video provider mismatch: expected {config_provider}",
+                ))
+
+    if tier_image_providers and tier_claims:
+        for tier_name, config_provider in tier_image_providers.items():
+            doc_slots = tier_claims.get(tier_name, {})
+            doc_raw = (doc_slots.get("image") or "").strip("` \t").lower()
+            if doc_raw == "_none_" or doc_raw == "none":
+                results.append(CheckResult(
+                    CheckId.TIER_IMAGE_PROVIDER, False,
+                    config_provider,
+                    "_none_",
+                    f"tier {tier_name} image: config has provider but docs say _none_",
                 ))
 
     return results
@@ -1063,6 +1149,56 @@ def _check_docker_service_count(doc_content: str, expected: int) -> CheckResult:
                                  f"docker service count mismatch: expected {expected}, found {observed}")
             return CheckResult(CheckId.DOCKER_SERVICE_COUNT, True)
     return CheckResult(CheckId.DOCKER_SERVICE_COUNT, True)
+
+
+_SUBAGENT_TABLE_RE = re.compile(
+    r'^\|\s*@(\w+)\s*\|\s*\*\*(?:Implemented|Reserved|Not implemented)\*\*\s*\|'
+    r'\s*([^|]+?)\s*\|'
+)
+
+
+def _check_subagent_table(doc_content: str, subagent_facts: dict[str, dict[str, str]]) -> list[CheckResult]:
+    results = []
+    for line in doc_content.splitlines():
+        m = _SUBAGENT_TABLE_RE.match(line.strip())
+        if not m:
+            continue
+        name = m.group(1).lower()
+        impl_desc = m.group(2).strip()
+        if name not in subagent_facts:
+            continue
+        facts = subagent_facts[name]
+        expected_status = facts["status"]
+        if expected_status == "implemented":
+            if "not implemented" in impl_desc.lower() or "reserved" in impl_desc.lower():
+                results.append(CheckResult(
+                    CheckId.SUBAGENT_STATUS, False,
+                    "Implemented",
+                    impl_desc,
+                    f"@{name} is implemented but table says '{impl_desc}'",
+                ))
+            else:
+                known_note = facts.get("note", "")
+                if known_note:
+                    note_lower = known_note.lower()
+                    impl_lower = impl_desc.lower()
+                    key_terms = [w for w in note_lower.split() if len(w) > 3 and w not in ("none", "code", "python")]
+                    if key_terms and not any(term in impl_lower for term in key_terms):
+                        results.append(CheckResult(
+                            CheckId.SUBAGENT_STATUS, False,
+                            known_note,
+                            impl_desc,
+                            f"@{name} implementation mismatch: expected '{known_note}', got '{impl_desc}'",
+                        ))
+        elif expected_status == "reserved":
+            if "implemented" in impl_desc.lower():
+                results.append(CheckResult(
+                    CheckId.SUBAGENT_STATUS, False,
+                    "Reserved",
+                    impl_desc,
+                    f"@{name} is reserved but table says '{impl_desc}'",
+                ))
+    return results
 
 
 def _find_line_with_fact(lines: list[str], pattern: str) -> int:
@@ -1194,8 +1330,9 @@ def check_document(
 
     tier_defaults = facts.get("tier_defaults", {}).get("tiers", {})
     tier_video_providers = facts.get("tier_defaults", {}).get("video_providers", {})
-    if tier_defaults:
-        tier_results = _check_tier_defaults(text, tier_defaults, tier_video_providers)
+    tier_image_providers = facts.get("tier_defaults", {}).get("image_providers", {})
+    if tier_defaults and doc_path.name in ("TECHNICAL_SPECS.md", "PROJECT_CONTEXT.md"):
+        tier_results = _check_tier_defaults(text, tier_defaults, tier_video_providers, tier_image_providers)
         for tres in tier_results:
             if not tres.passed:
                 exc = _match_exception(exceptions, tres.check_id, str(doc_path))
@@ -1231,7 +1368,7 @@ def check_document(
                                        res.expected, res.observed, res.message or "route mismatch"))
 
     env_facts = facts.get("env_vars", {}).get("env_vars", [])
-    if env_facts and doc_path.name in ("TECHNICAL_SPECS.md", "PROJECT_CONTEXT.md"):
+    if env_facts and doc_path.name in ("TECHNICAL_SPECS.md", "PROJECT_CONTEXT.md", "MEMORY_LAYER.md"):
         res = _check_env_vars(text, env_facts)
         if not res.passed:
             exc = _match_exception(exceptions, CheckId.ENV_VAR, str(doc_path))
@@ -1266,6 +1403,19 @@ def check_document(
                 findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"Docker Compose"),
                                        CheckId.DOCKER_SERVICE_COUNT, "mismatch",
                                        res.expected, res.observed, res.message or "docker service count mismatch"))
+
+    subagent_facts = facts.get("subagents", {})
+    if subagent_facts and doc_path.name == "PROJECT_CONTEXT.md":
+        sub_results = _check_subagent_table(text, subagent_facts)
+        for sres in sub_results:
+            if not sres.passed:
+                exc = _match_exception(exceptions, CheckId.SUBAGENT_STATUS, str(doc_path))
+                if exc and exc.expires >= today:
+                    exc.suppressed_finding = True
+                else:
+                    findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"@"),
+                                           sres.check_id, "mismatch",
+                                           sres.expected, sres.observed, sres.message or f"subagent status mismatch"))
 
     all_active_exceptions = [exc for exc in exceptions if exc.expires >= today]
     return findings, all_active_exceptions

@@ -13,6 +13,10 @@ on:
       - orchestrator/routes/**
       - orchestrator/tools/**
       - orchestrator/subagents/**
+      - orchestrator/prompts.py
+      - orchestrator/council/**
+      - orchestrator/commands/council.py
+      - orchestrator/services/fetch/**
       - backend/image_gen/**
       - orchestrator/main.py
       - orchestrator/memory/**
@@ -23,6 +27,7 @@ on:
       - .env.example
       - providers/**
       - frontend/**
+      - tests/benchmark_results/doc-alignment-regeneration/truth_set.md
   pull_request:
     paths:
       - docs/**
@@ -32,6 +37,10 @@ on:
       - orchestrator/routes/**
       - orchestrator/tools/**
       - orchestrator/subagents/**
+      - orchestrator/prompts.py
+      - orchestrator/council/**
+      - orchestrator/commands/council.py
+      - orchestrator/services/fetch/**
       - backend/image_gen/**
       - orchestrator/main.py
       - orchestrator/memory/**
@@ -42,6 +51,7 @@ on:
       - .env.example
       - providers/**
       - frontend/**
+      - tests/benchmark_results/doc-alignment-regeneration/truth_set.md
 
 jobs:
   doc-freshness:
