@@ -45,7 +45,7 @@ All model assignments are env-var overridable via `TIER_{NAME}_{SLOT}_MODEL`.
 | **FREE** | Kimi K2.5 | _none_ | openrouter | _none_ | _none_ | Disabled |
 | **STARTER** | Kimi K2.5 | Claude 3.5 Sonnet | Gemini 2.5 Flash | Gemini 2.0 Pro Exp | Voyage 4 Large | fal |
 | **PRO** | Kimi K2.5 | Claude 3.5 Sonnet | Gemini 2.5 Flash | Gemini 2.0 Pro Exp | Voyage 4 Large | fal |
-| **MAX** | Claude Opus 4.6 | Claude 3.5 Sonnet / Opus 4.6 | Gemini 2.5 Flash | Gemini 2.0 Pro Exp | Voyage 4 Large | fal |
+| **MAX** | Claude Opus 4.6 | Claude 3.5 Sonnet / Claude Opus 4.6 | Gemini 2.5 Flash | Gemini 2.0 Pro Exp | Voyage 4 Large | fal |
 | **BYOK** | Kimi K2.5 | _none_ | openrouter | _none_ | _none_ | fal |
 
 *Note: Image models are accessed via OpenRouter. Video provider `fal` uses Kling models.*

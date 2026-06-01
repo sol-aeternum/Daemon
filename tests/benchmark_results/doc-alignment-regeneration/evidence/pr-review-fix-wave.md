@@ -1210,6 +1210,55 @@ AST parse: OK ✅
 
 **Fix:** Updated `_SUBAGENT_TABLE_RE` to capture Status as group 2 and Implementation as group 3. Updated `_check_subagent_table()` to validate doc status against expected status: if source says `implemented` but doc says `Reserved`/`Not implemented` → FAIL.
 
+---
+
+## Addendum 21 — PR #6 Review Comments `3331002823`, `3331002825`, `3331218573`, `3331423951` (June 2026)
+
+**Commits:** `f73afd0b` (code fixes) + `{NEW_COMMIT}` (TECHNICAL_SPECS.md Max alias + evidence).
+
+### Comment `3331002823` — Max Code Model Alias Not Spelled Out
+**Problem:** `docs/TECHNICAL_SPECS.md` line 48 showed `Claude 3.5 Sonnet / Opus 4.6` for the MAX Research/Code cell. The bare `Opus 4.6` relied on suffix-stripping in the alias-matching logic rather than being explicitly the full model name.
+
+**Fix:** Changed `TECHNICAL_SPECS.md` MAX Research/Code cell from `Claude 3.5 Sonnet / Opus 4.6` to `Claude 3.5 Sonnet / Claude Opus 4.6`, matching the config alias `openrouter/anthropic/claude-opus-4.6` → `Claude Opus 4.6`. The suffix-based `_is_env_var_name()` filter for env-var detection is orthogonal to this; the Max model alias fix is a separate concern from the env-var suffix fix.
+
+### Comment `3331002825` — PROJECT_CONTEXT Summary Table Invented `research`/`code` Slots
+**Problem:** In the `_check_tier_defaults()` PROJECT_CONTEXT section, `tier_claims` was initialized with `"research": None, "code": None, ...` for all tiers. Since `_check_tier_defaults()` only compares keys that exist in `tier_claims`, the `None` values were not the direct cause — but the initialization was dead code that could mislead future readers.
+
+**Fix:** Removed the per-slot None initializations from `tier_claims` in the PROJECT_CONTEXT branch. The dict now only contains `"orchestrator"` and `"video"` keys, which are the only two columns in the PROJECT_CONTEXT 4-column summary table. Research/code/image/reader/embeddings are never set, so no false slot-invention is possible.
+
+### Comment `3331218573` — `document` Absent from Advertised Schemas; Trusted Context Auth Gate Preserved
+**Problem:** Reviewer noted `document` appeared in `spawn_agent` and `spawn_multiple` tool schema enums but should be removed from advertised schemas while preserving the trusted-context spawn path.
+
+**Fix (commit `a693698e`):** Removed `"document"` from both `spawn_agent` and `spawn_multiple` tool schema enums. Updated `SpawnAgentTool.description` to remove "document reading or document generation" from the description. Runtime authorization gate `_document_spawn_allowed()` retained — trusted-context callers (e.g. council) can still spawn document agents; untrusted callers receive `document spawn rejected` error.
+
+### Comment `3331423951` — Same as `3331218573`
+**Status:** Addressed by the same fix as comment `3331218573` above.
+
+### Files Modified
+- `docs/TECHNICAL_SPECS.md`: MAX Research/Code `Opus 4.6` → `Claude Opus 4.6`
+- `orchestrator/tools/spawn.py`: `document` removed from `spawn_agent` and `spawn_multiple` tool schema enums; description updated (commit `a693698e`)
+- `scripts/check_doc_freshness.py`: `_ENV_VAR_SUFFIXES` frozenset added; `_is_env_var_name()` suffix filter in `_check_env_vars()`; `_ENV_VAR_NAME_RE` regex removed (unused); `tier_claims` per-slot None init removed from PROJECT_CONTEXT branch
+
+### Gates
+| Gate | Result |
+|------|--------|
+| `check_doc_freshness.py --mode fail` | No drift ✅ |
+| `check_doc_freshness.py --mode fail --files README.md AGENTS.md` | No drift ✅ |
+| `py_compile` (spawn.py, check_doc_freshness.py) | OK ✅ |
+| `lint_feature_matrix.py` | OK: 60 rows ✅ |
+
+### Verification
+| Probe | Expected | Actual |
+|-------|----------|--------|
+| P1: TECHNICAL_SPECS Max code cell (Claude Opus 4.6) passes | 0 failures | 0 ✅ |
+| P2: wrong Max code value (Wrong Model) fails | 1 failure | 1 ✅ |
+| P3: PROJECT_CONTEXT Max code not falsely flagged | 0 failures | 0 ✅ |
+| P4: stale structured env-var claim (`DEFINITELY_NOT_IN_SOURCE_VAR`) fails | failure | failure ✅ |
+| P5: `CLUSTER_SIMILARITY_THRESHOLD` in prose not treated as env-var claim | pass | pass ✅ |
+| P6: `document` absent from both schema enums | not found | not found ✅ |
+| P7: `VOYAGE_API_KEY` recognized as env var | True | True ✅ |
+| P8: `CLUSTER_SIMILARITY_THRESHOLD` NOT recognized as env var | False | False ✅ |
+
 ### Files Modified
 - `docs/TECHNICAL_SPECS.md`: Free video `fal` → `Disabled`
 - `docs/MEMORY_LAYER.md`: Removed backticks from `CLUSTER_SIMILARITY_THRESHOLD` and `DAEMON_SYSTEM_PROMPT` prose mentions
