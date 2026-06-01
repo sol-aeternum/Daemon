@@ -114,8 +114,8 @@ For detailed architecture, see [MEMORY_LAYER.md](../MEMORY_LAYER.md).
 |----------|--------|----------------|
 | `@research` | Implemented | Brave Search + synthesis |
 | `@image` | Implemented | xAI (images/video), fal/Kling (video) |
-| `@audio` | Implemented | ElevenLabs TTS/STT/SFX |
-| `@document` | Implemented | File generation (.docx, .csv) |
+| `@audio` | Implemented | ElevenLabs SFX |
+| `@document` | Implemented | Python code generation + execution |
 | `@code` | **Reserved** | Not implemented |
 | `@reader` | **Reserved** | Not implemented |
 

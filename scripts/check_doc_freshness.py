@@ -206,41 +206,6 @@ def get_route_facts(root: Path) -> dict[str, Any]:
     return {"routes": routes}
 
 
-def get_feature_states(root: Path) -> dict[str, str]:
-    matrix_path = root / "docs" / "FEATURE_MATRIX.md"
-    if not matrix_path.exists():
-        return {}
-
-    text = matrix_path.read_text(encoding="utf-8")
-    states: dict[str, str] = {}
-
-    in_matrix = False
-    for line in text.splitlines():
-        if line.startswith("## Feature Matrix"):
-            in_matrix = True
-            continue
-        if in_matrix and line.startswith("## "):
-            break
-        if not in_matrix:
-            continue
-        if line.startswith("| Feature |") or line.startswith("| **"):
-            continue
-        # Skip separator lines like |---|---|---|
-        stripped = line.strip()
-        if stripped.startswith("|---"):
-            continue
-        # Data row: starts with |, has content, not a separator
-        if stripped.startswith("|") and not stripped.startswith("|---"):
-            parts = [p.strip() for p in stripped.split("|")[1:-1]]
-            if len(parts) >= 2:
-                feature = parts[0].strip()
-                state = parts[1].strip()
-                if feature and state and feature != "Feature":
-                    states[feature] = state
-
-    return states
-
-
 _ENV_VAR_RE = re.compile(r'`([A-Z_][A-Z0-9_]*)`')
 
 
@@ -280,7 +245,6 @@ def extract_all_facts(root: Path) -> dict[str, Any]:
         "embeddings": get_embedding_facts(root),
         "providers": get_provider_facts(root),
         "routes": get_route_facts(root),
-        "feature_states": get_feature_states(root),
         "env_vars": get_env_var_facts(root),
         "tier_defaults": get_tier_facts(root),
         "tier_prices": get_tier_prices(root),

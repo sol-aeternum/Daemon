@@ -1102,4 +1102,39 @@ Final PR #6 context-review blockers at HEAD `2195db94`. Three blockers.
 | Standard gates: `--mode report/fail`, py_compile, lint_feature_matrix | pass | pass ✅ |
 | LSP diagnostics | 0 errors | 0 errors ✅ |
 
+---
+
+## Atlas Verification Addendum 15 (Jun 2026)
+
+### Context
+Final PR #6 context-review blockers at HEAD `59b5df4c`. Three blockers addressed.
+
+### Issues Fixed
+
+#### 1. `@audio` Wording: TTS/STT Listed But Not From `@audio`
+**Problem:** PROJECT_CONTEXT.md:117 said `@audio — ElevenLabs TTS/STT/SFX`. Source truth: `AudioSubagent` (`orchestrator/subagents/audio.py:1`) is "sound effects generation via ElevenLabs" — sound-effects only. TTS/STT are separate routes (`/audio/token`, `/audio/scribe-token`) in `main.py`.
+
+**Fix:** Changed to `ElevenLabs SFX`. TTS/STTS are separate endpoints, not `@audio` subagent.
+
+#### 2. `feature_states` Extraction: Dead Code
+**Problem:** `extract_all_facts()` at line 283 called `get_feature_states(root)`, but `check_document()` never consumed `feature_states` — no validation of feature matrix state claims existed.
+
+**Fix:** Removed `get_feature_states()` function and its `extract_all_facts` entry. Eliminates dead code with no loss of coverage.
+
+#### 3. `document` Spawn Exposure: Documentation Accuracy
+**Problem:** `DocumentSubagent` ("Generate and run Python code") was documented as "File generation (.docx, .csv)" — understatement of actual capability and security implications.
+
+**Decision:** Option A — document accurately without architectural changes. Changed to `Python code generation + execution`. This accurately reflects the agent's actual behavior without breaking functionality or requiring trust-model changes.
+
+### Verification
+
+| Probe | Expected | Actual |
+|-------|----------|--------|
+| `@audio` in PROJECT_CONTEXT | "ElevenLabs SFX" | "ElevenLabs SFX" ✅ |
+| TTS/STT routes exist in source | `/audio/token`, `/audio/scribe-token` | present ✅ |
+| `feature_states` in `extract_all_facts()` | absent | absent ✅ |
+| `@document` implementation | "Python code generation + execution" | correct ✅ |
+| Standard gates: `--mode report/fail`, py_compile, lint_feature_matrix | pass | pass ✅ |
+| LSP diagnostics | 0 errors | 0 errors ✅ |
+
 
