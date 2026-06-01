@@ -128,7 +128,7 @@ _AUTO_FAST_MODEL_RE = re.compile(r'auto_fast_model\s*:\s*str\s*=\s*"([^"]+)"')
 _AUTO_REASONING_MODEL_RE = re.compile(r'auto_reasoning_model\s*:\s*str\s*=\s*"([^"]+)"')
 
 
-def get_tier_facts(root: Path) -> dict[str, dict[str, str]]:
+def get_tier_facts(root: Path) -> dict[str, Any]:
     config_path = root / "orchestrator" / "config.py"
     if not config_path.exists():
         return {}
