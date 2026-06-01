@@ -366,7 +366,6 @@ class SpawnMultipleTool(Tool):
     async def execute(self, **kwargs: Any) -> str:
         """Execute multiple subagents in parallel."""
         agents = kwargs.get("agents", [])
-        manager = get_subagent_manager(db_pool=self._db_pool)
 
         spawns: list[tuple[SubagentType, str, dict[str, Any] | None, str | None]] = []
         for agent_spec in agents:
@@ -377,7 +376,7 @@ class SpawnMultipleTool(Tool):
                 spawns.append((
                     SubagentType.IMAGE,
                     "",
-                    {"_spawn_error": f"Unknown agent_type: {agent_type_str}"},
+                    {"_spawn_error": f"Unknown agent_type: {agent_type_str}", "_orig_agent_type": agent_type_str},
                     None,
                 ))
                 continue
@@ -407,7 +406,7 @@ class SpawnMultipleTool(Tool):
 
         rejected = [
             {
-                "agent_type": at.value,
+                "agent_type": c.get("_orig_agent_type", at.value),
                 "task": t,
                 "session_id": sid,
                 "result": c,
@@ -427,6 +426,7 @@ class SpawnMultipleTool(Tool):
                 }
             )
 
+        manager = get_subagent_manager(db_pool=self._db_pool)
         results = []
         for agent_type, task, context, session_id in valid_spawns:
             result = await manager.spawn(agent_type, task, context, session_id)
