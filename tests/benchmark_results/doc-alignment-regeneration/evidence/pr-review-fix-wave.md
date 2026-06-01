@@ -828,11 +828,13 @@ Follow-up from `0934e3f7` targeted probe verification. Two remaining issues iden
 
 **Fix:** Changed pattern from `Docker Compose \(` to `Docker Compose Services? \(` making "Services" optional.
 
+**Regression caught and fixed:** `Services?` makes only the trailing `s` optional, not the whole word. Final correct pattern uses `(?: Services)?` to make the entire word optional.
+
 ```python
-# Before:
-r'^#{0,3}\s*Docker Compose \((\d+) services?\)'
-# After:
+# Before (broken — `Services?` only makes 's' optional):
 r'^#{0,3}\s*Docker Compose Services? \((\d+) services?\)'
+# After (correct — `(?: Services)?` makes whole word optional):
+r'^#{0,3}\s*Docker Compose(?: Services)? \((\d+) services?\)'
 ```
 
 #### 2. Route Prefix Extraction: Confirmed Working
@@ -861,7 +863,9 @@ python scripts/lint_feature_matrix.py                              # OK: 60 feat
 | stale `auto_fast_model: \`bad/model\`` | Exit 1 | Exit 1 ✅ |
 | stale tier video `xai` where source=`fal` | Exit 1 | Exit 1 ✅ |
 
-### Commit Pushed
-- `0934e3f7` — fix(lint): auto-routing backtick regex, docker heading anchor, tier video providers (auto-routing fix, docker `#{0,3}` anchor, tier video provider wiring)
+### Commits Pushed
+- `0934e3f7` — fix(lint): auto-routing backtick regex, docker heading anchor, tier video providers
+- `28bc6752` — fix(lint): docker Services heading support; confirm route prefix; add Addendum 10
+- `[fix]` — fix(lint): correct `(?: Services)?` optional word group in docker count regex
 - `[follow-up]` — fix(lint): make `Services` optional in docker count regex, confirm route prefix working, add Addendum 10 evidence
 
