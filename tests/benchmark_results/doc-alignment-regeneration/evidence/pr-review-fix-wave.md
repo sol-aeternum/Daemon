@@ -1164,7 +1164,7 @@ AST parse: OK ✅
 
 ## Addendum 19 — Free Tier Video/Image Provider Fixes (June 2026)
 
-**Commit:** `bfa03b80` (prior wave) and `5e46fa34` (evidence correction).
+**Commit:** `74cb76d0`.
 
 ### Free Tier Video: `Enabled (fal)` vs `tier_video_enabled=False`
 **Problem:** `docs/PROJECT_CONTEXT.md` Free tier video cell showed `Enabled (fal)`, but `orchestrator/config.py` has `tier_video_enabled=False` for Free tier. The check only compared provider names, not the enabled/disabled state.
