@@ -758,7 +758,7 @@ def _normalize_model_name(model: str) -> str:
     return normalized.strip()
 
 
-def _check_tier_defaults(doc_content: str, tier_defaults: dict[str, dict[str, str]]) -> list[CheckResult]:
+def _check_tier_defaults(doc_content: str, tier_defaults: dict[str, dict[str, str]], tier_video_providers: dict[str, str] | None = None) -> list[CheckResult]:
     """
     Validate tier table model claims against config.py defaults.
 
@@ -863,14 +863,24 @@ def _check_tier_defaults(doc_content: str, tier_defaults: dict[str, dict[str, st
                         f"tier {tier_name} {slot} mismatch: expected {config_model}",
                     ))
 
+    if tier_video_providers and tier_claims:
+        for tier_name, config_provider in tier_video_providers.items():
+            doc_slots = tier_claims.get(tier_name, {})
+            doc_raw = (doc_slots.get("video") or "").strip("` \t")
+            doc_lower = doc_raw.lower()
+            if not doc_lower or doc_lower in ("disabled", "n/a", "—"):
+                continue
+            embedded_m = re.search(r'\(([^)]+)\)', doc_raw)
+            provider_claimed = embedded_m.group(1).strip() if embedded_m else doc_raw
+            if provider_claimed.lower() != config_provider.lower():
+                results.append(CheckResult(
+                    CheckId.TIER_VIDEO_PROVIDER, False,
+                    config_provider,
+                    provider_claimed,
+                    f"tier {tier_name} video provider mismatch: expected {config_provider}",
+                ))
+
     return results
-
-
-_AUTO_MODEL_RE = re.compile(
-    r'(?:\*\*auto_((?:fast|reasoning)_model)\*\*|auto_((?:fast|reasoning)_model))'
-    r'[:=\s]+(?:["\'])?([a-z0-9/._-]+)(?:["\']?\s|$)',
-    re.IGNORECASE,
-)
 
 
 def _check_auto_routing(doc_content: str, auto_facts: dict[str, str]) -> list[CheckResult]:
@@ -880,7 +890,7 @@ def _check_auto_routing(doc_content: str, auto_facts: dict[str, str]) -> list[Ch
         if not expected:
             continue
         m = re.search(
-            rf'(?:\*\*{label}\*\*|{label})[:=\s]+(?:["\'])?([a-z0-9/._-]+)(?:["\']?\s|$)',
+            rf'(?:\*\*{label}\*\*|{label})`?[:=\s]+`?([a-z0-9/._-]+)`?(?:\s|$)',
             doc_content, re.IGNORECASE,
         )
         if not m:
@@ -893,7 +903,7 @@ def _check_auto_routing(doc_content: str, auto_facts: dict[str, str]) -> list[Ch
     return results
 
 
-_DOCKER_SERVICE_COUNT_RE = re.compile(r'^\s*Docker Compose \((\d+) services?\)', re.IGNORECASE)
+_DOCKER_SERVICE_COUNT_RE = re.compile(r'^#{0,3}\s*Docker Compose \((\d+) services?\)', re.IGNORECASE)
 
 
 def _check_docker_service_count(doc_content: str, expected: int) -> CheckResult:
@@ -1016,17 +1026,18 @@ def check_document(
                                    res.expected, res.observed, res.message or "video provider mismatch"))
 
     tier_defaults = facts.get("tier_defaults", {}).get("tiers", {})
+    tier_video_providers = facts.get("tier_defaults", {}).get("video_providers", {})
     if tier_defaults:
-        tier_results = _check_tier_defaults(text, tier_defaults)
+        tier_results = _check_tier_defaults(text, tier_defaults, tier_video_providers)
         for tres in tier_results:
             if not tres.passed:
-                exc = _match_exception(exceptions, CheckId.TIER_MODEL, str(doc_path))
+                exc = _match_exception(exceptions, tres.check_id, str(doc_path))
                 if exc and exc.expires >= today:
                     exc.suppressed_finding = True
                 else:
                     findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"\*\*[A-Z]+\*\*"),
-                                           CheckId.TIER_MODEL, "mismatch",
-                                           tres.expected, tres.observed, tres.message or f"tier model mismatch"))
+                                           tres.check_id, "mismatch",
+                                           tres.expected, tres.observed, tres.message or f"{tres.check_id} mismatch"))
 
     tier_prices = facts.get("tier_prices", {}).get("tier_prices", {})
     if tier_prices:
