@@ -216,32 +216,36 @@ class SpawnAgentTool(Tool):
         self._db_pool = db_pool
         self._trusted_spawn_context = trusted_spawn_context or {}
 
+    def _document_spawn_allowed(self) -> bool:
+        """Return True if document spawning is explicitly authorized in trusted context."""
+        doc_trust = self._trusted_spawn_context.get("document")
+        if isinstance(doc_trust, dict):
+            return doc_trust.get("enabled") is True
+        return doc_trust is True
+
     def _apply_trusted_context(
         self,
         agent_type: SubagentType,
         context: dict[str, Any] | None,
     ) -> dict[str, Any] | None:
-        if agent_type != SubagentType.IMAGE:
-            return context
-
-        merged_context: dict[str, Any] = dict(context or {})
-        trusted_video = self._trusted_spawn_context.get("video")
-        if not isinstance(trusted_video, dict):
+        if agent_type == SubagentType.IMAGE:
+            merged_context: dict[str, Any] = dict(context or {})
+            trusted_video = self._trusted_spawn_context.get("video")
+            if isinstance(trusted_video, dict):
+                merged_context["mode"] = "video"
+                for key in (
+                    "duration",
+                    "tier",
+                    "user_id",
+                    "source_mode",
+                    "reference_image_url",
+                    "reference_image_id",
+                ):
+                    value = trusted_video.get(key)
+                    if value is not None:
+                        merged_context[key] = value
             return merged_context
-
-        merged_context["mode"] = "video"
-        for key in (
-            "duration",
-            "tier",
-            "user_id",
-            "source_mode",
-            "reference_image_url",
-            "reference_image_id",
-        ):
-            value = trusted_video.get(key)
-            if value is not None:
-                merged_context[key] = value
-        return merged_context
+        return context
 
     async def execute(self, **kwargs: Any) -> str:
         """Execute the spawn agent tool."""
@@ -250,7 +254,6 @@ class SpawnAgentTool(Tool):
         context = kwargs.get("context")
         session_id = kwargs.get("session_id")
 
-        # Map string to enum
         try:
             subagent_type = SubagentType(agent_type.lower())
         except ValueError:
@@ -262,6 +265,14 @@ class SpawnAgentTool(Tool):
                 }
             )
 
+        if subagent_type == SubagentType.DOCUMENT and not self._document_spawn_allowed():
+            return json.dumps(
+                {
+                    "error": "document agent requires explicit authorization",
+                    "agent_type": "document",
+                    "hint": "trusted_spawn_context with document.enabled=true is required",
+                }
+            )
         context = self._apply_trusted_context(subagent_type, context)
 
         manager = get_subagent_manager(db_pool=self._db_pool)
@@ -318,64 +329,106 @@ class SpawnMultipleTool(Tool):
         self._db_pool = db_pool
         self._trusted_spawn_context = trusted_spawn_context or {}
 
+    def _document_spawn_allowed(self) -> bool:
+        """Return True if document spawning is explicitly authorized in trusted context."""
+        doc_trust = self._trusted_spawn_context.get("document")
+        if isinstance(doc_trust, dict):
+            return doc_trust.get("enabled") is True
+        return doc_trust is True
+
     def _apply_trusted_context(
         self,
         agent_type: SubagentType,
         context: dict[str, Any] | None,
     ) -> dict[str, Any] | None:
-        if agent_type != SubagentType.IMAGE:
-            return context
-
-        merged_context: dict[str, Any] = dict(context or {})
-        trusted_video = self._trusted_spawn_context.get("video")
-        if not isinstance(trusted_video, dict):
+        if agent_type == SubagentType.IMAGE:
+            merged_context: dict[str, Any] = dict(context or {})
+            trusted_video = self._trusted_spawn_context.get("video")
+            if isinstance(trusted_video, dict):
+                merged_context["mode"] = "video"
+                for key in (
+                    "duration",
+                    "tier",
+                    "user_id",
+                    "source_mode",
+                    "reference_image_url",
+                    "reference_image_id",
+                ):
+                    value = trusted_video.get(key)
+                    if value is not None:
+                        merged_context[key] = value
             return merged_context
-
-        merged_context["mode"] = "video"
-        for key in (
-            "duration",
-            "tier",
-            "user_id",
-            "source_mode",
-            "reference_image_url",
-            "reference_image_id",
-        ):
-            value = trusted_video.get(key)
-            if value is not None:
-                merged_context[key] = value
-        return merged_context
+        if agent_type == SubagentType.DOCUMENT:
+            if not self._document_spawn_allowed():
+                return None
+        return context
 
     async def execute(self, **kwargs: Any) -> str:
         """Execute multiple subagents in parallel."""
         agents = kwargs.get("agents", [])
         manager = get_subagent_manager(db_pool=self._db_pool)
 
-        # Convert to tuples for spawn_multiple
-        spawns = []
+        spawns: list[tuple[SubagentType, str, dict[str, Any] | None, str | None]] = []
         for agent_spec in agents:
             agent_type_str = agent_spec.get("agent_type", "")
             try:
                 agent_type = SubagentType(agent_type_str.lower())
-                task = agent_spec.get("task", "")
-                context = self._apply_trusted_context(
-                    agent_type, agent_spec.get("context")
-                )
-                session_id = agent_spec.get("session_id")
-                spawns.append((agent_type, task, context, session_id))
             except ValueError:
-                pass  # Skip invalid types
+                spawns.append((
+                    SubagentType.IMAGE,
+                    "",
+                    {"_spawn_error": f"Unknown agent_type: {agent_type_str}"},
+                    None,
+                ))
+                continue
+            if agent_type == SubagentType.DOCUMENT and not self._document_spawn_allowed():
+                spawns.append((
+                    SubagentType.DOCUMENT,
+                    agent_spec.get("task", ""),
+                    {"_spawn_rejected": "document agent requires explicit authorization"},
+                    agent_spec.get("session_id"),
+                ))
+                continue
+            task = agent_spec.get("task", "")
+            context = self._apply_trusted_context(
+                agent_type, agent_spec.get("context")
+            )
+            session_id = agent_spec.get("session_id")
+            spawns.append((agent_type, task, context, session_id))
 
-        if not spawns:
+        valid_spawns = [
+            (at, t, c, sid)
+            for at, t, c, sid in spawns
+            if not (
+                isinstance(c, dict)
+                and ("_spawn_error" in c or "_spawn_rejected" in c)
+            )
+        ]
+
+        rejected = [
+            {
+                "agent_type": at.value,
+                "task": t,
+                "session_id": sid,
+                "result": c,
+            }
+            for at, t, c, sid in spawns
+            if isinstance(c, dict)
+            and ("_spawn_error" in c or "_spawn_rejected" in c)
+        ]
+
+        if not valid_spawns:
             return json.dumps(
                 {
                     "error": "No valid agents to spawn",
+                    "agents_spawned": 0,
+                    "rejected": rejected,
                     "results": [],
                 }
             )
 
-        # Execute in parallel
         results = []
-        for agent_type, task, context, session_id in spawns:
+        for agent_type, task, context, session_id in valid_spawns:
             result = await manager.spawn(agent_type, task, context, session_id)
             result_dict = result.to_dict()
             result_dict = _persist_image_result(result_dict)
@@ -387,6 +440,7 @@ class SpawnMultipleTool(Tool):
             {
                 "parallel_execution": True,
                 "agents_spawned": len(results),
+                "rejected": rejected,
                 "results": results,
             }
         )
