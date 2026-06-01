@@ -652,3 +652,63 @@ python scripts/lint_feature_matrix.py                            # OK: 60 featur
 - `28e354f8` — fix(lint): LSP type annotation and router prefix route extraction
 - `[follow-up]` — fix: tier prices from Settings.list_available_tiers(), provider-qualified model ID splitting on ` / ` not bare `/`, add Addendum 7 evidence
 
+---
+
+## Atlas Verification Addendum 8 (Jun 2026)
+
+### Context
+Fixes for three targeted blockers from Atlas's verification of `d946cb86`:
+1. Stale single-segment routes not caught in route table context
+2. `backend/image_gen/router.py` not included in route extraction
+3. Dedup threshold swapped values not caught (0.9 vs 0.90 numeric mismatch; label-boundary false positives)
+
+### Issues Fixed
+
+#### 1. Route Extraction: Include `backend/image_gen/router.py`
+**Problem:** `get_route_facts()` only scanned `orchestrator/main.py` and `orchestrator/routes/*.py`. The image generation router at `backend/image_gen/router.py` was excluded, so `/api/images/generate` was not in the extracted route facts.
+
+**Fix:** Added `image_gen_router = root / "backend" / "image_gen" / "router.py"` to the scanned paths list at `scripts/check_doc_freshness.py:153-154`.
+
+#### 2. Route Checking: Validate Single-Segment Routes in Table Context
+**Problem:** The route filter `route.count('/') >= 2` skipped ALL single-segment routes, so stale `/bogus` in a route table was not flagged.
+
+**Fix:** Added `_KNOWN_SINGLE_SEGMENT_ROUTES` allowlist (`/chat`, `/health`, `/status`, `/providers`) and `_is_route_table_row()` method-line detection. Single-segment routes in a route TABLE row (detected by presence of `| METHOD |` before the path) are now validated. Single-segment routes in prose (e.g., "The `/local` flag") are still skipped.
+
+#### 3. Dedup Threshold: Line-First + Float Normalization + Hyphen Lookbehind
+**Problem:** Two issues caused swapped dedup values to pass:
+- The 100-char window approach was too broad (adjacent threshold lines polluted the window)
+- `0.9` vs `0.90` were treated as different strings (no numeric comparison)
+- "pre-merge" matched `\bmerge\b` (word boundary exists between `-` and `m`)
+
+**Fix:** Three changes at `scripts/check_doc_freshness.py:512-566`:
+- Line-first: check same line for both label AND threshold value first; only expand to ±2-line window if no value on same line
+- Float normalization: `_float_normalize()` converts `0.9` and `0.90` to `"0.90"` for comparison
+- Label patterns updated with negative lookbehind `(?<!-)` to avoid matching "pre-merge" type compounds: `(?<!-)\bmerge\b`, `(?<!-)\bgeneric\b`, `(?<!-)\bsame.?slot\b`
+
+### Verification
+
+#### Standard Gates
+```bash
+python scripts/check_doc_freshness.py --mode report --format text  # No drift detected.
+python scripts/check_doc_freshness.py --mode fail --format text    # No drift detected.
+python scripts/check_doc_freshness.py --mode fail --files README.md AGENTS.md  # No drift detected.
+python -m py_compile scripts/check_doc_freshness.py              # Compile OK
+python scripts/lint_feature_matrix.py                             # OK: 60 feature rows validated
+```
+
+#### Targeted Fixtures (8/8)
+| Fixture | Expected | Actual |
+|---------|----------|--------|
+| `route_stale_single_segment` (stale `/bogus` in table) | Exit 1 | Exit 1 ✅ |
+| `route_valid_single_segment` (valid `/chat`, `/health`) | Exit 0 | Exit 0 ✅ |
+| `route_prose_local` (`/local` in prose — not table) | Exit 0 | Exit 0 ✅ |
+| `route_api_images_generate` (`/api/images/generate`) | Exit 0 | Exit 0 ✅ |
+| `route_api_images_not_real` (stale `/api/images/not-real`) | Exit 1 | Exit 1 ✅ |
+| `dedup_swapped` (merge=0.65, generic=0.90, same_slot=0.82) | Exit 1 | Exit 1 ✅ |
+| `dedup_correct` (merge=0.90, generic=0.82, same_slot=0.65) | Exit 0 | Exit 0 ✅ |
+| `dedup_numeric_equiv` (merge=0.9, same-line values) | Exit 0 | Exit 0 ✅ |
+
+### Commit Pushed
+- `[fix]` — scripts/check_doc_freshness.py: include image_gen router, validate single-segment routes in table context, dedup line-first with float normalization and hyphen-lookbehind label patterns
+- `[follow-up]` — add Addendum 8 evidence
+

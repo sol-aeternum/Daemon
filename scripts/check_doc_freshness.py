@@ -150,9 +150,10 @@ def _strip_trailing_slash(path: str) -> str:
 def get_route_facts(root: Path) -> dict[str, Any]:
     main_path = root / "orchestrator" / "main.py"
     routes_dir = root / "orchestrator" / "routes"
+    image_gen_router = root / "backend" / "image_gen" / "router.py"
     routes: dict[str, list[str]] = {}
 
-    for path in [main_path] + sorted(routes_dir.glob("*.py")):
+    for path in [main_path] + sorted(routes_dir.glob("*.py")) + [image_gen_router]:
         if not path.exists():
             continue
         text = path.read_text(encoding="utf-8")
@@ -379,6 +380,13 @@ def _check_tier_prices(doc_content: str, source_prices: dict[str, str]) -> Check
 
 
 _ROUTE_TABLE_RE = re.compile(r'`(/[^`]+)`')
+_KNOWN_SINGLE_SEGMENT_ROUTES = frozenset(["/chat", "/health", "/status", "/providers"])
+_METHOD_LINE_RE = re.compile(r'\|\s*(GET|POST|PUT|PATCH|DELETE|OPTIONS)\s*\|', re.IGNORECASE)
+
+
+def _is_route_table_row(line_text: str, route_start: int) -> bool:
+    segment_before = line_text[:route_start]
+    return bool(_METHOD_LINE_RE.search(segment_before))
 
 
 def _normalize_route(route: str) -> str:
@@ -399,7 +407,20 @@ def _check_routes(doc_content: str, source_routes: dict[str, list[str]]) -> Chec
     doc_routes: list[str] = []
     for m in _ROUTE_TABLE_RE.finditer(doc_content):
         route = m.group(1).strip()
-        if route.startswith('/') and ('{' in route or route.count('/') >= 2):
+        if not route.startswith('/'):
+            continue
+        if route.count('/') >= 2:
+            doc_routes.append(route)
+            continue
+        if route in _KNOWN_SINGLE_SEGMENT_ROUTES:
+            doc_routes.append(route)
+            continue
+        line_start = doc_content.rfind('\n', 0, m.start()) + 1
+        line_end = doc_content.find('\n', m.start())
+        if line_end == -1:
+            line_end = len(doc_content)
+        line_text = doc_content[line_start:line_end]
+        if _is_route_table_row(line_text, m.start() - line_start):
             doc_routes.append(route)
     if not doc_routes:
         return CheckResult(CheckId.ROUTE, True)
@@ -501,28 +522,53 @@ def _check_embedding_dimensions(doc_content: str, expected: int) -> CheckResult:
     return CheckResult(CheckId.EMBEDDING_DIMENSIONS, True)
 
 
+def _float_normalize(val: float) -> str:
+    return f"{val:.2f}"
+
+
 def _check_dedup_threshold(doc_content: str, threshold_name: str, expected: float, label_pattern: str) -> CheckResult:
-    """
-    Check dedup threshold with label binding.
+    label_re = re.compile(label_pattern, re.IGNORECASE)
+    expected_norm = _float_normalize(expected)
+    lines = doc_content.splitlines()
 
-    The threshold value must appear near its corresponding label, not just anywhere
-    in the document. This prevents swapped labels (e.g., merge=0.65, same_slot=0.90)
-    from passing when the wrong value is in the wrong section.
-    """
-    # Build a pattern that requires the label near the threshold value
-    # Allow flexible whitespace, punctuation, and optional ≥/> prefix
-    labeled_pattern = rf'{label_pattern}.{{0,100}}(?:≥\s*)?{re.escape(str(expected))}'
-    if re.search(labeled_pattern, doc_content, re.IGNORECASE | re.DOTALL):
-        return CheckResult(threshold_name, True)
-
-    # Check if wrong threshold is near this label (indicates swapped values)
-    wrong_threshold_pattern = rf'{label_pattern}.{{0,100}}\b0\.\d{{2}}\b'
-    if re.search(wrong_threshold_pattern, doc_content, re.IGNORECASE | re.DOTALL):
-        found_match = re.search(rf'{label_pattern}.{{0,100}}\b0\.\d{{2}}\b', doc_content, re.IGNORECASE | re.DOTALL)
-        found_val = found_match.group(0).split()[-1] if found_match else "?"
-        return CheckResult(threshold_name, False, str(expected), found_val,
-                          f"dedup threshold mismatch for {threshold_name}: expected {expected} near '{label_pattern}', found {found_val}")
-
+    for i, line in enumerate(lines):
+        if not label_re.search(line):
+            continue
+        line_vals = re.findall(r'\b0\.\d{1,}\b', line)
+        if line_vals:
+            matched = False
+            wrong_val = None
+            for v in line_vals:
+                if _float_normalize(float(v)) == expected_norm:
+                    matched = True
+                    break
+                else:
+                    wrong_val = v
+            if matched:
+                return CheckResult(threshold_name, True)
+            elif wrong_val:
+                return CheckResult(threshold_name, False, expected_norm, wrong_val,
+                                  f"dedup threshold mismatch for {threshold_name}: expected {expected_norm} near '{label_pattern}', found {wrong_val}")
+            continue
+        window_start = max(0, i - 2)
+        window_end = min(len(lines), i + 3)
+        window_text = "\n".join(lines[window_start:window_end])
+        all_vals = re.findall(r'\b0\.\d{1,}\b', window_text)
+        if not all_vals:
+            continue
+        matched = False
+        wrong_val = None
+        for v in all_vals:
+            if _float_normalize(float(v)) == expected_norm:
+                matched = True
+                break
+            else:
+                wrong_val = v
+        if matched:
+            return CheckResult(threshold_name, True)
+        elif wrong_val:
+            return CheckResult(threshold_name, False, expected_norm, wrong_val,
+                              f"dedup threshold mismatch for {threshold_name}: expected {expected_norm} near '{label_pattern}', found {wrong_val}")
     return CheckResult(threshold_name, True)
 
 
@@ -862,9 +908,9 @@ def check_document(
                                    res.expected, res.observed, res.message or "embedding dimensions mismatch"))
 
     dedup_checks = [
-        (CheckId.DEDUP_MERGE, efact["dedup_merge"], r"merge"),
-        (CheckId.DEDUP_SUPERSEDE_GENERIC, efact["dedup_supersede_generic"], r"generic"),
-        (CheckId.DEDUP_SUPERSEDE_SAME_SLOT, efact["dedup_supersede_same_slot"], r"same.?slot"),
+        (CheckId.DEDUP_MERGE, efact["dedup_merge"], r"(?<!-)\bmerge\b"),
+        (CheckId.DEDUP_SUPERSEDE_GENERIC, efact["dedup_supersede_generic"], r"(?<!-)\bgeneric\b"),
+        (CheckId.DEDUP_SUPERSEDE_SAME_SLOT, efact["dedup_supersede_same_slot"], r"(?<!-)\bsame.?slot\b"),
     ]
     for check_id, expected_val, label_pat in dedup_checks:
         if expected_val is None:
