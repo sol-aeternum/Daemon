@@ -113,7 +113,7 @@ For detailed architecture, see [MEMORY_LAYER.md](../MEMORY_LAYER.md).
 | Subagent | Status | Implementation |
 |----------|--------|----------------|
 | `@research` | Implemented | Brave Search + synthesis |
-| `@image` | Implemented | xAI (images/video), fal/Kling (video) |
+| `@image` | Implemented | OpenRouter/Gemini (images), xAI/fal (video) |
 | `@audio` | Implemented | ElevenLabs SFX |
 | `@document` | Implemented | Python code generation + execution |
 | `@code` | **Reserved** | Not implemented |

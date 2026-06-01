@@ -281,7 +281,7 @@ def extract_all_facts(root: Path) -> dict[str, Any]:
 
 _SUBAGENT_IMPL_NOTES = {
     "research": "Brave Search + synthesis",
-    "image": "xAI (images/video), fal/Kling (video)",
+    "image": "OpenRouter/Gemini (images), xAI/fal (video)",
     "audio": "ElevenLabs SFX",
     "document": "Python code generation + execution",
 }
@@ -577,6 +577,45 @@ def _check_env_vars(doc_content: str, source_vars: list[str]) -> CheckResult:
             f"source env vars: {', '.join(sorted(source_set))}",
             f"documented stale: {', '.join(sorted(stale))}",
             f"env var(s) not found in source: {', '.join(sorted(stale))}",
+        )
+    return CheckResult(CheckId.ENV_VAR, True)
+
+
+_MEMORY_LAYER_REQUIRED_VARS = frozenset([
+    "VOYAGE_API_KEY",
+    "EMBEDDING_DOCUMENT_MODEL",
+    "EMBEDDING_QUERY_MODEL",
+    "EMBEDDING_DIMENSIONS",
+    "DEDUP_MERGE_THRESHOLD",
+    "DEDUP_SUPERSEDE_THRESHOLD",
+    "DEDUP_SUPERSEDE_SAME_SLOT_THRESHOLD",
+])
+
+
+def _check_memory_layer_env_block(doc_content: str) -> CheckResult:
+    in_block = False
+    found_vars: set[str] = set()
+    env_assign = re.compile(r'^([A-Z_][A-Z0-9_]*)=')
+    for line in doc_content.splitlines():
+        stripped = line.strip()
+        unescaped = stripped[1:] if stripped.startswith('\\') else stripped
+        if unescaped.startswith("```bash") and "## Environment" in doc_content[:doc_content.find(line)]:
+            in_block = True
+            continue
+        if unescaped.startswith("```") and in_block:
+            in_block = False
+            continue
+        if in_block:
+            m = env_assign.match(line.lstrip())
+            if m:
+                found_vars.add(m.group(1))
+    missing = _MEMORY_LAYER_REQUIRED_VARS - found_vars
+    if missing:
+        return CheckResult(
+            CheckId.ENV_VAR, False,
+            f"required memory vars: {', '.join(sorted(_MEMORY_LAYER_REQUIRED_VARS))}",
+            f"missing: {', '.join(sorted(missing))}",
+            f"memory layer env block missing: {', '.join(sorted(missing))}",
         )
     return CheckResult(CheckId.ENV_VAR, True)
 
@@ -1152,8 +1191,7 @@ def _check_docker_service_count(doc_content: str, expected: int) -> CheckResult:
 
 
 _SUBAGENT_TABLE_RE = re.compile(
-    r'^\|\s*@(\w+)\s*\|\s*\*\*(?:Implemented|Reserved|Not implemented)\*\*\s*\|'
-    r'\s*([^|]+?)\s*\|'
+    r'^\|\s*`?@(\w+)`?\s*\|\s*(?:\*\*)?(?:Implemented|Reserved|Not implemented)(?:\*\*)?\s*\|\s*([^|]+?)\s*\|'
 )
 
 
@@ -1180,9 +1218,9 @@ def _check_subagent_table(doc_content: str, subagent_facts: dict[str, dict[str, 
             else:
                 known_note = facts.get("note", "")
                 if known_note:
-                    note_lower = known_note.lower()
                     impl_lower = impl_desc.lower()
-                    key_terms = [w for w in note_lower.split() if len(w) > 3 and w not in ("none", "code", "python")]
+                    note_tokens = re.split(r'[^a-z0-9]+', known_note.lower())
+                    key_terms = [w for w in note_tokens if len(w) > 3 and w not in ("none", "code", "python")]
                     if key_terms and not any(term in impl_lower for term in key_terms):
                         results.append(CheckResult(
                             CheckId.SUBAGENT_STATUS, False,
@@ -1191,7 +1229,8 @@ def _check_subagent_table(doc_content: str, subagent_facts: dict[str, dict[str, 
                             f"@{name} implementation mismatch: expected '{known_note}', got '{impl_desc}'",
                         ))
         elif expected_status == "reserved":
-            if "implemented" in impl_desc.lower():
+            impl_lower = impl_desc.lower()
+            if "implemented" in impl_lower and "not implemented" not in impl_lower:
                 results.append(CheckResult(
                     CheckId.SUBAGENT_STATUS, False,
                     "Reserved",
@@ -1378,6 +1417,13 @@ def check_document(
                 findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"[A-Z_][A-Z0-9_]*"),
                                        CheckId.ENV_VAR, "mismatch",
                                        res.expected, res.observed, res.message or "env var mismatch"))
+
+    if doc_path.name == "MEMORY_LAYER.md":
+        mem_res = _check_memory_layer_env_block(text)
+        if not mem_res.passed:
+            findings.append(Finding(str(doc_path), 1,
+                                   CheckId.ENV_VAR, "missing",
+                                   mem_res.expected, mem_res.observed, mem_res.message or "memory layer env block check failed"))
 
     auto_facts = facts.get("auto_routing", {})
     if auto_facts and doc_path.name == "TECHNICAL_SPECS.md":

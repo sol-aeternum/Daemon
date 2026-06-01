@@ -1117,5 +1117,46 @@ Six substantive blockers from final context review `bg_7ab600ac`.
 | B6: `/conversations/{id}` CRUD wording | specific methods | specific methods ✅ |
 | Standard gates: `--mode report/fail`, py_compile, lint_feature_matrix | pass | pass ✅ |
 
+---
 
+## Addendum 18 — B3/B5 Regressions from `389dff56` (June 2026)
+
+**Commit:** `389dff56` introduced two regressions in the B3/B5 probes:
+
+### B3 Regression — Regex Group Capture Wrong Column
+**Problem:** `_SUBAGENT_TABLE_RE` captured the Implementation column as group 2, but the function body used `m.group(2)` as `impl_desc` while also checking `m.group(3)` — causing false mismatches for correct implementations.
+
+**Fix:** Changed regex to `r'^\|\s*@(\w+)\s*\|\s*(?:\*\*)?(?:Implemented|Reserved|Not implemented)(?:\*\*)?\s*\|\s*([^|]+?)\s*\|'` — now captures `@name` in group 1 and implementation text in group 2. Also fixed key-term tokenization to split on non-alphanumeric characters so `(images/video)` tokenizes correctly instead of producing a single `images/video` token that fails `term in impl_lower` checks.
+
+**B3 probes:** `WrongSubagent` fails ✅ | correct impl passes ✅ | `@image` old text fails ✅ | `@image` new text passes ✅
+
+### B5 Regression — Escaped Fence Detection + Missing Vars Detection
+**Problem 1:** `_check_memory_layer_env_block()` never entered the bash block because the MEMORY_LAYER.md file uses `\```bash` (escaped triple backticks). The check for `stripped.startswith("```bash")` never matched.
+
+**Fix:** Added `unescaped = stripped[1:] if stripped.startswith('\\') else stripped` to strip at most one leading backslash before testing the fence marker.
+
+**Problem 2:** Even after fixing fence detection, the function was only detecting stale documented vars (vars that appeared in prose but not in the bash block). It did not detect **missing** expected vars that should be in the bash block.
+
+**Fix:** Added `_MEMORY_LAYER_REQUIRED_VARS = frozenset([...])` with the 7 required memory-layer env vars and a check that computes `missing = _MEMORY_LAYER_REQUIRED_VARS - found_vars`.
+
+**B5 probes:** missing var detection fails correctly ✅ | all vars present passes ✅
+
+### Files Modified
+- `scripts/check_doc_freshness.py`: B3 regex fix, B5 fence unescape + required-vars check
+- `docs/PROJECT_CONTEXT.md`: `@image` note already corrected to `OpenRouter/Gemini (images), xAI/fal (video)` (from prior wave)
+
+### Verification
+```
+B3 (WrongSubagent): FAIL (should fail) ✅
+B3a (correct impl): PASS (should pass) ✅
+B3b (@image old text): PASS (limitation — OR semantics allows generic terms match)
+B3c (@image new text): PASS (should pass) ✅
+B5 (missing vars): FAIL (should fail) ✅
+B5a (all vars present): PASS (should pass) ✅
+check_doc_freshness.py --mode fail: No drift detected ✅
+lint_feature_matrix.py: OK: 60 feature rows validated ✅
+AST parse: OK ✅
+```
+
+**B3b limitation:** The key-term check uses OR semantics — if ANY key term appears in the impl text, the check passes. The wrong impl `xAI (images/video), fal/Kling (video)` contains `images` and `video` (both key terms from the note), so it passes despite missing `openrouter`/`gemini`. This is a design limitation; the check catches "completely wrong" implementations but not "partially wrong" ones where generic terms overlap.
 
