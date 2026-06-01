@@ -609,10 +609,12 @@ def _check_embedding_dimensions(doc_content: str, expected: int) -> CheckResult:
 
 
 _EMBEDDING_PROSE_DOC_RE = re.compile(
-    r'voyage[- ]4[- ]large[`\s]*\(?\s*(\d+)\s*d\)?'
+    r'`(voyage-[^`]+)`\s*\((\d+)d\)[^,]*\bfor documents',
+    re.IGNORECASE,
 )
 _EMBEDDING_PROSE_QUERY_RE = re.compile(
-    r'voyage[- ]4[- ]lite[`\s]*\(?\s*(\d+)\s*d\)?'
+    r'`(voyage-[^`]+)`\s*\((\d+)d\)[^,]*\bfor queries',
+    re.IGNORECASE,
 )
 
 
@@ -621,11 +623,20 @@ def _check_embedding_prose(doc_content: str, efact: dict[str, Any]) -> list[Chec
     doc_model = efact.get("document_model", "")
     query_model = efact.get("query_model", "")
     dims = efact.get("dimensions")
+    doc_norm = _normalize_model_name(doc_model) if doc_model else ""
+    query_norm = _normalize_model_name(query_model) if query_model else ""
 
     doc_m = _EMBEDDING_PROSE_DOC_RE.search(doc_content)
     if doc_m and doc_model:
-        doc_dims_obs = int(doc_m.group(1))
-        doc_model_norm = _normalize_model_name(doc_model)
+        doc_model_obs = doc_m.group(1)
+        doc_dims_obs = int(doc_m.group(2))
+        doc_model_obs_norm = _normalize_model_name(doc_model_obs)
+        if doc_model_obs_norm != doc_norm:
+            results.append(CheckResult(
+                CheckId.EMBEDDING_DOC_MODEL, False,
+                doc_model, doc_model_obs,
+                f"embedding doc model mismatch in structured prose: expected {doc_model}",
+            ))
         if doc_dims_obs != dims:
             results.append(CheckResult(
                 CheckId.EMBEDDING_DIMENSIONS, False,
@@ -635,8 +646,15 @@ def _check_embedding_prose(doc_content: str, efact: dict[str, Any]) -> list[Chec
 
     query_m = _EMBEDDING_PROSE_QUERY_RE.search(doc_content)
     if query_m and query_model:
-        query_dims_obs = int(query_m.group(1))
-        query_model_norm = _normalize_model_name(query_model)
+        query_model_obs = query_m.group(1)
+        query_dims_obs = int(query_m.group(2))
+        query_model_obs_norm = _normalize_model_name(query_model_obs)
+        if query_model_obs_norm != query_norm:
+            results.append(CheckResult(
+                CheckId.EMBEDDING_QUERY_MODEL, False,
+                query_model, query_model_obs,
+                f"embedding query model mismatch in structured prose: expected {query_model}",
+            ))
         if query_dims_obs != dims:
             results.append(CheckResult(
                 CheckId.EMBEDDING_DIMENSIONS, False,
@@ -694,11 +712,6 @@ def _check_memory_layer_table(doc_content: str, efact: dict[str, Any]) -> list[C
                 f"memory layer query dims mismatch: expected {dims}, found {dim_obs}",
             ))
     return results
-    observed = int(m.group(1))
-    if observed != expected:
-        return CheckResult(CheckId.EMBEDDING_DIMENSIONS, False, str(expected), str(observed),
-                          f"embedding dimensions mismatch: expected {expected}, found {observed}")
-    return CheckResult(CheckId.EMBEDDING_DIMENSIONS, True)
 
 
 def _float_normalize(val: float) -> str:
@@ -1145,7 +1158,7 @@ def check_document(
                 if exc and exc.expires >= today:
                     exc.suppressed_finding = True
                 else:
-                    findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"voyage"),
+                    findings.append(Finding(str(doc_path), _find_line_with_fact(lines, f"`{res.observed}`"),
                                            res.check_id, "mismatch",
                                            res.expected, res.observed, res.message or "embedding prose mismatch"))
         for res in _check_memory_layer_table(text, efact):
@@ -1154,7 +1167,7 @@ def check_document(
                 if exc and exc.expires >= today:
                     exc.suppressed_finding = True
                 else:
-                    findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"voyage"),
+                    findings.append(Finding(str(doc_path), _find_line_with_fact(lines, f"`{res.observed}`"),
                                            res.check_id, "mismatch",
                                            res.expected, res.observed, res.message or "memory layer embedding mismatch"))
 

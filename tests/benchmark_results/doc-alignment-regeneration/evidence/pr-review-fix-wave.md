@@ -928,4 +928,48 @@ python scripts/lint_feature_matrix.py                              # OK: 60 feat
 | embedding prose current (1024d) | Exit 0 | Exit 0 ✅ |
 | `get_feature_states()` returns nonzero | 60 rows | 60 rows ✅ |
 
+---
+
+## Atlas Regression Fix: Embedding Prose Model Validation (Jun 2026)
+
+### Context
+After commit `c49f8914`, Atlas verification at HEAD `c49f8914` reported a false negative:
+`project_embedding_prose_stale_doc`: replacing `voyage-4-large` with `voyage-3` in PROJECT_CONTEXT structured prose did NOT produce `CheckId.EMBEDDING_DOC_MODEL`.
+
+### Root Cause
+The original `_EMBEDDING_PROSE_DOC_RE` = `r'voyage[- ]4[- ]large[`\s]*\(?\s*(\d+)\s*d\)?'` only matched the **expected** model name literally (`voyage-4-large`). When the prose said `voyage-3 (1024d)`, no regex matched → no failure.
+
+Secondary issue: `[^.]*` in the query regex allowed backtracking across the comma between the two model claims in the same sentence, causing it to match `large (1024d) for queries` (capturing `large` as the "query model") at line 71's "Embedding (Voyage 4)" — a false positive at the wrong line.
+
+### Fix Applied
+
+**Regex broadening:** Changed both regexes to capture *any* `voyage-...` model name, then validate against the expected model:
+- `_EMBEDDING_PROSE_DOC_RE`: `r'`(voyage-[^`]+)`\s*\((\d+)d\)[^,]*\bfor documents'`
+- `_EMBEDDING_PROSE_QUERY_RE`: `r'`(voyage-[^`]+)`\s*\((\d+)d\)[^,]*\bfor queries'`
+
+Key changes:
+- `voyage[- ]4[- ]large` → `voyage-[^`]+` (capture any model)
+- `[^.]*` → `[^,]*` (comma hard-stop prevents cross-model backtracking)
+- `_normalize_model_name()` now applied to both observed and expected model names
+
+**Line reporting fix:** Changed `_find_line_with_fact(lines, r"voyage")` → `_find_line_with_fact(lines, f"`{res.observed}`")` to report the correct line (104) instead of line 71.
+
+**Dead code removal:** Removed 5-line unreachable fragment after `_check_memory_layer_table` return (lines 697-701).
+
+### Verification
+
+| Probe | Expected | Actual |
+|-------|----------|--------|
+| current prose (voyage-4-large/lite, 1024d) | all pass | all pass ✅ |
+| stale doc model `voyage-3` | `EMBEDDING_DOC_MODEL` fail | `EMBEDDING_DOC_MODEL` fail ✅ |
+| stale query model `voyage-3-lite` | `EMBEDDING_QUERY_MODEL` fail | `EMBEDDING_QUERY_MODEL` fail ✅ |
+| stale doc dims (512d) | `EMBEDDING_DIMENSIONS` fail | `EMBEDDING_DIMENSIONS` fail ✅ |
+| line 71 "Embedding (Voyage 4)" | no match | no match ✅ |
+| generic "embedding model choice" | no match | no match ✅ |
+| MEMORY_LAYER current | all pass | all pass ✅ |
+| MEMORY_LAYER stale dims | `EMBEDDING_DIMENSIONS` fail | `EMBEDDING_DIMENSIONS` fail ✅ |
+| MEMORY_LAYER wrong model | `EMBEDDING_DOC/QUERY_MODEL` fail | `EMBEDDING_DOC/QUERY_MODEL` fail ✅ |
+
+Standard gates: `--mode report`, `--mode fail`, `--mode fail --files README.md AGENTS.md`, `py_compile`, `lint_feature_matrix` — all pass.
+
 
