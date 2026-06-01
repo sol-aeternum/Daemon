@@ -1189,3 +1189,40 @@ AST parse: OK ✅
 | T4: TECHNICAL_SPECS Free image='openrouter' (correct) | 0 failures | 0 ✅ |
 | Standard gates: `--mode fail`, py_compile, lint_feature_matrix | pass | pass ✅ |
 
+---
+
+## Addendum 20 — PR #6 Review Comments `3337562067`, `3337562070`, `3337562071` (June 2026)
+
+**Commit:** `76ef659d` (prior wave).
+
+### Comment `3337562067` — TECHNICAL_SPECS Free Video
+**Problem:** `docs/TECHNICAL_SPECS.md` Free tier video cell showed `fal`, but `get_tier_config("free").tier_video_enabled=False`.
+
+**Fix:** Changed `TECHNICAL_SPECS.md` Free video from `fal` to `Disabled`. Also tightened `_check_tier_defaults()` to fail when `tier_video_enabled=False` and doc shows any non-disabled video claim (bare provider name or explicit "Enabled").
+
+### Comment `3337562070` — MEMORY_LAYER Self-Reference in Env Var Sources
+**Problem:** `get_env_var_facts()` used MEMORY_LAYER.md bash block AND prose backtick tokens as source env vars, letting MEMORY_LAYER validate its own stale claims.
+
+**Fix:** Removed MEMORY_LAYER.md from `get_env_var_facts()` entirely — source env vars now come only from `.env.example` and `docker-compose.yml`. Also removed the `_ENV_VAR_RE` backtick-quoted prose extraction from `get_env_var_facts()` since it was extracting non-env-var references (Python constants `CLUSTER_SIMILARITY_THRESHOLD`, `DAEMON_SYSTEM_PROMPT`). Removed backticks from these prose mentions in `MEMORY_LAYER.md` to prevent false stale detection. `_check_memory_layer_env_block()` remains independent and validates MEMORY_LAYER required bash vars separately.
+
+### Comment `3337562071` — Subagent Status Cell Not Validated
+**Problem:** `_SUBAGENT_TABLE_RE` consumed but did not capture the Status cell. `_check_subagent_table()` only compared implementation text, so changing `@research` from `Implemented` to `Reserved` with correct implementation text passed.
+
+**Fix:** Updated `_SUBAGENT_TABLE_RE` to capture Status as group 2 and Implementation as group 3. Updated `_check_subagent_table()` to validate doc status against expected status: if source says `implemented` but doc says `Reserved`/`Not implemented` → FAIL.
+
+### Files Modified
+- `docs/TECHNICAL_SPECS.md`: Free video `fal` → `Disabled`
+- `docs/MEMORY_LAYER.md`: Removed backticks from `CLUSTER_SIMILARITY_THRESHOLD` and `DAEMON_SYSTEM_PROMPT` prose mentions
+- `scripts/check_doc_freshness.py`: Removed MEMORY_LAYER.md from env var sources; regex captures status cell; status validation in `_check_subagent_table()`; tightened `tier_video_enabled=False` video claim check
+
+### Verification
+| Probe | Expected | Actual |
+|-------|----------|--------|
+| P1: TECHNICAL_SPECS Free video `Disabled` (correct) | 0 failures | 0 ✅ |
+| P2: TECHNICAL_SPECS Free video `fal` (wrong) | 1 failure | 1 ✅ |
+| P3: MEMORY_LAYER VOYAGE_API_KEY removed → B5 fails | failure | failure ✅ |
+| P4: @research `Reserved` with correct impl (wrong status) | 1 failure | 1 ✅ |
+| P5: @research `Implemented` with correct impl (correct) | 0 failures | 0 ✅ |
+| P6: @research `Implemented` WrongSubagent (wrong impl) | 1 failure | 1 ✅ |
+| Standard gates: `--mode fail`, py_compile, lint_feature_matrix | pass | pass ✅ |
+

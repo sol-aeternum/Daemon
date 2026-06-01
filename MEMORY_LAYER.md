@@ -205,7 +205,7 @@ L0 memories bypass embedding-based retrieval entirely. They are always prepended
 `consolidation.py` runs as a background job (triggered post-extraction, also on schedule):
 
 - Groups L1 memories by **slot family** (first two segments, e.g., `language.python` → `language`)
-- Clusters within-family memories by embedding similarity ≥ 0.65 (`CLUSTER_SIMILARITY_THRESHOLD`)
+- Clusters within-family memories by embedding similarity ≥ 0.65 (CLUSTER_SIMILARITY_THRESHOLD)
 - For clusters of ≥ 3 memories, calls gpt-4o-mini to synthesize a summary fact
 - Summary is stored as a new `category='summary'` memory with `tier='l1'`
 - Source memories are demoted to `tier='l2'`
@@ -230,7 +230,7 @@ L0 memories bypass embedding-based retrieval entirely. They are always prepended
 5. Token-aware truncation to `max_tokens` budget
 6. Format: `About this user:` / `Recent context:` / `[FROZEN MEMORIES]`
 
-`assemble_system_prompt()` then prepends `DAEMON_SYSTEM_PROMPT`, adds personality/preferences, appends the memory block, and ensures the memory tools reminder is present.
+`assemble_system_prompt()` then prepends DAEMON_SYSTEM_PROMPT, adds personality/preferences, appends the memory block, and ensures the memory tools reminder is present.
 
 ---
 

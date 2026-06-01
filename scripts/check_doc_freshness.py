@@ -242,23 +242,6 @@ def get_env_var_facts(root: Path) -> dict[str, list[str]]:
                 env_vars.add(m.group(1))
             for m in docker_list_pattern.finditer(text):
                 env_vars.add(m.group(1))
-    memory_layer = root / "MEMORY_LAYER.md"
-    if memory_layer.exists():
-        text = memory_layer.read_text(encoding="utf-8")
-        in_bash_block = False
-        for line in text.splitlines():
-            if line.strip().startswith("```bash"):
-                in_bash_block = True
-                continue
-            if line.strip().startswith("```") and in_bash_block:
-                in_bash_block = False
-                continue
-            if in_bash_block:
-                m = env_var_pattern.match(line.lstrip())
-                if m:
-                    env_vars.add(m.group(1))
-        for m in _ENV_VAR_RE.finditer(text):
-            env_vars.add(m.group(1))
     return {"env_vars": sorted(env_vars)}
 
 
@@ -1150,6 +1133,24 @@ def _check_tier_defaults(
                         f"tier {tier_name} video: config has provider but docs say '{observed}'",
                     ))
                 continue
+            if is_enabled is False:
+                results.append(CheckResult(
+                    CheckId.TIER_VIDEO_PROVIDER, False,
+                    config_provider,
+                    doc_raw,
+                    f"tier {tier_name} video: config disables video but docs say '{doc_raw}'",
+                ))
+                continue
+            embedded_m = re.search(r'\(([^)]+)\)', doc_raw)
+            provider_claimed = embedded_m.group(1).strip() if embedded_m else doc_raw
+            if provider_claimed.lower() != config_provider.lower():
+                results.append(CheckResult(
+                    CheckId.TIER_VIDEO_PROVIDER, False,
+                    config_provider,
+                    provider_claimed,
+                    f"tier {tier_name} video provider mismatch: expected {config_provider}",
+                ))
+                continue
             embedded_m = re.search(r'\(([^)]+)\)', doc_raw)
             provider_claimed = embedded_m.group(1).strip() if embedded_m else doc_raw
             if is_enabled is False:
@@ -1239,7 +1240,7 @@ def _check_docker_service_count(doc_content: str, expected: int) -> CheckResult:
 
 
 _SUBAGENT_TABLE_RE = re.compile(
-    r'^\|\s*`?@(\w+)`?\s*\|\s*(?:\*\*)?(?:Implemented|Reserved|Not implemented)(?:\*\*)?\s*\|\s*([^|]+?)\s*\|'
+    r'^\|\s*`?@(\w+)`?\s*\|\s*(?:\*\*)?(Implemented|Reserved|Not implemented)(?:\*\*)?\s*\|\s*([^|]+?)\s*\|'
 )
 
 
@@ -1250,18 +1251,20 @@ def _check_subagent_table(doc_content: str, subagent_facts: dict[str, dict[str, 
         if not m:
             continue
         name = m.group(1).lower()
-        impl_desc = m.group(2).strip()
+        doc_status = m.group(2).strip()
+        impl_desc = m.group(3).strip()
         if name not in subagent_facts:
             continue
         facts = subagent_facts[name]
         expected_status = facts["status"]
+        doc_status_lower = doc_status.lower()
         if expected_status == "implemented":
-            if "not implemented" in impl_desc.lower() or "reserved" in impl_desc.lower():
+            if doc_status_lower in ("reserved", "not implemented"):
                 results.append(CheckResult(
                     CheckId.SUBAGENT_STATUS, False,
                     "Implemented",
-                    impl_desc,
-                    f"@{name} is implemented but table says '{impl_desc}'",
+                    doc_status,
+                    f"@{name} is implemented but table says '{doc_status}'",
                 ))
             else:
                 known_note = facts.get("note", "")
@@ -1277,13 +1280,12 @@ def _check_subagent_table(doc_content: str, subagent_facts: dict[str, dict[str, 
                             f"@{name} implementation mismatch: expected '{known_note}', got '{impl_desc}'",
                         ))
         elif expected_status == "reserved":
-            impl_lower = impl_desc.lower()
-            if "implemented" in impl_lower and "not implemented" not in impl_lower:
+            if doc_status_lower == "implemented":
                 results.append(CheckResult(
                     CheckId.SUBAGENT_STATUS, False,
                     "Reserved",
-                    impl_desc,
-                    f"@{name} is reserved but table says '{impl_desc}'",
+                    doc_status,
+                    f"@{name} is reserved but table says '{doc_status}'",
                 ))
     return results
 
