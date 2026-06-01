@@ -33,10 +33,10 @@
 
 ### Undefined trust helper in dedup.py
 - **Severity**: critical
-- **Status**: open
+- **Status**: resolved
 - **Source**: TRIAGE.md (2026-04-08 11:12)
-- **Impact**: `reportUndefinedVariable` for `_lazy_import_trust_signals` in `orchestrator/memory/dedup.py` causes runtime failures in the dedup path.
-- **Action**: Add missing import or helper definition.
+- **Impact**: `_lazy_import_trust_signals` is defined at `orchestrator/memory/dedup.py:22` and used at line 512; no undefined variable exists.
+- **Action**: No action needed — issue was based on misdiagnosis. Helper exists and is used.
 
 ### Video E2E test syntax error
 - **Severity**: critical

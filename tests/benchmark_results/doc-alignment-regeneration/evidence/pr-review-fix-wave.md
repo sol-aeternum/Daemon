@@ -972,4 +972,59 @@ Key changes:
 
 Standard gates: `--mode report`, `--mode fail`, `--mode fail --files README.md AGENTS.md`, `py_compile`, `lint_feature_matrix` — all pass.
 
+---
+
+## Atlas Verification Addendum 12 (Jun 2026)
+
+### Context
+Final live PR #6 context-review blockers at HEAD `2a45566b`. Five blocker categories + two doc fixes.
+
+### Issues Fixed
+
+#### 1. Route Method Validation: GET/BOGUS Passed Incorrectly
+**Problem:** `_METHOD_LINE_RE = r'\|\s*(GET|POST|PUT|PATCH|DELETE|OPTIONS)\s*\|'` did not match `GET/BOGUS` (only single methods). Row was skipped via `_is_route_table_row` → no method validation → `GET/BOGUS` passed.
+
+**Fix:** Broadened `_METHOD_LINE_RE` to `r'\|\s*[A-Z][A-Z/]+\s*\|'` — matches any uppercase sequence with optional slashes, including `GET/BOGUS`, `GET/PATCH`, etc.
+
+#### 2. Route Multi-Route Cell: Second Route Silently Missed
+**Problem:** `_ROUTE_TABLE_RE.finditer` finds every backtick-enclosed route in the line. For bold-header rows (e.g., `| **Memories** | \`/memories/export\`, \`/bogus/export\` |`), the original code only appended the first matched route. Subsequent routes were never checked.
+
+**Fix:** Added `processed_lines` deduplication set + `all_routes_in_row = _ROUTE_TABLE_RE.findall(line_text)` inside multi-route branch to extract and check ALL routes in the row. Also removed `_is_route_table_row` gate inside multi-route branch (bold-header rows have no method column, so `_is_route_table_row` always returns False for them — but they still need stale-path checking).
+
+#### 3. Env Var: Docker Compose List Syntax Not Parsed
+**Problem:** `env_var_pattern = r'^([A-Z_][A-Z0-9_]*)='` only matched `KEY=value` lines. Docker Compose uses `- NAME=value` (list entry with value) and `- NAME` (boolean flag) which were not matched.
+
+**Fix:** Added `docker_list_pattern = re.compile(r'^\s*-\s+([A-Z_][A-Z0-9_]*)', re.MULTILINE)` to capture list-syntax env vars alongside `.env.example` parsing. `DAEMON_API_KEY` and `NEXT_PUBLIC_API_URL` now extracted from `docker-compose.yml`.
+
+#### 4. Provider Client: Classes Without Parentheses Not Matched
+**Problem:** `_PROVIDER_CLIENT_RE = r"class\s+(\w+(?:Client|Provider))\s*\("` required `(` after class name. `FalKlingClient:` and `XAIImagineClient:` have no parentheses → 0 provider clients extracted.
+
+**Fix:** Changed to `r"class\s+(\w+(?:Client|Provider))\s*(?:\(|:)"` — accepts either `(` or `:` after class name.
+
+#### 5. MEMORY_LAYER.md: Retry Counters Described as Internal
+**Problem:** `MEMORY_LAYER.md:244` said `_retry_count` and `_last_retry_at` are "internal." `/status` endpoint (`orchestrator/routes/system.py:25-26`) exposes them as `embedding_retry_activations` and `embedding_last_retry_at`.
+
+**Fix:** Updated wording to: "Counters `_retry_count` and `_last_retry_at` are exposed via `/status` as `embedding_retry_activations` and `embedding_last_retry_at`."
+
+#### 6. CURRENT_ISSUES.md: `_lazy_import_trust_signals` Listed as Open Critical
+**Problem:** `CURRENT_ISSUES.md:34-39` claimed `_lazy_import_trust_signals` was undefined, causing runtime failures. Function is defined at `orchestrator/memory/dedup.py:22` and used at line 512.
+
+**Fix:** Updated status from `open` to `resolved` with note that the helper exists and is used.
+
+### Verification
+
+| Probe | Expected | Actual |
+|-------|----------|--------|
+| `GET/BOGUS` for `/skills` | FAIL | FAIL ✅ |
+| stale `/bogus/export` in multi-route cell | FAIL | FAIL ✅ |
+| current `GET/POST` for `/skills` | PASS | PASS ✅ |
+| current `GET/POST` for `/conversations` | PASS | PASS ✅ |
+| `DAEMON_API_KEY` in env vars | present | present ✅ |
+| `NEXT_PUBLIC_API_URL` in env vars | present | present ✅ |
+| total env vars ≥ 27 | true | true (29) ✅ |
+| `FalKlingClient` in provider clients | present | present ✅ |
+| `XAIImagineClient` in provider clients | present | present ✅ |
+
+Standard gates: `--mode report`, `--mode fail`, `--mode fail --files README.md AGENTS.md`, `py_compile`, `lint_feature_matrix` — all pass.
+
 

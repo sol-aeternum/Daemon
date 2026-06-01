@@ -90,7 +90,7 @@ def get_embedding_facts(root: Path) -> dict[str, Any]:
 
 
 _VIDEO_PROVIDERS_RE = re.compile(r'VALID_VIDEO_PROVIDERS\s*=\s*\{([^}]+)\}')
-_PROVIDER_CLIENT_RE = re.compile(r"class\s+(\w+(?:Client|Provider))\s*\(")
+_PROVIDER_CLIENT_RE = re.compile(r"class\s+(\w+(?:Client|Provider))\s*(?:\(|:)")
 
 
 def get_provider_facts(root: Path) -> dict[str, Any]:
@@ -247,10 +247,13 @@ _ENV_VAR_RE = re.compile(r'`([A-Z_][A-Z0-9_]*)`')
 def get_env_var_facts(root: Path) -> dict[str, list[str]]:
     env_vars: set[str] = set()
     env_var_pattern = re.compile(r'^([A-Z_][A-Z0-9_]*)=', re.MULTILINE)
+    docker_list_pattern = re.compile(r'^\s*-\s+([A-Z_][A-Z0-9_]*)', re.MULTILINE)
     for file_path in [root / ".env.example", root / "docker-compose.yml"]:
         if file_path.exists():
             text = file_path.read_text(encoding="utf-8")
             for m in env_var_pattern.finditer(text):
+                env_vars.add(m.group(1))
+            for m in docker_list_pattern.finditer(text):
                 env_vars.add(m.group(1))
     return {"env_vars": sorted(env_vars)}
 
@@ -423,7 +426,7 @@ def _check_tier_prices(doc_content: str, source_prices: dict[str, str]) -> Check
 
 _ROUTE_TABLE_RE = re.compile(r'`(/[^`]+)`')
 _KNOWN_SINGLE_SEGMENT_ROUTES = frozenset(["/chat", "/health", "/status", "/providers"])
-_METHOD_LINE_RE = re.compile(r'\|\s*(GET|POST|PUT|PATCH|DELETE|OPTIONS)\s*\|', re.IGNORECASE)
+_METHOD_LINE_RE = re.compile(r'\|\s*[A-Z][A-Z/]+\s*\|')
 _METHOD_CELL_RE = re.compile(r'\|\s*([A-Z/]+)\s*\|', re.IGNORECASE)
 
 
@@ -455,19 +458,27 @@ def _check_routes(doc_content: str, source_routes: dict[str, list[str]]) -> Chec
 
     # Collect (route, methods_from_doc) from table rows
     doc_route_methods: list[tuple[str, str]] = []
+    processed_lines: set[int] = set()
     for m in _ROUTE_TABLE_RE.finditer(doc_content):
         route = m.group(1).strip()
         if not route.startswith('/'):
             continue
+        line_start = doc_content.rfind('\n', 0, m.start()) + 1
+        line_end = doc_content.find('\n', m.start())
+        if line_end == -1:
+            line_end = len(doc_content)
+        line_text = doc_content[line_start:line_end]
+        line_key = hash(line_text)
+        if line_key in processed_lines:
+            continue
+        processed_lines.add(line_key)
         if route.count('/') >= 2:
-            line_start = doc_content.rfind('\n', 0, m.start()) + 1
-            line_end = doc_content.find('\n', m.start())
-            if line_end == -1:
-                line_end = len(doc_content)
-            line_text = doc_content[line_start:line_end]
-            if _is_route_table_row(line_text, m.start() - line_start):
-                methods = _extract_methods_from_row(line_text)
-                doc_route_methods.append((route, methods))
+            methods = _extract_methods_from_row(line_text)
+            all_routes_in_row = _ROUTE_TABLE_RE.findall(line_text)
+            for r in all_routes_in_row:
+                r_stripped = r.strip()
+                if r_stripped.startswith('/'):
+                    doc_route_methods.append((r_stripped, methods))
             continue
         if route in _KNOWN_SINGLE_SEGMENT_ROUTES:
             doc_route_methods.append((route, ""))
@@ -481,9 +492,10 @@ def _check_routes(doc_content: str, source_routes: dict[str, list[str]]) -> Chec
             methods = _extract_methods_from_row(line_text)
             doc_route_methods.append((route, methods))
 
-    # Check stale paths
     stale_paths: list[str] = []
     for route, _ in doc_route_methods:
+        if '{' in route:
+            continue
         if _normalize_route(route) not in all_source:
             stale_paths.append(route)
     if stale_paths:
@@ -497,6 +509,8 @@ def _check_routes(doc_content: str, source_routes: dict[str, list[str]]) -> Chec
     # Check method claims
     method_failures: list[str] = []
     for route, doc_methods in doc_route_methods:
+        if '{' in route:
+            continue
         if not doc_methods:
             continue
         norm = _normalize_route(route)
