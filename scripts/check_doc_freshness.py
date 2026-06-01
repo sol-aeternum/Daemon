@@ -121,6 +121,11 @@ def get_provider_facts(root: Path) -> dict[str, Any]:
 _TIER_MODEL_RE = re.compile(
     r'tier_([a-z]+)_([a-z_]+)_model\s*:\s*str\s*=\s*"([^"]+)"'
 )
+_TIER_VIDEO_PROVIDER_RE = re.compile(
+    r'tier_([a-z]+)_video_provider\s*:\s*str\s*=\s*"([^"]+)"'
+)
+_AUTO_FAST_MODEL_RE = re.compile(r'auto_fast_model\s*:\s*str\s*=\s*"([^"]+)"')
+_AUTO_REASONING_MODEL_RE = re.compile(r'auto_reasoning_model\s*:\s*str\s*=\s*"([^"]+)"')
 
 
 def get_tier_facts(root: Path) -> dict[str, dict[str, str]]:
@@ -136,7 +141,36 @@ def get_tier_facts(root: Path) -> dict[str, dict[str, str]]:
         if tier_name not in tiers:
             tiers[tier_name] = {}
         tiers[tier_name][slot] = model
-    return tiers
+    video_providers: dict[str, str] = {}
+    for m in _TIER_VIDEO_PROVIDER_RE.finditer(text):
+        tier_name = m.group(1)
+        provider = m.group(2)
+        video_providers[tier_name] = provider
+    return {"tiers": tiers, "video_providers": video_providers}
+
+
+def get_auto_routing_facts(root: Path) -> dict[str, str]:
+    config_path = root / "orchestrator" / "config.py"
+    if not config_path.exists():
+        return {}
+    text = config_path.read_text(encoding="utf-8")
+    fast = _AUTO_FAST_MODEL_RE.search(text)
+    reasoning = _AUTO_REASONING_MODEL_RE.search(text)
+    return {
+        "auto_fast_model": fast.group(1) if fast else "",
+        "auto_reasoning_model": reasoning.group(1) if reasoning else "",
+    }
+
+
+def get_docker_facts(root: Path) -> dict[str, Any]:
+    compose_path = root / "docker-compose.yml"
+    if not compose_path.exists():
+        return {"service_count": 0}
+    import yaml
+    with compose_path.open(encoding="utf-8") as fh:
+        data = yaml.safe_load(fh)
+    services = data.get("services", {}) if isinstance(data, dict) else {}
+    return {"service_count": len(services)}
 
 
 _ROUTE_DEF_RE = re.compile(r'(@app\.|router\.)(get|post|put|patch|delete|options)\s*\(\s*["\']([^"\']*)["\']')
@@ -241,10 +275,11 @@ def extract_all_facts(root: Path) -> dict[str, Any]:
         "embeddings": get_embedding_facts(root),
         "providers": get_provider_facts(root),
         "routes": get_route_facts(root),
-        "feature_states": get_feature_states(root),
         "env_vars": get_env_var_facts(root),
         "tier_defaults": get_tier_facts(root),
         "tier_prices": get_tier_prices(root),
+        "auto_routing": get_auto_routing_facts(root),
+        "docker": get_docker_facts(root),
     }
 
 
@@ -261,9 +296,13 @@ class CheckId(str, Enum):
     DEDUP_SUPERSEDE_SAME_SLOT = "dedup_supersede_same_slot_threshold"
     VIDEO_PROVIDERS = "video_providers"
     TIER_MODEL = "tier_model"
+    TIER_VIDEO_PROVIDER = "tier_video_provider"
     TIER_PRICE = "tier_price"
     ROUTE = "route"
     ENV_VAR = "env_var"
+    AUTO_FAST_MODEL = "auto_fast_model"
+    AUTO_REASONING_MODEL = "auto_reasoning_model"
+    DOCKER_SERVICE_COUNT = "docker_service_count"
 
 
 @dataclass
@@ -385,8 +424,7 @@ _METHOD_LINE_RE = re.compile(r'\|\s*(GET|POST|PUT|PATCH|DELETE|OPTIONS)\s*\|', r
 
 
 def _is_route_table_row(line_text: str, route_start: int) -> bool:
-    segment_before = line_text[:route_start]
-    return bool(_METHOD_LINE_RE.search(segment_before))
+    return bool(_METHOD_LINE_RE.search(line_text))
 
 
 def _normalize_route(route: str) -> str:
@@ -828,6 +866,48 @@ def _check_tier_defaults(doc_content: str, tier_defaults: dict[str, dict[str, st
     return results
 
 
+_AUTO_MODEL_RE = re.compile(
+    r'(?:\*\*auto_((?:fast|reasoning)_model)\*\*|auto_((?:fast|reasoning)_model))'
+    r'[:=\s]+(?:["\'])?([a-z0-9/._-]+)(?:["\']?\s|$)',
+    re.IGNORECASE,
+)
+
+
+def _check_auto_routing(doc_content: str, auto_facts: dict[str, str]) -> list[CheckResult]:
+    results = []
+    for label, key in [("auto_fast_model", "auto_fast_model"), ("auto_reasoning_model", "auto_reasoning_model")]:
+        expected = auto_facts.get(key, "")
+        if not expected:
+            continue
+        m = re.search(
+            rf'(?:\*\*{label}\*\*|{label})[:=\s]+(?:["\'])?([a-z0-9/._-]+)(?:["\']?\s|$)',
+            doc_content, re.IGNORECASE,
+        )
+        if not m:
+            continue
+        observed = m.group(1).strip()
+        if _normalize_model_name(observed) != _normalize_model_name(expected):
+            check_id = CheckId.AUTO_FAST_MODEL if key == "auto_fast_model" else CheckId.AUTO_REASONING_MODEL
+            results.append(CheckResult(check_id, False, expected, observed,
+                                      f"{label} mismatch: expected {expected}, found {observed}"))
+    return results
+
+
+_DOCKER_SERVICE_COUNT_RE = re.compile(r'^\s*Docker Compose \((\d+) services?\)', re.IGNORECASE)
+
+
+def _check_docker_service_count(doc_content: str, expected: int) -> CheckResult:
+    for line in doc_content.splitlines():
+        m = _DOCKER_SERVICE_COUNT_RE.search(line)
+        if m:
+            observed = int(m.group(1))
+            if observed != expected:
+                return CheckResult(CheckId.DOCKER_SERVICE_COUNT, False, str(expected), str(observed),
+                                 f"docker service count mismatch: expected {expected}, found {observed}")
+            return CheckResult(CheckId.DOCKER_SERVICE_COUNT, True)
+    return CheckResult(CheckId.DOCKER_SERVICE_COUNT, True)
+
+
 def _find_line_with_fact(lines: list[str], pattern: str) -> int:
     cre = re.compile(pattern, re.IGNORECASE)
     for i, line in enumerate(lines, start=1):
@@ -935,7 +1015,7 @@ def check_document(
                                    CheckId.VIDEO_PROVIDERS, "mismatch",
                                    res.expected, res.observed, res.message or "video provider mismatch"))
 
-    tier_defaults = facts.get("tier_defaults", {})
+    tier_defaults = facts.get("tier_defaults", {}).get("tiers", {})
     if tier_defaults:
         tier_results = _check_tier_defaults(text, tier_defaults)
         for tres in tier_results:
@@ -983,6 +1063,31 @@ def check_document(
                 findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"[A-Z_][A-Z0-9_]*"),
                                        CheckId.ENV_VAR, "mismatch",
                                        res.expected, res.observed, res.message or "env var mismatch"))
+
+    auto_facts = facts.get("auto_routing", {})
+    if auto_facts and doc_path.name == "TECHNICAL_SPECS.md":
+        auto_results = _check_auto_routing(text, auto_facts)
+        for ares in auto_results:
+            if not ares.passed:
+                exc = _match_exception(exceptions, ares.check_id, str(doc_path))
+                if exc and exc.expires >= today:
+                    exc.suppressed_finding = True
+                else:
+                    findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"auto_.*model"),
+                                           ares.check_id, "mismatch",
+                                           ares.expected, ares.observed, ares.message or f"auto routing mismatch"))
+
+    docker_count = facts.get("docker", {}).get("service_count", 0)
+    if docker_count and doc_path.name in ("TECHNICAL_SPECS.md", "PROJECT_CONTEXT.md"):
+        res = _check_docker_service_count(text, docker_count)
+        if not res.passed:
+            exc = _match_exception(exceptions, CheckId.DOCKER_SERVICE_COUNT, str(doc_path))
+            if exc and exc.expires >= today:
+                exc.suppressed_finding = True
+            else:
+                findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"Docker Compose"),
+                                       CheckId.DOCKER_SERVICE_COUNT, "mismatch",
+                                       res.expected, res.observed, res.message or "docker service count mismatch"))
 
     all_active_exceptions = [exc for exc in exceptions if exc.expires >= today]
     return findings, all_active_exceptions

@@ -86,7 +86,7 @@ PostgreSQL 16 with pgvector extension. 30 migrations in the `migrations/` direct
 - **`retrieval_log`**: History of memory retrieval for scoring analysis.
 - **`entities`**: Extracted named entities for cross-referencing.
 - **`dream_log`**: Logs for background consolidation and dreaming jobs.
-- **`skill_projection`**: Mapping of skills to conversation context.
+- **`skill_projections`**: Mapping of skills to conversation context.
 
 Latest migration: `030_add_advisor_traces.sql`.
 

@@ -718,3 +718,99 @@ Added `backend/image_gen/**` to both `push.paths` and `pull_request.paths` in `.
 ### Commit Pushed
 - `[fix]` — .github/workflows/docs-freshness.yml: add backend/image_gen/** to push and pull_request path filters
 
+---
+
+## Atlas Verification Addendum 9 (Jun 2026)
+
+### Context
+Fixes for remaining PR #6 context-review blockers identified at HEAD `0a4bba0a`:
+1. Endpoint-first route table detection
+2. README user settings method
+3. Skill projection naming
+4. Workflow dependencies/path filters
+5. Auto-routing model defaults coverage
+6. Docker Compose service count coverage
+7. Feature-state dead extraction removal
+
+### Issues Fixed
+
+#### 1. Route Table Detection: Endpoint-First Tables
+**Problem:** `_is_route_table_row()` used `segment_before = line_text[:route_start]` and only checked for `METHOD` before the route position. In endpoint-first tables (`| Endpoint | Method |`), the route appears BEFORE the method, so `route_start` is at a position where `segment_before` does NOT contain the method. This caused endpoint-first table rows to be silently skipped.
+
+**Fix:** Changed `_is_route_table_row()` to check the full line for `METHOD` presence, not just the segment before the route:
+```python
+# Before:
+def _is_route_table_row(line_text: str, route_start: int) -> bool:
+    segment_before = line_text[:route_start]
+    return bool(_METHOD_LINE_RE.search(segment_before))
+
+# After:
+def _is_route_table_row(line_text: str, route_start: int) -> bool:
+    return bool(_METHOD_LINE_RE.search(line_text))
+```
+
+#### 2. README.md User Settings Method
+**Fix:** Changed `| /users/me/settings | GET/PUT |` to `| /users/me/settings | GET/PATCH |` in `README.md:147`. Source of truth: `orchestrator/routes/users.py` has `@router.patch('/me/settings')`.
+
+#### 3. Skill Projection Naming
+**Fix:** Changed `skill_projection` (singular) to `skill_projections` (plural) in `docs/TECHNICAL_SPECS.md:89`. Migration `028_skill_projection.sql` creates table `skill_projections` (plural).
+
+#### 4. Workflow: uv Setup + Additional Path Filters
+**Fix:** Updated `.github/workflows/docs-freshness.yml`:
+- Changed `python scripts/check_doc_freshness.py --mode fail` to `uv run python scripts/check_doc_freshness.py --mode fail` with `astral-sh/setup-uv@v5`
+- Added `.env.example` to path filters (env var facts extract from `.env.example`)
+- Added `providers/**` to path filters (provider facts extract from `providers/*.py`)
+
+#### 5. Auto-Routing Model Defaults: Linter Coverage
+**Fix:** Added `get_auto_routing_facts()` extraction and `_check_auto_routing()` check:
+- Extracts `auto_fast_model` and `auto_reasoning_model` from `orchestrator/config.py`
+- Added `CheckId.AUTO_FAST_MODEL` and `CheckId.AUTO_REASONING_MODEL`
+- Checks `TECHNICAL_SPECS.md` for `auto_fast_model` and `auto_reasoning_model` claim lines
+- Current docs at lines 54-55 already match source values
+
+#### 6. Docker Compose Service Count: Linter Coverage
+**Fix:** Added `get_docker_facts()` and `_check_docker_service_count()`:
+- Counts services in `docker-compose.yml` via `yaml.safe_load()`
+- Added `CheckId.DOCKER_SERVICE_COUNT`
+- Pattern `Docker Compose \((\d+) services?\)` matches `### Docker Compose (7 services)` headers
+- Checks `TECHNICAL_SPECS.md` and `PROJECT_CONTEXT.md` for service count claims
+- Current docs claim 7 services; docker-compose.yml has 7 services (migrate, backend, worker, frontend, postgres, redis, crawl4ai)
+
+#### 7. Feature-State Dead Extraction: Removal
+**Fix:** Removed `get_feature_states()` call from `extract_all_facts()`. The function was defined but never used in `check_document()` — it was dead extraction that parsed `docs/FEATURE_MATRIX.md` (a gated T1 doc) and returned state strings that were never checked. This removes the circular dependency.
+
+#### 8. `get_tier_facts()` Return Structure
+**Fix:** Updated `get_tier_facts()` to return `{"tiers": {...}, "video_providers": {...}}` instead of a flat dict. `tier_defaults` access in `check_document()` changed from `facts.get("tier_defaults", {})` to `facts.get("tier_defaults", {}).get("tiers", {})`.
+
+### Verification
+
+#### Standard Gates
+```bash
+python scripts/check_doc_freshness.py --mode report --format text  # No drift detected.
+python scripts/check_doc_freshness.py --mode fail --format text    # No drift detected.
+python scripts/check_doc_freshness.py --mode fail --files README.md AGENTS.md  # No drift detected.
+python -m py_compile scripts/check_doc_freshness.py              # Compile OK
+python scripts/lint_feature_matrix.py                             # OK: 60 feature rows validated
+```
+
+#### Fixture Suite (8/8 targeted)
+| Fixture | Expected | Actual |
+|---------|----------|--------|
+| `route_stale_single_segment` (stale `/bogus` in endpoint-first table) | Exit 1 | Exit 1 ✅ |
+| `route_valid_single_segment` (valid `/chat`, `/health`) | Exit 0 | Exit 0 ✅ |
+| `route_prose_local` (`/local` in prose — not table) | Exit 0 | Exit 0 ✅ |
+| `route_api_images_generate` (`/api/images/generate`) | Exit 0 | Exit 0 ✅ |
+| `route_api_images_not_real` (stale `/api/images/not-real`) | Exit 1 | Exit 1 ✅ |
+| `dedup_swapped` | Exit 1 | Exit 1 ✅ |
+| `dedup_correct` | Exit 0 | Exit 0 ✅ |
+| `dedup_numeric_equiv` | Exit 0 | Exit 0 ✅ |
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `scripts/check_doc_freshness.py` | Route table detection (endpoint-first), auto_routing/dockerservice checks, feature_states removal, tier_facts structure |
+| `README.md` | `GET/PUT` → `GET/PATCH` for `/users/me/settings` |
+| `docs/TECHNICAL_SPECS.md` | `skill_projection` → `skill_projections` |
+| `.github/workflows/docs-freshness.yml` | `uv run`, added `.env.example`, `providers/**` to path filters |
+

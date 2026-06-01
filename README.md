@@ -144,7 +144,7 @@ Benchmarking runs from the host shell against localhost-exposed container servic
 | `/conversations` | GET/POST | Conversation CRUD (uses `/conversations/{conversation_id}`) |
 | `/memories` | GET/POST/DELETE | Memory management (uses `/memories/{memory_id}`) |
 | `/skills` | GET/POST | Skills management (uses `/skills/{skill_id}`) |
-| `/users/me/settings` | GET/PUT | User preferences |
+| `/users/me/settings` | GET/PATCH | User preferences |
 | `/video-credits/balance` | GET | Video credit balance |
 | `/video-credits/transactions` | GET | Video credit transactions |
 | `/health` | GET | Health check |
