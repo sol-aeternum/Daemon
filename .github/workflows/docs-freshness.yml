@@ -11,6 +11,7 @@ on:
       - docker-compose.yml
       - orchestrator/config.py
       - orchestrator/routes/**
+      - backend/image_gen/**
       - orchestrator/main.py
       - orchestrator/memory/**
       - migrations/**
@@ -24,6 +25,7 @@ on:
       - docker-compose.yml
       - orchestrator/config.py
       - orchestrator/routes/**
+      - backend/image_gen/**
       - orchestrator/main.py
       - orchestrator/memory/**
       - migrations/**

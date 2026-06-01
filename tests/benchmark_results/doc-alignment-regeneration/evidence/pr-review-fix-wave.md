@@ -712,3 +712,9 @@ python scripts/lint_feature_matrix.py                             # OK: 60 featu
 - `[fix]` — scripts/check_doc_freshness.py: include image_gen router, validate single-segment routes in table context, dedup line-first with float normalization and hyphen-lookbehind label patterns
 - `[follow-up]` — add Addendum 8 evidence
 
+#### Workflow Path Filter Follow-up (Jun 2026)
+Added `backend/image_gen/**` to both `push.paths` and `pull_request.paths` in `.github/workflows/docs-freshness.yml` so that doc freshness gate re-runs when image generation routes change (since `scripts/check_doc_freshness.py` now extracts routes from `backend/image_gen/router.py`).
+
+### Commit Pushed
+- `[fix]` — .github/workflows/docs-freshness.yml: add backend/image_gen/** to push and pull_request path filters
+
