@@ -1265,7 +1265,7 @@ AST parse: OK ✅
 
 ## Addendum 22 — PR #6 Review Comments `3330885748`, `3331243086` (June 2026)
 
-**Commit:** `5cfed8d8`.
+**Commit:** `85f578b6`.
 
 ### Comment `3330885748` — README `@document` Should Not Be Advertised as User-Facing Spawnable
 **Problem:** `README.md` line 124 listed `@document — Document file generation` in the Subagents section, implying it is a normally spawnable user-facing subagent. However, `document` was removed from the `spawn_agent` and `spawn_multiple` tool schema enums (`f73afd0b`); it is only accessible via the trusted-context direct spawn path (`_document_spawn_allowed()`).
@@ -1278,7 +1278,7 @@ AST parse: OK ✅
 **Fix:** Changed the pre-commit hook entry from `python scripts/check_doc_freshness.py --mode fail` to `uv run python scripts/check_doc_freshness.py --mode fail`, aligning with the project's standard `uv run` invocation pattern used elsewhere (e.g. CI workflows). The `language: system` setting remains; `uv run` handles the environment dispatch.
 
 ### Files Modified
-- `README.md`: Removed `@document — Document file generation` bullet from Subagents section
+- `README.md`: Removed `@document — Document file generation` bullet from Subagents section (line 124) and `@document` from architecture diagram (line 32)
 - `.pre-commit-config.yaml`: Changed `entry` from bare `python` to `uv run python` for doc-freshness hook
 
 ### Gates
