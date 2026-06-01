@@ -903,7 +903,7 @@ def _check_auto_routing(doc_content: str, auto_facts: dict[str, str]) -> list[Ch
     return results
 
 
-_DOCKER_SERVICE_COUNT_RE = re.compile(r'^#{0,3}\s*Docker Compose \((\d+) services?\)', re.IGNORECASE)
+_DOCKER_SERVICE_COUNT_RE = re.compile(r'^#{0,3}\s*Docker Compose Services? \((\d+) services?\)', re.IGNORECASE)
 
 
 def _check_docker_service_count(doc_content: str, expected: int) -> CheckResult:

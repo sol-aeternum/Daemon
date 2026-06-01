@@ -814,3 +814,54 @@ python scripts/lint_feature_matrix.py                             # OK: 60 featu
 | `docs/TECHNICAL_SPECS.md` | `skill_projection` → `skill_projections` |
 | `.github/workflows/docs-freshness.yml` | `uv run`, added `.env.example`, `providers/**` to path filters |
 
+---
+
+## Atlas Verification Addendum 10 (Jun 2026)
+
+### Context
+Follow-up from `0934e3f7` targeted probe verification. Two remaining issues identified and fixed.
+
+### Issues Fixed
+
+#### 1. Docker Service Count: `Services` heading variant
+**Problem:** `_DOCKER_SERVICE_COUNT_RE` pattern `Docker Compose \(` did not match `PROJECT_CONTEXT.md`'s heading `### Docker Compose Services (7 services)`.
+
+**Fix:** Changed pattern from `Docker Compose \(` to `Docker Compose Services? \(` making "Services" optional.
+
+```python
+# Before:
+r'^#{0,3}\s*Docker Compose \((\d+) services?\)'
+# After:
+r'^#{0,3}\s*Docker Compose Services? \((\d+) services?\)'
+```
+
+#### 2. Route Prefix Extraction: Confirmed Working
+**Note:** Atlas probe suggested `_ROUTER_PREFIX_RE` might not handle `APIRouter(prefix="/api/images", tags=[...])`. Confirmed working: regex already captures `/api/images` correctly. `/api/images/generate` is in the 59 extracted routes.
+
+### Verification
+
+#### Standard Gates
+```bash
+python scripts/check_doc_freshness.py --mode report --format text  # No drift detected.
+python scripts/check_doc_freshness.py --mode fail --format text   # No drift detected.
+python scripts/check_doc_freshness.py --mode fail --files README.md AGENTS.md  # No drift detected.
+python -m py_compile scripts/check_doc_freshness.py               # Compile OK
+python scripts/lint_feature_matrix.py                              # OK: 60 feature rows validated
+```
+
+#### Targeted Probes
+| Probe | Expected | Actual |
+|-------|----------|--------|
+| `/api/images/generate` in extracted routes | True | True ✅ |
+| stale `/api/images/not-real` in route table | Exit 1 | Exit 1 ✅ |
+| `### Docker Compose (99 services)` stale | Exit 1 | Exit 1 ✅ |
+| `### Docker Compose Services (99 services)` stale | Exit 1 | Exit 1 ✅ |
+| `### Docker Compose (7 services)` current | Exit 0 | Exit 0 ✅ |
+| `### Docker Compose Services (7 services)` current | Exit 0 | Exit 0 ✅ |
+| stale `auto_fast_model: \`bad/model\`` | Exit 1 | Exit 1 ✅ |
+| stale tier video `xai` where source=`fal` | Exit 1 | Exit 1 ✅ |
+
+### Commit Pushed
+- `0934e3f7` — fix(lint): auto-routing backtick regex, docker heading anchor, tier video providers (auto-routing fix, docker `#{0,3}` anchor, tier video provider wiring)
+- `[follow-up]` — fix(lint): make `Services` optional in docker count regex, confirm route prefix working, add Addendum 10 evidence
+
