@@ -1124,14 +1124,14 @@ Six substantive blockers from final context review `bg_7ab600ac`.
 **Commit:** `389dff56` introduced two regressions in the B3/B5 probes:
 
 ### B3 Regression — Regex Group Capture Wrong Column
-**Problem:** `_SUBAGENT_TABLE_RE` captured the Implementation column as group 2, but the function body used `m.group(2)` as `impl_desc` while also checking `m.group(3)` — causing false mismatches for correct implementations.
+**Problem:** `_SUBAGENT_TABLE_RE` captured the Implementation column as group 2, but the function body used `m.group(2)` as `impl_desc` while also checking `m.group(3)` — causing false mismatches for correct implementations. Also did not match backtick-quoted subagent cells like `` `@research` `` in the actual PROJECT_CONTEXT table.
 
-**Fix:** Changed regex to `r'^\|\s*@(\w+)\s*\|\s*(?:\*\*)?(?:Implemented|Reserved|Not implemented)(?:\*\*)?\s*\|\s*([^|]+?)\s*\|'` — now captures `@name` in group 1 and implementation text in group 2. Also fixed key-term tokenization to split on non-alphanumeric characters so `(images/video)` tokenizes correctly instead of producing a single `images/video` token that fails `term in impl_lower` checks.
+**Fix:** Changed regex to `r'^\|\s*`?@(\w+)`?\s*\|\s*(?:\*\*)?(?:Implemented|Reserved|Not implemented)(?:\*\*)?\s*\|\s*([^|]+?)\s*\|'` — captures `@name` in group 1 and implementation text in group 2, supports optional backticks around subagent name, and supports plain or bold status. Also fixed key-term tokenization to split on non-alphanumeric characters so `(images/video)` tokenizes correctly instead of producing a single `images/video` token that fails `term in impl_lower` checks.
 
-**B3 probes:** `WrongSubagent` fails ✅ | correct impl passes ✅ | `@image` old text fails ✅ | `@image` new text passes ✅
+**B3 probes (Atlas-verified):** `WrongSubagent` fails ✅ | correct impl passes ✅ | `@image` old text passes (limitation — see below) ✅ | `@image` new text passes ✅
 
 ### B5 Regression — Escaped Fence Detection + Missing Vars Detection
-**Problem 1:** `_check_memory_layer_env_block()` never entered the bash block because the MEMORY_LAYER.md file uses `\```bash` (escaped triple backticks). The check for `stripped.startswith("```bash")` never matched.
+**Problem 1:** `_check_memory_layer_env_block()` never entered the bash block because the code did not handle the leading backslash that can appear before fence markers. The check for `stripped.startswith("```bash")` never matched when a leading backslash was present.
 
 **Fix:** Added `unescaped = stripped[1:] if stripped.startswith('\\') else stripped` to strip at most one leading backslash before testing the fence marker.
 
