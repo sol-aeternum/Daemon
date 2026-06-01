@@ -29,7 +29,7 @@ Commercial LLM products lock you into a single provider, a single model, and the
 │  ┌────▼────────────┐  ┌──────────────────────────┐  │
 │  │ Memory Layer    │  │ Subagent Orchestrator    │  │
 │  │ (pgvector)      │  │ @research @image @audio  │  │
-│  │                 │  │ @document @code @reader   │  │
+│  │                 │  │ @code @reader            │  │
 │  └─────────────────┘  └──────────────────────────┘  │
 └──────────────────────────────────────────────────────┘
                        │
@@ -121,7 +121,6 @@ Benchmarking runs from the host shell against localhost-exposed container servic
 - `@research` — Brave Search web search
 - `@image` — Image generation (OpenRouter/Gemini) and video generation (xAI, fal.ai/Kling)
 - `@audio` — ElevenLabs TTS/STT/sound effects
-- `@document` — Document file generation
 - `@code` — Code generation (experimental, not fully implemented)
 - `@reader` — Document reading (experimental, not fully implemented)
 

@@ -4,7 +4,7 @@ repos:
       - id: doc-freshness
         name: doc-freshness
         description: Check documentation freshness against source of truth
-        entry: python scripts/check_doc_freshness.py --mode fail
+        entry: uv run python scripts/check_doc_freshness.py --mode fail
         language: system
         pass_filenames: false
         types: []
