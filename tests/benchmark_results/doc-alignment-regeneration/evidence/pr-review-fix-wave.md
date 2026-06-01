@@ -1058,49 +1058,44 @@ Final live PR #6 context-review blockers at HEAD `96206121`. Two blockers.
 | TECHNICAL_SPECS missing BYOK row | `TIER_MODEL` fail | `TIER_MODEL` fail ✅ |
 | Standard gates: `--mode report/fail`, py_compile, lint_feature_matrix | pass | pass ✅ |
 | LSP diagnostics | 0 errors | 0 errors ✅ |
-| Workflow `orchestrator/tools/**` | present | present ✅ |
-| Workflow `orchestrator/subagents/**` | present | present ✅ |
 
 ---
 
-## Atlas Verification Addendum 14 (Jun 2026)
+## Atlas Verification Addendum 16 (Jun 2026)
 
 ### Context
-Final PR #6 context-review blockers at HEAD `2195db94`. Three blockers.
+Addendum 15 declared "Decision: Option A — document accurately without architectural changes" for the `document` spawn exposure blocker. That decision was later superseded: the user selected **Option B** (gate document spawning behind trusted context) and this was implemented across two commits.
 
-### Issues Fixed
+### Supersession
+Addendum 15 §3 (`document` Spawn Exposure — Option A) is superseded by this addendum. The architectural decision is now Option B.
 
-#### 1. Parameterized Route Validation: `/definitely-missing/{id}` Passed
-**Problem:** `if '{' in route: continue` unconditionally skipped ALL routes containing `{...}` in the stale_paths check. This let `/definitely-missing/{id}` pass while `/definitely-missing` correctly failed.
+### What Was Implemented
 
-**Fix:** Removed unconditional skip. Now normalizes `{...}` to `{id}` via `_normalize_route()` before checking against `all_source`. Also narrowed the method-check guard from `{'{' in route: continue` to `re.search(r'\{[a-z_]+\}', route): continue` — only skips description-style refs like `{conversation_id}`, not placeholders like `{id}`.
+**Commit `320f42b5`** — `orchestrator/tools/spawn.py`:
+- `SpawnAgentTool` and `SpawnMultipleTool` now gate `SubagentType.DOCUMENT` behind `_document_spawn_allowed()`.
+- Untrusted single document spawn returns `{"error": "document agent requires explicit authorization", "hint": "trusted_spawn_context with document.enabled=true is required"}`.
+- Untrusted multi document spawn appends the agent to `rejected` with `_spawn_rejected` marker; valid agents still spawn.
+- Trusted context `{'document': {'enabled': True}}` permits document spawn.
+- Non-document agents (`research`, `audio`, `image`, `code`, `reader`) are unaffected.
 
-#### 2. README @image Wording: xAI for Images (Wrong)
-**Problem:** README.md:122 said `@image — Image generation (xAI)`. Source truth: `orchestrator/subagents/image.py` uses `OpenRouterImageProvider` (Gemini) for images; xAI and fal are video providers.
-
-**Fix:** Changed to `@image — Image generation (OpenRouter/Gemini) and video generation (xAI, fal.ai/Kling)`.
-
-#### 3. PROJECT_CONTEXT /local Wording: Overstates Wiring
-**Problem:** "Pre-router `/local` flag implemented" overstates the runtime wiring. `route_message()` parses the flag but `local_requested` is not used in the chat path to route to local inference.
-
-**Fix:** Changed to "Pre-router `/local` flag parsed but not wired to local inference routing." — accurate about parsing vs actual routing.
+**Commit `7367cdd1`** — `orchestrator/tools/spawn.py`:
+- `get_subagent_manager()` deferred until after `valid_spawns` is confirmed non-empty. All-rejected requests (including untrusted document) return before manager initialization.
+- Invalid agent type rejections store `_orig_agent_type` in the error dict; rejected records use it instead of falling back to `at.value` (IMAGE).
 
 ### Verification
 
 | Probe | Expected | Actual |
 |-------|----------|--------|
-| `/definitely-missing/{id}` (stale param) | FAIL | FAIL ✅ |
-| `/conversations/{conversation_id}` GET (valid param) | PASS | PASS ✅ |
-| `/skills/{skill_id}` GET/PATCH/PUT (valid param) | PASS | PASS ✅ |
-| `/memories/{memory_id}` GET/DELETE (valid param) | PASS | PASS ✅ |
-| `/local` in prose (not route table) | PASS | PASS ✅ |
-| `GET/BOGUS` for `/skills` | FAIL | FAIL ✅ |
-| `/bogus` GET | FAIL | FAIL ✅ |
-| `/bogus/export` in multi-route cell | FAIL | FAIL ✅ |
-| README @image wording | "OpenRouter/Gemini" | "OpenRouter/Gemini" ✅ |
-| PROJECT_CONTEXT /local | "parsed but not wired" | "parsed but not wired" ✅ |
-| Standard gates: `--mode report/fail`, py_compile, lint_feature_matrix | pass | pass ✅ |
-| LSP diagnostics | 0 errors | 0 errors ✅ |
+| Untrusted single document spawn | `error` with authorization message | `error`: "document agent requires explicit authorization" ✅ |
+| Trusted document spawn (stubbed manager) | No error | No error ✅ |
+| Multi untrusted: doc rejected + research/audio run | `agents_spawned=2`, `rejected=[1 doc record]` | matches ✅ |
+| Multi trusted: both run | `agents_spawned=2`, `rejected=[]` | matches ✅ |
+| All-rejected multi (no valid agents) | No manager call | `manager_calls=0` ✅ |
+| Invalid agent type "badtype" | `rejected[0].agent_type="badtype"` | `"badtype"` ✅ |
+| Mixed invalid+valid multi | `agents_spawned=2`, `rejected` has `"badtype"` | matches ✅ |
+| Non-document agents (research, audio, image, code, reader) untrusted | No error | No error ✅ |
+| Standard gates: `--mode fail`, py_compile, lint_feature_matrix | pass | pass ✅ |
+
 
 ---
 
