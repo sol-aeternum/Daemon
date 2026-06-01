@@ -168,14 +168,14 @@ class SpawnAgentTool(Tool):
     """Tool to spawn specialized subagents for complex tasks."""
 
     name = "spawn_agent"
-    description = "Spawn a specialized subagent for research, image generation, video generation, sound effect generation, code tasks, or document reading or document generation"
+    description = "Spawn a specialized subagent for research, image generation, video generation, sound effect generation, or code tasks"
     parameters = {
         "type": "object",
         "properties": {
             "agent_type": {
                 "type": "string",
                 "description": "Type of subagent to spawn",
-                "enum": ["research", "image", "audio", "code", "reader", "document"],
+                "enum": ["research", "image", "audio", "code", "reader"],
             },
             "task": {
                 "type": "string",
@@ -301,7 +301,7 @@ class SpawnMultipleTool(Tool):
                     "properties": {
                         "agent_type": {
                             "type": "string",
-                            "enum": ["research", "image", "audio", "code", "reader", "document"],
+                            "enum": ["research", "image", "audio", "code", "reader"],
                         },
                         "task": {
                             "type": "string",

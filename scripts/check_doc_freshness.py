@@ -556,15 +556,26 @@ def _extract_methods_from_row(line_text: str) -> str:
 
 
 _ENV_DOC_RE = re.compile(r'`([A-Z_][A-Z0-9_]*)`')
+_ENV_VAR_SUFFIXES = frozenset([
+    "KEY", "URL", "TOKEN", "SECRET", "PATH", "DB", "PORT", "HOST",
+    "PASSWORD", "NAME", "ID", "MODEL", "SETTING", "VAR", "TYPE",
+])
+
+
+def _is_env_var_name(name: str) -> bool:
+    if not name:
+        return False
+    if name in ("EMBEDDING_DOCUMENT_MODEL", "EMBEDDING_QUERY_MODEL", "EMBEDDING_DIMENSIONS"):
+        return False
+    suffix = name.split("_")[-1] if "_" in name else ""
+    return suffix in _ENV_VAR_SUFFIXES
 
 
 def _check_env_vars(doc_content: str, source_vars: list[str]) -> CheckResult:
     if not source_vars:
         return CheckResult(CheckId.ENV_VAR, True)
     source_set = set(source_vars)
-    doc_vars = [m.group(1) for m in _ENV_DOC_RE.finditer(doc_content) if m.group(1) not in (
-        "EMBEDDING_DOCUMENT_MODEL", "EMBEDDING_QUERY_MODEL", "EMBEDDING_DIMENSIONS"
-    )]
+    doc_vars = [m.group(1) for m in _ENV_DOC_RE.finditer(doc_content) if _is_env_var_name(m.group(1))]
     if not doc_vars:
         return CheckResult(CheckId.ENV_VAR, True)
     stale: list[str] = [v for v in doc_vars if v not in source_set]
@@ -1036,11 +1047,6 @@ def _check_tier_defaults(
             _, orchestrator, _subagents, video = [g.strip() for g in m2.groups()[1:]]
             tier_claims[tier_config_name] = {
                 "orchestrator": orchestrator.strip("`"),
-                "research": None,
-                "code": None,
-                "image": None,
-                "reader": None,
-                "embeddings": None,
                 "video": video,
             }
 
