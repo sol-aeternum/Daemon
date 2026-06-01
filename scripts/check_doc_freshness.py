@@ -978,6 +978,24 @@ def _check_tier_defaults(doc_content: str, tier_defaults: dict[str, dict[str, st
                 "video": video,
             }
 
+    _PLACEHOLDER = {"", "—", "disabled", "n/a", "none"}
+    has_meaningful_tier_table = any(
+        any(
+            v is not None and v.strip('*_`-').lower() not in _PLACEHOLDER
+            for v in slots.values()
+        )
+        for slots in tier_claims.values()
+    )
+    if has_meaningful_tier_table:
+        for tier_name in tier_defaults:
+            if tier_name not in tier_claims:
+                results.append(CheckResult(
+                    CheckId.TIER_MODEL, False,
+                    tier_name,
+                    "(missing)",
+                    f"tier {tier_name} row missing from document tier table",
+                ))
+
     for tier_name, slots in tier_defaults.items():
         doc_slots = tier_claims.get(tier_name, {})
         for slot, config_model in slots.items():

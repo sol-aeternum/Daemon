@@ -1027,4 +1027,38 @@ Final live PR #6 context-review blockers at HEAD `2a45566b`. Five blocker catego
 
 Standard gates: `--mode report`, `--mode fail`, `--mode fail --files README.md AGENTS.md`, `py_compile`, `lint_feature_matrix` — all pass.
 
+---
+
+## Atlas Verification Addendum 13 (Jun 2026)
+
+### Context
+Final live PR #6 context-review blockers at HEAD `96206121`. Two blockers.
+
+### Issues Fixed
+
+#### 1. Workflow: Missing `orchestrator/tools/**` and `orchestrator/subagents/**`
+**Problem:** `workflow_has_orchestrator/tools/**: False` and `workflow_has_orchestrator/subagents/**: False`. The doc-freshness workflow did not trigger on changes to `orchestrator/tools/` or `orchestrator/subagents/`.
+
+**Fix:** Added both paths to both `push.paths` and `pull_request.paths` in `.github/workflows/docs-freshness.yml`.
+
+#### 2. Tier Table: Missing Row Not Detected
+**Problem:** `_check_tier_defaults()` iterated `tier_defaults.items()` and for each tier checked `doc_slots = tier_claims.get(tier_name, {})`. When missing, `doc_slots = {}` and most slots did `if doc_model_raw is None: continue` — no failure. Removing BYOK produced zero failures.
+
+**Fix:** Added missing-tier-row detection with `has_meaningful_tier_table` guard:
+- `has_meaningful_tier_table`: True only if at least one tier row has a real (non-`—`, non-placeholder) slot value — prevents false positive on `FEATURE_MATRIX.md` which has a BYOK row with all `—` values
+- Missing tier check: for each source tier not in `tier_claims`, emit `CheckId.TIER_MODEL` failure
+
+### Verification
+
+| Probe | Expected | Actual |
+|-------|----------|--------|
+| TECHNICAL_SPECS tier table complete | all pass | all pass ✅ |
+| PROJECT_CONTEXT tier table complete | all pass | all pass ✅ |
+| FEATURE_MATRIX (placeholder BYOK only) | all pass | all pass ✅ |
+| TECHNICAL_SPECS missing BYOK row | `TIER_MODEL` fail | `TIER_MODEL` fail ✅ |
+| Standard gates: `--mode report/fail`, py_compile, lint_feature_matrix | pass | pass ✅ |
+| LSP diagnostics | 0 errors | 0 errors ✅ |
+| Workflow `orchestrator/tools/**` | present | present ✅ |
+| Workflow `orchestrator/subagents/**` | present | present ✅ |
+
 
