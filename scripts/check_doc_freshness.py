@@ -206,9 +206,6 @@ def get_route_facts(root: Path) -> dict[str, Any]:
     return {"routes": routes}
 
 
-_FEATURE_ROW_RE = re.compile(r"^\|\s*([^|]+?)\s*\|[^|]*\|\s*([^|]+?)\s*\|-")
-
-
 def get_feature_states(root: Path) -> dict[str, str]:
     matrix_path = root / "docs" / "FEATURE_MATRIX.md"
     if not matrix_path.exists():
@@ -226,15 +223,20 @@ def get_feature_states(root: Path) -> dict[str, str]:
             break
         if not in_matrix:
             continue
-        if line.startswith("| Feature |") or line.startswith("|---") or line.startswith("| **"):
+        if line.startswith("| Feature |") or line.startswith("| **"):
             continue
-
-        m = _FEATURE_ROW_RE.match(line)
-        if m:
-            feature = m.group(1).strip()
-            state = m.group(2).strip()
-            if feature and state:
-                states[feature] = state
+        # Skip separator lines like |---|---|---|
+        stripped = line.strip()
+        if stripped.startswith("|---"):
+            continue
+        # Data row: starts with |, has content, not a separator
+        if stripped.startswith("|") and not stripped.startswith("|---"):
+            parts = [p.strip() for p in stripped.split("|")[1:-1]]
+            if len(parts) >= 2:
+                feature = parts[0].strip()
+                state = parts[1].strip()
+                if feature and state and feature != "Feature":
+                    states[feature] = state
 
     return states
 
@@ -275,6 +277,7 @@ def extract_all_facts(root: Path) -> dict[str, Any]:
         "embeddings": get_embedding_facts(root),
         "providers": get_provider_facts(root),
         "routes": get_route_facts(root),
+        "feature_states": get_feature_states(root),
         "env_vars": get_env_var_facts(root),
         "tier_defaults": get_tier_facts(root),
         "tier_prices": get_tier_prices(root),
@@ -421,6 +424,7 @@ def _check_tier_prices(doc_content: str, source_prices: dict[str, str]) -> Check
 _ROUTE_TABLE_RE = re.compile(r'`(/[^`]+)`')
 _KNOWN_SINGLE_SEGMENT_ROUTES = frozenset(["/chat", "/health", "/status", "/providers"])
 _METHOD_LINE_RE = re.compile(r'\|\s*(GET|POST|PUT|PATCH|DELETE|OPTIONS)\s*\|', re.IGNORECASE)
+_METHOD_CELL_RE = re.compile(r'\|\s*([A-Z/]+)\s*\|', re.IGNORECASE)
 
 
 def _is_route_table_row(line_text: str, route_start: int) -> bool:
@@ -436,22 +440,37 @@ def _normalize_route(route: str) -> str:
 def _check_routes(doc_content: str, source_routes: dict[str, list[str]]) -> CheckResult:
     if not source_routes:
         return CheckResult(CheckId.ROUTE, True)
+
+    # Build normalized path sets and method lookups
     all_source: set[str] = set()
-    for paths in source_routes.values():
+    source_methods_by_path: dict[str, set[str]] = {}
+    for method, paths in source_routes.items():
         for p in paths:
-            all_source.add(_normalize_route(p))
+            norm = _normalize_route(p)
+            all_source.add(norm)
+            source_methods_by_path.setdefault(norm, set()).add(method.upper())
+
     if not all_source:
         return CheckResult(CheckId.ROUTE, True)
-    doc_routes: list[str] = []
+
+    # Collect (route, methods_from_doc) from table rows
+    doc_route_methods: list[tuple[str, str]] = []
     for m in _ROUTE_TABLE_RE.finditer(doc_content):
         route = m.group(1).strip()
         if not route.startswith('/'):
             continue
         if route.count('/') >= 2:
-            doc_routes.append(route)
+            line_start = doc_content.rfind('\n', 0, m.start()) + 1
+            line_end = doc_content.find('\n', m.start())
+            if line_end == -1:
+                line_end = len(doc_content)
+            line_text = doc_content[line_start:line_end]
+            if _is_route_table_row(line_text, m.start() - line_start):
+                methods = _extract_methods_from_row(line_text)
+                doc_route_methods.append((route, methods))
             continue
         if route in _KNOWN_SINGLE_SEGMENT_ROUTES:
-            doc_routes.append(route)
+            doc_route_methods.append((route, ""))
             continue
         line_start = doc_content.rfind('\n', 0, m.start()) + 1
         line_end = doc_content.find('\n', m.start())
@@ -459,21 +478,50 @@ def _check_routes(doc_content: str, source_routes: dict[str, list[str]]) -> Chec
             line_end = len(doc_content)
         line_text = doc_content[line_start:line_end]
         if _is_route_table_row(line_text, m.start() - line_start):
-            doc_routes.append(route)
-    if not doc_routes:
-        return CheckResult(CheckId.ROUTE, True)
-    stale: list[str] = []
-    for route in doc_routes:
+            methods = _extract_methods_from_row(line_text)
+            doc_route_methods.append((route, methods))
+
+    # Check stale paths
+    stale_paths: list[str] = []
+    for route, _ in doc_route_methods:
         if _normalize_route(route) not in all_source:
-            stale.append(route)
-    if stale:
+            stale_paths.append(route)
+    if stale_paths:
         return CheckResult(
             CheckId.ROUTE, False,
             f"all source routes: {len(all_source)} paths",
-            f"stale: {', '.join(sorted(stale))}",
-            f"documented route(s) not found in source: {', '.join(sorted(stale))}",
+            f"stale: {', '.join(sorted(stale_paths))}",
+            f"documented route(s) not found in source: {', '.join(sorted(stale_paths))}",
         )
+
+    # Check method claims
+    method_failures: list[str] = []
+    for route, doc_methods in doc_route_methods:
+        if not doc_methods:
+            continue
+        norm = _normalize_route(route)
+        src_methods = source_methods_by_path.get(norm, set())
+        if not src_methods:
+            continue
+        for dm in doc_methods.split('/'):
+            dm = dm.strip().upper()
+            if dm not in src_methods:
+                method_failures.append(f"{route}: method {dm} not in source ({', '.join(sorted(src_methods))})")
+
+    if method_failures:
+        return CheckResult(
+            CheckId.ROUTE, False,
+            "source methods",
+            "; ".join(method_failures[:3]),
+            f"route method mismatch: {method_failures[0]}",
+        )
+
     return CheckResult(CheckId.ROUTE, True)
+
+
+def _extract_methods_from_row(line_text: str) -> str:
+    methods_match = _METHOD_CELL_RE.search(line_text)
+    return methods_match.group(1).strip() if methods_match else ""
 
 
 _ENV_DOC_RE = re.compile(r'`([A-Z_][A-Z0-9_]*)`')
@@ -553,6 +601,99 @@ def _check_embedding_dimensions(doc_content: str, expected: int) -> CheckResult:
     m = _EMBEDDING_DIMENSIONS_CLAIM_RE.search(doc_content)
     if not m:
         return CheckResult(CheckId.EMBEDDING_DIMENSIONS, True)
+    observed = int(m.group(1))
+    if observed != expected:
+        return CheckResult(CheckId.EMBEDDING_DIMENSIONS, False, str(expected), str(observed),
+                          f"embedding dimensions mismatch: expected {expected}, found {observed}")
+    return CheckResult(CheckId.EMBEDDING_DIMENSIONS, True)
+
+
+_EMBEDDING_PROSE_DOC_RE = re.compile(
+    r'voyage[- ]4[- ]large[`\s]*\(?\s*(\d+)\s*d\)?'
+)
+_EMBEDDING_PROSE_QUERY_RE = re.compile(
+    r'voyage[- ]4[- ]lite[`\s]*\(?\s*(\d+)\s*d\)?'
+)
+
+
+def _check_embedding_prose(doc_content: str, efact: dict[str, Any]) -> list[CheckResult]:
+    results = []
+    doc_model = efact.get("document_model", "")
+    query_model = efact.get("query_model", "")
+    dims = efact.get("dimensions")
+
+    doc_m = _EMBEDDING_PROSE_DOC_RE.search(doc_content)
+    if doc_m and doc_model:
+        doc_dims_obs = int(doc_m.group(1))
+        doc_model_norm = _normalize_model_name(doc_model)
+        if doc_dims_obs != dims:
+            results.append(CheckResult(
+                CheckId.EMBEDDING_DIMENSIONS, False,
+                str(dims), str(doc_dims_obs),
+                f"embedding doc dims mismatch in structured prose: expected {dims}, found {doc_dims_obs}",
+            ))
+
+    query_m = _EMBEDDING_PROSE_QUERY_RE.search(doc_content)
+    if query_m and query_model:
+        query_dims_obs = int(query_m.group(1))
+        query_model_norm = _normalize_model_name(query_model)
+        if query_dims_obs != dims:
+            results.append(CheckResult(
+                CheckId.EMBEDDING_DIMENSIONS, False,
+                str(dims), str(query_dims_obs),
+                f"embedding query dims mismatch in structured prose: expected {dims}, found {query_dims_obs}",
+            ))
+
+    return results
+
+
+_MEMORY_EMBEDDING_TABLE_RE = re.compile(
+    r'^\|\s*([^|]+?)\s*\|\s*`([^`]+)`\s*\|\s*[^|]+\s*\|\s*(\d+)\s*\|',
+    re.IGNORECASE,
+)
+
+
+def _check_memory_layer_table(doc_content: str, efact: dict[str, Any]) -> list[CheckResult]:
+    results = []
+    doc_model = efact.get("document_model", "")
+    query_model = efact.get("query_model", "")
+    dims = efact.get("dimensions")
+    if not doc_model and not query_model:
+        return results
+    doc_norm = _normalize_model_name(doc_model) if doc_model else ""
+    query_norm = _normalize_model_name(query_model) if query_model else ""
+    for line in doc_content.splitlines():
+        m = _MEMORY_EMBEDDING_TABLE_RE.match(line.strip())
+        if not m:
+            continue
+        purpose, model_raw, dim_obs_raw = m.group(1).strip(), m.group(2).strip(), m.group(3).strip()
+        model_norm = _normalize_model_name(model_raw)
+        dim_obs = int(dim_obs_raw) if dim_obs_raw.isdigit() else None
+        if "document" in purpose.lower() and doc_model and model_norm != doc_norm:
+            results.append(CheckResult(
+                CheckId.EMBEDDING_DOC_MODEL, False,
+                doc_model, model_raw,
+                f"memory layer doc model mismatch: expected {doc_model}",
+            ))
+        if "document" in purpose.lower() and dims and dim_obs and dim_obs != dims:
+            results.append(CheckResult(
+                CheckId.EMBEDDING_DIMENSIONS, False,
+                str(dims), str(dim_obs),
+                f"memory layer doc dims mismatch: expected {dims}, found {dim_obs}",
+            ))
+        if "query" in purpose.lower() and query_model and model_norm != query_norm:
+            results.append(CheckResult(
+                CheckId.EMBEDDING_QUERY_MODEL, False,
+                query_model, model_raw,
+                f"memory layer query model mismatch: expected {query_model}",
+            ))
+        if "query" in purpose.lower() and dims and dim_obs and dim_obs != dims:
+            results.append(CheckResult(
+                CheckId.EMBEDDING_DIMENSIONS, False,
+                str(dims), str(dim_obs),
+                f"memory layer query dims mismatch: expected {dims}, found {dim_obs}",
+            ))
+    return results
     observed = int(m.group(1))
     if observed != expected:
         return CheckResult(CheckId.EMBEDDING_DIMENSIONS, False, str(expected), str(observed),
@@ -996,6 +1137,26 @@ def check_document(
             findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"EMBEDDING_DIMENSIONS"),
                                    CheckId.EMBEDDING_DIMENSIONS, "mismatch",
                                    res.expected, res.observed, res.message or "embedding dimensions mismatch"))
+
+    if doc_path.name in ("PROJECT_CONTEXT.md", "MEMORY_LAYER.md"):
+        for res in _check_embedding_prose(text, efact):
+            if not res.passed:
+                exc = _match_exception(exceptions, res.check_id, str(doc_path))
+                if exc and exc.expires >= today:
+                    exc.suppressed_finding = True
+                else:
+                    findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"voyage"),
+                                           res.check_id, "mismatch",
+                                           res.expected, res.observed, res.message or "embedding prose mismatch"))
+        for res in _check_memory_layer_table(text, efact):
+            if not res.passed:
+                exc = _match_exception(exceptions, res.check_id, str(doc_path))
+                if exc and exc.expires >= today:
+                    exc.suppressed_finding = True
+                else:
+                    findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"voyage"),
+                                           res.check_id, "mismatch",
+                                           res.expected, res.observed, res.message or "memory layer embedding mismatch"))
 
     dedup_checks = [
         (CheckId.DEDUP_MERGE, efact["dedup_merge"], r"(?<!-)\bmerge\b"),

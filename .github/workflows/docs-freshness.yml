@@ -20,6 +20,7 @@ on:
       - .pre-commit-config.yaml
       - .env.example
       - providers/**
+      - frontend/**
   pull_request:
     paths:
       - docs/**
@@ -36,6 +37,7 @@ on:
       - .pre-commit-config.yaml
       - .env.example
       - providers/**
+      - frontend/**
 
 jobs:
   doc-freshness:

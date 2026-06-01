@@ -869,3 +869,63 @@ python scripts/lint_feature_matrix.py                              # OK: 60 feat
 - `[fix]` — fix(lint): correct `(?: Services)?` optional word group in docker count regex
 - `[follow-up]` — fix(lint): make `Services` optional in docker count regex, confirm route prefix working, add Addendum 10 evidence
 
+---
+
+## Atlas Verification Addendum 11 (Jun 2026)
+
+### Context
+Final context-mining review of PR #6 at HEAD `16ec3857`. Five blockers identified and fixed.
+
+### Issues Fixed
+
+#### 1. Feature States: Parser Returned 0 Rows
+**Problem:** `_FEATURE_ROW_RE` pattern ended with `\|-` matching the markdown table separator line `|---|---|...|` not actual data rows. `get_feature_states()` returned 0 rows.
+
+**Fix:** Rewrote `get_feature_states()` without `_FEATURE_ROW_RE`. Now uses pipe-split logic: skip header, skip separator rows (`|---`), parse data rows via `split("|")`. Returns 60 rows matching FEATURE_MATRIX content. Re-added to `extract_all_facts()`.
+
+#### 2. Workflow: Missing `frontend/**` Path Filter
+**Problem:** FEATURE_MATRIX.md is PR-gated for client-surface changes but workflow did not trigger on `frontend/**` changes.
+
+**Fix:** Added `frontend/**` to both `push.paths` and `pull_request.paths` in `.github/workflows/docs-freshness.yml`.
+
+#### 3. Route Method Validation: PUT vs GET/PATCH Not Checked
+**Problem:** `_check_routes()` only validated path existence, not HTTP method claims. `| PUT | /users/me/settings |` passed even though source only exposes GET/PATCH.
+
+**Fix:** Extended `_check_routes()` to build `source_methods_by_path` from route facts and validate documented method(s) per route table row. Methods extracted via `_extract_methods_from_row()`. Stale PUT for `/users/me/settings` now fails; current GET/PATCH passes.
+
+#### 4. `@image` Wording in PROJECT_CONTEXT
+**Problem:** `@image (xAI/fal)` mischaracterized xAI/fal as image providers. Source truth: `OpenRouterImageProvider` uses `gemini-2.5-flash-image` for images; xAI and fal are video providers.
+
+**Fix:** Changed `PROJECT_CONTEXT.md:66` to `@image (OpenRouter/Gemini for images; xAI, fal for video)`.
+
+#### 5. Embedding Structured Prose/Table Validation
+**Problem:** Embedding checks only matched `EMBEDDING_DOCUMENT_MODEL` label forms. `PROJECT_CONTEXT.md:104` prose and `MEMORY_LAYER.md` markdown table with voyage model/dimension claims were not validated.
+
+**Fix:** Added `_check_embedding_prose()` and `_check_memory_layer_table()`. Both run for `PROJECT_CONTEXT.md` and `MEMORY_LAYER.md`:
+- `_check_embedding_prose()`: matches `voyage-4-large` and `voyage-4-lite` with `(NNNd)` dimension qualifiers
+- `_check_memory_layer_table()`: parses markdown table rows `| Purpose | Model | Input type | Dimensions |` and validates model and dimension columns
+
+### Verification
+
+#### Standard Gates
+```bash
+python scripts/check_doc_freshness.py --mode report --format text  # No drift detected.
+python scripts/check_doc_freshness.py --mode fail --format text   # No drift detected.
+python scripts/check_doc_freshness.py --mode fail --files README.md AGENTS.md  # No drift detected.
+python -m py_compile scripts/check_doc_freshness.py               # Compile OK
+python scripts/lint_feature_matrix.py                              # OK: 60 feature rows validated
+```
+
+#### Targeted Probes
+| Probe | Expected | Actual |
+|-------|----------|--------|
+| stale PUT `/users/me/settings` | Exit 1 | Exit 1 ✅ |
+| current GET/PATCH `/users/me/settings` | Exit 0 | Exit 0 ✅ |
+| memory layer table wrong dims (512 vs 1024) | Exit 1 | Exit 1 ✅ |
+| memory layer table wrong model (voyage-3) | Exit 1 | Exit 1 ✅ |
+| memory layer table current (voyage-4-large/lite, 1024) | Exit 0 | Exit 0 ✅ |
+| embedding prose stale dims (512d) | Exit 1 | Exit 1 ✅ |
+| embedding prose current (1024d) | Exit 0 | Exit 0 ✅ |
+| `get_feature_states()` returns nonzero | 60 rows | 60 rows ✅ |
+
+

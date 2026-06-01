@@ -63,7 +63,7 @@ Daemon uses a tier-based model configuration system. Specific model assignments 
 
 ### Phase 1: Cloud Orchestration ✅
 - **SSE Streaming**: Typed events (`token`, `thinking`, `routing`, `tool_call`, `tool_result`, `final`, `error`, `done`).
-- **Subagents**: `@research` (Brave), `@image` (xAI/fal), `@audio` (ElevenLabs), `@document` (file gen).
+- **Subagents**: `@research` (Brave), `@image` (OpenRouter/Gemini for images; xAI, fal for video), `@audio` (ElevenLabs), `@document` (file gen).
 - **Tools**: `web_search`, `http_request`, `calculate`, `get_time`, `notifications`, `reminders`, `memory_read`, `memory_write`.
 
 ### Phase 2: Memory System ✅
