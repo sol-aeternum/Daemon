@@ -154,7 +154,21 @@ def get_tier_facts(root: Path) -> dict[str, Any]:
         tier_name = m.group(1)
         provider = m.group(2)
         image_providers[tier_name] = provider
-    return {"tiers": tiers, "video_providers": video_providers, "image_providers": image_providers}
+    video_enabled: dict[str, bool] = {}
+    current_tier: str | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("if tier_name ==") or stripped.startswith("elif tier_name =="):
+            m = re.search(r'==\s*"(\w+)"', stripped)
+            if m:
+                current_tier = m.group(1)
+        elif current_tier and "tier_video_enabled" in stripped and "=" in stripped:
+            if "False" in stripped:
+                video_enabled[current_tier] = False
+            elif "True" in stripped:
+                video_enabled[current_tier] = True
+            current_tier = None
+    return {"tiers": tiers, "video_providers": video_providers, "image_providers": image_providers, "video_enabled": video_enabled}
 
 
 def get_auto_routing_facts(root: Path) -> dict[str, str]:
@@ -990,6 +1004,7 @@ def _check_tier_defaults(
     tier_defaults: dict[str, dict[str, str]],
     tier_video_providers: dict[str, str] | None = None,
     tier_image_providers: dict[str, str] | None = None,
+    tier_video_enabled: dict[str, bool] | None = None,
 ) -> list[CheckResult]:
     """
     Validate tier table model claims against config.py defaults.
@@ -1004,7 +1019,7 @@ def _check_tier_defaults(
 
     Provider drift detection:
     - Video: docs say "Disabled"/"n/a"/"—" but config has tier_X_video_provider → FAIL
-    - Image: docs say "_none_" but config has tier_X_image_provider → FAIL
+    - Image (only if doc has image column): docs say "_none_" or wrong provider but config has tier_X_image_provider → FAIL
     """
     results = []
     lines = doc_content.splitlines()
@@ -1119,19 +1134,33 @@ def _check_tier_defaults(
 
     if tier_video_providers and tier_claims:
         for tier_name, config_provider in tier_video_providers.items():
+            if tier_name not in tier_claims:
+                continue
             doc_slots = tier_claims.get(tier_name, {})
             doc_raw = (doc_slots.get("video") or "").strip("` \t")
             doc_lower = doc_raw.lower()
+            is_enabled = tier_video_enabled.get(tier_name) if tier_video_enabled else None
             if doc_lower in ("disabled", "n/a", "—") or not doc_lower:
-                results.append(CheckResult(
-                    CheckId.TIER_VIDEO_PROVIDER, False,
-                    config_provider,
-                    doc_raw or "(empty)",
-                    f"tier {tier_name} video: config has provider but docs say '{doc_raw}'",
-                ))
+                if is_enabled:
+                    observed = doc_raw if doc_raw else "(empty)"
+                    results.append(CheckResult(
+                        CheckId.TIER_VIDEO_PROVIDER, False,
+                        config_provider,
+                        observed,
+                        f"tier {tier_name} video: config has provider but docs say '{observed}'",
+                    ))
                 continue
             embedded_m = re.search(r'\(([^)]+)\)', doc_raw)
             provider_claimed = embedded_m.group(1).strip() if embedded_m else doc_raw
+            if is_enabled is False:
+                if "enabled" in doc_lower:
+                    results.append(CheckResult(
+                        CheckId.TIER_VIDEO_PROVIDER, False,
+                        config_provider,
+                        doc_raw,
+                        f"tier {tier_name} video: config disables video but docs say '{doc_raw}'",
+                    ))
+                continue
             if provider_claimed.lower() != config_provider.lower():
                 results.append(CheckResult(
                     CheckId.TIER_VIDEO_PROVIDER, False,
@@ -1141,15 +1170,34 @@ def _check_tier_defaults(
                 ))
 
     if tier_image_providers and tier_claims:
+        has_image_col = any(
+            (doc_slots.get("image") or "").strip()
+            for doc_slots in tier_claims.values()
+        )
+        if not has_image_col:
+            return results
         for tier_name, config_provider in tier_image_providers.items():
+            if tier_name not in tier_claims:
+                continue
             doc_slots = tier_claims.get(tier_name, {})
-            doc_raw = (doc_slots.get("image") or "").strip("` \t").lower()
-            if doc_raw == "_none_" or doc_raw == "none":
+            doc_raw = (doc_slots.get("image") or "").strip("` \t")
+            doc_lower = doc_raw.lower()
+            if doc_lower in ("_none_", "none", ""):
+                observed = doc_raw if doc_raw else "(empty)"
                 results.append(CheckResult(
                     CheckId.TIER_IMAGE_PROVIDER, False,
                     config_provider,
-                    "_none_",
-                    f"tier {tier_name} image: config has provider but docs say _none_",
+                    observed,
+                    f"tier {tier_name} image: config has provider but docs say '{observed}'",
+                ))
+            elif " " in doc_raw or "/" in doc_raw:
+                pass
+            elif doc_lower != config_provider.lower():
+                results.append(CheckResult(
+                    CheckId.TIER_IMAGE_PROVIDER, False,
+                    config_provider,
+                    doc_raw,
+                    f"tier {tier_name} image provider mismatch: expected {config_provider}",
                 ))
 
     return results
@@ -1370,8 +1418,9 @@ def check_document(
     tier_defaults = facts.get("tier_defaults", {}).get("tiers", {})
     tier_video_providers = facts.get("tier_defaults", {}).get("video_providers", {})
     tier_image_providers = facts.get("tier_defaults", {}).get("image_providers", {})
+    tier_video_enabled = facts.get("tier_defaults", {}).get("video_enabled", {})
     if tier_defaults and doc_path.name in ("TECHNICAL_SPECS.md", "PROJECT_CONTEXT.md"):
-        tier_results = _check_tier_defaults(text, tier_defaults, tier_video_providers, tier_image_providers)
+        tier_results = _check_tier_defaults(text, tier_defaults, tier_video_providers, tier_image_providers, tier_video_enabled)
         for tres in tier_results:
             if not tres.passed:
                 exc = _match_exception(exceptions, tres.check_id, str(doc_path))

@@ -1160,3 +1160,32 @@ AST parse: OK ✅
 
 **B3b limitation:** The key-term check uses OR semantics — if ANY key term appears in the impl text, the check passes. The wrong impl `xAI (images/video), fal/Kling (video)` contains `images` and `video` (both key terms from the note), so it passes despite missing `openrouter`/`gemini`. This is a design limitation; the check catches "completely wrong" implementations but not "partially wrong" ones where generic terms overlap.
 
+---
+
+## Addendum 19 — Free Tier Video/Image Provider Fixes (June 2026)
+
+**Commit:** `bfa03b80` (prior wave) and `5e46fa34` (evidence correction).
+
+### Free Tier Video: `Enabled (fal)` vs `tier_video_enabled=False`
+**Problem:** `docs/PROJECT_CONTEXT.md` Free tier video cell showed `Enabled (fal)`, but `orchestrator/config.py` has `tier_video_enabled=False` for Free tier. The check only compared provider names, not the enabled/disabled state.
+
+**Fix:** Changed `PROJECT_CONTEXT.md` Free tier video from `Enabled (fal)` to `Disabled`. Updated `_check_tier_defaults()` to extract `tier_video_enabled` values via line-by-line parsing of the if/elif chain in `get_tier_config()`. The video check now: (1) fails when `tier_video_enabled=True` and doc says "Disabled"/empty; (2) fails when `tier_video_enabled=False` and doc explicitly claims "Enabled"; (3) compares provider names for other cases. Bare provider names (no "enabled" keyword) are treated as informational, not explicit enabled claims.
+
+### Image Provider Check: Wrong Non-Empty Provider Not Caught
+**Problem:** The image provider check only detected `_none_`/`none` cases. A wrong non-empty provider (e.g., changing `openrouter` to `xai`) was not caught.
+
+**Fix:** Added `elif doc_lower != config_provider.lower()` branch to catch wrong non-empty provider claims. Also added guard to skip image provider check when the doc has no image column (e.g., PROJECT_CONTEXT 4-column format). Added guard to skip tiers not present in the doc. Model names in the Image column (containing spaces or slashes) are skipped since they are not provider identifiers.
+
+### Files Modified
+- `docs/PROJECT_CONTEXT.md`: Free video `Enabled (fal)` → `Disabled`
+- `scripts/check_doc_freshness.py`: tier_video_enabled extraction, video enabled-state check, image provider non-empty mismatch check, has_image_col guard, tier_claims guard
+
+### Verification
+| Probe | Expected | Actual |
+|-------|----------|--------|
+| T1: Free video 'Disabled' (correct) | 0 failures | 0 ✅ |
+| T2: Free video 'Enabled (fal)' (wrong) | 1 failure | 1 ✅ |
+| T3: TECHNICAL_SPECS Free image='xai' (wrong) | 1 failure | 1 ✅ |
+| T4: TECHNICAL_SPECS Free image='openrouter' (correct) | 0 failures | 0 ✅ |
+| Standard gates: `--mode fail`, py_compile, lint_feature_matrix | pass | pass ✅ |
+
