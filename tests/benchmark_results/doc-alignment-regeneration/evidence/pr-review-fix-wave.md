@@ -1289,3 +1289,47 @@ AST parse: OK ✅
 | `py_compile` (check_doc_freshness.py) | OK ✅ |
 | `lint_feature_matrix.py` | OK: 60 rows ✅ |
 
+---
+
+## Addendum 23 — PR #6 Review Comments `3337842232`, `3337842227`, `3337842230` (June 2026)
+
+**Commit:** `6e33703f`.
+
+### Comment `3337842232` — Flag Tier Docs When Configured Model Is Removed
+**Problem:** `_check_tier_defaults()` only validated when docs matched config. When a tier had a model slot configured in docs but the config had that model cleared (empty string), no check fired — the docs could show a stale model name indefinitely.
+
+**Fix:** Added a pre-check at the `if not config_model:` branch. When `config_model` is empty/falsy but `doc_model` is non-empty, a `CheckResult` failure is emitted: `"tier {tier} {slot} model was removed from config but docs still show '{doc_model}'"`. For the image slot, this check is skipped when `tier_image_provider` is non-empty, since the image column shows a provider name (not a model name) and the separate image provider check handles that case. Also fixed: `_TIER_MODEL_RE` pattern changed from `[^"]+` to `[^"]*` so empty-string model values (e.g. `tier_free_research_model: str = ""`) are captured as empty strings instead of being invisible to the regex.
+
+### Comment `3337842227` — Reject Stale Implemented Status for Removed Subagents
+**Problem:** `_check_subagent_table()` handled `expected_status == "reserved"` → fail if doc says `Implemented`, but there was no handling for `expected_status == "not_implemented"` → fail if doc says `Implemented`.
+
+**Fix:** Added explicit `elif expected_status == "not_implemented"` branch: if `doc_status_lower == "implemented"`, a failure is emitted: `"@{name} is not implemented but table says '{doc_status}'"`.
+
+### Comment `3337842230` — Honor Env_Var Exceptions for Memory Env Block
+**Problem:** `_check_memory_layer_env_block()` findings were added directly to findings without going through the `_match_exception()` suppression path. A valid unexpired `DOC_FRESHNESS_EXCEPTION: env_var` annotation on MEMORY_LAYER.md would not suppress the missing-var finding.
+
+**Fix:** Wrapped the MEMORY_LAYER finding in `_match_exception()` check: if a matching exception exists and `exc.expires >= today`, `exc.suppressed_finding = True` is set; otherwise the finding is added to results (same pattern used by migration, auto_routing, and docker checks).
+
+### Files Modified
+- `scripts/check_doc_freshness.py`: tier model "removed" check added; `_TIER_MODEL_RE` pattern `[^"]+` → `[^"]*`; subagent `not_implemented` status branch added; MEMORY_LAYER exception handling added
+
+### Gates
+| Gate | Result |
+|------|--------|
+| `check_doc_freshness.py --mode fail` | No drift ✅ |
+| `check_doc_freshness.py --mode fail --files README.md AGENTS.md` | No drift ✅ |
+| `py_compile` (check_doc_freshness.py) | OK ✅ |
+| `lint_feature_matrix.py` | OK: 60 rows ✅ |
+
+### Verification
+| Probe | Expected | Actual |
+|-------|----------|--------|
+| P1a: FREE research `_none_` (config empty, doc empty) → 0 tier_model failures | 0 | 0 ✅ |
+| P1b: FREE research `Kimi K2.5` but config model cleared → 1 failure | 1 | 1 ✅ |
+| P1c: BYOK research+code shows model but config model cleared → failure | ≥1 | ≥1 ✅ |
+| P2a: `@code` Reserved (correct) → 0 failures | 0 | 0 ✅ |
+| P2b: `@code` Implemented but source Reserved → 1 failure | 1 | 1 ✅ |
+| P2c: `not_implemented` source, docs say Implemented → 1 failure | 1 | 1 ✅ |
+| P3a: MEMORY_LAYER missing vars → fails | failure | failure ✅ |
+| P3b: `_match_exception` finds `ENV_VAR` exception for MEMORY_LAYER path | True | True ✅ |
+

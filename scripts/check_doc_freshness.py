@@ -119,7 +119,7 @@ def get_provider_facts(root: Path) -> dict[str, Any]:
 
 # Tier model defaults extraction from config.py
 _TIER_MODEL_RE = re.compile(
-    r'tier_([a-z]+)_([a-z_]+)_model\s*:\s*str\s*=\s*"([^"]+)"'
+    r'tier_([a-z]+)_([a-z_]+)_model\s*:\s*str\s*=\s*"([^"]*)"'
 )
 _TIER_VIDEO_PROVIDER_RE = re.compile(
     r'tier_([a-z]+)_video_provider\s*:\s*str\s*=\s*"([^"]+)"'
@@ -1089,10 +1089,26 @@ def _check_tier_defaults(
                 continue
 
             doc_model = doc_model_raw.strip('*_`')
-            if not doc_model or doc_model.lower() in ("_none_", "disabled", "n/a", "—"):
+            if not doc_model or doc_model.lower() in ("_none_", "none", "disabled", "n/a", "—"):
                 doc_model = ""
 
             if not config_model:
+                if doc_model:
+                    # For image slot: if tier_image_provider is configured, the image column
+                    # shows a provider name (e.g. "openrouter") not a model name. The separate
+                    # image provider check handles this; skip the model-removal check.
+                    skip_for_image = (
+                        slot == "image"
+                        and tier_image_providers is not None
+                        and tier_image_providers.get(tier_name)
+                    )
+                    if not skip_for_image:
+                        results.append(CheckResult(
+                            CheckId.TIER_MODEL, False,
+                            "(cleared)",
+                            doc_model,
+                            f"tier {tier_name} {slot} model was removed from config but docs still show '{doc_model}'",
+                        ))
                 continue
 
             config_alias = _normalize_model_name(config_model)
@@ -1293,6 +1309,14 @@ def _check_subagent_table(doc_content: str, subagent_facts: dict[str, dict[str, 
                     doc_status,
                     f"@{name} is reserved but table says '{doc_status}'",
                 ))
+        elif expected_status == "not_implemented":
+            if doc_status_lower == "implemented":
+                results.append(CheckResult(
+                    CheckId.SUBAGENT_STATUS, False,
+                    "Not implemented",
+                    doc_status,
+                    f"@{name} is not implemented but table says '{doc_status}'",
+                ))
     return results
 
 
@@ -1478,9 +1502,13 @@ def check_document(
     if doc_path.name == "MEMORY_LAYER.md":
         mem_res = _check_memory_layer_env_block(text)
         if not mem_res.passed:
-            findings.append(Finding(str(doc_path), 1,
-                                   CheckId.ENV_VAR, "missing",
-                                   mem_res.expected, mem_res.observed, mem_res.message or "memory layer env block check failed"))
+            exc = _match_exception(exceptions, CheckId.ENV_VAR, str(doc_path))
+            if exc and exc.expires >= today:
+                exc.suppressed_finding = True
+            else:
+                findings.append(Finding(str(doc_path), 1,
+                                       CheckId.ENV_VAR, "missing",
+                                       mem_res.expected, mem_res.observed, mem_res.message or "memory layer env block check failed"))
 
     auto_facts = facts.get("auto_routing", {})
     if auto_facts and doc_path.name == "TECHNICAL_SPECS.md":
