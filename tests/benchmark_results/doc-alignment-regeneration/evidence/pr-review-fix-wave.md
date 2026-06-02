@@ -1293,7 +1293,7 @@ AST parse: OK ✅
 
 ## Addendum 23 — PR #6 Review Comments `3337842232`, `3337842227`, `3337842230` (June 2026)
 
-**Commit:** `6e33703f`.
+**Commit:** `3883c01`.
 
 ### Comment `3337842232` — Flag Tier Docs When Configured Model Is Removed
 **Problem:** `_check_tier_defaults()` only validated when docs matched config. When a tier had a model slot configured in docs but the config had that model cleared (empty string), no check fired — the docs could show a stale model name indefinitely.
