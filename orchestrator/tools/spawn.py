@@ -15,7 +15,6 @@ from orchestrator.subagents.base import SubagentType, SubagentManager
 from orchestrator.subagents.research import ResearchSubagent
 from orchestrator.subagents.image import ImageSubagent
 from orchestrator.subagents.audio import AudioSubagent
-from orchestrator.subagents.document import DocumentSubagent
 
 logger = logging.getLogger(__name__)
 
@@ -101,32 +100,6 @@ def _persist_audio_result(result_dict: dict[str, Any]) -> dict[str, Any]:
     return result_dict
 
 
-def _persist_file_result(result_dict: dict[str, Any]) -> dict[str, Any]:
-    """Handle DocumentSubagent results - preserve file path and generation_code.
-
-    DocumentSubagent already persists files to data/generated_files/ via its
-    _persist_file method. This function ensures generation_code is preserved
-    in metadata for revision flows.
-    """
-    # Check if this is a document result
-    agent_type = result_dict.get("agent_type")
-    if agent_type != "document":
-        return result_dict
-
-    data = result_dict.get("data")
-    if not isinstance(data, dict):
-        return result_dict
-
-    # DocumentSubagent already saved the file and returned file_url
-    # Just ensure generation_code is in metadata for revisions
-    generation_code = data.get("generation_code")
-    if generation_code:
-        # Move generation_code to metadata for persistence
-        result_dict["metadata"] = result_dict.get("metadata", {})
-        result_dict["metadata"]["generation_code"] = generation_code
-
-    return result_dict
-
 
 # Global subagent manager instance
 _subagent_manager: SubagentManager | None = None
@@ -156,7 +129,6 @@ def get_subagent_manager(db_pool: Any | None = None) -> SubagentManager:
         _subagent_manager.register(ResearchSubagent(shared_config))
         _subagent_manager.register(ImageSubagent(shared_config))
         _subagent_manager.register(AudioSubagent(shared_config))
-        _subagent_manager.register(DocumentSubagent(shared_config))
     elif db_pool is not None:
         image_agent = _subagent_manager.get(SubagentType.IMAGE)
         if image_agent is not None:
@@ -216,13 +188,6 @@ class SpawnAgentTool(Tool):
         self._db_pool = db_pool
         self._trusted_spawn_context = trusted_spawn_context or {}
 
-    def _document_spawn_allowed(self) -> bool:
-        """Return True if document spawning is explicitly authorized in trusted context."""
-        doc_trust = self._trusted_spawn_context.get("document")
-        if isinstance(doc_trust, dict):
-            return doc_trust.get("enabled") is True
-        return doc_trust is True
-
     def _apply_trusted_context(
         self,
         agent_type: SubagentType,
@@ -265,14 +230,6 @@ class SpawnAgentTool(Tool):
                 }
             )
 
-        if subagent_type == SubagentType.DOCUMENT and not self._document_spawn_allowed():
-            return json.dumps(
-                {
-                    "error": "document agent requires explicit authorization",
-                    "agent_type": "document",
-                    "hint": "trusted_spawn_context with document.enabled=true is required",
-                }
-            )
         context = self._apply_trusted_context(subagent_type, context)
 
         manager = get_subagent_manager(db_pool=self._db_pool)
@@ -280,7 +237,6 @@ class SpawnAgentTool(Tool):
         result_dict = result.to_dict()
         result_dict = _persist_image_result(result_dict)
         result_dict = _persist_audio_result(result_dict)
-        result_dict = _persist_file_result(result_dict)
 
         return json.dumps(result_dict)
 
@@ -329,13 +285,6 @@ class SpawnMultipleTool(Tool):
         self._db_pool = db_pool
         self._trusted_spawn_context = trusted_spawn_context or {}
 
-    def _document_spawn_allowed(self) -> bool:
-        """Return True if document spawning is explicitly authorized in trusted context."""
-        doc_trust = self._trusted_spawn_context.get("document")
-        if isinstance(doc_trust, dict):
-            return doc_trust.get("enabled") is True
-        return doc_trust is True
-
     def _apply_trusted_context(
         self,
         agent_type: SubagentType,
@@ -358,9 +307,6 @@ class SpawnMultipleTool(Tool):
                     if value is not None:
                         merged_context[key] = value
             return merged_context
-        if agent_type == SubagentType.DOCUMENT:
-            if not self._document_spawn_allowed():
-                return None
         return context
 
     async def execute(self, **kwargs: Any) -> str:
@@ -378,14 +324,6 @@ class SpawnMultipleTool(Tool):
                     "",
                     {"_spawn_error": f"Unknown agent_type: {agent_type_str}", "_orig_agent_type": agent_type_str},
                     None,
-                ))
-                continue
-            if agent_type == SubagentType.DOCUMENT and not self._document_spawn_allowed():
-                spawns.append((
-                    SubagentType.DOCUMENT,
-                    agent_spec.get("task", ""),
-                    {"_spawn_rejected": "document agent requires explicit authorization"},
-                    agent_spec.get("session_id"),
                 ))
                 continue
             task = agent_spec.get("task", "")
@@ -433,7 +371,6 @@ class SpawnMultipleTool(Tool):
             result_dict = result.to_dict()
             result_dict = _persist_image_result(result_dict)
             result_dict = _persist_audio_result(result_dict)
-            result_dict = _persist_file_result(result_dict)
             results.append(result_dict)
 
         return json.dumps(
