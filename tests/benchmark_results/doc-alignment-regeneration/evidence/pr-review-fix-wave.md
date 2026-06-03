@@ -1560,7 +1560,7 @@ Corrections to Addendum 27 (`019707c4`) following Atlas verification:
 ## Addendum 28 — Fix Linter Review Comments `3347913069`, `3331309517`, `3331309513` (June 2026)
 
 **Comments:** `3347913069` (yaml import), `3331309517` (subagents cell), `3331309513` (embedding prose regex)
-**Commit:** `3ef8d899` (prior fix) → this fix.
+**Commit:** `ac8aeb24` (prior fix) → `91842ea0` (this fix).
 
 ### Finding 1 — `3347913069`: Remove `import yaml` from `get_docker_facts()`
 
@@ -1576,9 +1576,15 @@ Corrections to Addendum 27 (`019707c4`) following Atlas verification:
 
 ### Finding 3 — `3331309517`: PROJECT_CONTEXT Subagents cell not validated
 
-**Problem:** For the 4-column PROJECT_CONTEXT tier table, the `_subagents` cell was parsed and stored in `tier_claims` but never validated. A tier with no subagent models in config could have stale subagent names in the docs without triggering a failure.
+**Problem:** For the 4-column PROJECT_CONTEXT tier table, the `_subagents` cell was parsed and stored in `tier_claims` but never validated. A tier with no subagent models in config could have stale subagent names in the docs without triggering a failure. Conversely, a tier with models configured could have a placeholder `None` and not be flagged.
 
-**Fix:** Added subagent cell validation at the end of `_check_tier_defaults()`. After parsing, for each tier with a non-placeholder subagents claim (anything not in `{"", "—", "disabled", "n/a", "none"}`), checks whether the tier has at least one research, code, or image model configured in `tier_defaults`. If the docs claim active subagents but all three slots are empty → `TIER_MODEL` failure.
+**Fix:** Inverted validation logic in `_check_tier_defaults()`. For each tier:
+
+- **Tiers with models (`has_any=True`):** Fail if doc subagents is a placeholder (`""`, `"—"`, `"disabled"`, `"n/a"`, `"none"`, `"not applicable"`, `"user-configured"`). Also fail if doc contains a non-placeholder value that lacks any expected keyword (`sonnet`/`claude`/`gemini`/`kimi`/`grok`) matching the configured model names.
+- **Tiers without models (`has_any=False`):** Fail if doc subagents is a non-placeholder (e.g. `WrongSubagent`). Pass if doc is a placeholder (e.g. `None` for Free tier).
+- **BYOK special case:** `user-configured` is treated as a placeholder since users supply their own models.
+
+Expected keywords are derived per-slot from `tier_defaults`: if `research` model contains `sonnet` → expect `sonnet`; if `image` model contains `gemini` → expect `gemini`; etc.
 
 ### Files Modified
 | File | Change |
@@ -1600,5 +1606,10 @@ Corrections to Addendum 27 (`019707c4`) following Atlas verification:
 | `get_docker_facts()` returns service count | `{"service_count": 7}` | `{"service_count": 7}` ✅ |
 | `get_docker_facts()` uses no yaml import | No `import yaml` in script | None found ✅ |
 | Embedding prose regex captures non-voyage model | `oogly-boogly-99 (999d)` captured | `oogly-boogly-99` captured ✅ |
-| Subagents cell: stale active claim detected | Fails if no subagent models | Correctly flagged ✅ |
-| Current aligned docs still pass | No false positives | No drift detected ✅ |
+| Subagents: aligned docs (Starter `Sonnet 3.5, Gemini Flash`) | 0 failures | 0 ✅ |
+| Subagents: Starter `WrongSubagent` (no keyword match) | ≥1 failure | 1 ✅ |
+| Subagents: Starter `None` (placeholder with models configured) | ≥1 failure | 1 ✅ |
+| Subagents: Free `None` (placeholder, no models) | 0 failures | 0 ✅ |
+| Subagents: Free `WrongSubagent` (non-placeholder, no models) | ≥1 failure | 1 ✅ |
+| Subagents: BYOK `User-configured` (placeholder, no models) | 0 failures | 0 ✅ |
+| Current aligned docs still pass all gates | No drift | No drift ✅ |
