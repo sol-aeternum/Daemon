@@ -1239,22 +1239,63 @@ def _check_tier_defaults(
                     f"tier {tier_name} image provider mismatch: expected {config_provider}",
                 ))
 
-    _PLACEHOLDER_SUBAGENTS = {"", "—", "disabled", "n/a", "none", "not applicable"}
+    _PLACEHOLDER_SUBAGENTS = {"", "—", "disabled", "n/a", "none", "not applicable", "user-configured"}
     for tier_name, doc_slots in tier_claims.items():
-        doc_subagents = (doc_slots.get("subagents") or "").strip()
-        if not doc_subagents or doc_subagents.lower() in _PLACEHOLDER_SUBAGENTS:
+        if "subagents" not in doc_slots:
             continue
+        doc_subagents = (doc_slots.get("subagents") or "").strip()
         tier_slot_vals = tier_defaults.get(tier_name, {})
         has_research = bool(tier_slot_vals.get("research", "").strip())
         has_code = bool(tier_slot_vals.get("code", "").strip())
         has_image = bool(tier_slot_vals.get("image", "").strip())
-        if not has_research and not has_code and not has_image:
+        has_reader = bool(tier_slot_vals.get("reader", "").strip())
+        has_any = has_research or has_code or has_image or has_reader
+        doc_lower = doc_subagents.lower()
+
+        if not has_any:
+            if not doc_subagents or doc_lower in _PLACEHOLDER_SUBAGENTS:
+                continue
             results.append(CheckResult(
                 CheckId.TIER_MODEL, False,
                 tier_name,
                 doc_subagents,
-                f"tier {tier_name} subagents: docs claim '{doc_subagents}' but config has no research/code/image models",
+                f"tier {tier_name} subagents: docs say '{doc_subagents}' but config has no research/code/image/reader models",
             ))
+            continue
+        if not doc_subagents or doc_lower in _PLACEHOLDER_SUBAGENTS:
+            results.append(CheckResult(
+                CheckId.TIER_MODEL, False,
+                tier_name,
+                doc_subagents or "(empty)",
+                f"tier {tier_name} subagents: docs say '{doc_subagents or '(empty)'}' but config has research/code/image models",
+            ))
+            continue
+        expected_keywords: list[str] = []
+        for slot, model in [("research", tier_slot_vals.get("research", "")),
+                             ("code", tier_slot_vals.get("code", "")),
+                             ("image", tier_slot_vals.get("image", "")),
+                             ("reader", tier_slot_vals.get("reader", ""))]:
+            if model:
+                m_lower = model.lower()
+                if "sonnet" in m_lower:
+                    expected_keywords.append("sonnet")
+                if "gemini" in m_lower:
+                    expected_keywords.append("gemini")
+                if "claude" in m_lower:
+                    expected_keywords.append("claude")
+                if "kimi" in m_lower:
+                    expected_keywords.append("kimi")
+                if "grok" in m_lower:
+                    expected_keywords.append("grok")
+        if expected_keywords:
+            matched = any(kw in doc_lower for kw in expected_keywords)
+            if not matched:
+                results.append(CheckResult(
+                    CheckId.TIER_MODEL, False,
+                    tier_name,
+                    doc_subagents,
+                    f"tier {tier_name} subagents: docs say '{doc_subagents}' but expected one of {expected_keywords}",
+                ))
 
     return results
 
