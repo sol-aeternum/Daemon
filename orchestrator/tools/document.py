@@ -114,8 +114,7 @@ class GenerateDocumentTool(Tool):
                 if isinstance(parsed, list) and all(isinstance(r, list) for r in parsed):
                     if parsed:
                         headers = [str(h) for h in (parsed[0] if isinstance(parsed[0], list) else [])]
-                        data_rows = parsed[1:] if len(parsed) > 1 else parsed
-                        rows = [[str(c) for c in r] for r in data_rows]
+                        rows = [[str(c) for c in r] for r in parsed[1:]]
                 elif isinstance(parsed, dict) and "headers" in parsed and "rows" in parsed:
                     headers = [str(h) for h in parsed["headers"]]
                     rows = [[str(c) for c in r] for r in parsed["rows"]]
@@ -123,7 +122,7 @@ class GenerateDocumentTool(Tool):
                 pass
 
         # Priority 3: fall back to text content as single column
-        if not rows:
+        if not rows and not headers:
             headers = ["Content"]
             for line in content.strip().splitlines():
                 if line.strip():

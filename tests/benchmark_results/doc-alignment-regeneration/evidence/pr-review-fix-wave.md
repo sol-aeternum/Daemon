@@ -1544,3 +1544,13 @@ Defensive: `table` is validated as a dict with list-valued `headers` and `rows` 
 | Workflow pull_request.paths includes router.py | True | True ✅ |
 | Workflow pull_request.paths includes daemon.py | True | True ✅ |
 | No DocumentSubagent in runtime code | 0 occurrences | 0 ✅ |
+
+---
+
+### Addendum 27 Correction Note (June 2026)
+
+Corrections to Addendum 27 (`019707c4`) following Atlas verification:
+
+1. **Workflow `pull_request.paths`**: Addendum 27 stated daemon.py and router.py were added to both push and PR paths, but only push.paths was updated in that commit. This correction adds both files to `pull_request.paths` as well.
+
+2. **CSV single-header-row behavior**: `data_rows = parsed[1:] if len(parsed) > 1 else parsed` was still wrong — when `len(parsed)==1`, it used the header row as data. Fixed to `data_rows = parsed[1:]` unconditionally. Also changed fallback guard from `if not rows:` to `if not rows and not headers:` so that a header-only list-of-lists (`[["Name","Score"]]`) outputs correctly without falling back to text.

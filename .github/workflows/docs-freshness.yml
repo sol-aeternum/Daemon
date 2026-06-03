@@ -45,6 +45,8 @@ on:
       - orchestrator/services/fetch/**
       - backend/image_gen/**
       - orchestrator/main.py
+      - orchestrator/daemon.py
+      - orchestrator/router.py
       - orchestrator/memory/**
       - migrations/**
       - scripts/check_doc_freshness.py
