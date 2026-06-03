@@ -1333,3 +1333,63 @@ AST parse: OK ✅
 | P3a: MEMORY_LAYER missing vars → fails | failure | failure ✅ |
 | P3b: `_match_exception` finds `ENV_VAR` exception for MEMORY_LAYER path | True | True ✅ |
 
+
+---
+
+## Addendum 24 — Document Subagent → Deterministic `generate_document` Tool (June 2026)
+
+**Commit:** `3cdbd953` (evidence-only parent) → this change.
+
+### Problem
+`DocumentSubagent` used LLM-generated Python code at runtime (via `python-docx` code generation + `exec()`) — a non-deterministic, high-risk execution path. The `/document` command path spawned a subagent that generated Python code and executed it. This was flagged as a security and reliability concern.
+
+### Fix
+Replaced `DocumentSubagent` with a deterministic `GenerateDocumentTool` that uses pre-approved `python-docx` calls directly. Zero runtime LLM code generation, zero `exec()`, zero `spawn_agent(document)` or `spawn_multiple(document)` paths.
+
+### What Changed
+| File | Change |
+|------|--------|
+| `orchestrator/tools/document.py` | New file: `GenerateDocumentTool` class with `name="generate_document"`. Supports `format="csv"` and `format="docx"`. CSV: parses JSON rows (array-of-arrays) or JSON `{"headers":[], "rows":[]}` or plain text fallback. DOCX: `python-docx` with title, optional sections, optional table. Returns `{success, data: {file_url, filename, format, file_size, mime_type}}`. |
+| `orchestrator/tools/spawn.py` | Removed: `DocumentSubagent` import, `_persist_file_result()` function, `DocumentSubagent` registration, `_document_spawn_allowed()` (both methods), all document checks from `SpawnAgentTool.execute()` and `SpawnMultipleTool.execute()`. |
+| `orchestrator/tools/builtin.py` | Added `GenerateDocumentTool()` to default registry. |
+| `orchestrator/prompts.py` | Removed `document` from `spawn_agent` tool description. Added `generate_document` tool with usage guidance. Removed `@document` usage instructions. |
+| `orchestrator/subagents/base.py` | `SubagentType` enum: `DOCUMENT` value removed. Members now: `RESEARCH`, `IMAGE`, `CODE`, `READER`, `AUDIO`. |
+| `orchestrator/subagents/document.py` | Orphaned on disk — zero runtime imports or references. |
+| `tests/test_generate_document.py` | New file: 8 unit tests covering CSV (JSON rows, headers+rows dict, text fallback, filename hint) and DOCX (simple, with sections+table) generation, unsupported format error, and file URL pattern. |
+| `tests/test_document_subagent.py` | Removed (was testing old LLM-codegen path). |
+| `tests/test_document_integration.py` | Removed (was testing old subagent integration). |
+
+### Key Interface Contract
+`GenerateDocumentTool.execute()` returns JSON with `data.file_url` starting with `/generated-files/` — matches existing `getDocumentDownloadFromEvents()` frontend contract. No frontend changes needed.
+
+### Files Modified
+- `orchestrator/tools/document.py` (new 238 lines)
+- `orchestrator/tools/spawn.py` (document references excised)
+- `orchestrator/tools/builtin.py` (`GenerateDocumentTool` added)
+- `orchestrator/prompts.py` (spawn_agent doc updated, `generate_document` added)
+- `orchestrator/subagents/base.py` (`SubagentType.DOCUMENT` removed)
+- `tests/test_generate_document.py` (new tests)
+- `tests/test_document_subagent.py` (deleted)
+- `tests/test_document_integration.py` (deleted)
+
+### Gates
+| Gate | Result |
+|------|--------|
+| `check_doc_freshness.py --mode fail` | No drift ✅ |
+| `lint_feature_matrix.py` | OK: 60 rows ✅ |
+| AST parse: spawn.py, builtin.py, document.py, base.py, prompts.py | OK ✅ |
+| `uv run pytest tests/test_generate_document.py` | 8 passed ✅ |
+
+### Verification
+| Probe | Expected | Actual |
+|-------|----------|--------|
+| V1: `SubagentType` members | `['research','image','code','reader','audio']` | `['research','image','code','reader','audio']` ✅ |
+| V2: `generate_document` in tool registry | True | True ✅ |
+| V3: `DOCUMENT` in tool registry | False | False ✅ |
+| V4: `document` in `spawn_agent` allowed types | False | False ✅ |
+| V5: CSV generation with JSON rows | success + file exists | success + file exists ✅ |
+| V6: CSV generation with text fallback | success + file exists | success + file exists ✅ |
+| V7: DOCX generation with title | success + file exists + size > 0 | success + file exists + size > 0 ✅ |
+| V8: DOCX generation with sections and table | success + file exists | success + file exists ✅ |
+| V9: Unsupported format returns error | success=False + "Unsupported format" | success=False + "Unsupported format" ✅ |
+| V10: file_url starts with `/generated-files/` | True | True ✅ |
