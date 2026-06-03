@@ -188,11 +188,24 @@ def get_docker_facts(root: Path) -> dict[str, Any]:
     compose_path = root / "docker-compose.yml"
     if not compose_path.exists():
         return {"service_count": 0}
-    import yaml
-    with compose_path.open(encoding="utf-8") as fh:
-        data = yaml.safe_load(fh)
-    services = data.get("services", {}) if isinstance(data, dict) else {}
-    return {"service_count": len(services)}
+    text = compose_path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    service_count = 0
+    services_indent: int | None = None
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("services:"):
+            services_indent = len(line) - len(line.lstrip())
+            continue
+        if services_indent is None:
+            continue
+        current_indent = len(line) - len(line.lstrip())
+        if current_indent <= services_indent and stripped:
+            break
+        if current_indent == services_indent + 2 and stripped and not stripped.startswith("#"):
+            if not any(stripped.startswith(k) for k in ("depends_on:", "environment:", "ports:", "volumes:", "networks:", "build:", "command:", "restart:", "image:", "container_name:", "healthcheck:", "env_file:", "extends:", "profiles:", "deploy:", "cgroup_parent:", "cpu_shares:", "mem_limit:", "mem_reservation:", "ulimits:", "log_driver:", "log_opt:", "dns:", "dns_search:", "external_links:", "extra_hosts:", "isolation:", "mac_address:", "network_mode:", "shm_size:", "stdin_open:", "tty:", "user:", "working_dir:")):
+                service_count += 1
+    return {"service_count": service_count}
 
 
 _ROUTE_DEF_RE = re.compile(r'(@app\.|router\.)(get|post|put|patch|delete|options)\s*\(\s*["\']([^"\']*)["\']')
@@ -692,11 +705,11 @@ def _check_embedding_dimensions(doc_content: str, expected: int) -> CheckResult:
 
 
 _EMBEDDING_PROSE_DOC_RE = re.compile(
-    r'`(voyage-[^`]+)`\s*\((\d+)d\)[^,]*\bfor documents',
+    r'`([^`]+)`\s*\((\d+)d\)[^,]*\bfor documents',
     re.IGNORECASE,
 )
 _EMBEDDING_PROSE_QUERY_RE = re.compile(
-    r'`(voyage-[^`]+)`\s*\((\d+)d\)[^,]*\bfor queries',
+    r'`([^`]+)`\s*\((\d+)d\)[^,]*\bfor queries',
     re.IGNORECASE,
 )
 
@@ -1049,6 +1062,7 @@ def _check_tier_defaults(
             _, orchestrator, _subagents, video = [g.strip() for g in m2.groups()[1:]]
             tier_claims[tier_config_name] = {
                 "orchestrator": orchestrator.strip("`"),
+                "subagents": _subagents,
                 "video": video,
             }
 
@@ -1224,6 +1238,23 @@ def _check_tier_defaults(
                     doc_raw,
                     f"tier {tier_name} image provider mismatch: expected {config_provider}",
                 ))
+
+    _PLACEHOLDER_SUBAGENTS = {"", "—", "disabled", "n/a", "none", "not applicable"}
+    for tier_name, doc_slots in tier_claims.items():
+        doc_subagents = (doc_slots.get("subagents") or "").strip()
+        if not doc_subagents or doc_subagents.lower() in _PLACEHOLDER_SUBAGENTS:
+            continue
+        tier_slot_vals = tier_defaults.get(tier_name, {})
+        has_research = bool(tier_slot_vals.get("research", "").strip())
+        has_code = bool(tier_slot_vals.get("code", "").strip())
+        has_image = bool(tier_slot_vals.get("image", "").strip())
+        if not has_research and not has_code and not has_image:
+            results.append(CheckResult(
+                CheckId.TIER_MODEL, False,
+                tier_name,
+                doc_subagents,
+                f"tier {tier_name} subagents: docs claim '{doc_subagents}' but config has no research/code/image models",
+            ))
 
     return results
 

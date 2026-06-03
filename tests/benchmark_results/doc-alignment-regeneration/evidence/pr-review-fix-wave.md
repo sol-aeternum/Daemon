@@ -1554,3 +1554,51 @@ Corrections to Addendum 27 (`019707c4`) following Atlas verification:
 1. **Workflow `pull_request.paths`**: Addendum 27 stated daemon.py and router.py were added to both push and PR paths, but only push.paths was updated in that commit. This correction adds both files to `pull_request.paths` as well.
 
 2. **CSV single-header-row behavior**: `data_rows = parsed[1:] if len(parsed) > 1 else parsed` was still wrong — when `len(parsed)==1`, it used the header row as data. Fixed to `data_rows = parsed[1:]` unconditionally. Also changed fallback guard from `if not rows:` to `if not rows and not headers:` so that a header-only list-of-lists (`[["Name","Score"]]`) outputs correctly without falling back to text.
+
+---
+
+## Addendum 28 — Fix Linter Review Comments `3347913069`, `3331309517`, `3331309513` (June 2026)
+
+**Comments:** `3347913069` (yaml import), `3331309517` (subagents cell), `3331309513` (embedding prose regex)
+**Commit:** `3ef8d899` (prior fix) → this fix.
+
+### Finding 1 — `3347913069`: Remove `import yaml` from `get_docker_facts()`
+
+**Problem:** `get_docker_facts()` used `import yaml` internally, making the script non-stdlib. The documented command `python scripts/check_doc_freshness.py --mode fail` was no longer dependency-light.
+
+**Fix:** Replaced YAML parsing with stdlib-only text scanning. Counts top-level `services:` block keys by tracking indentation: finds `services:` line, records its indent level, then collects lines at `services_indent + 2 spaces` as service names, stopping when indentation returns to root level. Defensively skips known non-service-keywords (`depends_on:`, `environment:`, `ports:`, etc.) to avoid false counting.
+
+### Finding 2 — `3331309513`: Embedding prose regex hardcoded `voyage-*`
+
+**Problem:** `_EMBEDDING_PROSE_DOC_RE` and `_EMBEDDING_PROSE_QUERY_RE` captured only `voyage-[^`]+` model names. Any non-voyage embedding model in prose would be invisible to the check.
+
+**Fix:** Changed capture group from `voyage-[^`]+` to `[^`]+` in both regexes, preserving the `(NNNd)` dimension capture and `for documents/queries` anchor.
+
+### Finding 3 — `3331309517`: PROJECT_CONTEXT Subagents cell not validated
+
+**Problem:** For the 4-column PROJECT_CONTEXT tier table, the `_subagents` cell was parsed and stored in `tier_claims` but never validated. A tier with no subagent models in config could have stale subagent names in the docs without triggering a failure.
+
+**Fix:** Added subagent cell validation at the end of `_check_tier_defaults()`. After parsing, for each tier with a non-placeholder subagents claim (anything not in `{"", "—", "disabled", "n/a", "none"}`), checks whether the tier has at least one research, code, or image model configured in `tier_defaults`. If the docs claim active subagents but all three slots are empty → `TIER_MODEL` failure.
+
+### Files Modified
+| File | Change |
+|------|--------|
+| `scripts/check_doc_freshness.py` | YAML import removed from `get_docker_facts()`; stdlib text-scan substituted; embedding prose regex generalized from `voyage-[^\`]+` to `[^\`]+`; subagents cell validation added |
+
+### Gates
+| Gate | Result |
+|------|--------|
+| `check_doc_freshness.py --mode report --format text` | No drift ✅ |
+| `check_doc_freshness.py --mode fail --format text` | No drift ✅ |
+| `check_doc_freshness.py --mode fail --files README.md AGENTS.md` | No drift ✅ |
+| `lint_feature_matrix.py` | OK: 60 rows ✅ |
+| `uv run pytest tests/test_generate_document.py` | 13 passed ✅ |
+
+### Verification
+| Probe | Expected | Actual |
+|-------|----------|--------|
+| `get_docker_facts()` returns service count | `{"service_count": 7}` | `{"service_count": 7}` ✅ |
+| `get_docker_facts()` uses no yaml import | No `import yaml` in script | None found ✅ |
+| Embedding prose regex captures non-voyage model | `oogly-boogly-99 (999d)` captured | `oogly-boogly-99` captured ✅ |
+| Subagents cell: stale active claim detected | Fails if no subagent models | Correctly flagged ✅ |
+| Current aligned docs still pass | No false positives | No drift detected ✅ |
