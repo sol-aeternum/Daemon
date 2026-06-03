@@ -63,16 +63,13 @@ class GenerateDocumentTool(Tool):
         "required": ["format", "content"],
     }
 
-    async def execute(
-        self,
-        format: str,
-        content: str,
-        title: str = "",
-        filename: str = "",
-        sections: list[dict[str, str]] | None = None,
-        table: dict[str, Any] | None = None,
-        **kwargs: Any,
-    ) -> str:
+    async def execute(self, **kwargs: Any) -> str:
+        format = kwargs.get("format", "")
+        content = kwargs.get("content", "")
+        title = kwargs.get("title", "")
+        filename = kwargs.get("filename", "")
+        sections = kwargs.get("sections")
+        table = kwargs.get("table")
         doc_format = format.lower()
         if doc_format not in ("csv", "docx"):
             return json.dumps({
