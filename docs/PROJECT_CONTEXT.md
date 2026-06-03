@@ -29,7 +29,7 @@ Daemon is a multi-provider LLM orchestration platform with intelligent routing, 
 │  ┌────▼────────────┐  ┌──────────────────────────┐  │
 │  │ Memory Layer    │  │ Subagent Orchestrator    │  │
 │  │ (pgvector)      │  │ @research @image @audio  │  │
-│  │                 │  │ @document                │  │
+
 │  └─────────────────┘  └──────────────────────────┘  │
 └──────────────────────────────────────────────────────┘
                        │
@@ -63,7 +63,8 @@ Daemon uses a tier-based model configuration system. Specific model assignments 
 
 ### Phase 1: Cloud Orchestration ✅
 - **SSE Streaming**: Typed events (`token`, `thinking`, `routing`, `tool_call`, `tool_result`, `final`, `error`, `done`).
-- **Subagents**: `@research` (Brave), `@image` (OpenRouter/Gemini for images; xAI, fal for video), `@audio` (ElevenLabs), `@document` (file gen).
+- **Subagents**: `@research` (Brave), `@image` (OpenRouter/Gemini for images; xAI, fal for video), `@audio` (ElevenLabs).
+- **Tools**: `generate_document` (deterministic CSV/DOCX generation).
 - **Tools**: `web_search`, `http_request`, `calculate`, `get_time`, `notifications`, `reminders`, `memory_read`, `memory_write`.
 
 ### Phase 2: Memory System ✅
@@ -115,7 +116,7 @@ For detailed architecture, see [MEMORY_LAYER.md](../MEMORY_LAYER.md).
 | `@research` | Implemented | Brave Search + synthesis |
 | `@image` | Implemented | OpenRouter/Gemini (images), xAI/fal (video) |
 | `@audio` | Implemented | ElevenLabs SFX |
-| `@document` | Implemented | Python code generation + execution |
+| `generate_document` | Implemented | Deterministic CSV/DOCX generation via `generate_document` tool |
 | `@code` | **Reserved** | Not implemented |
 | `@reader` | **Reserved** | Not implemented |
 

@@ -36,7 +36,7 @@ Daemon provides a comprehensive suite of features for advanced AI assistance.
 
 - **Chat & Routing**: Real-time token streaming with typed SSE events, supporting both native and OpenAI-compatible endpoints with tier-based model assignment.
 - **Persistent Memory**: Automated fact extraction, hybrid semantic/lexical retrieval, and bitemporal memory management. Detailed in [../MEMORY_LAYER.md](../MEMORY_LAYER.md).
-- **Subagent Framework**: Specialized agents for web research (`@research`), image and video generation (`@image`), audio processing (`@audio`), and document generation (`@document`).
+- **Subagent Framework**: Specialized agents for web research (`@research`), image and video generation (`@image`), audio processing (`@audio`). Document generation via `generate_document` tool (deterministic CSV/DOCX).
 - **Multimodal Studio**: Dedicated interfaces for high-fidelity media generation with integrated credit management.
 - **Voice Interaction**: Streaming text-to-speech and speech-to-text for a hands-free assistant experience.
 

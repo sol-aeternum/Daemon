@@ -53,7 +53,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | @image (image generation) | Cross-client stable | Cross-client stable | Not started | Not started | Subagent orchestration service + image generation service | No |
 | @image Video Generation | Cross-client stable | Cross-client stable | Not started | Not started | Subagent orchestration service + video generation service + /video-credits | No |
 | @audio (ElevenLabs sound effects) | Cross-client stable | Cross-client stable | Not started | Not started | POST /sound-effects | No |
-| @document (document file generation) | Cross-client stable | Cross-client stable | Not started | Not started | Subagent orchestration service + /generated-files/{filename} | No |
+| Document file generation (`generate_document`) | Cross-client stable | Cross-client stable | Not started | Not started | `generate_document` tool + /generated-files/{filename} | No |
 | @code (code generation) — NOT IMPLEMENTED | Web experimental | Web experimental | Not started | Not started | Reserved subagent orchestration mode | No |
 | @reader (document analysis) — NOT IMPLEMENTED | Web experimental | Web experimental | Not started | Not started | Reserved subagent orchestration mode | No |
 | **Tools** | — | — | — | — | — | — |

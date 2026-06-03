@@ -20,7 +20,6 @@ Daemon is a personal AI assistant orchestration layer. The system prompt (v3) de
 - `@research`: News, fact-checking, market research.
 - `@image`: Image and video generation (mode="video").
 - `@audio`: Sound effects, audio clips.
-- `@document`: Word documents, spreadsheets.
 - `@code`: Review, debugging (reserved).
 - `@reader`: Document analysis (reserved).
 
