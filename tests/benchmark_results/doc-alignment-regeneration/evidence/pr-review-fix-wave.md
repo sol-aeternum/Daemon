@@ -1560,7 +1560,9 @@ Corrections to Addendum 27 (`019707c4`) following Atlas verification:
 ## Addendum 28 — Fix Linter Review Comments `3347913069`, `3331309517`, `3331309513` (June 2026)
 
 **Comments:** `3347913069` (yaml import), `3331309517` (subagents cell), `3331309513` (embedding prose regex)
-**Commit:** `ac8aeb24` (prior fix) → `91842ea0` (this fix).
+**Commit:** `ac8aeb24` (prior fix) → `91842ea0` (subagent validation added, unreachable bug) → `f2f1a7f4` (Addendum 28 updated) → [pending] (early return bug fixed).
+
+**Note:** Commit `91842ea0` added subagent validation but it was unreachable for 4-column PROJECT_CONTEXT tables due to an early `return results` at line 1217 (old code: `if not has_image_col: return results`). The validation code existed but was never executed because the 4-column format has no image column → `has_image_col=False` → function returned before subagent check. This fix (pending) replaces the early return with a conditional `if has_image_col:` wrapper so the subagent block always runs.
 
 ### Finding 1 — `3347913069`: Remove `import yaml` from `get_docker_facts()`
 

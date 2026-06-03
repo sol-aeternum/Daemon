@@ -1213,31 +1213,30 @@ def _check_tier_defaults(
             (doc_slots.get("image") or "").strip()
             for doc_slots in tier_claims.values()
         )
-        if not has_image_col:
-            return results
-        for tier_name, config_provider in tier_image_providers.items():
-            if tier_name not in tier_claims:
-                continue
-            doc_slots = tier_claims.get(tier_name, {})
-            doc_raw = (doc_slots.get("image") or "").strip("` \t")
-            doc_lower = doc_raw.lower()
-            if doc_lower in ("_none_", "none", ""):
-                observed = doc_raw if doc_raw else "(empty)"
-                results.append(CheckResult(
-                    CheckId.TIER_IMAGE_PROVIDER, False,
-                    config_provider,
-                    observed,
-                    f"tier {tier_name} image: config has provider but docs say '{observed}'",
-                ))
-            elif " " in doc_raw or "/" in doc_raw:
-                pass
-            elif doc_lower != config_provider.lower():
-                results.append(CheckResult(
-                    CheckId.TIER_IMAGE_PROVIDER, False,
-                    config_provider,
-                    doc_raw,
-                    f"tier {tier_name} image provider mismatch: expected {config_provider}",
-                ))
+        if has_image_col:
+            for tier_name, config_provider in tier_image_providers.items():
+                if tier_name not in tier_claims:
+                    continue
+                doc_slots = tier_claims.get(tier_name, {})
+                doc_raw = (doc_slots.get("image") or "").strip("` \t")
+                doc_lower = doc_raw.lower()
+                if doc_lower in ("_none_", "none", ""):
+                    observed = doc_raw if doc_raw else "(empty)"
+                    results.append(CheckResult(
+                        CheckId.TIER_IMAGE_PROVIDER, False,
+                        config_provider,
+                        observed,
+                        f"tier {tier_name} image: config has provider but docs say '{observed}'",
+                    ))
+                elif " " in doc_raw or "/" in doc_raw:
+                    pass
+                elif doc_lower != config_provider.lower():
+                    results.append(CheckResult(
+                        CheckId.TIER_IMAGE_PROVIDER, False,
+                        config_provider,
+                        doc_raw,
+                        f"tier {tier_name} image provider mismatch: expected {config_provider}",
+                    ))
 
     _PLACEHOLDER_SUBAGENTS = {"", "—", "disabled", "n/a", "none", "not applicable", "user-configured"}
     for tier_name, doc_slots in tier_claims.items():
