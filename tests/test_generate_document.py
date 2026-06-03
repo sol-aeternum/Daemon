@@ -46,6 +46,19 @@ async def test_csv_generation_with_json_rows(tool, temp_gen_dir):
 
 
 @pytest.mark.asyncio
+async def test_csv_json_list_of_lists_no_header_duplication(tool, temp_gen_dir):
+    content = json.dumps([["Name", "Score"], ["Alice", "95"], ["Bob", "88"]])
+    result_json = await tool.execute(format="csv", content=content)
+    result = json.loads(result_json)
+    assert result["success"] is True
+    text = (temp_gen_dir / result["data"]["filename"]).read_text()
+    name_count = text.count("Name")
+    alice_count = text.count("Alice")
+    assert name_count == 1, f"'Name' appears {name_count} times (expected 1, not duplicated)"
+    assert alice_count == 1, f"'Alice' appears {alice_count} times (expected 1)"
+
+
+@pytest.mark.asyncio
 async def test_csv_generation_with_headers_and_rows(tool, temp_gen_dir):
     content = json.dumps({"headers": ["Name", "Score"], "rows": [["Alice", "95"], ["Bob", "88"]]})
     result_json = await tool.execute(format="csv", content=content)

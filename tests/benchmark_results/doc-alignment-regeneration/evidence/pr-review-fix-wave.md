@@ -1478,3 +1478,69 @@ Defensive: `table` is validated as a dict with list-valued `headers` and `rows` 
 | T4: `content` JSON list-of-lists still works (no `table`) | structured CSV | structured CSV ✅ |
 | T5: `content` plain text (no `table`, no JSON) still works | single-column CSV | single-column CSV ✅ |
 | T6: `file_url` starts with `/generated-files/` | True | True ✅ |
+
+---
+
+## Addendum 27 — Fix Four PR #6 Review Findings (June 2026)
+
+**Comments:** `3347291358` (CSV header dup), `3347415689` (TECHNICAL_SPECS missing tool), `3347415683` (check_doc_freshness app-config import), `3340608584`/`3340608589` (workflow path filters)
+**Commit:** `cd161d77` (prior evidence correction) → this fix.
+
+### Finding 1 — `3347291358`: CSV JSON list-of-lists duplicates header row
+
+**Problem:** `[["Name","Age"],["Alice",30]]` produced a CSV with the header row appearing twice — once as the header and once as the first data row. Code used `rows = [[str(c) for c in r] for r in parsed]` which included `parsed[0]` (the header row) in the data.
+
+**Fix:** Changed `rows` to `[[str(c) for c in r] for r in parsed[1:]]` — skip the first element when building data rows. Added `test_csv_json_list_of_lists_no_header_duplication` verifying header appears exactly once.
+
+### Finding 2 — `3347415689`: `generate_document` absent from Tools Available
+
+**Problem:** `docs/TECHNICAL_SPECS.md` line 17 Tools list omitted `generate_document`.
+
+**Fix:** Added `generate_document` to the tools list in `docs/TECHNICAL_SPECS.md`.
+
+### Finding 3 — `3347415683`: `get_tier_prices()` imports runtime app config
+
+**Problem:** `get_tier_prices()` did `from orchestrator.config import get_settings` and called `settings.list_available_tiers()`, pulling in full FastAPI app settings. This made `check_doc_freshness.py` dependency-heavy and prevented running it in a lightweight CI environment.
+
+**Fix:** Replaced runtime import with text-scanning of `orchestrator/config.py` using the existing `_TIER_PRICE_RE` regex (`# Tier: FREE ($0)` pattern). Added `/mo` suffix normalization for tiers that lack it in the config comment (`$0` → `$0/mo`). Result shape unchanged: `{"tier_prices": {"free": "$0/mo", "starter": "$9/mo", ...}}`.
+
+### Finding 4 — `3340608584` / `3340608589`: Workflow path filters miss `router.py` and `daemon.py`
+
+**Problem:** `.github/workflows/docs-freshness.yml` path filters omitted `orchestrator/router.py` and `orchestrator/daemon.py`, meaning changes to those files would not trigger the docs-freshness check.
+
+**Fix:** Added `orchestrator/router.py` and `orchestrator/daemon.py` to both `push.paths` and `pull_request.paths` filter lists.
+
+### Files Modified
+| File | Change |
+|------|--------|
+| `orchestrator/tools/document.py` | Fixed CSV list-of-lists: `rows = [[str(c) for c in r] for r in parsed[1:]]` |
+| `docs/TECHNICAL_SPECS.md` | Added `generate_document` to Tools Available list |
+| `scripts/check_doc_freshness.py` | `get_tier_prices()` now text-scans config.py via `_TIER_PRICE_RE`; no `from orchestrator.config` import |
+| `.github/workflows/docs-freshness.yml` | Added `orchestrator/router.py` and `orchestrator/daemon.py` to push and PR path filters |
+| `tests/test_generate_document.py` | Added `test_csv_json_list_of_lists_no_header_duplication` |
+
+### Gates
+| Gate | Result |
+|------|--------|
+| `check_doc_freshness.py --mode report --format text` | No drift ✅ |
+| `check_doc_freshness.py --mode fail --format text` | No drift ✅ |
+| `check_doc_freshness.py --mode fail --files README.md AGENTS.md` | No drift ✅ |
+| `lint_feature_matrix.py` | OK: 60 rows ✅ |
+| AST parse: document.py, check_doc_freshness.py | OK ✅ |
+| `uv run pytest tests/test_generate_document.py` | 12 passed ✅ |
+
+### Verification
+| Probe | Expected | Actual |
+|-------|----------|--------|
+| CSV `[["Name"],["Alice"]]` → header appears once | name_count=1 | name_count=1 ✅ |
+| CSV `table` priority still works | headers from table | headers from table ✅ |
+| CSV JSON dict format still works | structured CSV | structured CSV ✅ |
+| CSV text fallback still works | single-column CSV | single-column CSV ✅ |
+| `generate_document` in TECHNICAL_SPECS tools list | present | present ✅ |
+| `get_tier_prices` output matches doc format | `{"free": "$0/mo", ...}` | `{"free": "$0/mo", ...}` ✅ |
+| `get_tier_prices` uses no app config import | sys.modules clean | text-scan only ✅ |
+| Workflow push.paths includes router.py | True | True ✅ |
+| Workflow push.paths includes daemon.py | True | True ✅ |
+| Workflow pull_request.paths includes router.py | True | True ✅ |
+| Workflow pull_request.paths includes daemon.py | True | True ✅ |
+| No DocumentSubagent in runtime code | 0 occurrences | 0 ✅ |
