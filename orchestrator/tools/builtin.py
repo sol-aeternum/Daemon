@@ -155,8 +155,10 @@ def create_default_registry(
     )
 
     from orchestrator.tools.skill_manage import SkillManageTool
+    from orchestrator.tools.document import GenerateDocumentTool
 
     registry.register(SkillManageTool(db_pool=db_pool))
+    registry.register(GenerateDocumentTool())
 
     if memory_store and user_id:
         from orchestrator.memory.tools import MemoryReadTool, MemoryWriteTool
