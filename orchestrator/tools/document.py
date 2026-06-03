@@ -99,20 +99,29 @@ class GenerateDocumentTool(Tool):
         rows: list[list[str]] = []
         headers: list[str] = []
 
-        # Try to parse content as JSON rows
-        try:
-            parsed = json.loads(content)
-            if isinstance(parsed, list) and all(isinstance(r, list) for r in parsed):
-                if parsed:
-                    headers = [str(h) for h in (parsed[0] if isinstance(parsed[0], list) else [])]
-                    rows = [[str(c) for c in r] for r in parsed]
-            elif isinstance(parsed, dict) and "headers" in parsed and "rows" in parsed:
-                headers = [str(h) for h in parsed["headers"]]
-                rows = [[str(c) for c in r] for r in parsed["rows"]]
-        except (json.JSONDecodeError, TypeError):
-            pass
+        # Priority 1: use table parameter if provided with valid headers/rows
+        if table and isinstance(table, dict):
+            table_headers = table.get("headers")
+            table_rows = table.get("rows")
+            if isinstance(table_headers, list) and isinstance(table_rows, list):
+                headers = [str(h) for h in table_headers]
+                rows = [[str(c) for c in r] for r in table_rows]
 
-        # Fall back to text content as single column
+        # Priority 2: try to parse content as JSON rows
+        if not rows:
+            try:
+                parsed = json.loads(content)
+                if isinstance(parsed, list) and all(isinstance(r, list) for r in parsed):
+                    if parsed:
+                        headers = [str(h) for h in (parsed[0] if isinstance(parsed[0], list) else [])]
+                        rows = [[str(c) for c in r] for r in parsed]
+                elif isinstance(parsed, dict) and "headers" in parsed and "rows" in parsed:
+                    headers = [str(h) for h in parsed["headers"]]
+                    rows = [[str(c) for c in r] for r in parsed["rows"]]
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Priority 3: fall back to text content as single column
         if not rows:
             headers = ["Content"]
             for line in content.strip().splitlines():

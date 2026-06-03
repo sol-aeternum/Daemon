@@ -1438,3 +1438,43 @@ The previous `generate_document` migration (commits `9eeeccad..e2d0ccba`) left t
 | R5: `@document` in `docs/` | 0 occurrences | 0 ✅ |
 | R6: `GenerateDocumentTool.execute` LSP error | None | None ✅ |
 | R7: `generate_document` tool in registry | True | True ✅ |
+
+---
+
+## Addendum 26 — Fix `generate_document` CSV `table` Parameter (June 2026)
+
+**Comment:** `3347291351`
+**Commit:** `d72ee257` (prior correction) → this fix.
+
+### Problem
+`_generate_csv()` accepted a `table` parameter (`dict[headers, rows]`) but never read it. When a caller passed `table={"headers": [...], "rows": [...]}`, the method skipped it entirely and fell through to the text fallback, producing a single-column CSV from `content` instead of the requested table data.
+
+### Fix
+Changed `_generate_csv()` to use a 3-priority fallback:
+1. **Priority 1**: `table` parameter — if `table` is a dict with `headers` (list) and `rows` (list), use those directly
+2. **Priority 2**: `content` JSON parsing — existing behavior (list-of-lists or `{headers, rows}` dict)
+3. **Priority 3**: text fallback — existing behavior (single-column from lines in `content`)
+
+Defensive: `table` is validated as a dict with list-valued `headers` and `rows` before use; invalid/missing fields fall through to the next priority.
+
+### Files Modified
+- `orchestrator/tools/document.py`: `_generate_csv()` now checks `table` first
+- `tests/test_generate_document.py`: added 3 new tests for `table` priority behavior
+
+### Gates
+| Gate | Result |
+|------|--------|
+| `check_doc_freshness.py --mode fail` | No drift ✅ |
+| `lint_feature_matrix.py` | OK: 60 rows ✅ |
+| `uv run pytest tests/test_generate_document.py` | 11 passed ✅ |
+| LSP diagnostics (document.py) | No errors ✅ |
+
+### Verification
+| Probe | Expected | Actual |
+|-------|----------|--------|
+| T1: `table` rows written when `content` also provided | headers/rows from `table`, not `content` | headers/rows from `table` ✅ |
+| T2: `table` with mixed-type cells (int, bool, float) | coerced to strings | "1", "True", "3.5" ✅ |
+| T3: `table` with invalid/missing headers or rows | falls through to content parsing | fallback works ✅ |
+| T4: `content` JSON list-of-lists still works (no `table`) | structured CSV | structured CSV ✅ |
+| T5: `content` plain text (no `table`, no JSON) still works | single-column CSV | single-column CSV ✅ |
+| T6: `file_url` starts with `/generated-files/` | True | True ✅ |

@@ -122,6 +122,55 @@ async def test_unsupported_format_returns_error(tool):
 
 
 @pytest.mark.asyncio
+async def test_csv_table_parameter_takes_priority_over_content(tool, temp_gen_dir):
+    """table={headers,rows} must be used before content when both are present."""
+    result_json = await tool.execute(
+        format="csv",
+        content="this text must be ignored",
+        table={"headers": ["Name", "Score"], "rows": [["Alice", "95"], ["Bob", "88"]]},
+    )
+    result = json.loads(result_json)
+    assert result["success"] is True
+    text = (temp_gen_dir / result["data"]["filename"]).read_text()
+    assert "Name" in text
+    assert "Score" in text
+    assert "Alice" in text
+    assert "Bob" in text
+    assert "this text must be ignored" not in text
+
+
+@pytest.mark.asyncio
+async def test_csv_table_with_mixed_type_cells(tool, temp_gen_dir):
+    """table parameter should coerce non-string cell values to strings."""
+    result_json = await tool.execute(
+        format="csv",
+        content="ignored",
+        table={"headers": ["ID", "Active", "Score"], "rows": [[1, True, 3.5], [2, False, 2.1]]},
+    )
+    result = json.loads(result_json)
+    assert result["success"] is True
+    text = (temp_gen_dir / result["data"]["filename"]).read_text()
+    assert "ID" in text
+    assert "1" in text
+    assert "True" in text or "true" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_csv_table_missing_headers_or_rows_is_ignored(tool, temp_gen_dir):
+    """table without valid headers/rows falls through to content parsing."""
+    result_json = await tool.execute(
+        format="csv",
+        content="fallback1\nfallback2",
+        table={"headers": "not-a-list", "rows": []},
+    )
+    result = json.loads(result_json)
+    assert result["success"] is True
+    text = (temp_gen_dir / result["data"]["filename"]).read_text()
+    assert "fallback1" in text
+    assert "fallback2" in text
+
+
+@pytest.mark.asyncio
 async def test_file_url_matches_existing_download_pattern(tool, temp_gen_dir):
     result_json = await tool.execute(format="csv", content=json.dumps([["a", "b"]]))
     result = json.loads(result_json)
