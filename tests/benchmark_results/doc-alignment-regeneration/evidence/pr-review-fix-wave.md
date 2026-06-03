@@ -1393,3 +1393,48 @@ Replaced `DocumentSubagent` with a deterministic `GenerateDocumentTool` that use
 | V8: DOCX generation with sections and table | success + file exists | success + file exists ✅ |
 | V9: Unsupported format returns error | success=False + "Unsupported format" | success=False + "Unsupported format" ✅ |
 | V10: file_url starts with `/generated-files/` | True | True ✅ |
+
+---
+
+## Addendum 25 — Fix Incomplete Document Migration (June 2026)
+
+**Commit:** `e2d0ccba` (incomplete prior fix) → this correction.
+
+### Problem
+The previous `generate_document` migration (commits `9eeeccad..e2d0ccba`) left three residual defects:
+
+1. **`orchestrator/subagents/document.py`** still existed on disk with `agent_type = SubagentType.DOCUMENT`, but `SubagentType.DOCUMENT` had been removed. Any import of this module raised `AttributeError: type object 'SubagentType' has no attribute 'DOCUMENT'`.
+
+2. **`GenerateDocumentTool.execute`** declared explicit positional parameters (`format`, `content`, `title`, etc.) rather than `**kwargs`. The base `Tool.execute` contract is `execute(self, **kwargs: Any) -> str` — basedpyright reported incompatible override.
+
+3. **Current docs** still referenced `@document` as a subagent in `docs/TECHNICAL_SPECS.md`, `docs/PROJECT_CONTEXT.md`, `docs/PROJECT_BRIEF.md`, `docs/FEATURE_MATRIX.md`, and `truth_set.md` authoritative claims.
+
+### Fix
+| File | Change |
+|------|--------|
+| `orchestrator/subagents/document.py` | Deleted — file removed entirely |
+| `orchestrator/tools/document.py` | Changed `execute` signature from positional params to `async def execute(self, **kwargs: Any) -> str`; parameters extracted from `kwargs` inside the method |
+| `docs/TECHNICAL_SPECS.md` | Removed `@document` from Subagent Dispatch list |
+| `docs/PROJECT_CONTEXT.md` | Removed `@document` from architecture diagram; replaced subagent bullet + status table entry with `generate_document` tool entry |
+| `docs/PROJECT_BRIEF.md` | Updated Subagent Framework description to reference `generate_document` tool |
+| `docs/FEATURE_MATRIX.md` | Renamed `@document` row to `Document file generation (generate_document)` with updated implementation column |
+| `truth_set.md` | Updated feature state and subagent implementation rows to reflect `generate_document` tool |
+
+### Gates
+| Gate | Result |
+|------|--------|
+| `check_doc_freshness.py --mode fail` | No drift ✅ |
+| `lint_feature_matrix.py` | OK: 60 rows ✅ |
+| `uv run pytest tests/test_generate_document.py` | 8 passed ✅ |
+| `lsp_diagnostics` (document.py) | No errors ✅ |
+
+### Verification
+| Probe | Expected | Actual |
+|-------|----------|--------|
+| R1: `orchestrator.subagents.document` import | ModuleNotFoundError / harmless | File deleted ✅ |
+| R2: `DocumentSubagent` in runtime code | 0 occurrences | 0 ✅ |
+| R3: `SubagentType.DOCUMENT` in runtime code | 0 occurrences | 0 ✅ |
+| R4: `_document_spawn_allowed` in runtime code | 0 occurrences | 0 ✅ |
+| R5: `@document` in `docs/` | 0 occurrences | 0 ✅ |
+| R6: `GenerateDocumentTool.execute` LSP error | None | None ✅ |
+| R7: `generate_document` tool in registry | True | True ✅ |

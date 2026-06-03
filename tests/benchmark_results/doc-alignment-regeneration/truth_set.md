@@ -412,7 +412,7 @@ Source: `docs/FEATURE_MATRIX.md` (T1 — PR-gated source of truth)
 | @image (images) | Cross-client stable |
 | @image Video Generation | Cross-client stable |
 | @audio (ElevenLabs) | Cross-client stable |
-| @document (file generation) | Cross-client stable |
+| Document file generation (`generate_document` tool) | Cross-client stable |
 | @code | **Web experimental** (NOT IMPLEMENTED) |
 | @reader | **Web experimental** (NOT IMPLEMENTED) |
 | Skill Management CRUD | Cross-client stable |
@@ -486,7 +486,7 @@ Source: `orchestrator/subagents/` directory
 | `@research` | `research.py` | Implemented |
 | `@image` | `image.py` | Implemented (images via xAI; video via xAI and fal/Kling) |
 | `@audio` | `audio.py` | Implemented |
-| `@document` | `document.py` | Implemented |
+| `generate_document` | `tools/document.py` | Implemented (deterministic tool; replaced LLM-codegen subagent) |
 | `@code` | — | **NOT IMPLEMENTED** (reserved; `config.py:42` slot exists) |
 | `@reader` | — | **NOT IMPLEMENTED** (reserved; `config.py:44` slot exists) |
 
