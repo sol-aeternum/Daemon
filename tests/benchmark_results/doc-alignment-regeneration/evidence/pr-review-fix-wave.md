@@ -1444,7 +1444,7 @@ The previous `generate_document` migration (commits `9eeeccad..e2d0ccba`) left t
 ## Addendum 26 — Fix `generate_document` CSV `table` Parameter (June 2026)
 
 **Comment:** `3347291351`
-**Commit:** `d72ee257` (prior correction) → this fix.
+**Commit:** `a1a3d486`
 
 ### Problem
 `_generate_csv()` accepted a `table` parameter (`dict[headers, rows]`) but never read it. When a caller passed `table={"headers": [...], "rows": [...]}`, the method skipped it entirely and fell through to the text fallback, producing a single-column CSV from `content` instead of the requested table data.
