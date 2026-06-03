@@ -114,7 +114,8 @@ class GenerateDocumentTool(Tool):
                 if isinstance(parsed, list) and all(isinstance(r, list) for r in parsed):
                     if parsed:
                         headers = [str(h) for h in (parsed[0] if isinstance(parsed[0], list) else [])]
-                        rows = [[str(c) for c in r] for r in parsed]
+                        data_rows = parsed[1:] if len(parsed) > 1 else parsed
+                        rows = [[str(c) for c in r] for r in data_rows]
                 elif isinstance(parsed, dict) and "headers" in parsed and "rows" in parsed:
                     headers = [str(h) for h in parsed["headers"]]
                     rows = [[str(c) for c in r] for r in parsed["rows"]]

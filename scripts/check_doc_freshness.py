@@ -249,15 +249,17 @@ _TIER_PRICE_RE = re.compile(r'#\s*Tier:\s*(FREE|STARTER|PRO|MAX|BYOK)\s*\(([^)]+
 
 
 def get_tier_prices(root: Path) -> dict[str, Any]:
-    sys.path.insert(0, str(root))
-    from orchestrator.config import get_settings
-    settings = get_settings()
-    tiers = settings.list_available_tiers()
+    config_path = root / "orchestrator" / "config.py"
+    text = config_path.read_text(encoding="utf-8")
     prices: dict[str, str] = {}
-    for tier in tiers:
-        tier_id = str(tier["id"])
-        price_val = int(tier["price"])
-        prices[tier_id] = f"${price_val}/mo"
+    for match in _TIER_PRICE_RE.finditer(text):
+        tier_id = match.group(1).lower()
+        price_val = match.group(2).strip()
+        if not price_val.startswith("$"):
+            price_val = f"${price_val}"
+        if not price_val.endswith("/mo"):
+            price_val = f"{price_val}/mo"
+        prices[tier_id] = price_val
     return {"tier_prices": prices}
 
 

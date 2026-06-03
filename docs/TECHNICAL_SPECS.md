@@ -14,7 +14,7 @@ Daemon is a personal AI assistant orchestration layer. The system prompt (v3) de
 - Concise, accurate, and pragmatic.
 
 **Tools Available:**
-- `get_time`, `calculate`, `web_search`, `web_fetch` (with transcript support), `http_request`, `notification_send`, `reminder_set`, `reminder_list`, `spawn_agent`, `spawn_multiple`.
+- `get_time`, `calculate`, `web_search`, `web_fetch` (with transcript support), `http_request`, `notification_send`, `reminder_set`, `reminder_list`, `spawn_agent`, `spawn_multiple`, `generate_document`.
 
 **Subagent Dispatch:**
 - `@research`: News, fact-checking, market research.
