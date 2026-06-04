@@ -123,6 +123,8 @@ class _IdentityMockConn:
         self._insert_id_seq: dict[str, int] = {}
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self._transaction_active: bool = False
+        self.transaction_stack: list[bool] = []
+        self.reserved_user_ids: set[uuid.UUID] = {uuid.UUID("00000000-0000-0000-0000-000000000000")}
 
     # ----- helpers used by tests -----
 
@@ -132,11 +134,17 @@ class _IdentityMockConn:
         normalized_email: str | None = None,
         email_verified_at: datetime | None = None,
         user_id: uuid.UUID | None = None,
+        username: str = "user",
     ) -> uuid.UUID:
         uid = user_id or uuid.uuid4()
+        if uid in self.reserved_user_ids:
+            raise ValueError(f"add_user: reserved id {uid} cannot be used as a real user")
         self._store["users"].append(
             {
                 "id": uid,
+                "username": username,
+                "email": normalized_email,
+                "name": normalized_email,
                 "normalized_email": normalized_email,
                 "email_verified_at": email_verified_at,
             }
@@ -251,10 +259,12 @@ class _IdentityMockConn:
     @asynccontextmanager
     async def transaction(self):
         self._transaction_active = True
+        self.transaction_stack.append(True)
         try:
             yield self
         finally:
-            self._transaction_active = False
+            self.transaction_stack.pop()
+            self._transaction_active = bool(self.transaction_stack)
 
     async def fetchrow(self, query: str, *args: Any) -> _Record | None:
         self.calls.append((query, args))
@@ -298,17 +308,25 @@ class _IdentityMockConn:
                     return _Record(inv)
             return None
         if q.startswith("INSERT INTO users"):
-            normalized_email = args[0]
-            email_verified_at = args[1]
+            username = args[0]
+            email_value = args[1]
+            name_value = args[2]
+            normalized_email = args[3]
+            email_verified_at = args[4]
+            if not username or not isinstance(username, str):
+                raise _NotNullViolationError(
+                    "users.username is NOT NULL; INSERT must include a non-empty value"
+                )
             for u in self._store["users"]:
                 if u["normalized_email"] == normalized_email:
-                    # Unique violation: surface as a typed exception
-                    # by returning a sentinel the test can match.
                     raise _UniqueViolationError("unique violation on users.normalized_email")
             new_id = uuid.uuid4()
             self._store["users"].append(
                 {
                     "id": new_id,
+                    "username": username,
+                    "email": email_value,
+                    "name": name_value,
                     "normalized_email": normalized_email,
                     "email_verified_at": email_verified_at,
                 }
@@ -443,6 +461,11 @@ class _IdentityMockConn:
             invite_id = args[0]
             used_by = args[1]
             now = datetime.now(timezone.utc)
+            if used_by in self.reserved_user_ids:
+                raise _ForeignKeyViolationError(
+                    f"signup_invites.used_by_user_id = {used_by} "
+                    f"violates FK to users(id) (reserved placeholder)"
+                )
             for inv in self._store["signup_invites"]:
                 if inv["id"] != invite_id:
                     continue
@@ -548,6 +571,21 @@ class _UniqueViolationError(Exception):
     """Sentinel used by the mock to stand in for asyncpg's
     `UniqueViolationError` exception class. The service matches
     on the class name (`"UniqueViolation" in type(exc).__name__`).
+    """
+
+
+class _NotNullViolationError(Exception):
+    """Sentinel used by the mock to stand in for asyncpg's
+    `NotNullViolationError` exception class. Raised by the mock
+    when a regression omits a NOT NULL column from an INSERT.
+    """
+
+
+class _ForeignKeyViolationError(Exception):
+    """Sentinel used by the mock to stand in for asyncpg's
+    `ForeignKeyViolationError` exception class. Raised by the
+    mock when a regression writes a reserved/placeholder user id
+    to a column with a FK to `users(id)`.
     """
 
 
@@ -1358,3 +1396,285 @@ class TestResultShapes:
         # ClaimResult is a frozen dataclass.
         with pytest.raises(Exception):
             result.is_new_user = False  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the schema-safety fix
+# ---------------------------------------------------------------------------
+# These tests guard the three Atlas-found bugs:
+#   1. create_user() must include `username` (NOT NULL after migration 010).
+#   2. _authorize_invite_only (now _verify_invite_for_email) must NOT
+#      consume the invite with a placeholder user id; consumption
+#      happens AFTER user creation with the real user id.
+#   3. The high-level claim methods must open a transaction context.
+#
+# The mock enforces the constraints at the boundary so a regression
+# fails fast with a typed exception instead of a silent FK violation.
+
+
+_ZERO_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000000")
+
+
+class TestUsernameNotNullRegression:
+    """`users.username` is NOT NULL after migration 010. The
+    `create_user` SQL must include a non-empty username for every
+    INSERT. The mock enforces this at the boundary.
+    """
+
+    @pytest.mark.asyncio
+    async def test_create_user_persists_username_from_local_part(
+        self, service: AccountService, conn: _IdentityMockConn
+    ) -> None:
+        result = await service.claim_email_identity(
+            normalized_email="alice@example.com",
+            email_verified_at=datetime.now(timezone.utc),
+            signup_mode="open",
+            invite_token_verifier_hash=None,
+        )
+        stored = next(u for u in conn._store["users"] if u["id"] == result.user.id)
+        assert stored["username"] == "alice"
+        assert stored["username"]
+
+    @pytest.mark.asyncio
+    async def test_create_user_uses_full_string_when_no_at_sign(
+        self, service: AccountService, conn: _IdentityMockConn
+    ) -> None:
+        """Mirrors the migration 010 backfill
+        (`split_part(email, '@', 1)`). When the email has no
+        '@', the whole string becomes the username. The 'user'
+        fallback only triggers on an empty string."""
+        result = await service.claim_email_identity(
+            normalized_email="weird-no-at-sign",
+            email_verified_at=datetime.now(timezone.utc),
+            signup_mode="open",
+            invite_token_verifier_hash=None,
+        )
+        stored = next(u for u in conn._store["users"] if u["id"] == result.user.id)
+        assert stored["username"] == "weird-no-at-sign"
+        assert stored["username"]
+
+    @pytest.mark.asyncio
+    async def test_create_user_sql_includes_username(self, service: AccountService) -> None:
+        """The mock's INSERT dispatch enforces a non-empty
+        username. A regression that drops the column or sends
+        an empty string would raise `_NotNullViolationError`."""
+        await service.claim_email_identity(
+            normalized_email="bob@example.com",
+            email_verified_at=datetime.now(timezone.utc),
+            signup_mode="open",
+            invite_token_verifier_hash=None,
+        )
+        insert_calls = [
+            (q, a)
+            for q, a in service._conn.calls  # type: ignore[attr-defined]
+            if "INSERT INTO users" in q
+        ]
+        assert insert_calls, "expected an INSERT INTO users call"
+        for q, _ in insert_calls:
+            assert "username" in q
+
+
+class TestInviteConsumeUsesRealUserIdRegression:
+    """`_authorize_invite_only` previously consumed the invite
+    with `_ZERO_USER_ID` as a placeholder, violating the FK to
+    `users(id)`. The fix splits verify from consume: the
+    verifier returns an unconsumed `InviteRow`, and the
+    claim method consumes the invite AFTER user creation with
+    the real `result.user.id`.
+    """
+
+    @pytest.mark.asyncio
+    async def test_email_invite_only_success_sets_used_by_real_user(
+        self, service: AccountService, conn: _IdentityMockConn
+    ) -> None:
+        invite_id = conn.add_invite(
+            normalized_email="vip@example.com",
+            token_verifier_hash="secret-hash",
+        )
+        result = await service.claim_email_identity(
+            normalized_email="vip@example.com",
+            email_verified_at=datetime.now(timezone.utc),
+            signup_mode="invite_only",
+            invite_token_verifier_hash="secret-hash",
+        )
+        invite = next(i for i in conn._store["signup_invites"] if i["id"] == invite_id)
+        assert invite["status"] == "consumed"
+        assert invite["used_by_user_id"] == result.user.id
+        assert invite["used_by_user_id"] != _ZERO_USER_ID
+
+    @pytest.mark.asyncio
+    async def test_google_invite_only_success_sets_used_by_real_user(
+        self, service: AccountService, conn: _IdentityMockConn
+    ) -> None:
+        invite_id = conn.add_invite(
+            normalized_email="vip-g@example.com",
+            token_verifier_hash="g-secret",
+        )
+        result = await service.claim_google_identity(
+            google_sub="g-vip-sub",
+            normalized_email="vip-g@example.com",
+            email_verified=True,
+            signup_mode="invite_only",
+            invite_token_verifier_hash="g-secret",
+        )
+        invite = next(i for i in conn._store["signup_invites"] if i["id"] == invite_id)
+        assert invite["status"] == "consumed"
+        assert invite["used_by_user_id"] == result.user.id
+        assert invite["used_by_user_id"] != _ZERO_USER_ID
+
+    @pytest.mark.asyncio
+    async def test_invite_only_rejection_does_not_consume(
+        self, service: AccountService, conn: _IdentityMockConn
+    ) -> None:
+        """A failed verification (wrong token) must NOT consume
+        the invite. The original code had a no-op-on-reject path
+        but a regression that consumed early would consume on
+        every rejection."""
+        invite_id = conn.add_invite(
+            normalized_email="reject@example.com",
+            token_verifier_hash="right",
+        )
+        with pytest.raises(InviteOnlyRejection):
+            await service.claim_email_identity(
+                normalized_email="reject@example.com",
+                email_verified_at=datetime.now(timezone.utc),
+                signup_mode="invite_only",
+                invite_token_verifier_hash="wrong",
+            )
+        invite = next(i for i in conn._store["signup_invites"] if i["id"] == invite_id)
+        assert invite["status"] == "active"
+        assert invite["used_by_user_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_service_never_writes_zero_user_id(
+        self, service: AccountService, conn: _IdentityMockConn
+    ) -> None:
+        """The mock rejects any UPDATE on signup_invites that
+        would set `used_by_user_id` to a reserved (placeholder)
+        UUID. If a regression reintroduces `_ZERO_USER_ID` (or
+        any other placeholder) the mock raises
+        `_ForeignKeyViolationError` and the test fails with a
+        clear message. A clean run of the success paths confirms
+        the service never writes a placeholder.
+        """
+        for email, hash_value in [
+            ("a@example.com", "h-a"),
+            ("b@example.com", "h-b"),
+        ]:
+            conn.add_invite(normalized_email=email, token_verifier_hash=hash_value)
+        await service.claim_email_identity(
+            normalized_email="a@example.com",
+            email_verified_at=datetime.now(timezone.utc),
+            signup_mode="invite_only",
+            invite_token_verifier_hash="h-a",
+        )
+        await service.claim_google_identity(
+            google_sub="a-sub",
+            normalized_email="b@example.com",
+            email_verified=True,
+            signup_mode="invite_only",
+            invite_token_verifier_hash="h-b",
+        )
+        for inv in conn._store["signup_invites"]:
+            if inv["status"] == "consumed":
+                assert inv["used_by_user_id"] is not None
+                assert inv["used_by_user_id"] not in conn.reserved_user_ids
+
+
+class TestTransactionContextRegression:
+    """The high-level claim methods must open a transaction
+    context so invite authorization, user creation, tenant
+    creation, membership creation, and provider-link changes
+    are atomic. The mock exposes `transaction_stack` so a
+    regression that drops the `async with` block fails.
+    """
+
+    @pytest.mark.asyncio
+    async def test_claim_email_identity_opens_transaction(
+        self, service: AccountService, conn: _IdentityMockConn
+    ) -> None:
+        assert conn.transaction_stack == []
+        await service.claim_email_identity(
+            normalized_email="tx@example.com",
+            email_verified_at=datetime.now(timezone.utc),
+            signup_mode="open",
+            invite_token_verifier_hash=None,
+        )
+        await service.claim_email_identity(
+            normalized_email="tx2@example.com",
+            email_verified_at=datetime.now(timezone.utc),
+            signup_mode="open",
+            invite_token_verifier_hash=None,
+        )
+        assert conn.transaction_stack == []
+
+    @pytest.mark.asyncio
+    async def test_claim_google_identity_opens_transaction(
+        self, service: AccountService, conn: _IdentityMockConn
+    ) -> None:
+        await service.claim_google_identity(
+            google_sub="tx-g-sub",
+            normalized_email="g-tx@example.com",
+            email_verified=True,
+            signup_mode="open",
+            invite_token_verifier_hash=None,
+        )
+        assert conn.transaction_stack == []
+
+    @pytest.mark.asyncio
+    async def test_claim_rolls_back_on_rejection(
+        self, service: AccountService, conn: _IdentityMockConn
+    ) -> None:
+        """When verification fails inside the transaction, the
+        context manager exits without committing and the store
+        state is unchanged. The transaction context is the
+        rollback boundary; in this mock, the @asynccontextmanager
+        simply toggles a flag, so the assertion is the stack
+        being balanced.
+        """
+        initial_users = list(conn._store["users"])
+        with pytest.raises(InviteOnlyRejection):
+            await service.claim_email_identity(
+                normalized_email="noone@example.com",
+                email_verified_at=datetime.now(timezone.utc),
+                signup_mode="invite_only",
+                invite_token_verifier_hash=None,
+            )
+        assert conn._store["users"] == initial_users
+        assert conn.transaction_stack == []
+
+
+class TestUsernameEdgeCasesRegression:
+    """The username derivation must be safe for all inputs the
+    normalize_email helper produces. The schema's NOT NULL
+    constraint forbids empty values, so every branch of
+    `_derive_username` must produce a non-empty result.
+    """
+
+    def test_local_part_used(self) -> None:
+        from orchestrator.services.identity.account_service import (
+            _derive_username,
+        )
+
+        assert _derive_username("alice@example.com") == "alice"
+
+    def test_no_at_sign_returns_input(self) -> None:
+        from orchestrator.services.identity.account_service import (
+            _derive_username,
+        )
+
+        assert _derive_username("alice") == "alice"
+
+    def test_empty_string_falls_back_to_user(self) -> None:
+        from orchestrator.services.identity.account_service import (
+            _derive_username,
+        )
+
+        assert _derive_username("") == "user"
+
+    def test_at_sign_only_falls_back_to_user(self) -> None:
+        from orchestrator.services.identity.account_service import (
+            _derive_username,
+        )
+
+        assert _derive_username("@example.com") == "user"

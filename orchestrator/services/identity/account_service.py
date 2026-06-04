@@ -479,24 +479,42 @@ class AccountService:
     ) -> UserRow:
         """Insert a new `users` row and return the resulting user.
 
-        Email verification is recorded at the `users` level so the
-        Google cross-provider link check has a single source of
-        truth. The unique index on `normalized_email` makes this
-        idempotent at the DB level: a duplicate raises a unique
-        violation, which the caller is expected to handle by
-        re-reading the existing row.
+        The `users` schema (migrations 002 + 010 + 032) requires:
+          - `username TEXT NOT NULL` (from migration 010; backfilled
+            from `name` or the local part of `email`, with `'user'`
+            as the ultimate fallback)
+          - `email TEXT` (nullable; kept for legacy lookups)
+          - `name TEXT` (nullable; legacy)
+          - `normalized_email TEXT` (from migration 032; partial
+            unique index `idx_users_normalized_email_unique`)
+          - `email_verified_at TIMESTAMPTZ` (from migration 032;
+            the canonical verification record)
+          - `settings JSONB DEFAULT '{}'::jsonb` (from migration 010)
+
+        This helper derives `username` and `name` from the supplied
+        normalized email and inserts every NOT NULL column. A
+        duplicate `normalized_email` raises the unique-violation
+        that the caller is expected to handle by re-reading the
+        existing row.
         """
+        username = _derive_username(normalized_email)
         row = await self._conn.fetchrow(
             """
             INSERT INTO users (
+                username,
+                email,
+                name,
                 normalized_email,
                 email_verified_at
             )
-            VALUES ($1, $2)
+            VALUES ($1, $2, $3, $4, $5)
             RETURNING id,
                       normalized_email,
                       email_verified_at
             """,
+            username,
+            normalized_email,
+            normalized_email,
             normalized_email,
             email_verified_at,
         )
@@ -840,7 +858,7 @@ class AccountService:
         """Resolve a verified-email-code completion into a Daemon
         account + personal tenant.
 
-        Steps:
+        Steps (all inside a single transaction):
 
         1. Look up the user by normalized email. If a user
            already exists, return that user with their personal
@@ -848,14 +866,16 @@ class AccountService:
            the "repeated sign-in" path. Mark `is_new_user=False`.
         2. If no user exists, gate on signup_mode:
            - `disabled` -> `SignupDisabled`
-           - `invite_only` -> require a valid invite. The
-             invite's `token_verifier_hash` must match the
-             caller-supplied hash; on mismatch or absence,
-             raise `InviteOnlyRejection` (generic). On match,
-             consume the invite inside the same transaction.
+           - `invite_only` -> verify the invite (without
+             consuming it). If verification fails, raise
+             `InviteOnlyRejection` (generic).
            - `open` -> proceed without an invite.
         3. Create the user, the personal tenant, and the owner
-           membership, all inside the surrounding transaction.
+           membership.
+        4. If the path is invite_only, consume the invite with
+           the real user id (not a placeholder) so the FK to
+           `users(id)` is satisfied and the audit log records
+           the real user.
 
         Email-code completion does NOT insert a
         `identity_providers(provider='email')` row. See the
@@ -870,31 +890,46 @@ class AccountService:
                 "an unverified claim is an internal bug)"
             )
 
-        existing = await self.find_user_by_normalized_email(normalized_email)
-        if existing is not None:
-            return await self._ensure_account_for_existing_user(
-                existing,
+        async with self._conn.transaction():
+            existing = await self.find_user_by_normalized_email(normalized_email)
+            if existing is not None:
+                return await self._ensure_account_for_existing_user(
+                    existing,
+                    email_verified_at=email_verified_at,
+                )
+
+            # New user. Gate on signup mode.
+            if signup_mode == "disabled":
+                raise SignupDisabled("new hosted signups are disabled")
+            pending_invite: InviteRow | None = None
+            if signup_mode == "invite_only":
+                pending_invite = await self._verify_invite_for_email(
+                    normalized_email=normalized_email,
+                    invite_token_verifier_hash=invite_token_verifier_hash,
+                )
+            elif signup_mode == "open":
+                pass
+            else:
+                raise AccountServiceError(f"unknown signup_mode: {signup_mode!r}")
+
+            result = await self._create_user_tenant_membership(
+                normalized_email=normalized_email,
                 email_verified_at=email_verified_at,
             )
 
-        # New user. Gate on signup mode.
-        if signup_mode == "disabled":
-            raise SignupDisabled("new hosted signups are disabled")
-        if signup_mode == "invite_only":
-            await self._authorize_invite_only(
-                normalized_email=normalized_email,
-                invite_token_verifier_hash=invite_token_verifier_hash,
-            )
-        elif signup_mode == "open":
-            pass  # No gate.
-        else:
-            # Defensive: an unknown signup_mode is a misconfig.
-            raise AccountServiceError(f"unknown signup_mode: {signup_mode!r}")
+            if pending_invite is not None:
+                # Consume the invite with the real user id. If
+                # the user was created on this call, the id is
+                # the new one; if a race resolved to an existing
+                # user, the id is the existing one. Either way,
+                # it is a real user, satisfying the FK to
+                # `users(id)`.
+                await self.consume_invite(
+                    invite_id=pending_invite.id,
+                    used_by_user_id=result.user.id,
+                )
 
-        return await self._create_user_tenant_membership(
-            normalized_email=normalized_email,
-            email_verified_at=email_verified_at,
-        )
+            return result
 
     async def claim_google_identity(
         self,
@@ -908,7 +943,7 @@ class AccountService:
         """Resolve a Google ID-token completion into a Daemon account
         + personal tenant + provider link.
 
-        Steps:
+        Steps (all inside a single transaction):
 
         1. If the `(google, google_sub)` is already linked to a
            user, return that user with their personal tenant
@@ -927,14 +962,14 @@ class AccountService:
            - link via `link_provider_identity`. Any
              `ProviderCollision` is propagated.
         3. If no existing user, gate on signup_mode (same as
-           email-code). Create the user, tenant, membership, and
-           the `(google, google_sub)` link in one shot.
+           email-code). Verify the invite (no consume). Create
+           the user, tenant, membership, and the
+           `(google, google_sub)` link in one shot. Consume the
+           invite with the real user id.
         """
         if not google_sub:
             raise ValueError("claim_google_identity requires google_sub")
         if not email_verified and not normalized_email:
-            # An unverified Google token with no usable email
-            # cannot satisfy the linking rule. Reject early.
             raise EmailNotVerified(
                 "google token has unverified email and no normalized email to match on"
             )
@@ -943,88 +978,84 @@ class AccountService:
                 "google token email_verified is false; cannot use unverified email as durable key"
             )
 
-        # 1. Already linked?
-        by_provider = await self.find_user_by_provider("google", google_sub)
-        if by_provider is not None:
-            if by_provider.normalized_email != normalized_email:
-                raise ProviderCollision(
-                    f"google sub {google_sub!r} is bound to user "
-                    f"{by_provider.id} with email "
-                    f"{by_provider.normalized_email!r}; "
-                    f"refusing to resolve identity claim with "
-                    f"a different normalized email "
-                    f"{normalized_email!r}"
+        async with self._conn.transaction():
+            # 1. Already linked?
+            by_provider = await self.find_user_by_provider("google", google_sub)
+            if by_provider is not None:
+                if by_provider.normalized_email != normalized_email:
+                    raise ProviderCollision(
+                        f"google sub {google_sub!r} is bound to user "
+                        f"{by_provider.id} with email "
+                        f"{by_provider.normalized_email!r}; "
+                        f"refusing to resolve identity claim with "
+                        f"a different normalized email "
+                        f"{normalized_email!r}"
+                    )
+                await self.link_provider_identity(
+                    user_id=by_provider.id,
+                    provider="google",
+                    provider_subject=google_sub,
+                    normalized_email_at_link=normalized_email,
                 )
-            await self.link_provider_identity(
-                user_id=by_provider.id,
-                provider="google",
-                provider_subject=google_sub,
-                normalized_email_at_link=normalized_email,
-            )
-            return await self._ensure_account_for_existing_user(
-                by_provider,
-                email_verified_at=_now_utc(),
-            )
+                return await self._ensure_account_for_existing_user(
+                    by_provider,
+                    email_verified_at=_now_utc(),
+                )
 
-        # 2. Existing user with the same email? Try to link.
-        by_email = await self.find_user_by_normalized_email(normalized_email)
-        if by_email is not None:
-            if not by_email.is_email_verified:
-                # The existing user has not proven email control
-                # via the email-code path. Per the decision
-                # lock, we cannot auto-link by Google because
-                # that would bypass the email verification
-                # invariant. Reject safely.
-                raise EmailNotVerified(
-                    f"existing user {by_email.id} has not "
-                    f"verified email; refusing to link Google "
-                    f"identity without email-code verification"
+            # 2. Existing user with the same email? Try to link.
+            by_email = await self.find_user_by_normalized_email(normalized_email)
+            if by_email is not None:
+                if not by_email.is_email_verified:
+                    raise EmailNotVerified(
+                        f"existing user {by_email.id} has not "
+                        f"verified email; refusing to link Google "
+                        f"identity without email-code verification"
+                    )
+                if by_email.normalized_email != normalized_email:
+                    raise ProviderCollision(
+                        "verified google email does not match existing user normalized email"
+                    )
+                await self.link_provider_identity(
+                    user_id=by_email.id,
+                    provider="google",
+                    provider_subject=google_sub,
+                    normalized_email_at_link=normalized_email,
                 )
-            if by_email.normalized_email != normalized_email:
-                # Defensive: in practice both come from the
-                # same normalize_email() call, so they should
-                # be equal. The guard is here to surface any
-                # future normalization drift as a typed
-                # rejection rather than a silent link.
-                raise ProviderCollision(
-                    "verified google email does not match existing user normalized email"
+                return await self._ensure_account_for_existing_user(
+                    by_email,
+                    email_verified_at=_now_utc(),
                 )
-            await self.link_provider_identity(
-                user_id=by_email.id,
-                provider="google",
-                provider_subject=google_sub,
-                normalized_email_at_link=normalized_email,
-            )
-            return await self._ensure_account_for_existing_user(
-                by_email,
-                email_verified_at=_now_utc(),
-            )
 
-        # 3. New user. Same signup-mode gate as email-code.
-        if signup_mode == "disabled":
-            raise SignupDisabled("new hosted signups are disabled")
-        if signup_mode == "invite_only":
-            await self._authorize_invite_only(
+            # 3. New user. Same signup-mode gate as email-code.
+            if signup_mode == "disabled":
+                raise SignupDisabled("new hosted signups are disabled")
+            pending_invite: InviteRow | None = None
+            if signup_mode == "invite_only":
+                pending_invite = await self._verify_invite_for_email(
+                    normalized_email=normalized_email,
+                    invite_token_verifier_hash=invite_token_verifier_hash,
+                )
+            elif signup_mode == "open":
+                pass
+            else:
+                raise AccountServiceError(f"unknown signup_mode: {signup_mode!r}")
+
+            result = await self._create_user_tenant_membership(
                 normalized_email=normalized_email,
-                invite_token_verifier_hash=invite_token_verifier_hash,
+                email_verified_at=_now_utc(),
             )
-        elif signup_mode == "open":
-            pass
-        else:
-            raise AccountServiceError(f"unknown signup_mode: {signup_mode!r}")
-
-        result = await self._create_user_tenant_membership(
-            normalized_email=normalized_email,
-            email_verified_at=_now_utc(),
-        )
-        # Link the Google identity to the freshly created user.
-        await self.link_provider_identity(
-            user_id=result.user.id,
-            provider="google",
-            provider_subject=google_sub,
-            normalized_email_at_link=normalized_email,
-        )
-        return result
+            await self.link_provider_identity(
+                user_id=result.user.id,
+                provider="google",
+                provider_subject=google_sub,
+                normalized_email_at_link=normalized_email,
+            )
+            if pending_invite is not None:
+                await self.consume_invite(
+                    invite_id=pending_invite.id,
+                    used_by_user_id=result.user.id,
+                )
+            return result
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -1132,21 +1163,38 @@ class AccountService:
             is_new_membership=is_new_membership,
         )
 
-    async def _authorize_invite_only(
+    async def _verify_invite_for_email(
         self,
         *,
         normalized_email: str,
         invite_token_verifier_hash: str | None,
     ) -> InviteRow:
-        """Validate and consume an invite for the invite-only path.
+        """Validate an invite for the invite-only path WITHOUT
+        consuming it. Returns the unconsumed active invite row.
 
-        Returns the consumed invite row. Raises
-        `InviteOnlyRejection` for any rejection path (missing
-        token, mismatched token, no active invite, expired,
-        consumed). The route layer MUST treat all of these as
-        the same generic 4xx response with the same timing
-        floor, per the decision lock's enumeration-resistance
-        rule.
+        The caller is expected to:
+          1. Run this verifier first (still in the same
+             transaction; no state change occurs).
+          2. Create or resolve the user row.
+          3. Call `consume_invite(invite_id, used_by_user_id=...)`
+             with the actual user id, so the FK to
+             `users(id)` is satisfied and the audit log
+             records the real user.
+
+        The split between verify and consume is intentional: a
+        consume with a placeholder user id would either violate
+        the FK to `users(id)` (since the placeholder UUID is
+        not a real user) or would record a wrong user. The
+        only safe order is verify-then-create-then-consume,
+        all inside the same transaction so a rollback on
+        consume failure also rolls back user creation.
+
+        Raises `InviteOnlyRejection` for any rejection path
+        (missing token, mismatched token, no active invite,
+        expired, consumed). The route layer MUST treat all of
+        these as the same generic 4xx response with the same
+        timing floor, per the decision lock's
+        enumeration-resistance rule.
         """
         if not invite_token_verifier_hash:
             raise InviteOnlyRejection("invite-only signup requires a valid invite")
@@ -1175,14 +1223,7 @@ class AccountService:
             str(active_hash), str(invite_token_verifier_hash)
         ):
             raise InviteOnlyRejection("invite token does not match the active invite")
-        # Consume the invite inside the same transaction. The
-        # caller's transaction wrapper (route layer) is what
-        # actually rolls back on failure; the service is just
-        # the SQL boundary.
-        return await self.consume_invite(
-            invite_id=invite.id,
-            used_by_user_id=_ZERO_USER_ID,  # placeholder; will be re-set after user creation
-        )
+        return invite
 
 
 # ============================================================================
@@ -1190,14 +1231,22 @@ class AccountService:
 # ============================================================================
 
 
-# Placeholder UUID used by `_authorize_invite_only` when consuming
-# the invite before the user row exists. In practice the
-# `_create_user_tenant_membership` flow consumes the invite AFTER
-# the user row is created, so this placeholder is only a fallback
-# for early-exit error paths. The route layer must NOT rely on
-# `used_by_user_id` being meaningful in the rejection case (the
-# rejection case never reaches the UPDATE).
-_ZERO_USER_ID = UUID("00000000-0000-0000-0000-000000000000")
+def _derive_username(normalized_email: str) -> str:
+    """Derive a non-empty `users.username` from a normalized email.
+
+    Mirrors the migration 010 backfill (`COALESCE(name, local-part,
+    'user')`) so the service-side value matches the in-DB value
+    for legacy data. The result is always non-empty because:
+      - if the local part exists, it is used (sanitized to ASCII);
+      - if the email is degenerate (no `@`, no local part), the
+        string `'user'` is returned.
+    """
+    if not normalized_email:
+        return "user"
+    local = normalized_email.split("@", 1)[0] if "@" in normalized_email else normalized_email
+    if not local:
+        return "user"
+    return local
 
 
 def _constant_time_equals(a: str, b: str) -> bool:
