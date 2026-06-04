@@ -834,6 +834,23 @@ async def refresh_endpoint(
 
 
 # ---------------------------------------------------------------------------
+# Identity-aware session issuance helper (TODO 9)
+# ---------------------------------------------------------------------------
+# The TODO 9 deliverable is a reusable backend-only service helper
+# (`orchestrator.services.identity.issue_device_session`) that
+# TODO 11 (email completion) and TODO 13 (Google completion) will
+# call AFTER a successful `AccountService.claim_*_identity` call.
+# No HTTP route is added in this TODO because identity session
+# issuance MUST be gated on a verified identity proof (email code
+# consumption or Google ID-token verification); a route that
+# accepts caller-supplied user_id/tenant_id and mints Daemon
+# tokens would bypass the proof-of-identity invariant and is
+# explicitly out of scope for TODO 9. The thin test boundary is
+# helper-level only; route-level coverage is deferred to TODO 11
+# and TODO 13 which will own the proof contracts.
+
+
+# ---------------------------------------------------------------------------
 # Device management
 # ---------------------------------------------------------------------------
 
