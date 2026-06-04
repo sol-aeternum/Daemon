@@ -120,9 +120,14 @@ RATE_LIMIT_REFRESH_PER_IP_PER_HOUR: RateLimitPolicy = RateLimitPolicy(
 # `daemon_rate_limit_google_*` config fields in a follow-up. The
 # `start` endpoint is per-IP only (the nonce is not yet bound to a
 # verified identity, so there is no email/subject to key on); the
-# `complete` endpoint is per-IP AND per-challenge so an attacker
-# cannot burn through every nonce for one challenge row without
-# hitting the IP cap.
+# `complete` endpoint is also per-IP only. A per-challenge scope
+# was considered to prevent a single IP from burning through
+# multiple nonces for one challenge row, but adding `challenge`
+# to `ScopeKind` / `RateLimiter.build_key` is a public-contract
+# change wider than the TODO 13 scope ("Do not change ... public
+# contracts unless a failing test proves integration is
+# impossible"). The per-IP cap is the sole rate-limit surface
+# for both endpoints.
 RATE_LIMIT_GOOGLE_START_PER_IP_PER_HOUR: RateLimitPolicy = RateLimitPolicy(
     limit=20, window_seconds=3600
 )
