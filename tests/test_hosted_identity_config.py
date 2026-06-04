@@ -182,3 +182,53 @@ def test_signup_mode_all_three_allowed() -> None:
     for mode in HOSTED_SIGNUP_MODES:
         settings = _hosted_base(daemon_signup_mode=mode)  # type: ignore[arg-type]
         settings.validate_hosted_identity_config()
+
+
+# ===== Startup integration test =====
+# This proves the validation is actually called by the FastAPI lifespan, not
+# just a method on Settings that nothing invokes. The contract: a misconfigured
+# hosted deployment must abort startup before AppState initialization.
+
+from orchestrator.config import get_settings  # noqa: E402
+
+
+def test_lifespan_startup_aborts_on_misconfigured_hosted(monkeypatch) -> None:
+    """FastAPI lifespan startup raises HostedIdentityConfigError on misconfig.
+
+    Proves the wiring is real: the validation is invoked during the actual
+    app startup path, not only on direct method calls. Uses
+    app.router.lifespan_context (the canonical repo pattern in
+    tests/council/test_sse_integration.py:21) to drive the startup code.
+
+    Uses monkeypatch (not os.environ) so the misconfig env vars do not leak
+    into subsequent tests, which would see DAEMON_HOSTED_IDENTITY_ENABLED=true
+    on their own Settings() instantiation and fail to start.
+    """
+    import asyncio
+
+    from httpx import ASGITransport, AsyncClient
+
+    async def _drive() -> None:
+        # Lazy import so the test file's import cost is paid only when this
+        # test runs, not at collection time.
+        from orchestrator.main import app
+
+        async with app.router.lifespan_context(app):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test"):
+                # Should not reach here on misconfig.
+                pass  # pragma: no cover
+
+    # Inject misconfig via monkeypatch: enabled in production with console
+    # mail sink. The pepper is set so pepper validation passes and hosted
+    # identity is the rule that actually fails (proves the hosted branch
+    # is reached, not just the pepper branch above it).
+    monkeypatch.setenv("DAEMON_HOSTED_IDENTITY_ENABLED", "true")
+    monkeypatch.setenv("DAEMON_ENVIRONMENT", "production")
+    monkeypatch.setenv("DAEMON_MAIL_SENDER_MODE", "console")
+    monkeypatch.setenv("DAEMON_GOOGLE_CLIENT_ID", "test-id.apps.googleusercontent.com")
+    monkeypatch.setenv("DAEMON_HOSTED_IDENTITY_REQUIRE_REDIS", "false")
+    monkeypatch.setenv("DAEMON_AUTH_PEPPER", "a" * 50)
+    get_settings.cache_clear()
+    with pytest.raises(HostedIdentityConfigError, match="console"):
+        asyncio.run(_drive())

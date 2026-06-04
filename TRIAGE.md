@@ -1417,3 +1417,14 @@
 - **Evidence**: `uv run basedpyright --level error -p pyproject.toml` printed `Pyproject file cannot have both pyright and basedpyright sections. pick one` and exited `3`; after config consolidation, `uv run basedpyright --level error` reported `tests/benchmark_harness/verify_recovery_logic.py:156:5 - error: No overloads for "update" match the provided arguments` plus the same pattern at lines 157, 211, and 212.
 - **Likely cause**: The default command had been loading `pyrightconfig.json`, hiding the invalid pyproject basedpyright config; once the config was unified, dict inference for recovery result rows was too narrow for later inserting list-valued `raw_session_ids` rows (confidence 95%).
 - **Suggested action**: Keep basedpyright settings in one `[tool.basedpyright]` section and keep `pyrightconfig.json` synchronized for editor/default CLI discovery; continue ratcheting the baseline as real errors are fixed.
+
+## 2026-06-04 UTC — Council lifespan test fails pre-existing on pepper validation
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: TODO 6 startup-wiring fix verification
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: `tests/council/test_sse_integration.py` (3 tests) error during fixture setup with `PepperValidationError: daemon_auth_pepper is required in production`. The test fixture sets `DATABASE_URL`, `REDIS_URL`, and `MOCK_LLM` env vars but does not set `DAEMON_ENVIRONMENT=development` or a valid `DAEMON_AUTH_PEPPER`. The `Settings` default for `daemon_environment` is `"production"` (`orchestrator/config.py:63`), so lifespan startup fails on the existing pepper gate.
+- **Evidence**: `pytest tests/council/test_sse_integration.py` → `ERROR ... PepperValidationError: daemon_auth_pepper is required in production`. Verified pre-existing by `git checkout 973c4b4d` (the prior TODO 6 commit) and re-running; the same 3 errors appear, confirming they are not introduced by the TODO 6 startup-wiring fix.
+- **Likely cause**: The council test fixture predates any startup-time pepper validation enforcement and was never updated when the pepper check became mandatory in production. Confidence: high.
+- **Suggested action**: Update `tests/council/test_sse_integration.py` fixture to also `monkeypatch.setenv("DAEMON_ENVIRONMENT", "development")` (or set a dev-acceptable pepper). This is a test-infra fix, not a TODO 6 scope item.
