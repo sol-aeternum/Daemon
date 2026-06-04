@@ -301,6 +301,20 @@ class GoogleIdTokenVerifier(Protocol):
     clock-skew tolerance. It returns the decoded claims
     after a successful verification.
 
+    The `audience` parameter accepts either a single
+    client ID string or a list of acceptable client IDs;
+    the library treats the list form as "the `aud` claim
+    must equal one of these". Passing `[client_id] +
+    allowlist` lets the library enforce the full audience
+    set at the boundary, not just the primary client ID.
+
+    The `request` parameter accepts either a
+    `google.auth.transport.requests.Request` (or
+    compatible) instance or `None`. The default verifier
+    (`default_google_id_token_verifier`) constructs a
+    `Request()` when the caller passes `None` so the
+    library can perform its JWK fetch.
+
     The boundary is defined as a Protocol so the test
     layer can substitute a hand-rolled stub that returns
     pre-built claim dicts. This is the ONLY Google
@@ -313,7 +327,7 @@ class GoogleIdTokenVerifier(Protocol):
         self,
         id_token: str,
         request: Any,
-        audience: str,
+        audience: str | list[str],
         *,
         certs_url: str | None = None,
     ) -> Mapping[str, Any]: ...
@@ -327,9 +341,31 @@ def default_google_id_token_verifier() -> GoogleIdTokenVerifier:
     minimal CI matrix) can still import this module. The
     package is listed as a project dependency in
     `pyproject.toml:22` (`google-auth>=2.53.0`).
+
+    The returned callable:
+      - forwards `request` to `verify_token` as-is when
+        the caller supplies one (e.g. an authenticated
+        `google.auth.transport.requests.Request` that
+        carries the user's `Authorization` header for
+        `verify_oauth2_token`);
+      - constructs a fresh `Request()` when the caller
+        passes `None`, so the lower-level `verify_token`
+        can still perform its JWK fetch (the library
+        requires a transport to issue the certs HTTP
+        request, even when no Authorization header is
+        needed);
+      - forwards the `audience` argument as-is, supporting
+        both the `str` and `list[str]` shapes (the
+        service passes `[client_id] + allowlist` so the
+        library enforces the full audience set at the
+        boundary);
+      - forwards `certs_url` only when non-None so the
+        library's default JWK URL is honored in the
+        common case.
     """
     try:
         from google.oauth2 import id_token as _id_token  # type: ignore[import-not-found]
+        from google.auth.transport import requests as _requests  # type: ignore[import-not-found]
     except ImportError as exc:  # pragma: no cover - explicit guard
         raise GoogleVerifierUnavailable(
             "google-auth is not installed; cannot construct the default "
@@ -340,21 +376,32 @@ def default_google_id_token_verifier() -> GoogleIdTokenVerifier:
     def _verify(
         id_token: str,
         request: Any,
-        audience: str,
+        audience: str | list[str],
         *,
         certs_url: str | None = None,
     ) -> Mapping[str, Any]:
+        # `verify_token` requires a transport Request to
+        # fetch the JWKs; if the caller passed None,
+        # construct a default Request so the library can
+        # still issue its certs HTTP GET. The Request is
+        # short-lived (one call per verification) and
+        # carries no Authorization header; the lower-level
+        # `verify_token` does not need one. A caller that
+        # already has a Request (e.g. from an HTTP layer
+        # for `verify_oauth2_token`) can pass it through
+        # unchanged.
+        if request is None:
+            request = _requests.Request()
+
         # The `google-auth` library returns the verified
         # claims as a Mapping after RS256 signature,
-        # algorithm pin, `iss`, `aud`, and `exp` checks. We
-        # pass through the `request` argument as-is (the
-        # library accepts a Request object so it can read
-        # the Authorization header for
-        # `verify_oauth2_token`; `verify_token` is the
-        # lower-level variant that does not require a
-        # Request). `certs_url` is forwarded only when
-        # non-None so the library default JWK URL is
-        # honored in the common case.
+        # algorithm pin, `iss`, `aud`, and `exp` checks.
+        # `audience` is forwarded as-is (str or list[str])
+        # so the library enforces the full audience set
+        # at the boundary, not just the primary client ID.
+        # `certs_url` is forwarded only when non-None so
+        # the library default JWK URL is honored in the
+        # common case.
         if certs_url is None:
             return _id_token.verify_token(id_token, request, audience=audience)
         return _id_token.verify_token(id_token, request, audience=audience, certs_url=certs_url)
@@ -942,11 +989,18 @@ class GoogleVerifierService:
             raise ValueError("verify_id_token requires a consumed_nonce row")
 
         # Audience: the configured Google client ID is
-        # the primary audience the Google library
-        # enforces. The allowlist is checked
-        # separately (the library takes a single
-        # audience; multi-audience environments rely
-        # on the post-decode allowlist check).
+        # the primary audience, and the allowlist
+        # extends the set of acceptable client IDs for
+        # dev/staging. We pass the FULL list
+        # `[client_id] + allowlist` to the library so
+        # the library enforces the complete audience
+        # set at the boundary (the `google-auth`
+        # library treats the list form as "the `aud`
+        # claim must equal one of these"). The
+        # post-decode `audience_allowed(...)` check
+        # below remains as defense-in-depth in case a
+        # future library version regresses the list
+        # form.
         client_id = self._settings.daemon_google_client_id
         if not client_id:
             raise GoogleVerifierUnavailable(
@@ -954,6 +1008,7 @@ class GoogleVerifierService:
                 "the verifier cannot validate the audience."
             )
         allowlist = parse_audience_allowlist(self._settings.daemon_google_audience_allowlist)
+        audience: str | list[str] = [client_id, *allowlist] if allowlist else client_id
 
         # Library call. The Google library returns the
         # verified claims as a dict after a successful
@@ -963,12 +1018,15 @@ class GoogleVerifierService:
         # expired token) raises a google.auth exception
         # subclass; we collapse every library failure
         # to `GoogleTokenInvalid` so the route layer
-        # can map to a single generic 4xx.
+        # can map to a single generic 4xx. The default
+        # verifier (`default_google_id_token_verifier`)
+        # constructs a `Request()` when `request is None`
+        # so the library can perform its JWK fetch.
         try:
             claims = self._verifier(
                 request.id_token_str,
                 None,
-                client_id,
+                audience,
             )
         except GoogleTokenInvalid:
             raise

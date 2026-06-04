@@ -285,7 +285,8 @@ class _StubVerifier:
     Tests pre-load `_claims` (or `_error`) and the stub
     returns them on every call. The stub records all calls
     so tests can assert the verifier was invoked with the
-    expected `id_token` and `audience`.
+    expected `id_token`, `request`, `audience` (str or
+    list[str]), and optional `certs_url`.
     """
 
     def __init__(
@@ -296,13 +297,13 @@ class _StubVerifier:
     ) -> None:
         self._claims = claims
         self._error = error
-        self.calls: list[tuple[str, Any, str, str | None]] = []
+        self.calls: list[tuple[str, Any, Any, str | None]] = []
 
     def __call__(
         self,
         id_token: str,
         request: Any,
-        audience: str,
+        audience: str | list[str],
         *,
         certs_url: str | None = None,
     ) -> dict[str, Any]:
@@ -522,7 +523,7 @@ class TestDefaultVerifierCallable:
         captured: list[dict[str, Any]] = []
 
         def _fake_verify(
-            id_token: str, request: Any, *, audience: str, certs_url: str | None = None
+            id_token: str, request: Any, *, audience: str | list[str], certs_url: str | None = None
         ) -> dict[str, Any]:
             captured.append(
                 {
@@ -547,6 +548,94 @@ class TestDefaultVerifierCallable:
             assert captured and captured[0]["certs_url"] is None
         finally:
             real_lib.verify_token = original  # type: ignore[assignment]
+
+    def test_default_verifier_constructs_request_when_caller_passes_none(self) -> None:
+        # The library-boundary fix: `verify_token` requires
+        # a transport Request to fetch JWKs. The default
+        # verifier must construct a `Request()` when the
+        # caller passes `request=None` so the library can
+        # perform the certs fetch. The previous
+        # implementation passed `None` straight through,
+        # which the library rejects.
+        v = default_google_id_token_verifier()
+        import google.oauth2.id_token as real_lib  # type: ignore[import-not-found]
+
+        captured: list[dict[str, Any]] = []
+
+        def _fake_verify(
+            id_token: str, request: Any, *, audience: str | list[str], certs_url: str | None = None
+        ) -> dict[str, Any]:
+            captured.append({"request": request, "audience": audience})
+            return {"sub": "x"}
+
+        original = real_lib.verify_token
+        real_lib.verify_token = _fake_verify  # type: ignore[assignment]
+        try:
+            v("token-1", None, "aud-1")
+        finally:
+            real_lib.verify_token = original  # type: ignore[assignment]
+        assert captured
+        forwarded_request = captured[0]["request"]
+        # The default verifier must NOT forward `None` to
+        # the library. The constructed transport is the
+        # concrete `google.auth.transport.requests.Request`
+        # class; we assert by class name (not by identity)
+        # so a future import-path refactor does not break
+        # the test.
+        assert forwarded_request is not None
+        assert type(forwarded_request).__name__ == "Request"
+        assert type(forwarded_request).__module__ == "google.auth.transport.requests"
+
+    def test_default_verifier_forwards_caller_request_unchanged(self) -> None:
+        # The default verifier must pass a caller-supplied
+        # Request through unchanged (so the higher-level
+        # `verify_oauth2_token` path can read the user's
+        # Authorization header from a shared Request).
+        v = default_google_id_token_verifier()
+        import google.oauth2.id_token as real_lib  # type: ignore[import-not-found]
+
+        captured: list[dict[str, Any]] = []
+
+        def _fake_verify(
+            id_token: str, request: Any, *, audience: str | list[str], certs_url: str | None = None
+        ) -> dict[str, Any]:
+            captured.append({"request": request, "audience": audience})
+            return {"sub": "x"}
+
+        sentinel = object()
+        original = real_lib.verify_token
+        real_lib.verify_token = _fake_verify  # type: ignore[assignment]
+        try:
+            v("token-1", sentinel, "aud-1")
+        finally:
+            real_lib.verify_token = original  # type: ignore[assignment]
+        assert captured
+        assert captured[0]["request"] is sentinel
+
+    def test_default_verifier_forwards_audience_list(self) -> None:
+        # The library-boundary fix: when the service
+        # passes a `list[str]` audience, the default
+        # verifier must forward the list unchanged so the
+        # library enforces the full set at the boundary.
+        v = default_google_id_token_verifier()
+        import google.oauth2.id_token as real_lib  # type: ignore[import-not-found]
+
+        captured: list[dict[str, Any]] = []
+
+        def _fake_verify(
+            id_token: str, request: Any, *, audience: str | list[str], certs_url: str | None = None
+        ) -> dict[str, Any]:
+            captured.append({"audience": audience})
+            return {"sub": "x"}
+
+        original = real_lib.verify_token
+        real_lib.verify_token = _fake_verify  # type: ignore[assignment]
+        try:
+            v("token-1", None, ["primary", "secondary"])
+        finally:
+            real_lib.verify_token = original  # type: ignore[assignment]
+        assert captured
+        assert captured[0]["audience"] == ["primary", "secondary"]
 
     def test_default_verifier_missing_google_auth_raises_unavailable(self) -> None:
         v = default_google_id_token_verifier()
@@ -811,8 +900,24 @@ class TestVerifyIdToken:
         assert result.normalized_email == "user@example.com"
         assert result.original_email == "User@Example.com"
         assert result.verified_at is not None
-        # The verifier was called with the configured client_id.
-        assert stub.calls and stub.calls[0][2] == "daemon-test-client-id.googleusercontent.com"
+        # The verifier was called with the audience list
+        # `[client_id] + allowlist` so the library enforces
+        # the full audience set at the boundary. With an
+        # empty allowlist the service passes a single
+        # `str` (not a 1-element list) for the common
+        # case; the call record must still be the
+        # configured client ID either way.
+        assert stub.calls
+        audience_arg = stub.calls[0][2]
+        if isinstance(audience_arg, list):
+            assert audience_arg == ["daemon-test-client-id.googleusercontent.com"]
+        else:
+            assert audience_arg == "daemon-test-client-id.googleusercontent.com"
+        # The verifier is called with `request=None`; the
+        # default verifier constructs a `Request()` from
+        # this None. The boundary contract is documented
+        # in `default_google_id_token_verifier`.
+        assert stub.calls[0][1] is None
 
     @pytest.mark.asyncio
     async def test_wrong_audience_rejected(self) -> None:
@@ -840,13 +945,63 @@ class TestVerifyIdToken:
             client_id="daemon-test-client-id.googleusercontent.com",
             audience_allowlist="secondary-client-id,third-client",
         )
-        service = GoogleVerifierService(conn, settings, _StubVerifier(claims=claims))
+        stub = _StubVerifier(claims=claims)
+        service = GoogleVerifierService(conn, settings, stub)
         result = await service.verify_id_token(
             GoogleIdTokenVerifyRequest(
                 id_token_str="raw", plaintext_nonce=plaintext, consumed_nonce=consumed
             )
         )
         assert result.provider_subject == "1234567890"
+        # The service must pass the FULL audience list
+        # `[client_id] + allowlist` to the library so the
+        # library enforces the allowlist at the boundary
+        # (not just the primary client ID). The third
+        # allowlist entry is a no-op here; the test just
+        # asserts the list shape.
+        assert stub.calls
+        audience_arg = stub.calls[0][2]
+        assert audience_arg == [
+            "daemon-test-client-id.googleusercontent.com",
+            "secondary-client-id",
+            "third-client",
+        ]
+        # The service must pass `request=None`; the
+        # default verifier is responsible for constructing
+        # a `Request()` from this None.
+        assert stub.calls[0][1] is None
+
+    @pytest.mark.asyncio
+    async def test_service_passes_audience_list_when_allowlist_non_empty(self) -> None:
+        # The library-boundary fix: when an allowlist is
+        # configured, the service must pass a
+        # `list[str]` (not a single `str`) to the
+        # library so the library enforces the full set at
+        # the boundary. With the previous (buggy)
+        # implementation, only the primary client ID
+        # reached the library and an allowlisted token
+        # would have been rejected at the library before
+        # reaching the post-decode allowlist check.
+        conn = _GoogleMockConn()
+        plaintext = "nonce-list-shape"
+        consumed = _make_consumed_row(plaintext, _expected_pepper(_dev_settings()))
+        claims = _now_claims(aud="secondary", nonce=plaintext)
+        settings = _dev_settings(
+            client_id="primary",
+            audience_allowlist="secondary",
+        )
+        stub = _StubVerifier(claims=claims)
+        service = GoogleVerifierService(conn, settings, stub)
+        await service.verify_id_token(
+            GoogleIdTokenVerifyRequest(
+                id_token_str="raw", plaintext_nonce=plaintext, consumed_nonce=consumed
+            )
+        )
+        audience_arg = stub.calls[0][2]
+        assert isinstance(audience_arg, list), (
+            f"audience must be a list when allowlist is non-empty; got {type(audience_arg)}"
+        )
+        assert audience_arg == ["primary", "secondary"]
 
     @pytest.mark.asyncio
     async def test_wrong_issuer_rejected(self) -> None:
