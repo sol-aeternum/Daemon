@@ -96,7 +96,6 @@ def _persist_audio_result(result_dict: dict[str, Any]) -> dict[str, Any]:
     return result_dict
 
 
-
 # Global subagent manager instance
 _subagent_manager: SubagentManager | None = None
 
@@ -327,27 +326,27 @@ class SpawnMultipleTool(Tool):
             try:
                 agent_type = SubagentType(agent_type_str.lower())
             except ValueError:
-                spawns.append((
-                    SubagentType.IMAGE,
-                    "",
-                    {"_spawn_error": f"Unknown agent_type: {agent_type_str}", "_orig_agent_type": agent_type_str},
-                    None,
-                ))
+                spawns.append(
+                    (
+                        SubagentType.IMAGE,
+                        "",
+                        {
+                            "_spawn_error": f"Unknown agent_type: {agent_type_str}",
+                            "_orig_agent_type": agent_type_str,
+                        },
+                        None,
+                    )
+                )
                 continue
             task = agent_spec.get("task", "")
-            context = self._apply_trusted_context(
-                agent_type, agent_spec.get("context")
-            )
+            context = self._apply_trusted_context(agent_type, agent_spec.get("context"))
             session_id = agent_spec.get("session_id")
             spawns.append((agent_type, task, context, session_id))
 
         valid_spawns = [
             (at, t, c, sid)
             for at, t, c, sid in spawns
-            if not (
-                isinstance(c, dict)
-                and ("_spawn_error" in c or "_spawn_rejected" in c)
-            )
+            if not (isinstance(c, dict) and ("_spawn_error" in c or "_spawn_rejected" in c))
         ]
 
         rejected = [
@@ -358,8 +357,7 @@ class SpawnMultipleTool(Tool):
                 "result": c,
             }
             for at, t, c, sid in spawns
-            if isinstance(c, dict)
-            and ("_spawn_error" in c or "_spawn_rejected" in c)
+            if isinstance(c, dict) and ("_spawn_error" in c or "_spawn_rejected" in c)
         ]
 
         if not valid_spawns:

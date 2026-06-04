@@ -72,10 +72,12 @@ class GenerateDocumentTool(Tool):
         table = kwargs.get("table")
         doc_format = format.lower()
         if doc_format not in ("csv", "docx"):
-            return json.dumps({
-                "success": False,
-                "error": f"Unsupported format: {format}. Supported: csv, docx.",
-            })
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"Unsupported format: {format}. Supported: csv, docx.",
+                }
+            )
 
         try:
             if doc_format == "csv":
@@ -113,7 +115,9 @@ class GenerateDocumentTool(Tool):
                 parsed = json.loads(content)
                 if isinstance(parsed, list) and all(isinstance(r, list) for r in parsed):
                     if parsed:
-                        headers = [str(h) for h in (parsed[0] if isinstance(parsed[0], list) else [])]
+                        headers = [
+                            str(h) for h in (parsed[0] if isinstance(parsed[0], list) else [])
+                        ]
                         rows = [[str(c) for c in r] for r in parsed[1:]]
                 elif isinstance(parsed, dict) and "headers" in parsed and "rows" in parsed:
                     headers = [str(h) for h in parsed["headers"]]
