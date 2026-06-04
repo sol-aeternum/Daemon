@@ -1428,3 +1428,25 @@
 - **Evidence**: `pytest tests/council/test_sse_integration.py` → `ERROR ... PepperValidationError: daemon_auth_pepper is required in production`. Verified pre-existing by `git checkout 973c4b4d` (the prior TODO 6 commit) and re-running; the same 3 errors appear, confirming they are not introduced by the TODO 6 startup-wiring fix.
 - **Likely cause**: The council test fixture predates any startup-time pepper validation enforcement and was never updated when the pepper check became mandatory in production. Confidence: high.
 - **Suggested action**: Update `tests/council/test_sse_integration.py` fixture to also `monkeypatch.setenv("DAEMON_ENVIRONMENT", "development")` (or set a dev-acceptable pepper). This is a test-infra fix, not a TODO 6 scope item.
+
+## 2026-06-04 UTC — Auth user-scoping tests fail pre-existing on pepper env
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: TODO 7 rate-limiter verification (running the auth test surface)
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: `tests/test_auth_user_scoping.py` (5 tests) error during fixture setup with `PepperValidationError: daemon_auth_pepper is required in production`. Same root cause as the council lifespan entry above: the fixture does not set `DAEMON_ENVIRONMENT=development` or a test pepper.
+- **Evidence**: `pytest tests/test_auth_user_scoping.py` → 5 errors, all `PepperValidationError: daemon_auth_pepper is required in production`. Verified pre-existing by `git stash` of the TODO 7 changes and re-running on commit `1455a63b` — the same 5 errors appear.
+- **Likely cause**: The user-scoping test fixture predates startup-time pepper validation. Confidence: high.
+- **Suggested action**: Follow-up test-fixture update (set `DAEMON_ENVIRONMENT=development` or a test pepper), same fix pattern as the council lifespan entry.
+
+## 2026-06-04 UTC — Auth smoke lifecycle test fails pre-existing on 401 vs 410
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: TODO 7 rate-limiter verification
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: `tests/test_auth_smoke.py::TestAuthDeviceLifecycleSmoke::test_full_lifecycle_smoke` assertion failure: `assert 401 == 410`. The test expects a consumed-reuse path to return 410, but the route returns 401. The drift predates TODO 7.
+- **Evidence**: `pytest tests/test_auth_smoke.py::TestAuthDeviceLifecycleSmoke::test_full_lifecycle_smoke` → `FAILED ... assert 401 == 410`. Verified pre-existing by `git stash` of the TODO 7 changes and re-running on commit `1455a63b` — the same failure appears.
+- **Likely cause**: Status code drift between the test expectation and the actual route response (likely the route was changed to return 401 on a path the test expected to be 410). Confidence: high.
+- **Suggested action**: Follow-up: decide whether the test or the route is correct and reconcile.

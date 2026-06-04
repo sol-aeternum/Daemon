@@ -45,6 +45,12 @@ from orchestrator.auth_tokens import (
 )
 from orchestrator.config import get_settings
 from orchestrator.db import get_app_state
+from orchestrator.services.identity import (
+    RateLimitPolicy,
+    client_ip_for_key,
+    enforce_rate_limit,
+    get_rate_limiter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +62,19 @@ ACCESS_TOKEN_TTL_MINUTES = 30
 REFRESH_TOKEN_TTL_DAYS = 90
 ENROLLMENT_TTL_MINUTES = 10
 ENROLLMENT_WRONG_ATTEMPTS_INITIAL = 3
+
+# Rate-limit policies for the existing auth endpoints (TODO 7).
+# Values are research recommendations and match the per-IP scopes
+# surfaced in `_scratch_identity_audit.md` for these endpoints. They
+# are hard-coded here per the TODO 7 "do not add env vars" guardrail;
+# TODO 8/9 may promote them to `daemon_rate_limit_*` config fields.
+RATE_LIMIT_SETUP_PER_IP_PER_HOUR: RateLimitPolicy = RateLimitPolicy(limit=5, window_seconds=3600)
+RATE_LIMIT_ENROLL_COMPLETE_PER_IP_PER_HOUR: RateLimitPolicy = RateLimitPolicy(
+    limit=20, window_seconds=3600
+)
+RATE_LIMIT_REFRESH_PER_IP_PER_HOUR: RateLimitPolicy = RateLimitPolicy(
+    limit=120, window_seconds=3600
+)
 
 
 class SetupRequest(BaseModel):
@@ -148,6 +167,20 @@ async def setup_endpoint(
     response: Response,
     body: SetupRequest,
 ) -> SetupResponse:
+    limiter = get_rate_limiter(request)
+    await enforce_rate_limit(
+        request=request,
+        limiter=limiter,
+        endpoint="auth:setup",
+        policies=[
+            (
+                "ip",
+                client_ip_for_key(request),
+                RATE_LIMIT_SETUP_PER_IP_PER_HOUR,
+            ),
+        ],
+    )
+
     app_state = get_app_state(request)
     if app_state.db_pool is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
@@ -301,6 +334,20 @@ async def enroll_complete_endpoint(
     response: Response,
     body: EnrollCompleteRequest,
 ) -> EnrollCompleteResponse:
+    limiter = get_rate_limiter(request)
+    await enforce_rate_limit(
+        request=request,
+        limiter=limiter,
+        endpoint="auth:enroll:complete",
+        policies=[
+            (
+                "ip",
+                client_ip_for_key(request),
+                RATE_LIMIT_ENROLL_COMPLETE_PER_IP_PER_HOUR,
+            ),
+        ],
+    )
+
     app_state = get_app_state(request)
     if app_state.db_pool is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
@@ -543,6 +590,20 @@ async def refresh_endpoint(
     - On zero rows: second lookup by hash distinguishes bad/expired/revoked (401) vs consumed (revoke device).
     - Consumed reuse: revoke device + all sessions, clear cookie, log sanitized warning (device_id only).
     """
+    limiter = get_rate_limiter(request)
+    await enforce_rate_limit(
+        request=request,
+        limiter=limiter,
+        endpoint="auth:refresh",
+        policies=[
+            (
+                "ip",
+                client_ip_for_key(request),
+                RATE_LIMIT_REFRESH_PER_IP_PER_HOUR,
+            ),
+        ],
+    )
+
     app_state = get_app_state(request)
     if app_state.db_pool is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
