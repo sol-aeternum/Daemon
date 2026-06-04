@@ -30,6 +30,9 @@ Every markdown file in the repository is classified under this hierarchy to dete
 | `docs/FEATURE_MATRIX.md` | T1 | Product/Eng | gated | Code implementation state |
 | `docs/TECHNICAL_SPECS.md` | T1 | Engineering | gated | `orchestrator/`, `migrations/`, `docker-compose.yml` |
 | `docs/PROJECT_CONTEXT.md` | T1 | Engineering | gated | `truth_set.md`, `docs/FEATURE_MATRIX.md` |
+| `docs/AUTH_ARCHITECTURE.md` | T1 | Engineering | gated | `orchestrator/auth*.py`, `orchestrator/routes/auth_setup.py`, `migrations/031_auth_device_model.sql` |
+| `docs/HOSTED_IDENTITY.md` | T1 | Engineering/Product | gated | `docs/AUTH_ARCHITECTURE.md`, hosted identity auth routes, hosted identity migrations |
+| `docs/AUTH_SETUP.md` | T1 | Engineering | gated | `orchestrator/routes/auth_setup.py`, `orchestrator/auth_cookies.py`, `orchestrator/auth_csrf.py` |
 | `docs/OPEN_QUESTIONS.md` | T1 | Engineering | gated | Decision log / `truth_set.md` |
 | `docs/MEMORY_UPGRADE_ROADMAP.md` | T1 | Engineering | gated | `MEMORY_LAYER.md`, Wave plans |
 | `docs/CURRENT_ISSUES.md` | T3 | Engineering | operational-rollup | `TRIAGE.md` |
