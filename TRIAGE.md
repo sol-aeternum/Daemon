@@ -1246,6 +1246,7 @@
 - **What happened**: `uv run pip-audit` exited 1 and reported 29 known vulnerabilities across 13 installed packages. No findings were suppressed or ignored.
 - **Evidence**: Command output: `Found 29 known vulnerabilities in 13 packages`; affected packages and fixes: aiohttp 3.13.3 -> 3.13.4 (10 CVEs), cryptography 46.0.5 -> 46.0.6/46.0.7 (PYSEC-2026-35/36), idna 3.11 -> 3.15 (CVE-2026-45409), litellm 1.81.1 -> 1.83.0/1.83.7 (5 findings), lxml 6.0.2 -> 6.1.0, pygments 2.19.2 -> 2.20.0, pyjwt 2.11.0 -> 2.12.0, pytest 9.0.2 -> 9.0.3, python-dotenv 1.2.1 -> 1.2.2, python-multipart 0.0.22 -> 0.0.26/0.0.27, requests 2.32.5 -> 2.33.0, starlette 0.50.0 -> 1.0.1, urllib3 2.6.3 -> 2.7.0. Full output recorded in `.sisyphus/evidence/task-4-pip-audit.txt`.
 - **Seen again**: 2026-05-31T06:31Z during Task 7 local CI parity; `.sisyphus/evidence/task-7-ci-local-parity.txt` shows `uv run pip-audit` exit code 1 with `Found 29 known vulnerabilities in 13 packages`.
+- **Seen again**: 2026-06-04T10:28Z during local CI PR-submission wiring verification; `scripts/local_ci.sh backend` kept `pip-audit` non-blocking as inventory and reported `Found 36 known vulnerabilities in 13 packages`.
 - **Likely cause**: Current locked dependency versions lag newly published vulnerability advisories; several are transitive dependencies of FastAPI/LiteLLM/aiohttp stack (confidence 90%).
 - **Suggested action**: Plan a dedicated dependency-upgrade/remediation task using uv-managed upgrades, then rerun `uv run pip-audit` without suppressions.
 
