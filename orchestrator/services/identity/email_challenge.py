@@ -14,11 +14,19 @@ Architecture decisions followed:
 
   - TODO 0 decision lock: `code_verifier_hash` is the ONLY durable
     representation of a challenge code. The plaintext code is
-    returned to the caller ONLY through a `DevSink`-shaped object
-    that is constructed only by `create_challenge_for_delivery`
-    in dev/test mode; the production path (`issue_challenge`)
-    returns only a typed `EmailChallengeRow` with no plaintext
-    code in any field. Logs never receive the plaintext code.
+    returned to the caller in memory by
+    `create_challenge_for_delivery(request) -> (EmailChallengeRow, str)`,
+    which is the canonical entry point for both production and
+    dev/test. The TODO 11 `/v1/auth/email/start` route is expected
+    to call `create_challenge_for_delivery`, immediately hand the
+    plaintext to the mail sender (or an arq enqueue), and discard
+    it from request memory. The `DevSink` is an OPTIONAL
+    in-process test side-effect for reading the plaintext back
+    later; production never constructs one. The secondary
+    `issue_challenge(request)` entry point returns only the row
+    (plaintext discarded) for callers that do not need to deliver
+    the code (operator-triage flows, schema-shape tests). Logs
+    never receive the plaintext code.
   - TODO 3 research: codes are 6 decimal digits (~19.9 bits of
     entropy), generated with `secrets.SystemRandom` (the same
     primitive used by `auth_tokens.py:54`). 6 digits is the
@@ -65,8 +73,12 @@ This module never:
     table does not have a column for it; the verifier is the
     only durable artifact);
   - returns the plaintext code through any field of any
-    production-path return type (the dev/test sink is a separate
-    opt-in object);
+    PUBLIC row dataclass (the `EmailChallengeRow` exposes only
+    the seven schema columns; the plaintext is NEVER a row
+    field). The plaintext lives only in (a) the in-process
+    return value of `create_challenge_for_delivery`, and
+    (b) the in-process `DevSink` for dev/test, when one is
+    configured;
   - silently downgrades an expired/locked/consumed challenge to a
     success (each of those raises the typed error, the route
     layer maps to a generic 4xx).
@@ -281,10 +293,13 @@ class EmailChallengeConsumeRequest:
 
     `plaintext_code` is the user-supplied 6-digit code from the
     request body. The service computes the HMAC verifier
-    internally and compares it to the stored value with
-    `hmac.compare_digest`. The plaintext is never logged, never
-    written to the database, never returned in any error
-    message, and never exposed in any return type.
+    internally via `compute_code_verifier(plaintext, pepper)`
+    and matches it against the stored `code_verifier_hash`
+    through guarded SQL equality in the consume UPDATE
+    (`WHERE id = $1 AND ... AND code_verifier_hash = $2`).
+    The plaintext is never logged, never written to the
+    database, never returned in any error message, and never
+    exposed in any return type.
     """
 
     challenge_id: UUID
@@ -693,10 +708,21 @@ class EmailChallengeService:
         and atomically mark the row consumed on success.
 
         The verification is HMAC-SHA256(plaintext_code, pepper)
-        compared to `code_verifier_hash` with
-        `hmac.compare_digest`. The plaintext is never written
-        to the database, never logged, and never returned in
-        the result.
+        compared to `code_verifier_hash` via guarded SQL
+        equality on the consume UPDATE. The verifier for the
+        presented code is computed locally with
+        `compute_code_verifier` and then matched inside the
+        `WHERE id = $1 AND consumed_at IS NULL AND locked_at
+        IS NULL AND expires_at > NOW() AND code_verifier_hash
+        = $2` clause; a non-matching row leaves the UPDATE
+        with `RETURNING NULL` and the helper raises the typed
+        error. There is no in-Python `hmac.compare_digest` call:
+        the SQL equality is the authoritative match, and the
+        same WHERE guard is what makes the consume atomic
+        with the row-state check (concurrent second callers
+        see the row already consumed and fail). The plaintext
+        is never written to the database, never logged, and
+        never returned in the result.
 
         On success the row is updated with `consumed_at = NOW()`
         and a fresh fetch returns the updated `EmailChallengeRow`.
