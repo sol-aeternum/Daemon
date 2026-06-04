@@ -72,7 +72,7 @@ Daemon/
 │   ├── hooks/          # React hooks (useChat wrappers, audio, events)
 │   └── lib/events.ts   # Typed SSE event definitions
 ├── providers/          # Provider client implementations
-├── migrations/         # PostgreSQL migrations (13 applied)
+├── migrations/         # PostgreSQL migrations
 ├── tests/              # Test suite (pytest + playwright)
 ├── scripts/             # Utility scripts
 ├── data/                # Runtime data (generated files, etc.)
@@ -119,10 +119,10 @@ Benchmarking runs from the host shell against localhost-exposed container servic
 
 ### Subagents
 - `@research` — Brave Search web search
-- `@image` — Image and video generation (xAI Imagine API)
+- `@image` — Image generation (OpenRouter/Gemini) and video generation (xAI, fal.ai/Kling)
 - `@audio` — ElevenLabs TTS/STT/sound effects
-- `@code` — Code generation and analysis
-- `@reader` — Document reading
+- `@code` — Code generation (experimental, not fully implemented)
+- `@reader` — Document reading (experimental, not fully implemented)
 
 ### Frontend
 - Next.js 16 PWA with streaming chat (Vercel AI SDK `useChat`)
@@ -140,11 +140,12 @@ Benchmarking runs from the host shell against localhost-exposed container servic
 | `/v1/models` | GET | List available models (OpenAI-compatible) |
 | `/v1/chat/completions` | POST | Chat completion, streaming and non-streaming |
 | `/chat` | POST | Native Daemon chat with SSE streaming |
-| `/conversations` | GET/POST | Conversation CRUD |
-| `/conversations/{id}/messages` | GET/POST | Message history |
-| `/memories` | GET/POST/DELETE | Memory management |
-| `/users/settings` | GET/PUT | User preferences |
-| `/video-credits` | GET/POST | Video credit balance and transactions |
+| `/conversations` | GET/POST | Conversation CRUD (uses `/conversations/{conversation_id}`) |
+| `/memories` | GET/POST/DELETE | Memory management (uses `/memories/{memory_id}`) |
+| `/skills` | GET/POST | Skills management (uses `/skills/{skill_id}`) |
+| `/users/me/settings` | GET/PATCH | User preferences |
+| `/video-credits/balance` | GET | Video credit balance |
+| `/video-credits/transactions` | GET | Video credit transactions |
 | `/health` | GET | Health check |
 
 ## Status

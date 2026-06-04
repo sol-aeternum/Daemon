@@ -13,7 +13,7 @@ Daemon's memory system captures, stores, and retrieves durable facts about users
 ### Technology
 
 - **PostgreSQL 16** with `pgvector` extension — direct asyncpg (no ORM)
-- **Fernet (AES-256-GCM)** encryption applied at the application layer before write — all `content` fields encrypted transparently
+- **Fernet** encryption applied at the application layer before write — all `content` fields encrypted transparently
 - **Embeddings stored as plaintext** vectors so pgvector can index and search them
 
 ### Encryption
@@ -205,7 +205,7 @@ L0 memories bypass embedding-based retrieval entirely. They are always prepended
 `consolidation.py` runs as a background job (triggered post-extraction, also on schedule):
 
 - Groups L1 memories by **slot family** (first two segments, e.g., `language.python` → `language`)
-- Clusters within-family memories by embedding similarity ≥ 0.65 (`CLUSTER_SIMILARITY_THRESHOLD`)
+- Clusters within-family memories by embedding similarity ≥ 0.65 (CLUSTER_SIMILARITY_THRESHOLD)
 - For clusters of ≥ 3 memories, calls gpt-4o-mini to synthesize a summary fact
 - Summary is stored as a new `category='summary'` memory with `tier='l1'`
 - Source memories are demoted to `tier='l2'`
@@ -230,7 +230,7 @@ L0 memories bypass embedding-based retrieval entirely. They are always prepended
 5. Token-aware truncation to `max_tokens` budget
 6. Format: `About this user:` / `Recent context:` / `[FROZEN MEMORIES]`
 
-`assemble_system_prompt()` then prepends `DAEMON_SYSTEM_PROMPT`, adds personality/preferences, appends the memory block, and ensures the memory tools reminder is present.
+`assemble_system_prompt()` then prepends DAEMON_SYSTEM_PROMPT, adds personality/preferences, appends the memory block, and ensures the memory tools reminder is present.
 
 ---
 
@@ -241,7 +241,7 @@ L0 memories bypass embedding-based retrieval entirely. They are always prepended
 | Document (memory writes) | `voyage-4-large` | `input_type="document"` | 1024 |
 | Query (retrieval) | `voyage-4-lite` | `input_type="query"` | 1024 |
 
-Retry logic: 3 attempts with exponential backoff (1s → 2s → 4s). Module-level counters `_retry_count` and `_last_retry_at` are exposed via the `/status` endpoint.
+Retry logic: 3 attempts with exponential backoff (1s → 2s → 4s). Counters `_retry_count` and `_last_retry_at` are exposed via `/status` as `embedding_retry_activations` and `embedding_last_retry_at`.
 
 ---
 

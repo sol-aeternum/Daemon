@@ -1,0 +1,128 @@
+{
+  "checked_sources": {
+    "migrations": {
+      "count": 30,
+      "latest": "030_add_advisor_traces.sql"
+    },
+    "embeddings": {
+      "document_model": "voyage-4-large",
+      "query_model": "voyage-4-lite",
+      "dimensions": 1024,
+      "dedup_merge": 0.9,
+      "dedup_supersede_generic": 0.82,
+      "dedup_supersede_same_slot": 0.65
+    },
+    "providers": {
+      "video_providers": [
+        "fal",
+        "xai"
+      ],
+      "provider_clients": []
+    },
+    "routes": {
+      "routes": {
+        "GET": [
+          "/health",
+          "/providers",
+          "/api/models",
+          "/models",
+          "/v1/models",
+          "/v1/catalog",
+          "/generated-images/{filename}",
+          "/generated-audio/{filename}",
+          "/generated-files/{filename}",
+          "/audio/token",
+          "/audio/scribe-token",
+          "/{conversation_id}",
+          "/{memory_id}",
+          "/{skill_id}",
+          "/{skill_id}/download",
+          "/me/settings",
+          "/me/settings/presets",
+          "/balance",
+          "/transactions",
+          "/estimate"
+        ],
+        "POST": [
+          "/v1/tools/test",
+          "/chat/completions",
+          "/v1/chat/completions",
+          "/tts",
+          "/stt",
+          "/sound-effects",
+          "/chat",
+          "/export",
+          "/import",
+          "/reembed",
+          "/{memory_id}/confirm",
+          "/consolidate",
+          "/dream",
+          "/upload",
+          "/{skill_id}/pending-update",
+          "/admin/sync",
+          "/grant"
+        ],
+        "PATCH": [
+          "/{conversation_id}",
+          "/{memory_id}",
+          "/{skill_id}/enabled",
+          "/{skill_id}/autonomous-edit",
+          "/me/settings"
+        ],
+        "DELETE": [
+          "/{conversation_id}",
+          "/{memory_id}",
+          "/{skill_id}"
+        ],
+        "PUT": [
+          "/{skill_id}"
+        ]
+      }
+    }
+  },
+  "findings": [
+    {
+      "doc": "/home/sol/daemon/docs/TECHNICAL_SPECS.md",
+      "line": 1,
+      "check_id": "migration_count",
+      "kind": "mismatch",
+      "expected": "30",
+      "observed": "13",
+      "message": "migration count mismatch: expected 30, found 13"
+    },
+    {
+      "doc": "/home/sol/daemon/docs/TECHNICAL_SPECS.md",
+      "line": 123,
+      "check_id": "video_providers",
+      "kind": "mismatch",
+      "expected": "no Sora (deleted)",
+      "observed": "Sora is deleted and should not be mentioned",
+      "message": "video provider mismatch"
+    },
+    {
+      "doc": "/home/sol/daemon/docs/PROJECT_CONTEXT.md",
+      "line": 1,
+      "check_id": "migration_count",
+      "kind": "mismatch",
+      "expected": "30",
+      "observed": "13",
+      "message": "migration count mismatch: expected 30, found 13"
+    },
+    {
+      "doc": "/home/sol/daemon/docs/PROJECT_CONTEXT.md",
+      "line": 59,
+      "check_id": "video_providers",
+      "kind": "mismatch",
+      "expected": "no Sora (deleted)",
+      "observed": "Sora is deleted and should not be mentioned",
+      "message": "video provider mismatch"
+    }
+  ],
+  "exceptions": [],
+  "malformed_exceptions": [],
+  "summary": {
+    "total_findings": 4,
+    "total_exceptions": 0,
+    "total_malformed": 0
+  }
+}

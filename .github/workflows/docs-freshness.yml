@@ -1,0 +1,70 @@
+name: Documentation Freshness
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - docs/**
+      - '*.md'
+      - docker-compose.yml
+      - orchestrator/config.py
+      - orchestrator/routes/**
+      - orchestrator/tools/**
+      - orchestrator/subagents/**
+      - orchestrator/prompts.py
+      - orchestrator/council/**
+      - orchestrator/commands/council.py
+      - orchestrator/services/fetch/**
+      - backend/image_gen/**
+      - orchestrator/main.py
+      - orchestrator/daemon.py
+      - orchestrator/router.py
+      - orchestrator/memory/**
+      - migrations/**
+      - scripts/check_doc_freshness.py
+      - .github/workflows/docs-freshness.yml
+      - .pre-commit-config.yaml
+      - .env.example
+      - providers/**
+      - frontend/**
+      - tests/benchmark_results/doc-alignment-regeneration/truth_set.md
+  pull_request:
+    paths:
+      - docs/**
+      - '*.md'
+      - docker-compose.yml
+      - orchestrator/config.py
+      - orchestrator/routes/**
+      - orchestrator/tools/**
+      - orchestrator/subagents/**
+      - orchestrator/prompts.py
+      - orchestrator/council/**
+      - orchestrator/commands/council.py
+      - orchestrator/services/fetch/**
+      - backend/image_gen/**
+      - orchestrator/main.py
+      - orchestrator/daemon.py
+      - orchestrator/router.py
+      - orchestrator/memory/**
+      - migrations/**
+      - scripts/check_doc_freshness.py
+      - .github/workflows/docs-freshness.yml
+      - .pre-commit-config.yaml
+      - .env.example
+      - providers/**
+      - frontend/**
+      - tests/benchmark_results/doc-alignment-regeneration/truth_set.md
+
+jobs:
+  doc-freshness:
+    name: Check doc freshness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: '**/.python-version'
+      - run: uv run python scripts/check_doc_freshness.py --mode fail

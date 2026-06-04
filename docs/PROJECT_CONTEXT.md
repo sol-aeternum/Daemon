@@ -1,173 +1,138 @@
 # Project Context — Daemon
 
-> Last updated: 2026-03-19
-> Source of truth: codebase audit against `daemon-core` + `daemon-frontend-core` tarballs
+> **Verified-against-commit**: `3155d69fa1eb1939cf5c737018242fc119480d6c`
+> **Last updated**: 2026-05-31
+> **Upstream Sources**: `tests/benchmark_results/doc-alignment-regeneration/truth_set.md`, `docs/SOURCES_OF_TRUTH.md`, `docs/FEATURE_MATRIX.md`, `MEMORY_LAYER.md`, `orchestrator/config.py`, `docker-compose.yml`, `migrations/`
 
 ## What Daemon Is
 
-Mobile-first personal AI assistant with multi-model orchestration. FastAPI backend orchestrates LLM calls via OpenRouter (88 models), spawning specialized subagents for research, image generation, audio, code, and document reading tasks. Next.js 16 frontend with Vercel AI SDK provides the chat interface. PostgreSQL + pgvector stores conversations and memories. Redis + arq handle background job processing.
+Daemon is a multi-provider LLM orchestration platform with intelligent routing, persistent memory, and a subagent architecture. It provides a unified interface for multiple LLM providers (via OpenRouter), adding capabilities like tiered routing, persistent conversational memory via pgvector, specialized subagents, and a typed SSE event protocol for real-time streaming.
 
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────┐
-│           Next.js 16 Frontend (PWA)               │
-│           Vercel AI SDK 4 + React 19              │
-└────────────────────┬──────────────────────────────┘
-                     │ /api/chat (SSE bridge)
-                     ▼
-┌───────────────────────────────────────────────────┐
-│              FastAPI Backend                      │
-│                                                   │
-│  ┌─────────────────────────────────────────────┐  │
-│  │ Pre-Router: /local → local | else → cloud   │  │
-│  └─────────────┬───────────────────────────────┘  │
-│                │                                  │
-│    ┌───────────┴───────────┐                      │
-│    ▼                       ▼                      │
-│  LOCAL (Phase 3)     CLOUD PIPELINE               │
-│  Qwen 72B Q5         Orchestrator model           │
-│  (pending 5090)      (tier-configured)            │
-│                            │                      │
-│                      ┌─────┴─────┐                │
-│                      │ Subagents │                │
-│                      │ @research │                │
-│                      │ @image    │                │
-│                      │ @audio    │                │
-│                      │ @code     │                │
-│                      │ @reader   │                │
-│                      └───────────┘                │
-│                                                   │
-│  ┌─────────────────────────────────────────────┐  │
-│  │ Memory Layer (PostgreSQL + pgvector)        │  │
-│  │ Background Jobs (Redis + arq)               │  │
-│  │ Encryption at rest (Fernet)                 │  │
-│  └─────────────────────────────────────────────┘  │
-└───────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│           Next.js 16 Frontend (PWA)                  │
+│           Vercel AI SDK 4 + React 19                  │
+└──────────────────────┬──────────────────────────────┘
+                       │ /api/chat (SSE bridge)
+┌──────────────────────▼──────────────────────────────┐
+│              FastAPI Backend                          │
+│   orchestrator/  (routing, streaming, subagents,     │
+│                   memory, tools, routes, worker)     │
+│                                                      │
+│  ┌─────────┐  ┌──────────┐  ┌────────────────────┐  │
+│  │ Router  │→ │ Provider │→ │ LiteLLM Streaming  │  │
+│  │         │  │ Registry │  │ (SSE)              │  │
+│  └─────────┘  └──────────┘  └────────────────────┘  │
+│       │                                              │
+│  ┌────▼────────────┐  ┌──────────────────────────┐  │
+│  │ Memory Layer    │  │ Subagent Orchestrator    │  │
+│  │ (pgvector)      │  │ @research @image @audio  │  │
+
+│  └─────────────────┘  └──────────────────────────┘  │
+└──────────────────────────────────────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────────────┐
+│               LLM Providers                          │
+│  OpenRouter · xAI · fal.ai · ElevenLabs · Brave      │
+└─────────────────────────────────────────────────────┘
 ```
+
+- **Backend**: FastAPI (Python 3.11+) orchestrates LLM calls, memory, and subagents.
+- **Frontend**: Next.js 16 with Vercel AI SDK 4 and React 19.
+- **Memory**: PostgreSQL with `pgvector` for semantic search and Fernet encryption for content at rest.
+- **Worker**: Redis + `arq` for background jobs (memory extraction, consolidation, dreaming).
+- **Fetch**: `crawl4ai` service for robust web scraping.
 
 ## Tier System
 
-The backend implements a tier-based model configuration system. Tiers are real architecture; specific model assignments are placeholders subject to change as the model landscape evolves. All model assignments are env-var configurable — no code changes required to swap models.
+Daemon uses a tier-based model configuration system. Specific model assignments are env-var configurable in `orchestrator/config.py`.
 
-| Tier | Price | Current Orchestrator | Subagents | Video | Notes |
-|------|-------|---------------------|-----------|-------|-------|
-| Free | $0 | Kimi K2.5 | None | Blocked | Orchestrator only |
-| Starter | $9/mo | Kimi K2.5 | Claude 3.5 Sonnet (research, code), Gemini Flash (image), Gemini Pro (reader) | Enabled (5s-30s, provider-limited) | Basic subagent suite |
-| Pro | $19/mo | Kimi K2.5 | Same as Starter | Enabled (5s-30s, provider-limited) | Full subagent suite (default tier) |
-| Max | $29/mo | Claude 3 Opus | Opus (code), Sonnet (research), Gemini Flash (image), Gemini Pro (reader) | Enabled (5s-30s, provider-limited) | Premium models, large embeddings |
-| BYOK | $9/mo | Kimi K2.5 | User-configured | Enabled (bypasses credits, uses own XAI_API_KEY) | User's own OpenRouter key |
+| Tier | Price | Orchestrator Model (Default) | Subagents | Video |
+|------|-------|------------------------------|-----------|-------|
+| **Free** | $0/mo | `kimi-k2.5` | None | Disabled |
+| **Starter** | $9/mo | `kimi-k2.5` | Sonnet 3.5, Gemini Flash | Enabled (fal) |
+| **Pro** | $19/mo | `kimi-k2.5` | Sonnet 3.5, Gemini Flash | Enabled (fal) |
+| **Max** | $29/mo | `claude-opus-4.6` | Sonnet 3.5, Gemini Flash | Enabled (fal) |
+| **BYOK** | $9/mo | `kimi-k2.5` | User-configured | Enabled (fal) |
 
-Auto-routing within tiers: messages are classified as `fast` (→ Gemini Flash) or `reasoning` (→ tier orchestrator) based on complexity heuristics including turn count and code presence.
+*Note: Default video provider is `fal` (Kling) via config.py; runtime selection depends on `video_provider` propagation. BYOK users bypass credits using their own keys.*
 
-**Note on model identity:** The system prompt instructs Daemon to identify as "Kimi K2.5 via OpenRouter" regardless of actual model running. This should track the tier's orchestrator assignment or be made dynamic.
-
-## What's Implemented
+## Implementation Status
 
 ### Phase 1: Cloud Orchestration ✅
-- FastAPI with OpenAI-compatible endpoints + custom `/chat` SSE endpoint
-- LiteLLM multi-provider routing via OpenRouter (88 models, tier-1 sorting)
-- SubagentManager: @research (Brave Search), @image (Gemini Flash), @audio (ElevenLabs), @code, @reader
-- Tool registry: web_search, http_request, calculate, get_time, notifications (ntfy.sh), reminders, memory_read, memory_write
-- SSE streaming with typed events (token, thinking, routing, tool_call, tool_result, final, error, done)
+- **SSE Streaming**: Typed events (`token`, `thinking`, `routing`, `tool_call`, `tool_result`, `final`, `error`, `done`).
+- **Subagents**: `@research` (Brave), `@image` (OpenRouter/Gemini for images; xAI, fal for video), `@audio` (ElevenLabs).
+- **Tools**: `generate_document` (deterministic CSV/DOCX generation).
+- **Tools**: `web_search`, `http_request`, `calculate`, `get_time`, `notifications`, `reminders`, `memory_read`, `memory_write`.
 
 ### Phase 2: Memory System ✅
-- PostgreSQL + pgvector running (13 migrations applied)
-- Redis + arq worker queue operational
-- Encryption at rest via Fernet (messages, memories, extraction log)
-- Conversation CRUD with message persistence (conversations, messages tables)
-- Memory extraction pipeline: GPT-4o-mini extracts facts → embedding → dedup → store with `status="active"`
-- Memory retrieval: composite scoring (similarity × recency × source_boost × confidence)
-- Memory injection: builds enhanced system prompt with retrieved memories + user preferences
-- Memory tools: memory_read / memory_write integrated into Daemon's tool system
-- Background jobs: extract_memories, generate_title, generate_summary, garbage_collect
-- API routes: /conversations, /memories, /users/settings, /system/health
-- Retry detection: orchestrator/tools/retry.py with word-boundary matching
+- **Storage**: PostgreSQL + pgvector with 31 migrations applied (latest: `031_auth_device_model.sql`).
+- **Pipeline**: Extraction (GPT-4o-mini) → Embedding (Voyage 4) → Dedup → Retrieval (Hybrid).
+- **Encryption**: Fernet for messages and memories.
+- **Background Jobs**: Extraction, summary, consolidation, dreaming.
 
-### Video Generation + Credits ✅ (xAI Imagine)
-- xAI Imagine API integration for image and video generation
-- Video generation via @image subagent with mode="video" context
-- Prepaid video credits system with atomic debit/refund operations
-- Credit balance and transaction history API: `/video-credits/*`
-- Tier-based video access: Free blocked, Starter/Pro/Max/BYOK enabled
-- Duration options: 5s/10s/15s/20s/30s (provider-limited, no tier caps)
-- BYOK users bypass credits using their own XAI_API_KEY
-- Auto-refund on failed generations
-- Studio page extended with Image/Video mode toggle
-- Inline video rendering in chat with VideoPlayer component
+### Video Generation + Credits ✅
+- **Providers**: `fal` (Kling) as default; `xai` (Imagine) also supported.
+- **Credits**: Prepaid system with atomic debit/refund. Balance and transactions via `/video-credits`.
+- **Studio**: Dedicated UI for image and video generation.
 
-### Frontend (Work in Progress)
-- Streaming chat via Vercel AI SDK `useChat` with SSE bridge to backend
-- Conversation list with CRUD, search, pinning, rename
-- Rich inline rendering: images (lightbox + download), audio player, tool call blocks
-- Voice I/O: ElevenLabs TTS (streaming) + STT (Scribe) with push-to-talk
-- Model selector with catalog + full 88-model search
-- ThinkingIndicator, AgentStatusCard/List for orchestration visibility
-- PWA manifest + offline indicator + service worker caching
-- Settings panel: TTS voice/model/speed, STT language, memory management (clear all)
+### Frontend ✅
+- **Chat**: Streaming via Vercel AI SDK `useChat`.
+- **Voice**: ElevenLabs TTS/STT with push-to-talk.
+- **Settings**: Voice preferences, model selector, memory management.
 
-### Phase 3: Local Pipeline — Blocked on Hardware
-- Pre-router `/local` flag parsing implemented
-- All local inference code unimplemented (pending RTX 5090 acquisition)
+### Phase 3: Local Pipeline (Blocked)
+- Pre-router `/local` flag parsed but not wired to local inference routing.
+- Inference code pending hardware (RTX 5090).
 
 ## Infrastructure
 
-### Docker Compose Services (6 containers)
-- `backend` — FastAPI (port 8000)
-- `worker` — arq background job processor
-- `frontend` — Next.js 16 (port 3000)
-- `postgres` — pgvector/pgvector:pg16
-- `redis` — Redis 7 Alpine
+### Docker Compose Services (7 services)
+1. `migrate`: One-shot migration runner.
+2. `backend`: FastAPI app (port 8000).
+3. `worker`: arq background job processor.
+4. `frontend`: Next.js 16 (port 3000).
+5. `postgres`: pgvector/pg16 (port 5432).
+6. `redis`: Redis 7 Alpine (port 6379).
+7. `crawl4ai`: Web scraping service.
 
-### Cleanup Required
-- Open WebUI service still in docker-compose.yml — **remove** (dead weight from pre-pivot era)
-- Legacy OpenCode Zen provider config in Settings — **remove**
+## Memory Layer
 
-### Key Dependencies
+For detailed architecture, see [MEMORY_LAYER.md](../MEMORY_LAYER.md).
 
-**Backend:** FastAPI, LiteLLM, httpx, asyncpg, arq, cryptography, pydantic-settings
+- **Embeddings**: `voyage-4-large` (1024d) for documents, `voyage-4-lite` (1024d) for queries.
+- **Dedup Thresholds**:
+  - Merge: ≥ 0.90
+  - Supersede (generic): ≥ 0.82
+  - Supersede (same slot): ≥ 0.65
+- **Retrieval**: Hybrid score (0.5 × vector + 0.3 × BM25 + 0.2 × recency/confidence/trust).
 
-**Frontend:** Next.js 16, React 19, Vercel AI SDK 4, @ai-sdk/react, @ai-sdk/openai, lucide-react, next-pwa
+## Subagent Status
 
-**External APIs:** OpenRouter (LLMs), Voyage AI (embeddings), OpenAI (Sora video), Brave Search, ElevenLabs (TTS/STT/SFX), ntfy.sh (push notifications)
+| Subagent | Status | Implementation |
+|----------|--------|----------------|
+| `@research` | Implemented | Brave Search + synthesis |
+| `@image` | Implemented | OpenRouter/Gemini (images), xAI/fal (video) |
+| `@audio` | Implemented | ElevenLabs SFX |
+| `generate_document` | Implemented | Deterministic CSV/DOCX generation via `generate_document` tool |
+| `@code` | **Reserved** | Not implemented |
+| `@reader` | **Reserved** | Not implemented |
 
-### Database Schema (13 migrations)
-- `users` — single default user (multi-user scaffolded)
-- `conversations` — id, user_id, title, pipeline, pinned, title_locked, status, metadata
-- `messages` — conversation_id, role, content (encrypted), model, status, metadata
-- `memories` — content (encrypted), embedding (1024d), category, source_type, confidence, status, source_conversation_id
-- `extraction_log` — tracks extraction runs per conversation
+## Key API Endpoints
 
-## Decisions Made
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Simple health check |
+| `/status` | GET | Detailed system status (DB, Redis, Memory) |
+| `/providers` | GET | List available LLM providers |
+| `/skills` | GET/POST | Skill management CRUD |
+| `/chat` | POST | Native SSE chat endpoint |
+| `/v1/chat/completions` | POST | OpenAI-compatible completions |
 
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Frontend | Next.js 16 + Vercel AI SDK | Open WebUI lacked orchestration state concepts |
-| Tier system | 5 tiers, env-var model slots | Model assignments as configuration, not code |
-| Default tier | Pro (Kimi K2.5) | Placeholder — model assignments are fluid |
-| Cloud search | Brave Search API | Fast, privacy-respecting |
-| Cloud image gen | Gemini Flash Image via OpenRouter | In existing API flow |
-| Voice I/O | ElevenLabs | TTS, STT (Scribe), sound FX |
-| Notifications | ntfy.sh | Simple, self-hostable |
-| Memory encryption | Fernet (at rest) | Content + messages encrypted, embeddings plaintext for pgvector |
-| Embeddings | voyage-4-large documents + voyage-4-lite queries (1024d vectors) via Voyage API | Shared embedding space with asymmetric query/document input types |
-| Local LLM | Qwen 2.5 72B Q5_K_M | 32GB VRAM enables Q5, no CPU offload |
-| Local image gen | FLUX Dev | Privacy, no guardrails |
-| Local search | SearXNG | No Google/Bing dependency |
-| GPU | ASUS TUF 5090 @ $5999 AUD | Delayed — cloud pipeline proceeds independently |
-
-## Unresolved
-
-- Frontend: conversation switching / useChat state management
-- Frontend: no markdown rendering
-- Local pipeline complexity: full orchestration or simple Qwen-only?
-- Memory scope: shared vs separate stores for cloud/local
-- Always-on vs Wake-on-LAN for home server
-- Test coverage: minimal (test_chat_history.py, test_store.py added)
-
-## Next Steps
-
-1. Fix conversation switching state management
-2. Add markdown rendering to chat messages
-3. Remove Open WebUI and legacy OpenCode references from codebase
-4. Acquire RTX 5090 TUF, then execute Phase 3
+## Caveats & Cleanup
+- **Local Pipeline**: Blocked on hardware (RTX 5090); cloud pipeline runs independently.
+- **Linter Scope**: `check_doc_freshness.py` gates high-confidence structured facts only.
+- **Model Assignments**: Tier-to-model mappings are env-var configurable in `config.py`.
+- **Migrations**: 31 migrations applied.
