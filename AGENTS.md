@@ -114,6 +114,13 @@ migrations/             # PostgreSQL migrations
 
  Gate config lives in: `.pre-commit-config.yaml`, `.github/workflows/ci.yml`, `.github/workflows/codeql.yml`, `renovate.json`.
 
+## Local CI / PR Submission
+
+Local gate runner and PR wrapper live in `scripts/`:
+
+- `scripts/local_ci.sh [backend|frontend|aggregate] [--list]` — runs the gate families above. Blocking gates (ruff check, ruff format, basedpyright, frontend type/lint/format, feature matrix, pre-commit) fail the script; inventory gates (CI `continue-on-error`) are reported but do not block.
+- `scripts/pr_create.sh --dry-run -- <gh pr create args>` — refuses to invoke `gh pr create` until `scripts/local_ci.sh` exits 0. `--dry-run` shows the plan without running gates or contacting GitHub. `scripts/pr_create.sh -- <args>` is the recommended replacement for `gh pr create`.
+
 ## Recent Fixes (as of Feb 2026)
 - ✅ Memory extraction now writes `status="active"` — pipeline is fully operational
 - ✅ Error boundary added to chat view for crash recovery
