@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
 import {
   render,
   screen,
@@ -17,18 +17,30 @@ vi.mock('../lib/auth', () => ({
   refreshAccessToken: vi.fn(() => Promise.resolve({ success: false })),
   completeSetup: vi.fn(() => Promise.resolve({ success: true })),
   completeEnrollment: vi.fn(() => Promise.resolve({ success: true })),
+  startEmailSignIn: vi.fn(() =>
+    Promise.resolve({
+      success: true,
+      challengeId: 'ch-123',
+      expiresAt: 1234567890,
+    }),
+  ),
+  completeEmailSignIn: vi.fn(() => Promise.resolve({ success: true })),
 }));
 
 import {
   refreshAccessToken,
   completeSetup,
   completeEnrollment,
+  startEmailSignIn,
+  completeEmailSignIn,
 } from '../lib/auth';
 import AuthLanding from '../components/AuthLanding';
 
 const mockedRefresh = vi.mocked(refreshAccessToken);
 const mockedCompleteSetup = vi.mocked(completeSetup);
 const mockedCompleteEnrollment = vi.mocked(completeEnrollment);
+const mockedStartEmail = vi.mocked(startEmailSignIn);
+const mockedCompleteEmail = vi.mocked(completeEmailSignIn);
 
 async function waitForLoadingToFinish(): Promise<void> {
   await waitFor(() => {
@@ -44,15 +56,13 @@ describe('AuthLanding — hosted mode', () => {
     const googleButton = screen.getByRole('button', {
       name: /continue with google/i,
     });
-    const emailButton = screen.getByRole('button', {
-      name: /continue with email/i,
-    });
+    const emailInput = screen.getByLabelText(/email address/i);
     const enrollmentHeading = screen.getByRole('heading', {
       name: /continue enrollment/i,
     });
 
     expect(googleButton).toBeTruthy();
-    expect(emailButton).toBeTruthy();
+    expect(emailInput).toBeTruthy();
     expect(enrollmentHeading).toBeTruthy();
 
     const googlePosition =
@@ -62,21 +72,16 @@ describe('AuthLanding — hosted mode', () => {
     );
   });
 
-  it('shows identity cards as disabled with coming-soon reason', async () => {
+  it('shows Google card as disabled with coming-soon reason', async () => {
     render(<AuthLanding mode="hosted" />);
     await waitForLoadingToFinish();
 
     const googleButton = screen.getByRole('button', {
       name: /continue with google/i,
     });
-    const emailButton = screen.getByRole('button', {
-      name: /continue with email/i,
-    });
 
     expect(googleButton.hasAttribute('disabled')).toBe(true);
-    expect(emailButton.hasAttribute('disabled')).toBe(true);
-    const comingSoonElements = screen.getAllByText('Coming soon');
-    expect(comingSoonElements.length).toBe(2);
+    expect(screen.getByText('Coming soon')).toBeTruthy();
   });
 
   it('hides setup token form behind an advanced section', async () => {
@@ -264,5 +269,215 @@ describe('AuthLanding — enrollment submission', () => {
     });
 
     expect(mockPush).not.toHaveBeenCalled();
+  });
+});
+
+describe('AuthLanding — email sign-in flow', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('starts email sign-in with generic user-facing behavior', async () => {
+    mockedStartEmail.mockResolvedValueOnce({
+      success: true,
+      challengeId: 'ch-abc',
+      expiresAt: 1234567890,
+    });
+
+    render(<AuthLanding mode="hosted" />);
+    await waitForLoadingToFinish();
+
+    const emailInput = screen.getByLabelText(/email address/i);
+    fireEvent.change(emailInput, { target: { value: 'user@example.com' } });
+
+    const sendButton = screen.getByRole('button', {
+      name: /send verification code/i,
+    });
+    fireEvent.click(sendButton);
+
+    await waitFor(() => {
+      expect(mockedStartEmail).toHaveBeenCalledWith('user@example.com');
+    });
+
+    expect(screen.getByLabelText(/verification code/i)).toBeTruthy();
+  });
+
+  it('completes email sign-in and redirects on success', async () => {
+    mockedStartEmail.mockResolvedValueOnce({
+      success: true,
+      challengeId: 'ch-abc',
+      expiresAt: 1234567890,
+    });
+    mockedCompleteEmail.mockResolvedValueOnce({ success: true });
+    mockPush.mockClear();
+
+    render(<AuthLanding mode="hosted" />);
+    await waitForLoadingToFinish();
+
+    const emailInput = screen.getByLabelText(/email address/i);
+    fireEvent.change(emailInput, { target: { value: 'user@example.com' } });
+
+    const sendButton = screen.getByRole('button', {
+      name: /send verification code/i,
+    });
+    fireEvent.click(sendButton);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/verification code/i)).toBeTruthy();
+    });
+
+    const codeInput = screen.getByLabelText(/verification code/i);
+    fireEvent.change(codeInput, { target: { value: '123456' } });
+
+    const verifyButton = screen.getByRole('button', {
+      name: /verify and sign in/i,
+    });
+    fireEvent.click(verifyButton);
+
+    await waitFor(() => {
+      expect(mockedCompleteEmail).toHaveBeenCalledWith(
+        'ch-abc',
+        '123456',
+        'private',
+      );
+    });
+
+    expect(mockPush).toHaveBeenCalledWith('/');
+  });
+
+  it('maps public computer choice to temporary persistence', async () => {
+    mockedStartEmail.mockResolvedValueOnce({
+      success: true,
+      challengeId: 'ch-abc',
+      expiresAt: 1234567890,
+    });
+    mockedCompleteEmail.mockResolvedValueOnce({ success: true });
+
+    render(<AuthLanding mode="hosted" />);
+    await waitForLoadingToFinish();
+
+    const emailInput = screen.getByLabelText(/email address/i);
+    fireEvent.change(emailInput, { target: { value: 'user@example.com' } });
+
+    const sendButton = screen.getByRole('button', {
+      name: /send verification code/i,
+    });
+    fireEvent.click(sendButton);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/verification code/i)).toBeTruthy();
+    });
+
+    const publicRadio = screen.getByRole('radio', { name: /public/i });
+    fireEvent.click(publicRadio);
+
+    const codeInput = screen.getByLabelText(/verification code/i);
+    fireEvent.change(codeInput, { target: { value: '654321' } });
+
+    const verifyButton = screen.getByRole('button', {
+      name: /verify and sign in/i,
+    });
+    fireEvent.click(verifyButton);
+
+    await waitFor(() => {
+      expect(mockedCompleteEmail).toHaveBeenCalledWith(
+        'ch-abc',
+        '654321',
+        'temporary',
+      );
+    });
+  });
+
+  it('shows generic error when email start fails', async () => {
+    mockedStartEmail.mockResolvedValueOnce({
+      success: false,
+      error: 'Rate limit exceeded',
+    });
+
+    render(<AuthLanding mode="hosted" />);
+    await waitForLoadingToFinish();
+
+    const emailInput = screen.getByLabelText(/email address/i);
+    fireEvent.change(emailInput, { target: { value: 'user@example.com' } });
+
+    const sendButton = screen.getByRole('button', {
+      name: /send verification code/i,
+    });
+    fireEvent.click(sendButton);
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit exceeded/i)).toBeTruthy();
+    });
+  });
+
+  it('shows generic error when email complete fails', async () => {
+    mockedStartEmail.mockResolvedValueOnce({
+      success: true,
+      challengeId: 'ch-abc',
+      expiresAt: 1234567890,
+    });
+    mockedCompleteEmail.mockResolvedValueOnce({
+      success: false,
+      error: 'Invalid or expired code. Please try again.',
+    });
+
+    render(<AuthLanding mode="hosted" />);
+    await waitForLoadingToFinish();
+
+    const emailInput = screen.getByLabelText(/email address/i);
+    fireEvent.change(emailInput, { target: { value: 'user@example.com' } });
+
+    const sendButton = screen.getByRole('button', {
+      name: /send verification code/i,
+    });
+    fireEvent.click(sendButton);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/verification code/i)).toBeTruthy();
+    });
+
+    const codeInput = screen.getByLabelText(/verification code/i);
+    fireEvent.change(codeInput, { target: { value: '000000' } });
+
+    const verifyButton = screen.getByRole('button', {
+      name: /verify and sign in/i,
+    });
+    fireEvent.click(verifyButton);
+
+    await waitFor(() => {
+      expect(screen.getByText(/invalid or expired code/i)).toBeTruthy();
+    });
+  });
+
+  it('allows switching to a different email from code step', async () => {
+    mockedStartEmail.mockResolvedValueOnce({
+      success: true,
+      challengeId: 'ch-abc',
+      expiresAt: 1234567890,
+    });
+
+    render(<AuthLanding mode="hosted" />);
+    await waitForLoadingToFinish();
+
+    const emailInput = screen.getByLabelText(/email address/i);
+    fireEvent.change(emailInput, { target: { value: 'old@example.com' } });
+
+    const sendButton = screen.getByRole('button', {
+      name: /send verification code/i,
+    });
+    fireEvent.click(sendButton);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/verification code/i)).toBeTruthy();
+    });
+
+    const switchButton = screen.getByRole('button', {
+      name: /use a different email/i,
+    });
+    await act(async () => {
+      fireEvent.click(switchButton);
+    });
+
+    expect(screen.getByLabelText(/email address/i)).toBeTruthy();
   });
 });

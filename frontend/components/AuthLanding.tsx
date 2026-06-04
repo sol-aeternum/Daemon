@@ -6,6 +6,8 @@ import {
   refreshAccessToken,
   completeSetup,
   completeEnrollment,
+  startEmailSignIn,
+  completeEmailSignIn,
 } from '../lib/auth';
 import {
   Sparkles,
@@ -40,6 +42,17 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
   const [enrollmentError, setEnrollmentError] = useState<string | null>(null);
 
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const [email, setEmail] = useState('');
+  const [emailChallengeId, setEmailChallengeId] = useState('');
+  const [emailCode, setEmailCode] = useState('');
+  const [emailStep, setEmailStep] = useState<'idle' | 'code'>('idle');
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [isEmailStarting, setIsEmailStarting] = useState(false);
+  const [isEmailCompleting, setIsEmailCompleting] = useState(false);
+  const [devicePersistence, setDevicePersistence] = useState<
+    'private' | 'temporary'
+  >('private');
 
   useEffect(() => {
     let cancelled = false;
@@ -145,6 +158,65 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
     }
   }
 
+  async function handleEmailStart(e: React.FormEvent) {
+    e.preventDefault();
+    setEmailError(null);
+
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail) {
+      setEmailError('Please enter your email address.');
+      return;
+    }
+
+    setIsEmailStarting(true);
+    try {
+      const result = await startEmailSignIn(trimmedEmail);
+      if (result.success && result.challengeId) {
+        setEmailChallengeId(result.challengeId);
+        setEmailStep('code');
+      } else {
+        setEmailError(result.error || 'Unable to send code. Please try again.');
+      }
+    } catch {
+      setEmailError(
+        'Network error. Please check your connection and try again.',
+      );
+    } finally {
+      setIsEmailStarting(false);
+    }
+  }
+
+  async function handleEmailComplete(e: React.FormEvent) {
+    e.preventDefault();
+    setEmailError(null);
+
+    const trimmedCode = emailCode.trim();
+    if (!trimmedCode) {
+      setEmailError('Please enter the verification code.');
+      return;
+    }
+
+    setIsEmailCompleting(true);
+    try {
+      const result = await completeEmailSignIn(
+        emailChallengeId,
+        trimmedCode,
+        devicePersistence,
+      );
+      if (result.success) {
+        router.push('/');
+      } else {
+        setEmailError(result.error || 'Sign-in failed. Please try again.');
+      }
+    } catch {
+      setEmailError(
+        'Network error. Please check your connection and try again.',
+      );
+    } finally {
+      setIsEmailCompleting(false);
+    }
+  }
+
   if (isChecking) {
     return (
       <div className="flex h-screen w-full items-center justify-center bg-[var(--color-bg-tertiary)]">
@@ -198,12 +270,142 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
               disabled
               disabledReason="Coming soon"
             />
-            <IdentityCard
-              icon={<Mail className="w-5 h-5" />}
-              label="Continue with Email"
-              disabled
-              disabledReason="Coming soon"
-            />
+
+            {emailStep === 'idle' ? (
+              <form onSubmit={handleEmailStart} className="space-y-4">
+                <div>
+                  <label
+                    htmlFor="email-address"
+                    className="block text-sm font-medium text-[var(--color-text-secondary)] mb-1.5"
+                  >
+                    Email Address
+                  </label>
+                  <input
+                    id="email-address"
+                    type="email"
+                    autoComplete="email"
+                    placeholder="you@example.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    disabled={isEmailStarting}
+                    className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
+                  />
+                </div>
+
+                {emailError && (
+                  <div className="flex items-start gap-2.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5">
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
+                    <p className="text-sm text-red-300">{emailError}</p>
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={isEmailStarting || !email.trim()}
+                  className="w-full rounded-xl bg-[var(--color-accent-primary)] px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-[var(--color-accent-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {isEmailStarting
+                    ? 'Sending code...'
+                    : 'Send verification code'}
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={handleEmailComplete} className="space-y-4">
+                <div>
+                  <label
+                    htmlFor="email-code"
+                    className="block text-sm font-medium text-[var(--color-text-secondary)] mb-1.5"
+                  >
+                    Verification Code
+                  </label>
+                  <input
+                    id="email-code"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    placeholder="Enter 6-digit code"
+                    value={emailCode}
+                    onChange={(e) => setEmailCode(e.target.value)}
+                    disabled={isEmailCompleting}
+                    className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <p className="text-sm font-medium text-[var(--color-text-secondary)]">
+                    This device is:
+                  </p>
+                  <div className="flex gap-3">
+                    <label className="flex-1 flex items-center gap-2 rounded-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 cursor-pointer hover:border-[var(--color-border-secondary)] transition-colors">
+                      <input
+                        type="radio"
+                        name="device-persistence"
+                        value="private"
+                        checked={devicePersistence === 'private'}
+                        onChange={() => setDevicePersistence('private')}
+                        disabled={isEmailCompleting}
+                        className="text-[var(--color-accent-primary)] focus:ring-[var(--color-accent-primary)]"
+                      />
+                      <div>
+                        <p className="text-sm font-medium text-[var(--color-text-primary)]">
+                          Private
+                        </p>
+                        <p className="text-xs text-[var(--color-text-muted)]">
+                          Stay signed in
+                        </p>
+                      </div>
+                    </label>
+                    <label className="flex-1 flex items-center gap-2 rounded-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 cursor-pointer hover:border-[var(--color-border-secondary)] transition-colors">
+                      <input
+                        type="radio"
+                        name="device-persistence"
+                        value="temporary"
+                        checked={devicePersistence === 'temporary'}
+                        onChange={() => setDevicePersistence('temporary')}
+                        disabled={isEmailCompleting}
+                        className="text-[var(--color-accent-primary)] focus:ring-[var(--color-accent-primary)]"
+                      />
+                      <div>
+                        <p className="text-sm font-medium text-[var(--color-text-primary)]">
+                          Public
+                        </p>
+                        <p className="text-xs text-[var(--color-text-muted)]">
+                          Forget when I leave
+                        </p>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                {emailError && (
+                  <div className="flex items-start gap-2.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5">
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
+                    <p className="text-sm text-red-300">{emailError}</p>
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={isEmailCompleting || !emailCode.trim()}
+                  className="w-full rounded-xl bg-[var(--color-accent-primary)] px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-[var(--color-accent-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {isEmailCompleting ? 'Verifying...' : 'Verify and sign in'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEmailStep('idle');
+                    setEmailError(null);
+                    setEmailCode('');
+                  }}
+                  disabled={isEmailCompleting}
+                  className="w-full text-center text-sm text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] transition-colors disabled:opacity-50"
+                >
+                  Use a different email
+                </button>
+              </form>
+            )}
           </div>
         )}
 
