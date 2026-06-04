@@ -24,9 +24,7 @@ def route_message(message: str, metadata: dict[str, Any] | None) -> RoutingDecis
     if stripped.startswith("/council"):
         command = "council"
         user_message = (
-            stripped[len("/council") :].lstrip()
-            if len(stripped) > len("/council")
-            else ""
+            stripped[len("/council") :].lstrip() if len(stripped) > len("/council") else ""
         )
         reason = "council_command"
     elif stripped.startswith("/local"):

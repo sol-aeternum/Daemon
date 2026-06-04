@@ -9,9 +9,7 @@ from tests.benchmark_longmemeval.dev_subset import load_fixture
 from tests.longmemeval.ingest import CorpusSession, build_corpus_plan
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEV_SUBSET_BASELINE_DIR = (
-    REPO_ROOT / "tests" / "benchmark_results" / "dev_subset_baseline"
-)
+DEV_SUBSET_BASELINE_DIR = REPO_ROOT / "tests" / "benchmark_results" / "dev_subset_baseline"
 FAILURES_PATH = DEV_SUBSET_BASELINE_DIR / "failures.jsonl"
 LOCKED_RUN_IDS: Final[tuple[str, ...]] = ("run1", "run2")
 RETRIEVAL_LOG_SCHEMA_FIELDS: Final[tuple[str, ...]] = (
@@ -77,9 +75,7 @@ def load_locked_run_artifacts() -> dict[str, dict[str, Any]]:
         artifacts[run_id] = {
             "run_id": run_id,
             "results": results,
-            "results_by_question_id": {
-                str(row.get("question_id", "")): row for row in results
-            },
+            "results_by_question_id": {str(row.get("question_id", "")): row for row in results},
             "checkpoint": checkpoint,
             "score": score,
         }
@@ -88,11 +84,7 @@ def load_locked_run_artifacts() -> dict[str, dict[str, Any]]:
 
 def failure_question_ids_for_run(run_artifacts: dict[str, Any]) -> list[str]:
     results = cast(list[dict[str, Any]], run_artifacts["results"])
-    return [
-        str(row.get("question_id", ""))
-        for row in results
-        if row.get("judgment") != "correct"
-    ]
+    return [str(row.get("question_id", "")) for row in results if row.get("judgment") != "correct"]
 
 
 def ordered_failure_question_ids(
@@ -179,12 +171,13 @@ def _build_extraction_evidence(
     *,
     scoped_sessions: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    status_counts = Counter(str(session.get("status", "missing_artifact")) for session in scoped_sessions)
+    status_counts = Counter(
+        str(session.get("status", "missing_artifact")) for session in scoped_sessions
+    )
     complete_conversation_ids = [
         str(session["conversation_id"])
         for session in scoped_sessions
-        if session.get("status") == "complete"
-        and isinstance(session.get("conversation_id"), str)
+        if session.get("status") == "complete" and isinstance(session.get("conversation_id"), str)
     ]
     incomplete_sessions = [
         session for session in scoped_sessions if session.get("status") != "complete"
@@ -204,9 +197,9 @@ def _build_judge_reasoning(
 ) -> dict[str, Any]:
     judge_config = cast(
         dict[str, Any],
-        run_artifacts["checkpoint"]["benchmark_effective_config"]["pinned_authority"][
-            "shared"
-        ]["judge"],
+        run_artifacts["checkpoint"]["benchmark_effective_config"]["pinned_authority"]["shared"][
+            "judge"
+        ],
     )
     return {
         "available": False,
@@ -231,9 +224,9 @@ def _build_retrieval_evidence(
 ) -> dict[str, Any]:
     retrieval_config = cast(
         dict[str, Any],
-        run_artifacts["checkpoint"]["benchmark_effective_config"]["pinned_authority"][
-            "shared"
-        ]["retrieval"],
+        run_artifacts["checkpoint"]["benchmark_effective_config"]["pinned_authority"]["shared"][
+            "retrieval"
+        ],
     )
     runtime_config = cast(
         dict[str, Any], run_artifacts["checkpoint"]["benchmark_effective_config"]["runtime"]
@@ -259,9 +252,7 @@ def _build_retrieval_evidence(
             "retrieval_triggered_by": retrieval_config["call_contract"].get(
                 "retrieval_triggered_by"
             ),
-            "include_historical": retrieval_config["scope_defaults"].get(
-                "include_historical"
-            ),
+            "include_historical": retrieval_config["scope_defaults"].get("include_historical"),
             "memory_slot": retrieval_config["scope_defaults"].get("memory_slot"),
             "force_retrieval_logging": runtime_config.get("force_retrieval_logging"),
         },
@@ -280,9 +271,9 @@ def _build_active_memory_state(
 ) -> dict[str, Any]:
     retrieval_config = cast(
         dict[str, Any],
-        run_artifacts["checkpoint"]["benchmark_effective_config"]["pinned_authority"][
-            "shared"
-        ]["retrieval"],
+        run_artifacts["checkpoint"]["benchmark_effective_config"]["pinned_authority"]["shared"][
+            "retrieval"
+        ],
     )
     scoped_conversation_ids = [
         str(session["conversation_id"])
@@ -308,9 +299,7 @@ def _build_active_memory_state(
             "include_dream_observations": retrieval_config["call_contract"].get(
                 "include_dream_observations"
             ),
-            "include_historical": retrieval_config["scope_defaults"].get(
-                "include_historical"
-            ),
+            "include_historical": retrieval_config["scope_defaults"].get("include_historical"),
             "memory_slot": retrieval_config["scope_defaults"].get("memory_slot"),
         },
     }
@@ -354,17 +343,13 @@ def _build_failure_occurrence(
 def build_failure_dataset_rows() -> list[dict[str, Any]]:
     fixture = load_fixture()
     corpus_plan = build_corpus_plan(fixture)
-    corpus_session_lookup = {
-        session.corpus_key: session for session in corpus_plan.corpus_sessions
-    }
+    corpus_session_lookup = {session.corpus_key: session for session in corpus_plan.corpus_sessions}
     artifacts = load_locked_run_artifacts()
     ordered_question_ids = ordered_failure_question_ids(
         fixture=fixture,
         artifacts=artifacts,
     )
-    fixture_lookup = {
-        str(entry.get("question_id", "")): entry for entry in fixture
-    }
+    fixture_lookup = {str(entry.get("question_id", "")): entry for entry in fixture}
 
     rows: list[dict[str, Any]] = []
     for question_position, question_id in enumerate(ordered_question_ids, start=1):
@@ -415,9 +400,7 @@ def build_failure_dataset_rows() -> list[dict[str, Any]]:
 def write_failure_dataset(output_path: Path = FAILURES_PATH) -> list[dict[str, Any]]:
     rows = build_failure_dataset_rows()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows)
-    )
+    output_path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows))
     return rows
 
 

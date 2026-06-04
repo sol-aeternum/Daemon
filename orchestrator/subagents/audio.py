@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import logging
 import os
@@ -29,9 +28,7 @@ class AudioSubagent(BaseSubagent):
         self.base_url = "https://api.elevenlabs.io/v1"
         self.timeout = 60.0  # Sound effects are faster than images
 
-    async def execute(
-        self, task: str, context: dict[str, Any] | None = None
-    ) -> SubagentResult:
+    async def execute(self, task: str, context: dict[str, Any] | None = None) -> SubagentResult:
         """Execute sound effect generation task.
 
         Args:

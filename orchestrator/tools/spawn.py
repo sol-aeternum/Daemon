@@ -18,12 +18,8 @@ from orchestrator.subagents.audio import AudioSubagent
 
 logger = logging.getLogger(__name__)
 
-GENERATED_IMAGES_DIR = (
-    Path(__file__).resolve().parent.parent.parent / "data" / "generated_images"
-)
-GENERATED_AUDIO_DIR = (
-    Path(__file__).resolve().parent.parent.parent / "data" / "generated_audio"
-)
+GENERATED_IMAGES_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "generated_images"
+GENERATED_AUDIO_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "generated_audio"
 
 
 def _persist_image_result(result_dict: dict[str, Any]) -> dict[str, Any]:
@@ -205,10 +201,16 @@ class SpawnAgentTool(Tool):
                     "source_mode",
                     "reference_image_url",
                     "reference_image_id",
+                    "video_provider",
+                    "kling_model",
+                    "audio_enabled",
                 ):
                     value = trusted_video.get(key)
                     if value is not None:
                         merged_context[key] = value
+                reference_image_url = trusted_video.get("reference_image_url")
+                if reference_image_url is not None:
+                    merged_context["source_image_url"] = reference_image_url
             return merged_context
         return context
 
@@ -302,10 +304,16 @@ class SpawnMultipleTool(Tool):
                     "source_mode",
                     "reference_image_url",
                     "reference_image_id",
+                    "video_provider",
+                    "kling_model",
+                    "audio_enabled",
                 ):
                     value = trusted_video.get(key)
                     if value is not None:
                         merged_context[key] = value
+                reference_image_url = trusted_video.get("reference_image_url")
+                if reference_image_url is not None:
+                    merged_context["source_image_url"] = reference_image_url
             return merged_context
         return context
 

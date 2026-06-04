@@ -36,9 +36,7 @@ async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncClient,
 
         async with app.router.lifespan_context(app):
             transport = ASGITransport(app=app)
-            async with AsyncClient(
-                transport=transport, base_url="http://test"
-            ) as http_client:
+            async with AsyncClient(transport=transport, base_url="http://test") as http_client:
                 yield http_client
 
 
@@ -380,7 +378,7 @@ async def test_progress_events_with_timestamps(
 
 
 @pytest.mark.asyncio
-async def test_event_ordering_preserved(
+async def test_event_ordering_preserved(  # noqa: F811
     client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -451,7 +449,7 @@ async def test_event_ordering_preserved(
 
 
 @pytest.mark.asyncio
-async def test_done_event_is_last(
+async def test_done_event_is_last(  # noqa: F811
     client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -515,7 +513,7 @@ async def test_done_event_is_last(
 
 
 @pytest.mark.asyncio
-async def test_no_events_after_council_done(
+async def test_no_events_after_council_done(  # noqa: F811
     client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -576,7 +574,7 @@ async def test_no_events_after_council_done(
 
 
 @pytest.mark.asyncio
-async def test_progress_events_with_timestamps(
+async def test_progress_events_with_timestamps(  # noqa: F811
     client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -652,7 +650,7 @@ async def test_progress_events_with_timestamps(
 
 
 @pytest.mark.asyncio
-async def test_progress_events_with_timestamps(
+async def test_progress_events_with_timestamps(  # noqa: F811
     client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

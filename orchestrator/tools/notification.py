@@ -80,9 +80,7 @@ class NotificationSendTool(Tool):
 
         except httpx.HTTPStatusError as e:
             return json.dumps(
-                {
-                    "error": f"ntfy.sh error: {e.response.status_code} - {e.response.text[:200]}"
-                }
+                {"error": f"ntfy.sh error: {e.response.status_code} - {e.response.text[:200]}"}
             )
         except Exception as e:
             return json.dumps({"error": f"Notification failed: {str(e)}"})

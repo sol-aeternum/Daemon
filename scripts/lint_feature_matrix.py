@@ -64,7 +64,9 @@ def split_markdown_row(line: str) -> list[str]:
     return [cell.strip() for cell in stripped[1:-1].split("|")]
 
 
-def find_table(lines: list[str]) -> tuple[tuple[int, str] | None, tuple[int, str] | None, list[tuple[int, str]]]:
+def find_table(
+    lines: list[str],
+) -> tuple[tuple[int, str] | None, tuple[int, str] | None, list[tuple[int, str]]]:
     violations: list[tuple[int, str]] = []
     in_feature_matrix = False
     header: tuple[int, str] | None = None
@@ -176,7 +178,9 @@ def validate_rows(
 
         wedge_value = cells[6]
         if wedge_value not in {"Yes", "No"}:
-            violations.append((line_number, f"Wedge required? must be 'Yes' or 'No', found '{wedge_value}'"))
+            violations.append(
+                (line_number, f"Wedge required? must be 'Yes' or 'No', found '{wedge_value}'")
+            )
 
     if feature_rows < MINIMUM_FEATURE_ROWS:
         violations.append(

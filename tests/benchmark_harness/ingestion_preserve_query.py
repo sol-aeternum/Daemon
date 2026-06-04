@@ -7,6 +7,7 @@ Scope: tests/ only. No production code changes.
 Run after ingestion completes:
     PYTHONPATH=. python tests/benchmark_harness/ingestion_preserve_query.py <run_dir>
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -21,18 +22,21 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import dotenv
+import dotenv  # noqa: E402
+
 dotenv.load_dotenv()
 
 
 def canonicalize_facts_for_hash(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized = []
     for f in facts:
-        normalized.append({
-            "content": f.get("content", "").strip(),
-            "category": f.get("category", "").strip(),
-            "slot": f.get("slot"),
-        })
+        normalized.append(
+            {
+                "content": f.get("content", "").strip(),
+                "category": f.get("category", "").strip(),
+                "slot": f.get("slot"),
+            }
+        )
     normalized.sort(key=lambda x: (x["content"], x["category"], str(x["slot"])))
     return normalized
 
@@ -66,6 +70,7 @@ async def query_preservation_data(pool, test_user_id, encryption) -> tuple[list,
     )
 
     from orchestrator.memory.extraction import get_benchmark_tracking
+
     tracking = get_benchmark_tracking()
     ext_tracking = tracking.get("extraction", {})
 
@@ -82,7 +87,9 @@ async def write_preservation_artifacts(run_dir: Path):
     encryption = ContentEncryption(settings.daemon_encryption_key)
     test_user_id = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
-    extraction_rows, memory_rows, ext_tracking = await query_preservation_data(pool, test_user_id, encryption)
+    extraction_rows, memory_rows, ext_tracking = await query_preservation_data(
+        pool, test_user_id, encryption
+    )
     await pool.close()
 
     extraction_log_path = run_dir / "extraction_log.jsonl"
@@ -117,7 +124,9 @@ async def write_preservation_artifacts(run_dir: Path):
                 "slot": row["slot"],
                 "confidence": row["confidence"],
                 "status": row["status"],
-                "source_conversation_id": str(row["source_conversation_id"]) if row["source_conversation_id"] else None,
+                "source_conversation_id": str(row["source_conversation_id"])
+                if row["source_conversation_id"]
+                else None,
                 "created_at": row["created_at"].isoformat() if row["created_at"] else None,
             }
             f.write(json.dumps(entry) + "\n")
@@ -139,7 +148,9 @@ async def write_preservation_artifacts(run_dir: Path):
         "schema_version": 1,
         "generated_at": datetime.now(UTC).isoformat(),
         "total_extraction_calls": len(extraction_rows),
-        "unique_fingerprints": list(set(ext_tracking.get("fingerprint") for _ in [1] if ext_tracking.get("fingerprint"))),
+        "unique_fingerprints": list(
+            set(ext_tracking.get("fingerprint") for _ in [1] if ext_tracking.get("fingerprint"))
+        ),
         "observed_fingerprint": ext_tracking.get("fingerprint"),
         "observed_model": ext_tracking.get("model"),
         "extraction_tracking": dict(ext_tracking),

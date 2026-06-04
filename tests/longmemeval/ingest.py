@@ -32,7 +32,9 @@ from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.extraction import process_extraction
 from orchestrator.memory.store import MemoryStore
 
-DATASET_URL = "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s.json"
+DATASET_URL = (
+    "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s.json"
+)
 DATASET_PATH = Path("/tmp/longmemeval-review/data/longmemeval_s.json")
 TEST_USER_NAME = "longmemeval_test_user"
 TEST_USER_EMAIL = "longmemeval@daemon.test"
@@ -176,9 +178,7 @@ async def ensure_dataset() -> list[dict[str, Any]]:
 async def create_test_user(pool: asyncpg.Pool) -> uuid.UUID:
     """Create or get the dedicated test user for benchmark isolation."""
     async with pool.acquire() as conn:
-        existing = await conn.fetchrow(
-            "SELECT id FROM users WHERE email = $1", TEST_USER_EMAIL
-        )
+        existing = await conn.fetchrow("SELECT id FROM users WHERE email = $1", TEST_USER_EMAIL)
         if existing:
             user_id = existing["id"]
             logger.info(f"Using existing test user: {user_id}")
@@ -203,7 +203,7 @@ async def cleanup_test_user(pool: asyncpg.Pool) -> None:
     """Remove test user and all associated data."""
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM users WHERE email = $1", TEST_USER_EMAIL)
-        logger.info(f"Cleaned up test user and associated data")
+        logger.info("Cleaned up test user and associated data")
 
 
 async def poll_extraction_complete(
@@ -227,9 +227,7 @@ async def poll_extraction_complete(
                 conversation_id,
             )
             if row is not None:
-                facts_count = (
-                    len(row["extracted_facts"]) if row["extracted_facts"] else 0
-                )
+                facts_count = len(row["extracted_facts"]) if row["extracted_facts"] else 0
                 logger.info(
                     f"Extraction complete for conversation {conversation_id}: "
                     f"{facts_count} facts extracted"
@@ -243,8 +241,7 @@ async def poll_extraction_complete(
         await asyncio.sleep(poll_interval)
 
     logger.warning(
-        f"Extraction polling timed out for conversation {conversation_id} "
-        f"after {max_wait_seconds}s"
+        f"Extraction polling timed out for conversation {conversation_id} after {max_wait_seconds}s"
     )
     return False
 
@@ -285,9 +282,7 @@ async def ingest_session(
                 },
             )
         except Exception as e:
-            logger.warning(
-                f"Failed to insert message {msg_idx} in session {session_id}: {e}"
-            )
+            logger.warning(f"Failed to insert message {msg_idx} in session {session_id}: {e}")
 
     extraction_text = "\n".join(
         f"[{'user' if m.get('role') == 'user' else 'assistant'}]: {m.get('content', '')}"

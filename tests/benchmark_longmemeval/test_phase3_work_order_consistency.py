@@ -91,14 +91,10 @@ def test_phase3_work_order_consistency() -> None:
     assert guardrails["inactive_literal_max_returned_memories"] is True
 
     ordered = _items(summary, "ordered_candidates")
-    assert [
-        _as_int(item["rank"]) for item in ordered
-    ] == list(range(1, len(ordered) + 1))
+    assert [_as_int(item["rank"]) for item in ordered] == list(range(1, len(ordered) + 1))
 
     approved = [item for item in ordered if item["status"] == "approved"]
-    assert [
-        _as_int(item["rank"]) for item in approved
-    ] == [1, 2, 3, 4, 5]
+    assert [_as_int(item["rank"]) for item in approved] == [1, 2, 3, 4, 5]
     assert {str(item["name"]) for item in approved} == {
         "top_k_memories_sweep",
         "min_final_score_sweep",
@@ -177,10 +173,18 @@ def test_phase3_work_order_consistency() -> None:
     assert abstention_reference["category"] == "abstention"
     assert _as_int(abstention_reference["count"]) == category_counts["abstention"] == 2
     abstention_secondary = cast(JSONDict, abstention_reference["secondary_cell"])
-    assert _as_int(abstention_secondary["count"]) == cell_counts[("generation-error", "temporal-reasoning")] == 3
+    assert (
+        _as_int(abstention_secondary["count"])
+        == cell_counts[("generation-error", "temporal-reasoning")]
+        == 3
+    )
 
     extraction = _named(coverage_vetoes, "extraction_miss_only_retrieval_or_dedup_sweeps")
     extraction_reference = cast(JSONDict, extraction["coverage_reference"])
     assert extraction["status"] == "blocked_insufficient_target_cell"
     assert extraction_reference["type"] == "target_failure_cell"
-    assert _as_int(extraction_reference["count"]) == cell_counts[("extraction-miss", "single-session-assistant")] == 4
+    assert (
+        _as_int(extraction_reference["count"])
+        == cell_counts[("extraction-miss", "single-session-assistant")]
+        == 4
+    )

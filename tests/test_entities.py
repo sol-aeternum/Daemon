@@ -282,12 +282,9 @@ class TestBatchConfirmMerges:
             batch_confirm_merges,
             CandidateMention,
             EntityResolution,
-            confirm_merge_llm,
         )
 
-        mention = CandidateMention(
-            text="Alice", normalized_key="alice", context="My friend Alice"
-        )
+        mention = CandidateMention(text="Alice", normalized_key="alice", context="My friend Alice")
         resolution = EntityResolution(
             mention=mention,
             merge_decision="ambiguous",
@@ -312,9 +309,7 @@ class TestBatchConfirmMerges:
             EntityResolution,
         )
 
-        mention = CandidateMention(
-            text="Bob", normalized_key="bob", context="A different Bob"
-        )
+        mention = CandidateMention(text="Bob", normalized_key="bob", context="A different Bob")
         resolution = EntityResolution(
             mention=mention,
             merge_decision="ambiguous",
@@ -367,7 +362,6 @@ class TestNoFalseMergeBehavior:
     async def test_no_spacy_still_extracts(self) -> None:
         from orchestrator.memory.entities import (
             extract_entity_candidates,
-            _is_spacy_available,
         )
 
         # Even without spaCy, baseline extraction should work

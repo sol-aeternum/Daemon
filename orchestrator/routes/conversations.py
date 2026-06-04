@@ -6,11 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 import uuid
 
+from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.db import get_app_state, AppState
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
-
-DEFAULT_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
 class MessageOut(BaseModel):
@@ -101,22 +100,15 @@ class ConversationCreate(BaseModel):
 async def create_conversation(
     conversation: ConversationCreate,
     app_state: AppState = Depends(get_app_state),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
     """Create a new conversation."""
     store = app_state.memory_store
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
 
-    # Use payload user_id if provided (for benchmark isolation), otherwise default
-    user_id = DEFAULT_USER_ID
-    if conversation.user_id:
-        try:
-            user_id = uuid.UUID(conversation.user_id.replace("user_", ""))
-        except ValueError:
-            user_id = DEFAULT_USER_ID
-
     new_conv = await store.create_conversation(
-        user_id=user_id,
+        user_id=auth.user_id,
         title=conversation.title or "New conversation",
         pipeline="cloud",
     )
@@ -130,13 +122,14 @@ async def list_conversations(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     app_state: AppState = Depends(get_app_state),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
     """List conversations with pagination."""
     store = app_state.memory_store
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
     conversations = await store.list_conversations(
-        user_id=DEFAULT_USER_ID,
+        user_id=auth.user_id,
         limit=limit,
         offset=offset,
         search=search,
@@ -151,6 +144,7 @@ async def get_conversation(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     app_state: AppState = Depends(get_app_state),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
     """Get conversation with messages."""
     store = app_state.memory_store
@@ -158,6 +152,8 @@ async def get_conversation(
         raise HTTPException(status_code=503, detail="Memory store unavailable")
     conversation = await store.get_conversation(conversation_id)
     if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if conversation.get("user_id") != auth.user_id:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     messages = await store.get_messages(conversation_id, limit=limit, offset=offset)
@@ -171,11 +167,15 @@ async def update_conversation(
     conversation_id: uuid.UUID,
     update: ConversationUpdate,
     app_state: AppState = Depends(get_app_state),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
     """Update conversation fields."""
     store = app_state.memory_store
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
+    existing = await store.get_conversation(conversation_id)
+    if not existing or existing.get("user_id") != auth.user_id:
+        raise HTTPException(status_code=404, detail="Conversation not found")
     updated = await store.update_conversation(
         conversation_id,
         title=update.title,
@@ -191,11 +191,15 @@ async def update_conversation(
 async def delete_conversation(
     conversation_id: uuid.UUID,
     app_state: AppState = Depends(get_app_state),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
     """Delete conversation."""
     store = app_state.memory_store
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
+    existing = await store.get_conversation(conversation_id)
+    if not existing or existing.get("user_id") != auth.user_id:
+        raise HTTPException(status_code=404, detail="Conversation not found")
     deleted = await store.delete_conversation(conversation_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Conversation not found")

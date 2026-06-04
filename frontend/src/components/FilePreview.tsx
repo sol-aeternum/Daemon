@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { Loader2, AlertCircle, FileWarning } from "lucide-react";
 import { CsvPreview, HtmlPreview, PdfPreview, DocxPreview } from "@/src/components/previews";
 import MarkdownRenderer from "@/src/components/MarkdownRenderer";
+import { ensureAuthHeader } from "@/lib/auth";
+import { getProtectedMediaUrl } from "@/hooks/useAuthenticatedImageUrl";
 
 interface FilePreviewProps {
   fileUrl: string;
@@ -54,11 +56,13 @@ export function FilePreview({ fileUrl, filename, format, fileSize }: FilePreview
   const fetchContent = useCallback(async () => {
     if (hasLoaded || !isSupportedFormat || isTooLarge) return;
 
-    const fetchWithTimeout = async (url: string): Promise<Response> => {
+    const fetchWithTimeout = async (url: string, headers?: Record<string, string>): Promise<Response> => {
       const controller = new AbortController();
       const timeoutId = window.setTimeout(() => controller.abort(), PREVIEW_FETCH_TIMEOUT_MS);
       try {
-        return await fetch(url, { signal: controller.signal });
+        const opts: RequestInit = { signal: controller.signal };
+        if (headers) opts.headers = headers;
+        return await fetch(url, opts);
       } finally {
         window.clearTimeout(timeoutId);
       }
@@ -67,18 +71,39 @@ export function FilePreview({ fileUrl, filename, format, fileSize }: FilePreview
     setIsLoading(true);
     setError(null);
 
+    const getFetchParams = async (fileUrl: string): Promise<{ url: string; headers?: Record<string, string> }> => {
+      const protectedUrl = getProtectedMediaUrl(fileUrl);
+      if (protectedUrl) {
+        const authHeader = await ensureAuthHeader();
+        const headers: Record<string, string> = {};
+        if (authHeader) headers["Authorization"] = authHeader;
+        return { url: protectedUrl, headers };
+      }
+      return { url: fileUrl };
+    };
+
     try {
-      // PDF doesn't need content fetching - just pass URL
       if (normalizedFormat === "pdf") {
-        setContent({ type: "url", content: fileUrl });
+        const { url: fetchUrl, headers: fetchHeaders } = await getFetchParams(fileUrl);
+        if (fetchHeaders) {
+          const response = await fetchWithTimeout(fetchUrl, fetchHeaders);
+          if (!response.ok) {
+            throw new Error(`Failed to fetch file: ${response.status} ${response.statusText}`);
+          }
+          const blob = await response.blob();
+          const blobUrl = URL.createObjectURL(blob);
+          setContent({ type: "url", content: blobUrl });
+        } else {
+          setContent({ type: "url", content: fetchUrl });
+        }
         setHasLoaded(true);
         setIsLoading(false);
         return;
       }
 
-      // DOCX needs ArrayBuffer
       if (normalizedFormat === "docx") {
-        const response = await fetchWithTimeout(fileUrl);
+        const { url: fetchUrl, headers: fetchHeaders } = await getFetchParams(fileUrl);
+        const response = await fetchWithTimeout(fetchUrl, fetchHeaders);
         if (!response.ok) {
           throw new Error(`Failed to fetch file: ${response.status} ${response.statusText}`);
         }
@@ -89,8 +114,8 @@ export function FilePreview({ fileUrl, filename, format, fileSize }: FilePreview
         return;
       }
 
-      // CSV, MD, HTML need text
-      const response = await fetchWithTimeout(fileUrl);
+      const { url: fetchUrl, headers: fetchHeaders } = await getFetchParams(fileUrl);
+      const response = await fetchWithTimeout(fetchUrl, fetchHeaders);
       if (!response.ok) {
         throw new Error(`Failed to fetch file: ${response.status} ${response.statusText}`);
       }

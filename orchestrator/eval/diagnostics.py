@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Final, final
+from typing import Any, final
 
 import asyncpg
 
@@ -123,9 +123,7 @@ async def fetch_retrieval_log_for_query(
         return None
 
     row = rows[0]
-    candidate_ids = [
-        uuid.UUID(id_str) for id_str in (row["candidate_memory_ids"] or [])
-    ]
+    candidate_ids = [uuid.UUID(id_str) for id_str in (row["candidate_memory_ids"] or [])]
     selected_ids = [uuid.UUID(id_str) for id_str in (row["selected_memory_ids"] or [])]
     candidate_scores = row["candidate_scores"] or {}
 
@@ -164,12 +162,8 @@ async def fetch_retrieval_logs_by_fuzzy_match(
         query_lower = (row["query_text"] or "").lower()
         ratio = SequenceMatcher(None, question_lower, query_lower).ratio()
         if ratio >= threshold:
-            candidate_ids = [
-                uuid.UUID(id_str) for id_str in (row["candidate_memory_ids"] or [])
-            ]
-            selected_ids = [
-                uuid.UUID(id_str) for id_str in (row["selected_memory_ids"] or [])
-            ]
+            candidate_ids = [uuid.UUID(id_str) for id_str in (row["candidate_memory_ids"] or [])]
+            selected_ids = [uuid.UUID(id_str) for id_str in (row["selected_memory_ids"] or [])]
             candidate_scores = row["candidate_scores"] or {}
             results.append(
                 (
@@ -206,9 +200,7 @@ async def find_supporting_memories(
     try:
         ref_embedding = await embed_query(reference)
     except Exception:
-        logger.warning(
-            "[diagnostics] Failed to embed reference '%s...'", reference[:30]
-        )
+        logger.warning("[diagnostics] Failed to embed reference '%s...'", reference[:30])
         return SupportingMemoryInfo(
             found=False, memory_ids=[], in_candidates=False, in_selected=False
         )
@@ -282,7 +274,7 @@ def classify_failure(
     if judgment == "correct":
         return ("", "")
 
-    memories_used = result.get("memories_used", 0)
+    memories_used = result.get("memories_used", 0)  # noqa: F841
 
     if evidence is None:
         if not supporting.found:
@@ -421,11 +413,7 @@ def build_human_readable_report(
     mode_counts = summary["failure_mode_counts"]
     for mode in FAILURE_MODES:
         count = mode_counts.get(mode, 0)
-        pct = (
-            (count / summary["total_questions"] * 100)
-            if summary["total_questions"] > 0
-            else 0
-        )
+        pct = (count / summary["total_questions"] * 100) if summary["total_questions"] > 0 else 0
         lines.append(f"- **{mode}**: {count} ({pct:.1f}%)")
 
     lines.extend(["", "## Per-Category Breakdown", ""])
@@ -479,9 +467,7 @@ def compute_category_breakdown(
         if r.category not in breakdown:
             breakdown[r.category] = {m: 0 for m in FAILURE_MODES}
         if r.failure_mode:
-            breakdown[r.category][r.failure_mode] = (
-                breakdown[r.category].get(r.failure_mode, 0) + 1
-            )
+            breakdown[r.category][r.failure_mode] = breakdown[r.category].get(r.failure_mode, 0) + 1
     return breakdown
 
 
@@ -545,9 +531,7 @@ async def run_diagnostics(
             )
 
             if judgment != "correct":
-                evidence = await fetch_retrieval_log_for_query(
-                    store, question_text, user_id
-                )
+                evidence = await fetch_retrieval_log_for_query(store, question_text, user_id)
                 if evidence is None and use_fuzzy_match:
                     fuzzy_matches = await fetch_retrieval_logs_by_fuzzy_match(
                         store, question_text, user_id
@@ -561,12 +545,8 @@ async def run_diagnostics(
                         )
 
                 if reference:
-                    raw_supporting = await find_supporting_memories(
-                        store, reference, user_id
-                    )
-                    supporting = merge_supporting_memory_into_evidence(
-                        evidence, raw_supporting
-                    )
+                    raw_supporting = await find_supporting_memories(store, reference, user_id)
+                    supporting = merge_supporting_memory_into_evidence(evidence, raw_supporting)
 
             failure_mode, note = classify_failure(result, evidence, supporting)
 
@@ -611,14 +591,10 @@ async def run_diagnostics(
     print("\nFailure mode breakdown:")
     for mode in FAILURE_MODES:
         count = summary["failure_mode_counts"].get(mode, 0)
-        pct = (
-            (count / summary["total_questions"] * 100)
-            if summary["total_questions"] > 0
-            else 0
-        )
+        pct = (count / summary["total_questions"] * 100) if summary["total_questions"] > 0 else 0
         print(f"  {mode}: {count} ({pct:.1f}%)")
 
-    print(f"\nOutputs:")
+    print("\nOutputs:")
     print(f"  {summary_path}")
     print(f"  {report_path}")
 

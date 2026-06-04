@@ -24,9 +24,7 @@ async def test_embed_query_uses_query_model_and_input_type():
         new_callable=AsyncMock,
         return_value=mock_response,
     ) as mock_post:
-        with patch(
-            "orchestrator.memory.embedding.get_settings", return_value=mock_settings
-        ):
+        with patch("orchestrator.memory.embedding.get_settings", return_value=mock_settings):
             with patch(
                 "orchestrator.memory.embedding._get_voyage_api_key",
                 return_value="test-key",
@@ -60,9 +58,7 @@ async def test_embed_documents_uses_document_model_and_input_type():
         new_callable=AsyncMock,
         return_value=mock_response,
     ) as mock_post:
-        with patch(
-            "orchestrator.memory.embedding.get_settings", return_value=mock_settings
-        ):
+        with patch("orchestrator.memory.embedding.get_settings", return_value=mock_settings):
             with patch(
                 "orchestrator.memory.embedding._get_voyage_api_key",
                 return_value="test-key",

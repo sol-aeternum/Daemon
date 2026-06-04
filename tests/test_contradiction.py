@@ -28,9 +28,7 @@ class MockLitellmResponse:
 @pytest.mark.asyncio
 async def test_check_contradiction_yes() -> None:
     with patch("orchestrator.memory.dedup.litellm.acompletion") as mock:
-        mock.return_value = MockLitellmResponse(
-            "YES. Fact B states the opposite of Fact A."
-        )
+        mock.return_value = MockLitellmResponse("YES. Fact B states the opposite of Fact A.")
         contradiction, explanation = await check_contradiction(
             "User drives a Tesla",
             "User does not drive a Tesla",
@@ -42,9 +40,7 @@ async def test_check_contradiction_yes() -> None:
 @pytest.mark.asyncio
 async def test_check_contradiction_no() -> None:
     with patch("orchestrator.memory.dedup.litellm.acompletion") as mock:
-        mock.return_value = MockLitellmResponse(
-            "NO. Both facts can be true simultaneously."
-        )
+        mock.return_value = MockLitellmResponse("NO. Both facts can be true simultaneously.")
         contradiction, explanation = await check_contradiction(
             "User drives a Tesla",
             "User owns a Tesla",
@@ -87,15 +83,11 @@ async def test_dedup_supersession_with_contradiction() -> None:
     }
 
     with (
-        patch(
-            "orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock
-        ) as embed,
+        patch("orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock) as embed,
         patch("orchestrator.memory.dedup.litellm.acompletion") as litellm_mock,
     ):
         embed.return_value = [[0.01, 0.02]]
-        litellm_mock.return_value = MockLitellmResponse(
-            "YES. Fact B directly contradicts Fact A."
-        )
+        litellm_mock.return_value = MockLitellmResponse("YES. Fact B directly contradicts Fact A.")
         result = await deduplicate_facts(
             store,
             uuid.uuid4(),
@@ -211,15 +203,11 @@ async def test_dedup_supersession_retries_without_metadata_column() -> None:
     ]
 
     with (
-        patch(
-            "orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock
-        ) as embed,
+        patch("orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock) as embed,
         patch("orchestrator.memory.dedup.litellm.acompletion") as litellm_mock,
     ):
         embed.return_value = [[0.01, 0.02]]
-        litellm_mock.return_value = MockLitellmResponse(
-            "YES. Fact B directly contradicts Fact A."
-        )
+        litellm_mock.return_value = MockLitellmResponse("YES. Fact B directly contradicts Fact A.")
         result = await deduplicate_facts(
             store,
             uuid.uuid4(),
@@ -257,9 +245,7 @@ async def test_dedup_supersession_proceeds_on_llm_failure() -> None:
     }
 
     with (
-        patch(
-            "orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock
-        ) as embed,
+        patch("orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock) as embed,
         patch("orchestrator.memory.dedup.litellm.acompletion") as litellm_mock,
     ):
         embed.return_value = [[0.01, 0.02]]

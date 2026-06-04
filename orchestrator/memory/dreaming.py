@@ -55,9 +55,7 @@ def _extract_json_object(raw_text: str) -> str:
     if not cleaned:
         return ""
     if cleaned.startswith("```"):
-        lines = [
-            line for line in cleaned.splitlines() if not line.strip().startswith("```")
-        ]
+        lines = [line for line in cleaned.splitlines() if not line.strip().startswith("```")]
         cleaned = "\n".join(lines).strip()
     start = cleaned.find("{")
     end = cleaned.rfind("}")
@@ -114,9 +112,7 @@ def _extract_content(response: Any) -> str:
             return content
         if isinstance(first_choice, dict):
             message_dict = first_choice.get("message")
-            if isinstance(message_dict, dict) and isinstance(
-                message_dict.get("content"), str
-            ):
+            if isinstance(message_dict, dict) and isinstance(message_dict.get("content"), str):
                 return message_dict["content"]
 
     for method_name in ("model_dump", "dict"):
@@ -245,10 +241,7 @@ async def dream_on_cluster(memories: list[dict[str, Any]]) -> list[dict[str, Any
 
     settings = get_settings()
     provider_config = settings.get_provider_config("openrouter")
-    prompt = (
-        f"{DREAM_SYNTHESIS_PROMPT}\n\n"
-        f"Source memories:\n{_format_cluster_memories(memories)}"
-    )
+    prompt = f"{DREAM_SYNTHESIS_PROMPT}\n\nSource memories:\n{_format_cluster_memories(memories)}"
 
     call_params: dict[str, Any] = {
         "model": settings.background_reasoning_model,
@@ -338,9 +331,7 @@ async def run_dreaming(
             latest_memory_at = max(
                 (
                     timestamp
-                    for timestamp in (
-                        _coerce_datetime(m.get("created_at")) for m in members
-                    )
+                    for timestamp in (_coerce_datetime(m.get("created_at")) for m in members)
                     if timestamp is not None
                 ),
                 default=None,
@@ -390,9 +381,7 @@ async def run_dreaming(
                     skipped_families.append(family)
                     continue
 
-                observation_texts = [
-                    str(observation["content"]) for observation in observations
-                ]
+                observation_texts = [str(observation["content"]) for observation in observations]
                 embeddings = await embed_documents(observation_texts)
 
                 for observation_payload, embedding in zip(observations, embeddings):
@@ -458,16 +447,12 @@ async def run_dreaming(
             "observations_created": len(created_memory_ids),
             "eligible_families": eligible_families,
             "skipped_families": skipped_families,
-            "observation_memory_ids": [
-                str(memory_id) for memory_id in created_memory_ids
-            ],
+            "observation_memory_ids": [str(memory_id) for memory_id in created_memory_ids],
             "errors": family_errors,
             "dream_run_id": str(dream_run["id"]),
         }
     except Exception as error:
-        logger.warning(
-            "Dream run failed for user %s: %s", user_id, error, exc_info=True
-        )
+        logger.warning("Dream run failed for user %s: %s", user_id, error, exc_info=True)
         try:
             dream_run = await active_store.log_dream_run(
                 user_id=user_id,

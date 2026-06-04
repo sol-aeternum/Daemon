@@ -19,7 +19,6 @@ Scope: tests/ only. No production code changes.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import subprocess
@@ -103,7 +102,9 @@ print(f"[patched] orchestrator.memory.dedup.check_contradiction -> catches Dedup
 # Recovery ingest — NO reset, uses filtered dataset + amended checkpoint
 # ---------------------------------------------------------------------------
 
-RECOVERY_INGEST_CODE = PATCH_CODE + """
+RECOVERY_INGEST_CODE = (
+    PATCH_CODE
+    + """
 import asyncio, sys, json
 sys.path.insert(0, '{}')
 from orchestrator.eval.runner import LongMemEvalRunner
@@ -123,11 +124,17 @@ runner = LongMemEvalRunner(
 
 asyncio.run(runner.ingest())
 print("RECOVERY_INGEST_OK")
-""".format(str(PROJECT_ROOT), str(RECOVERY_DIR), str(RECOVERY_DIR / "longmemeval_filtered_dataset.json"))
+""".format(
+        str(PROJECT_ROOT),
+        str(RECOVERY_DIR),
+        str(RECOVERY_DIR / "longmemeval_filtered_dataset.json"),
+    )
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def load_json(path: Path) -> dict[str, Any]:
     with open(path) as f:
@@ -156,7 +163,7 @@ def build_filtered_dataset(
     if any of its haystack_sessions has a corpus_key in error_corpus_keys.
     Within each included question, we include only the matching sessions.
     """
-    from tests.longmemeval.ingest import build_corpus_key, normalize_session_messages
+    from tests.longmemeval.ingest import build_corpus_key
 
     filtered: list[dict[str, Any]] = []
     for item in original_dataset:
@@ -197,6 +204,7 @@ def build_amended_checkpoint(
     their corpus_keys will be absent from the checkpoint results.
     """
     import copy
+
     amended = copy.deepcopy(baseline_checkpoint)
     results = amended["phases"]["ingest"]["results"]
     for ck in error_corpus_keys:
@@ -218,6 +226,7 @@ def merge_checkpoints(
     Recovery rows replace any baseline rows for the same corpus_key.
     """
     import copy
+
     merged = copy.deepcopy(baseline_checkpoint)
     baseline_results = baseline_checkpoint.get("phases", {}).get("ingest", {}).get("results", {})
     recovery_results = recovery_checkpoint.get("phases", {}).get("ingest", {}).get("results", {})
@@ -236,6 +245,7 @@ def merge_checkpoints(
 def summarize(checkpoint: dict[str, Any]) -> dict[str, Any]:
     """Summarize checkpoint outcomes using canonical status→outcome mapping."""
     from tests.benchmark_harness.guardrails import _canonical_outcome
+
     results = checkpoint.get("phases", {}).get("ingest", {}).get("results", {})
     outcome_counts: dict[str, int] = {"completed": 0, "errored": 0, "empty": 0, "unknown": 0}
     status_counts: dict[str, int] = {"complete": 0, "extraction_failed": 0, "error": 0}
@@ -286,8 +296,8 @@ def write_report(
     status = summary.get("status_counts", {})
     report = f"""# Wave 0 — Full-Corpus Recovery Report
 
-**Generated:** {datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ')}
-**Status:** {'RECOVERY COMPLETE' if summary['errored_rate'] <= 5 else 'RECOVERY COMPLETE — G3 STILL FAILING'}
+**Generated:** {datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")}
+**Status:** {"RECOVERY COMPLETE" if summary["errored_rate"] <= 5 else "RECOVERY COMPLETE — G3 STILL FAILING"}
 **Harness:** `tests/benchmark_harness/ingestion_rerun_recovery.py`
 
 ---
@@ -300,38 +310,38 @@ def write_report(
 | Error sessions (status="error") | 7,298 |
 | Sessions preserved from baseline | ~11,177 (complete + extraction_failed) |
 | Recovery sessions processed | 7,298 |
-| Total sessions (merged) | {summary['total_sessions']} |
-| Errored (corrected) | {summary['errored_rate']:.1f}% |
+| Total sessions (merged) | {summary["total_sessions"]} |
+| Errored (corrected) | {summary["errored_rate"]:.1f}% |
 | Wall time | {elapsed:.0f}s |
 
 ## Outcome Counts (canonical mapping applied)
 
 | Outcome | Count |
 |---|---|
-| completed | {outcome.get('completed', 0)} |
-| errored | {outcome.get('errored', 0)} |
-| empty | {outcome.get('empty', 0)} |
+| completed | {outcome.get("completed", 0)} |
+| errored | {outcome.get("errored", 0)} |
+| empty | {outcome.get("empty", 0)} |
 
 ## Status Counts (checkpoint status field)
 
 | Status | Count |
 |---|---|
-| complete | {status.get('complete', 0)} |
-| extraction_failed | {status.get('extraction_failed', 0)} |
-| error | {status.get('error', 0)} |
+| complete | {status.get("complete", 0)} |
+| extraction_failed | {status.get("extraction_failed", 0)} |
+| error | {status.get("error", 0)} |
 
 ## G3 Guardrail (Errored Floor ≤ 5%)
 
 | Result | Value |
 |---|---|
-| Errored rate | {summary['errored_rate']:.1f}% |
+| Errored rate | {summary["errored_rate"]:.1f}% |
 | Threshold | 5.0% |
-| Verdict | {'PASS' if summary['errored_rate'] <= 5 else 'FAIL'} |
+| Verdict | {"PASS" if summary["errored_rate"] <= 5 else "FAIL"} |
 
 ## Sample Errors
 
 ```
-{chr(10).join(summary['sample_errors']) if summary['sample_errors'] else 'None'}
+{chr(10).join(summary["sample_errors"]) if summary["sample_errors"] else "None"}
 ```
 
 ---
@@ -348,6 +358,7 @@ def write_report(
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> int:
     print("=" * 60)
@@ -386,20 +397,24 @@ def main() -> int:
     filtered_dataset = build_filtered_dataset(original_dataset, error_corpus_keys)
     filtered_dataset_path = RECOVERY_DIR / "longmemeval_filtered_dataset.json"
     save_json(filtered_dataset_path, filtered_dataset)
-    print(f"[RECOVERY]   Filtered dataset: {len(filtered_dataset)} questions, "
-          f"saved to {filtered_dataset_path}")
+    print(
+        f"[RECOVERY]   Filtered dataset: {len(filtered_dataset)} questions, "
+        f"saved to {filtered_dataset_path}"
+    )
 
     # Count total sessions in filtered dataset
-    total_filtered_sessions = sum(
-        len(item["haystack_sessions"]) for item in filtered_dataset
-    )
+    total_filtered_sessions = sum(len(item["haystack_sessions"]) for item in filtered_dataset)
     print(f"[RECOVERY]   Filtered sessions (total): {total_filtered_sessions}")
 
-    amended_checkpoint = build_amended_checkpoint(baseline_checkpoint, error_corpus_keys, filtered_dataset_path)
+    amended_checkpoint = build_amended_checkpoint(
+        baseline_checkpoint, error_corpus_keys, filtered_dataset_path
+    )
     amended_checkpoint_path = RECOVERY_DIR / "longmemeval_checkpoint_amended.json"
     save_json(amended_checkpoint_path, amended_checkpoint)
-    print(f"[RECOVERY]   Amended checkpoint: {amended_checkpoint['phases']['ingest']['completed_count']} rows, "
-          f"saved to {amended_checkpoint_path}")
+    print(
+        f"[RECOVERY]   Amended checkpoint: {amended_checkpoint['phases']['ingest']['completed_count']} rows, "
+        f"saved to {amended_checkpoint_path}"
+    )
 
     # Copy amended checkpoint to where the runner expects it
     runner_checkpoint_path = RECOVERY_DIR / "longmemeval_checkpoint.json"
@@ -409,6 +424,7 @@ def main() -> int:
     # G1: provider health check
     try:
         from tests.benchmark_harness.guardrails import run_provider_health_check
+
         print("\n[RECOVERY] Running G1: provider health check...")
         run_provider_health_check(provider_slug="openai")
         print("[RECOVERY] G1: provider healthy — proceeding")
@@ -429,9 +445,17 @@ def main() -> int:
         recovery_checkpoint_path = RECOVERY_DIR / "longmemeval_checkpoint.json"
         if recovery_checkpoint_path.exists():
             recovery_ck = load_json(recovery_checkpoint_path)
-            summary = summarize(recovery_checkpoint := {
-                "phases": {"ingest": {"results": recovery_ck.get("phases", {}).get("ingest", {}).get("results", {})}}
-            })
+            summary = summarize(
+                recovery_checkpoint := {
+                    "phases": {
+                        "ingest": {
+                            "results": recovery_ck.get("phases", {})
+                            .get("ingest", {})
+                            .get("results", {})
+                        }
+                    }
+                }
+            )
             print(f"[RECOVERY] Partial summary: {summary}")
         return 1
 
@@ -445,7 +469,9 @@ def main() -> int:
     # Also write as the "final" checkpoint for the recovery run
     final_checkpoint_path = RECOVERY_DIR / "longmemeval_checkpoint.json"
     save_json(final_checkpoint_path, merged_checkpoint)
-    print(f"[RECOVERY]   Merged checkpoint: {merged_checkpoint['phases']['ingest']['completed_count']} rows")
+    print(
+        f"[RECOVERY]   Merged checkpoint: {merged_checkpoint['phases']['ingest']['completed_count']} rows"
+    )
 
     # Step 3: Verify
     print("\n[RECOVERY] STEP 3: Verifying merged checkpoint")

@@ -78,11 +78,7 @@ async def test_completion_with_tools_forces_synthesis_after_max_rounds(monkeypat
             }
 
         async def stream_synthesis_round():
-            yield {
-                "choices": [
-                    {"delta": {"content": "Here are the key findings from research. "}}
-                ]
-            }
+            yield {"choices": [{"delta": {"content": "Here are the key findings from research. "}}]}
             yield {
                 "choices": [
                     {
@@ -97,9 +93,7 @@ async def test_completion_with_tools_forces_synthesis_after_max_rounds(monkeypat
             return stream_synthesis_round()
         return stream_tool_round()
 
-    monkeypatch.setattr(
-        "orchestrator.tools.completion.litellm.acompletion", fake_acompletion
-    )
+    monkeypatch.setattr("orchestrator.tools.completion.litellm.acompletion", fake_acompletion)
 
     messages = [{"role": "user", "content": "Compare Galaxy S26 Ultra vs OnePlus 15"}]
     events = [
@@ -122,9 +116,7 @@ async def test_completion_with_tools_forces_synthesis_after_max_rounds(monkeypat
     assert event_types[-1] == "done"
 
     combined_content = "".join(
-        str(event.get("content", ""))
-        for event in events
-        if event.get("type") == "content_delta"
+        str(event.get("content", "")) for event in events if event.get("type") == "content_delta"
     )
     assert "Here are the key findings from research" in combined_content
     assert "Samsung leads on display and camera" in combined_content

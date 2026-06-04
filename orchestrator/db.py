@@ -22,6 +22,8 @@ class AppState:
     redis: ArqRedis | None = field(default=None)
     memory_store: MemoryStore | None = field(default=None)
     video_credits_dal: VideoCreditsDAL | None = field(default=None)
+    # First-boot setup token hash (process-local only, never persisted)
+    setup_token_hash: str | None = field(default=None)
 
 
 async def init_app_state(settings: Settings) -> AppState:
@@ -41,9 +43,7 @@ async def init_app_state(settings: Settings) -> AppState:
             )
             logger.info("PostgreSQL pool created")
         except Exception:
-            logger.warning(
-                "Failed to connect to PostgreSQL — running without DB", exc_info=True
-            )
+            logger.warning("Failed to connect to PostgreSQL — running without DB", exc_info=True)
     else:
         logger.info("DATABASE_URL not set — running without DB")
 
@@ -54,14 +54,10 @@ async def init_app_state(settings: Settings) -> AppState:
 
     if settings.redis_url:
         try:
-            state.redis = await arq_create_pool(
-                RedisSettings.from_dsn(settings.redis_url)
-            )
+            state.redis = await arq_create_pool(RedisSettings.from_dsn(settings.redis_url))
             logger.info("Redis connection created")
         except Exception:
-            logger.warning(
-                "Failed to connect to Redis — running without Redis", exc_info=True
-            )
+            logger.warning("Failed to connect to Redis — running without Redis", exc_info=True)
     else:
         logger.info("REDIS_URL not set — running without Redis")
 

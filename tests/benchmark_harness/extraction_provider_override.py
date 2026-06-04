@@ -35,7 +35,9 @@ if str(PROJECT_ROOT) not in sys.path:
 # causes OpenRouter to return 404 when used as provider.order entry.
 # The verified-working value is just the provider name "openai".
 _EXTRACTION_MODULE_PATH = "orchestrator.memory.extraction"
-_extraction_module = __import__(_EXTRACTION_MODULE_PATH, fromlist=["BENCHMARK_EXTRACTION_ENDPOINT_SLUG"])
+_extraction_module = __import__(
+    _EXTRACTION_MODULE_PATH, fromlist=["BENCHMARK_EXTRACTION_ENDPOINT_SLUG"]
+)
 
 # Save original for reference
 _original_slug = getattr(_extraction_module, "BENCHMARK_EXTRACTION_ENDPOINT_SLUG", None)
@@ -53,6 +55,7 @@ print("[D4 override] BENCHMARK_MODE=1 set in environment")
 # ------------------------------------------------------------------
 # SINGLE-CALL VERIFICATION PROBE
 # ------------------------------------------------------------------
+
 
 async def run_probe() -> bool:
     from orchestrator.memory.extraction import extract_facts_from_text
@@ -77,10 +80,12 @@ async def run_probe() -> bool:
             benchmark_mode=True,
         )
 
-        print(f"[D4 probe] ExtractionOutcome: raw={outcome.raw_count}, "
-              f"calibrated={outcome.calibrated_count}, "
-              f"validated={len(outcome.facts)}, "
-              f"rejected={outcome.rejected_count}")
+        print(
+            f"[D4 probe] ExtractionOutcome: raw={outcome.raw_count}, "
+            f"calibrated={outcome.calibrated_count}, "
+            f"validated={len(outcome.facts)}, "
+            f"rejected={outcome.rejected_count}"
+        )
 
         if outcome.facts:
             print("[D4 probe] Sample extracted facts:")

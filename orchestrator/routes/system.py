@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends
 
+from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.db import get_app_state, AppState
 from orchestrator.memory.embedding import _last_retry_at, _retry_count
 
@@ -9,7 +10,10 @@ router = APIRouter(prefix="/status", tags=["system"])
 
 
 @router.get("")
-async def get_status(app_state: AppState = Depends(get_app_state)):
+async def get_status(
+    app_state: AppState = Depends(get_app_state),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
+):
     """Get system status."""
     # Check DB health
     db_healthy = app_state.db_pool is not None

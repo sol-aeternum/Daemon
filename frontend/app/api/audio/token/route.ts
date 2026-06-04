@@ -4,24 +4,67 @@ const API_URLS = [
   process.env.DAEMON_INTERNAL_API_URL,
   process.env.NEXT_PUBLIC_API_URL,
   "http://backend:8000",
+  "http://localhost:8000",
 ].filter((url): url is string => Boolean(url));
+
+function buildProxyHeaders(req: Request): Headers {
+  const headers = new Headers();
+
+  const authHeader = req.headers.get("authorization");
+  if (authHeader) headers.set("Authorization", authHeader);
+
+  const cookie = req.headers.get("cookie");
+  if (cookie) headers.set("Cookie", cookie);
+
+  const origin = req.headers.get("origin");
+  if (origin) headers.set("Origin", origin);
+
+  const referer = req.headers.get("referer");
+  if (referer) headers.set("Referer", referer);
+
+  const secFetchSite = req.headers.get("sec-fetch-site");
+  if (secFetchSite) headers.set("Sec-Fetch-Site", secFetchSite);
+
+  const host = req.headers.get("host");
+  if (host) headers.set("Host", host);
+
+  const xForwardedHost = req.headers.get("x-forwarded-host");
+  if (xForwardedHost) headers.set("X-Forwarded-Host", xForwardedHost);
+
+  const xForwardedProto = req.headers.get("x-forwarded-proto");
+  if (xForwardedProto) headers.set("X-Forwarded-Proto", xForwardedProto);
+
+  return headers;
+}
+
+async function buildResponseWithCookies(res: Response): Promise<NextResponse> {
+  const data = await res.json();
+  const responseHeaders = new Headers();
+  responseHeaders.set("Content-Type", "application/json");
+
+  res.headers.forEach((value, key) => {
+    if (key.toLowerCase() === "set-cookie") {
+      responseHeaders.append("Set-Cookie", value);
+    }
+  });
+
+  return NextResponse.json(data, {
+    status: res.status,
+    headers: responseHeaders,
+  });
+}
 
 export async function GET(req: NextRequest) {
   try {
-    const authHeader = req.headers.get("authorization");
-    const authToken = authHeader?.replace(/^Bearer\s+/i, "").trim();
-    const authorization = authToken
-      ? `Bearer ${authToken}`
-      : `Bearer ${process.env.DAEMON_API_KEY || "sk-test"}`;
+    const proxyHeaders = buildProxyHeaders(req);
 
     let lastError: Error | null = null;
 
     for (const apiUrl of API_URLS) {
       try {
         const response = await fetch(`${apiUrl}/audio/token`, {
-          headers: {
-            Authorization: authorization,
-          },
+          headers: proxyHeaders,
+          credentials: "include",
         });
 
         if (!response.ok) {
@@ -32,8 +75,7 @@ export async function GET(req: NextRequest) {
           );
         }
 
-        const data = await response.json();
-        return NextResponse.json(data);
+        return await buildResponseWithCookies(response);
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
       }

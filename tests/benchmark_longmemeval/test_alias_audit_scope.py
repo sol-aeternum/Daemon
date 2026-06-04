@@ -99,9 +99,7 @@ def test_alias_audit_scope_full_fixture_alias_surfaces_stay_off_target() -> None
     fixture = _load_fixture()
 
     surface_qids = {
-        qid
-        for qid, item in fixture.items()
-        if _has_alias_like_surface(str(item["question"]))
+        qid for qid, item in fixture.items() if _has_alias_like_surface(str(item["question"]))
     }
 
     assert surface_qids == {

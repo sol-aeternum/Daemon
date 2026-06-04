@@ -51,16 +51,38 @@ class TierConfig(BaseSettings):
 
 
 class Settings(BaseSettings):
-    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
-        env_file=".env", extra="ignore"
-    )
+    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(env_file=".env", extra="ignore")
 
     env: str = "dev"
     log_level: str = "INFO"
 
-    # If set, the API requires `Authorization: Bearer <DAEMON_API_KEY>`.
-    daemon_api_key: str | None = None
     daemon_admin_api_key: str | None = None
+
+    # Auth environment: "production" or "development".
+    # Production requires strong pepper and rejects insecure cookies.
+    daemon_environment: str = Field(default="production")
+
+    # Auth pepper for enrollment code HMAC verification.
+    # Production: must be ≥32 random bytes (≥43 base64url chars). Missing/weak = fails startup.
+    # Development: if absent, a process-ephemeral pepper is generated with a warning.
+    daemon_auth_pepper: str | None = None
+
+    # Comma-separated list of allowed CORS origins. Default denies all cross-origin.
+    daemon_allowed_origins: str = ""
+
+    # Public origin for CSRF origin validation (e.g., "https://app.daemon.ai").
+    daemon_public_origin: str | None = None
+
+    # Whether to set Secure flag on auth cookies.
+    # Production: must be true (rejected if false).
+    # Development: may be false when daemon_environment=development.
+    daemon_cookie_secure: bool = True
+
+    # Session cleanup: grace period in days after expiry/revocation before deletion.
+    daemon_session_cleanup_grace_days: int = 7
+
+    # Session cleanup: interval in seconds between cleanup task runs.
+    daemon_session_cleanup_interval_seconds: int = 86400
 
     # Default provider to use when none specified in request
     default_provider: str = "openrouter"
@@ -347,9 +369,7 @@ class Settings(BaseSettings):
 
         return TierConfig(
             orchestrator=get_slot_config("orchestrator")
-            or ModelSlotConfig(
-                model="openrouter/moonshotai/kimi-k2.5", temperature=0.7
-            ),
+            or ModelSlotConfig(model="openrouter/moonshotai/kimi-k2.5", temperature=0.7),
             research_agent=get_slot_config("research"),
             code_agent=get_slot_config("code"),
             image_agent=get_slot_config("image"),
@@ -399,9 +419,7 @@ class Settings(BaseSettings):
                 api_key=getattr(self, f"{prefix.lower()}api_key", None),
                 model=getattr(self, f"{prefix.lower()}model", ""),
                 requires_auth=getattr(self, f"{prefix.lower()}requires_auth", True),
-                timeout_s=getattr(
-                    self, f"{prefix.lower()}timeout_s", self.request_timeout_s
-                ),
+                timeout_s=getattr(self, f"{prefix.lower()}timeout_s", self.request_timeout_s),
             )
 
         return ProviderConfig(

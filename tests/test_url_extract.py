@@ -1,4 +1,3 @@
-import pytest
 from orchestrator.services.fetch.url_extract import extract_urls
 
 

@@ -83,9 +83,7 @@ if _worker_settings.consolidation_enabled:
                 minute=0,
             )
         )
-        logger.info(
-            f"Memory consolidation scheduled: daily at 2 AM UTC (interval={interval} days)"
-        )
+        logger.info(f"Memory consolidation scheduled: daily at 2 AM UTC (interval={interval} days)")
     elif interval == 7:
         # Weekly at 2 AM UTC on Sundays
         cron_jobs.append(
@@ -142,9 +140,7 @@ worker = Worker(
     functions=[
         func(extract_memories, max_tries=_worker_settings.retry_attempts),
         func(generate_title, max_tries=_worker_settings.retry_attempts),
-        func(
-            generate_conversation_title_job, max_tries=_worker_settings.retry_attempts
-        ),
+        func(generate_conversation_title_job, max_tries=_worker_settings.retry_attempts),
         func(generate_summary_job, max_tries=_worker_settings.retry_attempts),
         func(garbage_collect, max_tries=_worker_settings.retry_attempts),
         func(cleanup_generated_files, max_tries=_worker_settings.retry_attempts),

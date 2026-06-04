@@ -42,7 +42,8 @@ def test_taxonomy_complete_and_unique_assignments() -> None:
 def test_taxonomy_non_extraction_rows_have_complete_answer_support() -> None:
     failure_rows = load_failure_rows()
     entries_by_id = {
-        str(entry["question_id"]): entry for entry in build_taxonomy_entries(failure_rows=failure_rows)
+        str(entry["question_id"]): entry
+        for entry in build_taxonomy_entries(failure_rows=failure_rows)
     }
 
     for row in failure_rows:

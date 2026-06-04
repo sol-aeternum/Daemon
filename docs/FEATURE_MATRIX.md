@@ -78,6 +78,11 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Appearance Settings (Dark/Light/System theme) | Cross-client stable | Cross-client stable | Not started | Not started | Client theme settings (no backend) | No |
 | Enrollment & Profile Settings (display name, custom instructions) | Cross-client stable | Cross-client stable | Not started | Not started | GET /users/me/settings, PATCH /users/me/settings | Yes |
 | Memory Management Settings | Cross-client stable | Cross-client stable | Not started | Not started | GET /memories, DELETE /memories/{id}, POST /memories/{id}/confirm, DELETE /memories?confirm=true | No |
+| **Auth & Sessions** | — | — | — | — | — | — |
+| First-boot Setup | Backend stable | Backend stable | Backend stable | Backend stable | Setup token: process-memory one-time token, advisory lock, zero-active-device condition | Yes |
+| Device Management | Backend stable | Backend stable | Backend stable | Backend stable | GET /devices, DELETE /devices/{id} | No |
+| Device Enrollment | Backend stable | Backend stable | Backend stable | Backend stable | POST /enroll/initiate (pending-id), POST /enroll/complete (pending-id lookup) | Yes |
+| Refresh Token Rotation | Backend stable | Backend stable | Backend stable | Backend stable | POST /refresh (cookie-backed web refresh, native JSON-body refresh, rotate on use) | Yes |
 | **Notifications** | — | — | — | — | — | — |
 | Push Completion Notifications (ntfy.sh) | Backend stable | Backend stable | Not started | Not started | Notification delivery service | Yes |
 | **Artifacts** | — | — | — | — | — | — |

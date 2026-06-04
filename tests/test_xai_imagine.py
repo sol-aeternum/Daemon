@@ -13,9 +13,7 @@ from providers.xai_imagine import (
 
 
 class DummyResponse:
-    def __init__(
-        self, status_code: int, payload: object | None = None, text: str = ""
-    ) -> None:
+    def __init__(self, status_code: int, payload: object | None = None, text: str = "") -> None:
         self.status_code = status_code
         self._payload = payload
         self.text = text
@@ -87,9 +85,7 @@ async def test_generate_image_retries_then_succeeds(
     transport = DummyAsyncClient(
         [
             DummyResponse(503, text="upstream unavailable"),
-            DummyResponse(
-                200, payload={"url": "https://cdn.example/retried-image.png"}
-            ),
+            DummyResponse(200, payload={"url": "https://cdn.example/retried-image.png"}),
         ]
     )
     sleeps: list[float] = []
@@ -124,9 +120,7 @@ async def test_generate_video_success_with_duration_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = make_client()
-    transport = DummyAsyncClient(
-        [DummyResponse(200, payload={"request_id": "req_123"})]
-    )
+    transport = DummyAsyncClient([DummyResponse(200, payload={"request_id": "req_123"})])
     monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: transport)
 
     result = await client.generate_video(
@@ -152,9 +146,7 @@ async def test_generate_video_auth_failure_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = make_client(api_key="")
-    monkeypatch.setattr(
-        httpx, "AsyncClient", lambda *args, **kwargs: DummyAsyncClient([])
-    )
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: DummyAsyncClient([]))
 
     with pytest.raises(XAIImagineError, match="XAI_API_KEY not configured"):
         await client.generate_video("blocked")
@@ -228,9 +220,7 @@ async def test_poll_video_job_failed_status_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = make_client()
-    transport = DummyAsyncClient(
-        [DummyResponse(200, payload={"video": {"status": "failed"}})]
-    )
+    transport = DummyAsyncClient([DummyResponse(200, payload={"video": {"status": "failed"}})])
     monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: transport)
 
     with pytest.raises(XAIImagineError, match="Video generation failed"):
@@ -242,9 +232,7 @@ async def test_poll_video_job_expired_status_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = make_client()
-    transport = DummyAsyncClient(
-        [DummyResponse(200, payload={"video": {"status": "expired"}})]
-    )
+    transport = DummyAsyncClient([DummyResponse(200, payload={"video": {"status": "expired"}})])
     monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: transport)
 
     with pytest.raises(XAIImagineError, match="expired"):

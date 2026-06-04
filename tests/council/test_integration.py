@@ -2,7 +2,7 @@
 
 import pytest
 import json
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch
 from orchestrator.council.models import (
     CouncilConfig,
     PerspectiveType,
@@ -265,8 +265,7 @@ class TestCouncilRegressionFixes:
         raw_events = [
             p
             for p in payloads
-            if p.get("type") == "council_output"
-            and p.get("data", {}).get("section") == "raw"
+            if p.get("type") == "council_output" and p.get("data", {}).get("section") == "raw"
         ]
         done_events = [p for p in payloads if p.get("type") == "council_done"]
 

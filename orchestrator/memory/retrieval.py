@@ -80,9 +80,7 @@ def _truncate_for_log(value: object, limit: int = MAX_LOGGED_CONTENT_CHARS) -> s
 def _days_since_accessed(memory: dict[str, object]) -> float:
     now = dt.datetime.now(dt.timezone.utc)
     accessed_at = (
-        memory.get("last_accessed_at")
-        or memory.get("updated_at")
-        or memory.get("created_at")
+        memory.get("last_accessed_at") or memory.get("updated_at") or memory.get("created_at")
     )
     if not isinstance(accessed_at, dt.datetime):
         return 1.0
@@ -225,9 +223,7 @@ def _log_retrieval_results(
             memory.get("source"),
             memory.get("category"),
             _as_float(memory.get("final_score"), 0.0),
-            _as_float(
-                memory.get("vector_sim"), _as_float(memory.get("similarity"), 0.0)
-            ),
+            _as_float(memory.get("vector_sim"), _as_float(memory.get("similarity"), 0.0)),
             _as_float(memory.get("bm25_normalized"), 0.0),
             _truncate_for_log(memory.get("content")),
         )
@@ -277,21 +273,16 @@ async def retrieve_memories_for_text(
             include_local=include_local,
             include_historical=include_historical,
             memory_slot=normalized_slot,
-            log_retrieval=_is_retrieval_logging_enabled(log_retrieval)
-            and not include_l0,
+            log_retrieval=_is_retrieval_logging_enabled(log_retrieval) and not include_l0,
             retrieval_triggered_by=retrieval_triggered_by,
-            retrieval_context="prompt_injection"
-            if retrieval_triggered_by is None
-            else None,
+            retrieval_context="prompt_injection" if retrieval_triggered_by is None else None,
             allowed_source_conversation_ids=allowed_source_conversation_ids,
             include_dream_observations=include_dream_observations,
         )
 
     l0_included = False
     if include_l0:
-        l0_memories = cast(
-            list[dict[str, object]], await store.get_l0_memories(user_id)
-        )
+        l0_memories = cast(list[dict[str, object]], await store.get_l0_memories(user_id))
         combined = _prepend_l0_memories(l0_memories, ranked)
         l0_included = len(l0_memories) > 0
 
@@ -317,9 +308,7 @@ async def retrieve_memories_for_text(
                         "final_score": _as_float(c.get("final_score"), 0.0),
                     }
             selected_ids: list[uuid.UUID] = [
-                cast(uuid.UUID, m.get("id"))
-                for m in ranked
-                if isinstance(m.get("id"), uuid.UUID)
+                cast(uuid.UUID, m.get("id")) for m in ranked if isinstance(m.get("id"), uuid.UUID)
             ]
 
             async def _persist_l0_log() -> None:
@@ -425,8 +414,7 @@ async def _get_entity_expanded_candidates(
                         source_conversation_id = memory.get("source_conversation_id")
                         if (
                             source_conversation_id is None
-                            or str(source_conversation_id)
-                            not in allowed_conversation_ids
+                            or str(source_conversation_id) not in allowed_conversation_ids
                         ):
                             continue
                     memory["source"] = "entity_linked"
@@ -455,10 +443,7 @@ async def retrieve_memories(
 ) -> list[dict[str, object]]:
     if not query_embedding:
         return []
-    if (
-        allowed_source_conversation_ids is not None
-        and len(allowed_source_conversation_ids) == 0
-    ):
+    if allowed_source_conversation_ids is not None and len(allowed_source_conversation_ids) == 0:
         return []
 
     start_time = time.monotonic()
@@ -470,9 +455,7 @@ async def retrieve_memories(
     if conversation_id is not None:
         conversation = await store.get_conversation(conversation_id)
         if not conversation:
-            logger.debug(
-                "Conversation %s not found for memory retrieval", conversation_id
-            )
+            logger.debug("Conversation %s not found for memory retrieval", conversation_id)
             return []
 
         user_id_from_conv = conversation.get("user_id")
@@ -538,9 +521,7 @@ async def retrieve_memories(
         memory_id = str(c.get("id", ""))
         if memory_id:
             if memory_id in candidate_map:
-                candidate_map[memory_id]["bm25_score"] = _as_float(
-                    c.get("bm25_score"), 0.0
-                )
+                candidate_map[memory_id]["bm25_score"] = _as_float(c.get("bm25_score"), 0.0)
                 candidate_map[memory_id]["source"] = "hybrid"
             else:
                 entry = dict(c)
@@ -614,9 +595,7 @@ async def retrieve_memories(
         scored.append(entry)
 
     filtered = [
-        item
-        for item in scored
-        if _as_float(item.get("final_score"), 0.0) >= MIN_FINAL_SCORE
+        item for item in scored if _as_float(item.get("final_score"), 0.0) >= MIN_FINAL_SCORE
     ]
 
     ranked = sorted(
@@ -668,9 +647,7 @@ async def retrieve_memories(
                     "final_score": _as_float(c.get("final_score"), 0.0),
                 }
         selected_ids: list[uuid.UUID] = [
-            cast(uuid.UUID, m.get("id"))
-            for m in ranked
-            if isinstance(m.get("id"), uuid.UUID)
+            cast(uuid.UUID, m.get("id")) for m in ranked if isinstance(m.get("id"), uuid.UUID)
         ]
         l0_included = any(m.get("source") == "l0" for m in ranked)
 

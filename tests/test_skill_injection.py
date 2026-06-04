@@ -13,9 +13,7 @@ from orchestrator.skills_store import (
 
 class TestSkillIndexL0:
     @pytest.mark.asyncio
-    async def test_skill_index_contains_names_and_descriptions(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_skill_index_contains_names_and_descriptions(self, tmp_path: Path) -> None:
         skill_summary = {
             "id": "test-skill",
             "name": "Test Skill",
@@ -32,9 +30,7 @@ class TestSkillIndexL0:
         }
 
         with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):
-            with patch(
-                "orchestrator.skills_store.list_skills", return_value=[skill_summary]
-            ):
+            with patch("orchestrator.skills_store.list_skills", return_value=[skill_summary]):
                 index = await build_skill_index(db_pool=None)
 
         assert "Test Skill" in index
@@ -59,9 +55,7 @@ class TestSkillIndexL0:
         long_content = "x" * 2500
 
         with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):
-            with patch(
-                "orchestrator.skills_store.list_skills", return_value=[skill_summary]
-            ):
+            with patch("orchestrator.skills_store.list_skills", return_value=[skill_summary]):
                 index = await build_skill_index(db_pool=None)
 
         assert long_content not in index
@@ -85,9 +79,7 @@ class TestSkillIndexL0:
         }
 
         with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):
-            with patch(
-                "orchestrator.skills_store.list_skills", return_value=[skill_summary]
-            ):
+            with patch("orchestrator.skills_store.list_skills", return_value=[skill_summary]):
                 index = await build_skill_index(db_pool=None)
 
         assert "[system]" in index
@@ -112,9 +104,7 @@ class TestSkillIndexL0:
         }
 
         with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):
-            with patch(
-                "orchestrator.skills_store.list_skills", return_value=[skill_summary]
-            ):
+            with patch("orchestrator.skills_store.list_skills", return_value=[skill_summary]):
                 index = await build_skill_index(db_pool=None)
 
         assert "[unknown]" in index
@@ -145,9 +135,7 @@ class TestSkillIndexL0:
         }
 
         with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):
-            with patch(
-                "orchestrator.skills_store.list_skills", return_value=[skill_summary]
-            ):
+            with patch("orchestrator.skills_store.list_skills", return_value=[skill_summary]):
                 index = await build_skill_index(db_pool=None)
 
         assert index == ""
@@ -174,9 +162,7 @@ class TestSkillIndexL0:
             )
 
         with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):
-            with patch(
-                "orchestrator.skills_store.list_skills", return_value=many_skills
-            ):
+            with patch("orchestrator.skills_store.list_skills", return_value=many_skills):
                 index1 = await build_skill_index(db_pool=None)
                 index2 = await build_skill_index(db_pool=None)
 
@@ -291,9 +277,7 @@ class TestSkillIndexL0:
         }
 
         with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):
-            with patch(
-                "orchestrator.skills_store.list_skills", return_value=[skill_summary]
-            ):
+            with patch("orchestrator.skills_store.list_skills", return_value=[skill_summary]):
                 index = await build_skill_index(db_pool=None)
 
         assert "def execute" not in index
@@ -318,9 +302,7 @@ class TestSkillIndexL0:
         }
 
         with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):
-            with patch(
-                "orchestrator.skills_store.list_skills", return_value=[skill_summary]
-            ):
+            with patch("orchestrator.skills_store.list_skills", return_value=[skill_summary]):
                 index = await build_skill_index(db_pool=None)
 
         assert "Skill Index (L0):" in index
@@ -382,9 +364,7 @@ class TestSkillIndexL0:
         assert high_pos < med_pos < low_pos
 
     @pytest.mark.asyncio
-    async def test_skill_index_native_chat_path_uses_l0_index(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_skill_index_native_chat_path_uses_l0_index(self, tmp_path: Path) -> None:
         skill_summary = {
             "id": "native-chat-skill",
             "name": "Native Chat Skill",
@@ -401,9 +381,7 @@ class TestSkillIndexL0:
         }
 
         with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):
-            with patch(
-                "orchestrator.skills_store.list_skills", return_value=[skill_summary]
-            ):
+            with patch("orchestrator.skills_store.list_skills", return_value=[skill_summary]):
                 index = await build_skill_index(db_pool=None)
 
         assert "Native Chat Skill" in index
@@ -411,9 +389,7 @@ class TestSkillIndexL0:
         assert "Should use L0 index" in index
 
     @pytest.mark.asyncio
-    async def test_skill_index_no_full_body_in_native_chat_path(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_skill_index_no_full_body_in_native_chat_path(self, tmp_path: Path) -> None:
         skill_summary = {
             "id": "native-chat-body",
             "name": "Native Chat Body Skill",
@@ -430,9 +406,7 @@ class TestSkillIndexL0:
         }
 
         with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):
-            with patch(
-                "orchestrator.skills_store.list_skills", return_value=[skill_summary]
-            ):
+            with patch("orchestrator.skills_store.list_skills", return_value=[skill_summary]):
                 index = await build_skill_index(db_pool=None)
 
         assert "Native Chat Body Skill" in index

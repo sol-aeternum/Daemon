@@ -10,9 +10,7 @@ from tests import benchmark_extraction
 
 
 def test_build_benchmark_transcript_is_user_only() -> None:
-    transcript = benchmark_extraction.build_benchmark_transcript(
-        ["first turn", "second turn"]
-    )
+    transcript = benchmark_extraction.build_benchmark_transcript(["first turn", "second turn"])
 
     assert transcript == [
         {"role": "user", "content": "first turn"},
@@ -36,9 +34,7 @@ def test_ensure_benchmark_user_sync_wrapper_uses_async_helper(
         finally:
             loop.close()
 
-    monkeypatch.setattr(
-        benchmark_extraction, "_ensure_benchmark_user_async", fake_ensure
-    )
+    monkeypatch.setattr(benchmark_extraction, "_ensure_benchmark_user_async", fake_ensure)
     monkeypatch.setattr(benchmark_extraction.asyncio, "run", fake_asyncio_run)
 
     benchmark_extraction._ensure_benchmark_user(expected_user_id)
@@ -81,9 +77,7 @@ async def test_replay_benchmark_conversation_uses_cumulative_user_transcript(
         async def update_conversation(
             self, conversation_uuid: uuid.UUID, **kwargs: Any
         ) -> dict[str, Any]:
-            updated_conversations.append(
-                {"conversation_id": conversation_uuid, **kwargs}
-            )
+            updated_conversations.append({"conversation_id": conversation_uuid, **kwargs})
             return {"id": conversation_uuid}
 
     async def fake_create_pool(*, dsn: str, min_size: int, max_size: int) -> FakePool:

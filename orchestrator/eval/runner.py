@@ -17,7 +17,6 @@ from orchestrator.memory.store import MemoryStore
 from tests.longmemeval.evaluate import (
     CATEGORY_MAP,
     CHECKPOINT_FILENAME,
-    DEFAULT_OUTPUT_DIR,
     RESULTS_FILENAME,
     evaluate_single,
     print_results,
@@ -75,9 +74,7 @@ def load_dataset(dataset_path: Path) -> list[dict[str, Any]]:
         with dataset_path.open() as handle:
             dataset = json.load(handle)
     except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"LongMemEval dataset is not valid JSON: {dataset_path}"
-        ) from exc
+        raise ValueError(f"LongMemEval dataset is not valid JSON: {dataset_path}") from exc
 
     if not isinstance(dataset, list):
         raise ValueError(f"LongMemEval dataset must be a JSON list: {dataset_path}")
@@ -146,9 +143,7 @@ def load_runner_checkpoint(
 
     payload.setdefault("created_at", utc_now_iso())
     payload["updated_at"] = utc_now_iso()
-    payload["dataset_path"] = (
-        str(dataset_path) if dataset_path is not None else checkpoint_dataset
-    )
+    payload["dataset_path"] = str(dataset_path) if dataset_path is not None else checkpoint_dataset
 
     phases = payload.setdefault("phases", {})
     ingest_phase = phases.setdefault("ingest", _default_phase_state())
@@ -260,9 +255,7 @@ class LongMemEvalRunner:
         return build_corpus_plan(self.load_dataset())
 
     def load_checkpoint(self) -> dict[str, Any]:
-        return load_runner_checkpoint(
-            self.checkpoint_path, dataset_path=self.dataset_path
-        )
+        return load_runner_checkpoint(self.checkpoint_path, dataset_path=self.dataset_path)
 
     async def ingest(self) -> list[dict[str, Any]]:
         dataset = self.load_dataset()
@@ -388,9 +381,7 @@ class LongMemEvalRunner:
             ingest_results = build_corpus_results_lookup(checkpoint)
 
             if self.force_retrieval_logging:
-                logger.info(
-                    "[evaluate] LongMemEval benchmark forcing retrieval logging ON"
-                )
+                logger.info("[evaluate] LongMemEval benchmark forcing retrieval logging ON")
 
             logger.info(
                 "[evaluate] Starting LongMemEval evaluation for %s questions (%s already checkpointed)",
@@ -453,9 +444,7 @@ class LongMemEvalRunner:
                 evaluate_phase["completed_count"] = len(completed_results)
                 evaluate_phase["updated_at"] = utc_now_iso()
                 ordered = [
-                    completed_results[qid]
-                    for qid in question_order
-                    if qid in completed_results
+                    completed_results[qid] for qid in question_order if qid in completed_results
                 ]
                 write_results_jsonl(self.output_path, ordered)
                 save_runner_checkpoint(self.checkpoint_path, checkpoint)

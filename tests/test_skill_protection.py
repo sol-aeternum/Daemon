@@ -5,14 +5,12 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from orchestrator.tools.skill_manage import (
     SkillManageTool,
-    _check_modification_allowed,
 )
 from tests.test_skill_projection_sync import MockRecord
 

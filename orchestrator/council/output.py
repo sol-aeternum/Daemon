@@ -24,7 +24,7 @@ def build_disagreement_map(
         return {"agreement_zones": [], "dissent_zones": [], "signals": []}
 
     content_by_role = {resp.perspective.value: resp.content for resp in responses}
-    confidence_by_role = {resp.perspective.value: resp.confidence for resp in responses}
+    confidence_by_role = {resp.perspective.value: resp.confidence for resp in responses}  # noqa: F841
 
     agreement_zones = []
     dissent_zones = []
@@ -33,9 +33,7 @@ def build_disagreement_map(
     keywords_agree = ["agree", "consensus", "same", "both", "unanimous"]
     keywords_disagree = ["disagree", "however", "but", "instead", "contrary"]
 
-    sample_content = (
-        list(content_by_role.values())[0].lower() if content_by_role else ""
-    )
+    sample_content = list(content_by_role.values())[0].lower() if content_by_role else ""
     agree_count = sum(1 for kw in keywords_agree if kw in sample_content)
 
     if agree_count >= 2:
@@ -94,13 +92,9 @@ class CouncilOutputRenderer:
             last_round = session.rounds[-1]
             disagreement_map = build_disagreement_map(last_round.responses)
 
-        token_costs = (
-            session.token_costs if isinstance(session.token_costs, dict) else {}
-        )
+        token_costs = session.token_costs if isinstance(session.token_costs, dict) else {}
         completed_rounds = len(session.rounds)
-        total_rounds = session.config.round_count + (
-            1 if session.config.audit_enabled else 0
-        )
+        total_rounds = session.config.round_count + (1 if session.config.audit_enabled else 0)
         models_total = 0
         if session.rounds:
             models_total = max((len(r.responses) for r in session.rounds), default=0)

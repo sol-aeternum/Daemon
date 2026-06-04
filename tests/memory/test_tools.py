@@ -11,7 +11,7 @@ from orchestrator.memory.tools import MemoryReadTool, MemoryWriteTool
 async def test_memory_tools_import():
     with patch("orchestrator.memory.dedup.dedup_and_store", new_callable=AsyncMock):
         mock_store = AsyncMock()
-        from orchestrator.memory.tools import MemoryReadTool, MemoryWriteTool
+        from orchestrator.memory.tools import MemoryReadTool
 
         user_id = uuid.uuid4()
         tool = MemoryReadTool(mock_store, user_id)
@@ -21,9 +21,7 @@ async def test_memory_tools_import():
 @pytest.mark.asyncio
 async def test_memory_read_semantic_mode_passes_memory_slot():
     """Test that semantic mode passes memory_slot to search_memories."""
-    with patch(
-        "orchestrator.memory.tools.embed_query", new_callable=AsyncMock
-    ) as mock_embed:
+    with patch("orchestrator.memory.tools.embed_query", new_callable=AsyncMock) as mock_embed:
         mock_embed.return_value = [0.1, 0.2, 0.3]
 
         mock_store = AsyncMock()
@@ -52,9 +50,7 @@ async def test_memory_read_temporal_mode_calls_list_memories_with_confirmed_true
     user_id = uuid.uuid4()
     tool = MemoryReadTool(mock_store, user_id)
 
-    await tool.execute(
-        mode="temporal", after="2023-01-01T00:00:00Z", before="2023-12-31T23:59:59Z"
-    )
+    await tool.execute(mode="temporal", after="2023-01-01T00:00:00Z", before="2023-12-31T23:59:59Z")
     # Verify list_memories was called with confirmed=True
     mock_store.list_memories.assert_called_once()
     call_args = mock_store.list_memories.call_args
@@ -192,9 +188,7 @@ async def test_memory_read_temporal_mode_slot_post_filter_with_increased_limit()
 @pytest.mark.asyncio
 async def test_memory_write_create_passes_slot_to_dedup_and_store():
     """Test that create action passes slot parameter to dedup_and_store."""
-    with patch(
-        "orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock
-    ) as mock_dedup:
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
         mock_dedup.return_value = uuid.uuid4()
 
         mock_store = AsyncMock()
@@ -211,9 +205,7 @@ async def test_memory_write_create_passes_slot_to_dedup_and_store():
 @pytest.mark.asyncio
 async def test_memory_write_update_calls_close_then_dedup():
     """Test that update action calls close_memory before dedup_and_store."""
-    with patch(
-        "orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock
-    ) as mock_dedup:
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
         mock_dedup.return_value = uuid.uuid4()
 
         mock_store = AsyncMock()
@@ -244,9 +236,7 @@ async def test_memory_write_update_calls_close_then_dedup():
 @pytest.mark.asyncio
 async def test_memory_write_update_inherits_category_and_slot():
     """Test that update action inherits category and slot from old memory when not provided."""
-    with patch(
-        "orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock
-    ) as mock_dedup:
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
         mock_dedup.return_value = uuid.uuid4()
 
         mock_store = AsyncMock()

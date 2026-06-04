@@ -90,7 +90,7 @@ def parse_consolidation_actions(response_text: str) -> list[dict[str, Any]]:
 
     cleaned = response_text.strip()
     if cleaned.startswith("```"):
-        lines = [l for l in cleaned.splitlines() if not l.strip().startswith("```")]
+        lines = [l for l in cleaned.splitlines() if not l.strip().startswith("```")]  # noqa: E741
         cleaned = "\n".join(lines).strip()
 
     start = cleaned.find("{")

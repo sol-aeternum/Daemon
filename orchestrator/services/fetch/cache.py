@@ -51,15 +51,11 @@ class FetchCache:
                     create_pool as arq_create_pool,
                 )
 
-                self.redis = await arq_create_pool(
-                    RedisSettings.from_dsn(self.redis_url)
-                )
+                self.redis = await arq_create_pool(RedisSettings.from_dsn(self.redis_url))
                 logger.debug("Redis connection established for fetch cache")
                 return True
             except Exception as e:
-                logger.warning(
-                    f"Failed to connect to Redis for fetch cache: {e}", exc_info=True
-                )
+                logger.warning(f"Failed to connect to Redis for fetch cache: {e}", exc_info=True)
                 return False
 
     def _serialize_result(self, result: FetchResult) -> str:
@@ -99,9 +95,7 @@ class FetchCache:
             # Convert fields with proper type handling
             content_str = content if isinstance(content, str) else str(content)
             title_str = title if isinstance(title, str) else str(title)
-            strategy_str = (
-                strategy_used if isinstance(strategy_used, str) else str(strategy_used)
-            )
+            strategy_str = strategy_used if isinstance(strategy_used, str) else str(strategy_used)
 
             # Handle numeric conversions safely
             if isinstance(fetch_time_ms, (int, float)):
@@ -171,9 +165,7 @@ class FetchCache:
             key = f"fetch:result:{normalized_url}"
             data = self._serialize_result(result)
 
-            cache_ttl = ttl or int(
-                os.getenv("FETCH_CACHE_TTL_SECONDS", DEFAULT_TTL_SECONDS)
-            )
+            cache_ttl = ttl or int(os.getenv("FETCH_CACHE_TTL_SECONDS", DEFAULT_TTL_SECONDS))
 
             # Type narrowing - _ensure_connection guarantees redis is not None here
             assert self.redis is not None

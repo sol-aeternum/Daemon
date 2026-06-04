@@ -180,17 +180,11 @@ def _extract_usage(response: Any) -> dict[str, Any]:
     if usage is not None:
         if isinstance(usage, dict):
             usage_payload["prompt_tokens"] = int(usage.get("prompt_tokens", 0) or 0)
-            usage_payload["completion_tokens"] = int(
-                usage.get("completion_tokens", 0) or 0
-            )
+            usage_payload["completion_tokens"] = int(usage.get("completion_tokens", 0) or 0)
             usage_payload["total_tokens"] = int(usage.get("total_tokens", 0) or 0)
         else:
-            usage_payload["prompt_tokens"] = int(
-                getattr(usage, "prompt_tokens", 0) or 0
-            )
-            usage_payload["completion_tokens"] = int(
-                getattr(usage, "completion_tokens", 0) or 0
-            )
+            usage_payload["prompt_tokens"] = int(getattr(usage, "prompt_tokens", 0) or 0)
+            usage_payload["completion_tokens"] = int(getattr(usage, "completion_tokens", 0) or 0)
             usage_payload["total_tokens"] = int(getattr(usage, "total_tokens", 0) or 0)
 
     hidden = getattr(response, "_hidden_params", None)
@@ -603,9 +597,7 @@ class CouncilEngine:
             if perspective_name == "auditor":
                 continue
             perspective = PerspectiveType(perspective_name)
-            response = await self._get_perspective_response(
-                perspective, prompt, session
-            )
+            response = await self._get_perspective_response(perspective, prompt, session)
             responses.append(response)
 
         round_obj.responses = responses
@@ -619,7 +611,7 @@ class CouncilEngine:
         session: CouncilSession,
     ) -> PerspectiveResponse:
         """Get response from a single perspective."""
-        config = get_perspective_config(perspective.value)
+        config = get_perspective_config(perspective.value)  # noqa: F841
         return PerspectiveResponse(
             perspective=perspective,
             content="",

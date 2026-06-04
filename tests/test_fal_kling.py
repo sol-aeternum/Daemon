@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import patch, MagicMock
 import os
 
 from providers.fal_kling import (
@@ -134,9 +134,7 @@ async def test_generate_video_submit_failure_raises():
         "providers.fal_kling.fal_client.submit_async",
         side_effect=Exception("API error"),
     ):
-        with pytest.raises(
-            FalKlingError, match="Failed to submit video generation job"
-        ):
+        with pytest.raises(FalKlingError, match="Failed to submit video generation job"):
             await client.generate_video("test prompt")
 
 
@@ -144,9 +142,7 @@ async def test_generate_video_submit_failure_raises():
 async def test_poll_video_job_success():
     client = FalKlingClient()
 
-    job = VideoJob(
-        job_id="job_123", prompt="test video", duration_seconds=5, kling_model="o3-pro"
-    )
+    job = VideoJob(job_id="job_123", prompt="test video", duration_seconds=5, kling_model="o3-pro")
 
     mock_result = {"video": {"url": "https://cdn.fal.ai/video.mp4"}}
     with patch("providers.fal_kling.fal_client.get_result", return_value=mock_result):
@@ -176,12 +172,10 @@ async def test_poll_video_job_get_result_failure_raises():
 
 
 @pytest.mark.asyncio
-async def test_poll_video_job_success():
+async def test_poll_video_job_success():  # noqa: F811
     client = FalKlingClient()
 
-    job = VideoJob(
-        job_id="job_123", prompt="test video", duration_seconds=5, kling_model="o3-pro"
-    )
+    job = VideoJob(job_id="job_123", prompt="test video", duration_seconds=5, kling_model="o3-pro")
 
     mock_result = {"video": {"url": "https://cdn.fal.ai/video.mp4"}}
     with patch("providers.fal_kling.fal_client.result_async", return_value=mock_result):
@@ -247,7 +241,7 @@ async def test_poll_video_job_missing_url_raises():
 
 
 @pytest.mark.asyncio
-async def test_poll_video_job_get_result_failure_raises():
+async def test_poll_video_job_get_result_failure_raises():  # noqa: F811
     client = FalKlingClient()
 
     job = VideoJob(job_id="job_111", prompt="test video", duration_seconds=5)
@@ -261,7 +255,7 @@ async def test_poll_video_job_get_result_failure_raises():
 
 
 @pytest.mark.asyncio
-async def test_poll_video_job_get_result_failure_raises():
+async def test_poll_video_job_get_result_failure_raises():  # noqa: F811
     client = FalKlingClient()
 
     job = VideoJob(job_id="job_111", prompt="test video", duration_seconds=5)

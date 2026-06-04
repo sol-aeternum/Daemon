@@ -2,11 +2,11 @@
 """
 Driver script to run the ingestion rerun 3 times with preservation.
 """
+
 import subprocess
 import sys
 import os
 import shutil
-import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -14,11 +14,12 @@ BASE_DIR = PROJECT_ROOT / "tests/benchmark_results/wave0_rerun_v1"
 
 os.environ["PYTHONPATH"] = str(PROJECT_ROOT)
 
+
 def run_harness(output_dir: Path, run_label: str) -> dict:
     """Run the ingestion rerun harness once."""
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"RUN {run_label}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"Output: {output_dir}")
 
     # Clean and create output dir
@@ -159,16 +160,18 @@ def main():
     for i in [1, 2, 3]:
         run_dir = BASE_DIR / f"run_{i}"
         result = run_harness(run_dir, f"{i}/3")
-        results.append({
-            "run": i,
-            "output_dir": result["output_dir"],
-            "returncode": result["returncode"],
-        })
+        results.append(
+            {
+                "run": i,
+                "output_dir": result["output_dir"],
+                "returncode": result["returncode"],
+            }
+        )
         print(f"Run {i} completed with code {result['returncode']}")
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("SUMMARY")
-    print("="*60)
+    print("=" * 60)
     for r in results:
         print(f"  Run {r['run']}: rc={r['returncode']} -> {r['output_dir']}")
 

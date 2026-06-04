@@ -69,7 +69,7 @@ class SkillSyncService:
                         success=True,
                     )
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("Backfill failed for skill %s: %s", skill_id, exc)
                 results.append(
                     SyncResult(
@@ -81,9 +81,7 @@ class SkillSyncService:
                 )
         return results
 
-    async def sync_skill(
-        self, skill_id: str, source_type: str = "manual"
-    ) -> SyncResult:
+    async def sync_skill(self, skill_id: str, source_type: str = "manual") -> SyncResult:
         path = SKILLS_DIR / f"{skill_id}.md"
         if not path.exists():
             return SyncResult(
@@ -107,28 +105,18 @@ class SkillSyncService:
             source_file_path=str(path),
             source_hash=source_hash,
             enabled=enabled,
-            source_type=projection.get("source_type", source_type)
-            if projection
-            else source_type,
-            created_by=projection.get("created_by", "system")
-            if projection
-            else "system",
+            source_type=projection.get("source_type", source_type) if projection else source_type,
+            created_by=projection.get("created_by", "system") if projection else "system",
             origin_url=projection.get("origin_url", "") if projection else "",
             embedding=embedding,
-            repo_version=projection.get("repo_version", "0.0.0")
-            if projection
-            else "0.0.0",
+            repo_version=projection.get("repo_version", "0.0.0") if projection else "0.0.0",
             local_version="0.0.0",
             pending_update=projection.get("pending_update") if projection else None,
             allow_autonomous_edit=projection.get("allow_autonomous_edit", False)
             if projection
             else False,
-            trigger_conditions=projection.get("trigger_conditions", "")
-            if projection
-            else "",
-            complexity_origin=projection.get("complexity_origin", 0)
-            if projection
-            else 0,
+            trigger_conditions=projection.get("trigger_conditions", "") if projection else "",
+            complexity_origin=projection.get("complexity_origin", 0) if projection else 0,
         )
         return SyncResult(
             skill_id=skill_id,
@@ -212,5 +200,5 @@ def summary_desc(skill_id: str) -> str:
     try:
         detail = get_skill(skill_id)
         return detail.get("description", "")
-    except Exception:  # noqa: BLE001
+    except Exception:
         return f"Skill {skill_id}"

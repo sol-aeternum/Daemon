@@ -22,9 +22,7 @@ from orchestrator.skill_evaluator import (
 class StubStore:
     def __init__(self, messages: list[dict[str, Any]]) -> None:
         self.get_messages_mock = AsyncMock(return_value=messages)
-        self.get_conversation_mock = AsyncMock(
-            return_value={"summary": "Conversation summary"}
-        )
+        self.get_conversation_mock = AsyncMock(return_value={"summary": "Conversation summary"})
 
     async def get_messages(
         self,
@@ -291,9 +289,7 @@ async def test_evaluator_patches_overlapping_autonomous_skill() -> None:
 
 
 @pytest.mark.asyncio
-async def test_evaluator_creates_new_skill_when_semantic_match_has_different_name() -> (
-    None
-):
+async def test_evaluator_creates_new_skill_when_semantic_match_has_different_name() -> None:
     assistant_message_id = uuid.uuid4()
     request = SkillEvaluationRequest(
         user_id=uuid.uuid4(),
@@ -381,9 +377,7 @@ async def test_evaluator_skips_failed_turns() -> None:
         store=StubStore(
             _build_messages(
                 assistant_message_id,
-                tool_results=[
-                    {"name": "read", "result": {"success": False, "error": "boom"}}
-                ],
+                tool_results=[{"name": "read", "result": {"success": False, "error": "boom"}}],
             )
         ),
         db_pool=None,

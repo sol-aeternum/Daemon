@@ -39,9 +39,7 @@ class WebSearchTool(Tool):
         num_results = min(10, max(1, kwargs.get("num_results", 5)))
 
         if not self.api_key:
-            return json.dumps(
-                {"error": "BRAVE_API_KEY not configured. Add it to your .env file."}
-            )
+            return json.dumps({"error": "BRAVE_API_KEY not configured. Add it to your .env file."})
 
         try:
             async with httpx.AsyncClient() as client:

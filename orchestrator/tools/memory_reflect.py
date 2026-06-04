@@ -131,9 +131,7 @@ class MemoryReflectTool(Tool):
             source = mem.get("source", "unknown")
 
             slot_text = f" (slot={slot})" if slot else ""
-            lines.append(
-                f"{i}. [{category.upper()}]{slot_text} [source={source}] {content}"
-            )
+            lines.append(f"{i}. [{category.upper()}]{slot_text} [source={source}] {content}")
 
         return "\n".join(lines)
 

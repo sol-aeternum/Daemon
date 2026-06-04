@@ -12,6 +12,9 @@ import pytest_asyncio
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import uuid
+
+from orchestrator.auth import AdminOrDeviceAuth, AuthenticatedDevice
 from orchestrator.config import get_settings
 from orchestrator.routes import skills as skills_router
 
@@ -49,14 +52,20 @@ def _set_db_pool(client: TestClient, db_pool: AsyncMock | None) -> None:
 
 
 @pytest.fixture
-def app_with_mock_db(mock_db_pool: AsyncMock) -> FastAPI:
-    """Create FastAPI app with mocked db pool in app state."""
+def app_with_mock_db(
+    mock_db_pool: AsyncMock, fake_authenticated_device: AuthenticatedDevice
+) -> FastAPI:
     app = FastAPI()
     app.include_router(skills_router.router)
 
     mock_app_state = MagicMock()
     mock_app_state.db_pool = mock_db_pool
+    mock_app_state.redis = MagicMock()
+    mock_app_state.memory_store = MagicMock()
+    mock_app_state.video_credits_dal = MagicMock()
     cast(Any, app).state.app_state = mock_app_state
+
+    app.dependency_overrides[skills_router.require_device_auth] = lambda: fake_authenticated_device
 
     return app
 
@@ -69,8 +78,31 @@ def client(app_with_mock_db: FastAPI) -> TestClient:
 
 @pytest_asyncio.fixture
 async def mock_db_pool() -> AsyncMock:
-    """Create mock database pool."""
-    return AsyncMock()
+    """Create mock database pool with proper async context manager for device auth."""
+    from contextlib import asynccontextmanager
+
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    conn.fetchval = AsyncMock(return_value=datetime.now())
+    conn.execute = AsyncMock()
+
+    @asynccontextmanager
+    async def mock_acquire():
+        yield conn
+
+    pool = AsyncMock()
+    pool.acquire = MagicMock(side_effect=lambda: mock_acquire())
+
+    return pool
+
+
+@pytest.fixture
+def fake_authenticated_device() -> AuthenticatedDevice:
+    return AuthenticatedDevice(
+        user_id=uuid.UUID("11111111-1111-1111-1111-111111111111"),
+        device_id=uuid.UUID("22222222-2222-2222-2222-222222222222"),
+        session_id=uuid.UUID("33333333-3333-3333-3333-333333333333"),
+    )
 
 
 @pytest.fixture
@@ -90,9 +122,7 @@ This is a test skill with instructions.
 class TestSkillsListContract:
     """Tests for GET /skills endpoint contract."""
 
-    def test_list_skills_without_projection(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_list_skills_without_projection(self, client: TestClient, tmp_path: Path) -> None:
         """Skills list works when db is unavailable (graceful degradation)."""
         skill_file = tmp_path / "test-skill.md"
         skill_file.write_text("""---
@@ -303,9 +333,7 @@ Content.
 class TestSkillsGetContract:
     """Tests for GET /skills/{id} endpoint contract."""
 
-    def test_get_skill_without_projection(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_get_skill_without_projection(self, client: TestClient, tmp_path: Path) -> None:
         """Get skill works without projection layer (legacy mode)."""
         skill_file = tmp_path / "legacy-skill.md"
         skill_file.write_text("""---
@@ -447,9 +475,7 @@ Export this content.
             assert "description: A skill for export testing" in body
             assert "# Exportable Skill" in body
 
-    def test_download_skill_can_be_reimported(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_download_skill_can_be_reimported(self, client: TestClient, tmp_path: Path) -> None:
         """Downloaded skill can be re-imported (roundtrip compatibility)."""
         original_content = """---
 name: Roundtrip Skill
@@ -489,9 +515,7 @@ Roundtrip content with special chars: <>&"'
 class TestSkillsUploadCompatibility:
     """Tests for POST /skills/upload endpoint (legacy compatibility)."""
 
-    def test_upload_standard_markdown_format(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_upload_standard_markdown_format(self, client: TestClient, tmp_path: Path) -> None:
         """Upload accepts standard markdown format (# Title + ## Purpose)."""
         standard_md = """# Standard Skill
 
@@ -517,9 +541,7 @@ Do something useful.
             assert data["name"] == "Standard Skill"
             assert "enabled" in data
 
-    def test_upload_frontmatter_format(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_upload_frontmatter_format(self, client: TestClient, tmp_path: Path) -> None:
         """Upload accepts frontmatter format."""
         frontmatter_md = """---
 name: Frontmatter Skill
@@ -545,9 +567,7 @@ Content here.
             assert data["description"] == "From frontmatter"
             assert data["enabled"] is False
 
-    def test_upload_conflict_without_overwrite(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_upload_conflict_without_overwrite(self, client: TestClient, tmp_path: Path) -> None:
         """Upload returns 409 if skill exists and overwrite=false."""
         existing = tmp_path / "existing.md"
         existing.write_text("---\nname: Existing\ndescription: Exists\n---\n\nContent")
@@ -595,9 +615,7 @@ class TestSkillsCreateUpdateContract:
         """Update skill returns updated detail."""
         # Create first
         skill_file = tmp_path / "updateable.md"
-        skill_file.write_text(
-            "---\nname: Updateable\ndescription: Original\n---\n\nOriginal"
-        )
+        skill_file.write_text("---\nname: Updateable\ndescription: Original\n---\n\nOriginal")
 
         with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):
             response = client.put(
@@ -626,9 +644,7 @@ class TestSkillMetadataTypes:
     ) -> None:
         """source_type returns valid enum values."""
         skill_file = tmp_path / "enum-skill.md"
-        skill_file.write_text(
-            "---\nname: Enum Skill\ndescription: Test\n---\n\nContent"
-        )
+        skill_file.write_text("---\nname: Enum Skill\ndescription: Test\n---\n\nContent")
 
         valid_types = ["system", "imported", "manual", "autonomous"]
 
@@ -667,9 +683,7 @@ class TestSkillMetadataTypes:
     ) -> None:
         """pending_update returns JSON object when present."""
         skill_file = tmp_path / "pending-skill.md"
-        skill_file.write_text(
-            "---\nname: Pending Skill\ndescription: Test\n---\n\nContent"
-        )
+        skill_file.write_text("---\nname: Pending Skill\ndescription: Test\n---\n\nContent")
 
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="pending-skill",
@@ -712,9 +726,7 @@ class TestSkillsDeleteContract:
     def test_delete_existing_skill(self, client: TestClient, tmp_path: Path) -> None:
         """Delete removes skill and returns status."""
         skill_file = tmp_path / "deletable.md"
-        skill_file.write_text(
-            "---\nname: Deletable\ndescription: To delete\n---\n\nContent"
-        )
+        skill_file.write_text("---\nname: Deletable\ndescription: To delete\n---\n\nContent")
 
         with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):
             response = client.delete("/skills/deletable")
@@ -738,9 +750,7 @@ class TestSkillsAutonomousEditContract:
     ) -> None:
         """Toggle autonomous edit for a protected skill (system/imported/manual) to opt-in."""
         skill_file = tmp_path / "system-skill.md"
-        skill_file.write_text(
-            "---\nname: System Skill\ndescription: Test\n---\n\nContent"
-        )
+        skill_file.write_text("---\nname: System Skill\ndescription: Test\n---\n\nContent")
 
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="system-skill",
@@ -783,9 +793,7 @@ class TestSkillsAutonomousEditContract:
     ) -> None:
         """Toggle autonomous edit for an imported skill."""
         skill_file = tmp_path / "imported-skill.md"
-        skill_file.write_text(
-            "---\nname: Imported Skill\ndescription: Test\n---\n\nContent"
-        )
+        skill_file.write_text("---\nname: Imported Skill\ndescription: Test\n---\n\nContent")
 
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="imported-skill",
@@ -820,14 +828,10 @@ class TestSkillsAutonomousEditContract:
             assert response.status_code == 200
             assert response.json()["allow_autonomous_edit"] is True
 
-    def test_toggle_autonomous_edit_no_db(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_toggle_autonomous_edit_no_db(self, client: TestClient, tmp_path: Path) -> None:
         """Toggle without db still returns success for existing skill."""
         skill_file = tmp_path / "manual-skill.md"
-        skill_file.write_text(
-            "---\nname: Manual Skill\ndescription: Test\n---\n\nContent"
-        )
+        skill_file.write_text("---\nname: Manual Skill\ndescription: Test\n---\n\nContent")
 
         with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):
             _set_db_pool(client, None)
@@ -854,7 +858,6 @@ class TestSkillsPendingUpdateContract:
         self, client: TestClient, tmp_path: Path, mock_db_pool: AsyncMock
     ) -> None:
         """Apply pending update routes through upgrade service to update skill safely."""
-        from orchestrator.skills_upgrade import _write_skill_file, _save_snapshot
 
         skill_file = tmp_path / "pending-skill.md"
         skill_file.write_text(
@@ -914,9 +917,7 @@ class TestSkillsPendingUpdateContract:
     ) -> None:
         """Dismiss pending update clears pending_update field."""
         skill_file = tmp_path / "dismiss-skill.md"
-        skill_file.write_text(
-            "---\nname: Dismiss Skill\ndescription: Local\n---\n\nLocal content"
-        )
+        skill_file.write_text("---\nname: Dismiss Skill\ndescription: Local\n---\n\nLocal content")
 
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="dismiss-skill",
@@ -963,9 +964,7 @@ class TestSkillsPendingUpdateContract:
     ) -> None:
         """Apply/dismiss returns 400 when no pending update exists."""
         skill_file = tmp_path / "no-pending.md"
-        skill_file.write_text(
-            "---\nname: No Pending\ndescription: Test\n---\n\nContent"
-        )
+        skill_file.write_text("---\nname: No Pending\ndescription: Test\n---\n\nContent")
 
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="no-pending",
@@ -1002,9 +1001,7 @@ class TestSkillsPendingUpdateContract:
     def test_pending_update_no_db(self, client: TestClient, tmp_path: Path) -> None:
         """Pending update returns 503 when database unavailable."""
         skill_file = tmp_path / "no-db-skill.md"
-        skill_file.write_text(
-            "---\nname: No DB Skill\ndescription: Test\n---\n\nContent"
-        )
+        skill_file.write_text("---\nname: No DB Skill\ndescription: Test\n---\n\nContent")
 
         with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):
             _set_db_pool(client, None)
@@ -1033,9 +1030,7 @@ class TestSkillsPendingUpdateContract:
     ) -> None:
         """Pending update returns 400 for invalid action."""
         skill_file = tmp_path / "invalid-action.md"
-        skill_file.write_text(
-            "---\nname: Invalid Action\ndescription: Test\n---\n\nContent"
-        )
+        skill_file.write_text("---\nname: Invalid Action\ndescription: Test\n---\n\nContent")
 
         mock_db_pool.fetchrow.return_value = MockRecord(
             skill_id="invalid-action",
@@ -1071,9 +1066,7 @@ class TestSkillsPendingUpdateContract:
 
 
 class TestAdminSyncRoute:
-    def test_admin_sync_returns_503_when_no_db(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_admin_sync_returns_503_when_no_db(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Admin sync returns 503 when db pool is not available."""
         monkeypatch.setenv("DAEMON_ADMIN_API_KEY", "test-secret-key")
 
@@ -1182,12 +1175,17 @@ class TestAdminSyncRoute:
         response = test_client.post("/skills/admin/sync")
 
         assert response.status_code == 401
-        assert "Missing bearer token" in response.json()["detail"]
+        assert "Missing or invalid authorization header" in response.json()["detail"]
 
     def test_admin_sync_rejects_invalid_token(
         self, app_with_mock_db: FastAPI, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Admin sync returns 403 when an invalid token is provided."""
+        """Admin sync returns 401 when an invalid token is provided.
+
+        With the new require_admin_or_device_auth dependency, an invalid token
+        that doesn't match the admin key falls through to device auth,
+        which fails with 401.
+        """
         monkeypatch.setenv("DAEMON_ADMIN_API_KEY", "test-secret-key")
         get_settings.cache_clear()
 
@@ -1197,5 +1195,35 @@ class TestAdminSyncRoute:
             headers={"Authorization": "Bearer wrong-token"},
         )
 
+        assert response.status_code == 401
+        assert "Invalid or expired access token" in response.json()["detail"]
+
+    def test_admin_sync_rejects_non_admin_device(
+        self,
+        app_with_mock_db: FastAPI,
+        fake_authenticated_device: AuthenticatedDevice,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Admin sync returns 403 when a non-admin device auth is used.
+
+        Authenticated devices without admin privilege must not trigger repo skill sync.
+        """
+        monkeypatch.setenv("DAEMON_ADMIN_API_KEY", "test-secret-key")
+        get_settings.cache_clear()
+
+        non_admin_auth = AdminOrDeviceAuth(
+            authenticated_device=fake_authenticated_device,
+            is_admin=False,
+        )
+        app_with_mock_db.dependency_overrides[skills_router.require_admin_or_device_auth] = lambda: (
+            non_admin_auth
+        )
+
+        test_client = TestClient(app_with_mock_db)
+        response = test_client.post(
+            "/skills/admin/sync",
+            headers={"Authorization": "Bearer valid-device-token"},
+        )
+
         assert response.status_code == 403
-        assert "Invalid admin bearer token" in response.json()["detail"]
+        assert "Admin access required" in response.json()["detail"]

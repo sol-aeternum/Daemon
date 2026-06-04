@@ -62,9 +62,7 @@ class MemoryStore:
         )
         return dict(row)  # type: ignore[arg-type]
 
-    async def get_conversation(
-        self, conversation_id: uuid.UUID
-    ) -> dict[str, Any] | None:
+    async def get_conversation(self, conversation_id: uuid.UUID) -> dict[str, Any] | None:
         row = await self._pool.fetchrow(
             "SELECT * FROM conversations WHERE id = $1",
             conversation_id,
@@ -323,9 +321,7 @@ class MemoryStore:
         encrypted_content = self._enc.encrypt(content) if content is not None else None
         metadata_json = json.dumps(metadata) if metadata is not None else None
         tool_calls_json = json.dumps(tool_calls) if tool_calls is not None else None
-        tool_results_json = (
-            json.dumps(tool_results) if tool_results is not None else None
-        )
+        tool_results_json = json.dumps(tool_results) if tool_results is not None else None
         encrypted_reasoning_text = (
             self._enc.encrypt(reasoning_text) if reasoning_text is not None else None
         )
@@ -504,9 +500,7 @@ class MemoryStore:
         elif confirmed is False:
             pending_statuses = ["pending", "rejected", "inactive"]
             params.append(pending_statuses)
-            conditions.append(
-                f"(valid_to IS NOT NULL OR status = ANY(${len(params)}::text[]))"
-            )
+            conditions.append(f"(valid_to IS NOT NULL OR status = ANY(${len(params)}::text[]))")
         else:
             if status is None:
                 status_list = None
@@ -739,9 +733,7 @@ class MemoryStore:
                     user_id,
                 )
                 if update_result != "UPDATE 1":
-                    raise RuntimeError(
-                        "Supersede failed to close source memory in active state"
-                    )
+                    raise RuntimeError("Supersede failed to close source memory in active state")
 
         result = cast(dict[str, Any], dict(new_row))
         result["content"] = self._enc.decrypt(result["content"])
@@ -832,9 +824,7 @@ class MemoryStore:
         source_conversation_ids: list[uuid.UUID] | None = None,
     ) -> list[dict[str, Any]]:
         embedding_str = _format_vector(query_embedding)
-        conversation_filter = [
-            str(value) for value in source_conversation_ids or []
-        ] or None
+        conversation_filter = [str(value) for value in source_conversation_ids or []] or None
 
         if category:
             rows = await self._pool.fetch(
@@ -924,9 +914,7 @@ class MemoryStore:
         """
         # By design: L0 memories are always injected, but they must remain
         # directly searchable via BM25 for explicit recall queries.
-        conversation_filter = [
-            str(value) for value in source_conversation_ids or []
-        ] or None
+        conversation_filter = [str(value) for value in source_conversation_ids or []] or None
         if category:
             rows = await self._pool.fetch(
                 """
@@ -1193,9 +1181,7 @@ class MemoryStore:
         )
         return row["count"] if row else 0
 
-    async def get_users_with_skill_candidates(
-        self, conversation_interval: int
-    ) -> list[uuid.UUID]:
+    async def get_users_with_skill_candidates(self, conversation_interval: int) -> list[uuid.UUID]:
         """Get users who have enough conversations since last nudge to trigger consolidation."""
         rows = await self._pool.fetch(
             """
@@ -1213,9 +1199,7 @@ class MemoryStore:
         )
         return [row["user_id"] for row in rows]
 
-    async def get_user_conversation_count_since_last_nudge(
-        self, user_id: uuid.UUID
-    ) -> int:
+    async def get_user_conversation_count_since_last_nudge(self, user_id: uuid.UUID) -> int:
         """Get conversations since last nudge by computing delta from total count."""
         total = await self.get_total_conversation_count(user_id)
         row = await self._pool.fetchrow(
@@ -1245,9 +1229,7 @@ class MemoryStore:
             conversation_count,
         )
 
-    async def get_autonomous_skill_candidates(
-        self, min_skills: int
-    ) -> list[dict[str, Any]]:
+    async def get_autonomous_skill_candidates(self, min_skills: int) -> list[dict[str, Any]]:
         rows = await self._pool.fetch(
             """
             SELECT
@@ -1307,13 +1289,9 @@ class MemoryStore:
             results.append(
                 {
                     "id": str(row["id"]),
-                    "content": self._enc.decrypt(row["content"])
-                    if row["content"]
-                    else "",
+                    "content": self._enc.decrypt(row["content"]) if row["content"] else "",
                     "status": row["status"],
-                    "created_at": row["created_at"].isoformat()
-                    if row["created_at"]
-                    else None,
+                    "created_at": row["created_at"].isoformat() if row["created_at"] else None,
                     "tier": row["tier"],
                 }
             )
@@ -1616,9 +1594,7 @@ class MemoryStore:
         result = dict(row)
         result["canonical_name"] = self._enc.decrypt(result["canonical_name"])
         if result.get("aliases") is not None:
-            result["aliases"] = json.loads(
-                self._enc.decrypt(json.loads(result["aliases"]))
-            )
+            result["aliases"] = json.loads(self._enc.decrypt(json.loads(result["aliases"])))
         return result
 
     async def get_entity(
@@ -1634,9 +1610,7 @@ class MemoryStore:
         result = dict(row)
         result["canonical_name"] = self._enc.decrypt(result["canonical_name"])
         if result.get("aliases") is not None:
-            result["aliases"] = json.loads(
-                self._enc.decrypt(json.loads(result["aliases"]))
-            )
+            result["aliases"] = json.loads(self._enc.decrypt(json.loads(result["aliases"])))
         return result
 
     async def get_entity_by_lookup_key(
@@ -1657,9 +1631,7 @@ class MemoryStore:
         result = dict(row)
         result["canonical_name"] = self._enc.decrypt(result["canonical_name"])
         if result.get("aliases") is not None:
-            result["aliases"] = json.loads(
-                self._enc.decrypt(json.loads(result["aliases"]))
-            )
+            result["aliases"] = json.loads(self._enc.decrypt(json.loads(result["aliases"])))
         return result
 
     async def get_entities_for_user(
@@ -1714,9 +1686,7 @@ class MemoryStore:
         result = dict(row)
         result["canonical_name"] = self._enc.decrypt(result["canonical_name"])
         if result.get("aliases") is not None:
-            result["aliases"] = json.loads(
-                self._enc.decrypt(json.loads(result["aliases"]))
-            )
+            result["aliases"] = json.loads(self._enc.decrypt(json.loads(result["aliases"])))
         return result
 
     async def link_entity_to_memory(
@@ -1955,9 +1925,7 @@ class MemoryStore:
         inserted = 0
         for mem in memories:
             encrypted_content = self._enc.encrypt(mem["content"])
-            embedding_str = (
-                _format_vector(mem["embedding"]) if mem.get("embedding") else None
-            )
+            embedding_str = _format_vector(mem["embedding"]) if mem.get("embedding") else None
             embedding_model = mem.get("embedding_model") or _default_embedding_model()
             status = mem.get("status", "active")
             memory_slot = mem.get("memory_slot")
@@ -2023,9 +1991,7 @@ class MemoryStore:
             try:
                 parsed = json.loads(raw)
             except json.JSONDecodeError:
-                logger.warning(
-                    "Invalid JSON in users.settings", extra={"value_type": "str"}
-                )
+                logger.warning("Invalid JSON in users.settings", extra={"value_type": "str"})
                 return {}
             return parsed if isinstance(parsed, dict) else {}
 
@@ -2054,9 +2020,7 @@ class MemoryStore:
         if not self._pool:
             return {}
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT settings FROM users WHERE id = $1", user_id
-            )
+            row = await conn.fetchrow("SELECT settings FROM users WHERE id = $1", user_id)
             if row and row["settings"] is not None:
                 return self._normalize_settings(row["settings"])
             return {}

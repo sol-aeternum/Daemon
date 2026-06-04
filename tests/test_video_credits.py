@@ -188,10 +188,7 @@ class FakeConnection:
             self.held_locks.append(lock)
             return transaction
 
-        if (
-            "insert into video_credit_balances" in normalized
-            and "returning balance" in normalized
-        ):
+        if "insert into video_credit_balances" in normalized and "returning balance" in normalized:
             user_id = args[0]
             amount = args[1]
             assert isinstance(user_id, uuid.UUID)
@@ -209,9 +206,7 @@ class FakeConnection:
             assert isinstance(user_id, uuid.UUID)
             assert isinstance(limit, int)
             assert isinstance(offset, int)
-            filtered = [
-                tx for tx in self.state.transactions if tx["user_id"] == user_id
-            ]
+            filtered = [tx for tx in self.state.transactions if tx["user_id"] == user_id]
             filtered.sort(key=lambda tx: tx["created_at"], reverse=True)
             return filtered[offset : offset + limit]
 
@@ -221,8 +216,7 @@ class FakeConnection:
         normalized = " ".join(query.split()).lower()
         if (
             "insert into video_credit_balances" in normalized
-            and "do update set balance = video_credit_balances.balance - $3"
-            in normalized
+            and "do update set balance = video_credit_balances.balance - $3" in normalized
         ):
             user_id, current_balance, amount = args
             assert isinstance(user_id, uuid.UUID)
@@ -259,9 +253,7 @@ def user_id() -> uuid.UUID:
 
 
 @pytest.mark.asyncio
-async def test_get_balance_defaults_to_zero(
-    dal: VideoCreditsDAL, user_id: uuid.UUID
-) -> None:
+async def test_get_balance_defaults_to_zero(dal: VideoCreditsDAL, user_id: uuid.UUID) -> None:
     assert await dal.get_balance(user_id) == 0
 
 
@@ -293,9 +285,7 @@ async def test_debit_credits_success(
 ) -> None:
     fake_state.balances[user_id] = 12
 
-    result = await dal.debit_credits(
-        user_id, 7, "video generation", reference_id="vid-123"
-    )
+    result = await dal.debit_credits(user_id, 7, "video generation", reference_id="vid-123")
 
     assert result.success is True
     assert result.message == "Credits debited successfully"

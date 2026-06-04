@@ -2,6 +2,8 @@
 
 import { ExternalLink, X } from "lucide-react";
 import type { StudioGeneration } from "../types";
+import { useAuthenticatedImageUrl, isProtectedPath } from "@/hooks/useAuthenticatedImageUrl";
+import { ensureAuthHeader } from "@/lib/auth";
 
 interface ImageLightboxProps {
   generation: StudioGeneration;
@@ -14,7 +16,40 @@ export function ImageLightbox({ generation, onClose, onUseAsReference }: ImageLi
     return null;
   }
 
-  const downloadHref = generation.imageUrl;
+  const { displayUrl, loading, error } = useAuthenticatedImageUrl(generation.imageUrl);
+
+  const handleDownload = async () => {
+    if (!generation.imageUrl) return;
+    let objectUrl: string | null = null;
+    let cleanupAnchor: HTMLAnchorElement | null = null;
+    try {
+      const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const fullUrl = generation.imageUrl.startsWith("/") ? `${apiBaseUrl}${generation.imageUrl}` : generation.imageUrl;
+      const isProtected = isProtectedPath(generation.imageUrl);
+      const headers: HeadersInit = {};
+      if (isProtected) {
+        const authHeader = await ensureAuthHeader();
+        if (authHeader) headers["Authorization"] = authHeader;
+      }
+      const response = await fetch(fullUrl, { headers });
+      if (!response.ok) throw new Error(`Download failed: ${response.status}`);
+      const blob = await response.blob();
+      objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = `${generation.modelId}-${generation.id}.png`;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      document.body.appendChild(link);
+      cleanupAnchor = link;
+      link.click();
+    } finally {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      if (cleanupAnchor && cleanupAnchor.parentNode) {
+        cleanupAnchor.parentNode.removeChild(cleanupAnchor);
+      }
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" onClick={onClose}>
@@ -31,7 +66,17 @@ export function ImageLightbox({ generation, onClose, onUseAsReference }: ImageLi
 
         <div className="grid gap-4 p-4 md:grid-cols-[1fr_280px]">
           <div className="rounded-xl border border-[var(--color-border-primary)] bg-black/20 p-2">
-            <img src={generation.imageUrl} alt={generation.prompt} className="max-h-[70vh] w-full rounded-md object-contain" />
+            {loading ? (
+              <div className="flex items-center justify-center h-64 text-[var(--color-text-muted)]">
+                Loading...
+              </div>
+            ) : error ? (
+              <div className="flex items-center justify-center h-64 text-[var(--color-text-muted)] text-sm">Failed to load image</div>
+            ) : displayUrl ? (
+              <img src={displayUrl} alt={generation.prompt} className="max-h-[70vh] w-full rounded-md object-contain" />
+            ) : (
+              <div className="flex items-center justify-center h-64 text-[var(--color-text-muted)] text-sm">Image unavailable</div>
+            )}
           </div>
 
           <div className="space-y-3 text-xs text-[var(--color-text-secondary)]">
@@ -49,13 +94,13 @@ export function ImageLightbox({ generation, onClose, onUseAsReference }: ImageLi
               />
             </div>
             <div className="space-y-2">
-              <a
-                href={downloadHref}
-                download={`${generation.modelId}-${generation.id}.png`}
-                className="block rounded-md border border-[var(--color-border-primary)] px-3 py-2 text-center text-[var(--color-text-primary)]"
+              <button
+                type="button"
+                onClick={handleDownload}
+                className="block w-full rounded-md border border-[var(--color-border-primary)] px-3 py-2 text-center text-[var(--color-text-primary)]"
               >
                 Download PNG
-              </a>
+              </button>
               <button
                 type="button"
                 className="w-full rounded-md border border-[var(--color-border-primary)] px-3 py-2 text-[var(--color-text-primary)]"
@@ -70,14 +115,13 @@ export function ImageLightbox({ generation, onClose, onUseAsReference }: ImageLi
               >
                 Copy prompt
               </button>
-              <a
-                href={generation.imageUrl}
-                target="_blank"
-                rel="noreferrer"
+              <button
+                type="button"
+                onClick={handleDownload}
                 className="inline-flex w-full items-center justify-center gap-1 rounded-md border border-[var(--color-border-primary)] px-3 py-2 text-[var(--color-text-primary)]"
               >
                 Open image <ExternalLink className="h-3 w-3" />
-              </a>
+              </button>
             </div>
           </div>
         </div>

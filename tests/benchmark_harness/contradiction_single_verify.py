@@ -39,20 +39,22 @@ if str(PROJECT_ROOT) not in sys.path:
 # ------------------------------------------------------------------
 
 # Explicitly load .env before importing litellm-dependent modules
-import dotenv
+import dotenv  # noqa: E402
+
 dotenv.load_dotenv()
 
-import orchestrator.memory.dedup as _dedup
+import orchestrator.memory.dedup as _dedup  # noqa: E402
 
 # Patch 1: contradiction model + provider.order routing
 _dedup.BENCHMARK_CONTRADICTION_MODEL = "openrouter/deepseek/deepseek-v3.2"
 _dedup.BENCHMARK_CONTRADICTION_ENDPOINT_SLUG = "novita"
-print(f"[patched] dedup.BENCHMARK_CONTRADICTION_MODEL = 'openrouter/deepseek/deepseek-v3.2'")
-print(f"[patched] dedup.BENCHMARK_CONTRADICTION_ENDPOINT_SLUG = 'novita'")
+print("[patched] dedup.BENCHMARK_CONTRADICTION_MODEL = 'openrouter/deepseek/deepseek-v3.2'")
+print("[patched] dedup.BENCHMARK_CONTRADICTION_ENDPOINT_SLUG = 'novita'")
 
 # Patch 2: catch DedupBenchmarkSamplingError on fingerprint drift
 _DedupBenchmarkSamplingError = _dedup.DedupBenchmarkSamplingError
 _dedup_check_orig = _dedup.check_contradiction
+
 
 async def _patched_check_contradiction(
     existing_content: str, new_content: str, benchmark_mode: bool | None = None
@@ -63,12 +65,14 @@ async def _patched_check_contradiction(
         print(f"[patched] DedupBenchmarkSamplingError caught (advisory): {e}")
         return False, ""
 
+
 _dedup.check_contradiction = _patched_check_contradiction
-print(f"[patched] dedup.check_contradiction -> catches DedupBenchmarkSamplingError")
+print("[patched] dedup.check_contradiction -> catches DedupBenchmarkSamplingError")
 
 # ------------------------------------------------------------------
 # SINGLE-CALL VERIFICATION PROBE
 # ------------------------------------------------------------------
+
 
 async def run_contradiction_probe() -> dict[str, Any]:
     fact_a = "User lives in Sydney, Australia"
@@ -147,14 +151,14 @@ def write_result_markdown(same_result: dict[str, Any], contradict_result: dict[s
 
     # The model correctly returns NO contradiction for identical facts
     # and YES contradiction for contradicting facts
-    same_detect_ok = same_result.get("contradiction_detected") == False
-    contradict_detect_ok = contradict_result.get("contradiction_detected") == True
+    same_detect_ok = same_result.get("contradiction_detected") == False  # noqa: E712
+    contradict_detect_ok = contradict_result.get("contradiction_detected") == True  # noqa: E712
 
     overall_pass = same_pass and contradict_pass and same_detect_ok and contradict_detect_ok
 
     report = f"""# Contradiction Single-Call Verification (Wave 0)
 
-**Generated:** {datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%S+00:00')}
+**Generated:** {datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S+00:00")}
 **Scope:** Tests-only — no production code changes
 **Verdict:** {"PASS" if overall_pass else "FAIL"}
 
@@ -247,8 +251,8 @@ def main() -> int:
     print("Contradiction Single-Call Verification")
     print("=" * 60)
     print(f"BENCHMARK_MODE: {os.environ.get('BENCHMARK_MODE')!r}")
-    print(f"Model: openrouter/deepseek/deepseek-v3.2")
-    print(f"Provider order: ['novita']")
+    print("Model: openrouter/deepseek/deepseek-v3.2")
+    print("Provider order: ['novita']")
     print("-" * 60)
 
     same_result = asyncio.run(run_contradiction_probe())
@@ -258,8 +262,8 @@ def main() -> int:
 
     same_pass = same_result["success"] and same_result["error"] is None
     contradict_pass = contradict_result["success"] and contradict_result["error"] is None
-    same_detect_ok = same_result.get("contradiction_detected") == False
-    contradict_detect_ok = contradict_result.get("contradiction_detected") == True
+    same_detect_ok = same_result.get("contradiction_detected") == False  # noqa: E712
+    contradict_detect_ok = contradict_result.get("contradiction_detected") == True  # noqa: E712
     overall_pass = same_pass and contradict_pass and same_detect_ok and contradict_detect_ok
 
     print(f"\nProbe 1 (identical): {'PASS' if same_pass else 'FAIL'}")

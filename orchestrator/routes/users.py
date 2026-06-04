@@ -3,14 +3,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Any
-import uuid
 
+from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.db import get_app_state, AppState
 from orchestrator.memory.injection import PERSONALITY_PRESETS
 
 router = APIRouter(prefix="/users", tags=["users"])
-
-DEFAULT_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
 class SettingsUpdate(BaseModel):
@@ -18,12 +16,15 @@ class SettingsUpdate(BaseModel):
 
 
 @router.get("/me/settings")
-async def get_settings(app_state: AppState = Depends(get_app_state)):
+async def get_settings(
+    app_state: AppState = Depends(get_app_state),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
+):
     """Get current user settings."""
     store = app_state.memory_store
     if store is None:
         raise HTTPException(status_code=503, detail="Memory store unavailable")
-    settings = await store.get_user_settings(DEFAULT_USER_ID)
+    settings = await store.get_user_settings(auth.user_id)
 
     return settings or {
         "preferences": {
@@ -43,6 +44,7 @@ async def get_settings(app_state: AppState = Depends(get_app_state)):
 async def update_settings(
     update: SettingsUpdate,
     app_state: AppState = Depends(get_app_state),
+    auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
     """Update user settings (partial merge)."""
     store = app_state.memory_store
@@ -50,26 +52,26 @@ async def update_settings(
         raise HTTPException(status_code=503, detail="Memory store unavailable")
 
     # Get current settings
-    current = await store.get_user_settings(DEFAULT_USER_ID) or {}
+    current = await store.get_user_settings(auth.user_id) or {}
 
     # Deep merge
     if update.preferences:
         current.setdefault("preferences", {})
         for key, value in update.preferences.items():
-            if isinstance(value, dict) and isinstance(
-                current["preferences"].get(key), dict
-            ):
+            if isinstance(value, dict) and isinstance(current["preferences"].get(key), dict):
                 current["preferences"][key].update(value)
             else:
                 current["preferences"][key] = value
 
     # Save
-    await store.update_user_settings(DEFAULT_USER_ID, current)
+    await store.update_user_settings(auth.user_id, current)
     return {"status": "updated", "settings": current}
 
 
 @router.get("/me/settings/presets")
-async def list_presets():
+async def list_presets(
+    auth: AuthenticatedDevice = Depends(require_device_auth),
+):
     """List available personality presets."""
     return {
         "presets": [

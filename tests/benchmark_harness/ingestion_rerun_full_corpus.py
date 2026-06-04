@@ -19,7 +19,6 @@ Scope: tests/ only. No production code changes.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import subprocess
@@ -102,7 +101,9 @@ _dedup.check_contradiction = _patched_check_contradiction
 print(f"[patched] orchestrator.memory.dedup.check_contradiction -> catches DedupBenchmarkSamplingError (advisory)")
 """
 
-RESET_CODE = PATCH_CODE + """
+RESET_CODE = (
+    PATCH_CODE
+    + """
 from pathlib import Path
 import asyncio, sys
 sys.path.insert(0, '{}')
@@ -134,8 +135,11 @@ async def main():
 
 asyncio.run(main())
 """.format(str(PROJECT_ROOT), str(CHECKPOINT), str(RESULT_FILE))
+)
 
-INGEST_CODE = PATCH_CODE + """
+INGEST_CODE = (
+    PATCH_CODE
+    + """
 import asyncio, sys, json
 sys.path.insert(0, '{}')
 from orchestrator.eval.runner import LongMemEvalRunner
@@ -156,6 +160,7 @@ runner = LongMemEvalRunner(
 asyncio.run(runner.ingest())
 print("INGEST_OK")
 """.format(str(PROJECT_ROOT), str(OUTPUT_DIR), str(DATASET))
+)
 
 
 def run_subprocess(code: str, label: str) -> tuple[int, str]:
@@ -183,8 +188,15 @@ def load_checkpoint_or_fail() -> dict[str, Any]:
 
 def summarize(checkpoint: dict[str, Any]) -> dict[str, Any]:
     from tests.benchmark_harness.guardrails import _canonical_outcome
+
     results = checkpoint.get("phases", {}).get("ingest", {}).get("results", {})
-    outcome_counts: dict[str, int] = {"completed": 0, "errored": 0, "empty": 0, "timed_out": 0, "unknown": 0}
+    outcome_counts: dict[str, int] = {
+        "completed": 0,
+        "errored": 0,
+        "empty": 0,
+        "timed_out": 0,
+        "unknown": 0,
+    }
     status_counts: dict[str, int] = {"complete": 0, "extraction_failed": 0}
     errors: list[str] = []
     for r in results.values():
@@ -221,7 +233,7 @@ def write_report(
     # Full-corpus baseline: no halt verdict until after evaluation
     report = f"""# Wave 0 — Full-Corpus Baseline
 
-**Generated:** {datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ')}
+**Generated:** {datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")}
 **Status:** BASELINE CAPTURED — not yet evaluated
 **Harness:** `tests/benchmark_harness/ingestion_rerun_full_corpus.py`
 
@@ -232,10 +244,10 @@ def write_report(
 | Item | Value |
 |---|---|
 | Dataset | `{dataset_path}` |
-| Sessions (total) | {summary['total_sessions']} |
-| Completed (outcome) | {outcome.get('completed', 0)} |
-| Errored (outcome) | {outcome.get('errored', 0)} |
-| ERRORED % | {summary['errored_rate']:.1f}% |
+| Sessions (total) | {summary["total_sessions"]} |
+| Completed (outcome) | {outcome.get("completed", 0)} |
+| Errored (outcome) | {outcome.get("errored", 0)} |
+| ERRORED % | {summary["errored_rate"]:.1f}% |
 | Reset exit code | {reset_rc} |
 | Ingest exit code | {ingest_rc} |
 | Wall time | {elapsed:.0f}s |
@@ -244,21 +256,21 @@ def write_report(
 
 | Outcome | Count |
 |---|---|
-| completed | {outcome.get('completed', 0)} |
-| errored | {outcome.get('errored', 0)} |
-| empty | {outcome.get('empty', 0)} |
+| completed | {outcome.get("completed", 0)} |
+| errored | {outcome.get("errored", 0)} |
+| empty | {outcome.get("empty", 0)} |
 
 ## Status Counts (from checkpoint `status` field)
 
 | Status | Count |
 |---|---|
-| complete | {status.get('complete', 0)} |
-| extraction_failed | {status.get('extraction_failed', 0)} |
+| complete | {status.get("complete", 0)} |
+| extraction_failed | {status.get("extraction_failed", 0)} |
 
 ## Sample Errors (first 5)
 
 ```
-{chr(10).join(summary['sample_errors']) if summary['sample_errors'] else 'None'}
+{chr(10).join(summary["sample_errors"]) if summary["sample_errors"] else "None"}
 ```
 
 ## Patches Applied (in subprocess)
@@ -276,7 +288,7 @@ def write_report(
 | Guardrail | Outcome |
 |---|---|
 | G1: Provider health check | (not shown in this report — run with `--check` flag to verify pre-run) |
-| G3: Errored-floor (5%) | {'PASS' if summary['errored_rate'] <= 5 else 'FAIL'} — {summary['errored_rate']:.1f}% |
+| G3: Errored-floor (5%) | {"PASS" if summary["errored_rate"] <= 5 else "FAIL"} — {summary["errored_rate"]:.1f}% |
 | G5: Credit instrumentation | log-only, not blocking |
 
 ## Bounded-Variance Framing
@@ -323,6 +335,7 @@ def main() -> int:
     # G1: provider health check (best-effort, not blocking in this harness)
     try:
         from tests.benchmark_harness.guardrails import run_provider_health_check
+
         print("\n[FULL_CORPUS] Running G1: provider health check...")
         run_provider_health_check(provider_slug="openai")
         print("[FULL_CORPUS] G1: provider healthy — proceeding")
@@ -368,6 +381,7 @@ def main() -> int:
     try:
         checkpoint = load_checkpoint_or_fail()
         from tests.benchmark_harness.guardrails import check_errored_floor
+
         g3_result = check_errored_floor(checkpoint)
         print(f"[FULL_CORPUS] G3: errored floor PASS ({g3_result['errored_rate']:.1f}%)")
     except FileNotFoundError:
@@ -396,6 +410,7 @@ def main() -> int:
     # G5: Credit instrumentation (log only)
     try:
         from tests.benchmark_harness.guardrails import log_credit_instrumentation
+
         log_credit_instrumentation("post_ingestion")
     except Exception as e:
         print(f"[FULL_CORPUS] G5: credit instrumentation error (non-blocking): {e}")

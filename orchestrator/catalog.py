@@ -85,11 +85,7 @@ def get_catalog() -> dict[str, object]:
     featured: list[dict[str, object]] = []
     for model in FEATURED_MODELS:
         badges = list(model.badges)
-        if (
-            "new" in badges
-            and model.added_at
-            and (now - model.added_at > NEW_BADGE_TTL_SECONDS)
-        ):
+        if "new" in badges and model.added_at and (now - model.added_at > NEW_BADGE_TTL_SECONDS):
             badges.remove("new")
         featured.append(
             {

@@ -7,14 +7,12 @@ Scope: tests/ only. No production code changes.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import os
 import subprocess
 import sys
 import time
-import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -81,11 +79,13 @@ def _sha256_text(value: str) -> str:
 def canonicalize_facts_for_hash(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized = []
     for f in facts:
-        normalized.append({
-            "content": f.get("content", "").strip(),
-            "category": f.get("category", "").strip(),
-            "slot": f.get("slot"),
-        })
+        normalized.append(
+            {
+                "content": f.get("content", "").strip(),
+                "category": f.get("category", "").strip(),
+                "slot": f.get("slot"),
+            }
+        )
     normalized.sort(key=lambda x: (x["content"], x["category"], str(x["slot"])))
     return normalized
 
@@ -98,7 +98,9 @@ def fact_list_sha256(facts: list[dict[str, Any]]) -> str:
 def run_reset(run_dir: Path) -> tuple[int, str]:
     run_dir_str = str(run_dir)
 
-    reset_code = PATCH_CODE + f"""
+    reset_code = (
+        PATCH_CODE
+        + f"""
 import asyncio, sys, json
 from pathlib import Path
 sys.path.insert(0, '{PROJECT_ROOT}')
@@ -128,8 +130,9 @@ async def main():
 
 asyncio.run(main())
 """
+    )
 
-    print(f"\n[PRESERVE] === RESET ===")
+    print("\n[PRESERVE] === RESET ===")
     result = subprocess.run(
         [sys.executable, "-c", reset_code],
         env=BASE_ENV,
@@ -148,7 +151,9 @@ def run_ingest(run_dir: Path) -> tuple[int, str]:
     run_dir_str = str(run_dir)
     dataset_str = str(DATASET)
 
-    ingest_code = PATCH_CODE + f"""
+    ingest_code = (
+        PATCH_CODE
+        + f"""
 import asyncio, sys, json, uuid
 from pathlib import Path
 sys.path.insert(0, '{PROJECT_ROOT}')
@@ -311,8 +316,9 @@ datetime = datetime_module.datetime
 
 asyncio.run(main())
 """
+    )
 
-    print(f"\n[PRESERVE] === INGEST ===")
+    print("\n[PRESERVE] === INGEST ===")
     result = subprocess.run(
         [sys.executable, "-c", ingest_code],
         env=BASE_ENV,
@@ -360,14 +366,20 @@ def main() -> int:
         metrics = run_dir / "run_metrics.json"
         artifacts_ok = extraction_log.exists() and memories.exists() and metrics.exists()
 
-        run_results.append({
-            "run": run_num,
-            "status": "success" if (ingest_rc == 0 and artifacts_ok) else ("artifacts_missing" if ingest_rc == 0 else "ingest_failed"),
-            "elapsed": elapsed,
-            "rc": ingest_rc,
-        })
+        run_results.append(
+            {
+                "run": run_num,
+                "status": "success"
+                if (ingest_rc == 0 and artifacts_ok)
+                else ("artifacts_missing" if ingest_rc == 0 else "ingest_failed"),
+                "elapsed": elapsed,
+                "rc": ingest_rc,
+            }
+        )
 
-        print(f"\n[PRESERVE] Run {run_num} complete in {elapsed:.0f}s - {run_results[-1]['status']}")
+        print(
+            f"\n[PRESERVE] Run {run_num} complete in {elapsed:.0f}s - {run_results[-1]['status']}"
+        )
 
     print(f"\n{'=' * 60}")
     print("RUN SUMMARY")

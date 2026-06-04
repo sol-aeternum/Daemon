@@ -102,7 +102,7 @@ async def test_alignment():
             rows = await get_memories_for_conversation(conn, conversation_id)
 
         if not rows:
-            print(f"  ❌ ZERO memories for this session")
+            print("  ❌ ZERO memories for this session")
             continue
 
         print(f"  ✓ Found {len(rows)} memories from answer session")
@@ -132,33 +132,29 @@ async def test_alignment():
             )
 
         if not similarities:
-            print(f"  ❌ No valid embeddings found")
+            print("  ❌ No valid embeddings found")
             continue
 
         similarities.sort(key=lambda x: x["similarity"], reverse=True)
 
-        print(f"\n  Similarity Results (top 3):")
+        print("\n  Similarity Results (top 3):")
         best_sim = similarities[0]["similarity"]
         for s in similarities[:3]:
             marker = "⭐ BEST" if s == similarities[0] else ""
             print(f"    - {s['similarity']:.4f} [{s['category']}/{s['slot']}] {marker}")
 
-        print(f"\n  Analysis:")
+        print("\n  Analysis:")
         if best_sim >= 0.70:
-            print(f"    ✓ HIGH similarity memory exists (0.70+)")
-            print(
-                f"      → Fact was extracted correctly, retrieval may be failing to find it"
-            )
+            print("    ✓ HIGH similarity memory exists (0.70+)")
+            print("      → Fact was extracted correctly, retrieval may be failing to find it")
         elif best_sim >= 0.50:
-            print(f"    ⚠ MODERATE similarity (0.50-0.70)")
-            print(
-                f"      → Partial alignment - fact exists but not strongly related to question"
-            )
+            print("    ⚠ MODERATE similarity (0.50-0.70)")
+            print("      → Partial alignment - fact exists but not strongly related to question")
         else:
-            print(f"    ❌ LOW similarity (<0.50)")
-            print(f"      → Extraction captured session content but NOT in a form")
-            print(f"        that's semantically close to how the question is phrased")
-            print(f"      → This is the extraction-to-query alignment gap")
+            print("    ❌ LOW similarity (<0.50)")
+            print("      → Extraction captured session content but NOT in a form")
+            print("        that's semantically close to how the question is phrased")
+            print("      → This is the extraction-to-query alignment gap")
 
     await pool.close()
     print(f"\n{'=' * 70}")

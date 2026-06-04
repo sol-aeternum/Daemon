@@ -17,9 +17,7 @@ from orchestrator.eval.runner import (
 )
 
 
-def add_shared_path_arguments(
-    parser: argparse.ArgumentParser, *, require_dataset: bool
-) -> None:
+def add_shared_path_arguments(parser: argparse.ArgumentParser, *, require_dataset: bool) -> None:
     parser.add_argument(
         "--dataset",
         type=Path,
@@ -39,18 +37,13 @@ def add_shared_path_arguments(
         "--checkpoint",
         type=Path,
         default=None,
-        help=(
-            "Optional checkpoint file path "
-            f"(default: <output-dir>/{CHECKPOINT_FILENAME})"
-        ),
+        help=(f"Optional checkpoint file path (default: <output-dir>/{CHECKPOINT_FILENAME})"),
     )
     parser.add_argument(
         "--score-output",
         type=Path,
         default=None,
-        help=(
-            f"Optional score summary file path (default: <output-dir>/{SCORE_FILENAME})"
-        ),
+        help=(f"Optional score summary file path (default: <output-dir>/{SCORE_FILENAME})"),
     )
     parser.add_argument(
         "--limit",

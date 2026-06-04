@@ -44,9 +44,7 @@ class JinaReaderStrategy:
                 response = await client.get(jina_url, headers=headers)
 
                 if response.status_code >= 400:
-                    logger.debug(
-                        f"Jina Reader returned {response.status_code} for {url}"
-                    )
+                    logger.debug(f"Jina Reader returned {response.status_code} for {url}")
                     return None
 
                 content = response.text

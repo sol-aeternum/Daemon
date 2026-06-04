@@ -11,11 +11,7 @@ from tests.benchmark_longmemeval.failure_dataset import (
 
 
 def _load_generated_rows() -> list[dict[str, object]]:
-    return [
-        json.loads(line)
-        for line in FAILURES_PATH.read_text().splitlines()
-        if line.strip()
-    ]
+    return [json.loads(line) for line in FAILURES_PATH.read_text().splitlines() if line.strip()]
 
 
 def test_failure_dataset_uses_union_semantics_across_locked_runs() -> None:
@@ -83,7 +79,5 @@ def test_failure_dataset_captures_run_scoped_extraction_anomalies() -> None:
 def test_failure_dataset_file_is_in_sync_with_builder() -> None:
     assert FAILURES_PATH.exists(), f"Failure dataset missing: {FAILURES_PATH}"
 
-    expected_lines = [
-        json.dumps(row, sort_keys=True) for row in build_failure_dataset_rows()
-    ]
+    expected_lines = [json.dumps(row, sort_keys=True) for row in build_failure_dataset_rows()]
     assert FAILURES_PATH.read_text().splitlines() == expected_lines

@@ -106,9 +106,7 @@ async def run_council(
         config = CouncilConfig()
 
     explicit_fields = getattr(config, "model_fields_set", set())
-    has_explicit_roster = (
-        isinstance(explicit_fields, set) and "roster" in explicit_fields
-    )
+    has_explicit_roster = isinstance(explicit_fields, set) and "roster" in explicit_fields
     roster = config.roster if has_explicit_roster else load_roster(config.preset_name)
     config.roster = roster
     role_timeouts = load_role_timeouts(config.preset_name)
@@ -150,7 +148,7 @@ async def run_council(
         models_complete: int,
         models_total: int,
     ) -> None:
-        event = {
+        event = {  # noqa: F841
             "stage": stage,
             "current_round": current_round,
             "total_rounds": total_rounds,
@@ -177,9 +175,7 @@ async def run_council(
         roster,
         timeout_by_role=role_timeouts,
     )
-    session.rounds.append(
-        CouncilRound(round_number=1, prompt=prompt, responses=round_1_responses)
-    )
+    session.rounds.append(CouncilRound(round_number=1, prompt=prompt, responses=round_1_responses))
     round_1_success = sum(
         1 for response in round_1_responses if not response.content.startswith("Error:")
     )
@@ -214,9 +210,7 @@ async def run_council(
             )
         )
         round_success = sum(
-            1
-            for response in round_2_responses
-            if not response.content.startswith("Error:")
+            1 for response in round_2_responses if not response.content.startswith("Error:")
         )
         await capture_progress(
             stage=f"round_{round_num}",

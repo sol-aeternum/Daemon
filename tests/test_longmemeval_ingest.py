@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import pytest_asyncio
 
 from tests.longmemeval.ingest import (
     TEST_USER_EMAIL,
@@ -68,9 +65,7 @@ class TestIngestSession:
         conversation_id = uuid.uuid4()
         mock_store.create_conversation.return_value = {"id": conversation_id}
 
-        with patch(
-            "tests.longmemeval.ingest.process_extraction", new_callable=AsyncMock
-        ):
+        with patch("tests.longmemeval.ingest.process_extraction", new_callable=AsyncMock):
             with patch(
                 "tests.longmemeval.ingest.poll_extraction_complete",
                 new_callable=AsyncMock,
@@ -96,9 +91,7 @@ class TestIngestSession:
     ):
         mock_store.create_conversation.return_value = {"id": uuid.uuid4()}
 
-        with patch(
-            "tests.longmemeval.ingest.process_extraction", new_callable=AsyncMock
-        ):
+        with patch("tests.longmemeval.ingest.process_extraction", new_callable=AsyncMock):
             with patch(
                 "tests.longmemeval.ingest.poll_extraction_complete",
                 new_callable=AsyncMock,
@@ -124,9 +117,7 @@ class TestIngestSession:
         ]
         mock_store.create_conversation.return_value = {"id": uuid.uuid4()}
 
-        with patch(
-            "tests.longmemeval.ingest.process_extraction", new_callable=AsyncMock
-        ):
+        with patch("tests.longmemeval.ingest.process_extraction", new_callable=AsyncMock):
             with patch(
                 "tests.longmemeval.ingest.poll_extraction_complete",
                 new_callable=AsyncMock,
@@ -281,12 +272,8 @@ class TestConstants:
 
 class TestCorpusPlanning:
     def test_normalize_session_messages_collapses_whitespace(self):
-        normalized_a = normalize_session_messages(
-            [{"role": "User", "content": "hello   world\n"}]
-        )
-        normalized_b = normalize_session_messages(
-            [{"role": "user", "content": "hello world"}]
-        )
+        normalized_a = normalize_session_messages([{"role": "User", "content": "hello   world\n"}])
+        normalized_b = normalize_session_messages([{"role": "user", "content": "hello world"}])
 
         assert normalized_a == normalized_b
 
@@ -327,9 +314,7 @@ class TestCorpusPlanning:
         assert plan.question_corpus_refs["q2"] == (shared_key,)
 
         shared_entry = next(
-            session
-            for session in plan.corpus_sessions
-            if session.corpus_key == shared_key
+            session for session in plan.corpus_sessions if session.corpus_key == shared_key
         )
         assert shared_entry.canonical_session_id == "session-a"
         assert shared_entry.raw_session_ids == ("session-a", "session-c")

@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { Sparkles } from "lucide-react";
 import { useStudio } from "../StudioProvider";
 import { useImageGeneration } from "../hooks/useImageGeneration";
+import { useAuthenticatedImageUrl } from "@/hooks/useAuthenticatedImageUrl";
 
 interface PromptInputProps {
   mode?: "image" | "video";
@@ -11,6 +12,18 @@ interface PromptInputProps {
   videoGenerateDisabled?: boolean;
   videoGenerateDisabledReason?: string | null;
   videoButtonLabel?: string;
+}
+
+function ReferenceImagePreview({ url }: { url: string }) {
+  const { displayUrl, loading, error } = useAuthenticatedImageUrl(url);
+
+  if (loading) {
+    return <div className="h-24 w-full rounded-md bg-[var(--color-bg-tertiary)] animate-pulse" />;
+  }
+  if (error || !displayUrl) {
+    return <div className="h-24 w-full rounded-md bg-[var(--color-bg-tertiary)] flex items-center justify-center text-[var(--color-text-muted)] text-xs">Failed to load</div>;
+  }
+  return <img src={displayUrl} alt="Reference" className="h-24 w-full rounded-md object-cover" />;
 }
 
 export function PromptInput({
@@ -54,7 +67,7 @@ export function PromptInput({
 
       {referenceImage && (
         <div className="mt-3 rounded-lg border border-[var(--color-border-primary)] p-2">
-          <img src={referenceImage.url} alt="Reference" className="h-24 w-full rounded-md object-cover" />
+          <ReferenceImagePreview url={referenceImage.url} />
           <button
             type="button"
             className="mt-2 w-full rounded-md border border-[var(--color-border-primary)] px-2 py-1 text-xs text-[var(--color-text-secondary)]"

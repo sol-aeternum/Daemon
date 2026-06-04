@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { ensureAuthHeader } from "@/lib/auth";
 
 export interface Memory {
   id: string;
@@ -45,9 +46,10 @@ export function useMemories() {
     process.env.NEXT_PUBLIC_API_URL ||
     (process.env.NODE_ENV === "development" ? "http://localhost:8000" : "");
 
-  const getAuthHeaders = useCallback((): Record<string, string> => {
-    const apiKey = typeof window !== "undefined" ? localStorage.getItem("daemon_api_key") || "" : "";
-    return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+  const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
+    const header = await ensureAuthHeader();
+    if (!header) return {};
+    return { Authorization: header };
   }, []);
 
   const apiCandidates = useCallback(
@@ -124,7 +126,7 @@ export function useMemories() {
         const url = `/memories${queryString ? `?${queryString}` : ""}`;
 
         const response = await apiFetch(url, {
-          headers: getAuthHeaders(),
+          headers: await getAuthHeaders(),
         });
 
         if (!response.ok) {
@@ -177,7 +179,7 @@ export function useMemories() {
       try {
         const response = await apiFetch(`/memories/${id}`, {
           method: "DELETE",
-          headers: getAuthHeaders(),
+          headers: await getAuthHeaders(),
         });
 
         if (!response.ok) {
@@ -212,7 +214,7 @@ export function useMemories() {
       try {
         const response = await apiFetch(`/memories/${id}/correct`, {
           method: "POST",
-          headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+          headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) },
           body: JSON.stringify({ content, category }),
         });
 
@@ -245,7 +247,7 @@ export function useMemories() {
     async (id: string): Promise<TrailItem[]> => {
       try {
         const response = await apiFetch(`/memories/${id}/trail`, {
-          headers: getAuthHeaders(),
+          headers: await getAuthHeaders(),
         });
 
         if (!response.ok) {

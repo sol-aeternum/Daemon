@@ -44,9 +44,7 @@ class ArchiveOrgStrategy:
                 snapshots: dict[str, object] = cast(
                     dict[str, object], data.get("archived_snapshots", {})
                 )
-                closest: dict[str, object] = cast(
-                    dict[str, object], snapshots.get("closest", {})
-                )
+                closest: dict[str, object] = cast(dict[str, object], snapshots.get("closest", {}))
 
                 if not closest or not cast(bool, closest.get("available", False)):
                     logger.debug(f"No archive snapshot available for {url}")
@@ -68,15 +66,11 @@ class ArchiveOrgStrategy:
                         )
 
                         # Check if snapshot is within 90 days
-                        if datetime.now(timezone.utc) - snapshot_time > timedelta(
-                            days=90
-                        ):
+                        if datetime.now(timezone.utc) - snapshot_time > timedelta(days=90):
                             logger.debug(f"Archive snapshot too old for {url}")
                             return None
                     except (ValueError, IndexError):
-                        logger.warning(
-                            f"Invalid timestamp format for {url}: {timestamp_str}"
-                        )
+                        logger.warning(f"Invalid timestamp format for {url}: {timestamp_str}")
                         return None
                 else:
                     logger.warning(f"Invalid timestamp for {url}: {timestamp_str}")

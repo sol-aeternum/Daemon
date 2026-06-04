@@ -1,21 +1,22 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { ChatEvent, isToolCallEvent, isToolResultEvent } from "../lib/events";
+import { ensureAuthHeader } from "../lib/auth";
 import { Download, Maximize2, X, Loader2, ChevronRight, Check, Volume2, Play, Pause, Palette } from "lucide-react";
 import { VideoPlayer } from "./VideoPlayer";
-
-export interface ToolExecution {
-  call: ChatEvent;
-  result?: ChatEvent;
-}
-
-interface ToolCallBlockProps {
-  execution: ToolExecution;
-}
+import { useAuthenticatedImageUrl } from "../hooks/useAuthenticatedImageUrl";
 
 type JsonRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null;
+}
+
+function sanitizeProtectedArtifactPaths(text: string): string {
+  return text
+    .replace(/\/generated-files\/[^\s"'`\\]+/g, "[protected generated file]")
+    .replace(/\/generated-audio\/[^\s"'`\\]+/g, "[protected generated audio]")
+    .replace(/\/generated-images\/[^\s"'`\\]+/g, "[protected generated image]")
+    .replace(/\/api\/images\/[^\s"'`\\]+/g, "[protected image]");
 }
 
 function getSpawnMode(call: ChatEvent): string | null {
@@ -37,21 +38,87 @@ function getSpawnMode(call: ChatEvent): string | null {
   return typeof mode === "string" ? mode : null;
 }
 
+type ToolResultEvent = ChatEvent & { type: "tool_result"; name: string; result: unknown };
+
+function deriveImagePath(result: ToolResultEvent | null, _isSpawnVideoCall: boolean): string | null {
+  if (!result) return null;
+  try {
+    const raw = result.result;
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const imgPath = parsed?.data?.image_path ?? parsed?.image_path;
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+    if (typeof imgPath === "string" && imgPath.startsWith("/generated-images/")) {
+      return `${apiUrl}${imgPath}`;
+    }
+  } catch {}
+  return null;
+}
+
+export interface ToolExecution {
+  call: ChatEvent;
+  result?: ChatEvent;
+}
+
+interface ToolCallBlockProps {
+  execution: ToolExecution;
+}
+
 export function ToolCallBlock({ execution }: ToolCallBlockProps) {
   const { call: rawCall, result: rawResult } = execution;
   const [isExpanded, setIsExpanded] = useState(false);
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
+  const [imageBlobUrl, setImageBlobUrl] = useState<string | null>(null);
+  const [imageBlobLoadError, setImageBlobLoadError] = useState(false);
+
+  const result = rawResult && isToolResultEvent(rawResult) ? rawResult : null;
+
+  const spawnMode = getSpawnMode(rawCall);
+  const isVideoRequested = spawnMode === "video";
+  const isAudioRequested = spawnMode === "audio";
+
+  const imagePath = deriveImagePath(result, isVideoRequested);
+
+  useEffect(() => {
+    if (!imagePath) return;
+    let revoked = false;
+    const controller = new AbortController();
+
+    async function loadBlob() {
+      if (!imagePath) return;
+      const authHeader = await ensureAuthHeader();
+      const headers: HeadersInit = {};
+      if (authHeader) headers["Authorization"] = authHeader;
+
+      try {
+        const res = await fetch(imagePath as string, { headers, signal: controller.signal });
+        if (!res.ok) throw new Error(`fetch ${res.status}`);
+        const blob = await res.blob();
+        if (revoked) return;
+        const objectUrl = URL.createObjectURL(blob);
+        setImageBlobUrl(objectUrl);
+        setImageBlobLoadError(false);
+      } catch {
+        if (!revoked) setImageBlobLoadError(true);
+      }
+    }
+
+    loadBlob();
+    return () => {
+      revoked = true;
+      controller.abort();
+      setImageBlobUrl((current) => {
+        if (current) URL.revokeObjectURL(current);
+        return null;
+      });
+    };
+  }, [imagePath]);
 
   if (!isToolCallEvent(rawCall)) {
     return null;
   }
-  const call = rawCall;
-  const spawnMode = getSpawnMode(call);
-  const isVideoRequested = spawnMode === "video";
-  const isAudioRequested = spawnMode === "audio";
-  const isSpawnVideoCall = call.name === "spawn_agent" && isVideoRequested;
 
-  const result = rawResult && isToolResultEvent(rawResult) ? rawResult : null;
+  const call = rawCall;
+  const isSpawnVideoCall = call.name === "spawn_agent" && isVideoRequested;
 
   const resultText = (() => {
     if (!result) return "";
@@ -91,13 +158,12 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
   // 2. Result State
   let isError = false;
   let errorMessage: string | null = null;
-  let imagePath: string | null = null;
   let audioPath: string | null = null;
   let videoPath: string | null = null;
   let videoDuration: number | null = null;
   let refunded: boolean | null = null;
   let prompt: string | null = null;
-  
+
   try {
     const raw = result.result;
     const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
@@ -133,12 +199,11 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
     if (typeof imgPath === "string" && imgPath.startsWith("/generated-images/")) {
-      imagePath = `${apiUrl}${imgPath}`;
       isError = false;
     }
 
     if (typeof audPath === "string" && audPath.startsWith("/generated-audio/")) {
-      audioPath = `${apiUrl}${audPath}`;
+      audioPath = audPath;
       isError = false;
     }
 
@@ -219,12 +284,22 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
         )}
         
         <div className="relative group rounded-xl overflow-hidden border border-[var(--color-border-primary)] bg-[var(--color-bg-tertiary)] shadow-sm max-w-md transition-all hover:shadow-md">
-          <img
-            src={imagePath}
-            alt={prompt || "Generated image"}
-            className="w-full h-auto max-h-96 object-cover cursor-pointer hover:opacity-95 transition-opacity"
-            onClick={() => setIsLightboxOpen(true)}
-          />
+          {imageBlobUrl && !imageBlobLoadError ? (
+            <img
+              src={imageBlobUrl}
+              alt={prompt || "Generated image"}
+              className="w-full h-auto max-h-96 object-cover cursor-pointer hover:opacity-95 transition-opacity"
+              onClick={() => setIsLightboxOpen(true)}
+            />
+          ) : imageBlobLoadError ? (
+            <div className="w-full h-48 flex items-center justify-center bg-[var(--color-bg-secondary)] text-[var(--color-text-muted)] text-sm">
+              Failed to load image
+            </div>
+          ) : (
+            <div className="w-full h-48 flex items-center justify-center bg-[var(--color-bg-secondary)] animate-pulse">
+              <Loader2 className="w-6 h-6 text-[var(--color-text-muted)] animate-spin" />
+            </div>
+          )}
           
           <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
             <a
@@ -245,17 +320,19 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
             >
               <Maximize2 className="w-4 h-4" />
             </button>
-            <a
-              href={imagePath}
-              download={`image-${Date.now()}.png`}
-              className="p-1.5 bg-black/50 hover:bg-black/70 text-white rounded-md backdrop-blur-sm transition-colors"
-              title="Download"
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <Download className="w-4 h-4" />
-            </a>
+            {imageBlobUrl && !imageBlobLoadError ? (
+              <a
+                href={imageBlobUrl}
+                download={`image-${Date.now()}.png`}
+                className="p-1.5 bg-black/50 hover:bg-black/70 text-white rounded-md backdrop-blur-sm transition-colors"
+                title="Download"
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <Download className="w-4 h-4" />
+              </a>
+            ) : null}
           </div>
         </div>
 
@@ -268,25 +345,33 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
               <X className="w-6 h-6" />
             </button>
             
-            <img
-              src={imagePath}
-              alt={prompt || "Full resolution image"}
-              className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
-              onClick={(e) => e.stopPropagation()}
-            />
-            
-            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex gap-4" onClick={(e) => e.stopPropagation()}>
-              <a
-                href={imagePath}
-                download={`image-${Date.now()}.png`}
-                className="flex items-center gap-2 px-4 py-2 bg-[var(--color-bg-inverse)] text-[var(--color-text-inverse)] rounded-full font-medium hover:bg-[var(--color-bg-hover)] transition-colors shadow-lg"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <Download className="w-4 h-4" />
-                Download
-              </a>
-            </div>
+            {imageBlobUrl && !imageBlobLoadError ? (
+              <img
+                src={imageBlobUrl}
+                alt={prompt || "Full resolution image"}
+                className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+              />
+            ) : imageBlobLoadError ? (
+              <div className="text-white/70 text-sm">Failed to load image</div>
+            ) : (
+              <Loader2 className="w-8 h-8 text-white/50 animate-spin" />
+            )}
+
+            {imageBlobUrl && !imageBlobLoadError && (
+              <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex gap-4" onClick={(e) => e.stopPropagation()}>
+                <a
+                  href={imageBlobUrl}
+                  download={`image-${Date.now()}.png`}
+                  className="flex items-center gap-2 px-4 py-2 bg-[var(--color-bg-inverse)] text-[var(--color-text-inverse)] rounded-full font-medium hover:bg-[var(--color-bg-hover)] transition-colors shadow-lg"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <Download className="w-4 h-4" />
+                  Download
+                </a>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -342,7 +427,7 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
           <pre className={`text-xs rounded p-2 overflow-x-auto overflow-y-auto max-h-80 whitespace-pre-wrap break-words ${
             isError ? "text-[var(--color-text-secondary)] bg-[var(--color-bg-secondary)] border border-[var(--color-status-warning)]/35" : "text-[var(--color-text-secondary)] bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)]"
           }`}>
-            {resultText}
+            {sanitizeProtectedArtifactPaths(resultText)}
           </pre>
         </div>
       )}
@@ -451,6 +536,7 @@ function AudioPlayerBlock({ audioPath, prompt }: AudioPlayerBlockProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const { displayUrl, loading, error } = useAuthenticatedImageUrl(audioPath);
 
   const handlePlayPause = () => {
     if (!audioRef.current) return;
@@ -486,18 +572,21 @@ function AudioPlayerBlock({ audioPath, prompt }: AudioPlayerBlockProps) {
       )}
 
       <div className="flex items-center gap-3 p-3 bg-[var(--color-bg-tertiary)] rounded-xl border border-[var(--color-border-primary)] max-w-md">
-        <audio
-          ref={audioRef}
-          src={audioPath}
-          onTimeUpdate={handleTimeUpdate}
-          onEnded={handleEnded}
-          preload="metadata"
-        />
+        {displayUrl && !loading && !error ? (
+          <audio
+            ref={audioRef}
+            src={displayUrl}
+            onTimeUpdate={handleTimeUpdate}
+            onEnded={handleEnded}
+            preload="metadata"
+          />
+        ) : null}
 
         <button
           onClick={handlePlayPause}
+          disabled={loading || error || !displayUrl}
           className="flex-shrink-0 w-10 h-10 flex items-center justify-center bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-white rounded-full transition-colors"
-          title={isPlaying ? "Pause" : "Play"}
+          title={error ? "Audio failed to load" : loading ? "Loading audio" : isPlaying ? "Pause" : "Play"}
         >
           {isPlaying ? (
             <Pause className="w-5 h-5" />
@@ -518,16 +607,27 @@ function AudioPlayerBlock({ audioPath, prompt }: AudioPlayerBlockProps) {
           </div>
         </div>
 
-        <a
-          href={audioPath}
-          download={`sound-effect-${Date.now()}.mp3`}
-          className="flex-shrink-0 p-2 text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] rounded-lg transition-colors"
-          title="Download"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Download className="w-4 h-4" />
-        </a>
+        {displayUrl && !loading && !error ? (
+          <a
+            href={displayUrl}
+            download={`sound-effect-${Date.now()}.mp3`}
+            className="flex-shrink-0 p-2 text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] rounded-lg transition-colors"
+            title="Download"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <Download className="w-4 h-4" />
+          </a>
+        ) : (
+          <button
+            type="button"
+            disabled
+            className="flex-shrink-0 p-2 text-[var(--color-text-muted)]/50 rounded-lg cursor-not-allowed"
+            title={error ? "Audio failed to load" : "Audio download loading"}
+          >
+            <Download className="w-4 h-4" />
+          </button>
+        )}
       </div>
     </div>
   );

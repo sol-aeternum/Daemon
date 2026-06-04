@@ -54,9 +54,7 @@ async def test_reflect_no_memories_found():
     with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
         mock_embed.return_value = [0.1] * 128
 
-        with patch(
-            "orchestrator.tools.memory_reflect.retrieve_memories_for_text"
-        ) as mock_retrieve:
+        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = []
 
             tool = MemoryReflectTool(store, user_id)
@@ -91,14 +89,10 @@ async def test_reflect_successful_synthesis():
     with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
         mock_embed.return_value = [0.1] * 128
 
-        with patch(
-            "orchestrator.tools.memory_reflect.retrieve_memories_for_text"
-        ) as mock_retrieve:
+        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = memories
 
-            with patch(
-                "orchestrator.tools.memory_reflect.litellm.acompletion"
-            ) as mock_llm:
+            with patch("orchestrator.tools.memory_reflect.litellm.acompletion") as mock_llm:
                 mock_llm.return_value = MockLitellmResponse(
                     "Based on your memories, you have a passion for guitar playing and own quality equipment."
                 )
@@ -108,9 +102,7 @@ async def test_reflect_successful_synthesis():
                     "_get_orchestrator_model",
                     return_value="openrouter/moonshotai/kimi-k2.5",
                 ):
-                    with patch(
-                        "orchestrator.tools.memory_reflect.get_settings"
-                    ) as mock_settings:
+                    with patch("orchestrator.tools.memory_reflect.get_settings") as mock_settings:
                         mock_settings.return_value.get_tier_config.return_value.orchestrator.model = "openrouter/moonshotai/kimi-k2.5"
                         mock_settings.return_value.get_provider_config.return_value.timeout_s = 60
 
@@ -136,14 +128,10 @@ async def test_reflect_includes_l0_memories():
     with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
         mock_embed.return_value = [0.1] * 128
 
-        with patch(
-            "orchestrator.tools.memory_reflect.retrieve_memories_for_text"
-        ) as mock_retrieve:
+        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = [l0_memory]
 
-            with patch(
-                "orchestrator.tools.memory_reflect.litellm.acompletion"
-            ) as mock_llm:
+            with patch("orchestrator.tools.memory_reflect.litellm.acompletion") as mock_llm:
                 mock_llm.return_value = MockLitellmResponse(
                     "The user has a strong coffee preference."
                 )
@@ -163,9 +151,7 @@ async def test_reflect_uses_expanded_retrieval_limit():
     with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
         mock_embed.return_value = [0.1] * 128
 
-        with patch(
-            "orchestrator.tools.memory_reflect.retrieve_memories_for_text"
-        ) as mock_retrieve:
+        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = []
 
             tool = MemoryReflectTool(store, user_id)
@@ -183,9 +169,7 @@ async def test_reflect_custom_limit():
     with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
         mock_embed.return_value = [0.1] * 128
 
-        with patch(
-            "orchestrator.tools.memory_reflect.retrieve_memories_for_text"
-        ) as mock_retrieve:
+        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = []
 
             tool = MemoryReflectTool(store, user_id)
@@ -213,14 +197,10 @@ async def test_reflect_llm_failure_returns_error():
     with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
         mock_embed.return_value = [0.1] * 128
 
-        with patch(
-            "orchestrator.tools.memory_reflect.retrieve_memories_for_text"
-        ) as mock_retrieve:
+        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = memories
 
-            with patch(
-                "orchestrator.tools.memory_reflect.litellm.acompletion"
-            ) as mock_llm:
+            with patch("orchestrator.tools.memory_reflect.litellm.acompletion") as mock_llm:
                 mock_llm.side_effect = Exception("LLM unavailable")
 
                 with patch.object(
@@ -228,9 +208,7 @@ async def test_reflect_llm_failure_returns_error():
                     "_get_orchestrator_model",
                     return_value="openrouter/moonshotai/kimi-k2.5",
                 ):
-                    with patch(
-                        "orchestrator.tools.memory_reflect.get_settings"
-                    ) as mock_settings:
+                    with patch("orchestrator.tools.memory_reflect.get_settings") as mock_settings:
                         mock_settings.return_value.get_tier_config.return_value.orchestrator.model = "openrouter/moonshotai/kimi-k2.5"
                         mock_settings.return_value.get_provider_config.return_value.timeout_s = 60
 
@@ -248,9 +226,7 @@ async def test_reflect_is_non_persistent():
     with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
         mock_embed.return_value = [0.1] * 128
 
-        with patch(
-            "orchestrator.tools.memory_reflect.retrieve_memories_for_text"
-        ) as mock_retrieve:
+        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = []
 
             tool = MemoryReflectTool(store, user_id)
@@ -290,20 +266,14 @@ def test_prompt_guidance_memory_reflect_vs_memory_read():
 
     assert "simple factual" in prompt.lower() or "factual recall" in prompt.lower()
     assert "pattern" in prompt.lower() or "patterns" in prompt.lower()
-    assert (
-        "synthesis, patterns, and history" in prompt.lower()
-        or "synthesis" in prompt.lower()
-    )
+    assert "synthesis, patterns, and history" in prompt.lower() or "synthesis" in prompt.lower()
 
     assert (
         "do not call it for simple factual lookups" in prompt.lower()
         or "simple factual" in prompt.lower()
     )
     assert "only call it when" in prompt.lower() or "only call it" in prompt.lower()
-    assert (
-        "genuinely asks for synthesis" in prompt.lower()
-        or "synthesis" in prompt.lower()
-    )
+    assert "genuinely asks for synthesis" in prompt.lower() or "synthesis" in prompt.lower()
 
     assert (
         "non-persistent" in prompt.lower()
@@ -333,9 +303,7 @@ async def test_reflect_truncates_limit_to_max_50():
     with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
         mock_embed.return_value = [0.1] * 128
 
-        with patch(
-            "orchestrator.tools.memory_reflect.retrieve_memories_for_text"
-        ) as mock_retrieve:
+        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = []
 
             tool = MemoryReflectTool(store, user_id)
@@ -353,9 +321,7 @@ async def test_reflect_enforces_minimum_limit_of_1():
     with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
         mock_embed.return_value = [0.1] * 128
 
-        with patch(
-            "orchestrator.tools.memory_reflect.retrieve_memories_for_text"
-        ) as mock_retrieve:
+        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = []
 
             tool = MemoryReflectTool(store, user_id)
@@ -383,14 +349,10 @@ async def test_reflect_passes_timeout_from_provider_config():
     with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
         mock_embed.return_value = [0.1] * 128
 
-        with patch(
-            "orchestrator.tools.memory_reflect.retrieve_memories_for_text"
-        ) as mock_retrieve:
+        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = memories
 
-            with patch(
-                "orchestrator.tools.memory_reflect.litellm.acompletion"
-            ) as mock_llm:
+            with patch("orchestrator.tools.memory_reflect.litellm.acompletion") as mock_llm:
                 mock_llm.return_value = MockLitellmResponse("Guitar hobby synthesis.")
 
                 with patch.object(
@@ -398,9 +360,7 @@ async def test_reflect_passes_timeout_from_provider_config():
                     "_get_orchestrator_model",
                     return_value="openrouter/moonshotai/kimi-k2.5",
                 ):
-                    with patch(
-                        "orchestrator.tools.memory_reflect.get_settings"
-                    ) as mock_settings:
+                    with patch("orchestrator.tools.memory_reflect.get_settings") as mock_settings:
                         mock_settings.return_value.get_tier_config.return_value.orchestrator.model = "openrouter/moonshotai/kimi-k2.5"
                         mock_settings.return_value.get_provider_config.return_value.timeout_s = 30.0
                         mock_settings.return_value.get_provider_config.return_value.base_url = ""
@@ -409,7 +369,7 @@ async def test_reflect_passes_timeout_from_provider_config():
                         mock_settings.return_value.get_provider_config.return_value.requires_auth = False
                         mock_settings.return_value.get_provider_config.return_value.name = "test"
 
-                        result = await tool.execute(topic="my hobbies")
+                        result = await tool.execute(topic="my hobbies")  # noqa: F841
 
                         mock_llm.assert_awaited_once()
                         assert mock_llm.await_args is not None
@@ -436,14 +396,10 @@ async def test_reflect_uses_zero_timeout_when_configured():
     with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
         mock_embed.return_value = [0.1] * 128
 
-        with patch(
-            "orchestrator.tools.memory_reflect.retrieve_memories_for_text"
-        ) as mock_retrieve:
+        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = memories
 
-            with patch(
-                "orchestrator.tools.memory_reflect.litellm.acompletion"
-            ) as mock_llm:
+            with patch("orchestrator.tools.memory_reflect.litellm.acompletion") as mock_llm:
                 mock_llm.return_value = MockLitellmResponse("Synthesis.")
 
                 with patch.object(
@@ -451,9 +407,7 @@ async def test_reflect_uses_zero_timeout_when_configured():
                     "_get_orchestrator_model",
                     return_value="openrouter/moonshotai/kimi-k2.5",
                 ):
-                    with patch(
-                        "orchestrator.tools.memory_reflect.get_settings"
-                    ) as mock_settings:
+                    with patch("orchestrator.tools.memory_reflect.get_settings") as mock_settings:
                         mock_settings.return_value.get_tier_config.return_value.orchestrator.model = "openrouter/moonshotai/kimi-k2.5"
                         mock_settings.return_value.get_provider_config.return_value.timeout_s = 0.0
                         mock_settings.return_value.get_provider_config.return_value.base_url = ""
@@ -462,7 +416,7 @@ async def test_reflect_uses_zero_timeout_when_configured():
                         mock_settings.return_value.get_provider_config.return_value.requires_auth = False
                         mock_settings.return_value.get_provider_config.return_value.name = "test"
 
-                        result = await tool.execute(topic="my hobbies")
+                        result = await tool.execute(topic="my hobbies")  # noqa: F841
 
                         mock_llm.assert_awaited_once()
                         assert mock_llm.await_args is not None
@@ -484,14 +438,10 @@ async def test_reflect_includes_dream_observations():
     with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
         mock_embed.return_value = [0.1] * 128
 
-        with patch(
-            "orchestrator.tools.memory_reflect.retrieve_memories_for_text"
-        ) as mock_retrieve:
+        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = []
 
             tool = MemoryReflectTool(store, user_id)
             await tool.execute(topic="my dreams and aspirations")
 
-            assert (
-                mock_retrieve.call_args.kwargs.get("include_dream_observations") is True
-            )
+            assert mock_retrieve.call_args.kwargs.get("include_dream_observations") is True

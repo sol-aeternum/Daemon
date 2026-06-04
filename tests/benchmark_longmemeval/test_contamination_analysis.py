@@ -7,19 +7,13 @@ from typing import cast
 
 ROOT = Path(__file__).resolve().parents[2]
 RESULTS_DIR = ROOT / "tests" / "benchmark_results"
-FAST_RESULTS_PATH = (
-    RESULTS_DIR / "longmemeval_tier2_fast" / "longmemeval_fast_results.jsonl"
-)
+FAST_RESULTS_PATH = RESULTS_DIR / "longmemeval_tier2_fast" / "longmemeval_fast_results.jsonl"
 FAST_SUMMARY_PATH = RESULTS_DIR / "longmemeval_tier2_fast.json"
 FAST_RUN_LOG_PATH = RESULTS_DIR / "longmemeval_tier2_fast" / "run.log"
 
 
 def _load_fast_results() -> list[dict[str, object]]:
-    return [
-        json.loads(line)
-        for line in FAST_RESULTS_PATH.read_text().splitlines()
-        if line.strip()
-    ]
+    return [json.loads(line) for line in FAST_RESULTS_PATH.read_text().splitlines() if line.strip()]
 
 
 def _load_failed_qids() -> list[str]:

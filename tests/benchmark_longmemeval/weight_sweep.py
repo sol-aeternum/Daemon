@@ -92,17 +92,11 @@ WEIGHT_RUNS: tuple[tuple[str, dict[str, float]], ...] = (
 
 
 def _weights_sum(weights: dict[str, float]) -> float:
-    return (
-        float(weights["vector"])
-        + float(weights["bm25"])
-        + float(weights["recency_confidence"])
-    )
+    return float(weights["vector"]) + float(weights["bm25"]) + float(weights["recency_confidence"])
 
 
 def expected_weight_warnings(weights: dict[str, float]) -> list[str]:
-    warnings = [
-        "shared.retrieval.call_contract.top_k_memories: pinned=5 effective=6"
-    ]
+    warnings = ["shared.retrieval.call_contract.top_k_memories: pinned=5 effective=6"]
     if not math.isclose(weights["bm25"], CURRENT_WEIGHTS["bm25"], abs_tol=1e-9):
         warnings.append(
             "shared.retrieval.ranking.hybrid_bm25_weight: "
@@ -142,14 +136,10 @@ def patched_retrieval_weights(weights: dict[str, float]) -> Iterator[None]:
     try:
         retrieval_module.HYBRID_VECTOR_WEIGHT = float(weights["vector"])
         retrieval_module.HYBRID_BM25_WEIGHT = float(weights["bm25"])
-        retrieval_module.HYBRID_RECENCY_CONFIDENCE_WEIGHT = float(
-            weights["recency_confidence"]
-        )
+        retrieval_module.HYBRID_RECENCY_CONFIDENCE_WEIGHT = float(weights["recency_confidence"])
         runner_module.HYBRID_VECTOR_WEIGHT = float(weights["vector"])
         runner_module.HYBRID_BM25_WEIGHT = float(weights["bm25"])
-        runner_module.HYBRID_RECENCY_CONFIDENCE_WEIGHT = float(
-            weights["recency_confidence"]
-        )
+        runner_module.HYBRID_RECENCY_CONFIDENCE_WEIGHT = float(weights["recency_confidence"])
         evaluate_module.TOP_K_MEMORIES = TOP_K_OVERRIDE
         runner_module.TOP_K_MEMORIES = TOP_K_OVERRIDE
         retrieval_module.TEMPORAL_QUERY_FILTER_ENABLED = True
@@ -162,14 +152,10 @@ def patched_retrieval_weights(weights: dict[str, float]) -> Iterator[None]:
         )
         runner_module.HYBRID_VECTOR_WEIGHT = float(original_values["runner_vector"])
         runner_module.HYBRID_BM25_WEIGHT = float(original_values["runner_bm25"])
-        runner_module.HYBRID_RECENCY_CONFIDENCE_WEIGHT = float(
-            original_values["runner_recency"]
-        )
+        runner_module.HYBRID_RECENCY_CONFIDENCE_WEIGHT = float(original_values["runner_recency"])
         evaluate_module.TOP_K_MEMORIES = int(original_values["evaluate_top_k"])
         runner_module.TOP_K_MEMORIES = int(original_values["runner_top_k"])
-        retrieval_module.TEMPORAL_QUERY_FILTER_ENABLED = bool(
-            original_values["temporal_filter"]
-        )
+        retrieval_module.TEMPORAL_QUERY_FILTER_ENABLED = bool(original_values["temporal_filter"])
 
 
 def _protected_cells_from_accuracy(accuracy: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -310,9 +296,7 @@ def _comparison_for_run(
         for label in current_protected
     }
     negative_protected_deltas = {
-        label: delta
-        for label, delta in protected_deltas.items()
-        if delta < 0.0
+        label: delta for label, delta in protected_deltas.items() if delta < 0.0
     }
     negative_target_deltas = {
         subset_name: values["delta_vs_current"]
@@ -331,8 +315,7 @@ def _comparison_for_run(
             f"{locked_failure_union['delta_vs_current']:+d}/{locked_failure_union['total']}"
         )
     regressions.extend(
-        f"protected_cell:{label} {delta:+.1%}"
-        for label, delta in negative_protected_deltas.items()
+        f"protected_cell:{label} {delta:+.1%}" for label, delta in negative_protected_deltas.items()
     )
     regressions.extend(
         f"target_cell:{subset_name} {delta:+d}"
@@ -340,8 +323,7 @@ def _comparison_for_run(
     )
 
     qualifying_improvement = (
-        target_cells[PRIMARY_TARGET_SUBSET]["delta_vs_current"] > 0
-        and not regressions
+        target_cells[PRIMARY_TARGET_SUBSET]["delta_vs_current"] > 0 and not regressions
     )
 
     return {
@@ -405,7 +387,9 @@ def _build_run_summary(
     return summary
 
 
-def _build_manifest_entry(run_name: str, output_dir: Path, summary: dict[str, Any]) -> dict[str, Any]:
+def _build_manifest_entry(
+    run_name: str, output_dir: Path, summary: dict[str, Any]
+) -> dict[str, Any]:
     return {
         "run_name": run_name,
         "output_dir": str(output_dir),
@@ -445,10 +429,7 @@ def _recommendation(current: dict[str, Any], runs: list[dict[str, Any]]) -> dict
             run["approved_target_cells"][PRIMARY_TARGET_SUBSET]["delta_vs_current"],
             run["strict_accuracy"],
             run["locked_failure_union"]["sweep_correct"],
-            sum(
-                int(cell["delta_vs_current"])
-                for cell in run["approved_target_cells"].values()
-            ),
+            sum(int(cell["delta_vs_current"]) for cell in run["approved_target_cells"].values()),
         ),
     )
     return {
@@ -667,7 +648,8 @@ async def run_sweep() -> dict[str, Any]:
             write_json(OUTPUT_ROOT / MANIFEST_FILENAME, manifest)
 
         manifest["runs"] = sorted(
-            manifest["runs"], key=lambda run: [name for name, _ in WEIGHT_RUNS].index(run["run_name"])
+            manifest["runs"],
+            key=lambda run: [name for name, _ in WEIGHT_RUNS].index(run["run_name"]),
         )
         manifest["recommendation"] = _recommendation(current_manifest_summary, manifest["runs"])
         write_json(OUTPUT_ROOT / MANIFEST_FILENAME, manifest)

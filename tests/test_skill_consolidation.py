@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,8 +15,6 @@ from orchestrator.worker.jobs import (
     _apply_delete_action,
     _apply_merge_action,
     _build_consolidation_nudge_debounce_key,
-    _call_consolidation_model,
-    _process_user_consolidation_nudge,
     run_consolidation_nudge_job,
 )
 
@@ -143,9 +141,7 @@ async def test_job_skips_when_below_interval() -> None:
         def __init__(self) -> None:
             pass
 
-        async def get_user_conversation_count_since_last_nudge(
-            self, uid: uuid.UUID
-        ) -> int:
+        async def get_user_conversation_count_since_last_nudge(self, uid: uuid.UUID) -> int:
             return 5
 
         async def get_total_conversation_count(self, uid: uuid.UUID) -> int:
@@ -181,27 +177,19 @@ async def test_job_finds_users_above_interval() -> None:
         def __init__(self) -> None:
             pass
 
-        async def get_users_with_skill_candidates(
-            self, interval: int
-        ) -> list[uuid.UUID]:
+        async def get_users_with_skill_candidates(self, interval: int) -> list[uuid.UUID]:
             return [user_id]
 
-        async def get_user_conversation_count_since_last_nudge(
-            self, uid: uuid.UUID
-        ) -> int:
+        async def get_user_conversation_count_since_last_nudge(self, uid: uuid.UUID) -> int:
             return 20
 
         async def get_total_conversation_count(self, uid: uuid.UUID) -> int:
             return 35
 
-        async def get_autonomous_skill_candidates(
-            self, min_skills: int
-        ) -> list[dict[str, Any]]:
+        async def get_autonomous_skill_candidates(self, min_skills: int) -> list[dict[str, Any]]:
             return []
 
-        async def record_consolidation_nudge_run(
-            self, uid: uuid.UUID, count: int
-        ) -> None:
+        async def record_consolidation_nudge_run(self, uid: uuid.UUID, count: int) -> None:
             pass
 
         async def log_consolidation_nudge_action(self, **kwargs) -> None:
@@ -402,19 +390,15 @@ class TestApplyDeleteAction:
                 self.logged_action = kwargs
 
         with patch("orchestrator.skills_store.delete_skill") as mock_delete:
-            with patch(
-                "orchestrator.skills_projection.SkillProjectionStore"
-            ) as mock_proj:
+            with patch("orchestrator.skills_projection.SkillProjectionStore") as mock_proj:
                 mock_proj_instance = MagicMock()
                 mock_proj.return_value = mock_proj_instance
 
                 store = FakeMemoryStore()
-                result = await _apply_delete_action("skill-to-delete", store, user_id)
+                result = await _apply_delete_action("skill-to-delete", store, user_id)  # noqa: F841
 
                 mock_delete.assert_called_once_with("skill-to-delete")
-                mock_proj_instance.delete_projection.assert_called_once_with(
-                    "skill-to-delete"
-                )
+                mock_proj_instance.delete_projection.assert_called_once_with("skill-to-delete")
 
 
 class TestModelDrivenConsolidationFlow:
@@ -426,9 +410,7 @@ class TestModelDrivenConsolidationFlow:
             def __init__(self) -> None:
                 pass
 
-            async def get_user_conversation_count_since_last_nudge(
-                self, uid: uuid.UUID
-            ) -> int:
+            async def get_user_conversation_count_since_last_nudge(self, uid: uuid.UUID) -> int:
                 return 20
 
             async def get_total_conversation_count(self, uid: uuid.UUID) -> int:
@@ -453,9 +435,7 @@ class TestModelDrivenConsolidationFlow:
             ) -> list[dict[str, Any]]:
                 return []
 
-            async def record_consolidation_nudge_run(
-                self, uid: uuid.UUID, count: int
-            ) -> None:
+            async def record_consolidation_nudge_run(self, uid: uuid.UUID, count: int) -> None:
                 pass
 
             async def log_consolidation_nudge_action(self, **kwargs) -> None:

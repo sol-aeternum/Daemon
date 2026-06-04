@@ -64,15 +64,15 @@ async def _wait_for_retrieval_log_count(
     while asyncio.get_running_loop().time() < deadline:
         count = int(
             await pool.fetchval(
-            """
+                """
             SELECT COUNT(*)
             FROM retrieval_log
             WHERE user_id = $1
               AND query_text = $2
               AND retrieval_triggered_by = 'longmemeval'
             """,
-            user_id,
-            query_text,
+                user_id,
+                query_text,
             )
         )
         if count == expected_count:
@@ -125,15 +125,15 @@ async def test_benchmark_retrieval_path_persists_one_retrieval_log_row() -> None
 
         baseline_count = int(
             await pool.fetchval(
-            """
+                """
             SELECT COUNT(*)
             FROM retrieval_log
             WHERE user_id = $1
               AND query_text = $2
               AND retrieval_triggered_by = 'longmemeval'
             """,
-            user_id,
-            QUERY_TEXT,
+                user_id,
+                QUERY_TEXT,
             )
         )
 
@@ -159,7 +159,7 @@ async def test_benchmark_retrieval_path_persists_one_retrieval_log_row() -> None
         row = cast(
             asyncpg.Record | None,
             await pool.fetchrow(
-            """
+                """
             SELECT candidate_memory_ids,
                    selected_memory_ids,
                    retrieval_triggered_by,
@@ -172,9 +172,9 @@ async def test_benchmark_retrieval_path_persists_one_retrieval_log_row() -> None
             ORDER BY created_at DESC
             LIMIT 1
             """,
-            user_id,
-            QUERY_TEXT,
-        )
+                user_id,
+                QUERY_TEXT,
+            ),
         )
 
         assert row is not None

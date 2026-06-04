@@ -379,9 +379,7 @@ def build_analysis_markdown(manifest: dict[str, Any]) -> str:
     total_beyond_limit = sum(
         run["support_analysis"]["support_beyond_current_limit"] for run in runs
     )
-    total_recovered = sum(
-        run["support_analysis"]["support_recovered_within_top_k"] for run in runs
-    )
+    total_recovered = sum(run["support_analysis"]["support_recovered_within_top_k"] for run in runs)
     lines.extend(
         [
             "",
@@ -412,8 +410,7 @@ def subset_definitions(taxonomy_by_qid: dict[str, dict[str, str]]) -> dict[str, 
         subsets[name] = sorted(
             qid
             for qid, entry in taxonomy_by_qid.items()
-            if entry["stage"] == stage
-            and (category is None or entry["category"] == category)
+            if entry["stage"] == stage and (category is None or entry["category"] == category)
         )
     return subsets
 
@@ -571,7 +568,10 @@ async def build_run_artifacts(
                 "rank": rank_by_id[memory_id],
                 "selected": memory_id in selected_id_strings,
                 "snippet": memory_snippet(
-                    next((memory for memory in supporting if str(memory.get("id")) == memory_id), None)
+                    next(
+                        (memory for memory in supporting if str(memory.get("id")) == memory_id),
+                        None,
+                    )
                 ),
             }
             for memory_id in supporting_ids
@@ -614,7 +614,8 @@ async def build_run_artifacts(
                 "support_in_selected": any(item["selected"] for item in supporting_positions),
                 "support_min_rank": min_support_rank,
                 "support_beyond_current_limit": (
-                    min_support_rank is not None and min_support_rank > evaluate_module.TOP_K_MEMORIES
+                    min_support_rank is not None
+                    and min_support_rank > evaluate_module.TOP_K_MEMORIES
                 ),
                 "support_recovered_by_this_k": (
                     min_support_rank is not None

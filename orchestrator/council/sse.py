@@ -113,9 +113,7 @@ def _format_findings(raw: Any) -> tuple[str, int]:
 
     lines: list[str] = []
     for finding in raw:
-        finding_dict = (
-            finding if isinstance(finding, dict) else _normalize_output(finding)
-        )
+        finding_dict = finding if isinstance(finding, dict) else _normalize_output(finding)
         if not isinstance(finding_dict, dict):
             continue
         category = finding_dict.get("category", "Finding")
@@ -155,13 +153,9 @@ async def _emit_council_output_events(
                     "council_progress",
                     {
                         "stage": progress_event.get("stage", "council"),
-                        "current_round": int(
-                            progress_event.get("current_round", 0) or 0
-                        ),
+                        "current_round": int(progress_event.get("current_round", 0) or 0),
                         "total_rounds": int(progress_event.get("total_rounds", 0) or 0),
-                        "models_complete": int(
-                            progress_event.get("models_complete", 0) or 0
-                        ),
+                        "models_complete": int(progress_event.get("models_complete", 0) or 0),
                         "models_total": int(progress_event.get("models_total", 0) or 0),
                     },
                     conversation_id,
@@ -236,9 +230,7 @@ async def _emit_council_output_events(
             ),
         )
 
-    findings_content, findings_count = _format_findings(
-        normalized_output.get("findings")
-    )
+    findings_content, findings_count = _format_findings(normalized_output.get("findings"))
     if findings_content:
         yield sse(
             "council_output",
@@ -535,9 +527,7 @@ async def stream_council_interview_response(
         prompt_override = config_source.pop("_prompt", None)
 
         try:
-            config_obj = (
-                CouncilConfig(**config_source) if config_source else CouncilConfig()
-            )
+            config_obj = CouncilConfig(**config_source) if config_source else CouncilConfig()
         except Exception:
             config_obj = CouncilConfig()
 

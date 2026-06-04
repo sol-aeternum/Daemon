@@ -234,9 +234,7 @@ async def scenario_skill_manage_roundtrip() -> dict[str, Any]:
                 )
             )
             list_payload = json.loads(await tool.execute(action="list"))
-            view_payload = json.loads(
-                await tool.execute(action="view", skill_id="benchmark-skill")
-            )
+            view_payload = json.loads(await tool.execute(action="view", skill_id="benchmark-skill"))
 
         assert create_payload["created"] is True
         assert create_payload["skill_id"] == "benchmark-skill"
@@ -473,9 +471,7 @@ async def scenario_pending_update() -> dict[str, Any]:
             local_version="1.0.0",
             updated_at=datetime.now(timezone.utc).isoformat(),
         )
-        (tmp_path / MANIFEST_FILENAME).write_text(
-            json.dumps(manifest.to_dict()), encoding="utf-8"
-        )
+        (tmp_path / MANIFEST_FILENAME).write_text(json.dumps(manifest.to_dict()), encoding="utf-8")
 
         pool = AsyncMock()
         pool.fetchrow.return_value = MockRecord(
@@ -510,9 +506,7 @@ async def scenario_pending_update() -> dict[str, Any]:
                 AsyncMock(return_value=[0.1] * 1024),
             ):
                 service = SkillUpgradeService(store)
-                result = await service.sync_repo_skills(
-                    {"modified-skill": new_repo_content}
-                )
+                result = await service.sync_repo_skills({"modified-skill": new_repo_content})
 
         pending_action = next(a for a in result.actions if a.action == "pending_update")
         local_content = skill_file.read_text(encoding="utf-8")
@@ -560,11 +554,7 @@ def _print_summary(results: list[ScenarioResult]) -> bool:
 
     passed = all(result.passed for result in results)
     print()
-    print(
-        "✅ BENCHMARK PASSED"
-        if passed
-        else "❌ BENCHMARK FAILED — see scenario errors above"
-    )
+    print("✅ BENCHMARK PASSED" if passed else "❌ BENCHMARK FAILED — see scenario errors above")
     return passed
 
 

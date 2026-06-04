@@ -10,7 +10,6 @@ from typing import Any
 
 from tests.longmemeval.evaluate import (
     BenchmarkProviderError,
-    BenchmarkSamplingError,
     _call_llm_with_provider_config,
     reset_benchmark_tracking,
 )
@@ -34,11 +33,8 @@ class TestEvaluateProviderFailFast:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Transport/provider exception in benchmark mode raises BenchmarkProviderError."""
-        import litellm
 
-        litellm_mock = AsyncMock(
-            side_effect=Exception("rate limit exceeded")
-        )
+        litellm_mock = AsyncMock(side_effect=Exception("rate limit exceeded"))
         monkeypatch.setattr("litellm.acompletion", litellm_mock)
 
         with pytest.raises(BenchmarkProviderError) as exc_info:
@@ -59,11 +55,8 @@ class TestEvaluateProviderFailFast:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Network error in benchmark mode raises BenchmarkProviderError with diagnostic."""
-        import litellm
 
-        litellm_mock = AsyncMock(
-            side_effect=Exception("Connection timeout")
-        )
+        litellm_mock = AsyncMock(side_effect=Exception("Connection timeout"))
         monkeypatch.setattr("litellm.acompletion", litellm_mock)
 
         with pytest.raises(BenchmarkProviderError) as exc_info:
@@ -83,11 +76,8 @@ class TestEvaluateProviderFailFast:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Non-benchmark mode returns None on provider error (silent fallback preserved)."""
-        import litellm
 
-        litellm_mock = AsyncMock(
-            side_effect=Exception("rate limit exceeded")
-        )
+        litellm_mock = AsyncMock(side_effect=Exception("rate limit exceeded"))
         monkeypatch.setattr("litellm.acompletion", litellm_mock)
 
         result = await _call_llm_with_provider_config(
@@ -105,7 +95,6 @@ class TestEvaluateProviderFailFast:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Fingerprint drift is checked before provider-error fail-fast is evaluated."""
-        import litellm
 
         call_count = 0
 
@@ -189,6 +178,7 @@ class TestExtractionProviderFailFast:
     @pytest.fixture(autouse=True)
     def setup(self) -> None:
         from orchestrator.memory.extraction import reset_benchmark_tracking
+
         reset_benchmark_tracking()
 
     @pytest.mark.asyncio
@@ -202,9 +192,7 @@ class TestExtractionProviderFailFast:
             BenchmarkProviderError,
         )
 
-        litellm_mock = AsyncMock(
-            side_effect=Exception("credit limit exceeded")
-        )
+        litellm_mock = AsyncMock(side_effect=Exception("credit limit exceeded"))
         monkeypatch.setattr("litellm.acompletion", litellm_mock)
 
         with pytest.raises(BenchmarkProviderError) as exc_info:
@@ -226,9 +214,7 @@ class TestExtractionProviderFailFast:
             ExtractionOutcome,
         )
 
-        litellm_mock = AsyncMock(
-            side_effect=Exception("connection reset")
-        )
+        litellm_mock = AsyncMock(side_effect=Exception("connection reset"))
         monkeypatch.setattr("litellm.acompletion", litellm_mock)
 
         result = await extract_facts_from_text(
@@ -251,6 +237,7 @@ class TestDedupProviderFailFast:
     @pytest.fixture(autouse=True)
     def setup(self) -> None:
         from orchestrator.memory.dedup import reset_dedup_benchmark_tracking
+
         reset_dedup_benchmark_tracking()
 
     @pytest.mark.asyncio
@@ -264,9 +251,7 @@ class TestDedupProviderFailFast:
             DedupBenchmarkProviderError,
         )
 
-        litellm_mock = AsyncMock(
-            side_effect=Exception("rate limit")
-        )
+        litellm_mock = AsyncMock(side_effect=Exception("rate limit"))
         monkeypatch.setattr("litellm.acompletion", litellm_mock)
 
         with pytest.raises(DedupBenchmarkProviderError) as exc_info:
@@ -286,9 +271,7 @@ class TestDedupProviderFailFast:
         """Non-benchmark mode returns (False, '') on provider error (silent fallback preserved)."""
         from orchestrator.memory.dedup import check_contradiction
 
-        litellm_mock = AsyncMock(
-            side_effect=Exception("network unreachable")
-        )
+        litellm_mock = AsyncMock(side_effect=Exception("network unreachable"))
         monkeypatch.setattr("litellm.acompletion", litellm_mock)
 
         result = await check_contradiction(
@@ -482,6 +465,7 @@ class TestExtractionExtraBodyContract:
     @pytest.fixture(autouse=True)
     def setup(self) -> None:
         from orchestrator.memory.extraction import reset_benchmark_tracking
+
         reset_benchmark_tracking()
 
     @pytest.mark.asyncio
@@ -500,6 +484,7 @@ class TestExtractionExtraBodyContract:
         monkeypatch.setattr("litellm.acompletion", litellm_mock)
 
         from orchestrator.memory.extraction import extract_facts_from_text
+
         await extract_facts_from_text(
             "I love Python",
             benchmark_mode=True,
@@ -518,12 +503,11 @@ class TestExtractionExtraBodyContract:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Extraction non-benchmark mode does not include extra_body."""
-        litellm_mock = AsyncMock(
-            return_value=MockResponse('{"facts": []}')
-        )
+        litellm_mock = AsyncMock(return_value=MockResponse('{"facts": []}'))
         monkeypatch.setattr("litellm.acompletion", litellm_mock)
 
         from orchestrator.memory.extraction import extract_facts_from_text
+
         await extract_facts_from_text(
             "I love Python",
             benchmark_mode=False,
@@ -548,6 +532,7 @@ class TestExtractionExtraBodyContract:
         monkeypatch.setattr("litellm.acompletion", litellm_mock)
 
         from orchestrator.memory.extraction import extract_facts_from_text
+
         await extract_facts_from_text(
             "I love Python",
             benchmark_mode=True,
@@ -563,6 +548,7 @@ class TestDedupExtraBodyContract:
     @pytest.fixture(autouse=True)
     def setup(self) -> None:
         from orchestrator.memory.dedup import reset_dedup_benchmark_tracking
+
         reset_dedup_benchmark_tracking()
 
     @pytest.mark.asyncio
@@ -581,6 +567,7 @@ class TestDedupExtraBodyContract:
         monkeypatch.setattr("litellm.acompletion", litellm_mock)
 
         from orchestrator.memory.dedup import check_contradiction
+
         await check_contradiction(
             "User likes Python",
             "User loves Python",
@@ -600,12 +587,11 @@ class TestDedupExtraBodyContract:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Dedup contradiction non-benchmark mode does not include extra_body."""
-        litellm_mock = AsyncMock(
-            return_value=MockResponse("NO")
-        )
+        litellm_mock = AsyncMock(return_value=MockResponse("NO"))
         monkeypatch.setattr("litellm.acompletion", litellm_mock)
 
         from orchestrator.memory.dedup import check_contradiction
+
         await check_contradiction(
             "User likes Python",
             "User loves Python",
@@ -631,6 +617,7 @@ class TestDedupExtraBodyContract:
         monkeypatch.setattr("litellm.acompletion", litellm_mock)
 
         from orchestrator.memory.dedup import check_contradiction
+
         await check_contradiction(
             "User likes Python",
             "User loves Python",
