@@ -150,8 +150,6 @@ class _EmailMockConn:
         q = _strip_sql(query)
         if q.startswith("INSERT INTO email_challenges") and "RETURNING" in q:
             return self._handle_insert(args)
-        if q.startswith("UPDATE email_challenges SET code_verifier_hash"):
-            return self._handle_update_verifier(args)
         if q.startswith("UPDATE email_challenges SET consumed_at"):
             return self._handle_consume(args)
         if q.startswith(
@@ -199,18 +197,6 @@ class _EmailMockConn:
         }
         self._store["email_challenges"].append(row)
         return _Record(self._public_view(row))
-
-    def _handle_update_verifier(self, args: tuple[Any, ...]) -> _Record | None:
-        challenge_id = args[0]
-        new_verifier = args[1]
-        for row in self._store["email_challenges"]:
-            if row["id"] != challenge_id:
-                continue
-            if row["consumed_at"] is not None or row["locked_at"] is not None:
-                return None
-            row["code_verifier_hash"] = new_verifier
-            return _Record(self._public_view(row))
-        return None
 
     def _handle_consume(self, args: tuple[Any, ...]) -> _Record | None:
         challenge_id = args[0]
@@ -642,10 +628,11 @@ class TestCreateChallengeForDelivery:
         assert len(sink) == 1
 
     @pytest.mark.asyncio
-    async def test_create_without_dev_sink_raises(self) -> None:
-        """create_challenge_for_delivery is a deliberate
-        opt-in: callers without a dev_sink must use
-        issue_challenge.
+    async def test_create_for_delivery_works_without_dev_sink(self) -> None:
+        """Production path: `create_challenge_for_delivery` works
+        with `dev_sink=None` and returns the plaintext directly.
+        The TODO 11 `/v1/auth/email/start` route is the
+        canonical caller and must not require a DevSink.
         """
         conn = _EmailMockConn()
         service = EmailChallengeService(conn, _dev_settings())  # no sink
@@ -656,8 +643,35 @@ class TestCreateChallengeForDelivery:
             ttl_seconds=600,
             max_attempts=5,
         )
-        with pytest.raises(EmailChallengeServiceError, match="dev_sink"):
-            await service.create_challenge_for_delivery(request)
+        row, plaintext = await service.create_challenge_for_delivery(request)
+        assert isinstance(row, EmailChallengeRow)
+        assert len(plaintext) == 6
+        assert plaintext.isdecimal()
+        # No sink, so the plaintext is only in the return value.
+        # We can still verify the row exists in the store.
+        assert len(conn._store["email_challenges"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_create_for_delivery_with_dev_sink_populates_sink(
+        self,
+    ) -> None:
+        """Dev/test path: when a DevSink is configured, the
+        plaintext is also stashed in the sink keyed by
+        challenge id.
+        """
+        conn = _EmailMockConn()
+        sink = DevSink(_store={})
+        service = EmailChallengeService(conn, _dev_settings(), dev_sink=sink)
+        request = EmailChallengeIssueRequest(
+            normalized_email="user@example.com",
+            ip_hash=None,
+            user_agent_hash=None,
+            ttl_seconds=600,
+            max_attempts=5,
+        )
+        row, plaintext = await service.create_challenge_for_delivery(request)
+        assert sink.get(row.id) == plaintext
+        assert len(sink) == 1
 
     @pytest.mark.asyncio
     async def test_sink_keeps_multiple_codes(self) -> None:
@@ -680,6 +694,59 @@ class TestCreateChallengeForDelivery:
         assert sink.get(row1.id) == code1
         assert sink.get(row2.id) == code2
         assert len(sink) == 2
+
+    @pytest.mark.asyncio
+    async def test_plaintext_matches_stored_verifier(self) -> None:
+        """The HMAC-SHA256 of the returned plaintext with the
+        service's pepper equals the stored `code_verifier_hash`.
+        This proves the one-pass INSERT-then-deliver flow: the
+        caller can HMAC the plaintext and the database
+        recognizes it.
+        """
+        conn = _EmailMockConn()
+        pepper = "test-pepper-1234567890"
+        service = EmailChallengeService(conn, _dev_settings_with_pepper(pepper))
+        request = EmailChallengeIssueRequest(
+            normalized_email="user@example.com",
+            ip_hash=None,
+            user_agent_hash=None,
+            ttl_seconds=600,
+            max_attempts=5,
+        )
+        row, plaintext = await service.create_challenge_for_delivery(request)
+        # The stored verifier equals HMAC(plaintext, pepper).
+        expected = compute_code_verifier(plaintext, pepper)
+        stored = conn._store["email_challenges"][0]
+        assert stored["code_verifier_hash"] == expected
+
+    @pytest.mark.asyncio
+    async def test_issue_is_single_insert_no_update(self) -> None:
+        """The single-pass design issues exactly one INSERT
+        per `create_challenge_for_delivery` call. There is no
+        INSERT-then-UPDATE pattern: the verifier is computed
+        before the INSERT, and the row is durable on the first
+        round-trip.
+        """
+        conn = _EmailMockConn()
+        service = EmailChallengeService(conn, _dev_settings())
+        request = EmailChallengeIssueRequest(
+            normalized_email="user@example.com",
+            ip_hash=None,
+            user_agent_hash=None,
+            ttl_seconds=600,
+            max_attempts=5,
+        )
+        await service.create_challenge_for_delivery(request)
+        # Filter to issuance / verifier-mutation queries only.
+        # consume/lock/decrement are tested in their own classes.
+        issuance_calls = [
+            q
+            for q, _ in conn.calls
+            if "INSERT INTO email_challenges" in q
+            or "UPDATE email_challenges SET code_verifier_hash" in q
+        ]
+        assert len(issuance_calls) == 1
+        assert "INSERT INTO email_challenges" in issuance_calls[0]
 
 
 # ============================================================================

@@ -469,14 +469,15 @@ class EmailChallengeService:
     passes it in. This is the same pattern as `AccountService`
     (TODO 8) and `issue_device_session` (TODO 9).
 
-    The service is constructed with a `Settings` instance and a
-    `dev_sink` (which is `None` in production and a
-    `DevSink(...)` instance in dev/test). The dev_sink is the
-    only place the plaintext code is exposed to the caller; the
-    production path (`issue_challenge`) returns the row WITHOUT
-    a `DevSink`, and the route layer is expected to send the code
-    via the mail sender (TODO 11) which itself never logs the
-    plaintext in production.
+    The service is constructed with a `Settings` instance and an
+    optional `dev_sink`. The `dev_sink` is `None` in production;
+    a `DevSink(_store={})` instance is supplied by dev/test code
+    that wants to read the plaintext code back later (e.g. a
+    test that simulates a mail-sender sink reading from the
+    DevSink). The DevSink is NEVER required for production
+    delivery — `create_challenge_for_delivery` works without
+    one and returns the plaintext directly to the caller for
+    immediate dispatch via the mail sender.
     """
 
     def __init__(
@@ -494,34 +495,53 @@ class EmailChallengeService:
     # Issuance
     # ------------------------------------------------------------------
 
-    async def issue_challenge(
+    async def _create_challenge(
         self,
         request: EmailChallengeIssueRequest,
-    ) -> EmailChallengeRow:
+    ) -> tuple[EmailChallengeRow, str]:
         """Insert a new `email_challenges` row with a fresh code.
 
-        The plaintext code is generated with `generate_email_code`
-        (CSPRNG) and stored as an HMAC verifier via
-        `compute_code_verifier(plaintext, validate_and_get_pepper(...))`.
-        The plaintext is NOT returned in the result; the route layer
-        sends the plaintext through the mail sender.
+        Private helper that performs ONE INSERT and returns both
+        the persisted `EmailChallengeRow` and the plaintext code
+        that produces the stored HMAC verifier. The function is
+        the single source of truth for "issue a challenge": every
+        public issuance method delegates to it.
 
-        The function does NOT touch a DevSink. For dev/test flows
-        that need the plaintext locally, use
-        `create_challenge_for_delivery` instead.
+        The plaintext is generated with `generate_email_code`
+        (CSPRNG, `secrets.SystemRandom`) and stored as an HMAC
+        verifier via `compute_code_verifier(plaintext,
+        validate_and_get_pepper(settings))`. The verifier is
+        computed BEFORE the INSERT so a single round-trip
+        persists the durable state — there is no INSERT-then-
+        UPDATE pattern. The plaintext is returned to the caller
+        ONLY in memory; the database stores the HMAC verifier,
+        never the plaintext.
+
+        If a `DevSink` is configured (dev/test only), the
+        plaintext is also stashed under the challenge id so
+        later test code can read it via `dev_sink.get(row.id)`.
+        The sink is a process-local side-effect; production
+        callers that pass `dev_sink=None` get the plaintext in
+        the return value and dispatch it via the mail sender
+        without any in-process persistence beyond the dispatch.
 
         Args:
             request: Per-request inputs (see
                 `EmailChallengeIssueRequest`).
 
         Returns:
-            The persisted `EmailChallengeRow` (no plaintext code
-            in any field).
+            `(row, plaintext_code)` where `plaintext_code` is
+            the 6-digit decimal code whose HMAC verifier is
+            stored in `code_verifier_hash`. The caller is
+            responsible for delivering the plaintext (e.g. via
+            the mail sender) and MUST NOT retain it beyond
+            the dispatch.
 
         Raises:
             ValueError: invalid request inputs.
             EmailChallengeUnavailable: pepper validation failed
-                (this propagates from `validate_and_get_pepper`).
+                (propagates from `validate_and_get_pepper`) or
+                the INSERT returned no row.
         """
         if not request.normalized_email:
             raise ValueError("issue_challenge requires normalized_email")
@@ -530,8 +550,11 @@ class EmailChallengeService:
         if request.max_attempts < 1 or request.max_attempts > 10:
             raise ValueError(f"max_attempts must be in [1, 10], got: {request.max_attempts!r}")
 
-        # Obtain the pepper through the canonical accessor so the
-        # production gate and dev-ephemeral generation are honored.
+        # Obtain the pepper through the canonical accessor so
+        # the production gate and dev-ephemeral generation are
+        # honored. NEVER read `settings.daemon_auth_pepper`
+        # directly for cryptographic operations (the inherited
+        # TODO 7 lesson).
         pepper = validate_and_get_pepper(self._settings)
 
         plaintext_code = generate_email_code()
@@ -567,71 +590,96 @@ class EmailChallengeService:
         )
         if row is None:
             raise EmailChallengeUnavailable("issue_challenge INSERT RETURNING produced no row")
-        return _row_from_record(row)
+        typed_row = _row_from_record(row)
+
+        if self._dev_sink is not None:
+            # Dev/test side-effect: stash the plaintext in the
+            # in-memory sink keyed by challenge id. The sink is
+            # a process-scoped test helper; production code
+            # never sees a DevSink.
+            self._dev_sink._store[typed_row.id] = plaintext_code
+
+        return typed_row, plaintext_code
+
+    async def issue_challenge(
+        self,
+        request: EmailChallengeIssueRequest,
+    ) -> EmailChallengeRow:
+        """Insert a new `email_challenges` row and discard the
+        plaintext code.
+
+        This is the public issue entry point for callers that
+        do NOT need to deliver the code (operator-triage
+        workflows, tests that exercise the row shape without
+        the consume path). The plaintext is generated, HMAC'd,
+        stored, and then dropped — the durable artifact is
+        `code_verifier_hash`.
+
+        Production `/v1/auth/email/start` (TODO 11) MUST use
+        `create_challenge_for_delivery` instead, so the route
+        can hand the plaintext to the mail sender.
+
+        Args:
+            request: Per-request inputs (see
+                `EmailChallengeIssueRequest`).
+
+        Returns:
+            The persisted `EmailChallengeRow` (no plaintext code
+            in any field).
+
+        Raises:
+            ValueError: invalid request inputs.
+            EmailChallengeUnavailable: pepper validation failed
+                (propagates from `validate_and_get_pepper`).
+        """
+        row, _plaintext = await self._create_challenge(request)
+        return row
 
     async def create_challenge_for_delivery(
         self,
         request: EmailChallengeIssueRequest,
     ) -> tuple[EmailChallengeRow, str]:
-        """Issue a challenge AND return the plaintext code, ONLY for
-        dev/test use.
+        """Insert a new `email_challenges` row and return the
+        plaintext code for immediate dispatch.
 
-        The plaintext code is added to the `DevSink` so other
-        dev/test code (e.g. a test that simulates a mail-sender
-        sink) can read it via `dev_sink.get(challenge.id)`. The
-        tuple return shape is a deliberate opt-in: callers that
-        want the plaintext MUST take the tuple; production
-        callers that pass `dev_sink=None` cannot accidentally
-        reach this code path because the constructor enforces
-        the parameter.
+        This is the public issue entry point for the route
+        layer (TODO 11) — both production and dev/test. The
+        function works with or without a configured
+        `DevSink`:
+
+          - **Without a DevSink** (production): the function
+            returns `(row, plaintext_code)`. The caller MUST
+            hand the plaintext to the mail sender
+            (TODO 10 `mail_sender.py`) and MUST NOT retain
+            it in request memory beyond the dispatch. The
+            row is the durable handle; the plaintext is the
+            in-flight delivery artifact.
+
+          - **With a DevSink** (dev/test only): the function
+            returns `(row, plaintext_code)` AND stashes the
+            plaintext under `row.id` in the sink. The sink
+            is a process-scoped test helper that lets test
+            code read the plaintext back via
+            `dev_sink.get(row.id)` for assertion. Production
+            deployments never construct a DevSink.
+
+        The implementation is the same single-INSERT path as
+        `issue_challenge`; the only difference is that the
+        plaintext is returned to the caller rather than
+        discarded. There is no INSERT-then-UPDATE pattern: one
+        plaintext, one HMAC verifier, one round-trip.
 
         Returns:
-            `(row, plaintext_code)`. The plaintext code is also
-            stored in the `DevSink` for the lifetime of the
-            process. Do not use this method in production.
-        """
-        if self._dev_sink is None:
-            raise EmailChallengeServiceError(
-                "create_challenge_for_delivery requires a dev_sink; "
-                "use issue_challenge in production"
-            )
-        row = await self.issue_challenge(request)
-        # Re-derive the plaintext from the verifier is impossible
-        # (HMAC is one-way). The dev/test path must capture the
-        # plaintext at issue time and stash it in the sink. We
-        # re-generate a fresh code here and replace the row's
-        # verifier with a new HMAC of the new plaintext. This
-        # preserves the invariant: the stored verifier is the
-        # HMAC of the code that the test will present on the
-        # consume path.
-        pepper = validate_and_get_pepper(self._settings)
-        plaintext_code = generate_email_code()
-        verifier = compute_code_verifier(plaintext_code, pepper)
+            `(row, plaintext_code)`. The plaintext is the
+            6-digit decimal code whose HMAC verifier is stored
+            in `code_verifier_hash`.
 
-        updated = await self._conn.fetchrow(
-            """
-            UPDATE email_challenges
-            SET code_verifier_hash = $2
-            WHERE id = $1
-              AND consumed_at IS NULL
-              AND locked_at IS NULL
-            RETURNING id,
-                      normalized_email,
-                      attempts_remaining,
-                      expires_at,
-                      consumed_at,
-                      locked_at,
-                      created_at
-            """,
-            row.id,
-            verifier,
-        )
-        if updated is None:
-            raise EmailChallengeUnavailable(
-                "create_challenge_for_delivery: race against consume/lock on the just-issued row"
-            )
-        self._dev_sink._store[row.id] = plaintext_code
-        return _row_from_record(updated), plaintext_code
+        Raises:
+            ValueError: invalid request inputs.
+            EmailChallengeUnavailable: pepper validation failed
+                or the INSERT returned no row.
+        """
+        return await self._create_challenge(request)
 
     # ------------------------------------------------------------------
     # Verification / consumption
