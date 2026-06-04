@@ -305,6 +305,13 @@ def _email_complete_failure() -> HTTPException:
     )
 
 
+def _email_sign_in_disabled_error() -> HTTPException:
+    return HTTPException(
+        status_code=404,
+        detail="email_sign_in_disabled",
+    )
+
+
 async def _load_email_challenge_lookup(conn, challenge_id: uuid.UUID):
     return await conn.fetchrow(
         """
@@ -342,6 +349,9 @@ async def email_start_endpoint(
 ) -> EmailStartResponse:
     started_at = time.monotonic()
     settings = get_settings()
+
+    if not settings.daemon_email_enabled:
+        raise _email_sign_in_disabled_error()
 
     try:
         normalized_email = normalize_email(body.email)
@@ -420,6 +430,10 @@ async def email_complete_endpoint(
     body: EmailCompleteRequest,
 ) -> EmailCompleteResponse:
     settings = get_settings()
+
+    if not settings.daemon_email_enabled:
+        raise _email_sign_in_disabled_error()
+
     app_state = get_app_state(request)
     if app_state.db_pool is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
