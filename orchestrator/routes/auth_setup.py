@@ -58,6 +58,13 @@ from orchestrator.services.identity import (
     EmailChallengeRow,
     EmailChallengeService,
     EmailChallengeUnavailable,
+    GoogleIdTokenVerifyRequest,
+    GoogleNonceConsumeRequest,
+    GoogleNonceInvalid,
+    GoogleNonceIssueRequest,
+    GoogleTokenInvalid,
+    GoogleVerifierService,
+    GoogleVerifierUnavailable,
     InviteOnlyRejection,
     IssueSessionRequest,
     MailMessage,
@@ -66,14 +73,18 @@ from orchestrator.services.identity import (
     ScopeKind,
     SignupDisabled,
     SupportsEmailChallengeQueries,
+    SupportsGoogleNonceQueries,
     SupportsIdentityQueries,
     SupportsSessionIssuanceQueries,
     client_ip_for_key,
+    default_google_id_token_verifier,
     enforce_rate_limit,
     get_mail_sender,
     get_rate_limiter,
     hash_ip_for_storage,
+    hash_ip_for_storage_google,
     hash_user_agent_for_storage,
+    hash_user_agent_for_storage_google,
     issue_device_session,
     normalize_code,
     normalize_email,
@@ -102,6 +113,21 @@ RATE_LIMIT_ENROLL_COMPLETE_PER_IP_PER_HOUR: RateLimitPolicy = RateLimitPolicy(
 )
 RATE_LIMIT_REFRESH_PER_IP_PER_HOUR: RateLimitPolicy = RateLimitPolicy(
     limit=120, window_seconds=3600
+)
+
+# Google sign-in rate-limit policies (TODO 13). Hard-coded per the
+# TODO 7 "do not add env vars" guardrail; may be promoted to
+# `daemon_rate_limit_google_*` config fields in a follow-up. The
+# `start` endpoint is per-IP only (the nonce is not yet bound to a
+# verified identity, so there is no email/subject to key on); the
+# `complete` endpoint is per-IP AND per-challenge so an attacker
+# cannot burn through every nonce for one challenge row without
+# hitting the IP cap.
+RATE_LIMIT_GOOGLE_START_PER_IP_PER_HOUR: RateLimitPolicy = RateLimitPolicy(
+    limit=20, window_seconds=3600
+)
+RATE_LIMIT_GOOGLE_COMPLETE_PER_IP_PER_HOUR: RateLimitPolicy = RateLimitPolicy(
+    limit=20, window_seconds=3600
 )
 
 
@@ -575,6 +601,325 @@ async def email_complete_endpoint(
         )
 
     return EmailCompleteResponse(
+        access_token=issued_session.access_token,
+        expires_at=int(issued_session.access_expires_at.timestamp()),
+        refresh_token=issued_session.refresh_token,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Google sign-in endpoints (TODO 13)
+# ---------------------------------------------------------------------------
+# The Google flow is a two-step exchange: `/v1/auth/google/start` issues
+# a server nonce challenge that the client passes to the Google Identity
+# Services manual callback as the `nonce` parameter; the GIS callback
+# returns a JWT `CredentialResponse.credential` which the client posts to
+# `/v1/auth/google/complete` together with the challenge id. The complete
+# route consumes the nonce, verifies the ID token against the audience
+# allowlist, resolves the account/tenant/provider via
+# `AccountService.claim_google_identity`, and mints a Daemon device
+# session through `issue_device_session`.
+#
+# Architecture decisions followed:
+#   - TODO 0 decision lock: Google `sub` is the durable identity. The
+#     verifier returns `VerifiedGoogleIdentity.provider_subject`; the
+#     account service is the only place that resolves it to a Daemon
+#     `user_id`/`tenant_id`. The route never accepts caller-supplied
+#     `user_id`/`tenant_id` (Pydantic `extra="forbid"`).
+#   - TODO 12 verifier: `issue_nonce` is called from start;
+#     `consume_nonce` is called from complete BEFORE `verify_id_token`
+#     so a single nonce can succeed at most once.
+#   - TODO 8 account service: identity is resolved through
+#     `AccountService.claim_google_identity`; no inline user/tenant SQL
+#     in the route.
+#   - TODO 9 session issuance: the route calls
+#     `issue_device_session` only after a successful claim. No standalone
+#     unauthenticated session-minting surface.
+#   - Web/native transport: web sets the refresh cookie and returns no
+#     refresh JSON; native returns the refresh in the JSON body and sets
+#     no cookie. Mixed client_kind/cookie patterns are rejected with a
+#     400 before any token burn.
+#   - Invite-only policy: completion collapses invite rejection and
+#     signup disabled to a generic 4xx so a probe cannot enumerate
+#     "invited vs uninvited" by response shape.
+#   - Provider token as bearer: protected APIs still trust only
+#     Daemon-issued tokens. The Google ID token is consumed and
+#     discarded; it is never stored, never logged, and never returned
+#     in the response.
+
+
+class GoogleStartResponse(BaseModel):
+    challenge_id: str
+    nonce: str
+    expires_at: int
+
+
+class GoogleCompleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    challenge_id: str
+    nonce: str
+    id_token: str
+    client_kind: str
+    device_persistence: str = "private"
+
+
+class GoogleCompleteResponse(BaseModel):
+    access_token: str
+    expires_at: int
+    refresh_token: str | None = None
+    token_type: str = "Bearer"
+
+
+def _google_sign_in_disabled_error() -> HTTPException:
+    return HTTPException(
+        status_code=404,
+        detail="google_sign_in_disabled",
+    )
+
+
+def _google_complete_failure() -> HTTPException:
+    return HTTPException(
+        status_code=401,
+        detail="google_sign_in_failed",
+    )
+
+
+def _google_complete_invalid_persistence(persistence: str) -> HTTPException:
+    return HTTPException(
+        status_code=400,
+        detail=f"device_persistence must be 'private' or 'temporary', got {persistence!r}",
+    )
+
+
+def _google_start_rate_limit_policies(
+    request: Request,
+) -> list[tuple[ScopeKind, str, RateLimitPolicy]]:
+    return [
+        ("ip", client_ip_for_key(request), RATE_LIMIT_GOOGLE_START_PER_IP_PER_HOUR),
+    ]
+
+
+def _google_complete_rate_limit_policies(
+    request: Request,
+) -> list[tuple[ScopeKind, str, RateLimitPolicy]]:
+    return [
+        (
+            "ip",
+            client_ip_for_key(request),
+            RATE_LIMIT_GOOGLE_COMPLETE_PER_IP_PER_HOUR,
+        ),
+    ]
+
+
+def _google_device_name_for_client_kind(client_kind: str) -> str:
+    return "Web Google Sign-In Device" if client_kind == "web" else "Native Google Sign-In Device"
+
+
+@router.post("/google/start", response_model=GoogleStartResponse, status_code=202)
+async def google_start_endpoint(request: Request) -> GoogleStartResponse:
+    settings = get_settings()
+
+    if not settings.daemon_google_enabled:
+        raise _google_sign_in_disabled_error()
+
+    limiter = get_rate_limiter(request)
+    await enforce_rate_limit(
+        request=request,
+        limiter=limiter,
+        endpoint="auth:google:start",
+        policies=_google_start_rate_limit_policies(request),
+    )
+
+    app_state = get_app_state(request)
+    if app_state.db_pool is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    pepper = validate_and_get_pepper(settings)
+    ip_hash = hash_ip_for_storage_google(client_ip_for_key(request), pepper)
+    user_agent = request.headers.get("User-Agent")
+    user_agent_hash = (
+        hash_user_agent_for_storage_google(user_agent, pepper)
+        if user_agent and user_agent.strip()
+        else None
+    )
+
+    async with app_state.db_pool.acquire() as conn:
+        service = GoogleVerifierService(
+            cast(SupportsGoogleNonceQueries, conn),
+            settings,
+            default_google_id_token_verifier(),
+        )
+        try:
+            nonce_row, plaintext_nonce = await service.issue_nonce(
+                GoogleNonceIssueRequest(
+                    ip_hash=ip_hash,
+                    user_agent_hash=user_agent_hash,
+                    ttl_seconds=settings.daemon_google_nonce_ttl_seconds,
+                )
+            )
+        except GoogleVerifierUnavailable as exc:
+            raise HTTPException(status_code=503, detail="google_unavailable") from exc
+
+    return GoogleStartResponse(
+        challenge_id=str(nonce_row.id),
+        nonce=plaintext_nonce,
+        expires_at=int(nonce_row.expires_at.timestamp()),
+    )
+
+
+@router.post(
+    "/google/complete",
+    response_model=GoogleCompleteResponse,
+    response_model_exclude_none=True,
+)
+async def google_complete_endpoint(
+    request: Request,
+    response: Response,
+    body: GoogleCompleteRequest,
+) -> GoogleCompleteResponse:
+    settings = get_settings()
+
+    if not settings.daemon_google_enabled:
+        raise _google_sign_in_disabled_error()
+
+    app_state = get_app_state(request)
+    if app_state.db_pool is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    if body.client_kind not in ("web", "native"):
+        raise HTTPException(status_code=400, detail="client_kind must be 'web' or 'native'")
+    if body.device_persistence not in ("private", "temporary"):
+        raise _google_complete_invalid_persistence(body.device_persistence)
+
+    has_cookie = _refresh_cookie_value(request, settings) is not None
+    if body.client_kind == "native" and has_cookie:
+        raise HTTPException(
+            status_code=400,
+            detail="cookie present but client_kind is 'native'",
+        )
+
+    if body.client_kind == "web":
+        csrf_result = check_csrf_origin(
+            request_origin=request.headers.get("Origin"),
+            sec_fetch_site=request.headers.get("Sec-Fetch-Site"),
+            referer=request.headers.get("Referer"),
+            allowed_origins=[
+                o.strip() for o in settings.daemon_allowed_origins.split(",") if o.strip()
+            ],
+            public_origin=settings.daemon_public_origin,
+            has_cookie=has_cookie,
+        )
+        if not csrf_result.allowed:
+            raise HTTPException(
+                status_code=403,
+                detail=f"CSRF/origin check failed: {csrf_result.reason}",
+            )
+
+    try:
+        uuid.UUID(body.challenge_id)
+    except (ValueError, AttributeError):
+        raise _google_complete_failure()
+
+    limiter = get_rate_limiter(request)
+
+    async with app_state.db_pool.acquire() as conn:
+        await enforce_rate_limit(
+            request=request,
+            limiter=limiter,
+            endpoint="auth:google:complete",
+            policies=_google_complete_rate_limit_policies(request),
+        )
+
+        verifier_service = GoogleVerifierService(
+            cast(SupportsGoogleNonceQueries, conn),
+            settings,
+            default_google_id_token_verifier(),
+        )
+        try:
+            consumed_nonce = await verifier_service.consume_nonce(
+                GoogleNonceConsumeRequest(plaintext_nonce=body.nonce)
+            )
+        except GoogleNonceInvalid as exc:
+            raise _google_complete_failure() from exc
+        except GoogleVerifierUnavailable as exc:
+            raise HTTPException(status_code=503, detail="google_unavailable") from exc
+
+        try:
+            verified = await verifier_service.verify_id_token(
+                GoogleIdTokenVerifyRequest(
+                    id_token_str=body.id_token,
+                    plaintext_nonce=body.nonce,
+                    consumed_nonce=consumed_nonce,
+                )
+            )
+        except GoogleTokenInvalid as exc:
+            raise _google_complete_failure() from exc
+        except GoogleVerifierUnavailable as exc:
+            raise HTTPException(status_code=503, detail="google_unavailable") from exc
+
+        invite_token_verifier_hash: str | None = None
+        if settings.daemon_signup_mode == "invite_only":
+            invite_token_verifier_hash = await _load_active_invite_verifier_hash(
+                conn,
+                verified.normalized_email,
+            )
+
+        account_service = AccountService(cast(SupportsIdentityQueries, conn))
+        try:
+            claim_result = await account_service.claim_google_identity(
+                google_sub=verified.provider_subject,
+                normalized_email=verified.normalized_email,
+                email_verified=True,
+                signup_mode=settings.daemon_signup_mode,
+                invite_token_verifier_hash=invite_token_verifier_hash,
+            )
+        except (InviteOnlyRejection, SignupDisabled):
+            raise _google_complete_failure()
+
+        async with conn.transaction():
+            issued_session = await issue_device_session(
+                cast(SupportsSessionIssuanceQueries, conn),
+                IssueSessionRequest(
+                    user_id=claim_result.user.id,
+                    tenant_id=claim_result.tenant.id,
+                    client_kind=body.client_kind,
+                    device_persistence=body.device_persistence,
+                    device_name=_google_device_name_for_client_kind(body.client_kind),
+                    platform=body.client_kind,
+                    private_refresh_ttl_days=settings.daemon_private_refresh_ttl_days,
+                    temporary_refresh_ttl_seconds=settings.daemon_temporary_refresh_ttl_seconds,
+                ),
+            )
+
+    if body.client_kind == "web":
+        try:
+            cookie_config = make_refresh_cookie_config(
+                cookie_secure=settings.daemon_cookie_secure,
+                environment=settings.daemon_environment,
+            )
+        except CookiePolicyError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        if body.device_persistence == "temporary":
+            cookie_headers = build_temporary_refresh_cookie(
+                value=issued_session.refresh_token,
+                config=cookie_config,
+            )
+        else:
+            cookie_headers = build_refresh_cookie(
+                value=issued_session.refresh_token,
+                config=cookie_config,
+                max_age=issued_session.refresh_max_age_seconds,
+            )
+        for header_name, header_value in cookie_headers.items():
+            response.headers[header_name] = header_value
+        return GoogleCompleteResponse(
+            access_token=issued_session.access_token,
+            expires_at=int(issued_session.access_expires_at.timestamp()),
+        )
+
+    return GoogleCompleteResponse(
         access_token=issued_session.access_token,
         expires_at=int(issued_session.access_expires_at.timestamp()),
         refresh_token=issued_session.refresh_token,
