@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -32,7 +31,9 @@ def temp_gen_dir():
 
 @pytest.mark.asyncio
 async def test_csv_generation_with_json_rows(tool, temp_gen_dir):
-    content = json.dumps([["Name", "Age", "City"], ["Alice", "30", "Sydney"], ["Bob", "25", "Melbourne"]])
+    content = json.dumps(
+        [["Name", "Age", "City"], ["Alice", "30", "Sydney"], ["Bob", "25", "Melbourne"]]
+    )
     result_json = await tool.execute(format="csv", content=content)
     result = json.loads(result_json)
     assert result["success"] is True

@@ -33,8 +33,6 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-
-
 def get_migration_facts(root: Path) -> dict[str, Any]:
     migrations_dir = root / "migrations"
     sql_files = sorted(migrations_dir.glob("*.sql"), key=lambda p: p.name)
@@ -45,10 +43,16 @@ def get_migration_facts(root: Path) -> dict[str, Any]:
 
 _EMBEDDING_DOC_RE = re.compile(r'embedding_document_model:\s*str\s*=\s*"([^"]+)"')
 _EMBEDDING_QUERY_RE = re.compile(r'embedding_query_model:\s*str\s*=\s*"([^"]+)"')
-_EMBEDDING_DIM_RE = re.compile(r'embedding_dimensions:\s*int\s*=\s*(\d+)')
-_DEDUP_MERGE_RE = re.compile(r"dedup_merge_threshold:\s*float\s*=\s*Field\s*\(\s*default\s*=\s*([\d.]+)")
-_DEDUP_SUPERSEDE_GENERIC_RE = re.compile(r"dedup_supersede_threshold:\s*float\s*=\s*Field\s*\(\s*default\s*=\s*([\d.]+)")
-_DEDUP_SUPERSEDE_SAME_SLOT_RE = re.compile(r"dedup_supersede_same_slot_threshold:\s*float\s*=\s*Field\s*\(\s*default\s*=\s*([\d.]+)")
+_EMBEDDING_DIM_RE = re.compile(r"embedding_dimensions:\s*int\s*=\s*(\d+)")
+_DEDUP_MERGE_RE = re.compile(
+    r"dedup_merge_threshold:\s*float\s*=\s*Field\s*\(\s*default\s*=\s*([\d.]+)"
+)
+_DEDUP_SUPERSEDE_GENERIC_RE = re.compile(
+    r"dedup_supersede_threshold:\s*float\s*=\s*Field\s*\(\s*default\s*=\s*([\d.]+)"
+)
+_DEDUP_SUPERSEDE_SAME_SLOT_RE = re.compile(
+    r"dedup_supersede_same_slot_threshold:\s*float\s*=\s*Field\s*\(\s*default\s*=\s*([\d.]+)"
+)
 
 # Accept bold-label (GFM), uppercase plain, and lowercase plain forms:
 #   **EMBEDDING_DOCUMENT_MODEL**: voyage-4-large
@@ -63,7 +67,7 @@ _EMBEDDING_QUERY_MODEL_CLAIM_RE = re.compile(
     re.IGNORECASE,
 )
 _EMBEDDING_DIMENSIONS_CLAIM_RE = re.compile(
-    r'(?:\*\*EMBEDDING_DIMENSIONS\*\*|EMBEDDING_DIMENSIONS|embedding_dimensions)[:=\s]+(\d+)',
+    r"(?:\*\*EMBEDDING_DIMENSIONS\*\*|EMBEDDING_DIMENSIONS|embedding_dimensions)[:=\s]+(\d+)",
     re.IGNORECASE,
 )
 
@@ -85,11 +89,13 @@ def get_embedding_facts(root: Path) -> dict[str, Any]:
         "dimensions": int(dim.group(1)) if dim else None,
         "dedup_merge": float(merge.group(1)) if merge else None,
         "dedup_supersede_generic": float(supersede_generic.group(1)) if supersede_generic else None,
-        "dedup_supersede_same_slot": float(supersede_same_slot.group(1)) if supersede_same_slot else None,
+        "dedup_supersede_same_slot": float(supersede_same_slot.group(1))
+        if supersede_same_slot
+        else None,
     }
 
 
-_VIDEO_PROVIDERS_RE = re.compile(r'VALID_VIDEO_PROVIDERS\s*=\s*\{([^}]+)\}')
+_VIDEO_PROVIDERS_RE = re.compile(r"VALID_VIDEO_PROVIDERS\s*=\s*\{([^}]+)\}")
 _PROVIDER_CLIENT_RE = re.compile(r"class\s+(\w+(?:Client|Provider))\s*(?:\(|:)")
 
 
@@ -118,15 +124,9 @@ def get_provider_facts(root: Path) -> dict[str, Any]:
 
 
 # Tier model defaults extraction from config.py
-_TIER_MODEL_RE = re.compile(
-    r'tier_([a-z]+)_([a-z_]+)_model\s*:\s*str\s*=\s*"([^"]*)"'
-)
-_TIER_VIDEO_PROVIDER_RE = re.compile(
-    r'tier_([a-z]+)_video_provider\s*:\s*str\s*=\s*"([^"]+)"'
-)
-_TIER_IMAGE_PROVIDER_RE = re.compile(
-    r'tier_([a-z]+)_image_provider\s*:\s*str\s*=\s*"([^"]+)"'
-)
+_TIER_MODEL_RE = re.compile(r'tier_([a-z]+)_([a-z_]+)_model\s*:\s*str\s*=\s*"([^"]*)"')
+_TIER_VIDEO_PROVIDER_RE = re.compile(r'tier_([a-z]+)_video_provider\s*:\s*str\s*=\s*"([^"]+)"')
+_TIER_IMAGE_PROVIDER_RE = re.compile(r'tier_([a-z]+)_image_provider\s*:\s*str\s*=\s*"([^"]+)"')
 _AUTO_FAST_MODEL_RE = re.compile(r'auto_fast_model\s*:\s*str\s*=\s*"([^"]+)"')
 _AUTO_REASONING_MODEL_RE = re.compile(r'auto_reasoning_model\s*:\s*str\s*=\s*"([^"]+)"')
 
@@ -168,7 +168,12 @@ def get_tier_facts(root: Path) -> dict[str, Any]:
             elif "True" in stripped:
                 video_enabled[current_tier] = True
             current_tier = None
-    return {"tiers": tiers, "video_providers": video_providers, "image_providers": image_providers, "video_enabled": video_enabled}
+    return {
+        "tiers": tiers,
+        "video_providers": video_providers,
+        "image_providers": image_providers,
+        "video_enabled": video_enabled,
+    }
 
 
 def get_auto_routing_facts(root: Path) -> dict[str, str]:
@@ -203,17 +208,57 @@ def get_docker_facts(root: Path) -> dict[str, Any]:
         if current_indent <= services_indent and stripped:
             break
         if current_indent == services_indent + 2 and stripped and not stripped.startswith("#"):
-            if not any(stripped.startswith(k) for k in ("depends_on:", "environment:", "ports:", "volumes:", "networks:", "build:", "command:", "restart:", "image:", "container_name:", "healthcheck:", "env_file:", "extends:", "profiles:", "deploy:", "cgroup_parent:", "cpu_shares:", "mem_limit:", "mem_reservation:", "ulimits:", "log_driver:", "log_opt:", "dns:", "dns_search:", "external_links:", "extra_hosts:", "isolation:", "mac_address:", "network_mode:", "shm_size:", "stdin_open:", "tty:", "user:", "working_dir:")):
+            if not any(
+                stripped.startswith(k)
+                for k in (
+                    "depends_on:",
+                    "environment:",
+                    "ports:",
+                    "volumes:",
+                    "networks:",
+                    "build:",
+                    "command:",
+                    "restart:",
+                    "image:",
+                    "container_name:",
+                    "healthcheck:",
+                    "env_file:",
+                    "extends:",
+                    "profiles:",
+                    "deploy:",
+                    "cgroup_parent:",
+                    "cpu_shares:",
+                    "mem_limit:",
+                    "mem_reservation:",
+                    "ulimits:",
+                    "log_driver:",
+                    "log_opt:",
+                    "dns:",
+                    "dns_search:",
+                    "external_links:",
+                    "extra_hosts:",
+                    "isolation:",
+                    "mac_address:",
+                    "network_mode:",
+                    "shm_size:",
+                    "stdin_open:",
+                    "tty:",
+                    "user:",
+                    "working_dir:",
+                )
+            ):
                 service_count += 1
     return {"service_count": service_count}
 
 
-_ROUTE_DEF_RE = re.compile(r'(@app\.|router\.)(get|post|put|patch|delete|options)\s*\(\s*["\']([^"\']*)["\']')
+_ROUTE_DEF_RE = re.compile(
+    r'(@app\.|router\.)(get|post|put|patch|delete|options)\s*\(\s*["\']([^"\']*)["\']'
+)
 _ROUTER_PREFIX_RE = re.compile(r'router\s*=\s*APIRouter\s*\(\s*prefix\s*=\s*["\']([^"\']+)["\']')
 
 
 def _strip_trailing_slash(path: str) -> str:
-    return path.rstrip('/')
+    return path.rstrip("/")
 
 
 def get_route_facts(root: Path) -> dict[str, Any]:
@@ -241,13 +286,13 @@ def get_route_facts(root: Path) -> dict[str, Any]:
     return {"routes": routes}
 
 
-_ENV_VAR_RE = re.compile(r'`([A-Z_][A-Z0-9_]*)`')
+_ENV_VAR_RE = re.compile(r"`([A-Z_][A-Z0-9_]*)`")
 
 
 def get_env_var_facts(root: Path) -> dict[str, list[str]]:
     env_vars: set[str] = set()
-    env_var_pattern = re.compile(r'^([A-Z_][A-Z0-9_]*)=', re.MULTILINE)
-    docker_list_pattern = re.compile(r'^\s*-\s+([A-Z_][A-Z0-9_]*)', re.MULTILINE)
+    env_var_pattern = re.compile(r"^([A-Z_][A-Z0-9_]*)=", re.MULTILINE)
+    docker_list_pattern = re.compile(r"^\s*-\s+([A-Z_][A-Z0-9_]*)", re.MULTILINE)
     for file_path in [root / ".env.example", root / "docker-compose.yml"]:
         if file_path.exists():
             text = file_path.read_text(encoding="utf-8")
@@ -258,7 +303,7 @@ def get_env_var_facts(root: Path) -> dict[str, list[str]]:
     return {"env_vars": sorted(env_vars)}
 
 
-_TIER_PRICE_RE = re.compile(r'#\s*Tier:\s*(FREE|STARTER|PRO|MAX|BYOK)\s*\(([^)]+)\)', re.IGNORECASE)
+_TIER_PRICE_RE = re.compile(r"#\s*Tier:\s*(FREE|STARTER|PRO|MAX|BYOK)\s*\(([^)]+)\)", re.IGNORECASE)
 
 
 def get_tier_prices(root: Path) -> dict[str, Any]:
@@ -322,8 +367,6 @@ def get_subagent_facts(root: Path) -> dict[str, dict[str, str]]:
     return result
 
 
-
-
 class CheckId(str, Enum):
     MIGRATION_COUNT = "migration_count"
     MIGRATION_LATEST = "migration_latest"
@@ -367,19 +410,19 @@ class ExceptionEntry:
     suppressed_finding: bool = False
 
 
-
-
 _EXCEPTION_RE = re.compile(
-    r"<!--\s*DOC_FRESHNESS_EXCEPTION:\s*" +
-    r"([a-z_]+)\s+" +
-    r"expires=(\d{4}-\d{2}-\d{2})\s+" +
-    r'reason="([^"]*)"',
+    r"<!--\s*DOC_FRESHNESS_EXCEPTION:\s*"
+    + r"([a-z_]+)\s+"
+    + r"expires=(\d{4}-\d{2}-\d{2})\s+"
+    + r'reason="([^"]*)"',
     re.IGNORECASE,
 )
 _EXCEPTION_LINE_RE = re.compile(r"<!--\s*DOC_FRESHNESS_EXCEPTION:", re.IGNORECASE)
 
 
-def parse_exceptions(lines: list[str], doc_path: str) -> tuple[list[ExceptionEntry], list[tuple[int, str]]]:
+def parse_exceptions(
+    lines: list[str], doc_path: str
+) -> tuple[list[ExceptionEntry], list[tuple[int, str]]]:
     exceptions: list[ExceptionEntry] = []
     malformed: list[tuple[int, str]] = []
 
@@ -399,19 +442,19 @@ def parse_exceptions(lines: list[str], doc_path: str) -> tuple[list[ExceptionEnt
                 if not reason:
                     malformed.append((lineno, "empty reason"))
                     continue
-                exceptions.append(ExceptionEntry(
-                    check_id=check_id,
-                    expires=expires,
-                    reason=reason,
-                    doc_path=doc_path,
-                    line=lineno,
-                ))
+                exceptions.append(
+                    ExceptionEntry(
+                        check_id=check_id,
+                        expires=expires,
+                        reason=reason,
+                        doc_path=doc_path,
+                        line=lineno,
+                    )
+                )
             if not matched:
                 malformed.append((lineno, "malformed exception syntax"))
 
     return exceptions, malformed
-
-
 
 
 @dataclass
@@ -424,7 +467,7 @@ class CheckResult:
 
 
 _TIER_PRICE_TABLE_RE = re.compile(
-    r'^\|\s*\*\*([A-Za-z]+)\*\*\s*\|\s*(\$[\d]+/mo)\s*\|',
+    r"^\|\s*\*\*([A-Za-z]+)\*\*\s*\|\s*(\$[\d]+/mo)\s*\|",
     re.IGNORECASE,
 )
 
@@ -451,7 +494,8 @@ def _check_tier_prices(doc_content: str, source_prices: dict[str, str]) -> Check
             mismatches.append(f"{tier}: expected {src_price}, got {doc_price}")
     if mismatches:
         return CheckResult(
-            CheckId.TIER_PRICE, False,
+            CheckId.TIER_PRICE,
+            False,
             str(source_prices),
             str(doc_prices),
             "; ".join(mismatches),
@@ -459,10 +503,10 @@ def _check_tier_prices(doc_content: str, source_prices: dict[str, str]) -> Check
     return CheckResult(CheckId.TIER_PRICE, True)
 
 
-_ROUTE_TABLE_RE = re.compile(r'`(/[^`]+)`')
+_ROUTE_TABLE_RE = re.compile(r"`(/[^`]+)`")
 _KNOWN_SINGLE_SEGMENT_ROUTES = frozenset(["/chat", "/health", "/status", "/providers"])
-_METHOD_LINE_RE = re.compile(r'\|\s*[A-Z][A-Z/]+\s*\|')
-_METHOD_CELL_RE = re.compile(r'\|\s*([A-Z/]+)\s*\|', re.IGNORECASE)
+_METHOD_LINE_RE = re.compile(r"\|\s*[A-Z][A-Z/]+\s*\|")
+_METHOD_CELL_RE = re.compile(r"\|\s*([A-Z/]+)\s*\|", re.IGNORECASE)
 
 
 def _is_route_table_row(line_text: str, route_start: int) -> bool:
@@ -471,7 +515,7 @@ def _is_route_table_row(line_text: str, route_start: int) -> bool:
 
 def _normalize_route(route: str) -> str:
     normalized = route.strip()
-    normalized = re.sub(r'\{[^}]+\}', '{id}', normalized)
+    normalized = re.sub(r"\{[^}]+\}", "{id}", normalized)
     return normalized
 
 
@@ -496,10 +540,10 @@ def _check_routes(doc_content: str, source_routes: dict[str, list[str]]) -> Chec
     processed_lines: set[int] = set()
     for m in _ROUTE_TABLE_RE.finditer(doc_content):
         route = m.group(1).strip()
-        if not route.startswith('/'):
+        if not route.startswith("/"):
             continue
-        line_start = doc_content.rfind('\n', 0, m.start()) + 1
-        line_end = doc_content.find('\n', m.start())
+        line_start = doc_content.rfind("\n", 0, m.start()) + 1
+        line_end = doc_content.find("\n", m.start())
         if line_end == -1:
             line_end = len(doc_content)
         line_text = doc_content[line_start:line_end]
@@ -507,19 +551,19 @@ def _check_routes(doc_content: str, source_routes: dict[str, list[str]]) -> Chec
         if line_key in processed_lines:
             continue
         processed_lines.add(line_key)
-        if route.count('/') >= 2:
+        if route.count("/") >= 2:
             methods = _extract_methods_from_row(line_text)
             all_routes_in_row = _ROUTE_TABLE_RE.findall(line_text)
             for r in all_routes_in_row:
                 r_stripped = r.strip()
-                if r_stripped.startswith('/'):
+                if r_stripped.startswith("/"):
                     doc_route_methods.append((r_stripped, methods))
             continue
         if route in _KNOWN_SINGLE_SEGMENT_ROUTES:
             doc_route_methods.append((route, ""))
             continue
-        line_start = doc_content.rfind('\n', 0, m.start()) + 1
-        line_end = doc_content.find('\n', m.start())
+        line_start = doc_content.rfind("\n", 0, m.start()) + 1
+        line_end = doc_content.find("\n", m.start())
         if line_end == -1:
             line_end = len(doc_content)
         line_text = doc_content[line_start:line_end]
@@ -533,7 +577,8 @@ def _check_routes(doc_content: str, source_routes: dict[str, list[str]]) -> Chec
             stale_paths.append(route)
     if stale_paths:
         return CheckResult(
-            CheckId.ROUTE, False,
+            CheckId.ROUTE,
+            False,
             f"all source routes: {len(all_source)} paths",
             f"stale: {', '.join(sorted(stale_paths))}",
             f"documented route(s) not found in source: {', '.join(sorted(stale_paths))}",
@@ -541,7 +586,7 @@ def _check_routes(doc_content: str, source_routes: dict[str, list[str]]) -> Chec
 
     method_failures: list[str] = []
     for route, doc_methods in doc_route_methods:
-        if '{' in route and re.search(r'\{[a-z_]+\}', route):
+        if "{" in route and re.search(r"\{[a-z_]+\}", route):
             continue
         if not doc_methods:
             continue
@@ -549,14 +594,17 @@ def _check_routes(doc_content: str, source_routes: dict[str, list[str]]) -> Chec
         src_methods = source_methods_by_path.get(norm, set())
         if not src_methods:
             continue
-        for dm in doc_methods.split('/'):
+        for dm in doc_methods.split("/"):
             dm = dm.strip().upper()
             if dm not in src_methods:
-                method_failures.append(f"{route}: method {dm} not in source ({', '.join(sorted(src_methods))})")
+                method_failures.append(
+                    f"{route}: method {dm} not in source ({', '.join(sorted(src_methods))})"
+                )
 
     if method_failures:
         return CheckResult(
-            CheckId.ROUTE, False,
+            CheckId.ROUTE,
+            False,
             "source methods",
             "; ".join(method_failures[:3]),
             f"route method mismatch: {method_failures[0]}",
@@ -570,11 +618,26 @@ def _extract_methods_from_row(line_text: str) -> str:
     return methods_match.group(1).strip() if methods_match else ""
 
 
-_ENV_DOC_RE = re.compile(r'`([A-Z_][A-Z0-9_]*)`')
-_ENV_VAR_SUFFIXES = frozenset([
-    "KEY", "URL", "TOKEN", "SECRET", "PATH", "DB", "PORT", "HOST",
-    "PASSWORD", "NAME", "ID", "MODEL", "SETTING", "VAR", "TYPE",
-])
+_ENV_DOC_RE = re.compile(r"`([A-Z_][A-Z0-9_]*)`")
+_ENV_VAR_SUFFIXES = frozenset(
+    [
+        "KEY",
+        "URL",
+        "TOKEN",
+        "SECRET",
+        "PATH",
+        "DB",
+        "PORT",
+        "HOST",
+        "PASSWORD",
+        "NAME",
+        "ID",
+        "MODEL",
+        "SETTING",
+        "VAR",
+        "TYPE",
+    ]
+)
 
 
 def _is_env_var_name(name: str) -> bool:
@@ -590,13 +653,16 @@ def _check_env_vars(doc_content: str, source_vars: list[str]) -> CheckResult:
     if not source_vars:
         return CheckResult(CheckId.ENV_VAR, True)
     source_set = set(source_vars)
-    doc_vars = [m.group(1) for m in _ENV_DOC_RE.finditer(doc_content) if _is_env_var_name(m.group(1))]
+    doc_vars = [
+        m.group(1) for m in _ENV_DOC_RE.finditer(doc_content) if _is_env_var_name(m.group(1))
+    ]
     if not doc_vars:
         return CheckResult(CheckId.ENV_VAR, True)
     stale: list[str] = [v for v in doc_vars if v not in source_set]
     if stale:
         return CheckResult(
-            CheckId.ENV_VAR, False,
+            CheckId.ENV_VAR,
+            False,
             f"source env vars: {', '.join(sorted(source_set))}",
             f"documented stale: {', '.join(sorted(stale))}",
             f"env var(s) not found in source: {', '.join(sorted(stale))}",
@@ -604,25 +670,30 @@ def _check_env_vars(doc_content: str, source_vars: list[str]) -> CheckResult:
     return CheckResult(CheckId.ENV_VAR, True)
 
 
-_MEMORY_LAYER_REQUIRED_VARS = frozenset([
-    "VOYAGE_API_KEY",
-    "EMBEDDING_DOCUMENT_MODEL",
-    "EMBEDDING_QUERY_MODEL",
-    "EMBEDDING_DIMENSIONS",
-    "DEDUP_MERGE_THRESHOLD",
-    "DEDUP_SUPERSEDE_THRESHOLD",
-    "DEDUP_SUPERSEDE_SAME_SLOT_THRESHOLD",
-])
+_MEMORY_LAYER_REQUIRED_VARS = frozenset(
+    [
+        "VOYAGE_API_KEY",
+        "EMBEDDING_DOCUMENT_MODEL",
+        "EMBEDDING_QUERY_MODEL",
+        "EMBEDDING_DIMENSIONS",
+        "DEDUP_MERGE_THRESHOLD",
+        "DEDUP_SUPERSEDE_THRESHOLD",
+        "DEDUP_SUPERSEDE_SAME_SLOT_THRESHOLD",
+    ]
+)
 
 
 def _check_memory_layer_env_block(doc_content: str) -> CheckResult:
     in_block = False
     found_vars: set[str] = set()
-    env_assign = re.compile(r'^([A-Z_][A-Z0-9_]*)=')
+    env_assign = re.compile(r"^([A-Z_][A-Z0-9_]*)=")
     for line in doc_content.splitlines():
         stripped = line.strip()
-        unescaped = stripped[1:] if stripped.startswith('\\') else stripped
-        if unescaped.startswith("```bash") and "## Environment" in doc_content[:doc_content.find(line)]:
+        unescaped = stripped[1:] if stripped.startswith("\\") else stripped
+        if (
+            unescaped.startswith("```bash")
+            and "## Environment" in doc_content[: doc_content.find(line)]
+        ):
             in_block = True
             continue
         if unescaped.startswith("```") and in_block:
@@ -635,7 +706,8 @@ def _check_memory_layer_env_block(doc_content: str) -> CheckResult:
     missing = _MEMORY_LAYER_REQUIRED_VARS - found_vars
     if missing:
         return CheckResult(
-            CheckId.ENV_VAR, False,
+            CheckId.ENV_VAR,
+            False,
             f"required memory vars: {', '.join(sorted(_MEMORY_LAYER_REQUIRED_VARS))}",
             f"missing: {', '.join(sorted(missing))}",
             f"memory layer env block missing: {', '.join(sorted(missing))}",
@@ -644,20 +716,25 @@ def _check_memory_layer_env_block(doc_content: str) -> CheckResult:
 
 
 def _check_migration_count(doc_content: str, expected: int) -> CheckResult:
-    matches = re.findall(r'\b(\d{2,3})\s+migration', doc_content, re.IGNORECASE)
+    matches = re.findall(r"\b(\d{2,3})\s+migration", doc_content, re.IGNORECASE)
     if not matches:
         return CheckResult(CheckId.MIGRATION_COUNT, True)
     for m in matches:
         observed = int(m)
         if observed != expected:
-            return CheckResult(CheckId.MIGRATION_COUNT, False, str(expected), str(observed),
-                            f"migration count mismatch: expected {expected}, found {observed}")
+            return CheckResult(
+                CheckId.MIGRATION_COUNT,
+                False,
+                str(expected),
+                str(observed),
+                f"migration count mismatch: expected {expected}, found {observed}",
+            )
     return CheckResult(CheckId.MIGRATION_COUNT, True)
 
 
 def _check_migration_latest(doc_content: str, expected: str) -> CheckResult:
     latest_claim_pattern = re.compile(
-        r'(?:latest(?:\s+(?:migration|db))?|most\s+recent|newest)[:\s]+`?(\d{2,3}_\w+(?:\.sql)?)`?',
+        r"(?:latest(?:\s+(?:migration|db))?|most\s+recent|newest)[:\s]+`?(\d{2,3}_\w+(?:\.sql)?)`?",
         re.IGNORECASE,
     )
     matches = latest_claim_pattern.findall(doc_content)
@@ -666,8 +743,13 @@ def _check_migration_latest(doc_content: str, expected: str) -> CheckResult:
     for observed in matches:
         normalized = observed if observed.endswith(".sql") else observed + ".sql"
         if normalized != expected and observed != expected:
-            return CheckResult(CheckId.MIGRATION_LATEST, False, expected, observed,
-                              f"latest migration mismatch: expected {expected}, found {observed}")
+            return CheckResult(
+                CheckId.MIGRATION_LATEST,
+                False,
+                expected,
+                observed,
+                f"latest migration mismatch: expected {expected}, found {observed}",
+            )
     return CheckResult(CheckId.MIGRATION_LATEST, True)
 
 
@@ -677,8 +759,13 @@ def _check_embedding_doc_model(doc_content: str, expected: str) -> CheckResult:
         return CheckResult(CheckId.EMBEDDING_DOC_MODEL, True)
     observed = m.group(1).strip()
     if _normalize_model_name(observed) != _normalize_model_name(expected):
-        return CheckResult(CheckId.EMBEDDING_DOC_MODEL, False, expected, observed,
-                          f"embedding doc model mismatch: expected {expected}, found {observed}")
+        return CheckResult(
+            CheckId.EMBEDDING_DOC_MODEL,
+            False,
+            expected,
+            observed,
+            f"embedding doc model mismatch: expected {expected}, found {observed}",
+        )
     return CheckResult(CheckId.EMBEDDING_DOC_MODEL, True)
 
 
@@ -688,8 +775,13 @@ def _check_embedding_query_model(doc_content: str, expected: str) -> CheckResult
         return CheckResult(CheckId.EMBEDDING_QUERY_MODEL, True)
     observed = m.group(1).strip()
     if _normalize_model_name(observed) != _normalize_model_name(expected):
-        return CheckResult(CheckId.EMBEDDING_QUERY_MODEL, False, expected, observed,
-                          f"embedding query model mismatch: expected {expected}, found {observed}")
+        return CheckResult(
+            CheckId.EMBEDDING_QUERY_MODEL,
+            False,
+            expected,
+            observed,
+            f"embedding query model mismatch: expected {expected}, found {observed}",
+        )
     return CheckResult(CheckId.EMBEDDING_QUERY_MODEL, True)
 
 
@@ -699,17 +791,22 @@ def _check_embedding_dimensions(doc_content: str, expected: int) -> CheckResult:
         return CheckResult(CheckId.EMBEDDING_DIMENSIONS, True)
     observed = int(m.group(1))
     if observed != expected:
-        return CheckResult(CheckId.EMBEDDING_DIMENSIONS, False, str(expected), str(observed),
-                          f"embedding dimensions mismatch: expected {expected}, found {observed}")
+        return CheckResult(
+            CheckId.EMBEDDING_DIMENSIONS,
+            False,
+            str(expected),
+            str(observed),
+            f"embedding dimensions mismatch: expected {expected}, found {observed}",
+        )
     return CheckResult(CheckId.EMBEDDING_DIMENSIONS, True)
 
 
 _EMBEDDING_PROSE_DOC_RE = re.compile(
-    r'`([^`]+)`\s*\((\d+)d\)[^,]*\bfor documents',
+    r"`([^`]+)`\s*\((\d+)d\)[^,]*\bfor documents",
     re.IGNORECASE,
 )
 _EMBEDDING_PROSE_QUERY_RE = re.compile(
-    r'`([^`]+)`\s*\((\d+)d\)[^,]*\bfor queries',
+    r"`([^`]+)`\s*\((\d+)d\)[^,]*\bfor queries",
     re.IGNORECASE,
 )
 
@@ -728,17 +825,25 @@ def _check_embedding_prose(doc_content: str, efact: dict[str, Any]) -> list[Chec
         doc_dims_obs = int(doc_m.group(2))
         doc_model_obs_norm = _normalize_model_name(doc_model_obs)
         if doc_model_obs_norm != doc_norm:
-            results.append(CheckResult(
-                CheckId.EMBEDDING_DOC_MODEL, False,
-                doc_model, doc_model_obs,
-                f"embedding doc model mismatch in structured prose: expected {doc_model}",
-            ))
+            results.append(
+                CheckResult(
+                    CheckId.EMBEDDING_DOC_MODEL,
+                    False,
+                    doc_model,
+                    doc_model_obs,
+                    f"embedding doc model mismatch in structured prose: expected {doc_model}",
+                )
+            )
         if doc_dims_obs != dims:
-            results.append(CheckResult(
-                CheckId.EMBEDDING_DIMENSIONS, False,
-                str(dims), str(doc_dims_obs),
-                f"embedding doc dims mismatch in structured prose: expected {dims}, found {doc_dims_obs}",
-            ))
+            results.append(
+                CheckResult(
+                    CheckId.EMBEDDING_DIMENSIONS,
+                    False,
+                    str(dims),
+                    str(doc_dims_obs),
+                    f"embedding doc dims mismatch in structured prose: expected {dims}, found {doc_dims_obs}",
+                )
+            )
 
     query_m = _EMBEDDING_PROSE_QUERY_RE.search(doc_content)
     if query_m and query_model:
@@ -746,23 +851,31 @@ def _check_embedding_prose(doc_content: str, efact: dict[str, Any]) -> list[Chec
         query_dims_obs = int(query_m.group(2))
         query_model_obs_norm = _normalize_model_name(query_model_obs)
         if query_model_obs_norm != query_norm:
-            results.append(CheckResult(
-                CheckId.EMBEDDING_QUERY_MODEL, False,
-                query_model, query_model_obs,
-                f"embedding query model mismatch in structured prose: expected {query_model}",
-            ))
+            results.append(
+                CheckResult(
+                    CheckId.EMBEDDING_QUERY_MODEL,
+                    False,
+                    query_model,
+                    query_model_obs,
+                    f"embedding query model mismatch in structured prose: expected {query_model}",
+                )
+            )
         if query_dims_obs != dims:
-            results.append(CheckResult(
-                CheckId.EMBEDDING_DIMENSIONS, False,
-                str(dims), str(query_dims_obs),
-                f"embedding query dims mismatch in structured prose: expected {dims}, found {query_dims_obs}",
-            ))
+            results.append(
+                CheckResult(
+                    CheckId.EMBEDDING_DIMENSIONS,
+                    False,
+                    str(dims),
+                    str(query_dims_obs),
+                    f"embedding query dims mismatch in structured prose: expected {dims}, found {query_dims_obs}",
+                )
+            )
 
     return results
 
 
 _MEMORY_EMBEDDING_TABLE_RE = re.compile(
-    r'^\|\s*([^|]+?)\s*\|\s*`([^`]+)`\s*\|\s*[^|]+\s*\|\s*(\d+)\s*\|',
+    r"^\|\s*([^|]+?)\s*\|\s*`([^`]+)`\s*\|\s*[^|]+\s*\|\s*(\d+)\s*\|",
     re.IGNORECASE,
 )
 
@@ -784,29 +897,45 @@ def _check_memory_layer_table(doc_content: str, efact: dict[str, Any]) -> list[C
         model_norm = _normalize_model_name(model_raw)
         dim_obs = int(dim_obs_raw) if dim_obs_raw.isdigit() else None
         if "document" in purpose.lower() and doc_model and model_norm != doc_norm:
-            results.append(CheckResult(
-                CheckId.EMBEDDING_DOC_MODEL, False,
-                doc_model, model_raw,
-                f"memory layer doc model mismatch: expected {doc_model}",
-            ))
+            results.append(
+                CheckResult(
+                    CheckId.EMBEDDING_DOC_MODEL,
+                    False,
+                    doc_model,
+                    model_raw,
+                    f"memory layer doc model mismatch: expected {doc_model}",
+                )
+            )
         if "document" in purpose.lower() and dims and dim_obs and dim_obs != dims:
-            results.append(CheckResult(
-                CheckId.EMBEDDING_DIMENSIONS, False,
-                str(dims), str(dim_obs),
-                f"memory layer doc dims mismatch: expected {dims}, found {dim_obs}",
-            ))
+            results.append(
+                CheckResult(
+                    CheckId.EMBEDDING_DIMENSIONS,
+                    False,
+                    str(dims),
+                    str(dim_obs),
+                    f"memory layer doc dims mismatch: expected {dims}, found {dim_obs}",
+                )
+            )
         if "query" in purpose.lower() and query_model and model_norm != query_norm:
-            results.append(CheckResult(
-                CheckId.EMBEDDING_QUERY_MODEL, False,
-                query_model, model_raw,
-                f"memory layer query model mismatch: expected {query_model}",
-            ))
+            results.append(
+                CheckResult(
+                    CheckId.EMBEDDING_QUERY_MODEL,
+                    False,
+                    query_model,
+                    model_raw,
+                    f"memory layer query model mismatch: expected {query_model}",
+                )
+            )
         if "query" in purpose.lower() and dims and dim_obs and dim_obs != dims:
-            results.append(CheckResult(
-                CheckId.EMBEDDING_DIMENSIONS, False,
-                str(dims), str(dim_obs),
-                f"memory layer query dims mismatch: expected {dims}, found {dim_obs}",
-            ))
+            results.append(
+                CheckResult(
+                    CheckId.EMBEDDING_DIMENSIONS,
+                    False,
+                    str(dims),
+                    str(dim_obs),
+                    f"memory layer query dims mismatch: expected {dims}, found {dim_obs}",
+                )
+            )
     return results
 
 
@@ -814,7 +943,9 @@ def _float_normalize(val: float) -> str:
     return f"{val:.2f}"
 
 
-def _check_dedup_threshold(doc_content: str, threshold_name: str, expected: float, label_pattern: str) -> CheckResult:
+def _check_dedup_threshold(
+    doc_content: str, threshold_name: str, expected: float, label_pattern: str
+) -> CheckResult:
     label_re = re.compile(label_pattern, re.IGNORECASE)
     expected_norm = _float_normalize(expected)
     lines = doc_content.splitlines()
@@ -822,7 +953,7 @@ def _check_dedup_threshold(doc_content: str, threshold_name: str, expected: floa
     for i, line in enumerate(lines):
         if not label_re.search(line):
             continue
-        line_vals = re.findall(r'\b0\.\d{1,}\b', line)
+        line_vals = re.findall(r"\b0\.\d{1,}\b", line)
         if line_vals:
             matched = False
             wrong_val = None
@@ -835,13 +966,18 @@ def _check_dedup_threshold(doc_content: str, threshold_name: str, expected: floa
             if matched:
                 return CheckResult(threshold_name, True)
             elif wrong_val:
-                return CheckResult(threshold_name, False, expected_norm, wrong_val,
-                                  f"dedup threshold mismatch for {threshold_name}: expected {expected_norm} near '{label_pattern}', found {wrong_val}")
+                return CheckResult(
+                    threshold_name,
+                    False,
+                    expected_norm,
+                    wrong_val,
+                    f"dedup threshold mismatch for {threshold_name}: expected {expected_norm} near '{label_pattern}', found {wrong_val}",
+                )
             continue
         window_start = max(0, i - 2)
         window_end = min(len(lines), i + 3)
         window_text = "\n".join(lines[window_start:window_end])
-        all_vals = re.findall(r'\b0\.\d{1,}\b', window_text)
+        all_vals = re.findall(r"\b0\.\d{1,}\b", window_text)
         if not all_vals:
             continue
         matched = False
@@ -855,8 +991,13 @@ def _check_dedup_threshold(doc_content: str, threshold_name: str, expected: floa
         if matched:
             return CheckResult(threshold_name, True)
         elif wrong_val:
-            return CheckResult(threshold_name, False, expected_norm, wrong_val,
-                              f"dedup threshold mismatch for {threshold_name}: expected {expected_norm} near '{label_pattern}', found {wrong_val}")
+            return CheckResult(
+                threshold_name,
+                False,
+                expected_norm,
+                wrong_val,
+                f"dedup threshold mismatch for {threshold_name}: expected {expected_norm} near '{label_pattern}', found {wrong_val}",
+            )
     return CheckResult(threshold_name, True)
 
 
@@ -875,29 +1016,29 @@ def _check_video_providers(doc_content: str, valid_providers: frozenset[str]) ->
     """
     # Singular forms: capture exactly one provider name after "provider:" or "video provider:"
     singular_patterns = [
-        (r'\bprovider:\s*([a-z]+)',),
-        (r'\bvideo\s+provider:\s*([a-z]+)',),
+        (r"\bprovider:\s*([a-z]+)",),
+        (r"\bvideo\s+provider:\s*([a-z]+)",),
     ]
     # Plural/list forms: capture raw comma-separated names, brace-enclosed set, or markdown backtick lists
     plural_patterns = [
-        (r'\bproviders:\s*([a-z, ]+)',),
-        (r'\bvideo\s+providers:\s*([a-z, ]+)',),
-        (r'\bVALID_VIDEO_PROVIDERS\s*=\s*\{([^}]+)\}',),
+        (r"\bproviders:\s*([a-z, ]+)",),
+        (r"\bvideo\s+providers:\s*([a-z, ]+)",),
+        (r"\bVALID_VIDEO_PROVIDERS\s*=\s*\{([^}]+)\}",),
     ]
     plural_backtick_label_patterns = [
-        r'\*\*Providers\*\*:',
-        r'\*\*Video\s+Providers\*\*:',
+        r"\*\*Providers\*\*:",
+        r"\*\*Video\s+Providers\*\*:",
     ]
 
     singular_claims: set[str] = set()
     plural_claims: set[str] = set()
 
-    for pat, in singular_patterns:
+    for (pat,) in singular_patterns:
         for m in re.finditer(pat, doc_content, re.IGNORECASE):
             if m.lastindex and m.lastindex >= 1:
                 singular_claims.add(m.group(1).lower())
 
-    for pat, in plural_patterns:
+    for (pat,) in plural_patterns:
         for m in re.finditer(pat, doc_content, re.IGNORECASE):
             if m.lastindex and m.lastindex >= 1:
                 raw = m.group(1)
@@ -910,11 +1051,11 @@ def _check_video_providers(doc_content: str, valid_providers: frozenset[str]) ->
     for label_pat in plural_backtick_label_patterns:
         for m in re.finditer(label_pat, doc_content, re.IGNORECASE):
             # Limit remainder to current line only (next newline or end of document)
-            line_end = doc_content.find('\n', m.end())
+            line_end = doc_content.find("\n", m.end())
             if line_end == -1:
                 line_end = len(doc_content)
-            remainder = doc_content[m.end():line_end]
-            names = re.findall(r'`([a-z]+)`', remainder, re.IGNORECASE)
+            remainder = doc_content[m.end() : line_end]
+            names = re.findall(r"`([a-z]+)`", remainder, re.IGNORECASE)
             for n in names:
                 if n.lower() not in singular_claims:
                     plural_claims.add(n.lower())
@@ -924,7 +1065,8 @@ def _check_video_providers(doc_content: str, valid_providers: frozenset[str]) ->
         if claim not in valid_providers:
             valid_list = ", ".join(sorted(valid_providers))
             return CheckResult(
-                CheckId.VIDEO_PROVIDERS, False,
+                CheckId.VIDEO_PROVIDERS,
+                False,
                 f"valid providers: {valid_list}",
                 f"invalid: {claim}",
                 f"video provider '{claim}' is not in the valid provider set",
@@ -944,10 +1086,11 @@ def _check_video_providers(doc_content: str, valid_providers: frozenset[str]) ->
                 parts.append(f"missing: {', '.join(sorted(missing))}")
             detail = "; ".join(parts)
             return CheckResult(
-                CheckId.VIDEO_PROVIDERS, False,
+                CheckId.VIDEO_PROVIDERS,
+                False,
                 f"providers in {valid_list}",
                 f"claimed {claimed_list} ({detail})",
-                f"video provider set mismatch",
+                "video provider set mismatch",
             )
 
     return CheckResult(CheckId.VIDEO_PROVIDERS, True)
@@ -956,7 +1099,7 @@ def _check_video_providers(doc_content: str, valid_providers: frozenset[str]) ->
 # Tier table row regex: | **TIER** | model | model | model | model | model | model |
 # Matches actual tier names (FREE, STARTER, PRO, MAX, BYOK) in any case variant
 _TIER_TABLE_ROW_RE = re.compile(
-    r'^\|\s*\*\*(FREE|STARTER|PRO|MAX|BYOK)\*\*\s*\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|',
+    r"^\|\s*\*\*(FREE|STARTER|PRO|MAX|BYOK)\*\*\s*\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|",
     re.IGNORECASE,
 )
 
@@ -975,7 +1118,7 @@ _TIER_SLOTS = ["orchestrator", "research", "code", "image", "reader", "embedding
 
 # PROJECT_CONTEXT tier table: mixed-case tier names and 4 data columns (price, orchestrator, subagents, video)
 _TIER_TABLE_ROW_RE_PLAIN = re.compile(
-    r'^\|\s*\*\*(Free|Starter|Pro|Max|BYOK)\*\*\s*\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|',
+    r"^\|\s*\*\*(Free|Starter|Pro|Max|BYOK)\*\*\s*\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|",
     re.IGNORECASE,
 )
 
@@ -993,16 +1136,24 @@ def _normalize_model_name(model: str) -> str:
     normalized = model.lower()
     while True:
         stripped = False
-        for prefix in ["openrouter/", "openai/", "anthropic/", "google/", "x-ai/", "deepseek/", "moonshotai/"]:
+        for prefix in [
+            "openrouter/",
+            "openai/",
+            "anthropic/",
+            "google/",
+            "x-ai/",
+            "deepseek/",
+            "moonshotai/",
+        ]:
             if normalized.startswith(prefix):
-                normalized = normalized[len(prefix):]
+                normalized = normalized[len(prefix) :]
                 stripped = True
                 break
         if not stripped:
             break
     for suffix in ["-image", "-video", "-instruct", "-chat", "-preview"]:
         if normalized.endswith(suffix):
-            normalized = normalized[:-len(suffix)]
+            normalized = normalized[: -len(suffix)]
             break
     normalized = normalized.replace("/", " ").replace("-", " ").replace("_", " ")
     return normalized.strip()
@@ -1068,21 +1219,21 @@ def _check_tier_defaults(
 
     _PLACEHOLDER = {"", "—", "disabled", "n/a", "none"}
     has_meaningful_tier_table = any(
-        any(
-            v is not None and v.strip('*_`-').lower() not in _PLACEHOLDER
-            for v in slots.values()
-        )
+        any(v is not None and v.strip("*_`-").lower() not in _PLACEHOLDER for v in slots.values())
         for slots in tier_claims.values()
     )
     if has_meaningful_tier_table:
         for tier_name in tier_defaults:
             if tier_name not in tier_claims:
-                results.append(CheckResult(
-                    CheckId.TIER_MODEL, False,
-                    tier_name,
-                    "(missing)",
-                    f"tier {tier_name} row missing from document tier table",
-                ))
+                results.append(
+                    CheckResult(
+                        CheckId.TIER_MODEL,
+                        False,
+                        tier_name,
+                        "(missing)",
+                        f"tier {tier_name} row missing from document tier table",
+                    )
+                )
 
     for tier_name, slots in tier_defaults.items():
         doc_slots = tier_claims.get(tier_name, {})
@@ -1091,20 +1242,28 @@ def _check_tier_defaults(
             research_alias = _normalize_model_name(slots.get("research") or "")
             code_alias = _normalize_model_name(slots.get("code") or "")
 
-            if (doc_model_raw is None and slot == "code" and research_alias != code_alias
-                    and config_model and doc_slots.get("research") is not None):
-                results.append(CheckResult(
-                    CheckId.TIER_MODEL, False,
-                    config_model,
-                    "",
-                    f"tier {tier_name} {slot} mismatch: expected {config_model}",
-                ))
+            if (
+                doc_model_raw is None
+                and slot == "code"
+                and research_alias != code_alias
+                and config_model
+                and doc_slots.get("research") is not None
+            ):
+                results.append(
+                    CheckResult(
+                        CheckId.TIER_MODEL,
+                        False,
+                        config_model,
+                        "",
+                        f"tier {tier_name} {slot} mismatch: expected {config_model}",
+                    )
+                )
                 continue
 
             if doc_model_raw is None:
                 continue
 
-            doc_model = doc_model_raw.strip('*_`')
+            doc_model = doc_model_raw.strip("*_`")
             if not doc_model or doc_model.lower() in ("_none_", "none", "disabled", "n/a", "—"):
                 doc_model = ""
 
@@ -1119,39 +1278,47 @@ def _check_tier_defaults(
                         and tier_image_providers.get(tier_name)
                     )
                     if not skip_for_image:
-                        results.append(CheckResult(
-                            CheckId.TIER_MODEL, False,
-                            "(cleared)",
-                            doc_model,
-                            f"tier {tier_name} {slot} model was removed from config but docs still show '{doc_model}'",
-                        ))
+                        results.append(
+                            CheckResult(
+                                CheckId.TIER_MODEL,
+                                False,
+                                "(cleared)",
+                                doc_model,
+                                f"tier {tier_name} {slot} model was removed from config but docs still show '{doc_model}'",
+                            )
+                        )
                 continue
 
             config_alias = _normalize_model_name(config_model)
 
             if doc_model:
                 doc_options = [opt.strip() for opt in doc_model.split("/")]
-                matched = (
-                    any(_normalize_model_name(opt) == config_alias for opt in doc_options)
-                    or (
-                        len(doc_options) == 1
-                        and research_alias != code_alias
-                        and (
-                            _normalize_model_name(doc_options[0]) in (research_alias, code_alias)
-                            or (slot == "code" and (
+                matched = any(
+                    _normalize_model_name(opt) == config_alias for opt in doc_options
+                ) or (
+                    len(doc_options) == 1
+                    and research_alias != code_alias
+                    and (
+                        _normalize_model_name(doc_options[0]) in (research_alias, code_alias)
+                        or (
+                            slot == "code"
+                            and (
                                 _normalize_model_name(doc_options[0]) == code_alias
                                 or code_alias.endswith(_normalize_model_name(doc_options[0]))
-                            ))
+                            )
                         )
                     )
                 )
                 if not matched:
-                    results.append(CheckResult(
-                        CheckId.TIER_MODEL, False,
-                        config_model,
-                        doc_model,
-                        f"tier {tier_name} {slot} mismatch: expected {config_model}",
-                    ))
+                    results.append(
+                        CheckResult(
+                            CheckId.TIER_MODEL,
+                            False,
+                            config_model,
+                            doc_model,
+                            f"tier {tier_name} {slot} mismatch: expected {config_model}",
+                        )
+                    )
 
     if tier_video_providers and tier_claims:
         for tier_name, config_provider in tier_video_providers.items():
@@ -1164,54 +1331,68 @@ def _check_tier_defaults(
             if doc_lower in ("disabled", "n/a", "—") or not doc_lower:
                 if is_enabled:
                     observed = doc_raw if doc_raw else "(empty)"
-                    results.append(CheckResult(
-                        CheckId.TIER_VIDEO_PROVIDER, False,
-                        config_provider,
-                        observed,
-                        f"tier {tier_name} video: config has provider but docs say '{observed}'",
-                    ))
+                    results.append(
+                        CheckResult(
+                            CheckId.TIER_VIDEO_PROVIDER,
+                            False,
+                            config_provider,
+                            observed,
+                            f"tier {tier_name} video: config has provider but docs say '{observed}'",
+                        )
+                    )
                 continue
             if is_enabled is False:
-                results.append(CheckResult(
-                    CheckId.TIER_VIDEO_PROVIDER, False,
-                    config_provider,
-                    doc_raw,
-                    f"tier {tier_name} video: config disables video but docs say '{doc_raw}'",
-                ))
-                continue
-            embedded_m = re.search(r'\(([^)]+)\)', doc_raw)
-            provider_claimed = embedded_m.group(1).strip() if embedded_m else doc_raw
-            if provider_claimed.lower() != config_provider.lower():
-                results.append(CheckResult(
-                    CheckId.TIER_VIDEO_PROVIDER, False,
-                    config_provider,
-                    provider_claimed,
-                    f"tier {tier_name} video provider mismatch: expected {config_provider}",
-                ))
-                continue
-            embedded_m = re.search(r'\(([^)]+)\)', doc_raw)
-            provider_claimed = embedded_m.group(1).strip() if embedded_m else doc_raw
-            if is_enabled is False:
-                if "enabled" in doc_lower:
-                    results.append(CheckResult(
-                        CheckId.TIER_VIDEO_PROVIDER, False,
+                results.append(
+                    CheckResult(
+                        CheckId.TIER_VIDEO_PROVIDER,
+                        False,
                         config_provider,
                         doc_raw,
                         f"tier {tier_name} video: config disables video but docs say '{doc_raw}'",
-                    ))
+                    )
+                )
+                continue
+            embedded_m = re.search(r"\(([^)]+)\)", doc_raw)
+            provider_claimed = embedded_m.group(1).strip() if embedded_m else doc_raw
+            if provider_claimed.lower() != config_provider.lower():
+                results.append(
+                    CheckResult(
+                        CheckId.TIER_VIDEO_PROVIDER,
+                        False,
+                        config_provider,
+                        provider_claimed,
+                        f"tier {tier_name} video provider mismatch: expected {config_provider}",
+                    )
+                )
+                continue
+            embedded_m = re.search(r"\(([^)]+)\)", doc_raw)
+            provider_claimed = embedded_m.group(1).strip() if embedded_m else doc_raw
+            if is_enabled is False:
+                if "enabled" in doc_lower:
+                    results.append(
+                        CheckResult(
+                            CheckId.TIER_VIDEO_PROVIDER,
+                            False,
+                            config_provider,
+                            doc_raw,
+                            f"tier {tier_name} video: config disables video but docs say '{doc_raw}'",
+                        )
+                    )
                 continue
             if provider_claimed.lower() != config_provider.lower():
-                results.append(CheckResult(
-                    CheckId.TIER_VIDEO_PROVIDER, False,
-                    config_provider,
-                    provider_claimed,
-                    f"tier {tier_name} video provider mismatch: expected {config_provider}",
-                ))
+                results.append(
+                    CheckResult(
+                        CheckId.TIER_VIDEO_PROVIDER,
+                        False,
+                        config_provider,
+                        provider_claimed,
+                        f"tier {tier_name} video provider mismatch: expected {config_provider}",
+                    )
+                )
 
     if tier_image_providers and tier_claims:
         has_image_col = any(
-            (doc_slots.get("image") or "").strip()
-            for doc_slots in tier_claims.values()
+            (doc_slots.get("image") or "").strip() for doc_slots in tier_claims.values()
         )
         if has_image_col:
             for tier_name, config_provider in tier_image_providers.items():
@@ -1222,23 +1403,37 @@ def _check_tier_defaults(
                 doc_lower = doc_raw.lower()
                 if doc_lower in ("_none_", "none", ""):
                     observed = doc_raw if doc_raw else "(empty)"
-                    results.append(CheckResult(
-                        CheckId.TIER_IMAGE_PROVIDER, False,
-                        config_provider,
-                        observed,
-                        f"tier {tier_name} image: config has provider but docs say '{observed}'",
-                    ))
+                    results.append(
+                        CheckResult(
+                            CheckId.TIER_IMAGE_PROVIDER,
+                            False,
+                            config_provider,
+                            observed,
+                            f"tier {tier_name} image: config has provider but docs say '{observed}'",
+                        )
+                    )
                 elif " " in doc_raw or "/" in doc_raw:
                     pass
                 elif doc_lower != config_provider.lower():
-                    results.append(CheckResult(
-                        CheckId.TIER_IMAGE_PROVIDER, False,
-                        config_provider,
-                        doc_raw,
-                        f"tier {tier_name} image provider mismatch: expected {config_provider}",
-                    ))
+                    results.append(
+                        CheckResult(
+                            CheckId.TIER_IMAGE_PROVIDER,
+                            False,
+                            config_provider,
+                            doc_raw,
+                            f"tier {tier_name} image provider mismatch: expected {config_provider}",
+                        )
+                    )
 
-    _PLACEHOLDER_SUBAGENTS = {"", "—", "disabled", "n/a", "none", "not applicable", "user-configured"}
+    _PLACEHOLDER_SUBAGENTS = {
+        "",
+        "—",
+        "disabled",
+        "n/a",
+        "none",
+        "not applicable",
+        "user-configured",
+    }
     for tier_name, doc_slots in tier_claims.items():
         if "subagents" not in doc_slots:
             continue
@@ -1254,26 +1449,34 @@ def _check_tier_defaults(
         if not has_any:
             if not doc_subagents or doc_lower in _PLACEHOLDER_SUBAGENTS:
                 continue
-            results.append(CheckResult(
-                CheckId.TIER_MODEL, False,
-                tier_name,
-                doc_subagents,
-                f"tier {tier_name} subagents: docs say '{doc_subagents}' but config has no research/code/image/reader models",
-            ))
+            results.append(
+                CheckResult(
+                    CheckId.TIER_MODEL,
+                    False,
+                    tier_name,
+                    doc_subagents,
+                    f"tier {tier_name} subagents: docs say '{doc_subagents}' but config has no research/code/image/reader models",
+                )
+            )
             continue
         if not doc_subagents or doc_lower in _PLACEHOLDER_SUBAGENTS:
-            results.append(CheckResult(
-                CheckId.TIER_MODEL, False,
-                tier_name,
-                doc_subagents or "(empty)",
-                f"tier {tier_name} subagents: docs say '{doc_subagents or '(empty)'}' but config has research/code/image models",
-            ))
+            results.append(
+                CheckResult(
+                    CheckId.TIER_MODEL,
+                    False,
+                    tier_name,
+                    doc_subagents or "(empty)",
+                    f"tier {tier_name} subagents: docs say '{doc_subagents or '(empty)'}' but config has research/code/image models",
+                )
+            )
             continue
         expected_keywords: list[str] = []
-        for slot, model in [("research", tier_slot_vals.get("research", "")),
-                             ("code", tier_slot_vals.get("code", "")),
-                             ("image", tier_slot_vals.get("image", "")),
-                             ("reader", tier_slot_vals.get("reader", ""))]:
+        for slot, model in [
+            ("research", tier_slot_vals.get("research", "")),
+            ("code", tier_slot_vals.get("code", "")),
+            ("image", tier_slot_vals.get("image", "")),
+            ("reader", tier_slot_vals.get("reader", "")),
+        ]:
             if model:
                 m_lower = model.lower()
                 if "sonnet" in m_lower:
@@ -1289,37 +1492,57 @@ def _check_tier_defaults(
         if expected_keywords:
             matched = any(kw in doc_lower for kw in expected_keywords)
             if not matched:
-                results.append(CheckResult(
-                    CheckId.TIER_MODEL, False,
-                    tier_name,
-                    doc_subagents,
-                    f"tier {tier_name} subagents: docs say '{doc_subagents}' but expected one of {expected_keywords}",
-                ))
+                results.append(
+                    CheckResult(
+                        CheckId.TIER_MODEL,
+                        False,
+                        tier_name,
+                        doc_subagents,
+                        f"tier {tier_name} subagents: docs say '{doc_subagents}' but expected one of {expected_keywords}",
+                    )
+                )
 
     return results
 
 
 def _check_auto_routing(doc_content: str, auto_facts: dict[str, str]) -> list[CheckResult]:
     results = []
-    for label, key in [("auto_fast_model", "auto_fast_model"), ("auto_reasoning_model", "auto_reasoning_model")]:
+    for label, key in [
+        ("auto_fast_model", "auto_fast_model"),
+        ("auto_reasoning_model", "auto_reasoning_model"),
+    ]:
         expected = auto_facts.get(key, "")
         if not expected:
             continue
         m = re.search(
-            rf'(?:\*\*{label}\*\*|{label})`?[:=\s]+`?([a-z0-9/._-]+)`?(?:\s|$)',
-            doc_content, re.IGNORECASE,
+            rf"(?:\*\*{label}\*\*|{label})`?[:=\s]+`?([a-z0-9/._-]+)`?(?:\s|$)",
+            doc_content,
+            re.IGNORECASE,
         )
         if not m:
             continue
         observed = m.group(1).strip()
         if _normalize_model_name(observed) != _normalize_model_name(expected):
-            check_id = CheckId.AUTO_FAST_MODEL if key == "auto_fast_model" else CheckId.AUTO_REASONING_MODEL
-            results.append(CheckResult(check_id, False, expected, observed,
-                                      f"{label} mismatch: expected {expected}, found {observed}"))
+            check_id = (
+                CheckId.AUTO_FAST_MODEL
+                if key == "auto_fast_model"
+                else CheckId.AUTO_REASONING_MODEL
+            )
+            results.append(
+                CheckResult(
+                    check_id,
+                    False,
+                    expected,
+                    observed,
+                    f"{label} mismatch: expected {expected}, found {observed}",
+                )
+            )
     return results
 
 
-_DOCKER_SERVICE_COUNT_RE = re.compile(r'^#{0,3}\s*Docker Compose(?: Services)? \((\d+) services?\)', re.IGNORECASE)
+_DOCKER_SERVICE_COUNT_RE = re.compile(
+    r"^#{0,3}\s*Docker Compose(?: Services)? \((\d+) services?\)", re.IGNORECASE
+)
 
 
 def _check_docker_service_count(doc_content: str, expected: int) -> CheckResult:
@@ -1328,18 +1551,25 @@ def _check_docker_service_count(doc_content: str, expected: int) -> CheckResult:
         if m:
             observed = int(m.group(1))
             if observed != expected:
-                return CheckResult(CheckId.DOCKER_SERVICE_COUNT, False, str(expected), str(observed),
-                                 f"docker service count mismatch: expected {expected}, found {observed}")
+                return CheckResult(
+                    CheckId.DOCKER_SERVICE_COUNT,
+                    False,
+                    str(expected),
+                    str(observed),
+                    f"docker service count mismatch: expected {expected}, found {observed}",
+                )
             return CheckResult(CheckId.DOCKER_SERVICE_COUNT, True)
     return CheckResult(CheckId.DOCKER_SERVICE_COUNT, True)
 
 
 _SUBAGENT_TABLE_RE = re.compile(
-    r'^\|\s*`?@(\w+)`?\s*\|\s*(?:\*\*)?(Implemented|Reserved|Not implemented)(?:\*\*)?\s*\|\s*([^|]+?)\s*\|'
+    r"^\|\s*`?@(\w+)`?\s*\|\s*(?:\*\*)?(Implemented|Reserved|Not implemented)(?:\*\*)?\s*\|\s*([^|]+?)\s*\|"
 )
 
 
-def _check_subagent_table(doc_content: str, subagent_facts: dict[str, dict[str, str]]) -> list[CheckResult]:
+def _check_subagent_table(
+    doc_content: str, subagent_facts: dict[str, dict[str, str]]
+) -> list[CheckResult]:
     results = []
     for line in doc_content.splitlines():
         m = _SUBAGENT_TABLE_RE.match(line.strip())
@@ -1355,41 +1585,55 @@ def _check_subagent_table(doc_content: str, subagent_facts: dict[str, dict[str, 
         doc_status_lower = doc_status.lower()
         if expected_status == "implemented":
             if doc_status_lower in ("reserved", "not implemented"):
-                results.append(CheckResult(
-                    CheckId.SUBAGENT_STATUS, False,
-                    "Implemented",
-                    doc_status,
-                    f"@{name} is implemented but table says '{doc_status}'",
-                ))
+                results.append(
+                    CheckResult(
+                        CheckId.SUBAGENT_STATUS,
+                        False,
+                        "Implemented",
+                        doc_status,
+                        f"@{name} is implemented but table says '{doc_status}'",
+                    )
+                )
             else:
                 known_note = facts.get("note", "")
                 if known_note:
                     impl_lower = impl_desc.lower()
-                    note_tokens = re.split(r'[^a-z0-9]+', known_note.lower())
-                    key_terms = [w for w in note_tokens if len(w) > 3 and w not in ("none", "code", "python")]
+                    note_tokens = re.split(r"[^a-z0-9]+", known_note.lower())
+                    key_terms = [
+                        w for w in note_tokens if len(w) > 3 and w not in ("none", "code", "python")
+                    ]
                     if key_terms and not any(term in impl_lower for term in key_terms):
-                        results.append(CheckResult(
-                            CheckId.SUBAGENT_STATUS, False,
-                            known_note,
-                            impl_desc,
-                            f"@{name} implementation mismatch: expected '{known_note}', got '{impl_desc}'",
-                        ))
+                        results.append(
+                            CheckResult(
+                                CheckId.SUBAGENT_STATUS,
+                                False,
+                                known_note,
+                                impl_desc,
+                                f"@{name} implementation mismatch: expected '{known_note}', got '{impl_desc}'",
+                            )
+                        )
         elif expected_status == "reserved":
             if doc_status_lower == "implemented":
-                results.append(CheckResult(
-                    CheckId.SUBAGENT_STATUS, False,
-                    "Reserved",
-                    doc_status,
-                    f"@{name} is reserved but table says '{doc_status}'",
-                ))
+                results.append(
+                    CheckResult(
+                        CheckId.SUBAGENT_STATUS,
+                        False,
+                        "Reserved",
+                        doc_status,
+                        f"@{name} is reserved but table says '{doc_status}'",
+                    )
+                )
         elif expected_status == "not_implemented":
             if doc_status_lower == "implemented":
-                results.append(CheckResult(
-                    CheckId.SUBAGENT_STATUS, False,
-                    "Not implemented",
-                    doc_status,
-                    f"@{name} is not implemented but table says '{doc_status}'",
-                ))
+                results.append(
+                    CheckResult(
+                        CheckId.SUBAGENT_STATUS,
+                        False,
+                        "Not implemented",
+                        doc_status,
+                        f"@{name} is not implemented but table says '{doc_status}'",
+                    )
+                )
     return results
 
 
@@ -1401,7 +1645,9 @@ def _find_line_with_fact(lines: list[str], pattern: str) -> int:
     return 1
 
 
-def _match_exception(exceptions: list[ExceptionEntry], check_id: str, doc_path: str) -> ExceptionEntry | None:
+def _match_exception(
+    exceptions: list[ExceptionEntry], check_id: str, doc_path: str
+) -> ExceptionEntry | None:
     for exc in exceptions:
         if exc.check_id == check_id and exc.doc_path == doc_path:
             return exc
@@ -1428,9 +1674,17 @@ def check_document(
         if exc and exc.expires >= today:
             exc.suppressed_finding = True
         else:
-            findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"\dmigration"),
-                                   CheckId.MIGRATION_COUNT, "mismatch",
-                                   res.expected, res.observed, res.message or "migration count mismatch"))
+            findings.append(
+                Finding(
+                    str(doc_path),
+                    _find_line_with_fact(lines, r"\dmigration"),
+                    CheckId.MIGRATION_COUNT,
+                    "mismatch",
+                    res.expected,
+                    res.observed,
+                    res.message or "migration count mismatch",
+                )
+            )
 
     res = _check_migration_latest(text, mfact["latest"])
     if not res.passed:
@@ -1438,9 +1692,17 @@ def check_document(
         if exc and exc.expires >= today:
             exc.suppressed_finding = True
         else:
-            findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"0\d\d_\w+\.sql"),
-                                   CheckId.MIGRATION_LATEST, "mismatch",
-                                   res.expected, res.observed, res.message or "migration latest mismatch"))
+            findings.append(
+                Finding(
+                    str(doc_path),
+                    _find_line_with_fact(lines, r"0\d\d_\w+\.sql"),
+                    CheckId.MIGRATION_LATEST,
+                    "mismatch",
+                    res.expected,
+                    res.observed,
+                    res.message or "migration latest mismatch",
+                )
+            )
 
     res = _check_embedding_doc_model(text, efact["document_model"])
     if not res.passed:
@@ -1448,9 +1710,17 @@ def check_document(
         if exc and exc.expires >= today:
             exc.suppressed_finding = True
         else:
-            findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"EMBEDDING_DOCUMENT_MODEL"),
-                                   CheckId.EMBEDDING_DOC_MODEL, "mismatch",
-                                   res.expected, res.observed, res.message or "embedding doc model mismatch"))
+            findings.append(
+                Finding(
+                    str(doc_path),
+                    _find_line_with_fact(lines, r"EMBEDDING_DOCUMENT_MODEL"),
+                    CheckId.EMBEDDING_DOC_MODEL,
+                    "mismatch",
+                    res.expected,
+                    res.observed,
+                    res.message or "embedding doc model mismatch",
+                )
+            )
 
     res = _check_embedding_query_model(text, efact["query_model"])
     if not res.passed:
@@ -1458,9 +1728,17 @@ def check_document(
         if exc and exc.expires >= today:
             exc.suppressed_finding = True
         else:
-            findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"EMBEDDING_QUERY_MODEL"),
-                                   CheckId.EMBEDDING_QUERY_MODEL, "mismatch",
-                                   res.expected, res.observed, res.message or "embedding query model mismatch"))
+            findings.append(
+                Finding(
+                    str(doc_path),
+                    _find_line_with_fact(lines, r"EMBEDDING_QUERY_MODEL"),
+                    CheckId.EMBEDDING_QUERY_MODEL,
+                    "mismatch",
+                    res.expected,
+                    res.observed,
+                    res.message or "embedding query model mismatch",
+                )
+            )
 
     res = _check_embedding_dimensions(text, efact["dimensions"])
     if not res.passed:
@@ -1468,9 +1746,17 @@ def check_document(
         if exc and exc.expires >= today:
             exc.suppressed_finding = True
         else:
-            findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"EMBEDDING_DIMENSIONS"),
-                                   CheckId.EMBEDDING_DIMENSIONS, "mismatch",
-                                   res.expected, res.observed, res.message or "embedding dimensions mismatch"))
+            findings.append(
+                Finding(
+                    str(doc_path),
+                    _find_line_with_fact(lines, r"EMBEDDING_DIMENSIONS"),
+                    CheckId.EMBEDDING_DIMENSIONS,
+                    "mismatch",
+                    res.expected,
+                    res.observed,
+                    res.message or "embedding dimensions mismatch",
+                )
+            )
 
     if doc_path.name in ("PROJECT_CONTEXT.md", "MEMORY_LAYER.md"):
         for res in _check_embedding_prose(text, efact):
@@ -1479,23 +1765,43 @@ def check_document(
                 if exc and exc.expires >= today:
                     exc.suppressed_finding = True
                 else:
-                    findings.append(Finding(str(doc_path), _find_line_with_fact(lines, f"`{res.observed}`"),
-                                           res.check_id, "mismatch",
-                                           res.expected, res.observed, res.message or "embedding prose mismatch"))
+                    findings.append(
+                        Finding(
+                            str(doc_path),
+                            _find_line_with_fact(lines, f"`{res.observed}`"),
+                            res.check_id,
+                            "mismatch",
+                            res.expected,
+                            res.observed,
+                            res.message or "embedding prose mismatch",
+                        )
+                    )
         for res in _check_memory_layer_table(text, efact):
             if not res.passed:
                 exc = _match_exception(exceptions, res.check_id, str(doc_path))
                 if exc and exc.expires >= today:
                     exc.suppressed_finding = True
                 else:
-                    findings.append(Finding(str(doc_path), _find_line_with_fact(lines, f"`{res.observed}`"),
-                                           res.check_id, "mismatch",
-                                           res.expected, res.observed, res.message or "memory layer embedding mismatch"))
+                    findings.append(
+                        Finding(
+                            str(doc_path),
+                            _find_line_with_fact(lines, f"`{res.observed}`"),
+                            res.check_id,
+                            "mismatch",
+                            res.expected,
+                            res.observed,
+                            res.message or "memory layer embedding mismatch",
+                        )
+                    )
 
     dedup_checks = [
         (CheckId.DEDUP_MERGE, efact["dedup_merge"], r"(?<!-)\bmerge\b"),
         (CheckId.DEDUP_SUPERSEDE_GENERIC, efact["dedup_supersede_generic"], r"(?<!-)\bgeneric\b"),
-        (CheckId.DEDUP_SUPERSEDE_SAME_SLOT, efact["dedup_supersede_same_slot"], r"(?<!-)\bsame.?slot\b"),
+        (
+            CheckId.DEDUP_SUPERSEDE_SAME_SLOT,
+            efact["dedup_supersede_same_slot"],
+            r"(?<!-)\bsame.?slot\b",
+        ),
     ]
     for check_id, expected_val, label_pat in dedup_checks:
         if expected_val is None:
@@ -1506,9 +1812,17 @@ def check_document(
             if exc and exc.expires >= today:
                 exc.suppressed_finding = True
             else:
-                findings.append(Finding(str(doc_path), _find_line_with_fact(lines, label_pat),
-                                       check_id.value, "mismatch",
-                                       res.expected, res.observed, res.message or f"dedup threshold mismatch for {check_id.value}"))
+                findings.append(
+                    Finding(
+                        str(doc_path),
+                        _find_line_with_fact(lines, label_pat),
+                        check_id.value,
+                        "mismatch",
+                        res.expected,
+                        res.observed,
+                        res.message or f"dedup threshold mismatch for {check_id.value}",
+                    )
+                )
 
     res = _check_video_providers(text, frozenset(facts["providers"]["video_providers"]))
     if not res.passed:
@@ -1516,25 +1830,43 @@ def check_document(
         if exc and exc.expires >= today:
             exc.suppressed_finding = True
         else:
-            findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"provider"),
-                                   CheckId.VIDEO_PROVIDERS, "mismatch",
-                                   res.expected, res.observed, res.message or "video provider mismatch"))
+            findings.append(
+                Finding(
+                    str(doc_path),
+                    _find_line_with_fact(lines, r"provider"),
+                    CheckId.VIDEO_PROVIDERS,
+                    "mismatch",
+                    res.expected,
+                    res.observed,
+                    res.message or "video provider mismatch",
+                )
+            )
 
     tier_defaults = facts.get("tier_defaults", {}).get("tiers", {})
     tier_video_providers = facts.get("tier_defaults", {}).get("video_providers", {})
     tier_image_providers = facts.get("tier_defaults", {}).get("image_providers", {})
     tier_video_enabled = facts.get("tier_defaults", {}).get("video_enabled", {})
     if tier_defaults and doc_path.name in ("TECHNICAL_SPECS.md", "PROJECT_CONTEXT.md"):
-        tier_results = _check_tier_defaults(text, tier_defaults, tier_video_providers, tier_image_providers, tier_video_enabled)
+        tier_results = _check_tier_defaults(
+            text, tier_defaults, tier_video_providers, tier_image_providers, tier_video_enabled
+        )
         for tres in tier_results:
             if not tres.passed:
                 exc = _match_exception(exceptions, tres.check_id, str(doc_path))
                 if exc and exc.expires >= today:
                     exc.suppressed_finding = True
                 else:
-                    findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"\*\*[A-Z]+\*\*"),
-                                           tres.check_id, "mismatch",
-                                           tres.expected, tres.observed, tres.message or f"{tres.check_id} mismatch"))
+                    findings.append(
+                        Finding(
+                            str(doc_path),
+                            _find_line_with_fact(lines, r"\*\*[A-Z]+\*\*"),
+                            tres.check_id,
+                            "mismatch",
+                            tres.expected,
+                            tres.observed,
+                            tres.message or f"{tres.check_id} mismatch",
+                        )
+                    )
 
     tier_prices = facts.get("tier_prices", {}).get("tier_prices", {})
     if tier_prices:
@@ -1544,9 +1876,17 @@ def check_document(
             if exc and exc.expires >= today:
                 exc.suppressed_finding = True
             else:
-                findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"\$\d+/mo"),
-                                       CheckId.TIER_PRICE, "mismatch",
-                                       res.expected, res.observed, res.message or "tier price mismatch"))
+                findings.append(
+                    Finding(
+                        str(doc_path),
+                        _find_line_with_fact(lines, r"\$\d+/mo"),
+                        CheckId.TIER_PRICE,
+                        "mismatch",
+                        res.expected,
+                        res.observed,
+                        res.message or "tier price mismatch",
+                    )
+                )
 
     route_facts = facts.get("routes", {}).get("routes", {})
     if route_facts:
@@ -1556,21 +1896,41 @@ def check_document(
             if exc and exc.expires >= today:
                 exc.suppressed_finding = True
             else:
-                findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"`/"),
-                                       CheckId.ROUTE, "mismatch",
-                                       res.expected, res.observed, res.message or "route mismatch"))
+                findings.append(
+                    Finding(
+                        str(doc_path),
+                        _find_line_with_fact(lines, r"`/"),
+                        CheckId.ROUTE,
+                        "mismatch",
+                        res.expected,
+                        res.observed,
+                        res.message or "route mismatch",
+                    )
+                )
 
     env_facts = facts.get("env_vars", {}).get("env_vars", [])
-    if env_facts and doc_path.name in ("TECHNICAL_SPECS.md", "PROJECT_CONTEXT.md", "MEMORY_LAYER.md"):
+    if env_facts and doc_path.name in (
+        "TECHNICAL_SPECS.md",
+        "PROJECT_CONTEXT.md",
+        "MEMORY_LAYER.md",
+    ):
         res = _check_env_vars(text, env_facts)
         if not res.passed:
             exc = _match_exception(exceptions, CheckId.ENV_VAR, str(doc_path))
             if exc and exc.expires >= today:
                 exc.suppressed_finding = True
             else:
-                findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"[A-Z_][A-Z0-9_]*"),
-                                       CheckId.ENV_VAR, "mismatch",
-                                       res.expected, res.observed, res.message or "env var mismatch"))
+                findings.append(
+                    Finding(
+                        str(doc_path),
+                        _find_line_with_fact(lines, r"[A-Z_][A-Z0-9_]*"),
+                        CheckId.ENV_VAR,
+                        "mismatch",
+                        res.expected,
+                        res.observed,
+                        res.message or "env var mismatch",
+                    )
+                )
 
     if doc_path.name == "MEMORY_LAYER.md":
         mem_res = _check_memory_layer_env_block(text)
@@ -1579,9 +1939,17 @@ def check_document(
             if exc and exc.expires >= today:
                 exc.suppressed_finding = True
             else:
-                findings.append(Finding(str(doc_path), 1,
-                                       CheckId.ENV_VAR, "missing",
-                                       mem_res.expected, mem_res.observed, mem_res.message or "memory layer env block check failed"))
+                findings.append(
+                    Finding(
+                        str(doc_path),
+                        1,
+                        CheckId.ENV_VAR,
+                        "missing",
+                        mem_res.expected,
+                        mem_res.observed,
+                        mem_res.message or "memory layer env block check failed",
+                    )
+                )
 
     auto_facts = facts.get("auto_routing", {})
     if auto_facts and doc_path.name == "TECHNICAL_SPECS.md":
@@ -1592,9 +1960,17 @@ def check_document(
                 if exc and exc.expires >= today:
                     exc.suppressed_finding = True
                 else:
-                    findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"auto_.*model"),
-                                           ares.check_id, "mismatch",
-                                           ares.expected, ares.observed, ares.message or f"auto routing mismatch"))
+                    findings.append(
+                        Finding(
+                            str(doc_path),
+                            _find_line_with_fact(lines, r"auto_.*model"),
+                            ares.check_id,
+                            "mismatch",
+                            ares.expected,
+                            ares.observed,
+                            ares.message or "auto routing mismatch",
+                        )
+                    )
 
     docker_count = facts.get("docker", {}).get("service_count", 0)
     if docker_count and doc_path.name in ("TECHNICAL_SPECS.md", "PROJECT_CONTEXT.md"):
@@ -1604,9 +1980,17 @@ def check_document(
             if exc and exc.expires >= today:
                 exc.suppressed_finding = True
             else:
-                findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"Docker Compose"),
-                                       CheckId.DOCKER_SERVICE_COUNT, "mismatch",
-                                       res.expected, res.observed, res.message or "docker service count mismatch"))
+                findings.append(
+                    Finding(
+                        str(doc_path),
+                        _find_line_with_fact(lines, r"Docker Compose"),
+                        CheckId.DOCKER_SERVICE_COUNT,
+                        "mismatch",
+                        res.expected,
+                        res.observed,
+                        res.message or "docker service count mismatch",
+                    )
+                )
 
     subagent_facts = facts.get("subagents", {})
     if subagent_facts and doc_path.name == "PROJECT_CONTEXT.md":
@@ -1617,30 +2001,46 @@ def check_document(
                 if exc and exc.expires >= today:
                     exc.suppressed_finding = True
                 else:
-                    findings.append(Finding(str(doc_path), _find_line_with_fact(lines, r"@"),
-                                           sres.check_id, "mismatch",
-                                           sres.expected, sres.observed, sres.message or f"subagent status mismatch"))
+                    findings.append(
+                        Finding(
+                            str(doc_path),
+                            _find_line_with_fact(lines, r"@"),
+                            sres.check_id,
+                            "mismatch",
+                            sres.expected,
+                            sres.observed,
+                            sres.message or "subagent status mismatch",
+                        )
+                    )
 
     all_active_exceptions = [exc for exc in exceptions if exc.expires >= today]
     return findings, all_active_exceptions
 
 
-
-
-def format_text(findings: list[Finding], exceptions: list[ExceptionEntry], malformed: list[tuple[str, int, str]]) -> str:
+def format_text(
+    findings: list[Finding], exceptions: list[ExceptionEntry], malformed: list[tuple[str, int, str]]
+) -> str:
     lines_out: list[str] = []
     for f in findings:
-        lines_out.append(f"{f.doc_path}:{f.line} [{f.check_id}] expected={f.expected!r} observed={f.observed!r}  {f.message}")
+        lines_out.append(
+            f"{f.doc_path}:{f.line} [{f.check_id}] expected={f.expected!r} observed={f.observed!r}  {f.message}"
+        )
     for e in exceptions:
         status = "SUPPRESSED" if e.suppressed_finding else "ACTIVE"
-        lines_out.append(f"{e.doc_path}:{e.line} [EXCEPTION {e.check_id}] expires={e.expires} reason={e.reason!r} ({status})")
+        lines_out.append(
+            f"{e.doc_path}:{e.line} [EXCEPTION {e.check_id}] expires={e.expires} reason={e.reason!r} ({status})"
+        )
     for doc, lineno, msg in malformed:
         lines_out.append(f"MALFORMED_EXCEPTION {doc}:{lineno}: {msg}")
     return "\n".join(lines_out)
 
 
-def format_json(findings: list[Finding], exceptions: list[ExceptionEntry],
-                malformed: list[tuple[str, int, str]], facts: dict[str, Any]) -> str:
+def format_json(
+    findings: list[Finding],
+    exceptions: list[ExceptionEntry],
+    malformed: list[tuple[str, int, str]],
+    facts: dict[str, Any],
+) -> str:
     report = {
         "checked_sources": {
             "migrations": facts["migrations"],
@@ -1649,13 +2049,26 @@ def format_json(findings: list[Finding], exceptions: list[ExceptionEntry],
             "routes": facts["routes"],
         },
         "findings": [
-            {"doc": f.doc_path, "line": f.line, "check_id": f.check_id, "kind": f.kind,
-             "expected": f.expected, "observed": f.observed, "message": f.message}
+            {
+                "doc": f.doc_path,
+                "line": f.line,
+                "check_id": f.check_id,
+                "kind": f.kind,
+                "expected": f.expected,
+                "observed": f.observed,
+                "message": f.message,
+            }
             for f in findings
         ],
         "exceptions": [
-            {"doc": e.doc_path, "line": e.line, "check_id": e.check_id,
-             "expires": e.expires.isoformat(), "reason": e.reason, "suppressed_finding": e.suppressed_finding}
+            {
+                "doc": e.doc_path,
+                "line": e.line,
+                "check_id": e.check_id,
+                "expires": e.expires.isoformat(),
+                "reason": e.reason,
+                "suppressed_finding": e.suppressed_finding,
+            }
             for e in exceptions
         ],
         "malformed_exceptions": [{"doc": m[0], "line": m[1], "message": m[2]} for m in malformed],
@@ -1666,8 +2079,6 @@ def format_json(findings: list[Finding], exceptions: list[ExceptionEntry],
         },
     }
     return json.dumps(report, indent=2)
-
-
 
 
 SOURCES_OF_TRUTH = Path("docs/SOURCES_OF_TRUTH.md")
@@ -1739,15 +2150,17 @@ def main() -> int:
 
         for exc in exceptions:
             if exc.expires < today:
-                all_findings.append(Finding(
-                    doc_path=str(doc_path),
-                    line=exc.line,
-                    check_id=exc.check_id,
-                    kind="expired_exception",
-                    expected=f"expires >= {today.isoformat()}",
-                    observed=f"expired on {exc.expires.isoformat()}",
-                    message=f"expired DOC_FRESHNESS_EXCEPTION for '{exc.check_id}'",
-                ))
+                all_findings.append(
+                    Finding(
+                        doc_path=str(doc_path),
+                        line=exc.line,
+                        check_id=exc.check_id,
+                        kind="expired_exception",
+                        expected=f"expires >= {today.isoformat()}",
+                        observed=f"expired on {exc.expires.isoformat()}",
+                        message=f"expired DOC_FRESHNESS_EXCEPTION for '{exc.check_id}'",
+                    )
+                )
 
         findings, updated_exceptions = check_document(doc_path, facts, exceptions, today)
         all_findings.extend(findings)
