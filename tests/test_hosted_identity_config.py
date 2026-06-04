@@ -123,7 +123,7 @@ def test_production_with_redis_require_knob_off_still_fails_other_rules() -> Non
 
 
 def test_production_with_console_mail_sink_fails() -> None:
-    """Dev console mail sink is rejected in production."""
+    """Dev console mail sink is rejected in production when email is enabled."""
     settings = _hosted_base(
         daemon_environment="production",
         redis_url="redis://redis:6379/0",
@@ -133,22 +133,65 @@ def test_production_with_console_mail_sink_fails() -> None:
         settings.validate_hosted_identity_config()
 
 
-def test_production_with_smtp_sink_passes() -> None:
-    """SMTP sink is accepted in production (no host check here; that's runtime)."""
+def test_production_with_smtp_sink_and_host_passes() -> None:
+    """SMTP sink with a non-empty host passes the production mail gate."""
     settings = _hosted_base(
         daemon_environment="production",
         redis_url="redis://redis:6379/0",
         daemon_mail_sender_mode="smtp",
+        daemon_mail_smtp_host="smtp.example.com",
     )
     settings.validate_hosted_identity_config()
 
 
-def test_production_with_disabled_sink_passes() -> None:
-    """Disabled mail sink is accepted in production (operator opt-out)."""
+def test_production_with_smtp_sink_no_host_fails() -> None:
+    """SMTP sink without a host fails the production mail gate when email is enabled."""
+    settings = _hosted_base(
+        daemon_environment="production",
+        redis_url="redis://redis:6379/0",
+        daemon_mail_sender_mode="smtp",
+        daemon_mail_smtp_host="",
+    )
+    with pytest.raises(HostedIdentityConfigError, match="daemon_mail_smtp_host"):
+        settings.validate_hosted_identity_config()
+
+
+def test_production_with_smtp_sink_whitespace_host_fails() -> None:
+    """SMTP sink with a whitespace-only host fails the production mail gate."""
+    settings = _hosted_base(
+        daemon_environment="production",
+        redis_url="redis://redis:6379/0",
+        daemon_mail_sender_mode="smtp",
+        daemon_mail_smtp_host="   ",
+    )
+    with pytest.raises(HostedIdentityConfigError, match="daemon_mail_smtp_host"):
+        settings.validate_hosted_identity_config()
+
+
+def test_production_email_enabled_with_disabled_sink_fails() -> None:
+    """Disabled sink fails in production when email provider is enabled."""
     settings = _hosted_base(
         daemon_environment="production",
         redis_url="redis://redis:6379/0",
         daemon_mail_sender_mode="disabled",
+    )
+    with pytest.raises(HostedIdentityConfigError, match="disabled"):
+        settings.validate_hosted_identity_config()
+
+
+def test_production_google_only_with_disabled_sink_passes() -> None:
+    """Google-only production deployment may use a disabled mail sink.
+
+    When daemon_email_enabled=False, the email sign-in path is not used
+    so no email codes are generated and the mail sink is irrelevant.
+    Documented opt-out: the operator can disable email entirely without
+    configuring a sender.
+    """
+    settings = _hosted_base(
+        daemon_environment="production",
+        redis_url="redis://redis:6379/0",
+        daemon_mail_sender_mode="disabled",
+        daemon_email_enabled=False,
     )
     settings.validate_hosted_identity_config()
 

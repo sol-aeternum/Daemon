@@ -576,13 +576,22 @@ class Settings(BaseSettings):
         - at least one of (Google, email) is enabled as an identity provider;
         - in production: Redis URL is set (fail-closed for nonce/challenge
           /rate-limit enforcement per the decision lock);
-        - in production: mail sender mode is not 'console' (dev sink);
+        - in production, when the email provider is enabled: the mail
+          sender must be a real provider — daemon_mail_sender_mode must
+          not be 'console' (dev sink), 'disabled' (no sender), or 'smtp'
+          with an empty daemon_mail_smtp_host;
         - in production: Google provider (if enabled) has a client ID;
         - signup mode and mail sender mode are within their allowlists
           (Literal type checks at construction enforce this, but we
           double-check for runtime robustness against env-var drift);
         - the Google audience allowlist is a comma-separated list of
           non-empty strings (each entry trimmed).
+
+        Production deployments where only the Google provider is enabled
+        (daemon_email_enabled=False) intentionally allow non-real mail
+        sinks (including 'disabled') because no email codes are ever
+        generated or sent on that code path. The mail sink is irrelevant
+        when email is disabled.
 
         Raises:
             HostedIdentityConfigError: on any of the above violations.
@@ -605,12 +614,28 @@ class Settings(BaseSettings):
                 "rate-limit enforcement; refusing to start with a weakened posture."
             )
 
-        if is_production and self.daemon_mail_sender_mode == "console":
-            raise HostedIdentityConfigError(
-                "Hosted identity is enabled in production but mail sender mode "
-                "is 'console' (dev sink). Configure daemon_mail_sender_mode=smtp "
-                "(or 'disabled' to opt out) before deploying to production."
-            )
+        if is_production and self.daemon_email_enabled:
+            if self.daemon_mail_sender_mode == "console":
+                raise HostedIdentityConfigError(
+                    "Hosted identity is enabled in production with the email "
+                    "provider, but mail sender mode is 'console' (dev sink). "
+                    "Configure daemon_mail_sender_mode=smtp with a real host "
+                    "before deploying to production."
+                )
+            if self.daemon_mail_sender_mode == "disabled":
+                raise HostedIdentityConfigError(
+                    "Hosted identity is enabled in production with the email "
+                    "provider, but mail sender mode is 'disabled'. The email "
+                    "sign-in flow requires a real sender; refusing to start "
+                    "with email codes that can never be delivered."
+                )
+            if self.daemon_mail_sender_mode == "smtp" and not self.daemon_mail_smtp_host.strip():
+                raise HostedIdentityConfigError(
+                    "Hosted identity is enabled in production with the email "
+                    "provider and mail sender mode 'smtp', but "
+                    "daemon_mail_smtp_host is empty. Configure a non-empty "
+                    "daemon_mail_smtp_host before deploying to production."
+                )
 
         if self.daemon_google_enabled and not self.daemon_google_client_id:
             raise HostedIdentityConfigError(
