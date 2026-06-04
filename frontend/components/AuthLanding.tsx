@@ -18,6 +18,7 @@ import {
   ChevronDown,
   ChevronUp,
   KeyRound,
+  Monitor,
 } from 'lucide-react';
 
 export type DeploymentMode = 'hosted' | 'self-hosted';
@@ -329,6 +330,18 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
                     disabled={isEmailCompleting}
                     className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
                   />
+                </div>
+
+                <div className="flex items-start gap-2 rounded-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2">
+                  <Monitor className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-text-muted)]" />
+                  <div>
+                    <p className="text-xs font-medium text-[var(--color-text-secondary)]">
+                      Device
+                    </p>
+                    <p className="text-xs text-[var(--color-text-muted)]">
+                      Web Sign-In Device (this browser)
+                    </p>
+                  </div>
                 </div>
 
                 <div className="space-y-2">

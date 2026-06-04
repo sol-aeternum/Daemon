@@ -300,6 +300,7 @@ describe('AuthLanding — email sign-in flow', () => {
     });
 
     expect(screen.getByLabelText(/verification code/i)).toBeTruthy();
+    expect(screen.getByText(/web sign-in device/i)).toBeTruthy();
   });
 
   it('completes email sign-in and redirects on success', async () => {
@@ -325,6 +326,7 @@ describe('AuthLanding — email sign-in flow', () => {
     await waitFor(() => {
       expect(screen.getByLabelText(/verification code/i)).toBeTruthy();
     });
+    expect(screen.getByText(/web sign-in device/i)).toBeTruthy();
 
     const codeInput = screen.getByLabelText(/verification code/i);
     fireEvent.change(codeInput, { target: { value: '123456' } });
@@ -367,6 +369,7 @@ describe('AuthLanding — email sign-in flow', () => {
     await waitFor(() => {
       expect(screen.getByLabelText(/verification code/i)).toBeTruthy();
     });
+    expect(screen.getByText(/web sign-in device/i)).toBeTruthy();
 
     const publicRadio = screen.getByRole('radio', { name: /public/i });
     fireEvent.click(publicRadio);
@@ -435,6 +438,7 @@ describe('AuthLanding — email sign-in flow', () => {
     await waitFor(() => {
       expect(screen.getByLabelText(/verification code/i)).toBeTruthy();
     });
+    expect(screen.getByText(/web sign-in device/i)).toBeTruthy();
 
     const codeInput = screen.getByLabelText(/verification code/i);
     fireEvent.change(codeInput, { target: { value: '000000' } });
