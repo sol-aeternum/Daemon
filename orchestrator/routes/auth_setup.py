@@ -17,17 +17,21 @@ Architecture decisions followed:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import cast
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
-from pydantic import BaseModel
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request, Response
+from pydantic import BaseModel, ConfigDict
 
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.auth_cookies import (
     CookiePolicyError,
     RefreshCookieConfig,
+    build_temporary_refresh_cookie,
     build_refresh_cookie,
     clear_refresh_cookie,
     get_refresh_cookie_name,
@@ -46,10 +50,33 @@ from orchestrator.auth_tokens import (
 from orchestrator.config import get_settings
 from orchestrator.db import get_app_state
 from orchestrator.services.identity import (
+    AccountService,
+    EmailChallengeConsumeRequest,
+    EmailChallengeInvalid,
+    EmailChallengeIssueRequest,
+    EmailChallengeLocked,
+    EmailChallengeRow,
+    EmailChallengeService,
+    EmailChallengeUnavailable,
+    InviteOnlyRejection,
+    IssueSessionRequest,
+    MailMessage,
+    MailSenderConfigError,
     RateLimitPolicy,
+    ScopeKind,
+    SignupDisabled,
+    SupportsEmailChallengeQueries,
+    SupportsIdentityQueries,
+    SupportsSessionIssuanceQueries,
     client_ip_for_key,
     enforce_rate_limit,
+    get_mail_sender,
     get_rate_limiter,
+    hash_ip_for_storage,
+    hash_user_agent_for_storage,
+    issue_device_session,
+    normalize_code,
+    normalize_email,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,6 +89,7 @@ ACCESS_TOKEN_TTL_MINUTES = 30
 REFRESH_TOKEN_TTL_DAYS = 90
 ENROLLMENT_TTL_MINUTES = 10
 ENROLLMENT_WRONG_ATTEMPTS_INITIAL = 3
+EMAIL_START_TIMING_FLOOR_SECONDS = 0.25
 
 # Rate-limit policies for the existing auth endpoints (TODO 7).
 # Values are research recommendations and match the per-IP scopes
@@ -75,6 +103,34 @@ RATE_LIMIT_ENROLL_COMPLETE_PER_IP_PER_HOUR: RateLimitPolicy = RateLimitPolicy(
 RATE_LIMIT_REFRESH_PER_IP_PER_HOUR: RateLimitPolicy = RateLimitPolicy(
     limit=120, window_seconds=3600
 )
+
+
+class EmailStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: str
+
+
+class EmailStartResponse(BaseModel):
+    accepted: bool = True
+    challenge_id: str
+    expires_at: int
+
+
+class EmailCompleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    challenge_id: str
+    code: str
+    client_kind: str
+    device_persistence: str = "private"
+
+
+class EmailCompleteResponse(BaseModel):
+    access_token: str
+    expires_at: int
+    refresh_token: str | None = None
+    token_type: str = "Bearer"
 
 
 class SetupRequest(BaseModel):
@@ -159,6 +215,356 @@ def _refresh_cookie_name(settings) -> str:
 
 def _refresh_cookie_value(request: Request, settings) -> str | None:
     return request.cookies.get(_refresh_cookie_name(settings))
+
+
+async def _sleep_for_start_timing_floor(started_at: float) -> None:
+    remaining = EMAIL_START_TIMING_FLOOR_SECONDS - (time.monotonic() - started_at)
+    if remaining > 0:
+        await asyncio.sleep(remaining)
+
+
+def _email_start_rate_limit_policies(
+    request: Request,
+    *,
+    normalized_email: str,
+    settings,
+) -> list[tuple[ScopeKind, str, RateLimitPolicy]]:
+    client_ip = client_ip_for_key(request)
+    return [
+        (
+            "ip",
+            client_ip,
+            RateLimitPolicy(
+                limit=settings.daemon_rate_limit_email_start_per_ip_per_hour,
+                window_seconds=3600,
+            ),
+        ),
+        (
+            "ip",
+            client_ip,
+            RateLimitPolicy(
+                limit=settings.daemon_rate_limit_email_start_per_ip_per_day,
+                window_seconds=86400,
+            ),
+        ),
+        (
+            "email",
+            normalized_email,
+            RateLimitPolicy(
+                limit=settings.daemon_rate_limit_email_start_per_email_per_hour,
+                window_seconds=3600,
+            ),
+        ),
+        (
+            "email",
+            normalized_email,
+            RateLimitPolicy(
+                limit=settings.daemon_rate_limit_email_start_per_email_per_day,
+                window_seconds=86400,
+            ),
+        ),
+    ]
+
+
+def _email_complete_rate_limit_policies(
+    request: Request,
+    *,
+    scope_value: str,
+    settings,
+) -> list[tuple[ScopeKind, str, RateLimitPolicy]]:
+    policy = RateLimitPolicy(
+        limit=settings.daemon_rate_limit_email_complete_per_ip_per_hour,
+        window_seconds=3600,
+    )
+    return [
+        ("ip", client_ip_for_key(request), policy),
+        ("email", scope_value, policy),
+    ]
+
+
+def _build_email_code_message(
+    *,
+    normalized_email: str,
+    plaintext_code: str,
+    ttl_seconds: int,
+) -> MailMessage:
+    minutes = max(1, ttl_seconds // 60)
+    return MailMessage(
+        to_address=normalized_email,
+        subject="Your Daemon sign-in code",
+        body_text=(
+            f"Your Daemon sign-in code is {plaintext_code}.\n\nIt expires in {minutes} minutes."
+        ),
+    )
+
+
+def _email_complete_failure() -> HTTPException:
+    return HTTPException(
+        status_code=401,
+        detail="code_invalid_or_expired",
+    )
+
+
+async def _load_email_challenge_lookup(conn, challenge_id: uuid.UUID):
+    return await conn.fetchrow(
+        """
+        SELECT id, normalized_email
+        FROM email_challenges
+        WHERE id = $1
+        """,
+        challenge_id,
+    )
+
+
+async def _load_active_invite_verifier_hash(conn, normalized_email: str) -> str | None:
+    value = await conn.fetchval(
+        """
+        SELECT token_verifier_hash
+        FROM signup_invites
+        WHERE normalized_email = $1
+          AND status = 'active'
+          AND expires_at > NOW()
+        """,
+        normalized_email,
+    )
+    return None if value is None else str(value)
+
+
+def _device_name_for_client_kind(client_kind: str) -> str:
+    return "Web Sign-In Device" if client_kind == "web" else "Native Sign-In Device"
+
+
+@router.post("/email/start", response_model=EmailStartResponse, status_code=202)
+async def email_start_endpoint(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    body: EmailStartRequest,
+) -> EmailStartResponse:
+    started_at = time.monotonic()
+    settings = get_settings()
+
+    try:
+        normalized_email = normalize_email(body.email)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid_email")
+
+    limiter = get_rate_limiter(request)
+    await enforce_rate_limit(
+        request=request,
+        limiter=limiter,
+        endpoint="auth:email:start",
+        policies=_email_start_rate_limit_policies(
+            request,
+            normalized_email=normalized_email,
+            settings=settings,
+        ),
+    )
+
+    app_state = get_app_state(request)
+    if app_state.db_pool is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    try:
+        sender = get_mail_sender(settings)
+    except MailSenderConfigError as exc:
+        raise HTTPException(status_code=503, detail="email_unavailable") from exc
+
+    pepper = validate_and_get_pepper(settings)
+    ip_hash = hash_ip_for_storage(client_ip_for_key(request), pepper)
+    user_agent = request.headers.get("User-Agent")
+    user_agent_hash = (
+        hash_user_agent_for_storage(user_agent, pepper)
+        if user_agent and user_agent.strip()
+        else None
+    )
+
+    async with app_state.db_pool.acquire() as conn:
+        service = EmailChallengeService(cast(SupportsEmailChallengeQueries, conn), settings)
+        try:
+            challenge_row, plaintext_code = await service.create_challenge_for_delivery(
+                EmailChallengeIssueRequest(
+                    normalized_email=normalized_email,
+                    ip_hash=ip_hash,
+                    user_agent_hash=user_agent_hash,
+                    ttl_seconds=settings.daemon_email_challenge_ttl_seconds,
+                    max_attempts=settings.daemon_email_challenge_max_attempts,
+                )
+            )
+        except EmailChallengeUnavailable as exc:
+            raise HTTPException(status_code=503, detail="email_unavailable") from exc
+
+    background_tasks.add_task(
+        sender.send,
+        _build_email_code_message(
+            normalized_email=normalized_email,
+            plaintext_code=plaintext_code,
+            ttl_seconds=settings.daemon_email_challenge_ttl_seconds,
+        ),
+    )
+
+    await _sleep_for_start_timing_floor(started_at)
+    return EmailStartResponse(
+        challenge_id=str(challenge_row.id),
+        expires_at=int(challenge_row.expires_at.timestamp()),
+    )
+
+
+@router.post(
+    "/email/complete",
+    response_model=EmailCompleteResponse,
+    response_model_exclude_none=True,
+)
+async def email_complete_endpoint(
+    request: Request,
+    response: Response,
+    body: EmailCompleteRequest,
+) -> EmailCompleteResponse:
+    settings = get_settings()
+    app_state = get_app_state(request)
+    if app_state.db_pool is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    if body.client_kind not in ("web", "native"):
+        raise HTTPException(status_code=400, detail="client_kind must be 'web' or 'native'")
+    if body.device_persistence not in ("private", "temporary"):
+        raise HTTPException(
+            status_code=400,
+            detail="device_persistence must be 'private' or 'temporary'",
+        )
+
+    has_cookie = _refresh_cookie_value(request, settings) is not None
+    if body.client_kind == "native" and has_cookie:
+        raise HTTPException(
+            status_code=400,
+            detail="cookie present but client_kind is 'native'",
+        )
+
+    if body.client_kind == "web":
+        csrf_result = check_csrf_origin(
+            request_origin=request.headers.get("Origin"),
+            sec_fetch_site=request.headers.get("Sec-Fetch-Site"),
+            referer=request.headers.get("Referer"),
+            allowed_origins=[
+                o.strip() for o in settings.daemon_allowed_origins.split(",") if o.strip()
+            ],
+            public_origin=settings.daemon_public_origin,
+            has_cookie=has_cookie,
+        )
+        if not csrf_result.allowed:
+            raise HTTPException(
+                status_code=403,
+                detail=f"CSRF/origin check failed: {csrf_result.reason}",
+            )
+
+    try:
+        challenge_uuid = uuid.UUID(body.challenge_id)
+    except (ValueError, AttributeError):
+        raise _email_complete_failure()
+
+    try:
+        normalized_code = normalize_code(body.code)
+    except ValueError:
+        raise _email_complete_failure()
+
+    limiter = get_rate_limiter(request)
+
+    async with app_state.db_pool.acquire() as conn:
+        challenge_lookup = await _load_email_challenge_lookup(conn, challenge_uuid)
+        challenge_scope = body.challenge_id
+        if challenge_lookup is not None and challenge_lookup["normalized_email"]:
+            challenge_scope = str(challenge_lookup["normalized_email"])
+
+        await enforce_rate_limit(
+            request=request,
+            limiter=limiter,
+            endpoint="auth:email:complete",
+            policies=_email_complete_rate_limit_policies(
+                request,
+                scope_value=challenge_scope,
+                settings=settings,
+            ),
+        )
+
+        challenge_service = EmailChallengeService(
+            cast(SupportsEmailChallengeQueries, conn), settings
+        )
+        try:
+            consumed_challenge: EmailChallengeRow = await challenge_service.consume_challenge(
+                EmailChallengeConsumeRequest(
+                    challenge_id=challenge_uuid,
+                    plaintext_code=normalized_code,
+                )
+            )
+        except (EmailChallengeInvalid, EmailChallengeLocked):
+            raise _email_complete_failure()
+        except EmailChallengeUnavailable as exc:
+            raise HTTPException(status_code=503, detail="service_unavailable") from exc
+
+        invite_token_verifier_hash: str | None = None
+        if settings.daemon_signup_mode == "invite_only":
+            invite_token_verifier_hash = await _load_active_invite_verifier_hash(
+                conn,
+                consumed_challenge.normalized_email,
+            )
+
+        account_service = AccountService(cast(SupportsIdentityQueries, conn))
+        try:
+            claim_result = await account_service.claim_email_identity(
+                normalized_email=consumed_challenge.normalized_email,
+                email_verified_at=consumed_challenge.consumed_at or datetime.now(timezone.utc),
+                signup_mode=settings.daemon_signup_mode,
+                invite_token_verifier_hash=invite_token_verifier_hash,
+            )
+        except (InviteOnlyRejection, SignupDisabled):
+            raise _email_complete_failure()
+
+        async with conn.transaction():
+            issued_session = await issue_device_session(
+                cast(SupportsSessionIssuanceQueries, conn),
+                IssueSessionRequest(
+                    user_id=claim_result.user.id,
+                    tenant_id=claim_result.tenant.id,
+                    client_kind=body.client_kind,
+                    device_persistence=body.device_persistence,
+                    device_name=_device_name_for_client_kind(body.client_kind),
+                    platform=body.client_kind,
+                    private_refresh_ttl_days=settings.daemon_private_refresh_ttl_days,
+                    temporary_refresh_ttl_seconds=settings.daemon_temporary_refresh_ttl_seconds,
+                ),
+            )
+
+    if body.client_kind == "web":
+        try:
+            cookie_config = make_refresh_cookie_config(
+                cookie_secure=settings.daemon_cookie_secure,
+                environment=settings.daemon_environment,
+            )
+        except CookiePolicyError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        if body.device_persistence == "temporary":
+            cookie_headers = build_temporary_refresh_cookie(
+                value=issued_session.refresh_token,
+                config=cookie_config,
+            )
+        else:
+            cookie_headers = build_refresh_cookie(
+                value=issued_session.refresh_token,
+                config=cookie_config,
+                max_age=issued_session.refresh_max_age_seconds,
+            )
+        for header_name, header_value in cookie_headers.items():
+            response.headers[header_name] = header_value
+        return EmailCompleteResponse(
+            access_token=issued_session.access_token,
+            expires_at=int(issued_session.access_expires_at.timestamp()),
+        )
+
+    return EmailCompleteResponse(
+        access_token=issued_session.access_token,
+        expires_at=int(issued_session.access_expires_at.timestamp()),
+        refresh_token=issued_session.refresh_token,
+    )
 
 
 @router.post("/setup", response_model=SetupResponse)
