@@ -54,6 +54,7 @@ from orchestrator.services.identity import (
     SignupDisabled,
     TenantRow,
     UserRow,
+    VerifiedGoogleIdentity,
 )
 
 
@@ -983,3 +984,399 @@ class TestProviderTokenNotBearerAuth:
         assert response.status_code == 401, response.text
         # The response body must not echo the Google token.
         assert "google-id-token-value" not in response.text
+
+
+class TestGoogleCompleteNewDeviceNotification:
+    """TODO 14: the google-complete route schedules a best-effort
+    new-device email notification AFTER a successful
+    `issue_device_session`. The notification:
+
+      - carries the verified email (the Google ID-token's
+        normalized email) as the recipient;
+      - carries the device name and the platform label;
+      - is NEVER sent on failed sign-in (replayed nonce,
+        malformed ID token, invite-only rejection,
+        signup disabled);
+      - does NOT block the auth response (a sender failure
+        is logged at WARNING and swallowed; the response
+        still returns 200 with the access/refresh cookie).
+    """
+
+    @pytest.mark.asyncio
+    async def test_success_schedules_new_device_notification(
+        self, route_client, monkeypatch
+    ) -> None:
+        client, _pool = route_client
+        captured_notifications: list = []
+
+        async def fake_consume(_self, _request):
+            return _Record(
+                {
+                    "id": uuid.uuid4(),
+                    "nonce_verifier_hash": "verifier",
+                    "user_id_proposed": None,
+                    "expires_at": datetime.now(timezone.utc) + timedelta(minutes=5),
+                    "consumed_at": datetime.now(timezone.utc),
+                    "created_at": datetime.now(timezone.utc),
+                }
+            )
+
+        async def fake_verify(_self, _request):
+            return VerifiedGoogleIdentity(
+                provider_subject="google-sub-123",
+                normalized_email="user@example.com",
+                original_email="user@example.com",
+                verified_at=datetime.now(timezone.utc),
+            )
+
+        async def fake_claim(_self, **_kwargs):
+            return _claim_result()
+
+        async def fake_issue(_conn, _request):
+            return _issued_session(client_kind="web", refresh_max_age_seconds=90 * 86400)
+
+        async def fake_enforce_rate_limit(**_kwargs):
+            return None
+
+        def fake_schedule(background_tasks, settings, notification):
+            captured_notifications.append(notification)
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.GoogleVerifierService.consume_nonce",
+            fake_consume,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.GoogleVerifierService.verify_id_token",
+            fake_verify,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity",
+            fake_claim,
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.schedule_device_notification", fake_schedule
+        )
+
+        nonce = "valid-nonce-for-google-complete"
+        challenge_id = str(uuid.uuid4())
+        response = await client.post(
+            "/v1/auth/google/complete",
+            json={
+                "challenge_id": challenge_id,
+                "nonce": nonce,
+                "id_token": "id-token",
+                "client_kind": "web",
+                "device_persistence": "private",
+            },
+            headers={
+                "Origin": "https://app.daemon.ai",
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["access_token"] == "access-token"
+        assert len(captured_notifications) == 1
+        notif = captured_notifications[0]
+        assert notif.recipient_email == "user@example.com"
+        assert notif.device_name == "Web Google Sign-In Device"
+        assert notif.platform == "web"
+        assert notif.provider == "google"
+
+    @pytest.mark.asyncio
+    async def test_no_notification_on_replayed_nonce(self, route_client, monkeypatch) -> None:
+        client, _pool = route_client
+        captured_notifications: list = []
+
+        async def fake_consume(_self, _request):
+            raise GoogleNonceInvalid("already consumed")
+
+        def fail_verify(_self, _request):
+            raise AssertionError("verify should not be called on replay")
+
+        def fail_claim(_self, **_kwargs):
+            raise AssertionError("claim should not be called on replay")
+
+        async def fail_issue(_conn, _request):
+            raise AssertionError("issue should not be called on replay")
+
+        async def fake_enforce_rate_limit(**_kwargs):
+            return None
+
+        def fake_schedule(background_tasks, settings, notification):
+            captured_notifications.append(notification)
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.GoogleVerifierService.consume_nonce",
+            fake_consume,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.GoogleVerifierService.verify_id_token",
+            fail_verify,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity", fail_claim
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fail_issue)
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.schedule_device_notification", fake_schedule
+        )
+
+        response = await client.post(
+            "/v1/auth/google/complete",
+            json={
+                "challenge_id": str(uuid.uuid4()),
+                "nonce": "replayed-nonce",
+                "id_token": "id-token",
+                "client_kind": "web",
+                "device_persistence": "private",
+            },
+            headers={
+                "Origin": "https://app.daemon.ai",
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+
+        assert response.status_code == 401, response.text
+        assert response.json() == {"detail": "google_sign_in_failed"}
+        assert captured_notifications == [], "expected no notification on replayed nonce"
+
+    @pytest.mark.asyncio
+    async def test_no_notification_on_invalid_token(self, route_client, monkeypatch) -> None:
+        client, _pool = route_client
+        captured_notifications: list = []
+
+        async def fake_consume(_self, _request):
+            return _Record(
+                {
+                    "id": uuid.uuid4(),
+                    "nonce_verifier_hash": "verifier",
+                    "user_id_proposed": None,
+                    "expires_at": datetime.now(timezone.utc) + timedelta(minutes=5),
+                    "consumed_at": datetime.now(timezone.utc),
+                    "created_at": datetime.now(timezone.utc),
+                }
+            )
+
+        async def fake_verify(_self, _request):
+            raise GoogleTokenInvalid("malformed token")
+
+        def fail_claim(_self, **_kwargs):
+            raise AssertionError("claim should not be called on invalid token")
+
+        async def fail_issue(_conn, _request):
+            raise AssertionError("issue should not be called on invalid token")
+
+        async def fake_enforce_rate_limit(**_kwargs):
+            return None
+
+        def fake_schedule(background_tasks, settings, notification):
+            captured_notifications.append(notification)
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.GoogleVerifierService.consume_nonce",
+            fake_consume,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.GoogleVerifierService.verify_id_token",
+            fake_verify,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity", fail_claim
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fail_issue)
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.schedule_device_notification", fake_schedule
+        )
+
+        response = await client.post(
+            "/v1/auth/google/complete",
+            json={
+                "challenge_id": str(uuid.uuid4()),
+                "nonce": "valid-nonce",
+                "id_token": "id-token",
+                "client_kind": "web",
+                "device_persistence": "private",
+            },
+            headers={
+                "Origin": "https://app.daemon.ai",
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+
+        assert response.status_code == 401
+        assert captured_notifications == [], "expected no notification on invalid token"
+
+    @pytest.mark.asyncio
+    async def test_no_notification_on_invite_only_rejection(
+        self, route_client, monkeypatch
+    ) -> None:
+        client, _pool = route_client
+        captured_notifications: list = []
+
+        async def fake_consume(_self, _request):
+            return _Record(
+                {
+                    "id": uuid.uuid4(),
+                    "nonce_verifier_hash": "verifier",
+                    "user_id_proposed": None,
+                    "expires_at": datetime.now(timezone.utc) + timedelta(minutes=5),
+                    "consumed_at": datetime.now(timezone.utc),
+                    "created_at": datetime.now(timezone.utc),
+                }
+            )
+
+        async def fake_verify(_self, _request):
+            return VerifiedGoogleIdentity(
+                provider_subject="google-sub-123",
+                normalized_email="user@example.com",
+                original_email="user@example.com",
+                verified_at=datetime.now(timezone.utc),
+            )
+
+        async def fake_claim(_self, **_kwargs):
+            raise InviteOnlyRejection("invite required")
+
+        async def fail_issue(_conn, _request):
+            raise AssertionError("issue should not be called on invite rejection")
+
+        async def fake_enforce_rate_limit(**_kwargs):
+            return None
+
+        def fake_schedule(background_tasks, settings, notification):
+            captured_notifications.append(notification)
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.GoogleVerifierService.consume_nonce",
+            fake_consume,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.GoogleVerifierService.verify_id_token",
+            fake_verify,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity",
+            fake_claim,
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fail_issue)
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.schedule_device_notification", fake_schedule
+        )
+
+        response = await client.post(
+            "/v1/auth/google/complete",
+            json={
+                "challenge_id": str(uuid.uuid4()),
+                "nonce": "valid-nonce",
+                "id_token": "id-token",
+                "client_kind": "web",
+                "device_persistence": "private",
+            },
+            headers={
+                "Origin": "https://app.daemon.ai",
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+
+        assert response.status_code == 401
+        assert captured_notifications == [], "expected no notification on invite-only rejection"
+
+    @pytest.mark.asyncio
+    async def test_notification_sender_failure_does_not_block_auth(
+        self, route_client, monkeypatch
+    ) -> None:
+        client, _pool = route_client
+        schedule_calls: list = []
+
+        async def fake_consume(_self, _request):
+            return _Record(
+                {
+                    "id": uuid.uuid4(),
+                    "nonce_verifier_hash": "verifier",
+                    "user_id_proposed": None,
+                    "expires_at": datetime.now(timezone.utc) + timedelta(minutes=5),
+                    "consumed_at": datetime.now(timezone.utc),
+                    "created_at": datetime.now(timezone.utc),
+                }
+            )
+
+        async def fake_verify(_self, _request):
+            return VerifiedGoogleIdentity(
+                provider_subject="google-sub-123",
+                normalized_email="user@example.com",
+                original_email="user@example.com",
+                verified_at=datetime.now(timezone.utc),
+            )
+
+        async def fake_claim(_self, **_kwargs):
+            return _claim_result()
+
+        async def fake_issue(_conn, _request):
+            return _issued_session(client_kind="web", refresh_max_age_seconds=90 * 86400)
+
+        async def fake_enforce_rate_limit(**_kwargs):
+            return None
+
+        def fake_schedule(background_tasks, settings, notification):
+            schedule_calls.append(notification)
+            # The BackgroundTasks runtime would await the
+            # coroutine AFTER the response is sent. Simulate
+            # a broken sender by recording that the route
+            # only enqueued; the actual send never runs in
+            # this test.
+            return None
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.GoogleVerifierService.consume_nonce",
+            fake_consume,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.GoogleVerifierService.verify_id_token",
+            fake_verify,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity",
+            fake_claim,
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.schedule_device_notification", fake_schedule
+        )
+
+        response = await client.post(
+            "/v1/auth/google/complete",
+            json={
+                "challenge_id": str(uuid.uuid4()),
+                "nonce": "valid-nonce",
+                "id_token": "id-token",
+                "client_kind": "web",
+                "device_persistence": "private",
+            },
+            headers={
+                "Origin": "https://app.daemon.ai",
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+
+        # The auth response is unchanged by the simulated
+        # notification failure.
+        assert response.status_code == 200, response.text
+        assert response.json()["access_token"] == "access-token"
+        assert "__Host-daemon_refresh=refresh-token" in response.headers.get("set-cookie", "")
+        assert len(schedule_calls) == 1

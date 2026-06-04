@@ -51,6 +51,7 @@ from orchestrator.config import get_settings
 from orchestrator.db import get_app_state
 from orchestrator.services.identity import (
     AccountService,
+    DeviceNotification,
     EmailChallengeConsumeRequest,
     EmailChallengeInvalid,
     EmailChallengeIssueRequest,
@@ -88,6 +89,7 @@ from orchestrator.services.identity import (
     issue_device_session,
     normalize_code,
     normalize_email,
+    schedule_device_notification,
 )
 
 logger = logging.getLogger(__name__)
@@ -459,6 +461,7 @@ async def email_complete_endpoint(
     request: Request,
     response: Response,
     body: EmailCompleteRequest,
+    background_tasks: BackgroundTasks,
 ) -> EmailCompleteResponse:
     settings = get_settings()
 
@@ -577,6 +580,26 @@ async def email_complete_endpoint(
                     temporary_refresh_ttl_seconds=settings.daemon_temporary_refresh_ttl_seconds,
                 ),
             )
+
+        # Best-effort new-device email notification (TODO 14). The
+        # helper itself never raises; sender failure or factory
+        # misconfig is logged at WARNING and the auth response
+        # below is unaffected. The recipient is the verified
+        # email that consumed the challenge; the body contains
+        # the device name, the platform/client kind, the
+        # sign-in timestamp, and the revoke guidance -- NEVER
+        # any token, code, nonce, cookie value, or password.
+        schedule_device_notification(
+            background_tasks=background_tasks,
+            settings=settings,
+            notification=DeviceNotification(
+                recipient_email=consumed_challenge.normalized_email,
+                device_name=_device_name_for_client_kind(body.client_kind),
+                platform=body.client_kind,
+                signed_in_at=datetime.now(timezone.utc),
+                provider="email",
+            ),
+        )
 
     if body.client_kind == "web":
         try:
@@ -782,6 +805,7 @@ async def google_complete_endpoint(
     request: Request,
     response: Response,
     body: GoogleCompleteRequest,
+    background_tasks: BackgroundTasks,
 ) -> GoogleCompleteResponse:
     settings = get_settings()
 
@@ -896,6 +920,28 @@ async def google_complete_endpoint(
                     temporary_refresh_ttl_seconds=settings.daemon_temporary_refresh_ttl_seconds,
                 ),
             )
+
+        # Best-effort new-device email notification (TODO 14). The
+        # helper itself never raises; sender failure or factory
+        # misconfig is logged at WARNING and the auth response
+        # below is unaffected. The recipient is the verified
+        # email returned by the Google ID-token verifier; the
+        # body contains the device name, the platform/client
+        # kind, the sign-in timestamp, and the revoke guidance
+        # -- NEVER the Google ID token, the consumed nonce, the
+        # access/refresh token, the cookie value, or any
+        # challenge/nonce/cookie surface from the request.
+        schedule_device_notification(
+            background_tasks=background_tasks,
+            settings=settings,
+            notification=DeviceNotification(
+                recipient_email=verified.normalized_email,
+                device_name=_google_device_name_for_client_kind(body.client_kind),
+                platform=body.client_kind,
+                signed_in_at=datetime.now(timezone.utc),
+                provider="google",
+            ),
+        )
 
     if body.client_kind == "web":
         try:

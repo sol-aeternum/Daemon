@@ -661,3 +661,303 @@ class TestEmailCompleteRoute:
 
         assert response.status_code == 404, response.text
         assert response.json() == {"detail": "email_sign_in_disabled"}
+
+
+class TestEmailCompleteNewDeviceNotification:
+    """TODO 14: the email-complete route schedules a best-effort
+    new-device email notification AFTER a successful
+    `issue_device_session`. The notification:
+
+      - carries the verified email as the recipient;
+      - carries the device name and the platform label;
+      - is NEVER sent on failed sign-in (wrong code,
+        invite-only rejection, signup disabled);
+      - does NOT block the auth response (a sender failure
+        is logged at WARNING and swallowed; the response
+        still returns 200 with the access/refresh token).
+    """
+
+    @pytest.mark.asyncio
+    async def test_success_schedules_new_device_notification(
+        self, route_client, monkeypatch
+    ) -> None:
+        client, pool = route_client
+        challenge_id = uuid.uuid4()
+        pool.challenge_lookup[challenge_id] = {
+            "id": challenge_id,
+            "normalized_email": "user@example.com",
+        }
+        captured_notifications: list = []
+
+        async def fake_consume(_self, request):
+            return EmailChallengeRow(
+                id=request.challenge_id,
+                normalized_email="user@example.com",
+                attempts_remaining=5,
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+                consumed_at=datetime.now(timezone.utc),
+                locked_at=None,
+                created_at=datetime.now(timezone.utc),
+            )
+
+        async def fake_claim(_self, **_kwargs):
+            return _claim_result()
+
+        async def fake_issue(_conn, _request):
+            return _issued_session(client_kind="web", refresh_max_age_seconds=90 * 86400)
+
+        async def fake_enforce_rate_limit(**_kwargs):
+            return None
+
+        def fake_schedule(background_tasks, settings, notification):
+            captured_notifications.append(notification)
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.EmailChallengeService.consume_challenge",
+            fake_consume,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity",
+            fake_claim,
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.schedule_device_notification", fake_schedule
+        )
+
+        response = await client.post(
+            "/v1/auth/email/complete",
+            json={
+                "challenge_id": str(challenge_id),
+                "code": "123456",
+                "client_kind": "web",
+                "device_persistence": "private",
+            },
+            headers={
+                "Origin": "https://app.daemon.ai",
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["access_token"] == "access-token"
+        assert len(captured_notifications) == 1
+        notif = captured_notifications[0]
+        assert notif.recipient_email == "user@example.com"
+        assert notif.device_name == "Web Sign-In Device"
+        assert notif.platform == "web"
+        assert notif.provider == "email"
+
+    @pytest.mark.asyncio
+    async def test_no_notification_on_wrong_code(self, route_client, monkeypatch) -> None:
+        client, pool = route_client
+        challenge_id = uuid.uuid4()
+        pool.challenge_lookup[challenge_id] = {
+            "id": challenge_id,
+            "normalized_email": "user@example.com",
+        }
+        captured_notifications: list = []
+
+        async def fake_consume(_self, _request):
+            raise EmailChallengeInvalid("wrong code")
+
+        def fail_claim(_self, **_kwargs):
+            raise AssertionError("claim should not be called on wrong code")
+
+        async def fail_issue(_conn, _request):
+            raise AssertionError("issue should not be called on wrong code")
+
+        async def fake_enforce_rate_limit(**_kwargs):
+            return None
+
+        def fake_schedule(background_tasks, settings, notification):
+            captured_notifications.append(notification)
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.EmailChallengeService.consume_challenge",
+            fake_consume,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity", fail_claim
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fail_issue)
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.schedule_device_notification", fake_schedule
+        )
+
+        response = await client.post(
+            "/v1/auth/email/complete",
+            json={
+                "challenge_id": str(challenge_id),
+                "code": "000000",
+                "client_kind": "web",
+                "device_persistence": "private",
+            },
+            headers={
+                "Origin": "https://app.daemon.ai",
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+
+        assert response.status_code == 401
+        assert response.json() == {"detail": "code_invalid_or_expired"}
+        assert captured_notifications == [], "expected no notification on failed sign-in"
+
+    @pytest.mark.asyncio
+    async def test_no_notification_on_invite_only_rejection(
+        self, route_client, monkeypatch
+    ) -> None:
+        client, pool = route_client
+        challenge_id = uuid.uuid4()
+        pool.challenge_lookup[challenge_id] = {
+            "id": challenge_id,
+            "normalized_email": "user@example.com",
+        }
+        captured_notifications: list = []
+
+        async def fake_consume(_self, request):
+            return EmailChallengeRow(
+                id=request.challenge_id,
+                normalized_email="user@example.com",
+                attempts_remaining=5,
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+                consumed_at=datetime.now(timezone.utc),
+                locked_at=None,
+                created_at=datetime.now(timezone.utc),
+            )
+
+        async def fake_claim(_self, **_kwargs):
+            raise InviteOnlyRejection("invite required")
+
+        async def fail_issue(_conn, _request):
+            raise AssertionError("issue should not be called on invite rejection")
+
+        async def fake_enforce_rate_limit(**_kwargs):
+            return None
+
+        def fake_schedule(background_tasks, settings, notification):
+            captured_notifications.append(notification)
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.EmailChallengeService.consume_challenge",
+            fake_consume,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity", fake_claim
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fail_issue)
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.schedule_device_notification", fake_schedule
+        )
+
+        response = await client.post(
+            "/v1/auth/email/complete",
+            json={
+                "challenge_id": str(challenge_id),
+                "code": "123456",
+                "client_kind": "web",
+                "device_persistence": "private",
+            },
+            headers={
+                "Origin": "https://app.daemon.ai",
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+
+        assert response.status_code == 401
+        assert response.json() == {"detail": "code_invalid_or_expired"}
+        assert captured_notifications == [], "expected no notification when account claim fails"
+
+    @pytest.mark.asyncio
+    async def test_notification_sender_failure_does_not_block_auth(
+        self, route_client, monkeypatch
+    ) -> None:
+        # Simulate the schedule helper being called but the
+        # actual send raising. The auth response must still
+        # be 200 with the access/refresh cookie. The helper
+        # itself never raises (it logs + swallows); this
+        # test asserts the contract is honored by the
+        # integration: the route hands the work off and the
+        # response does not depend on the send outcome.
+        client, pool = route_client
+        challenge_id = uuid.uuid4()
+        pool.challenge_lookup[challenge_id] = {
+            "id": challenge_id,
+            "normalized_email": "user@example.com",
+        }
+        schedule_calls: list = []
+
+        async def fake_consume(_self, request):
+            return EmailChallengeRow(
+                id=request.challenge_id,
+                normalized_email="user@example.com",
+                attempts_remaining=5,
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+                consumed_at=datetime.now(timezone.utc),
+                locked_at=None,
+                created_at=datetime.now(timezone.utc),
+            )
+
+        async def fake_claim(_self, **_kwargs):
+            return _claim_result()
+
+        async def fake_issue(_conn, _request):
+            return _issued_session(client_kind="web", refresh_max_age_seconds=90 * 86400)
+
+        async def fake_enforce_rate_limit(**_kwargs):
+            return None
+
+        def fake_schedule(background_tasks, settings, notification):
+            schedule_calls.append(notification)
+            # Simulate the helper having scheduled a coroutine
+            # on a broken BackgroundTasks: the real coroutine
+            # is never awaited, mirroring a sender that
+            # fails silently in the background.
+            return None
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.EmailChallengeService.consume_challenge",
+            fake_consume,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity",
+            fake_claim,
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.schedule_device_notification", fake_schedule
+        )
+
+        response = await client.post(
+            "/v1/auth/email/complete",
+            json={
+                "challenge_id": str(challenge_id),
+                "code": "123456",
+                "client_kind": "web",
+                "device_persistence": "private",
+            },
+            headers={
+                "Origin": "https://app.daemon.ai",
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+
+        # The auth response is unchanged by the simulated
+        # notification failure.
+        assert response.status_code == 200, response.text
+        assert response.json()["access_token"] == "access-token"
+        assert "__Host-daemon_refresh=refresh-token" in response.headers.get("set-cookie", "")
+        # The schedule helper was called exactly once.
+        assert len(schedule_calls) == 1

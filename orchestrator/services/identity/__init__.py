@@ -6,14 +6,17 @@ Reusable primitives that back the hosted identity endpoints
 the account/tenant/invite/provider service (TODO 8), the
 identity-aware device-session issuance helper (TODO 9), the
 email-challenge service (TODO 10), the mail-sender
-abstraction (TODO 10), and the Google ID-token verification
-service (TODO 12) are the services implemented today; future
-TODOs add Google route wiring and notification delivery. The
+abstraction (TODO 10), the Google ID-token verification
+service (TODO 12), and the new-device notification helper
+(TODO 14) are the services implemented today. The
 TODO 9 / TODO 12 helpers are backend-only boundaries — no HTTP
 routes are added at those TODOs because identity session
 issuance MUST be gated on a verified identity proof (email
 code consumption or Google ID-token verification), and those
-routes are TODO 11 and TODO 13.
+routes are TODO 11 and TODO 13. TODO 14 adds the post-issue
+new-device email notification that the TODO 11 and TODO 13
+routes schedule as a FastAPI `BackgroundTasks` coroutine
+after a successful `issue_device_session`.
 """
 
 from __future__ import annotations
@@ -92,6 +95,14 @@ from orchestrator.services.identity.mail_sender import (
     SmtpMailSender,
     get_mail_sender,
 )
+from orchestrator.services.identity.device_notification import (
+    NOTIFICATION_SUBJECT,
+    REVOKE_GUIDANCE,
+    DeviceNotification,
+    render_device_notification,
+    schedule_device_notification,
+    send_device_notification,
+)
 from orchestrator.services.identity.google_verifier import (
     DEFAULT_TTL_SECONDS as GOOGLE_DEFAULT_TTL_SECONDS,
     GOOGLE_ISSUER_CANONICAL,
@@ -135,6 +146,7 @@ __all__ = [
     "DEFAULT_TEMPORARY_REFRESH_TTL_SECONDS",
     "DEFAULT_TTL_SECONDS",
     "DevSink",
+    "DeviceNotification",
     "DevicePersistence",
     "DisabledMailSender",
     "EMAIL_CODE_NUM_DIGITS",
@@ -169,6 +181,8 @@ __all__ = [
     "MailSender",
     "MailSenderConfigError",
     "MailSenderError",
+    "NOTIFICATION_SUBJECT",
+    "REVOKE_GUIDANCE",
     "ProviderCollision",
     "ProviderLink",
     "RateLimitDecision",
@@ -208,4 +222,7 @@ __all__ = [
     "normalize_code",
     "normalize_email",
     "parse_audience_allowlist",
+    "render_device_notification",
+    "schedule_device_notification",
+    "send_device_notification",
 ]
