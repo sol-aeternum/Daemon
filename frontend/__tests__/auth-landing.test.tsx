@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from '@testing-library/react';
 
 const mockPush = vi.fn();
 
@@ -85,7 +91,9 @@ describe('AuthLanding — hosted mode', () => {
     expect(advancedButton).toBeTruthy();
     expect(advancedButton.getAttribute('aria-expanded')).toBe('false');
 
-    fireEvent.click(advancedButton);
+    await act(async () => {
+      fireEvent.click(advancedButton);
+    });
     expect(advancedButton.getAttribute('aria-expanded')).toBe('true');
 
     expect(screen.getByLabelText(/setup token/i)).toBeTruthy();
