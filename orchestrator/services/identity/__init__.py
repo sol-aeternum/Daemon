@@ -5,14 +5,15 @@ Reusable primitives that back the hosted identity endpoints
 /v1/auth/enroll/*, /v1/auth/refresh). The rate limiter (TODO 7),
 the account/tenant/invite/provider service (TODO 8), the
 identity-aware device-session issuance helper (TODO 9), the
-email-challenge service (TODO 10), and the mail-sender
-abstraction (TODO 10) are the services implemented today;
-future TODOs add Google challenge storage and route wiring.
-The TODO 9 helper is a backend-only boundary — no HTTP route is
-added at this TODO because identity session issuance MUST be
-gated on a verified identity proof (email code consumption or
-Google ID-token verification), and those routes are TODO 11 and
-TODO 13.
+email-challenge service (TODO 10), the mail-sender
+abstraction (TODO 10), and the Google ID-token verification
+service (TODO 12) are the services implemented today; future
+TODOs add Google route wiring and notification delivery. The
+TODO 9 / TODO 12 helpers are backend-only boundaries — no HTTP
+routes are added at those TODOs because identity session
+issuance MUST be gated on a verified identity proof (email
+code consumption or Google ID-token verification), and those
+routes are TODO 11 and TODO 13.
 """
 
 from __future__ import annotations
@@ -91,8 +92,40 @@ from orchestrator.services.identity.mail_sender import (
     SmtpMailSender,
     get_mail_sender,
 )
+from orchestrator.services.identity.google_verifier import (
+    DEFAULT_TTL_SECONDS as GOOGLE_DEFAULT_TTL_SECONDS,
+    GOOGLE_ISSUER_CANONICAL,
+    GOOGLE_ISSUER_LEGACY,
+    GoogleIdTokenVerifier,
+    GoogleIdTokenVerifyRequest,
+    GoogleNonceConsumeRequest,
+    GoogleNonceInvalid,
+    GoogleNonceIssueRequest,
+    GoogleNonceRow,
+    GoogleVerifierError,
+    GoogleVerifierService,
+    GoogleVerifierUnavailable,
+    GoogleTokenInvalid,
+    MAX_TOKEN_AGE_SECONDS,
+    NONCE_NUM_BYTES,
+    SupportsGoogleNonceQueries,
+    VerifiedGoogleIdentity,
+    audience_allowed,
+    compute_nonce_verifier,
+    default_google_id_token_verifier,
+    generate_google_nonce,
+    hash_ip_for_storage as hash_ip_for_storage_google,
+    hash_user_agent_for_storage as hash_user_agent_for_storage_google,
+    issuer_allowed,
+    parse_audience_allowlist,
+)
 
 __all__ = [
+    "GOOGLE_DEFAULT_TTL_SECONDS",
+    "GOOGLE_ISSUER_CANONICAL",
+    "GOOGLE_ISSUER_LEGACY",
+    "MAX_TOKEN_AGE_SECONDS",
+    "NONCE_NUM_BYTES",
     "AccountService",
     "AccountServiceError",
     "ClaimResult",
@@ -114,6 +147,16 @@ __all__ = [
     "EmailChallengeServiceError",
     "EmailChallengeUnavailable",
     "EmailNotVerified",
+    "GoogleIdTokenVerifier",
+    "GoogleIdTokenVerifyRequest",
+    "GoogleNonceConsumeRequest",
+    "GoogleNonceInvalid",
+    "GoogleNonceIssueRequest",
+    "GoogleNonceRow",
+    "GoogleTokenInvalid",
+    "GoogleVerifierError",
+    "GoogleVerifierService",
+    "GoogleVerifierUnavailable",
     "InvalidClientKind",
     "InvalidDevicePersistence",
     "InviteInvalidOrExpired",
@@ -138,21 +181,31 @@ __all__ = [
     "SignupDisabled",
     "SmtpMailSender",
     "SupportsEmailChallengeQueries",
+    "SupportsGoogleNonceQueries",
     "SupportsIdentityQueries",
     "SupportsSessionIssuanceQueries",
     "TEMPORARY_DB_FALLBACK_TTL_SECONDS",
     "TenantRow",
     "UserRow",
+    "VerifiedGoogleIdentity",
+    "audience_allowed",
     "client_ip_for_key",
     "compute_code_verifier",
+    "compute_nonce_verifier",
+    "default_google_id_token_verifier",
     "enforce_rate_limit",
     "generate_email_code",
+    "generate_google_nonce",
     "get_mail_sender",
     "get_rate_limiter",
     "hash_ip_for_storage",
+    "hash_ip_for_storage_google",
     "hash_key_material",
     "hash_user_agent_for_storage",
+    "hash_user_agent_for_storage_google",
+    "issuer_allowed",
     "issue_device_session",
     "normalize_code",
     "normalize_email",
+    "parse_audience_allowlist",
 ]
