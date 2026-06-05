@@ -10,6 +10,7 @@
 - **Evidence**: `lsp_diagnostics` returned `Import "fastapi" could not be resolved` for `orchestrator/routes/auth_setup.py`, `Import "httpx" could not be resolved` / `Import "pytest" could not be resolved` for changed backend tests, and TSX dependency errors like `Cannot find module 'react' or its corresponding type declarations` in `frontend/components/AuthLanding.tsx`.
 - **Likely cause**: The OpenCode language-server environment for the detached `/tmp` worktree is not inheriting the repo's Python venv / frontend dependency graph the same way as runtime test commands do (confidence 90%).
 - **Suggested action**: Treat runtime verification (`/home/sol/daemon/.venv/bin/python -m pytest`, `npm run ...` in the existing frontend install) as the authoritative gate for this worktree, or configure the LSP environment to resolve dependencies from the shared repo installation paths.
+- **Seen again**: 2026-06-05 during the PR #7 current-head follow-up fix pass when `lsp_diagnostics` on `frontend/lib/deployment.ts` and `orchestrator/routes/auth_setup.py` again reported `/tmp` worktree dependency-resolution noise (`Cannot find name 'process'` / unresolved `fastapi`) while runtime frontend/backend verification passed from the shared repo toolchains.
 
 ## 2026-06-05 UTC — Doc freshness migration metadata drift
 - **Severity**: warning
@@ -55,6 +56,7 @@
 - **Evidence**: `npm test -- --run __tests__/auth.test.ts` passed `19 tests` and printed `(node:3845559) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.`
 - **Likely cause**: Current Vitest/jsdom/Node runtime exposes a localStorage-related experimental warning unless Node is launched with `--localstorage-file`, even when tests provide their own localStorage mock (confidence 80%).
 - **Suggested action**: If the warning becomes noisy, configure the frontend test runner with an explicit localStorage file or suppress the Node experimental warning for this test environment.
+- **Seen again**: 2026-06-05 during the PR #7 current-head follow-up fix pass when the targeted Vitest command for `__tests__/auth.test.ts`, `__tests__/auth-landing.test.tsx`, and `__tests__/deployment.test.ts` passed but still printed the same `ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.`
 
 ## 2026-05-29 UTC — Studio Kling provider value is not accepted or forwarded by backend video paths
 - **Severity**: warning
