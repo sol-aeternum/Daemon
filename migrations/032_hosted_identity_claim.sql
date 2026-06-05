@@ -163,6 +163,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_providers_provider_subject
 CREATE INDEX IF NOT EXISTS idx_identity_providers_user_id
     ON identity_providers(user_id);
 
+-- At most one durable link per provider for a given user.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_providers_user_provider_unique
+    ON identity_providers(user_id, provider);
+
 COMMENT ON TABLE identity_providers IS
     'Durable provider identities linked to Daemon users. provider_subject is '
     'the provider-issued stable identifier (e.g. Google sub). normalized_'
@@ -202,6 +206,26 @@ CREATE TABLE IF NOT EXISTS signup_invites (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_signup_invites_active_email
     ON signup_invites(normalized_email)
     WHERE status = 'active';
+
+-- Naturally expired active invites must not block reissue forever. Before a new
+-- invite INSERT, expire any stale active rows for the same normalized email.
+CREATE OR REPLACE FUNCTION expire_stale_signup_invites_before_insert()
+RETURNS trigger AS $$
+BEGIN
+    UPDATE signup_invites
+    SET status = 'expired'
+    WHERE normalized_email = NEW.normalized_email
+      AND status = 'active'
+      AND expires_at <= NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_signup_invites_expire_stale_before_insert ON signup_invites;
+CREATE TRIGGER trg_signup_invites_expire_stale_before_insert
+    BEFORE INSERT ON signup_invites
+    FOR EACH ROW
+    EXECUTE FUNCTION expire_stale_signup_invites_before_insert();
 
 CREATE INDEX IF NOT EXISTS idx_signup_invites_status ON signup_invites(status);
 CREATE INDEX IF NOT EXISTS idx_signup_invites_expires_at ON signup_invites(expires_at);
