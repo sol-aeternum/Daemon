@@ -220,6 +220,17 @@ def test_email_only_deployment_passes() -> None:
     settings.validate_hosted_identity_config()
 
 
+def test_forwarded_client_ip_trust_defaults_false() -> None:
+    settings = _hosted_base()
+    assert settings.daemon_trust_proxy_forwarded_client_ip is False
+
+
+def test_forwarded_client_ip_trust_can_be_enabled() -> None:
+    settings = _hosted_base(daemon_trust_proxy_forwarded_client_ip=True)
+    settings.validate_hosted_identity_config()
+    assert settings.daemon_trust_proxy_forwarded_client_ip is True
+
+
 def test_signup_mode_all_three_allowed() -> None:
     """All three signup modes pass validation when other constraints are met."""
     for mode in HOSTED_SIGNUP_MODES:

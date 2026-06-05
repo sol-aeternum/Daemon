@@ -29,6 +29,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 from typing import cast
+from starlette.requests import Request
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -42,6 +43,8 @@ from orchestrator.services.identity.rate_limiter import (  # noqa: E402
     RateLimitUnavailableError,
     hash_key_material,
 )
+from orchestrator.services.identity.rate_limit_dep import client_ip_for_key  # noqa: E402
+from orchestrator.config import get_settings  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -821,3 +824,65 @@ class _AppWithNoRedis:
     def __init__(self) -> None:
         self.state = cast(Any, object.__new__(type("_Stub", (), {})))
         self.state.app_state = _AppStateNoRedis()
+
+
+def _make_request(
+    *,
+    host: str,
+    headers: list[tuple[bytes, bytes]] | None = None,
+) -> Request:
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/auth/email/start",
+        "headers": headers or [],
+        "client": (host, 12345),
+        "app": _AppWithNoRedis(),
+    }
+    return Request(scope)
+
+
+class TestClientIpForKey:
+    def setup_method(self) -> None:
+        get_settings.cache_clear()
+
+    def teardown_method(self) -> None:
+        get_settings.cache_clear()
+
+    def test_defaults_to_immediate_socket_ip(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("DAEMON_TRUST_PROXY_FORWARDED_CLIENT_IP", raising=False)
+        request = _make_request(
+            host="203.0.113.10",
+            headers=[(b"x-forwarded-for", b"198.51.100.8")],
+        )
+        assert client_ip_for_key(request) == "203.0.113.10"
+
+    def test_trusted_proxy_mode_uses_forwarded_for_when_proxy_hop_is_private(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DAEMON_TRUST_PROXY_FORWARDED_CLIENT_IP", "true")
+        request = _make_request(
+            host="10.0.0.12",
+            headers=[(b"x-forwarded-for", b"198.51.100.8, 10.0.0.12")],
+        )
+        assert client_ip_for_key(request) == "198.51.100.8"
+
+    def test_trusted_proxy_mode_still_rejects_forwarded_headers_on_public_socket(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DAEMON_TRUST_PROXY_FORWARDED_CLIENT_IP", "true")
+        request = _make_request(
+            host="8.8.8.8",
+            headers=[(b"x-forwarded-for", b"198.51.100.8")],
+        )
+        assert client_ip_for_key(request) == "8.8.8.8"
+
+    def test_uses_forwarded_header_when_x_forwarded_for_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DAEMON_TRUST_PROXY_FORWARDED_CLIENT_IP", "true")
+        request = _make_request(
+            host="127.0.0.1",
+            headers=[(b"forwarded", b"for=198.51.100.9;proto=https")],
+        )
+        assert client_ip_for_key(request) == "198.51.100.9"

@@ -326,12 +326,8 @@ class SmtpMailSender(MailSender):
         this value; tests verify the value is not echoed into
         the application logger.
       - `use_tls`: True for STARTTLS (port 587) or implicit
-        TLS (port 465). The sender does the standard
-        `smtplib.SMTP.starttls()` for STARTTLS; for implicit
-        TLS the caller is expected to use
-        `smtplib.SMTP_SSL` (currently the sender uses
-        `smtplib.SMTP` and STARTTLS, which is the common
-        hosted-relay pattern).
+        TLS (port 465). Port 465 uses `smtplib.SMTP_SSL`;
+        other TLS ports use `smtplib.SMTP.starttls()`.
       - `from_address`: the envelope-from address. The
         `MailMessage.from_address` overrides this when set.
     """
@@ -363,9 +359,11 @@ class SmtpMailSender(MailSender):
         )
 
         def _do_send() -> None:
-            with smtplib.SMTP(self.host, self.port, timeout=30) as smtp:
+            implicit_tls = self.use_tls and self.port == 465
+            smtp_factory = smtplib.SMTP_SSL if implicit_tls else smtplib.SMTP
+            with smtp_factory(self.host, self.port, timeout=30) as smtp:
                 smtp.ehlo()
-                if self.use_tls:
+                if self.use_tls and not implicit_tls:
                     smtp.starttls()
                     smtp.ehlo()
                 if self.username and self.password:

@@ -234,6 +234,14 @@ class _RaisingSMTP(_FakeSMTP):
         raise smtplib.SMTPRecipientsRefused({"addr": (550, b"User unknown")})
 
 
+class _FakeSMTPSSL(_FakeSMTP):
+    ssl_instances: list["_FakeSMTPSSL"] = []
+
+    def __init__(self, host: str, port: int, timeout: float = 0) -> None:
+        super().__init__(host, port, timeout)
+        _FakeSMTPSSL.ssl_instances.append(self)
+
+
 class TestSmtpMailSender:
     @pytest.mark.asyncio
     async def test_send_connects_and_sends(self) -> None:
@@ -281,6 +289,30 @@ class TestSmtpMailSender:
         assert instance.starttls_calls == 0
         assert instance.ehlo_calls == 1
         assert instance.login_calls == []
+
+    @pytest.mark.asyncio
+    async def test_send_with_implicit_tls_uses_smtp_ssl(self) -> None:
+        _FakeSMTP.instances.clear()
+        _FakeSMTPSSL.ssl_instances.clear()
+        sender = SmtpMailSender(
+            host="smtp.example.com",
+            port=465,
+            username="user",
+            password="secret",
+            use_tls=True,
+            from_address="noreply@daemon.test",
+        )
+        with (
+            patch("orchestrator.services.identity.mail_sender.smtplib.SMTP", _FakeSMTP),
+            patch("orchestrator.services.identity.mail_sender.smtplib.SMTP_SSL", _FakeSMTPSSL),
+        ):
+            await sender.send(_sample_message())
+
+        assert len(_FakeSMTPSSL.ssl_instances) == 1
+        instance = _FakeSMTPSSL.ssl_instances[0]
+        assert instance.starttls_calls == 0
+        assert instance.ehlo_calls == 1
+        assert instance.login_calls == [("user", "secret")]
 
     @pytest.mark.asyncio
     async def test_send_with_empty_credentials_skips_login(self) -> None:

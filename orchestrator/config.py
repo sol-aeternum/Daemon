@@ -400,6 +400,14 @@ class Settings(BaseSettings):
     # nonce/challenge/rate-limit enforcement" rule.
     daemon_hosted_identity_require_redis: bool = True
 
+    # ----- Trusted auth-proxy forwarding -----
+    # Default safe posture: do NOT trust forwarded client-IP headers.
+    # Hosted deployments that front `/api/v1/auth/*` with the Next.js proxy
+    # may opt in so rate limits key on the original client IP instead of the
+    # proxy/container hop. The rate-limit helper still requires the immediate
+    # socket hop to be loopback/private before honoring forwarded headers.
+    daemon_trust_proxy_forwarded_client_ip: bool = False
+
     def get_tier_config(self, tier: str | None = None) -> TierConfig:
         """Get model configuration for a specific tier.
 
