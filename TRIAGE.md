@@ -1,5 +1,27 @@
 # TRIAGE.md
 
+## 2026-06-05 UTC — Doc freshness migration metadata drift
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 20 — Update Setup, Hosted Identity, and Feature Matrix Documentation
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: The required `python scripts/check_doc_freshness.py --mode fail` attempt failed on migration metadata in existing gated docs outside this task's requested edit set. The task evidence records the failure, but the current documentation synchronization scope only allows `AUTH_SETUP.md`, `HOSTED_IDENTITY.md`, `FEATURE_MATRIX.md`, optional matrix linter changes, and task evidence.
+- **Evidence**: `/home/sol/daemon/docs/TECHNICAL_SPECS.md:1 [CheckId.MIGRATION_COUNT] expected='32' observed='31'; /home/sol/daemon/docs/TECHNICAL_SPECS.md:90 [CheckId.MIGRATION_LATEST] expected='032_hosted_identity_claim.sql' observed='031_auth_device_model.sql'; /home/sol/daemon/docs/PROJECT_CONTEXT.md:1 [CheckId.MIGRATION_COUNT] expected='32' observed='31'; /home/sol/daemon/docs/PROJECT_CONTEXT.md:71 [CheckId.MIGRATION_LATEST] expected='032_hosted_identity_claim.sql' observed='031_auth_device_model.sql`; command exit code 1.
+- **Likely cause**: Hosted identity migration documentation was updated to expect migration `032_hosted_identity_claim.sql`, but the current repository migration set still reports latest applied/source migration `031_auth_device_model.sql` (confidence 85%).
+- **Suggested action**: In a separate docs/schema synchronization task, reconcile `docs/TECHNICAL_SPECS.md` and `docs/PROJECT_CONTEXT.md` with the actual hosted identity migration source state, or restore the missing migration artifact if it should exist in this branch.
+
+## 2026-06-05 09:31 UTC — TypeScript LSP all-severity output lagged behind file contents
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: TODO17 Frontend Google Sign-In Flow verification
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: After fixing tuple casts in `frontend/__tests__/auth.test.ts` and removing an unused import from `frontend/components/AuthLanding.tsx`, an all-severity `lsp_diagnostics` call still reported the old TypeScript errors/hints. Reading the files showed the fixes were present, and rerunning `lsp_diagnostics` at error severity immediately returned no diagnostics for all changed files.
+- **Evidence**: stale all-severity output included `frontend/__tests__/auth.test.ts` TypeScript 2352 tuple-cast errors at lines 210/274/397/430 and an unused `Mail` hint in `AuthLanding.tsx`; subsequent `lsp_diagnostics(filePath="/home/sol/daemon/frontend/__tests__/auth.test.ts", severity="error")` and error-level checks on all changed files returned `No diagnostics found`.
+- **Likely cause**: LSP diagnostics cache or all-severity server state lag in the OpenCode TypeScript tooling (confidence 80%).
+- **Suggested action**: When all-severity diagnostics contradict current file contents, rerun error-level diagnostics or restart the TypeScript language server before treating stale hints/errors as current.
+
 ## 2026-05-31 05:18 UTC — TOML diagnostics unavailable for pyproject changes
 - **Severity**: info
 - **Scope**: tooling
@@ -102,6 +124,7 @@
 - **Evidence**: `lsp_diagnostics` on `tests/benchmark_results/harness_parity_baseline_stability.md` and `.sisyphus/notepads/longmemeval-parity-baseline-completion/learnings.md` returned `Error: No LSP server configured for extension: .md`.
 - **Seen again**: 2026-05-28 during PR #4 review-fix QA when `lsp_diagnostics` on `TRIAGE.md` and `.sisyphus/notepads/pr-4-review-fix-qa/learnings.md` returned `Error: No LSP server configured for extension: .md`.
 - **Seen again**: 2026-05-29 during generated-audio protection verification when `lsp_diagnostics` on the updated `TRIAGE.md` returned `Error: No LSP server configured for extension: .md`.
+- **Seen again**: 2026-06-05 during Task 20 docs verification when `lsp_diagnostics` on `docs/AUTH_SETUP.md`, `docs/HOSTED_IDENTITY.md`, and `docs/FEATURE_MATRIX.md` returned `Error: No LSP server configured for extension: .md`.
 - **Likely cause**: OpenCode LSP configuration in this workspace defines language servers for code and JSON-oriented extensions but does not include a Markdown-capable server such as Marksman (confidence 98%).
 - **Suggested action**: Add a Markdown LSP server to the workspace tooling if artifact-only tasks are expected to satisfy the changed-file diagnostics requirement without fallback checks.
 
@@ -1452,3 +1475,59 @@
 - **Evidence**: `pytest tests/test_auth_smoke.py::TestAuthDeviceLifecycleSmoke::test_full_lifecycle_smoke` → `FAILED ... assert 401 == 410`. Verified pre-existing by `git stash` of the TODO 7 changes and re-running on commit `1455a63b` — the same failure appears.
 - **Likely cause**: Status code drift between the test expectation and the actual route response (likely the route was changed to return 401 on a path the test expected to be 410). Confidence: high.
 - **Suggested action**: Follow-up: decide whether the test or the route is correct and reconcile.
+
+## 2026-06-05 UTC — Frontend build fails on missing qrcode.react dependency
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 15 — Auth landing component verification
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: `npm run build` in `frontend/` fails with `Module not found: Can't resolve 'qrcode.react'` from `components/settings/EnrollmentModal.tsx`. This is a pre-existing dependency issue unrelated to Task 15 changes.
+- **Evidence**: `npm run build` output: `./components/settings/EnrollmentModal.tsx Module not found: Can't resolve 'qrcode.react'`
+- **Likely cause**: `qrcode.react` is listed in `package.json` dependencies but may not be installed, or its types are missing (confidence 85%).
+- **Suggested action**: Verify `qrcode.react` is installed in `frontend/node_modules/`; if missing, run `npm ci` or check for installation issues.
+
+## 2026-06-05 UTC — Frontend type-check has pre-existing advisorEvents and tool_call_log errors
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 15 — Auth landing component verification
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: `npm run type-check` reports 80+ errors in `lib/advisorEvents.ts`, `__tests__/advisor-events.test.ts`, `__tests__/tool-call-log.test.ts`, and `components/settings/EnrollmentModal.tsx`. Task 15 files (`lib/deployment.ts`, `components/AuthLanding.tsx`, `app/setup/page.tsx`, `__tests__/auth-landing.test.tsx`) have zero type errors.
+- **Evidence**: `npm run type-check` output shows errors only in pre-existing files; no errors in newly created/modified Task 15 files.
+- **Likely cause**: Advisor event types were refactored without updating all consumers; `tool_call_id` and `advisor_id` fields were removed from base event types but still used in tests and `lib/advisorEvents.ts` (confidence 90%).
+- **Suggested action**: Update `lib/advisorEvents.ts` and related tests to match current event type definitions, or restore the missing type fields.
+
+## 2026-06-05 UTC — Frontend lint has pre-existing errors across 29 files
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 15 — Auth landing component verification
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: `npm run lint` reports 29 errors and 13 warnings across existing files (e.g., `app/page.tsx`, `components/ToolCallBlock.tsx`, `hooks/useLocalStorage.ts`). Task 15 files have zero lint errors.
+- **Evidence**: `npm run lint` output shows 42 total problems; none in `lib/deployment.ts`, `components/AuthLanding.tsx`, `app/setup/page.tsx`, or `__tests__/auth-landing.test.tsx`.
+- **Likely cause**: These are pre-existing lint violations from earlier development, likely introduced before the current strict eslint config was applied (confidence 95%).
+- **Suggested action**: Run a dedicated lint-fix pass across the frontend, or grandfather existing violations and enforce lint only on changed files.
+
+## 2026-06-05 UTC — Temporary refresh sessions rotate into 90-day persistent sessions
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: Task 22 — Hosted Identity Oracle security/product review
+- **Category**: security
+- **Blocked current task**: no
+- **What happened**: A temporary hosted-identity session is issued with session-cookie / short-TTL semantics, but `/v1/auth/refresh` does not preserve that temporary posture. Refresh rotation recreates the session with the global 90-day refresh lifetime and sets a persistent `Max-Age=7776000` cookie, silently upgrading a temporary/public-computer session into a long-lived private session.
+- **Evidence**: `orchestrator/routes/auth_setup.py:1601-1649` hardcodes `refresh_expires = now + timedelta(days=REFRESH_TOKEN_TTL_DAYS)` and `build_refresh_cookie(... max_age=refresh_max_age)` on every successful web refresh; `orchestrator/services/identity/session_issuance.py:251-286` is where temporary sessions are initially distinguished; targeted ASGI proof command on 2026-06-05 returned `status 200`, `set_cookie __Host-daemon_refresh=...; Max-Age=7776000`, and `rotated_refresh_days 90.0` after seeding a 10-minute temporary web refresh token.
+- **Likely cause**: The pre-existing refresh endpoint only keys on `client_kind` and has no persisted `device_persistence` / temporary-session flag to carry forward during rotation, so temporary hosted-identity sessions fall back to the legacy 90-day refresh path on first refresh (confidence 97%).
+- **Suggested action**: In a follow-up auth fix, persist temporary/private refresh semantics (or an equivalent session-scope marker) and teach `/v1/auth/refresh` to rotate temporary sessions without lengthening TTL or minting persistent cookies/JSON refresh tokens.
+
+
+## 2026-06-05 UTC — Plain text artifacts cannot satisfy changed-file LSP diagnostics
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Task 22 — Hosted Identity Oracle security/product review verification
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Required changed-file diagnostics could not run on the new evidence artifact `.sisyphus/evidence/hosted-identity-claim/task-22-oracle.txt` because this workspace has no LSP server configured for `.txt` files. The review/report content was still verified via direct reads and grep-based checks.
+- **Evidence**: `lsp_diagnostics(filePath="/home/sol/daemon/.sisyphus/evidence/hosted-identity-claim/task-22-oracle.txt", severity="error")` returned `Error: No LSP server configured for extension: .txt` and listed only code-oriented servers (`typescript, deno, vue, eslint, oxlint, biome, gopls, ruby-lsp, basedpyright, pyright...`).
+- **Likely cause**: OpenCode LSP configuration in this environment does not include a plain-text-capable language server, so `.txt` evidence artifacts cannot participate in changed-file diagnostics (confidence 99%).
+- **Suggested action**: If plain-text evidence files are expected to satisfy changed-file diagnostics, add a `.txt`-capable LSP to the workspace or treat grep/read validation as the canonical check for text artifacts.
