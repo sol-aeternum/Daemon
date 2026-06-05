@@ -27,3 +27,23 @@ All checks passed!
 
 # basedpyright --level error:
 0 errors, 0 warnings, 0 notes
+
+# ----------------------------------------------------------------------
+# Follow-up: identity-row continuity fix (claim hoisted)
+# ----------------------------------------------------------------------
+.                                                                        [100%]
+=============================== warnings summary ===============================
+.venv/lib/python3.14/site-packages/litellm/litellm_core_utils/logging_utils.py:273: 15 warnings
+  /home/sol/daemon/.venv/lib/python3.14/site-packages/litellm/litellm_core_utils/logging_utils.py:273: DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction() instead
+    if asyncio.iscoroutinefunction(func):
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1 passed, 9 deselected, 15 warnings in 2.19s
+..........                                                               [100%]
+=============================== warnings summary ===============================
+.venv/lib/python3.14/site-packages/litellm/litellm_core_utils/logging_utils.py:273: 15 warnings
+  /home/sol/daemon/.venv/lib/python3.14/site-packages/litellm/litellm_core_utils/logging_utils.py:273: DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction() instead
+    if asyncio.iscoroutinefunction(func):
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+10 passed, 15 warnings in 2.40s

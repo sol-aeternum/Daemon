@@ -551,6 +551,11 @@ class TestEmailWeb:
         sender = FakeMailSender()
         captured_notifications: list = []
         issued_sessions: list[IssuedSession] = []
+        # Single shared identity for the smoke flow: the fake account
+        # claim result AND the seeded device/session row MUST resolve
+        # to the same user/tenant UUIDs, otherwise the "tenant/user/
+        # device DB rows" continuity proof is weak.
+        claim = _claim_result()
 
         # --- email start ---
         challenge_id = uuid.uuid4()
@@ -582,7 +587,7 @@ class TestEmailWeb:
             )
 
         async def fake_claim(_self, **_kwargs):
-            return _claim_result()
+            return claim
 
         async def fake_issue(_conn, request):
             session = _issued_session(
@@ -679,7 +684,9 @@ class TestEmailWeb:
 
         # 4) The issued access token lets us see the device in /v1/auth/devices.
         issued = issued_sessions[0]
-        claim = _claim_result()
+        # Reuse the same `claim` returned by fake_claim so the seeded
+        # device/session row resolves to the same user_id that the
+        # identity-completion path produced.
         _install_session_for_token(pool, issued, user_id=claim.user.id)
         access_token = issued.access_token
 
