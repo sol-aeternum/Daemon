@@ -154,6 +154,12 @@ After successful session creation, Daemon sends a best-effort new-device notific
 notification is sent only after the session exists, never blocks login, and contains no
 secrets, tokens, codes, nonces, invite material, or provider credentials.
 
+Residual phishing and social-engineering risk remains in scope for operator awareness:
+attackers can still trick users into entering email codes, selecting the wrong Google
+account, or approving unexpected sign-ins. Daemon mitigates this with nonce-bound
+challenges, single-use proofs, generic responses, short TTLs, new-device visibility, and
+revocation; these controls reduce but do not eliminate user-targeted deception risk.
+
 ## Self-Hosted Advanced Setup
 
 Hosted deployments should present Google and email code sign-in first. The self-hosted

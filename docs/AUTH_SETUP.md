@@ -1,8 +1,32 @@
 # Authentication Setup Guide — Daemon
 
-This guide covers Daemon's per-device authentication model for self-hosted deployments.
+This guide covers Daemon's per-device authentication model for hosted and self-hosted deployments.
+
+Hosted deployments present Google and email identity sign-in first. Those providers prove account identity only: Google credentials, Google ID tokens, email codes, invite tokens, setup tokens, and enrollment tokens are never API credentials. Protected APIs trust only Daemon-issued device/session access tokens and rotating refresh tokens after identity proof, setup, or enrollment completes.
+
+Self-hosted first-boot setup remains available as the **Advanced** hosted-UX path for operators running their own Daemon instance or recovering from zero active devices.
+
+---
+
+## Hosted Identity Sign-In
+
+Hosted Google and email sign-in exchange a verified identity proof for a normal Daemon device/session pair:
+
+- **Google sign-in** uses a server-generated nonce challenge and the Google Identity Services manual JavaScript callback. The browser posts the credential, challenge reference, nonce, client kind, and device metadata back to Daemon; the GIS `login_uri` auto-post pattern is not the approved flow.
+- **Email sign-in** proves control of a normalized email address with a short-lived code challenge, then issues a Daemon device/session if invite and account policy allow it.
+- **Web completion** creates a web device, returns the access token for JavaScript memory, and sets the rotating refresh token in an HttpOnly cookie.
+- **Native completion** creates a native device and returns access and refresh tokens in JSON for platform secure storage.
+- **Temporary or public-computer sessions**, when offered, are intentionally temporary, narrow-capability sessions; they do not authorize normal protected APIs unless a route explicitly allows temporary sessions.
+
+GitHub sign-in is out of scope. Provider tokens are never accepted as protected API authorization.
+
+Hosted identity still has residual phishing and social-engineering risk: users can be tricked into entering email codes or approving the wrong account. Daemon mitigates this with nonce-bound challenges, single-use codes, generic responses, short TTLs, new-device visibility, and revocation, but operators should still treat suspicious sign-ins as account-security events.
+
+---
 
 ## First Boot Setup
+
+First-boot setup is primarily the self-hosted and recovery path. In hosted deployments, keep this behind **Advanced self-hosted setup** instead of presenting it as the default login path.
 
 On a fresh Daemon installation with no active devices, the backend logs a one-time setup token at startup:
 
@@ -29,9 +53,12 @@ The one-time setup token **is written to server logs at startup**. Treat your lo
 
 ---
 
-## Adding Devices (Enrollment)
+## Adding Devices
 
-After first-boot setup, you can enroll additional devices (browsers, native clients) from the Devices panel in the web UI.
+Additional devices can be added through hosted identity sign-in or through in-app enrollment, depending on deployment mode.
+
+- **Hosted identity path**: sign in with Google or email from the new browser or native app. After successful identity proof, Daemon creates a new device/session for that account.
+- **Enrollment path**: from an existing authenticated browser, use the Devices panel to create a QR or manual enrollment code for another browser or native client.
 
 ### Enrollment Flow
 
@@ -65,7 +92,7 @@ To revoke access:
 3. Any access tokens for that device are invalidated instantly.
 4. If you revoke the current web browser device, the refresh cookie is cleared and you are redirected to `/setup`.
 
-Revocation is permanent. To regain access, the device must be re-enrolled from an already-authenticated browser.
+Revocation is permanent. To regain access, the device must complete hosted identity sign-in again or be re-enrolled from an already-authenticated browser, depending on deployment mode.
 
 ---
 
@@ -182,10 +209,13 @@ Daemon rejects requests that mix cookie-based and body-based refresh in the same
 
 | Topic | Key Point |
 |-------|-----------|
-| First boot | Form-based one-time token from server logs; never in URL |
-| Adding devices | QR or manual code from enrolled browser; web cookie or native JSON-body token |
+| Hosted identity | Google/email prove identity only; Daemon-issued device/session tokens are the API auth surface |
+| Google sign-in | Server nonce challenge + manual GIS callback; no `login_uri` auto-post flow |
+| First boot | Advanced self-hosted/recovery path; form-based one-time token from server logs, never in URL |
+| Adding devices | Hosted identity sign-in or enrollment QR/manual code; web cookie or native JSON-body token |
 | Revoking | Immediate session/token invalidation; current-device revoke clears cookie |
 | Recovery | Zero active devices + restart → new setup token logged |
 | Pepper | Production requires ≥32 bytes / 43 base64url chars; missing/weak fails startup |
 | Browser auth | Access token in JS memory; refresh in HttpOnly `__Host-` cookie |
 | Native auth | Access + refresh returned in JSON; refresh must use platform secure storage |
+| Out of scope | GitHub sign-in and provider-token API auth |
