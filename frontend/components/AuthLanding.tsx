@@ -11,6 +11,7 @@ import {
   startGoogleSignIn,
   completeGoogleSignIn,
 } from '../lib/auth';
+import { getGoogleClientId } from '../lib/deployment';
 import {
   Sparkles,
   Shield,
@@ -60,10 +61,6 @@ declare global {
 }
 
 const GOOGLE_GIS_SCRIPT_SRC = 'https://accounts.google.com/gsi/client';
-
-function getGoogleClientId(): string {
-  return process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID?.trim() ?? '';
-}
 
 function loadGoogleIdentityServices(): Promise<GoogleIdentityServices> {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
@@ -162,7 +159,7 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
   }, [router]);
 
   async function handleGoogleSignIn() {
-    const clientId = getGoogleClientId();
+    const clientId = getGoogleClientId(mode);
     if (!clientId) return;
 
     setGoogleError(null);
@@ -425,7 +422,7 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
   }
 
   const isHosted = mode === 'hosted';
-  const googleClientId = getGoogleClientId();
+  const googleClientId = getGoogleClientId(mode);
 
   return (
     <div className="flex min-h-screen w-full items-center justify-center bg-[var(--color-bg-tertiary)] px-4 py-12">
