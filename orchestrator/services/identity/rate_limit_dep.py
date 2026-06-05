@@ -28,6 +28,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import re
+from collections.abc import Sequence
 from typing import Literal
 
 from fastapi import HTTPException, Request
@@ -45,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 
 ScopeKind = Literal["ip", "email"]
+PolicySpec = tuple[ScopeKind, str, RateLimitPolicy] | tuple[ScopeKind, str, RateLimitPolicy, str]
 
 
 def get_rate_limiter(request: Request) -> RateLimiter:
@@ -165,11 +167,12 @@ async def enforce_rate_limit(
     request: Request,
     limiter: RateLimiter,
     endpoint: str,
-    policies: list[tuple[ScopeKind, str, RateLimitPolicy]],
+    policies: Sequence[PolicySpec],
 ) -> None:
     """Run one or more rate-limit checks and translate the result.
 
-    Each policy is a (scope_kind, raw_value, policy) tuple. A request
+    Each policy is either a `(scope_kind, raw_value, policy)` tuple or a
+    `(scope_kind, raw_value, policy, endpoint_override)` tuple. A request
     passes only if every check returns `allowed=True`. If any check
     returns `allowed=False`, the function raises a 429 with the
     `Retry-After` from the most-restrictive failure (the maximum
@@ -200,10 +203,15 @@ async def enforce_rate_limit(
 
     worst_retry_after = 0
     blocked = False
-    for scope_kind, raw_value, policy in policies:
+    for policy_spec in policies:
+        if len(policy_spec) == 3:
+            scope_kind, raw_value, policy = policy_spec
+            policy_endpoint = endpoint
+        else:
+            scope_kind, raw_value, policy, policy_endpoint = policy_spec
         try:
             decision = await limiter.check(
-                endpoint=endpoint,
+                endpoint=policy_endpoint,
                 scope_kind=scope_kind,
                 raw_value=raw_value,
                 policy=policy,
@@ -212,7 +220,7 @@ async def enforce_rate_limit(
             if fail_closed:
                 logger.warning(
                     "Rate limiter unavailable for endpoint=%s scope=%s: %s; failing closed",
-                    endpoint,
+                    policy_endpoint,
                     scope_kind,
                     type(exc).__name__,
                 )

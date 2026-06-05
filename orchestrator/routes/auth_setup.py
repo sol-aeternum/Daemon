@@ -278,7 +278,7 @@ def _email_start_rate_limit_policies(
     *,
     normalized_email: str,
     settings,
-) -> list[tuple[ScopeKind, str, RateLimitPolicy]]:
+) -> list[tuple[ScopeKind, str, RateLimitPolicy, str]]:
     client_ip = client_ip_for_key(request)
     return [
         (
@@ -288,6 +288,7 @@ def _email_start_rate_limit_policies(
                 limit=settings.daemon_rate_limit_email_start_per_ip_per_hour,
                 window_seconds=3600,
             ),
+            "auth:email:start:ip:hour",
         ),
         (
             "ip",
@@ -296,6 +297,7 @@ def _email_start_rate_limit_policies(
                 limit=settings.daemon_rate_limit_email_start_per_ip_per_day,
                 window_seconds=86400,
             ),
+            "auth:email:start:ip:day",
         ),
         (
             "email",
@@ -304,6 +306,7 @@ def _email_start_rate_limit_policies(
                 limit=settings.daemon_rate_limit_email_start_per_email_per_hour,
                 window_seconds=3600,
             ),
+            "auth:email:start:email:hour",
         ),
         (
             "email",
@@ -312,6 +315,7 @@ def _email_start_rate_limit_policies(
                 limit=settings.daemon_rate_limit_email_start_per_email_per_day,
                 window_seconds=86400,
             ),
+            "auth:email:start:email:day",
         ),
     ]
 
@@ -1573,7 +1577,7 @@ async def refresh_endpoint(
                   AND refresh_expires_at > NOW()
                   AND revoked_at IS NULL
                   AND EXISTS (SELECT 1 FROM devices WHERE id = sessions.device_id AND revoked_at IS NULL)
-                RETURNING id, user_id, device_id, client_kind, device_persistence, refresh_expires_at
+                RETURNING id, user_id, device_id, client_kind, device_persistence, tenant_id, refresh_expires_at
                 """,
                 token_hash,
             )

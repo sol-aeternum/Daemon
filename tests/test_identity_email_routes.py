@@ -258,6 +258,12 @@ class TestEmailStartRoute:
         assert captured_requests[0].user_agent_hash is not None
         assert [policy[0] for policy in captured_policies] == ["ip", "ip", "email", "email"]
         assert captured_policies[2][1] == "user@example.com"
+        assert [policy[3] for policy in captured_policies] == [
+            "auth:email:start:ip:hour",
+            "auth:email:start:ip:day",
+            "auth:email:start:email:hour",
+            "auth:email:start:email:day",
+        ]
 
     @pytest.mark.asyncio
     async def test_email_start_blocks_when_email_provider_disabled(

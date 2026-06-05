@@ -23,6 +23,7 @@ class MockConn:
     def __init__(self, pool):
         self._pool = pool
         self._in_transaction = False
+        self._last_refresh_consume_sql = None
 
     async def fetchval(self, sql, *args):
         if "SELECT NOW()" in sql:
@@ -47,6 +48,8 @@ class MockConn:
 
     async def fetchrow(self, sql, *args):
         if "UPDATE sessions" in sql and "RETURNING" in sql:
+            self._last_refresh_consume_sql = sql
+            assert "tenant_id" in sql
             token_hash = args[0]
             if token_hash in self._pool._sessions:
                 row = self._pool._sessions[token_hash]
@@ -269,6 +272,12 @@ class TestWebRefreshRotatesCookie:
                     assert len(mock_pool._captured_inserts) == 1
                     inserted = mock_pool._captured_inserts[0]["args"]
                     assert inserted[4] == tenant_id
+                    consume_sql = next(
+                        conn._last_refresh_consume_sql
+                        for conn in mock_pool._connections
+                        if conn._last_refresh_consume_sql is not None
+                    )
+                    assert "tenant_id" in consume_sql
         finally:
             restore_init(original)
 
