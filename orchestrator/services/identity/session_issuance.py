@@ -61,14 +61,24 @@ Refresh transport semantics (v1):
     in the response body only, NEVER as a Set-Cookie header. The
     client persists the refresh in the OS keychain/keystore.
 
-Persistence is encoded in the cookie Max-Age, not in the database
-schema. Migration 031 constrains `sessions.client_kind` to
-`('web', 'native')`; the audit recommended against introducing a
-`temporary` `client_kind` value (see TODO 2 audit decisions). A
-later TODO may add a `device_persistence` column to `sessions` to
-preserve the original persistence across refresh rotations; v1
-rotates to the default private TTL because the DB does not remember
-the originating persistence.
+Persistence is now persisted on the session row (migration 032) so
+refresh rotation preserves the original posture (TODO 22 BLOCKING
+finding B1). Migration 032 adds a constrained
+`sessions.device_persistence` column (`'private' | 'temporary'`,
+NOT NULL, backfilled to `'private'` for pre-existing rows) and the
+helper writes the requested value at issuance. The refresh route
+in `orchestrator/routes/auth_setup.py` reads the stored
+`device_persistence` from the consumed session and uses
+`_compute_refresh_ttl_seconds()` to derive the replacement
+cookie's `Max-Age` and the replacement `refresh_expires_at`,
+so a temporary web refresh stays temporary (session-cookie + 1h
+DB cap when `daemon_temporary_refresh_ttl_seconds == 0`, or an
+explicit short cookie when that knob is positive). Migration 031
+still constrains `sessions.client_kind` to `('web', 'native')`; the
+audit recommended against introducing a `temporary` `client_kind`
+value (see TODO 2 audit decisions) and the implementation respects
+that by encoding persistence in its own column rather than
+overloading `client_kind`.
 
 This module never:
 
@@ -372,23 +382,29 @@ async def issue_device_session(
 
     # Step 3: session row. client_kind is constrained by migration
     # 031 to ('web', 'native'); we store 'web' for both private and
-    # temporary web persistence. tenant_id is the same value the
-    # device row received; future multi-tenant migrations may
-    # differentiate, but v1 keeps the device/session tenant in sync.
+    # temporary web persistence. device_persistence is constrained by
+    # migration 032 to ('private', 'temporary') and is recorded here so
+    # refresh rotation can preserve the originating posture (TODO 22
+    # BLOCKING finding B1: temporary sessions must not silently widen
+    # into the long-lived private flow on cookie rotation).
+    # tenant_id is the same value the device row received; future
+    # multi-tenant migrations may differentiate, but v1 keeps the
+    # device/session tenant in sync.
     session_id = await conn.fetchval(
         """
         INSERT INTO sessions (
-            user_id, device_id, client_kind, tenant_id,
+            user_id, device_id, client_kind, device_persistence, tenant_id,
             access_token_hash, access_expires_at,
             refresh_token_hash, refresh_expires_at,
             created_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING id
         """,
         request.user_id,
         device_id,
         request.client_kind,
+        request.device_persistence,
         request.tenant_id,
         hash_token(access_token),
         access_expires_at,

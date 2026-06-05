@@ -200,6 +200,7 @@ def _make_session(
     expired=False,
     session_revoked=False,
     device_revoked=False,
+    device_persistence="private",
 ):
     now = datetime.now(timezone.utc)
     if expired:
@@ -211,6 +212,7 @@ def _make_session(
         "user_id": user_id,
         "device_id": device_id,
         "client_kind": client_kind,
+        "device_persistence": device_persistence,
         "refresh_token_hash": token_hash,
         "refresh_expires_at": refresh_expires_at,
         "refresh_consumed_at": now if consumed else None,
@@ -772,5 +774,246 @@ class TestWebRefreshCSRF:
                     assert (
                         "CSRF" in response.json()["detail"] or "origin" in response.json()["detail"]
                     )
+        finally:
+            restore_init(original)
+
+
+class TestRefreshPreservesDevicePersistence:
+    """B1 fix: refresh rotation must preserve the originating
+    device_persistence so a temporary/public web session is not
+    silently widened into the long-lived private posture on cookie
+    rotation (TODO 22 BLOCKING finding B1). The settings used here
+    rely on the production defaults:
+        daemon_private_refresh_ttl_days = 90  (=> 90 * 86400 = 7,776,000s)
+        daemon_temporary_refresh_ttl_seconds = 0  (=> session cookie + 3600s DB cap)
+    """
+
+    @pytest.mark.asyncio
+    async def test_temporary_web_refresh_stays_temporary_no_max_age(self, setup_env, monkeypatch):
+        user_id = SINGLETON_ID
+        device_id = uuid.uuid4()
+        refresh_token = generate_token()
+        refresh_hash = hash_token(refresh_token)
+        old_session = _make_session(
+            refresh_hash, user_id, device_id, "web", device_persistence="temporary"
+        )
+        devices = {str(device_id): {"id": device_id, "user_id": user_id, "revoked_at": None}}
+        mock_pool = MockPool(sessions={refresh_hash: old_session}, devices=devices)
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    response = await client.post(
+                        "/v1/auth/refresh",
+                        cookies={"__Host-daemon_refresh": refresh_token},
+                        headers={
+                            "Origin": "https://app.daemon.ai",
+                            "Sec-Fetch-Site": "same-origin",
+                        },
+                    )
+
+                    assert response.status_code == 200, response.text
+                    cookie_header = response.headers.get("set-cookie", "")
+                    assert "__Host-daemon_refresh" in cookie_header
+                    assert "HttpOnly" in cookie_header
+                    # Session-cookie (no Max-Age) — must NOT be 90 days.
+                    assert "Max-Age=7776000" not in cookie_header
+                    assert "Max-Age=" not in cookie_header
+                    # Replacement session row preserves the temporary persistence.
+                    assert len(mock_pool._captured_inserts) >= 1
+                    insert_args = mock_pool._captured_inserts[0]["args"]
+                    assert insert_args[2] == "web"
+                    assert insert_args[3] == "temporary"
+        finally:
+            restore_init(original)
+
+    @pytest.mark.asyncio
+    async def test_temporary_web_refresh_db_expiry_uses_short_cap(self, setup_env, monkeypatch):
+        user_id = SINGLETON_ID
+        device_id = uuid.uuid4()
+        refresh_token = generate_token()
+        refresh_hash = hash_token(refresh_token)
+        old_session = _make_session(
+            refresh_hash, user_id, device_id, "web", device_persistence="temporary"
+        )
+        devices = {str(device_id): {"id": device_id, "user_id": user_id, "revoked_at": None}}
+        mock_pool = MockPool(sessions={refresh_hash: old_session}, devices=devices)
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    response = await client.post(
+                        "/v1/auth/refresh",
+                        cookies={"__Host-daemon_refresh": refresh_token},
+                        headers={
+                            "Origin": "https://app.daemon.ai",
+                            "Sec-Fetch-Site": "same-origin",
+                        },
+                    )
+
+                    assert response.status_code == 200, response.text
+                    assert len(mock_pool._captured_inserts) >= 1
+                    # refresh_expires_at is the 7th positional arg
+                    # (user_id, device_id, client_kind, device_persistence,
+                    #  access_token_hash, access_expires_at,
+                    #  refresh_token_hash, refresh_expires_at, created_at).
+                    refresh_expires_at = mock_pool._captured_inserts[0]["args"][7]
+                    delta = (refresh_expires_at - datetime.now(timezone.utc)).total_seconds()
+                    # Defensive 1-hour DB cap (TEMPORARY_DB_FALLBACK_TTL_SECONDS),
+                    # not the 90-day private cap.
+                    assert 3500 <= delta <= 3700, (
+                        f"expected ~1h DB cap for temporary session, got {delta}s"
+                    )
+                    assert delta < 90 * 86400, "temporary must not get private 90-day TTL"
+        finally:
+            restore_init(original)
+
+    @pytest.mark.asyncio
+    async def test_private_web_refresh_remains_90_days(self, setup_env, monkeypatch):
+        user_id = SINGLETON_ID
+        device_id = uuid.uuid4()
+        refresh_token = generate_token()
+        refresh_hash = hash_token(refresh_token)
+        old_session = _make_session(
+            refresh_hash, user_id, device_id, "web", device_persistence="private"
+        )
+        devices = {str(device_id): {"id": device_id, "user_id": user_id, "revoked_at": None}}
+        mock_pool = MockPool(sessions={refresh_hash: old_session}, devices=devices)
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    response = await client.post(
+                        "/v1/auth/refresh",
+                        cookies={"__Host-daemon_refresh": refresh_token},
+                        headers={
+                            "Origin": "https://app.daemon.ai",
+                            "Sec-Fetch-Site": "same-origin",
+                        },
+                    )
+
+                    assert response.status_code == 200, response.text
+                    cookie_header = response.headers.get("set-cookie", "")
+                    assert "__Host-daemon_refresh" in cookie_header
+                    assert "Max-Age=7776000" in cookie_header
+                    assert len(mock_pool._captured_inserts) >= 1
+                    insert_args = mock_pool._captured_inserts[0]["args"]
+                    assert insert_args[2] == "web"
+                    assert insert_args[3] == "private"
+                    refresh_expires_at = insert_args[7]
+                    delta = (refresh_expires_at - datetime.now(timezone.utc)).total_seconds()
+                    assert 90 * 86400 - 60 <= delta <= 90 * 86400 + 60
+        finally:
+            restore_init(original)
+
+    @pytest.mark.asyncio
+    async def test_native_refresh_preserves_persistence_no_cookie(self, setup_env, monkeypatch):
+        """Native refresh must NOT set a cookie and must persist the
+        device_persistence on the replacement session row."""
+        user_id = SINGLETON_ID
+        device_id = uuid.uuid4()
+        refresh_token = generate_token()
+        refresh_hash = hash_token(refresh_token)
+        old_session = _make_session(
+            refresh_hash, user_id, device_id, "native", device_persistence="temporary"
+        )
+        devices = {str(device_id): {"id": device_id, "user_id": user_id, "revoked_at": None}}
+        mock_pool = MockPool(sessions={refresh_hash: old_session}, devices=devices)
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    response = await client.post(
+                        "/v1/auth/refresh",
+                        json={"refresh_token": refresh_token},
+                    )
+
+                    assert response.status_code == 200, response.text
+                    data = response.json()
+                    assert "refresh_token" in data
+                    cookie_header = response.headers.get("set-cookie", "")
+                    assert "__Host-daemon_refresh" not in cookie_header
+                    assert len(mock_pool._captured_inserts) >= 1
+                    insert_args = mock_pool._captured_inserts[0]["args"]
+                    assert insert_args[2] == "native"
+                    assert insert_args[3] == "temporary"
+        finally:
+            restore_init(original)
+
+    @pytest.mark.asyncio
+    async def test_native_private_refresh_remains_private_no_cookie(self, setup_env, monkeypatch):
+        """Native private refresh preserves the private posture on the
+        replacement row, still JSON-only, still no cookie."""
+        user_id = SINGLETON_ID
+        device_id = uuid.uuid4()
+        refresh_token = generate_token()
+        refresh_hash = hash_token(refresh_token)
+        old_session = _make_session(
+            refresh_hash, user_id, device_id, "native", device_persistence="private"
+        )
+        devices = {str(device_id): {"id": device_id, "user_id": user_id, "revoked_at": None}}
+        mock_pool = MockPool(sessions={refresh_hash: old_session}, devices=devices)
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    response = await client.post(
+                        "/v1/auth/refresh",
+                        json={"refresh_token": refresh_token},
+                    )
+
+                    assert response.status_code == 200, response.text
+                    cookie_header = response.headers.get("set-cookie", "")
+                    assert "__Host-daemon_refresh" not in cookie_header
+                    assert len(mock_pool._captured_inserts) >= 1
+                    insert_args = mock_pool._captured_inserts[0]["args"]
+                    assert insert_args[2] == "native"
+                    assert insert_args[3] == "private"
+        finally:
+            restore_init(original)
+
+    @pytest.mark.asyncio
+    async def test_reuse_revoke_path_does_not_insert_replacement(self, setup_env, monkeypatch):
+        """Consumed-reuse revocation must NOT silently insert a new
+        session row that would itself carry device_persistence."""
+        user_id = SINGLETON_ID
+        device_id = uuid.uuid4()
+        refresh_token = generate_token()
+        refresh_hash = hash_token(refresh_token)
+        consumed_session = _make_session(
+            refresh_hash,
+            user_id,
+            device_id,
+            "web",
+            consumed=True,
+            device_persistence="temporary",
+        )
+        devices = {str(device_id): {"id": device_id, "user_id": user_id, "revoked_at": None}}
+        mock_pool = MockPool(
+            sessions={refresh_hash: consumed_session},
+            devices=devices,
+        )
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    response = await client.post(
+                        "/v1/auth/refresh",
+                        cookies={"__Host-daemon_refresh": refresh_token},
+                        headers={
+                            "Origin": "https://app.daemon.ai",
+                            "Sec-Fetch-Site": "same-origin",
+                        },
+                    )
+
+                    assert response.status_code == 401, response.text
+                    # Critical: no replacement session row on the reuse path.
+                    assert len(mock_pool._captured_inserts) == 0
         finally:
             restore_init(original)

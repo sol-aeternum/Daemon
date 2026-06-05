@@ -91,6 +91,9 @@ from orchestrator.services.identity import (
     normalize_email,
     schedule_device_notification,
 )
+from orchestrator.services.identity.session_issuance import (
+    _compute_refresh_ttl_seconds,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1472,6 +1475,11 @@ async def refresh_endpoint(
     exc_to_raise: HTTPException | None = None
     access_token = ""
     refresh_token = ""
+    # Default-init so the cookie emission below type-checks even on
+    # defensive paths. The success path inside the transaction
+    # overwrites both from the consumed session row.
+    stored_persistence: str = "private"
+    cookie_max_age: int | None = None
 
     async with app_state.db_pool.acquire() as conn:
         async with conn.transaction():
@@ -1481,7 +1489,7 @@ async def refresh_endpoint(
             # the invalid-token path.
             pre_row = await conn.fetchrow(
                 """
-                SELECT client_kind
+                SELECT client_kind, device_persistence
                 FROM sessions
                 WHERE refresh_token_hash = $1
                   AND refresh_consumed_at IS NULL
@@ -1513,7 +1521,7 @@ async def refresh_endpoint(
                   AND refresh_expires_at > NOW()
                   AND revoked_at IS NULL
                   AND EXISTS (SELECT 1 FROM devices WHERE id = sessions.device_id AND revoked_at IS NULL)
-                RETURNING id, user_id, device_id, client_kind, refresh_expires_at
+                RETURNING id, user_id, device_id, client_kind, device_persistence, refresh_expires_at
                 """,
                 token_hash,
             )
@@ -1522,7 +1530,7 @@ async def refresh_endpoint(
                 # Zero rows: check second lookup to distinguish consumed-reuse from other invalid
                 existing_row = await conn.fetchrow(
                     """
-                    SELECT id, user_id, device_id, client_kind,
+                    SELECT id, user_id, device_id, client_kind, device_persistence,
                            refresh_expires_at, refresh_consumed_at
                     FROM sessions
                     WHERE refresh_token_hash = $1
@@ -1600,23 +1608,39 @@ async def refresh_endpoint(
             if exc_to_raise is None and consumed_row is not None:
                 now = datetime.now(timezone.utc)
                 access_expires = now + timedelta(minutes=ACCESS_TOKEN_TTL_MINUTES)
-                refresh_expires = now + timedelta(days=REFRESH_TOKEN_TTL_DAYS)
+                # Preserve the originating device_persistence on rotation so
+                # a temporary/public session cannot be silently widened into
+                # the long-lived private posture (TODO 22 BLOCKING finding B1).
+                # The cookie Max-Age and the DB-side refresh_expires_at are
+                # both derived from the stored value via the same helper
+                # `issue_device_session` uses at issuance, so initial
+                # issuance and refresh rotation produce matching TTLs.
+                stored_persistence = consumed_row["device_persistence"]
+                if stored_persistence not in ("private", "temporary"):
+                    stored_persistence = "private"
+                cookie_max_age, db_refresh_ttl_seconds = _compute_refresh_ttl_seconds(
+                    device_persistence=stored_persistence,
+                    private_refresh_ttl_days=settings.daemon_private_refresh_ttl_days,
+                    temporary_refresh_ttl_seconds=settings.daemon_temporary_refresh_ttl_seconds,
+                )
+                refresh_expires = now + timedelta(seconds=db_refresh_ttl_seconds)
                 access_token = generate_token()
                 refresh_token = generate_token()
 
                 await conn.execute(
                     """
                     INSERT INTO sessions (
-                        user_id, device_id, client_kind,
+                        user_id, device_id, client_kind, device_persistence,
                         access_token_hash, access_expires_at,
                         refresh_token_hash, refresh_expires_at,
                         created_at
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                     """,
                     consumed_row["user_id"],
                     consumed_row["device_id"],
                     consumed_row["client_kind"],
+                    stored_persistence,
                     hash_token(access_token),
                     access_expires,
                     hash_token(refresh_token),
@@ -1627,18 +1651,28 @@ async def refresh_endpoint(
     if exc_to_raise:
         raise exc_to_raise
 
-    # Set replacement cookie for web mode
+    # Set replacement cookie for web mode using the *stored* device_persistence
+    # carried through the consumed row. Temporary sessions get a session-cookie
+    # (no Max-Age) when the operator configures `daemon_temporary_refresh_ttl_
+    # seconds == 0`, or an explicit short Max-Age when a positive value is
+    # configured. Private sessions get the full 90-day Max-Age. This mirrors
+    # the issuance path in `_compute_refresh_ttl_seconds()`.
     if is_web:
         cookie_config = make_refresh_cookie_config(
             cookie_secure=settings.daemon_cookie_secure,
             environment=settings.daemon_environment,
         )
-        refresh_max_age = int(timedelta(days=REFRESH_TOKEN_TTL_DAYS).total_seconds())
-        cookie_headers = build_refresh_cookie(
-            value=refresh_token,
-            config=cookie_config,
-            max_age=refresh_max_age,
-        )
+        if stored_persistence == "temporary" and cookie_max_age is None:
+            cookie_headers = build_temporary_refresh_cookie(
+                value=refresh_token,
+                config=cookie_config,
+            )
+        else:
+            cookie_headers = build_refresh_cookie(
+                value=refresh_token,
+                config=cookie_config,
+                max_age=cookie_max_age,
+            )
         for header_name, header_value in cookie_headers.items():
             response.headers[header_name] = header_value
         return RefreshResponse(access_token=access_token)

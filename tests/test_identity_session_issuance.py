@@ -248,14 +248,35 @@ class TestHelperPersistenceToDeviceAndSession:
         assert dev_args[2] == "Test Device"
         assert dev_args[3] == "macos"
         # INSERT INTO sessions (user_id, device_id, client_kind,
-        #                       tenant_id, access_token_hash,
-        #                       access_expires_at, refresh_token_hash,
-        #                       refresh_expires_at, created_at)
+        #                       device_persistence, tenant_id,
+        #                       access_token_hash, access_expires_at,
+        #                       refresh_token_hash, refresh_expires_at,
+        #                       created_at)
         assert len(conn.session_inserts) == 1
         sess_args = conn.session_inserts[0]
         assert sess_args[0] == SINGLETON_ID
         assert sess_args[2] == "web"
-        assert sess_args[3] == TEST_TENANT_ID
+        assert sess_args[3] == "private"
+        assert sess_args[4] == TEST_TENANT_ID
+
+    @pytest.mark.asyncio
+    async def test_temporary_persistence_persisted_on_session(self) -> None:
+        """Helper must store the requested device_persistence on the
+        session row so refresh rotation can preserve it (B1 fix)."""
+        conn = HelperMockConn()
+        request = IssueSessionRequest(
+            user_id=SINGLETON_ID,
+            tenant_id=TEST_TENANT_ID,
+            client_kind="web",
+            device_persistence="temporary",
+            device_name="Public Computer",
+            platform="macos",
+            temporary_refresh_ttl_seconds=0,
+        )
+        async with conn.transaction():
+            await issue_device_session(conn, request)
+        sess_args = conn.session_inserts[0]
+        assert sess_args[3] == "temporary"
 
     @pytest.mark.asyncio
     async def test_native_session_uses_native_client_kind(self) -> None:
@@ -289,11 +310,11 @@ class TestHelperPersistenceToDeviceAndSession:
         # access_token_hash and refresh_token_hash must NOT match the
         # plaintext tokens (defensive: the helper must not write
         # plaintext to the DB).
-        assert sess_args[4] != issued.access_token.encode("utf-8")
-        assert sess_args[6] != issued.refresh_token.encode("utf-8")
+        assert sess_args[5] != issued.access_token.encode("utf-8")
+        assert sess_args[7] != issued.refresh_token.encode("utf-8")
         # And the hash of the access token should match the stored value.
-        assert sess_args[4] == hash_token(issued.access_token)
-        assert sess_args[6] == hash_token(issued.refresh_token)
+        assert sess_args[5] == hash_token(issued.access_token)
+        assert sess_args[7] == hash_token(issued.refresh_token)
 
     @pytest.mark.asyncio
     async def test_none_tenant_id_passes_through(self) -> None:
@@ -312,7 +333,7 @@ class TestHelperPersistenceToDeviceAndSession:
         dev_args = conn.device_inserts[0]
         assert dev_args[1] is None
         sess_args = conn.session_inserts[0]
-        assert sess_args[3] is None
+        assert sess_args[4] is None
 
 
 class TestDevicePersistenceTypeAlias:

@@ -379,6 +379,30 @@ COMMENT ON COLUMN sessions.tenant_id IS
     'in migration 032; NOT NULL after backfill. ON DELETE RESTRICT prevents '
     'tenant deletion while active sessions exist.';
 
+-- sessions.device_persistence records the originating persistence
+-- (private vs temporary) on every session row. The refresh rotation
+-- preserves this column so a temporary/web session is not silently
+-- widened into the long-lived private posture during cookie rotation
+-- (TODO 22 BLOCKING finding B1). Constrained to the same two values
+-- the helper accepts (`private`, `temporary`); pre-existing rows are
+-- backfilled to `private` so a missed backfill in an existing row
+-- never widens into a longer-lived posture by accident.
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS device_persistence TEXT
+        NOT NULL DEFAULT 'private'
+        CHECK (device_persistence IN ('private', 'temporary'));
+
+CREATE INDEX IF NOT EXISTS idx_sessions_device_persistence
+    ON sessions(device_persistence) WHERE revoked_at IS NULL;
+
+COMMENT ON COLUMN sessions.device_persistence IS
+    'Originating device persistence for this session: private (long-lived, '
+    'default 90-day cookie/refresh TTL) or temporary (session-cookie for web, '
+    'short DB cap for native). Persisted on issuance so refresh rotation '
+    'preserves the original posture (decision lock: temporary/public sessions '
+    'must not silently widen into the private posture). Pre-existing rows '
+    'were backfilled to private on migration apply.';
+
 -- ============================================================================
 -- 10. Idempotent singleton backfill
 -- ============================================================================
