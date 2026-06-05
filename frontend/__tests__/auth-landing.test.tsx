@@ -59,8 +59,19 @@ interface TestGoogleCredentialResponse {
   credential?: string;
 }
 
+interface TestGooglePromptNotification {
+  getMomentType?: () => 'display' | 'skipped' | 'dismissed' | string;
+  isNotDisplayed?: () => boolean;
+  isSkippedMoment?: () => boolean;
+  isDismissedMoment?: () => boolean;
+  getDismissedReason?: () => string | undefined;
+}
+
 let capturedGoogleCallback:
   | ((response: TestGoogleCredentialResponse) => void)
+  | null = null;
+let capturedPromptCallback:
+  | ((notification: TestGooglePromptNotification) => void)
   | null = null;
 const mockGoogleInitialize = vi.fn(
   (config: {
@@ -71,10 +82,15 @@ const mockGoogleInitialize = vi.fn(
     capturedGoogleCallback = config.callback;
   },
 );
-const mockGooglePrompt = vi.fn();
+const mockGooglePrompt = vi.fn(
+  (cb?: (notification: TestGooglePromptNotification) => void) => {
+    capturedPromptCallback = cb ?? null;
+  },
+);
 
 function installGoogleMock(): void {
   capturedGoogleCallback = null;
+  capturedPromptCallback = null;
   Object.defineProperty(window, 'google', {
     configurable: true,
     value: {
@@ -92,6 +108,7 @@ beforeEach(() => {
   delete process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
   delete (window as Window & { google?: unknown }).google;
   capturedGoogleCallback = null;
+  capturedPromptCallback = null;
   mockedRefresh.mockClear();
   mockedCompleteSetup.mockClear();
   mockedCompleteEnrollment.mockClear();
@@ -296,7 +313,7 @@ describe('AuthLanding — hosted mode', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText(/google did not return a credential/i),
+        screen.getByText(/google sign-in was cancelled or unavailable/i),
       ).toBeTruthy();
     });
     expect(mockedCompleteGoogle).not.toHaveBeenCalled();
@@ -336,6 +353,113 @@ describe('AuthLanding — hosted mode', () => {
       ).toBeTruthy();
     });
     expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'not displayed',
+      {
+        getMomentType: () => 'display',
+        isNotDisplayed: () => true,
+      },
+    ],
+    [
+      'skipped',
+      {
+        getMomentType: () => 'skipped',
+        isSkippedMoment: () => true,
+      },
+    ],
+    [
+      'dismissed without credential',
+      {
+        getMomentType: () => 'dismissed',
+        isDismissedMoment: () => true,
+        getDismissedReason: () => 'cancel_called',
+      },
+    ],
+  ] satisfies Array<[string, TestGooglePromptNotification]>)(
+    'shows a recoverable error when the GIS prompt is %s',
+    async (_label, notification) => {
+      process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
+      installGoogleMock();
+      mockedStartGoogle.mockResolvedValueOnce({
+        success: true,
+        challengeId: 'google-challenge',
+        nonce: 'server-nonce',
+        expiresAt: 1234567890,
+      });
+
+      render(<AuthLanding mode="hosted" />);
+      await waitForLoadingToFinish();
+
+      fireEvent.click(
+        screen.getByRole('button', { name: /continue with google/i }),
+      );
+
+      await waitFor(() => {
+        expect(capturedPromptCallback).toBeTruthy();
+      });
+
+      await act(async () => {
+        capturedPromptCallback?.(notification);
+      });
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(/google sign-in was cancelled or unavailable/i),
+        ).toBeTruthy();
+      });
+      expect(mockedCompleteGoogle).not.toHaveBeenCalled();
+      const recoveredButton = screen.getByRole('button', {
+        name: /continue with google/i,
+      });
+      expect(recoveredButton.hasAttribute('disabled')).toBe(false);
+    },
+  );
+
+  it('does not reject when GIS reports a credential_returned dismissed moment', async () => {
+    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
+    installGoogleMock();
+    mockedStartGoogle.mockResolvedValueOnce({
+      success: true,
+      challengeId: 'google-challenge',
+      nonce: 'server-nonce',
+      expiresAt: 1234567890,
+    });
+    mockedCompleteGoogle.mockResolvedValueOnce({ success: true });
+
+    render(<AuthLanding mode="hosted" />);
+    await waitForLoadingToFinish();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /continue with google/i }),
+    );
+
+    await waitFor(() => {
+      expect(capturedPromptCallback).toBeTruthy();
+    });
+
+    await act(async () => {
+      capturedPromptCallback?.({
+        getMomentType: () => 'dismissed',
+        isDismissedMoment: () => true,
+        getDismissedReason: () => 'credential_returned',
+      });
+      capturedGoogleCallback?.({ credential: 'google-id-token' });
+    });
+
+    await waitFor(() => {
+      expect(mockedCompleteGoogle).toHaveBeenCalledWith(
+        'google-challenge',
+        'server-nonce',
+        'google-id-token',
+        'private',
+      );
+    });
+    expect(
+      screen.queryByText(/google sign-in was cancelled or unavailable/i),
+    ).toBeNull();
   });
 
   it('hides setup token form behind an advanced section', async () => {

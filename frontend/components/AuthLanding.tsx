@@ -28,6 +28,16 @@ interface GoogleCredentialResponse {
   credential?: string;
 }
 
+interface GooglePromptNotification {
+  getMomentType?: () => 'display' | 'skipped' | 'dismissed' | string;
+  isNotDisplayed?: () => boolean;
+  isSkippedMoment?: () => boolean;
+  isDismissedMoment?: () => boolean;
+  getNotDisplayedReason?: () => unknown;
+  getSkippedReason?: () => unknown;
+  getDismissedReason?: () => string | undefined;
+}
+
 interface GoogleIdentityServices {
   accounts: {
     id: {
@@ -36,7 +46,9 @@ interface GoogleIdentityServices {
         nonce: string;
         callback: (response: GoogleCredentialResponse) => void;
       }) => void;
-      prompt?: () => void;
+      prompt?: (
+        callback?: (notification: GooglePromptNotification) => void,
+      ) => void;
     };
   };
 }
@@ -171,22 +183,58 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
 
       const google = await loadGoogleIdentityServices();
       const idToken = await new Promise<string>((resolve, reject) => {
+        let settled = false;
+        const resolveCredential = (credential: string) => {
+          if (settled) return;
+          settled = true;
+          resolve(credential);
+        };
+        const rejectGooglePrompt = () => {
+          if (settled) return;
+          settled = true;
+          reject(
+            new Error(
+              'Google sign-in was cancelled or unavailable. Please try again.',
+            ),
+          );
+        };
+
         google.accounts.id.initialize({
           client_id: clientId,
           nonce: startResult.nonce!,
           callback: (response) => {
             if (response.credential) {
-              resolve(response.credential);
+              resolveCredential(response.credential);
               return;
             }
-            reject(
-              new Error(
-                'Google did not return a credential. Please try again.',
-              ),
-            );
+            rejectGooglePrompt();
           },
         });
-        google.accounts.id.prompt?.();
+
+        const promptFn = google.accounts.id.prompt;
+        if (typeof promptFn === 'function') {
+          promptFn((notification) => {
+            const momentType = notification.getMomentType?.();
+            const isNotDisplayed = notification.isNotDisplayed?.() ?? false;
+            const isSkipped =
+              notification.isSkippedMoment?.() ?? momentType === 'skipped';
+            const isDismissed =
+              notification.isDismissedMoment?.() ?? momentType === 'dismissed';
+
+            if (isNotDisplayed || isSkipped) {
+              rejectGooglePrompt();
+              return;
+            }
+
+            if (isDismissed) {
+              const dismissedReason = notification.getDismissedReason?.();
+              if (dismissedReason !== 'credential_returned') {
+                rejectGooglePrompt();
+              }
+              return;
+            }
+          });
+        }
       });
 
       const completeResult = await completeGoogleSignIn(
