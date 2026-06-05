@@ -8,12 +8,13 @@ import {
   completeEnrollment,
   startEmailSignIn,
   completeEmailSignIn,
+  startGoogleSignIn,
+  completeGoogleSignIn,
 } from '../lib/auth';
 import {
   Sparkles,
   Shield,
   AlertCircle,
-  Mail,
   Chrome,
   ChevronDown,
   ChevronUp,
@@ -22,6 +23,76 @@ import {
 } from 'lucide-react';
 
 export type DeploymentMode = 'hosted' | 'self-hosted';
+
+interface GoogleCredentialResponse {
+  credential?: string;
+}
+
+interface GoogleIdentityServices {
+  accounts: {
+    id: {
+      initialize: (config: {
+        client_id: string;
+        nonce: string;
+        callback: (response: GoogleCredentialResponse) => void;
+      }) => void;
+      prompt?: () => void;
+    };
+  };
+}
+
+declare global {
+  interface Window {
+    google?: GoogleIdentityServices;
+  }
+}
+
+const GOOGLE_GIS_SCRIPT_SRC = 'https://accounts.google.com/gsi/client';
+
+function getGoogleClientId(): string {
+  return process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID?.trim() ?? '';
+}
+
+function loadGoogleIdentityServices(): Promise<GoogleIdentityServices> {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return Promise.reject(new Error('Google sign-in is unavailable here.'));
+  }
+  if (window.google?.accounts?.id) {
+    return Promise.resolve(window.google);
+  }
+
+  return new Promise((resolve, reject) => {
+    const existingScript = document.querySelector<HTMLScriptElement>(
+      `script[src="${GOOGLE_GIS_SCRIPT_SRC}"]`,
+    );
+
+    const finish = () => {
+      if (window.google?.accounts?.id) {
+        resolve(window.google);
+      } else {
+        reject(new Error('Google sign-in did not finish loading.'));
+      }
+    };
+
+    if (existingScript) {
+      existingScript.addEventListener('load', finish, { once: true });
+      existingScript.addEventListener(
+        'error',
+        () => reject(new Error('Google sign-in failed to load.')),
+        { once: true },
+      );
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = GOOGLE_GIS_SCRIPT_SRC;
+    script.async = true;
+    script.defer = true;
+    script.onload = finish;
+    script.onerror = () => reject(new Error('Google sign-in failed to load.'));
+    document.head.appendChild(script);
+  });
+}
 
 interface AuthLandingProps {
   mode: DeploymentMode;
@@ -51,6 +122,8 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
   const [emailError, setEmailError] = useState<string | null>(null);
   const [isEmailStarting, setIsEmailStarting] = useState(false);
   const [isEmailCompleting, setIsEmailCompleting] = useState(false);
+  const [googleError, setGoogleError] = useState<string | null>(null);
+  const [isGoogleStarting, setIsGoogleStarting] = useState(false);
   const [devicePersistence, setDevicePersistence] = useState<
     'private' | 'temporary'
   >('private');
@@ -75,6 +148,70 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
       cancelled = true;
     };
   }, [router]);
+
+  async function handleGoogleSignIn() {
+    const clientId = getGoogleClientId();
+    if (!clientId) return;
+
+    setGoogleError(null);
+    setIsGoogleStarting(true);
+    try {
+      const startResult = await startGoogleSignIn();
+      if (
+        !startResult.success ||
+        !startResult.challengeId ||
+        !startResult.nonce
+      ) {
+        setGoogleError(
+          startResult.error ||
+            'Unable to start Google sign-in. Please try again.',
+        );
+        return;
+      }
+
+      const google = await loadGoogleIdentityServices();
+      const idToken = await new Promise<string>((resolve, reject) => {
+        google.accounts.id.initialize({
+          client_id: clientId,
+          nonce: startResult.nonce!,
+          callback: (response) => {
+            if (response.credential) {
+              resolve(response.credential);
+              return;
+            }
+            reject(
+              new Error(
+                'Google did not return a credential. Please try again.',
+              ),
+            );
+          },
+        });
+        google.accounts.id.prompt?.();
+      });
+
+      const completeResult = await completeGoogleSignIn(
+        startResult.challengeId,
+        startResult.nonce,
+        idToken,
+        devicePersistence,
+      );
+      if (completeResult.success) {
+        router.push('/');
+      } else {
+        setGoogleError(
+          completeResult.error || 'Google sign-in failed. Please try again.',
+        );
+      }
+    } catch (err) {
+      setGoogleError(
+        err instanceof Error
+          ? err.message
+          : 'Google sign-in failed. Please try again.',
+      );
+    } finally {
+      setIsGoogleStarting(false);
+    }
+  }
 
   async function handleSetupSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -240,6 +377,7 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
   }
 
   const isHosted = mode === 'hosted';
+  const googleClientId = getGoogleClientId();
 
   return (
     <div className="flex min-h-screen w-full items-center justify-center bg-[var(--color-bg-tertiary)] px-4 py-12">
@@ -265,12 +403,38 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
 
         {isHosted && (
           <div className="space-y-3">
-            <IdentityCard
-              icon={<Chrome className="w-5 h-5" />}
-              label="Continue with Google"
-              disabled
-              disabledReason="Coming soon"
+            {googleClientId ? (
+              <IdentityCard
+                icon={<Chrome className="w-5 h-5" />}
+                label={
+                  isGoogleStarting
+                    ? 'Starting Google sign-in...'
+                    : 'Continue with Google'
+                }
+                onClick={handleGoogleSignIn}
+                disabled={isGoogleStarting}
+              />
+            ) : (
+              <IdentityCard
+                icon={<Chrome className="w-5 h-5" />}
+                label="Google sign-in unavailable"
+                disabled
+                disabledReason="No Google client ID configured"
+              />
+            )}
+
+            <DevicePersistenceChooser
+              devicePersistence={devicePersistence}
+              disabled={isGoogleStarting || isEmailCompleting}
+              onChange={setDevicePersistence}
             />
+
+            {googleError && (
+              <div className="flex items-start gap-2.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
+                <p className="text-sm text-red-300">{googleError}</p>
+              </div>
+            )}
 
             {emailStep === 'idle' ? (
               <form onSubmit={handleEmailStart} className="space-y-4">
@@ -330,64 +494,6 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
                     disabled={isEmailCompleting}
                     className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
                   />
-                </div>
-
-                <div className="flex items-start gap-2 rounded-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2">
-                  <Monitor className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-text-muted)]" />
-                  <div>
-                    <p className="text-xs font-medium text-[var(--color-text-secondary)]">
-                      Device
-                    </p>
-                    <p className="text-xs text-[var(--color-text-muted)]">
-                      Web Sign-In Device (this browser)
-                    </p>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <p className="text-sm font-medium text-[var(--color-text-secondary)]">
-                    This device is:
-                  </p>
-                  <div className="flex gap-3">
-                    <label className="flex-1 flex items-center gap-2 rounded-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 cursor-pointer hover:border-[var(--color-border-secondary)] transition-colors">
-                      <input
-                        type="radio"
-                        name="device-persistence"
-                        value="private"
-                        checked={devicePersistence === 'private'}
-                        onChange={() => setDevicePersistence('private')}
-                        disabled={isEmailCompleting}
-                        className="text-[var(--color-accent-primary)] focus:ring-[var(--color-accent-primary)]"
-                      />
-                      <div>
-                        <p className="text-sm font-medium text-[var(--color-text-primary)]">
-                          Private
-                        </p>
-                        <p className="text-xs text-[var(--color-text-muted)]">
-                          Stay signed in
-                        </p>
-                      </div>
-                    </label>
-                    <label className="flex-1 flex items-center gap-2 rounded-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 cursor-pointer hover:border-[var(--color-border-secondary)] transition-colors">
-                      <input
-                        type="radio"
-                        name="device-persistence"
-                        value="temporary"
-                        checked={devicePersistence === 'temporary'}
-                        onChange={() => setDevicePersistence('temporary')}
-                        disabled={isEmailCompleting}
-                        className="text-[var(--color-accent-primary)] focus:ring-[var(--color-accent-primary)]"
-                      />
-                      <div>
-                        <p className="text-sm font-medium text-[var(--color-text-primary)]">
-                          Public
-                        </p>
-                        <p className="text-xs text-[var(--color-text-muted)]">
-                          Forget when I leave
-                        </p>
-                      </div>
-                    </label>
-                  </div>
                 </div>
 
                 {emailError && (
@@ -690,17 +796,20 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
 function IdentityCard({
   icon,
   label,
+  onClick,
   disabled,
   disabledReason,
 }: {
   icon: React.ReactNode;
   label: string;
+  onClick?: () => void;
   disabled?: boolean;
   disabledReason?: string;
 }) {
   return (
     <button
       type="button"
+      onClick={onClick}
       disabled={disabled}
       className="w-full flex items-center gap-3 rounded-xl border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-4 py-3 text-left hover:border-[var(--color-border-secondary)] hover:bg-[var(--color-bg-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-[var(--color-bg-secondary)] disabled:hover:border-[var(--color-border-primary)] transition-colors"
     >
@@ -718,5 +827,75 @@ function IdentityCard({
         )}
       </div>
     </button>
+  );
+}
+
+function DevicePersistenceChooser({
+  devicePersistence,
+  disabled,
+  onChange,
+}: {
+  devicePersistence: 'private' | 'temporary';
+  disabled: boolean;
+  onChange: (value: 'private' | 'temporary') => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-start gap-2 rounded-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2">
+        <Monitor className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-text-muted)]" />
+        <div>
+          <p className="text-xs font-medium text-[var(--color-text-secondary)]">
+            Device
+          </p>
+          <p className="text-xs text-[var(--color-text-muted)]">
+            Web Sign-In Device (this browser)
+          </p>
+        </div>
+      </div>
+
+      <p className="text-sm font-medium text-[var(--color-text-secondary)]">
+        This device is:
+      </p>
+      <div className="flex gap-3">
+        <label className="flex-1 flex items-center gap-2 rounded-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 cursor-pointer hover:border-[var(--color-border-secondary)] transition-colors">
+          <input
+            type="radio"
+            name="device-persistence"
+            value="private"
+            checked={devicePersistence === 'private'}
+            onChange={() => onChange('private')}
+            disabled={disabled}
+            className="text-[var(--color-accent-primary)] focus:ring-[var(--color-accent-primary)]"
+          />
+          <div>
+            <p className="text-sm font-medium text-[var(--color-text-primary)]">
+              Private
+            </p>
+            <p className="text-xs text-[var(--color-text-muted)]">
+              Stay signed in
+            </p>
+          </div>
+        </label>
+        <label className="flex-1 flex items-center gap-2 rounded-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 cursor-pointer hover:border-[var(--color-border-secondary)] transition-colors">
+          <input
+            type="radio"
+            name="device-persistence"
+            value="temporary"
+            checked={devicePersistence === 'temporary'}
+            onChange={() => onChange('temporary')}
+            disabled={disabled}
+            className="text-[var(--color-accent-primary)] focus:ring-[var(--color-accent-primary)]"
+          />
+          <div>
+            <p className="text-sm font-medium text-[var(--color-text-primary)]">
+              Public
+            </p>
+            <p className="text-xs text-[var(--color-text-muted)]">
+              Forget when I leave
+            </p>
+          </div>
+        </label>
+      </div>
+    </div>
   );
 }

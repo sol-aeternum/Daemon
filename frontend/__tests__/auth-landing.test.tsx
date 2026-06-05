@@ -25,6 +25,15 @@ vi.mock('../lib/auth', () => ({
     }),
   ),
   completeEmailSignIn: vi.fn(() => Promise.resolve({ success: true })),
+  startGoogleSignIn: vi.fn(() =>
+    Promise.resolve({
+      success: true,
+      challengeId: 'google-challenge',
+      nonce: 'server-nonce',
+      expiresAt: 1234567890,
+    }),
+  ),
+  completeGoogleSignIn: vi.fn(() => Promise.resolve({ success: true })),
 }));
 
 import {
@@ -33,6 +42,8 @@ import {
   completeEnrollment,
   startEmailSignIn,
   completeEmailSignIn,
+  startGoogleSignIn,
+  completeGoogleSignIn,
 } from '../lib/auth';
 import AuthLanding from '../components/AuthLanding';
 
@@ -41,6 +52,57 @@ const mockedCompleteSetup = vi.mocked(completeSetup);
 const mockedCompleteEnrollment = vi.mocked(completeEnrollment);
 const mockedStartEmail = vi.mocked(startEmailSignIn);
 const mockedCompleteEmail = vi.mocked(completeEmailSignIn);
+const mockedStartGoogle = vi.mocked(startGoogleSignIn);
+const mockedCompleteGoogle = vi.mocked(completeGoogleSignIn);
+
+interface TestGoogleCredentialResponse {
+  credential?: string;
+}
+
+let capturedGoogleCallback:
+  | ((response: TestGoogleCredentialResponse) => void)
+  | null = null;
+const mockGoogleInitialize = vi.fn(
+  (config: {
+    client_id: string;
+    nonce: string;
+    callback: (response: TestGoogleCredentialResponse) => void;
+  }) => {
+    capturedGoogleCallback = config.callback;
+  },
+);
+const mockGooglePrompt = vi.fn();
+
+function installGoogleMock(): void {
+  capturedGoogleCallback = null;
+  Object.defineProperty(window, 'google', {
+    configurable: true,
+    value: {
+      accounts: {
+        id: {
+          initialize: mockGoogleInitialize,
+          prompt: mockGooglePrompt,
+        },
+      },
+    },
+  });
+}
+
+beforeEach(() => {
+  delete process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
+  delete (window as Window & { google?: unknown }).google;
+  capturedGoogleCallback = null;
+  mockedRefresh.mockClear();
+  mockedCompleteSetup.mockClear();
+  mockedCompleteEnrollment.mockClear();
+  mockedStartEmail.mockClear();
+  mockedCompleteEmail.mockClear();
+  mockedStartGoogle.mockClear();
+  mockedCompleteGoogle.mockClear();
+  mockGoogleInitialize.mockClear();
+  mockGooglePrompt.mockClear();
+  mockPush.mockClear();
+});
 
 async function waitForLoadingToFinish(): Promise<void> {
   await waitFor(() => {
@@ -50,6 +112,8 @@ async function waitForLoadingToFinish(): Promise<void> {
 
 describe('AuthLanding — hosted mode', () => {
   it('renders identity entry points before enrollment', async () => {
+    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
+
     render(<AuthLanding mode="hosted" />);
     await waitForLoadingToFinish();
 
@@ -72,7 +136,27 @@ describe('AuthLanding — hosted mode', () => {
     );
   });
 
-  it('shows Google card as disabled with coming-soon reason', async () => {
+  it('does not render an active Google button without a client ID', async () => {
+    render(<AuthLanding mode="hosted" />);
+    await waitForLoadingToFinish();
+
+    expect(
+      screen.queryByRole('button', {
+        name: /continue with google/i,
+      }),
+    ).toBeNull();
+
+    const unavailableButton = screen.getByRole('button', {
+      name: /google sign-in unavailable/i,
+    });
+
+    expect(unavailableButton.hasAttribute('disabled')).toBe(true);
+    expect(screen.getByText('No Google client ID configured')).toBeTruthy();
+  });
+
+  it('renders an active Google button when a client ID is configured', async () => {
+    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
+
     render(<AuthLanding mode="hosted" />);
     await waitForLoadingToFinish();
 
@@ -80,8 +164,178 @@ describe('AuthLanding — hosted mode', () => {
       name: /continue with google/i,
     });
 
-    expect(googleButton.hasAttribute('disabled')).toBe(true);
-    expect(screen.getByText('Coming soon')).toBeTruthy();
+    expect(googleButton.hasAttribute('disabled')).toBe(false);
+  });
+
+  it('starts Google with a server nonce before completing with the GIS credential', async () => {
+    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
+    installGoogleMock();
+    mockedStartGoogle.mockResolvedValueOnce({
+      success: true,
+      challengeId: 'google-challenge',
+      nonce: 'server-nonce',
+      expiresAt: 1234567890,
+    });
+    mockedCompleteGoogle.mockResolvedValueOnce({ success: true });
+
+    render(<AuthLanding mode="hosted" />);
+    await waitForLoadingToFinish();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /continue with google/i }),
+    );
+
+    await waitFor(() => {
+      expect(mockedStartGoogle).toHaveBeenCalledTimes(1);
+      expect(mockGoogleInitialize).toHaveBeenCalledWith({
+        client_id: 'public-client-id',
+        nonce: 'server-nonce',
+        callback: expect.any(Function),
+      });
+      expect(mockedCompleteGoogle).not.toHaveBeenCalled();
+    });
+
+    await act(async () => {
+      capturedGoogleCallback?.({ credential: 'google-id-token' });
+    });
+
+    await waitFor(() => {
+      expect(mockedCompleteGoogle).toHaveBeenCalledWith(
+        'google-challenge',
+        'server-nonce',
+        'google-id-token',
+        'private',
+      );
+    });
+    expect(mockPush).toHaveBeenCalledWith('/');
+  });
+
+  it('maps public computer choice to temporary persistence for Google', async () => {
+    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
+    installGoogleMock();
+    mockedStartGoogle.mockResolvedValueOnce({
+      success: true,
+      challengeId: 'google-challenge',
+      nonce: 'server-nonce',
+      expiresAt: 1234567890,
+    });
+    mockedCompleteGoogle.mockResolvedValueOnce({ success: true });
+
+    render(<AuthLanding mode="hosted" />);
+    await waitForLoadingToFinish();
+
+    fireEvent.click(screen.getByRole('radio', { name: /public/i }));
+    fireEvent.click(
+      screen.getByRole('button', { name: /continue with google/i }),
+    );
+
+    await waitFor(() => {
+      expect(mockGoogleInitialize).toHaveBeenCalled();
+    });
+    await act(async () => {
+      capturedGoogleCallback?.({ credential: 'google-id-token' });
+    });
+
+    await waitFor(() => {
+      expect(mockedCompleteGoogle).toHaveBeenCalledWith(
+        'google-challenge',
+        'server-nonce',
+        'google-id-token',
+        'temporary',
+      );
+    });
+  });
+
+  it('shows a recoverable error when Google start fails', async () => {
+    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
+    installGoogleMock();
+    mockedStartGoogle.mockResolvedValueOnce({
+      success: false,
+      error: 'google_unavailable',
+    });
+
+    render(<AuthLanding mode="hosted" />);
+    await waitForLoadingToFinish();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /continue with google/i }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('google_unavailable')).toBeTruthy();
+    });
+    expect(mockedCompleteGoogle).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole('button', { name: /continue with google/i }),
+    ).toBeTruthy();
+  });
+
+  it('shows a recoverable error when GIS returns no credential', async () => {
+    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
+    installGoogleMock();
+    mockedStartGoogle.mockResolvedValueOnce({
+      success: true,
+      challengeId: 'google-challenge',
+      nonce: 'server-nonce',
+      expiresAt: 1234567890,
+    });
+
+    render(<AuthLanding mode="hosted" />);
+    await waitForLoadingToFinish();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /continue with google/i }),
+    );
+
+    await waitFor(() => {
+      expect(mockGoogleInitialize).toHaveBeenCalled();
+    });
+    await act(async () => {
+      capturedGoogleCallback?.({});
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/google did not return a credential/i),
+      ).toBeTruthy();
+    });
+    expect(mockedCompleteGoogle).not.toHaveBeenCalled();
+  });
+
+  it('shows a recoverable error when Google complete fails', async () => {
+    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
+    installGoogleMock();
+    mockedStartGoogle.mockResolvedValueOnce({
+      success: true,
+      challengeId: 'google-challenge',
+      nonce: 'server-nonce',
+      expiresAt: 1234567890,
+    });
+    mockedCompleteGoogle.mockResolvedValueOnce({
+      success: false,
+      error: 'Google sign-in failed. Please try again.',
+    });
+
+    render(<AuthLanding mode="hosted" />);
+    await waitForLoadingToFinish();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /continue with google/i }),
+    );
+
+    await waitFor(() => {
+      expect(mockGoogleInitialize).toHaveBeenCalled();
+    });
+    await act(async () => {
+      capturedGoogleCallback?.({ credential: 'google-id-token' });
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('Google sign-in failed. Please try again.'),
+      ).toBeTruthy();
+    });
+    expect(mockPush).not.toHaveBeenCalled();
   });
 
   it('hides setup token form behind an advanced section', async () => {

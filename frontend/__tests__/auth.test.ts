@@ -207,7 +207,10 @@ describe('startEmailSignIn', () => {
     expect(result.expiresAt).toBe(1710000000);
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
-    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const [url, init] = mockFetch.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
     expect(url).toBe('/api/v1/auth/email/start');
     expect(init.method).toBe('POST');
     expect(init.credentials).toBe('include');
@@ -271,7 +274,10 @@ describe('completeEmailSignIn', () => {
     expect(result.success).toBe(true);
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
-    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const [url, init] = mockFetch.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
     expect(url).toBe('/api/v1/auth/email/complete');
     expect(init.method).toBe('POST');
     expect(init.credentials).toBe('include');
@@ -356,6 +362,154 @@ describe('completeEmailSignIn', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('Invalid or expired code');
+
+    vi.restoreAllMocks();
+  });
+});
+
+describe('Google sign-in helpers', () => {
+  beforeEach(() => {
+    mockNavigator.value = { locks: undefined };
+    mockLocalStorage.value = {};
+    mockBroadcastChannel.value = null;
+    vi.resetModules();
+  });
+
+  it('posts to /api/v1/auth/google/start with credentials include', async () => {
+    const mockFetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            challenge_id: 'google-challenge',
+            nonce: 'server-nonce',
+            expires_at: 1710000000,
+          }),
+          { status: 202, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    globalThis.fetch = mockFetch;
+
+    const { startGoogleSignIn } = await import('../lib/auth');
+    const result = await startGoogleSignIn();
+
+    expect(result).toEqual({
+      success: true,
+      challengeId: 'google-challenge',
+      nonce: 'server-nonce',
+      expiresAt: 1710000000,
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [url, init] = mockFetch.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('/api/v1/auth/google/start');
+    expect(init.method).toBe('POST');
+    expect(init.credentials).toBe('include');
+
+    vi.restoreAllMocks();
+  });
+
+  it('posts Google ID token and nonce to complete with credentials include', async () => {
+    const mockFetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            access_token: 'daemon-access',
+            expires_at: 1710003600,
+            token_type: 'Bearer',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    globalThis.fetch = mockFetch;
+
+    const { completeGoogleSignIn, getAccessToken } =
+      await import('../lib/auth');
+    const result = await completeGoogleSignIn(
+      'google-challenge',
+      'server-nonce',
+      'google-id-token',
+      'temporary',
+    );
+
+    expect(result.success).toBe(true);
+    const [url, init] = mockFetch.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('/api/v1/auth/google/complete');
+    expect(init.method).toBe('POST');
+    expect(init.credentials).toBe('include');
+    expect(new Headers(init.headers).get('Content-Type')).toBe(
+      'application/json',
+    );
+    expect(JSON.parse(init.body as string)).toEqual({
+      challenge_id: 'google-challenge',
+      nonce: 'server-nonce',
+      id_token: 'google-id-token',
+      client_kind: 'web',
+      device_persistence: 'temporary',
+    });
+    expect(getAccessToken()).toBe('daemon-access');
+
+    vi.restoreAllMocks();
+  });
+
+  it('treats Google complete expires_at as epoch seconds and stores ms', async () => {
+    const futureEpochSeconds = Math.floor(Date.now() / 1000) + 3600;
+    const mockFetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            access_token: 'daemon-access',
+            expires_at: futureEpochSeconds,
+            token_type: 'Bearer',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    globalThis.fetch = mockFetch;
+
+    const { completeGoogleSignIn, hasValidAccessToken } =
+      await import('../lib/auth');
+    await completeGoogleSignIn('ch-1', 'nonce-1', 'id-token-1', 'private');
+
+    expect(hasValidAccessToken()).toBe(true);
+
+    vi.restoreAllMocks();
+  });
+
+  it('ignores any Google complete refresh_token in web JS', async () => {
+    const mockFetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            access_token: 'daemon-access-only',
+            expires_at: Math.floor(Date.now() / 1000) + 3600,
+            refresh_token: 'ignore-me',
+            token_type: 'Bearer',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    globalThis.fetch = mockFetch;
+
+    const { completeGoogleSignIn, getAccessToken } =
+      await import('../lib/auth');
+    const result = await completeGoogleSignIn(
+      'ch-1',
+      'nonce-1',
+      'id-token-1',
+      'private',
+    );
+
+    expect(result.success).toBe(true);
+    expect(getAccessToken()).toBe('daemon-access-only');
 
     vi.restoreAllMocks();
   });

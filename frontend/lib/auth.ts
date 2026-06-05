@@ -432,6 +432,97 @@ export async function startEmailSignIn(email: string): Promise<{
   }
 }
 
+export async function startGoogleSignIn(): Promise<{
+  success: boolean;
+  challengeId?: string;
+  nonce?: string;
+  expiresAt?: number;
+  error?: string;
+}> {
+  try {
+    const response = await _fetchAuthProxy('/google/start', {
+      method: 'POST',
+      credentials: 'include',
+    });
+
+    if (response.status === 202 || response.ok) {
+      const data = await response.json();
+      return {
+        success: true,
+        challengeId: data.challenge_id as string,
+        nonce: data.nonce as string,
+        expiresAt: data.expires_at as number,
+      };
+    }
+
+    const errorData = await response.json().catch(() => ({}));
+    return {
+      success: false,
+      error:
+        (errorData as { error?: string; detail?: string }).error ||
+        (errorData as { error?: string; detail?: string }).detail ||
+        `Google sign-in start failed: ${response.status}`,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Google sign-in start failed',
+    };
+  }
+}
+
+export async function completeGoogleSignIn(
+  challengeId: string,
+  nonce: string,
+  idToken: string,
+  devicePersistence: 'private' | 'temporary',
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const response = await _fetchAuthProxy('/google/complete', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        challenge_id: challengeId,
+        nonce,
+        id_token: idToken,
+        client_kind: 'web',
+        device_persistence: devicePersistence,
+      }),
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      const accessToken = data.access_token as string;
+      const expiresAt = data.expires_at as number;
+      const expiresAtMs = expiresAt * 1000;
+      setAccessToken(accessToken, expiresAtMs);
+      return { success: true };
+    }
+
+    if (response.status === 401) {
+      return {
+        success: false,
+        error: 'Google sign-in failed. Please try again.',
+      };
+    }
+
+    const errorData = await response.json().catch(() => ({}));
+    return {
+      success: false,
+      error:
+        (errorData as { error?: string; detail?: string }).error ||
+        (errorData as { error?: string; detail?: string }).detail ||
+        `Google sign-in failed: ${response.status}`,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Google sign-in failed',
+    };
+  }
+}
+
 export async function completeEmailSignIn(
   challengeId: string,
   code: string,
