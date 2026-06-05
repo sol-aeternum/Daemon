@@ -725,7 +725,7 @@ describe('refreshAccessToken', () => {
     vi.restoreAllMocks();
   });
 
-  it('refreshAccessToken no-Web-Locks fallback does own cookie-based refresh when receiving a refreshed broadcast', async () => {
+  it('refreshAccessToken no-Web-Locks fallback waits for refreshed broadcast, then performs one serialized cookie-based refresh', async () => {
     Object.defineProperty(globalThis, 'navigator', {
       value: { locks: undefined },
       writable: true,
@@ -776,6 +776,45 @@ describe('refreshAccessToken', () => {
     ];
     expect(url).toBe('/api/v1/auth/refresh');
     expect(init.credentials).toBe('include');
+
+    vi.restoreAllMocks();
+  });
+
+  it('refreshAccessToken no-Web-Locks fallback serializes multiple same-tab waiters into one refresh', async () => {
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { locks: undefined },
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'BroadcastChannel', {
+      configurable: true,
+      value: TestBroadcastChannel,
+    });
+    installStorage({});
+
+    const mockFetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            access_token: 'shared-refreshed-token',
+            expires_in: 1800,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    globalThis.fetch = mockFetch;
+
+    const { refreshAccessToken, getAccessToken, hasValidAccessToken } =
+      await import('../lib/auth');
+    const refreshA = refreshAccessToken();
+    const refreshB = refreshAccessToken();
+
+    const [resultA, resultB] = await Promise.all([refreshA, refreshB]);
+    expect(resultA.success).toBe(true);
+    expect(resultB.success).toBe(true);
+    expect(getAccessToken()).toBe('shared-refreshed-token');
+    expect(hasValidAccessToken()).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
 
     vi.restoreAllMocks();
   });

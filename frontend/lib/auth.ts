@@ -173,6 +173,7 @@ async function _waitForRefreshCompletion(): Promise<RefreshResult | null> {
     const deadline = Date.now() + _LOCK_WAIT_TIMEOUT_MS;
     let timerId: ReturnType<typeof setTimeout> | null = null;
     let done = false;
+    let sawRefreshedEvent = false;
 
     const cleanup = () => {
       if (timerId !== null) {
@@ -191,9 +192,13 @@ async function _waitForRefreshCompletion(): Promise<RefreshResult | null> {
 
     const handler = (type: AuthEventType, _tabId: string) => {
       if (type === 'refreshed') {
-        void doRefresh()
-          .then((result) => resolveOnce(result))
-          .catch(() => resolveOnce(null));
+        sawRefreshedEvent = true;
+        try {
+          localStorage.removeItem(_LOCK_KEY);
+        } catch {}
+        if (!hasValidAccessToken()) {
+          resolveOnce(null);
+        }
         return;
       }
       if (type === 'cleared') {
@@ -210,6 +215,10 @@ async function _waitForRefreshCompletion(): Promise<RefreshResult | null> {
         return;
       }
       if (!state || Date.now() > state.expiresAt) {
+        if (sawRefreshedEvent) {
+          resolveOnce(null);
+          return;
+        }
         resolveOnce(null);
         return;
       }
@@ -310,10 +319,14 @@ export async function refreshAccessToken(): Promise<RefreshResult> {
   }
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (_refreshPromise) {
+      return _refreshPromise;
+    }
     const acquired = await _tryAcquireLocalStorageLock();
     if (!acquired) {
       const waited = await _waitForRefreshCompletion();
       if (waited) return waited;
+      if (_refreshPromise) return _refreshPromise;
       if (hasValidAccessToken()) return { success: true };
       continue;
     }
