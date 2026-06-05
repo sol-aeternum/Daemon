@@ -10,20 +10,8 @@
 
 export type DeploymentMode = 'hosted' | 'self-hosted';
 
-type RuntimeProcessEnv = Record<string, string | undefined>;
-
-function getRuntimeEnv(): RuntimeProcessEnv | undefined {
-  if (typeof globalThis === 'undefined') {
-    return undefined;
-  }
-  const runtime = globalThis as typeof globalThis & {
-    process?: { env?: RuntimeProcessEnv };
-  };
-  return runtime.process?.env;
-}
-
 export function getDeploymentMode(): DeploymentMode {
-  const env = getRuntimeEnv()?.NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE;
+  const env = process.env.NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE;
   return env === 'hosted' ? 'hosted' : 'self-hosted';
 }
 
@@ -31,5 +19,5 @@ export function getGoogleClientId(mode?: DeploymentMode): string {
   if ((mode ?? getDeploymentMode()) !== 'hosted') {
     return '';
   }
-  return getRuntimeEnv()?.NEXT_PUBLIC_GOOGLE_CLIENT_ID?.trim() ?? '';
+  return process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID?.trim() ?? '';
 }
