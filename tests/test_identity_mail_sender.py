@@ -18,10 +18,12 @@ Coverage matches the TODO 10 acceptance criteria:
   - get_mail_sender factory: returns the right concrete
     sender for each mode; rejects misconfigured SMTP
     (empty host, port out of range, empty from_address).
-  - Secret-free messages: the body never contains the SMTP
-    password; the sender does not log the body or the
+  - Secret-free SMTP messages: the body never contains the SMTP
+    password; the SMTP sender does not log the body or the
     recipient; the rendered EmailMessage does not include the
-    password in any header.
+    password in any header. Console mode is the intentional
+    dev-only exception and logs the rendered body with a
+    `DEV ONLY` prefix.
   - Non-blocking/async boundary: every `send` is a coroutine
     and can be awaited; the SmtpMailSender wraps the blocking
     smtplib call in `asyncio.to_thread`.

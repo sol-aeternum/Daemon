@@ -5,10 +5,12 @@ when it needs to send an email-code email. It exposes a single
 async `MailSender` abstract base with three concrete
 implementations:
 
-  - `ConsoleMailSender`: dev/test sink that captures every message
-    in an in-memory queue so tests and local development can read
-    the rendered email body. The plaintext code is ONLY available
-    in this sink; it is never logged.
+  - `ConsoleMailSender`: development/test sink that captures every
+    message in an in-memory queue so tests and local development can
+    read the rendered email body. In local development it also emits
+    a `DEV ONLY` INFO log containing the rendered body so sign-in
+    codes are reachable without an out-of-process mail relay. Hosted
+    production validation rejects console mode.
   - `SmtpMailSender`: production sender that uses the stdlib
     `smtplib` + `email.message.EmailMessage` to deliver via an
     unauthenticated or authenticated SMTP relay. Uses
@@ -36,12 +38,13 @@ Architecture decisions followed:
     latency. The `SmtpMailSender.send` method uses
     `asyncio.to_thread` to keep the event loop responsive even
     when called inline.
-  - TODO 3 research: the sender never logs the plaintext code.
-    The `MailMessage` dataclass does not have a `secret`
+  - TODO 3 research: production mail paths never log plaintext
+    codes. The `MailMessage` dataclass does not have a `secret`
     field; the body is a fully-rendered email body that the
-    service caller composes. For the dev/test path, the
-    `ConsoleMailSender` captures the body in memory and the
-    test reads it back via `drain()`.
+    service caller composes. For the dev/test path,
+    `ConsoleMailSender` captures the body in memory and also logs
+    it with a `DEV ONLY` prefix so local operators can read the
+    code without SMTP.
   - TODO 6 settings: the sender reads its configuration from
     `daemon_mail_sender_mode`, `daemon_mail_from_address`,
     `daemon_mail_smtp_host`, `daemon_mail_smtp_port`,
@@ -62,7 +65,9 @@ Architecture decisions followed:
 This module never:
 
   - logs plaintext codes, raw recipient addresses, or raw
-    passwords;
+    passwords from the production SMTP path; console mode is the
+    intentional local-development exception and logs only because
+    hosted production validation rejects it;
   - creates a new SMTP connection pool (each `SmtpMailSender`
     is a one-shot sender; the connection is opened and
     closed per call);
@@ -200,9 +205,12 @@ class MailSender(ABC):
         success. Raises `MailSendError` on transport failure.
 
         Implementations MUST NOT log the body or the recipient
-        address. The console sink captures both for tests; the
-        SMTP sink passes the message to smtplib and the
-        underlying smtplib logger will see the recipient
+        address in production SMTP mode. The console sink is the
+        intentional local-development exception: it captures the
+        message in memory and emits a `DEV ONLY` INFO log with the
+        rendered body so local sign-in codes are reachable without
+        a mail relay. The SMTP sink passes the message to smtplib
+        and the underlying smtplib logger will see the recipient
         address on its own (that is the SMTP protocol; the
         Daemon application logger does not log it).
         """
@@ -218,18 +226,21 @@ class ConsoleMailSender(MailSender):
     """In-process dev/test sink that captures every message in
     an in-memory queue.
 
-    This sender is the production-equivalent of a mail relay for
-    local development and unit tests. It is selected by
+    This sender is the development/test equivalent of a mail relay.
+    It is selected by
     `daemon_mail_sender_mode="console"`; production must use
     `daemon_mail_sender_mode="smtp"` (enforced by
     `validate_hosted_identity_config`).
 
     The queue is a `deque` so the test layer can read it via
     `drain()` (returns and clears the captured messages) or
-    `peek()` (returns a snapshot without clearing). Tests that
-    want to assert on the rendered email body can call
-    `drain()` after the route layer's `send` call and check
-    the captured `body_text` / `subject` / `to_address`.
+    `peek()` (returns a snapshot without clearing). In addition,
+    `send()` emits a `DEV ONLY` INFO log with the rendered body so
+    local development can read sign-in codes without opening the
+    in-memory queue manually. Tests that want to assert on the
+    rendered email body can call `drain()` after the route layer's
+    `send` call and check the captured `body_text` / `subject` /
+    `to_address`.
     """
 
     _queue: Deque[MailMessage] = field(default_factory=deque)
