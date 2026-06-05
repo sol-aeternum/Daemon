@@ -348,6 +348,16 @@ def _email_sign_in_disabled_error() -> HTTPException:
     )
 
 
+def _hosted_identity_disabled_error() -> HTTPException:
+    # Security: fail-closed for hosted email/Google when hosted mode is
+    # off. Setup/enrollment/device routes stay reachable on the same
+    # router for self-hosted/recovery flows.
+    return HTTPException(
+        status_code=404,
+        detail="hosted_identity_disabled",
+    )
+
+
 async def _load_email_challenge_lookup(conn, challenge_id: uuid.UUID):
     return await conn.fetchrow(
         """
@@ -385,6 +395,9 @@ async def email_start_endpoint(
 ) -> EmailStartResponse:
     started_at = time.monotonic()
     settings = get_settings()
+
+    if not settings.daemon_hosted_identity_enabled:
+        raise _hosted_identity_disabled_error()
 
     if not settings.daemon_email_enabled:
         raise _email_sign_in_disabled_error()
@@ -467,6 +480,9 @@ async def email_complete_endpoint(
     background_tasks: BackgroundTasks,
 ) -> EmailCompleteResponse:
     settings = get_settings()
+
+    if not settings.daemon_hosted_identity_enabled:
+        raise _hosted_identity_disabled_error()
 
     if not settings.daemon_email_enabled:
         raise _email_sign_in_disabled_error()
@@ -751,6 +767,9 @@ def _google_device_name_for_client_kind(client_kind: str) -> str:
 async def google_start_endpoint(request: Request) -> GoogleStartResponse:
     settings = get_settings()
 
+    if not settings.daemon_hosted_identity_enabled:
+        raise _hosted_identity_disabled_error()
+
     if not settings.daemon_google_enabled:
         raise _google_sign_in_disabled_error()
 
@@ -811,6 +830,9 @@ async def google_complete_endpoint(
     background_tasks: BackgroundTasks,
 ) -> GoogleCompleteResponse:
     settings = get_settings()
+
+    if not settings.daemon_hosted_identity_enabled:
+        raise _hosted_identity_disabled_error()
 
     if not settings.daemon_google_enabled:
         raise _google_sign_in_disabled_error()

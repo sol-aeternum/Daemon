@@ -108,6 +108,13 @@ services:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
+      # NEXT_PUBLIC_* vars are baked at build time. Default is
+      # self-hosted (setup-first landing); set "hosted" to switch the
+      # landing to Google / email sign-in. See .env.example.
+      - NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE=${NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE:-self-hosted}
+      # Public Google OAuth web client ID; required for the Google
+      # sign-in button on the hosted landing. Leave empty for self-hosted.
+      - NEXT_PUBLIC_GOOGLE_CLIENT_ID=${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
     volumes:
       - ./frontend:/app
       - /app/node_modules

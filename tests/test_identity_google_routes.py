@@ -358,6 +358,7 @@ async def setup_env(monkeypatch):
     monkeypatch.setenv("DAEMON_AUTH_PEPPER", "test-pepper-for-all-tests-12345678901234567890")
     monkeypatch.setenv("DAEMON_GOOGLE_CLIENT_ID", "daemon-test-client-id.googleusercontent.com")
     monkeypatch.setenv("DAEMON_SIGNUP_MODE", "open")
+    monkeypatch.setenv("DAEMON_HOSTED_IDENTITY_ENABLED", "true")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
@@ -431,6 +432,35 @@ class TestGoogleStartRoute:
 
         assert response.status_code == 404, response.text
         assert response.json() == {"detail": "google_sign_in_disabled"}
+
+    @pytest.mark.asyncio
+    async def test_start_blocks_when_hosted_identity_disabled(
+        self, route_client, monkeypatch
+    ) -> None:
+        client, _pool = route_client
+        monkeypatch.setenv("DAEMON_HOSTED_IDENTITY_ENABLED", "false")
+        monkeypatch.setenv("DAEMON_GOOGLE_ENABLED", "true")
+        get_settings.cache_clear()
+
+        def fail_get_rate_limiter(_request):
+            raise AssertionError(
+                "get_rate_limiter must not be called when hosted identity is disabled"
+            )
+
+        async def fail_issue_nonce(_self, _request):
+            raise AssertionError("issue_nonce must not be called when hosted identity is disabled")
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.get_rate_limiter", fail_get_rate_limiter
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.GoogleVerifierService.issue_nonce", fail_issue_nonce
+        )
+
+        response = await client.post("/v1/auth/google/start")
+
+        assert response.status_code == 404, response.text
+        assert response.json() == {"detail": "hosted_identity_disabled"}
 
 
 # ============================================================================
@@ -957,6 +987,71 @@ class TestGoogleCompleteRoute:
 
         assert response.status_code == 404, response.text
         assert response.json() == {"detail": "google_sign_in_disabled"}
+
+    @pytest.mark.asyncio
+    async def test_complete_blocks_when_hosted_identity_disabled(
+        self, route_client, monkeypatch
+    ) -> None:
+        client, pool = route_client
+        plaintext = "plaintext-nonce-hosted-disabled"
+        challenge_id = _seed_nonce(pool, plaintext)
+
+        monkeypatch.setenv("DAEMON_HOSTED_IDENTITY_ENABLED", "false")
+        monkeypatch.setenv("DAEMON_GOOGLE_ENABLED", "true")
+        get_settings.cache_clear()
+
+        def fail_get_rate_limiter(_request):
+            raise AssertionError(
+                "get_rate_limiter must not be called when hosted identity is disabled"
+            )
+
+        async def fail_consume(_self, _request):
+            raise AssertionError(
+                "consume_nonce must not be called when hosted identity is disabled"
+            )
+
+        async def fail_verify(_self, _request):
+            raise AssertionError(
+                "verify_id_token must not be called when hosted identity is disabled"
+            )
+
+        async def fail_claim(_self, **_kwargs):
+            raise AssertionError(
+                "claim_google_identity must not be called when hosted identity is disabled"
+            )
+
+        async def fail_issue(_conn, _request):
+            raise AssertionError(
+                "issue_device_session must not be called when hosted identity is disabled"
+            )
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.get_rate_limiter", fail_get_rate_limiter
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.GoogleVerifierService.consume_nonce", fail_consume
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.GoogleVerifierService.verify_id_token", fail_verify
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity", fail_claim
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fail_issue)
+
+        response = await client.post(
+            "/v1/auth/google/complete",
+            json={
+                "challenge_id": str(challenge_id),
+                "nonce": plaintext,
+                "id_token": "id-token",
+                "client_kind": "web",
+                "device_persistence": "private",
+            },
+        )
+
+        assert response.status_code == 404, response.text
+        assert response.json() == {"detail": "hosted_identity_disabled"}
 
 
 # ============================================================================

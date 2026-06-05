@@ -124,6 +124,8 @@ async def setup_env(monkeypatch):
     monkeypatch.setenv("DAEMON_ENVIRONMENT", "development")
     monkeypatch.setenv("DAEMON_AUTH_PEPPER", "test-pepper-for-all-tests-12345678901234567890")
     monkeypatch.setenv("DAEMON_SIGNUP_MODE", "open")
+    monkeypatch.setenv("DAEMON_HOSTED_IDENTITY_ENABLED", "true")
+    monkeypatch.setenv("DAEMON_GOOGLE_CLIENT_ID", "daemon-test-client-id.googleusercontent.com")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
@@ -281,6 +283,53 @@ class TestEmailStartRoute:
 
         assert response.status_code == 404, response.text
         assert response.json() == {"detail": "email_sign_in_disabled"}
+
+    @pytest.mark.asyncio
+    async def test_email_start_blocks_when_hosted_identity_disabled(
+        self, route_client, monkeypatch
+    ) -> None:
+        client, _pool = route_client
+        monkeypatch.setenv("DAEMON_HOSTED_IDENTITY_ENABLED", "false")
+        monkeypatch.setenv("DAEMON_EMAIL_ENABLED", "true")
+        get_settings.cache_clear()
+
+        def fail_get_rate_limiter(_request):
+            raise AssertionError(
+                "get_rate_limiter must not be called when hosted identity is disabled"
+            )
+
+        async def fail_create(_self, _request):
+            raise AssertionError(
+                "create_challenge_for_delivery must not be called when hosted identity is disabled"
+            )
+
+        def fail_get_mail_sender(_settings):
+            raise AssertionError(
+                "get_mail_sender must not be called when hosted identity is disabled"
+            )
+
+        def fail_normalize_email(_email):
+            raise AssertionError(
+                "normalize_email must not be called when hosted identity is disabled"
+            )
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.get_rate_limiter", fail_get_rate_limiter
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.EmailChallengeService.create_challenge_for_delivery",
+            fail_create,
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.get_mail_sender", fail_get_mail_sender)
+        monkeypatch.setattr("orchestrator.routes.auth_setup.normalize_email", fail_normalize_email)
+
+        response = await client.post(
+            "/v1/auth/email/start",
+            json={"email": "user@example.com"},
+        )
+
+        assert response.status_code == 404, response.text
+        assert response.json() == {"detail": "hosted_identity_disabled"}
 
 
 class TestEmailCompleteRoute:
@@ -661,6 +710,67 @@ class TestEmailCompleteRoute:
 
         assert response.status_code == 404, response.text
         assert response.json() == {"detail": "email_sign_in_disabled"}
+
+    @pytest.mark.asyncio
+    async def test_email_complete_blocks_when_hosted_identity_disabled(
+        self, route_client, monkeypatch
+    ) -> None:
+        client, pool = route_client
+        challenge_id = uuid.uuid4()
+        pool.challenge_lookup[challenge_id] = {
+            "id": challenge_id,
+            "normalized_email": "user@example.com",
+        }
+
+        monkeypatch.setenv("DAEMON_HOSTED_IDENTITY_ENABLED", "false")
+        monkeypatch.setenv("DAEMON_EMAIL_ENABLED", "true")
+        get_settings.cache_clear()
+
+        def fail_get_rate_limiter(_request):
+            raise AssertionError(
+                "get_rate_limiter must not be called when hosted identity is disabled"
+            )
+
+        async def fail_consume(_self, _request):
+            raise AssertionError(
+                "consume_challenge must not be called when hosted identity is disabled"
+            )
+
+        async def fail_claim(_self, **_kwargs):
+            raise AssertionError(
+                "claim_email_identity must not be called when hosted identity is disabled"
+            )
+
+        async def fail_issue(_conn, _request):
+            raise AssertionError(
+                "issue_device_session must not be called when hosted identity is disabled"
+            )
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.get_rate_limiter", fail_get_rate_limiter
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.EmailChallengeService.consume_challenge",
+            fail_consume,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity",
+            fail_claim,
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fail_issue)
+
+        response = await client.post(
+            "/v1/auth/email/complete",
+            json={
+                "challenge_id": str(challenge_id),
+                "code": "123456",
+                "client_kind": "web",
+                "device_persistence": "private",
+            },
+        )
+
+        assert response.status_code == 404, response.text
+        assert response.json() == {"detail": "hosted_identity_disabled"}
 
 
 class TestEmailCompleteNewDeviceNotification:

@@ -504,6 +504,7 @@ async def setup_env(monkeypatch):
     monkeypatch.setenv("DAEMON_AUTH_PEPPER", "test-pepper-for-all-tests-12345678901234567890")
     monkeypatch.setenv("DAEMON_GOOGLE_CLIENT_ID", "daemon-test-client-id.googleusercontent.com")
     monkeypatch.setenv("DAEMON_SIGNUP_MODE", "open")
+    monkeypatch.setenv("DAEMON_HOSTED_IDENTITY_ENABLED", "true")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
