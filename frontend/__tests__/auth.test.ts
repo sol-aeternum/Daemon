@@ -296,6 +296,56 @@ describe('completeEmailSignIn', () => {
     vi.restoreAllMocks();
   });
 
+  it('includes invite_token in email complete only when non-empty', async () => {
+    const mockFetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            access_token: 'acc-xyz',
+            expires_at: 1710003600,
+            token_type: 'Bearer',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    globalThis.fetch = mockFetch;
+
+    const { completeEmailSignIn } = await import('../lib/auth');
+    await completeEmailSignIn(
+      'ch-123',
+      '654321',
+      'temporary',
+      ' invite-secret ',
+    );
+    await completeEmailSignIn('ch-123', '654321', 'temporary', '   ');
+
+    const [, firstInit] = mockFetch.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(JSON.parse(firstInit.body as string)).toEqual({
+      challenge_id: 'ch-123',
+      code: '654321',
+      client_kind: 'web',
+      device_persistence: 'temporary',
+      invite_token: 'invite-secret',
+    });
+
+    const [, secondInit] = mockFetch.mock.calls[1] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(JSON.parse(secondInit.body as string)).toEqual({
+      challenge_id: 'ch-123',
+      code: '654321',
+      client_kind: 'web',
+      device_persistence: 'temporary',
+    });
+
+    vi.restoreAllMocks();
+  });
+
   it('treats backend expires_at as epoch seconds and stores ms', async () => {
     const futureEpochSeconds = Math.floor(Date.now() / 1000) + 3600;
     const mockFetch = vi.fn(() =>
@@ -454,6 +504,65 @@ describe('Google sign-in helpers', () => {
       device_persistence: 'temporary',
     });
     expect(getAccessToken()).toBe('daemon-access');
+
+    vi.restoreAllMocks();
+  });
+
+  it('includes invite_token in Google complete only when non-empty', async () => {
+    const mockFetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            access_token: 'daemon-access',
+            expires_at: 1710003600,
+            token_type: 'Bearer',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    globalThis.fetch = mockFetch;
+
+    const { completeGoogleSignIn } = await import('../lib/auth');
+    await completeGoogleSignIn(
+      'google-challenge',
+      'server-nonce',
+      'google-id-token',
+      'private',
+      ' invite-secret ',
+    );
+    await completeGoogleSignIn(
+      'google-challenge',
+      'server-nonce',
+      'google-id-token',
+      'private',
+      '',
+    );
+
+    const [, firstInit] = mockFetch.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(JSON.parse(firstInit.body as string)).toEqual({
+      challenge_id: 'google-challenge',
+      nonce: 'server-nonce',
+      id_token: 'google-id-token',
+      client_kind: 'web',
+      device_persistence: 'private',
+      invite_token: 'invite-secret',
+    });
+
+    const [, secondInit] = mockFetch.mock.calls[1] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(JSON.parse(secondInit.body as string)).toEqual({
+      challenge_id: 'google-challenge',
+      nonce: 'server-nonce',
+      id_token: 'google-id-token',
+      client_kind: 'web',
+      device_persistence: 'private',
+    });
 
     vi.restoreAllMocks();
   });

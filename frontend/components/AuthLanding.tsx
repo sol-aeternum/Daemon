@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   refreshAccessToken,
   completeSetup,
@@ -109,6 +109,7 @@ interface AuthLandingProps {
 
 export default function AuthLanding({ mode }: AuthLandingProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [isChecking, setIsChecking] = useState(true);
 
   const [setupToken, setSetupToken] = useState('');
@@ -136,6 +137,10 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
   const [devicePersistence, setDevicePersistence] = useState<
     'private' | 'temporary'
   >('private');
+  const inviteToken =
+    searchParams.get('invite_token')?.trim() ||
+    searchParams.get('invite')?.trim() ||
+    undefined;
 
   useEffect(() => {
     let cancelled = false;
@@ -239,6 +244,7 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
         startResult.nonce,
         idToken,
         devicePersistence,
+        inviteToken,
       );
       if (completeResult.success) {
         router.push('/');
@@ -385,6 +391,7 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
         emailChallengeId,
         trimmedCode,
         devicePersistence,
+        inviteToken,
       );
       if (result.success) {
         router.push('/');

@@ -8,9 +8,11 @@ import {
 } from '@testing-library/react';
 
 const mockPush = vi.fn();
+let mockSearchParams = new URLSearchParams();
 
 vi.mock('next/navigation', () => ({
   useRouter: vi.fn(() => ({ push: mockPush })),
+  useSearchParams: vi.fn(() => mockSearchParams),
 }));
 
 vi.mock('../lib/auth', () => ({
@@ -105,6 +107,7 @@ function installGoogleMock(): void {
 }
 
 beforeEach(() => {
+  mockSearchParams = new URLSearchParams();
   delete process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
   delete (window as Window & { google?: unknown }).google;
   capturedGoogleCallback = null;
@@ -222,6 +225,7 @@ describe('AuthLanding — hosted mode', () => {
         'server-nonce',
         'google-id-token',
         'private',
+        undefined,
       );
     });
     expect(mockPush).toHaveBeenCalledWith('/');
@@ -259,6 +263,44 @@ describe('AuthLanding — hosted mode', () => {
         'server-nonce',
         'google-id-token',
         'temporary',
+        undefined,
+      );
+    });
+  });
+
+  it('passes invite token from URL query to Google completion without storing it', async () => {
+    mockSearchParams = new URLSearchParams('invite=invite-secret');
+    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
+    installGoogleMock();
+    mockedStartGoogle.mockResolvedValueOnce({
+      success: true,
+      challengeId: 'google-challenge',
+      nonce: 'server-nonce',
+      expiresAt: 1234567890,
+    });
+    mockedCompleteGoogle.mockResolvedValueOnce({ success: true });
+
+    render(<AuthLanding mode="hosted" />);
+    await waitForLoadingToFinish();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /continue with google/i }),
+    );
+
+    await waitFor(() => {
+      expect(mockGoogleInitialize).toHaveBeenCalled();
+    });
+    await act(async () => {
+      capturedGoogleCallback?.({ credential: 'google-id-token' });
+    });
+
+    await waitFor(() => {
+      expect(mockedCompleteGoogle).toHaveBeenCalledWith(
+        'google-challenge',
+        'server-nonce',
+        'google-id-token',
+        'private',
+        'invite-secret',
       );
     });
   });
@@ -455,6 +497,7 @@ describe('AuthLanding — hosted mode', () => {
         'server-nonce',
         'google-id-token',
         'private',
+        undefined,
       );
     });
     expect(
@@ -719,10 +762,51 @@ describe('AuthLanding — email sign-in flow', () => {
         'ch-abc',
         '123456',
         'private',
+        undefined,
       );
     });
 
     expect(mockPush).toHaveBeenCalledWith('/');
+  });
+
+  it('passes invite token from URL query to email completion without storing it', async () => {
+    mockSearchParams = new URLSearchParams('invite_token=invite-secret');
+    mockedStartEmail.mockResolvedValueOnce({
+      success: true,
+      challengeId: 'ch-abc',
+      expiresAt: 1234567890,
+    });
+    mockedCompleteEmail.mockResolvedValueOnce({ success: true });
+
+    render(<AuthLanding mode="hosted" />);
+    await waitForLoadingToFinish();
+
+    fireEvent.change(screen.getByLabelText(/email address/i), {
+      target: { value: 'user@example.com' },
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: /send verification code/i }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/verification code/i)).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText(/verification code/i), {
+      target: { value: '123456' },
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: /verify and sign in/i }),
+    );
+
+    await waitFor(() => {
+      expect(mockedCompleteEmail).toHaveBeenCalledWith(
+        'ch-abc',
+        '123456',
+        'private',
+        'invite-secret',
+      );
+    });
   });
 
   it('maps public computer choice to temporary persistence', async () => {
@@ -765,6 +849,7 @@ describe('AuthLanding — email sign-in flow', () => {
         'ch-abc',
         '654321',
         'temporary',
+        undefined,
       );
     });
   });

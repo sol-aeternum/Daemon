@@ -475,6 +475,7 @@ export async function completeGoogleSignIn(
   nonce: string,
   idToken: string,
   devicePersistence: 'private' | 'temporary',
+  inviteToken?: string,
 ): Promise<{ success: boolean; error?: string }> {
   try {
     const response = await _fetchAuthProxy('/google/complete', {
@@ -487,6 +488,7 @@ export async function completeGoogleSignIn(
         id_token: idToken,
         client_kind: 'web',
         device_persistence: devicePersistence,
+        ...(inviteToken?.trim() ? { invite_token: inviteToken.trim() } : {}),
       }),
     });
 
@@ -526,6 +528,7 @@ export async function completeEmailSignIn(
   challengeId: string,
   code: string,
   devicePersistence: 'private' | 'temporary',
+  inviteToken?: string,
 ): Promise<{ success: boolean; error?: string }> {
   try {
     const response = await _fetchAuthProxy('/email/complete', {
@@ -537,6 +540,7 @@ export async function completeEmailSignIn(
         code,
         client_kind: 'web',
         device_persistence: devicePersistence,
+        ...(inviteToken?.trim() ? { invite_token: inviteToken.trim() } : {}),
       }),
     });
 
