@@ -155,6 +155,22 @@ class TestConsoleMailSender:
         result = await asyncio.wait_for(coro, timeout=0.5)
         assert result.sink_kind == "console"
 
+    @pytest.mark.asyncio
+    async def test_send_logs_dev_only_body(self, caplog: pytest.LogCaptureFixture) -> None:
+        sender = ConsoleMailSender()
+        with caplog.at_level("INFO"):
+            await sender.send(_sample_message(body_text="Your sign-in code is 654321."))
+        assert "DEV ONLY console mail" in caplog.text
+        assert "654321" in caplog.text
+
+
+class TestGetMailSenderConsoleMode:
+    def test_console_mode_returns_process_singleton(self) -> None:
+        settings = _settings_with_mode("console")
+        first = get_mail_sender(settings)
+        second = get_mail_sender(settings)
+        assert first is second
+
 
 # ============================================================================
 # Disabled sink

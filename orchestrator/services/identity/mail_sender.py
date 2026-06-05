@@ -242,6 +242,11 @@ class ConsoleMailSender(MailSender):
         if not message.to_address:
             raise MailSendError("ConsoleMailSender: empty to_address")
         self._queue.append(message)
+        logger.info(
+            "DEV ONLY console mail subject=%s body=%s",
+            message.subject,
+            message.body_text,
+        )
         return MailSendResult(
             sent_at=datetime.now(timezone.utc),
             sink_kind="console",
@@ -429,6 +434,9 @@ class SupportsAppState(Protocol):
     """
 
 
+_CONSOLE_MAIL_SENDER = ConsoleMailSender()
+
+
 def get_mail_sender(settings: Settings) -> MailSender:
     """Factory that returns the concrete sender for the live
     `daemon_mail_sender_mode` value.
@@ -462,7 +470,7 @@ def get_mail_sender(settings: Settings) -> MailSender:
     """
     mode = settings.daemon_mail_sender_mode
     if mode == "console":
-        return ConsoleMailSender()
+        return _CONSOLE_MAIL_SENDER
     if mode == "disabled":
         return DisabledMailSender()
     if mode == "smtp":
