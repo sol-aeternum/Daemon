@@ -33,15 +33,6 @@ function buildProxyHeaders(req: Request): Headers {
   const xForwardedProto = req.headers.get('x-forwarded-proto');
   if (xForwardedProto) headers.set('X-Forwarded-Proto', xForwardedProto);
 
-  const xForwardedFor = req.headers.get('x-forwarded-for');
-  if (xForwardedFor) headers.set('X-Forwarded-For', xForwardedFor);
-
-  const xRealIp = req.headers.get('x-real-ip');
-  if (xRealIp) headers.set('X-Real-IP', xRealIp);
-
-  const forwarded = req.headers.get('forwarded');
-  if (forwarded) headers.set('Forwarded', forwarded);
-
   const authorization = req.headers.get('authorization');
   if (authorization) headers.set('Authorization', authorization);
 
