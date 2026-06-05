@@ -710,7 +710,12 @@ class AccountService:
             # Same link already exists; refresh last_used_at and
             # return the current row. This keeps the helper
             # idempotent on repeated Google sign-ins.
-            return await self._touch_provider_link(user_id, provider, provider_subject)
+            return await self._touch_provider_link(
+                user_id,
+                provider,
+                provider_subject,
+                normalized_email_at_link,
+            )
 
         # Cross-user collision check: a different user already
         # owns this (provider, provider_subject). The schema's
@@ -769,7 +774,11 @@ class AccountService:
         return _provider_link_from_record(row)
 
     async def _touch_provider_link(
-        self, user_id: UUID, provider: str, provider_subject: str
+        self,
+        user_id: UUID,
+        provider: str,
+        provider_subject: str,
+        normalized_email_at_link: str | None = None,
     ) -> ProviderLink:
         """Refresh `last_used_at` on an existing link and return it.
 
@@ -780,7 +789,8 @@ class AccountService:
         row = await self._conn.fetchrow(
             """
             UPDATE identity_providers
-            SET last_used_at = NOW()
+            SET last_used_at = NOW(),
+                normalized_email_at_link = COALESCE($4, normalized_email_at_link)
             WHERE user_id = $1
               AND provider = $2
               AND provider_subject = $3
@@ -795,6 +805,7 @@ class AccountService:
             user_id,
             provider,
             provider_subject,
+            normalized_email_at_link,
         )
         if row is None:
             raise AccountServiceError(
@@ -924,10 +935,13 @@ class AccountService:
                 # user, the id is the existing one. Either way,
                 # it is a real user, satisfying the FK to
                 # `users(id)`.
-                await self.consume_invite(
-                    invite_id=pending_invite.id,
-                    used_by_user_id=result.user.id,
-                )
+                try:
+                    await self.consume_invite(
+                        invite_id=pending_invite.id,
+                        used_by_user_id=result.user.id,
+                    )
+                except InviteInvalidOrExpired as exc:
+                    raise InviteOnlyRejection("invite-only signup requires a valid invite") from exc
 
             return result
 
@@ -983,13 +997,17 @@ class AccountService:
             by_provider = await self.find_user_by_provider("google", google_sub)
             if by_provider is not None:
                 if by_provider.normalized_email != normalized_email:
-                    raise ProviderCollision(
-                        f"google sub {google_sub!r} is bound to user "
-                        f"{by_provider.id} with email "
-                        f"{by_provider.normalized_email!r}; "
-                        f"refusing to resolve identity claim with "
-                        f"a different normalized email "
-                        f"{normalized_email!r}"
+                    by_new_email = await self.find_user_by_normalized_email(normalized_email)
+                    if by_new_email is not None and by_new_email.id != by_provider.id:
+                        raise ProviderCollision(
+                            f"google sub {google_sub!r} is bound to user "
+                            f"{by_provider.id} and email {normalized_email!r} "
+                            f"belongs to user {by_new_email.id}; refusing "
+                            f"cross-user email reassignment"
+                        )
+                    by_provider = await self.update_user_normalized_email(
+                        by_provider.id,
+                        normalized_email,
                     )
                 await self.link_provider_identity(
                     user_id=by_provider.id,
@@ -1051,10 +1069,13 @@ class AccountService:
                 normalized_email_at_link=normalized_email,
             )
             if pending_invite is not None:
-                await self.consume_invite(
-                    invite_id=pending_invite.id,
-                    used_by_user_id=result.user.id,
-                )
+                try:
+                    await self.consume_invite(
+                        invite_id=pending_invite.id,
+                        used_by_user_id=result.user.id,
+                    )
+                except InviteInvalidOrExpired as exc:
+                    raise InviteOnlyRejection("invite-only signup requires a valid invite") from exc
             return result
 
     # ------------------------------------------------------------------

@@ -18,6 +18,7 @@ Architecture decisions followed:
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import time
 import uuid
@@ -52,6 +53,7 @@ from orchestrator.db import get_app_state
 from orchestrator.services.identity import (
     AccountService,
     DeviceNotification,
+    EmailNotVerified,
     EmailChallengeConsumeRequest,
     EmailChallengeInvalid,
     EmailChallengeIssueRequest,
@@ -70,6 +72,7 @@ from orchestrator.services.identity import (
     IssueSessionRequest,
     MailMessage,
     MailSenderConfigError,
+    ProviderCollision,
     RateLimitPolicy,
     ScopeKind,
     SignupDisabled,
@@ -160,6 +163,7 @@ class EmailCompleteRequest(BaseModel):
     code: str
     client_kind: str
     device_persistence: str = "private"
+    invite_token: str | None = None
 
 
 class EmailCompleteResponse(BaseModel):
@@ -201,17 +205,26 @@ async def _find_or_create_singleton_user(conn) -> uuid.UUID:
     )
 
 
+async def _ensure_singleton_tenant(conn, user_id: uuid.UUID) -> uuid.UUID:
+    account_service = AccountService(cast(SupportsIdentityQueries, conn))
+    tenant, _ = await account_service.ensure_personal_tenant(user_id)
+    await account_service.ensure_owner_membership(tenant.id, user_id)
+    return tenant.id
+
+
 async def _create_first_device_and_session(
     conn,
     user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
 ) -> tuple[str, str]:
     device_id = await conn.fetchval(
         """
-        INSERT INTO devices (user_id, display_name, platform)
-        VALUES ($1, $2, $3)
+        INSERT INTO devices (user_id, tenant_id, display_name, platform)
+        VALUES ($1, $2, $3, $4)
         RETURNING id
         """,
         user_id,
+        tenant_id,
         "First Device",
         "web",
     )
@@ -223,16 +236,17 @@ async def _create_first_device_and_session(
     await conn.execute(
         """
         INSERT INTO sessions (
-            user_id, device_id, client_kind,
+            user_id, device_id, client_kind, tenant_id,
             access_token_hash, access_expires_at,
             refresh_token_hash, refresh_expires_at,
             created_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         """,
         user_id,
         device_id,
         "web",
+        tenant_id,
         hash_token(access_token),
         access_expires,
         hash_token(refresh_token),
@@ -369,18 +383,13 @@ async def _load_email_challenge_lookup(conn, challenge_id: uuid.UUID):
     )
 
 
-async def _load_active_invite_verifier_hash(conn, normalized_email: str) -> str | None:
-    value = await conn.fetchval(
-        """
-        SELECT token_verifier_hash
-        FROM signup_invites
-        WHERE normalized_email = $1
-          AND status = 'active'
-          AND expires_at > NOW()
-        """,
-        normalized_email,
-    )
-    return None if value is None else str(value)
+def _compute_invite_verifier_hash(invite_token: str | None, *, pepper: str) -> str | None:
+    if invite_token is None:
+        return None
+    normalized = invite_token.strip()
+    if not normalized:
+        return None
+    return hmac.new(pepper.encode("utf-8"), normalized.encode("utf-8"), "sha256").hexdigest()
 
 
 def _device_name_for_client_kind(client_kind: str) -> str:
@@ -533,6 +542,7 @@ async def email_complete_endpoint(
     except ValueError:
         raise _email_complete_failure()
 
+    pepper = validate_and_get_pepper(settings)
     limiter = get_rate_limiter(request)
 
     async with app_state.db_pool.acquire() as conn:
@@ -567,12 +577,10 @@ async def email_complete_endpoint(
         except EmailChallengeUnavailable as exc:
             raise HTTPException(status_code=503, detail="service_unavailable") from exc
 
-        invite_token_verifier_hash: str | None = None
-        if settings.daemon_signup_mode == "invite_only":
-            invite_token_verifier_hash = await _load_active_invite_verifier_hash(
-                conn,
-                consumed_challenge.normalized_email,
-            )
+        invite_token_verifier_hash = _compute_invite_verifier_hash(
+            body.invite_token,
+            pepper=pepper,
+        )
 
         account_service = AccountService(cast(SupportsIdentityQueries, conn))
         try:
@@ -629,7 +637,10 @@ async def email_complete_endpoint(
         except CookiePolicyError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-        if body.device_persistence == "temporary":
+        if (
+            body.device_persistence == "temporary"
+            and issued_session.refresh_max_age_seconds is None
+        ):
             cookie_headers = build_temporary_refresh_cookie(
                 value=issued_session.refresh_token,
                 config=cookie_config,
@@ -709,6 +720,7 @@ class GoogleCompleteRequest(BaseModel):
     id_token: str
     client_kind: str
     device_persistence: str = "private"
+    invite_token: str | None = None
 
 
 class GoogleCompleteResponse(BaseModel):
@@ -875,6 +887,7 @@ async def google_complete_endpoint(
     except (ValueError, AttributeError):
         raise _google_complete_failure()
 
+    pepper = validate_and_get_pepper(settings)
     limiter = get_rate_limiter(request)
 
     async with app_state.db_pool.acquire() as conn:
@@ -912,12 +925,10 @@ async def google_complete_endpoint(
         except GoogleVerifierUnavailable as exc:
             raise HTTPException(status_code=503, detail="google_unavailable") from exc
 
-        invite_token_verifier_hash: str | None = None
-        if settings.daemon_signup_mode == "invite_only":
-            invite_token_verifier_hash = await _load_active_invite_verifier_hash(
-                conn,
-                verified.normalized_email,
-            )
+        invite_token_verifier_hash = _compute_invite_verifier_hash(
+            body.invite_token,
+            pepper=pepper,
+        )
 
         account_service = AccountService(cast(SupportsIdentityQueries, conn))
         try:
@@ -928,7 +939,7 @@ async def google_complete_endpoint(
                 signup_mode=settings.daemon_signup_mode,
                 invite_token_verifier_hash=invite_token_verifier_hash,
             )
-        except (InviteOnlyRejection, SignupDisabled):
+        except (EmailNotVerified, InviteOnlyRejection, ProviderCollision, SignupDisabled):
             raise _google_complete_failure()
 
         async with conn.transaction():
@@ -977,7 +988,10 @@ async def google_complete_endpoint(
         except CookiePolicyError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-        if body.device_persistence == "temporary":
+        if (
+            body.device_persistence == "temporary"
+            and issued_session.refresh_max_age_seconds is None
+        ):
             cookie_headers = build_temporary_refresh_cookie(
                 value=issued_session.refresh_token,
                 config=cookie_config,
@@ -1075,7 +1089,12 @@ async def setup_endpoint(
                 )
 
             user_id = await _find_or_create_singleton_user(conn)
-            access_token, refresh_token = await _create_first_device_and_session(conn, user_id)
+            tenant_id = await _ensure_singleton_tenant(conn, user_id)
+            access_token, refresh_token = await _create_first_device_and_session(
+                conn,
+                user_id,
+                tenant_id,
+            )
 
     app_state.setup_token_hash = None
 
@@ -1511,7 +1530,7 @@ async def refresh_endpoint(
             # the invalid-token path.
             pre_row = await conn.fetchrow(
                 """
-                SELECT client_kind, device_persistence
+                SELECT client_kind, device_persistence, tenant_id
                 FROM sessions
                 WHERE refresh_token_hash = $1
                   AND refresh_consumed_at IS NULL
@@ -1552,7 +1571,7 @@ async def refresh_endpoint(
                 # Zero rows: check second lookup to distinguish consumed-reuse from other invalid
                 existing_row = await conn.fetchrow(
                     """
-                    SELECT id, user_id, device_id, client_kind, device_persistence,
+                    SELECT id, user_id, device_id, client_kind, device_persistence, tenant_id,
                            refresh_expires_at, refresh_consumed_at
                     FROM sessions
                     WHERE refresh_token_hash = $1
@@ -1652,17 +1671,18 @@ async def refresh_endpoint(
                 await conn.execute(
                     """
                     INSERT INTO sessions (
-                        user_id, device_id, client_kind, device_persistence,
+                        user_id, device_id, client_kind, device_persistence, tenant_id,
                         access_token_hash, access_expires_at,
                         refresh_token_hash, refresh_expires_at,
                         created_at
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                     """,
                     consumed_row["user_id"],
                     consumed_row["device_id"],
                     consumed_row["client_kind"],
                     stored_persistence,
+                    consumed_row["tenant_id"],
                     hash_token(access_token),
                     access_expires,
                     hash_token(refresh_token),

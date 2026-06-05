@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+import hmac
 from typing import Any, cast
 
 import pytest
@@ -472,7 +473,82 @@ class TestEmailCompleteRoute:
         cookie_header = response.headers.get("set-cookie", "")
         assert "__Host-daemon_refresh=refresh-token" in cookie_header
         assert "HttpOnly" in cookie_header
-        assert "Max-Age" not in cookie_header
+        assert "Max-Age=600" in cookie_header
+
+    @pytest.mark.asyncio
+    async def test_invite_only_uses_caller_supplied_invite_token(self, route_client, monkeypatch):
+        client, pool = route_client
+        challenge_id = uuid.uuid4()
+        pool.challenge_lookup[challenge_id] = {
+            "id": challenge_id,
+            "normalized_email": "user@example.com",
+        }
+        pool.invite_hash_by_email["user@example.com"] = "stored-hash-must-not-be-reused"
+        captured_claims = []
+
+        monkeypatch.setenv("DAEMON_SIGNUP_MODE", "invite_only")
+        get_settings.cache_clear()
+
+        async def fake_consume(_self, request):
+            return EmailChallengeRow(
+                id=request.challenge_id,
+                normalized_email="user@example.com",
+                attempts_remaining=5,
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+                consumed_at=datetime.now(timezone.utc),
+                locked_at=None,
+                created_at=datetime.now(timezone.utc),
+            )
+
+        async def fake_claim(_self, **kwargs):
+            captured_claims.append(kwargs)
+            return _claim_result()
+
+        async def fake_issue(_conn, _request):
+            return _issued_session(client_kind="web", refresh_max_age_seconds=600)
+
+        async def fake_enforce_rate_limit(**_kwargs):
+            return None
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.EmailChallengeService.consume_challenge",
+            fake_consume,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity",
+            fake_claim,
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+
+        response = await client.post(
+            "/v1/auth/email/complete",
+            json={
+                "challenge_id": str(challenge_id),
+                "code": "123456",
+                "client_kind": "web",
+                "device_persistence": "temporary",
+                "invite_token": "invite-secret",
+            },
+            headers={
+                "Origin": "https://app.daemon.ai",
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        expected_hash = hmac.new(
+            b"test-pepper-for-all-tests-12345678901234567890",
+            b"invite-secret",
+            "sha256",
+        ).hexdigest()
+        assert captured_claims[0]["invite_token_verifier_hash"] == expected_hash
+        assert (
+            captured_claims[0]["invite_token_verifier_hash"]
+            != pool.invite_hash_by_email["user@example.com"]
+        )
 
     @pytest.mark.asyncio
     async def test_native_returns_refresh_json_and_no_cookie(self, route_client, monkeypatch):

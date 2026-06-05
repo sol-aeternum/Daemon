@@ -201,6 +201,7 @@ def _make_session(
     session_revoked=False,
     device_revoked=False,
     device_persistence="private",
+    tenant_id=None,
 ):
     now = datetime.now(timezone.utc)
     if expired:
@@ -213,6 +214,7 @@ def _make_session(
         "device_id": device_id,
         "client_kind": client_kind,
         "device_persistence": device_persistence,
+        "tenant_id": tenant_id,
         "refresh_token_hash": token_hash,
         "refresh_expires_at": refresh_expires_at,
         "refresh_consumed_at": now if consumed else None,
@@ -225,9 +227,16 @@ class TestWebRefreshRotatesCookie:
     async def test_web_refresh_rotates_cookie(self, setup_env, monkeypatch):
         user_id = SINGLETON_ID
         device_id = uuid.uuid4()
+        tenant_id = uuid.uuid4()
         refresh_token = generate_token()
         refresh_hash = hash_token(refresh_token)
-        old_session = _make_session(refresh_hash, user_id, device_id, "web")
+        old_session = _make_session(
+            refresh_hash,
+            user_id,
+            device_id,
+            "web",
+            tenant_id=tenant_id,
+        )
         devices = {str(device_id): {"id": device_id, "user_id": user_id, "revoked_at": None}}
         mock_pool = MockPool(sessions={refresh_hash: old_session}, devices=devices)
         original = make_mock_init(mock_pool)
@@ -257,6 +266,9 @@ class TestWebRefreshRotatesCookie:
                     updated = mock_pool._sessions.get(refresh_hash)
                     assert updated is not None
                     assert updated["refresh_consumed_at"] is not None
+                    assert len(mock_pool._captured_inserts) == 1
+                    inserted = mock_pool._captured_inserts[0]["args"]
+                    assert inserted[4] == tenant_id
         finally:
             restore_init(original)
 
@@ -855,11 +867,11 @@ class TestRefreshPreservesDevicePersistence:
 
                     assert response.status_code == 200, response.text
                     assert len(mock_pool._captured_inserts) >= 1
-                    # refresh_expires_at is the 7th positional arg
+                    # refresh_expires_at is the 8th positional arg
                     # (user_id, device_id, client_kind, device_persistence,
-                    #  access_token_hash, access_expires_at,
+                    #  tenant_id, access_token_hash, access_expires_at,
                     #  refresh_token_hash, refresh_expires_at, created_at).
-                    refresh_expires_at = mock_pool._captured_inserts[0]["args"][7]
+                    refresh_expires_at = mock_pool._captured_inserts[0]["args"][8]
                     delta = (refresh_expires_at - datetime.now(timezone.utc)).total_seconds()
                     # Defensive 1-hour DB cap (TEMPORARY_DB_FALLBACK_TTL_SECONDS),
                     # not the 90-day private cap.
@@ -903,7 +915,7 @@ class TestRefreshPreservesDevicePersistence:
                     insert_args = mock_pool._captured_inserts[0]["args"]
                     assert insert_args[2] == "web"
                     assert insert_args[3] == "private"
-                    refresh_expires_at = insert_args[7]
+                    refresh_expires_at = insert_args[8]
                     delta = (refresh_expires_at - datetime.now(timezone.utc)).total_seconds()
                     assert 90 * 86400 - 60 <= delta <= 90 * 86400 + 60
         finally:

@@ -33,13 +33,26 @@ class MockConn:
         if "INSERT INTO users" in sql:
             self._pool._singleton_exists = True
             return SINGLETON_ID
+        if "INSERT INTO tenants" in sql:
+            if self._pool._tenant_id is None:
+                self._pool._tenant_id = uuid.uuid4()
+                return self._pool._tenant_id
+            return None
+        if "SELECT role" in sql and "tenant_memberships" in sql:
+            return "owner" if self._pool._membership_exists else None
         if "INSERT INTO devices" in sql:
             self._pool._device_created = True
             self._pool._active_count = 1
+            self._pool._device_insert_args = args
             return uuid.uuid4()
         if "INSERT INTO sessions" in sql:
             self._session_insert_args = args
             return uuid.uuid4()
+        if "INSERT INTO tenant_memberships" in sql:
+            if self._pool._membership_exists:
+                return None
+            self._pool._membership_exists = True
+            return "owner"
         return None
 
     async def execute(self, sql, *args):
@@ -52,6 +65,16 @@ class MockConn:
         return None
 
     async def fetchrow(self, sql, *args):
+        if (
+            "SELECT id, owner_user_id, kind, name FROM tenants" in sql
+            and self._pool._tenant_id is not None
+        ):
+            return {
+                "id": self._pool._tenant_id,
+                "owner_user_id": SINGLETON_ID,
+                "kind": "personal",
+                "name": "Personal",
+            }
         return None
 
     @asynccontextmanager
@@ -71,6 +94,9 @@ class MockPool:
         self._closed = False
         self._lock_acquired = False
         self._device_created = False
+        self._device_insert_args = None
+        self._tenant_id = None
+        self._membership_exists = False
         self._connections = []
 
     async def fetchval(self, sql, *args):
@@ -231,6 +257,10 @@ class TestSetupHappyPath:
                     assert session_insert_args[2] == "web", (
                         f"Expected client_kind='web', got {session_insert_args[2]}"
                     )
+                    assert mock_pool._tenant_id is not None
+                    assert mock_pool._device_insert_args is not None
+                    assert mock_pool._device_insert_args[1] == mock_pool._tenant_id
+                    assert session_insert_args[3] == mock_pool._tenant_id
         finally:
             restore_init(original)
 

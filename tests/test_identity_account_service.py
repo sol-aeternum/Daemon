@@ -447,6 +447,7 @@ class _IdentityMockConn:
             user_id = args[0]
             provider = args[1]
             subject = args[2]
+            normalized_email_at_link = args[3] if len(args) > 3 else None
             now = datetime.now(timezone.utc)
             for link in self._store["identity_providers"]:
                 if (
@@ -455,6 +456,8 @@ class _IdentityMockConn:
                     and link["provider_subject"] == subject
                 ):
                     link["last_used_at"] = now
+                    if normalized_email_at_link is not None:
+                        link["normalized_email_at_link"] = normalized_email_at_link
                     return _Record(link)
             return None
         if q.startswith("UPDATE signup_invites SET status"):
@@ -1063,6 +1066,71 @@ class TestClaimGoogleIdentity:
         assert len(conn._store["tenant_memberships"]) == 1
 
     @pytest.mark.asyncio
+    async def test_reuses_existing_google_link_after_verified_email_change(
+        self, service: AccountService, conn: _IdentityMockConn
+    ) -> None:
+        uid = conn.add_user(
+            normalized_email="old@example.com",
+            email_verified_at=datetime.now(timezone.utc),
+        )
+        conn.add_provider_link(
+            user_id=uid,
+            provider="google",
+            provider_subject="known-sub",
+            normalized_email_at_link="old@example.com",
+        )
+
+        result = await service.claim_google_identity(
+            google_sub="known-sub",
+            normalized_email="new@example.com",
+            email_verified=True,
+            signup_mode="open",
+            invite_token_verifier_hash=None,
+        )
+
+        assert result.user.id == uid
+        assert result.user.normalized_email == "new@example.com"
+        stored_user = next(u for u in conn._store["users"] if u["id"] == uid)
+        assert stored_user["normalized_email"] == "new@example.com"
+        links = conn.all_provider_links(uid)
+        assert len(links) == 1
+        assert links[0].provider_subject == "known-sub"
+        assert links[0].normalized_email_at_link == "new@example.com"
+
+    @pytest.mark.asyncio
+    async def test_reuses_existing_google_link_rejects_cross_user_email_collision(
+        self, service: AccountService, conn: _IdentityMockConn
+    ) -> None:
+        linked_uid = conn.add_user(
+            normalized_email="old@example.com",
+            email_verified_at=datetime.now(timezone.utc),
+        )
+        conn.add_provider_link(
+            user_id=linked_uid,
+            provider="google",
+            provider_subject="known-sub",
+            normalized_email_at_link="old@example.com",
+        )
+        other_uid = conn.add_user(
+            normalized_email="new@example.com",
+            email_verified_at=datetime.now(timezone.utc),
+        )
+
+        with pytest.raises(ProviderCollision):
+            await service.claim_google_identity(
+                google_sub="known-sub",
+                normalized_email="new@example.com",
+                email_verified=True,
+                signup_mode="open",
+                invite_token_verifier_hash=None,
+            )
+
+        stored_linked_user = next(u for u in conn._store["users"] if u["id"] == linked_uid)
+        assert stored_linked_user["normalized_email"] == "old@example.com"
+        stored_other_user = next(u for u in conn._store["users"] if u["id"] == other_uid)
+        assert stored_other_user["normalized_email"] == "new@example.com"
+
+    @pytest.mark.asyncio
     async def test_links_to_existing_verified_user(
         self, service: AccountService, conn: _IdentityMockConn
     ) -> None:
@@ -1137,6 +1205,10 @@ class TestClaimGoogleIdentity:
             user_id=first_uid,
             provider="google",
             provider_subject="taken-sub",
+        )
+        conn.add_user(
+            normalized_email="second@example.com",
+            email_verified_at=datetime.now(timezone.utc),
         )
         with pytest.raises(ProviderCollision):
             await service.claim_google_identity(
