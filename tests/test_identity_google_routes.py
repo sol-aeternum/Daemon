@@ -121,11 +121,17 @@ class GoogleRouteMockConn:
 
     @asynccontextmanager
     async def transaction(self):
+        snapshot = list(self._pool.claim_markers)
+        self._pool.transaction_depth += 1
         self._pool.transaction_stack.append(True)
         try:
             yield self
+        except Exception:
+            self._pool.claim_markers = snapshot
+            raise
         finally:
             self._pool.transaction_stack.pop()
+            self._pool.transaction_depth -= 1
 
     # ----- nonce-table handlers -----
 
@@ -205,6 +211,8 @@ class GoogleRouteMockPool:
         self.invite_hash_by_email: dict[str, str] = {}
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self.transaction_stack: list[bool] = []
+        self.transaction_depth = 0
+        self.claim_markers: list[str] = []
 
     async def fetchval(self, query: str, *args):
         return 0
@@ -532,7 +540,7 @@ class TestGoogleCompleteRoute:
             captured_policies.extend(policies)
 
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_google_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity_in_transaction",
             fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
@@ -603,7 +611,7 @@ class TestGoogleCompleteRoute:
             return None
 
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_google_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity_in_transaction",
             fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
@@ -657,7 +665,7 @@ class TestGoogleCompleteRoute:
             return None
 
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_google_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity_in_transaction",
             fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
@@ -694,6 +702,101 @@ class TestGoogleCompleteRoute:
         )
 
     @pytest.mark.asyncio
+    async def test_claim_and_issue_run_inside_one_transaction(self, route_client, monkeypatch):
+        client, pool = route_client
+        plaintext = "plaintext-nonce-tx"
+        challenge_id = _seed_nonce(pool, plaintext)
+        _install_stub_verifier(monkeypatch, claims=_good_claims(nonce=plaintext))
+
+        async def fake_claim(_self, **_kwargs):
+            assert pool.transaction_depth == 1
+            pool.claim_markers.append("google-claim")
+            return _claim_result()
+
+        async def fake_issue(_conn, _request):
+            assert pool.transaction_depth == 1
+            assert pool.claim_markers == ["google-claim"]
+            return _issued_session(client_kind="web", refresh_max_age_seconds=600)
+
+        async def fake_enforce_rate_limit(**_kwargs):
+            return None
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity_in_transaction",
+            fake_claim,
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+
+        response = await client.post(
+            "/v1/auth/google/complete",
+            json={
+                "challenge_id": str(challenge_id),
+                "nonce": plaintext,
+                "id_token": "id-token",
+                "client_kind": "web",
+                "device_persistence": "temporary",
+            },
+            headers={
+                "Origin": "https://app.daemon.ai",
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        assert pool.transaction_depth == 0
+        assert pool.claim_markers == ["google-claim"]
+
+    @pytest.mark.asyncio
+    async def test_session_failure_rolls_back_claim_side_effects(self, route_client, monkeypatch):
+        client, pool = route_client
+        plaintext = "plaintext-nonce-rollback"
+        challenge_id = _seed_nonce(pool, plaintext)
+        _install_stub_verifier(monkeypatch, claims=_good_claims(nonce=plaintext))
+
+        async def fake_claim(_self, **_kwargs):
+            assert pool.transaction_depth == 1
+            pool.claim_markers.append("google-claim")
+            return _claim_result()
+
+        async def failing_issue(_conn, _request):
+            assert pool.transaction_depth == 1
+            raise RuntimeError("session issuance failed")
+
+        async def fake_enforce_rate_limit(**_kwargs):
+            return None
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity_in_transaction",
+            fake_claim,
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", failing_issue)
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+
+        with pytest.raises(RuntimeError, match="session issuance failed"):
+            await client.post(
+                "/v1/auth/google/complete",
+                json={
+                    "challenge_id": str(challenge_id),
+                    "nonce": plaintext,
+                    "id_token": "id-token",
+                    "client_kind": "web",
+                    "device_persistence": "temporary",
+                },
+                headers={
+                    "Origin": "https://app.daemon.ai",
+                    "Sec-Fetch-Site": "same-origin",
+                },
+            )
+
+        assert pool.transaction_depth == 0
+        assert pool.claim_markers == []
+
+    @pytest.mark.asyncio
     async def test_native_returns_refresh_json_and_no_cookie(self, route_client, monkeypatch):
         client, pool = route_client
         plaintext = "plaintext-nonce-CCC"
@@ -711,7 +814,7 @@ class TestGoogleCompleteRoute:
             return None
 
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_google_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity_in_transaction",
             fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
@@ -762,7 +865,7 @@ class TestGoogleCompleteRoute:
             return None
 
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_google_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity_in_transaction",
             fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
@@ -817,7 +920,7 @@ class TestGoogleCompleteRoute:
             return None
 
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_google_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity_in_transaction",
             fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
@@ -927,7 +1030,7 @@ class TestGoogleCompleteRoute:
             fake_verify,
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_google_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity_in_transaction",
             fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
@@ -1038,7 +1141,8 @@ class TestGoogleCompleteRoute:
             "orchestrator.routes.auth_setup.GoogleVerifierService.verify_id_token", fail_verify
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_google_identity", fail_claim
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity_in_transaction",
+            fail_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fail_issue)
 
@@ -1103,7 +1207,8 @@ class TestGoogleCompleteRoute:
             "orchestrator.routes.auth_setup.GoogleVerifierService.verify_id_token", fail_verify
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_google_identity", fail_claim
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity_in_transaction",
+            fail_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fail_issue)
 
@@ -1213,7 +1318,7 @@ class TestGoogleCompleteNewDeviceNotification:
             fake_verify,
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_google_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity_in_transaction",
             fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
@@ -1282,7 +1387,8 @@ class TestGoogleCompleteNewDeviceNotification:
             fail_verify,
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_google_identity", fail_claim
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity_in_transaction",
+            fail_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fail_issue)
         monkeypatch.setattr(
@@ -1352,7 +1458,8 @@ class TestGoogleCompleteNewDeviceNotification:
             fake_verify,
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_google_identity", fail_claim
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity_in_transaction",
+            fail_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fail_issue)
         monkeypatch.setattr(
@@ -1428,7 +1535,7 @@ class TestGoogleCompleteNewDeviceNotification:
             fake_verify,
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_google_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity_in_transaction",
             fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fail_issue)
@@ -1511,7 +1618,7 @@ class TestGoogleCompleteNewDeviceNotification:
             fake_verify,
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_google_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity_in_transaction",
             fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)

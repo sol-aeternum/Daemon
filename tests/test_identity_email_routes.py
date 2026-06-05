@@ -53,13 +53,23 @@ class RouteMockConn:
 
     @asynccontextmanager
     async def transaction(self):
-        yield self
+        snapshot = list(self._pool.claim_markers)
+        self._pool.transaction_depth += 1
+        try:
+            yield self
+        except Exception:
+            self._pool.claim_markers = snapshot
+            raise
+        finally:
+            self._pool.transaction_depth -= 1
 
 
 class RouteMockPool:
     def __init__(self) -> None:
         self.challenge_lookup: dict[uuid.UUID, dict[str, object]] = {}
         self.invite_hash_by_email: dict[str, str] = {}
+        self.transaction_depth = 0
+        self.claim_markers: list[str] = []
 
     async def fetchval(self, query: str, *args):
         return 0
@@ -375,7 +385,7 @@ class TestEmailCompleteRoute:
             fake_consume,
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_email_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity_in_transaction",
             fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
@@ -445,7 +455,7 @@ class TestEmailCompleteRoute:
             fake_consume,
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_email_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity_in_transaction",
             fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
@@ -515,7 +525,7 @@ class TestEmailCompleteRoute:
             fake_consume,
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_email_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity_in_transaction",
             fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
@@ -551,6 +561,133 @@ class TestEmailCompleteRoute:
         )
 
     @pytest.mark.asyncio
+    async def test_claim_and_issue_run_inside_one_transaction(self, route_client, monkeypatch):
+        client, pool = route_client
+        challenge_id = uuid.uuid4()
+        pool.challenge_lookup[challenge_id] = {
+            "id": challenge_id,
+            "normalized_email": "user@example.com",
+        }
+
+        async def fake_consume(_self, request):
+            return EmailChallengeRow(
+                id=request.challenge_id,
+                normalized_email="user@example.com",
+                attempts_remaining=5,
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+                consumed_at=datetime.now(timezone.utc),
+                locked_at=None,
+                created_at=datetime.now(timezone.utc),
+            )
+
+        async def fake_claim(_self, **_kwargs):
+            assert pool.transaction_depth == 1
+            pool.claim_markers.append("email-claim")
+            return _claim_result()
+
+        async def fake_issue(_conn, _request):
+            assert pool.transaction_depth == 1
+            assert pool.claim_markers == ["email-claim"]
+            return _issued_session(client_kind="web", refresh_max_age_seconds=600)
+
+        async def fake_enforce_rate_limit(**_kwargs):
+            return None
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.EmailChallengeService.consume_challenge",
+            fake_consume,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity_in_transaction",
+            fake_claim,
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+
+        response = await client.post(
+            "/v1/auth/email/complete",
+            json={
+                "challenge_id": str(challenge_id),
+                "code": "123456",
+                "client_kind": "web",
+                "device_persistence": "temporary",
+            },
+            headers={
+                "Origin": "https://app.daemon.ai",
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        assert pool.transaction_depth == 0
+        assert pool.claim_markers == ["email-claim"]
+
+    @pytest.mark.asyncio
+    async def test_session_failure_rolls_back_claim_side_effects(self, route_client, monkeypatch):
+        client, pool = route_client
+        challenge_id = uuid.uuid4()
+        pool.challenge_lookup[challenge_id] = {
+            "id": challenge_id,
+            "normalized_email": "user@example.com",
+        }
+
+        async def fake_consume(_self, request):
+            return EmailChallengeRow(
+                id=request.challenge_id,
+                normalized_email="user@example.com",
+                attempts_remaining=5,
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+                consumed_at=datetime.now(timezone.utc),
+                locked_at=None,
+                created_at=datetime.now(timezone.utc),
+            )
+
+        async def fake_claim(_self, **_kwargs):
+            assert pool.transaction_depth == 1
+            pool.claim_markers.append("email-claim")
+            return _claim_result()
+
+        async def failing_issue(_conn, _request):
+            assert pool.transaction_depth == 1
+            raise RuntimeError("session issuance failed")
+
+        async def fake_enforce_rate_limit(**_kwargs):
+            return None
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.EmailChallengeService.consume_challenge",
+            fake_consume,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity_in_transaction",
+            fake_claim,
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", failing_issue)
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+
+        with pytest.raises(RuntimeError, match="session issuance failed"):
+            await client.post(
+                "/v1/auth/email/complete",
+                json={
+                    "challenge_id": str(challenge_id),
+                    "code": "123456",
+                    "client_kind": "web",
+                    "device_persistence": "temporary",
+                },
+                headers={
+                    "Origin": "https://app.daemon.ai",
+                    "Sec-Fetch-Site": "same-origin",
+                },
+            )
+
+        assert pool.transaction_depth == 0
+        assert pool.claim_markers == []
+
+    @pytest.mark.asyncio
     async def test_native_returns_refresh_json_and_no_cookie(self, route_client, monkeypatch):
         client, pool = route_client
         challenge_id = uuid.uuid4()
@@ -584,7 +721,7 @@ class TestEmailCompleteRoute:
             fake_consume,
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_email_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity_in_transaction",
             fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
@@ -661,7 +798,7 @@ class TestEmailCompleteRoute:
             fake_consume,
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_email_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity_in_transaction",
             fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
@@ -769,7 +906,7 @@ class TestEmailCompleteRoute:
             fail_consume,
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_email_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity_in_transaction",
             fail_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fail_issue)
@@ -830,7 +967,7 @@ class TestEmailCompleteRoute:
             fail_consume,
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_email_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity_in_transaction",
             fail_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fail_issue)
@@ -903,7 +1040,7 @@ class TestEmailCompleteNewDeviceNotification:
             fake_consume,
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_email_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity_in_transaction",
             fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
@@ -967,7 +1104,8 @@ class TestEmailCompleteNewDeviceNotification:
             fake_consume,
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_email_identity", fail_claim
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity_in_transaction",
+            fail_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fail_issue)
         monkeypatch.setattr(
@@ -1035,7 +1173,8 @@ class TestEmailCompleteNewDeviceNotification:
             fake_consume,
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_email_identity", fake_claim
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity_in_transaction",
+            fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fail_issue)
         monkeypatch.setattr(
@@ -1115,7 +1254,7 @@ class TestEmailCompleteNewDeviceNotification:
             fake_consume,
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_email_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity_in_transaction",
             fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)

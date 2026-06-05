@@ -544,6 +544,15 @@ async def email_complete_endpoint(
 
     pepper = validate_and_get_pepper(settings)
     limiter = get_rate_limiter(request)
+    cookie_config: RefreshCookieConfig | None = None
+    if body.client_kind == "web":
+        try:
+            cookie_config = make_refresh_cookie_config(
+                cookie_secure=settings.daemon_cookie_secure,
+                environment=settings.daemon_environment,
+            )
+        except CookiePolicyError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     async with app_state.db_pool.acquire() as conn:
         challenge_lookup = await _load_email_challenge_lookup(conn, challenge_uuid)
@@ -565,35 +574,35 @@ async def email_complete_endpoint(
         challenge_service = EmailChallengeService(
             cast(SupportsEmailChallengeQueries, conn), settings
         )
-        try:
-            consumed_challenge: EmailChallengeRow = await challenge_service.consume_challenge(
-                EmailChallengeConsumeRequest(
-                    challenge_id=challenge_uuid,
-                    plaintext_code=normalized_code,
-                )
-            )
-        except (EmailChallengeInvalid, EmailChallengeLocked):
-            raise _email_complete_failure()
-        except EmailChallengeUnavailable as exc:
-            raise HTTPException(status_code=503, detail="service_unavailable") from exc
-
         invite_token_verifier_hash = _compute_invite_verifier_hash(
             body.invite_token,
             pepper=pepper,
         )
-
         account_service = AccountService(cast(SupportsIdentityQueries, conn))
-        try:
-            claim_result = await account_service.claim_email_identity(
-                normalized_email=consumed_challenge.normalized_email,
-                email_verified_at=consumed_challenge.consumed_at or datetime.now(timezone.utc),
-                signup_mode=settings.daemon_signup_mode,
-                invite_token_verifier_hash=invite_token_verifier_hash,
-            )
-        except (InviteOnlyRejection, SignupDisabled):
-            raise _email_complete_failure()
 
         async with conn.transaction():
+            try:
+                consumed_challenge: EmailChallengeRow = await challenge_service.consume_challenge(
+                    EmailChallengeConsumeRequest(
+                        challenge_id=challenge_uuid,
+                        plaintext_code=normalized_code,
+                    )
+                )
+            except (EmailChallengeInvalid, EmailChallengeLocked):
+                raise _email_complete_failure()
+            except EmailChallengeUnavailable as exc:
+                raise HTTPException(status_code=503, detail="service_unavailable") from exc
+
+            try:
+                claim_result = await account_service.claim_email_identity_in_transaction(
+                    normalized_email=consumed_challenge.normalized_email,
+                    email_verified_at=consumed_challenge.consumed_at or datetime.now(timezone.utc),
+                    signup_mode=settings.daemon_signup_mode,
+                    invite_token_verifier_hash=invite_token_verifier_hash,
+                )
+            except (InviteOnlyRejection, SignupDisabled):
+                raise _email_complete_failure()
+
             issued_session = await issue_device_session(
                 cast(SupportsSessionIssuanceQueries, conn),
                 IssueSessionRequest(
@@ -629,13 +638,7 @@ async def email_complete_endpoint(
         )
 
     if body.client_kind == "web":
-        try:
-            cookie_config = make_refresh_cookie_config(
-                cookie_secure=settings.daemon_cookie_secure,
-                environment=settings.daemon_environment,
-            )
-        except CookiePolicyError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        assert cookie_config is not None
 
         if (
             body.device_persistence == "temporary"
@@ -889,6 +892,15 @@ async def google_complete_endpoint(
 
     pepper = validate_and_get_pepper(settings)
     limiter = get_rate_limiter(request)
+    cookie_config: RefreshCookieConfig | None = None
+    if body.client_kind == "web":
+        try:
+            cookie_config = make_refresh_cookie_config(
+                cookie_secure=settings.daemon_cookie_secure,
+                environment=settings.daemon_environment,
+            )
+        except CookiePolicyError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     async with app_state.db_pool.acquire() as conn:
         await enforce_rate_limit(
@@ -903,46 +915,51 @@ async def google_complete_endpoint(
             settings,
             default_google_id_token_verifier(),
         )
-        try:
-            consumed_nonce = await verifier_service.consume_nonce(
-                GoogleNonceConsumeRequest(plaintext_nonce=body.nonce)
-            )
-        except GoogleNonceInvalid as exc:
-            raise _google_complete_failure() from exc
-        except GoogleVerifierUnavailable as exc:
-            raise HTTPException(status_code=503, detail="google_unavailable") from exc
-
-        try:
-            verified = await verifier_service.verify_id_token(
-                GoogleIdTokenVerifyRequest(
-                    id_token_str=body.id_token,
-                    plaintext_nonce=body.nonce,
-                    consumed_nonce=consumed_nonce,
-                )
-            )
-        except GoogleTokenInvalid as exc:
-            raise _google_complete_failure() from exc
-        except GoogleVerifierUnavailable as exc:
-            raise HTTPException(status_code=503, detail="google_unavailable") from exc
-
         invite_token_verifier_hash = _compute_invite_verifier_hash(
             body.invite_token,
             pepper=pepper,
         )
-
         account_service = AccountService(cast(SupportsIdentityQueries, conn))
-        try:
-            claim_result = await account_service.claim_google_identity(
-                google_sub=verified.provider_subject,
-                normalized_email=verified.normalized_email,
-                email_verified=True,
-                signup_mode=settings.daemon_signup_mode,
-                invite_token_verifier_hash=invite_token_verifier_hash,
-            )
-        except (EmailNotVerified, InviteOnlyRejection, ProviderCollision, SignupDisabled):
-            raise _google_complete_failure()
 
         async with conn.transaction():
+            try:
+                consumed_nonce = await verifier_service.consume_nonce(
+                    GoogleNonceConsumeRequest(plaintext_nonce=body.nonce)
+                )
+            except GoogleNonceInvalid as exc:
+                raise _google_complete_failure() from exc
+            except GoogleVerifierUnavailable as exc:
+                raise HTTPException(status_code=503, detail="google_unavailable") from exc
+
+            try:
+                verified = await verifier_service.verify_id_token(
+                    GoogleIdTokenVerifyRequest(
+                        id_token_str=body.id_token,
+                        plaintext_nonce=body.nonce,
+                        consumed_nonce=consumed_nonce,
+                    )
+                )
+            except GoogleTokenInvalid as exc:
+                raise _google_complete_failure() from exc
+            except GoogleVerifierUnavailable as exc:
+                raise HTTPException(status_code=503, detail="google_unavailable") from exc
+
+            try:
+                claim_result = await account_service.claim_google_identity_in_transaction(
+                    google_sub=verified.provider_subject,
+                    normalized_email=verified.normalized_email,
+                    email_verified=True,
+                    signup_mode=settings.daemon_signup_mode,
+                    invite_token_verifier_hash=invite_token_verifier_hash,
+                )
+            except (
+                EmailNotVerified,
+                InviteOnlyRejection,
+                ProviderCollision,
+                SignupDisabled,
+            ):
+                raise _google_complete_failure()
+
             issued_session = await issue_device_session(
                 cast(SupportsSessionIssuanceQueries, conn),
                 IssueSessionRequest(
@@ -980,13 +997,7 @@ async def google_complete_endpoint(
         )
 
     if body.client_kind == "web":
-        try:
-            cookie_config = make_refresh_cookie_config(
-                cookie_secure=settings.daemon_cookie_secure,
-                environment=settings.daemon_environment,
-            )
-        except CookiePolicyError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        assert cookie_config is not None
 
         if (
             body.device_persistence == "temporary"

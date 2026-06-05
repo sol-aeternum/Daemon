@@ -866,6 +866,22 @@ class AccountService:
         signup_mode: str,
         invite_token_verifier_hash: str | None,
     ) -> ClaimResult:
+        async with self._conn.transaction():
+            return await self.claim_email_identity_in_transaction(
+                normalized_email=normalized_email,
+                email_verified_at=email_verified_at,
+                signup_mode=signup_mode,
+                invite_token_verifier_hash=invite_token_verifier_hash,
+            )
+
+    async def claim_email_identity_in_transaction(
+        self,
+        *,
+        normalized_email: str,
+        email_verified_at: datetime,
+        signup_mode: str,
+        invite_token_verifier_hash: str | None,
+    ) -> ClaimResult:
         """Resolve a verified-email-code completion into a Daemon
         account + personal tenant.
 
@@ -901,51 +917,62 @@ class AccountService:
                 "an unverified claim is an internal bug)"
             )
 
-        async with self._conn.transaction():
-            existing = await self.find_user_by_normalized_email(normalized_email)
-            if existing is not None:
-                return await self._ensure_account_for_existing_user(
-                    existing,
-                    email_verified_at=email_verified_at,
-                )
-
-            # New user. Gate on signup mode.
-            if signup_mode == "disabled":
-                raise SignupDisabled("new hosted signups are disabled")
-            pending_invite: InviteRow | None = None
-            if signup_mode == "invite_only":
-                pending_invite = await self._verify_invite_for_email(
-                    normalized_email=normalized_email,
-                    invite_token_verifier_hash=invite_token_verifier_hash,
-                )
-            elif signup_mode == "open":
-                pass
-            else:
-                raise AccountServiceError(f"unknown signup_mode: {signup_mode!r}")
-
-            result = await self._create_user_tenant_membership(
-                normalized_email=normalized_email,
+        existing = await self.find_user_by_normalized_email(normalized_email)
+        if existing is not None:
+            return await self._ensure_account_for_existing_user(
+                existing,
                 email_verified_at=email_verified_at,
             )
 
-            if pending_invite is not None:
-                # Consume the invite with the real user id. If
-                # the user was created on this call, the id is
-                # the new one; if a race resolved to an existing
-                # user, the id is the existing one. Either way,
-                # it is a real user, satisfying the FK to
-                # `users(id)`.
-                try:
-                    await self.consume_invite(
-                        invite_id=pending_invite.id,
-                        used_by_user_id=result.user.id,
-                    )
-                except InviteInvalidOrExpired as exc:
-                    raise InviteOnlyRejection("invite-only signup requires a valid invite") from exc
+        # New user. Gate on signup mode.
+        if signup_mode == "disabled":
+            raise SignupDisabled("new hosted signups are disabled")
+        pending_invite: InviteRow | None = None
+        if signup_mode == "invite_only":
+            pending_invite = await self._verify_invite_for_email(
+                normalized_email=normalized_email,
+                invite_token_verifier_hash=invite_token_verifier_hash,
+            )
+        elif signup_mode == "open":
+            pass
+        else:
+            raise AccountServiceError(f"unknown signup_mode: {signup_mode!r}")
 
-            return result
+        result = await self._create_user_tenant_membership(
+            normalized_email=normalized_email,
+            email_verified_at=email_verified_at,
+        )
+
+        if pending_invite is not None:
+            try:
+                await self.consume_invite(
+                    invite_id=pending_invite.id,
+                    used_by_user_id=result.user.id,
+                )
+            except InviteInvalidOrExpired as exc:
+                raise InviteOnlyRejection("invite-only signup requires a valid invite") from exc
+
+        return result
 
     async def claim_google_identity(
+        self,
+        *,
+        google_sub: str,
+        normalized_email: str,
+        email_verified: bool,
+        signup_mode: str,
+        invite_token_verifier_hash: str | None,
+    ) -> ClaimResult:
+        async with self._conn.transaction():
+            return await self.claim_google_identity_in_transaction(
+                google_sub=google_sub,
+                normalized_email=normalized_email,
+                email_verified=email_verified,
+                signup_mode=signup_mode,
+                invite_token_verifier_hash=invite_token_verifier_hash,
+            )
+
+    async def claim_google_identity_in_transaction(
         self,
         *,
         google_sub: str,
@@ -992,91 +1019,90 @@ class AccountService:
                 "google token email_verified is false; cannot use unverified email as durable key"
             )
 
-        async with self._conn.transaction():
-            # 1. Already linked?
-            by_provider = await self.find_user_by_provider("google", google_sub)
-            if by_provider is not None:
-                if by_provider.normalized_email != normalized_email:
-                    by_new_email = await self.find_user_by_normalized_email(normalized_email)
-                    if by_new_email is not None and by_new_email.id != by_provider.id:
-                        raise ProviderCollision(
-                            f"google sub {google_sub!r} is bound to user "
-                            f"{by_provider.id} and email {normalized_email!r} "
-                            f"belongs to user {by_new_email.id}; refusing "
-                            f"cross-user email reassignment"
-                        )
-                    by_provider = await self.update_user_normalized_email(
-                        by_provider.id,
-                        normalized_email,
-                    )
-                await self.link_provider_identity(
-                    user_id=by_provider.id,
-                    provider="google",
-                    provider_subject=google_sub,
-                    normalized_email_at_link=normalized_email,
-                )
-                return await self._ensure_account_for_existing_user(
-                    by_provider,
-                    email_verified_at=_now_utc(),
-                )
-
-            # 2. Existing user with the same email? Try to link.
-            by_email = await self.find_user_by_normalized_email(normalized_email)
-            if by_email is not None:
-                if not by_email.is_email_verified:
-                    raise EmailNotVerified(
-                        f"existing user {by_email.id} has not "
-                        f"verified email; refusing to link Google "
-                        f"identity without email-code verification"
-                    )
-                if by_email.normalized_email != normalized_email:
+        # 1. Already linked?
+        by_provider = await self.find_user_by_provider("google", google_sub)
+        if by_provider is not None:
+            if by_provider.normalized_email != normalized_email:
+                by_new_email = await self.find_user_by_normalized_email(normalized_email)
+                if by_new_email is not None and by_new_email.id != by_provider.id:
                     raise ProviderCollision(
-                        "verified google email does not match existing user normalized email"
+                        f"google sub {google_sub!r} is bound to user "
+                        f"{by_provider.id} and email {normalized_email!r} "
+                        f"belongs to user {by_new_email.id}; refusing "
+                        f"cross-user email reassignment"
                     )
-                await self.link_provider_identity(
-                    user_id=by_email.id,
-                    provider="google",
-                    provider_subject=google_sub,
-                    normalized_email_at_link=normalized_email,
+                by_provider = await self.update_user_normalized_email(
+                    by_provider.id,
+                    normalized_email,
                 )
-                return await self._ensure_account_for_existing_user(
-                    by_email,
-                    email_verified_at=_now_utc(),
-                )
-
-            # 3. New user. Same signup-mode gate as email-code.
-            if signup_mode == "disabled":
-                raise SignupDisabled("new hosted signups are disabled")
-            pending_invite: InviteRow | None = None
-            if signup_mode == "invite_only":
-                pending_invite = await self._verify_invite_for_email(
-                    normalized_email=normalized_email,
-                    invite_token_verifier_hash=invite_token_verifier_hash,
-                )
-            elif signup_mode == "open":
-                pass
-            else:
-                raise AccountServiceError(f"unknown signup_mode: {signup_mode!r}")
-
-            result = await self._create_user_tenant_membership(
-                normalized_email=normalized_email,
-                email_verified_at=_now_utc(),
-            )
             await self.link_provider_identity(
-                user_id=result.user.id,
+                user_id=by_provider.id,
                 provider="google",
                 provider_subject=google_sub,
                 normalized_email_at_link=normalized_email,
             )
-            if pending_invite is not None:
-                try:
-                    await self.consume_invite(
-                        invite_id=pending_invite.id,
-                        used_by_user_id=result.user.id,
-                    )
-                except InviteInvalidOrExpired as exc:
-                    raise InviteOnlyRejection("invite-only signup requires a valid invite") from exc
-            return result
+            return await self._ensure_account_for_existing_user(
+                by_provider,
+                email_verified_at=_now_utc(),
+            )
+
+        # 2. Existing user with the same email? Try to link.
+        by_email = await self.find_user_by_normalized_email(normalized_email)
+        if by_email is not None:
+            if not by_email.is_email_verified:
+                raise EmailNotVerified(
+                    f"existing user {by_email.id} has not "
+                    f"verified email; refusing to link Google "
+                    f"identity without email-code verification"
+                )
+            if by_email.normalized_email != normalized_email:
+                raise ProviderCollision(
+                    "verified google email does not match existing user normalized email"
+                )
+            await self.link_provider_identity(
+                user_id=by_email.id,
+                provider="google",
+                provider_subject=google_sub,
+                normalized_email_at_link=normalized_email,
+            )
+            return await self._ensure_account_for_existing_user(
+                by_email,
+                email_verified_at=_now_utc(),
+            )
+
+        # 3. New user. Same signup-mode gate as email-code.
+        if signup_mode == "disabled":
+            raise SignupDisabled("new hosted signups are disabled")
+        pending_invite: InviteRow | None = None
+        if signup_mode == "invite_only":
+            pending_invite = await self._verify_invite_for_email(
+                normalized_email=normalized_email,
+                invite_token_verifier_hash=invite_token_verifier_hash,
+            )
+        elif signup_mode == "open":
+            pass
+        else:
+            raise AccountServiceError(f"unknown signup_mode: {signup_mode!r}")
+
+        result = await self._create_user_tenant_membership(
+            normalized_email=normalized_email,
+            email_verified_at=_now_utc(),
+        )
+        await self.link_provider_identity(
+            user_id=result.user.id,
+            provider="google",
+            provider_subject=google_sub,
+            normalized_email_at_link=normalized_email,
+        )
+        if pending_invite is not None:
+            try:
+                await self.consume_invite(
+                    invite_id=pending_invite.id,
+                    used_by_user_id=result.user.id,
+                )
+            except InviteInvalidOrExpired as exc:
+                raise InviteOnlyRejection("invite-only signup requires a valid invite") from exc
+        return result
 
     # ------------------------------------------------------------------
     # Internal helpers
