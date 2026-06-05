@@ -632,8 +632,7 @@ describe('refreshAccessToken', () => {
     vi.restoreAllMocks();
   });
 
-  it('listenForAuthEvents applies token and expiry from a received refreshed event', async () => {
-    // Fresh module so channel is created after spy is set up
+  it('listenForAuthEvents does NOT apply token or expiry from a received refreshed event (secret-free broadcast)', async () => {
     vi.resetModules();
     const { _getChannel } = await import('../lib/auth');
     const channel = _getChannel();
@@ -649,9 +648,6 @@ describe('refreshAccessToken', () => {
     setAccessToken('old-token', Date.now() - 1_000);
     expect(hasValidAccessToken()).toBe(false);
 
-    const newToken = 'new-access-from-broadcast';
-    const newExpiry = Date.now() + 60_000;
-
     listenForAuthEvents(() => {});
 
     const messageHandler = addEventListenerSpy.mock.calls[0]?.[1] as (
@@ -661,13 +657,19 @@ describe('refreshAccessToken', () => {
       data: {
         type: 'refreshed',
         tabId: 'other-tab',
-        accessToken: newToken,
-        expiresAt: newExpiry,
+        accessToken: 'token-in-message',
+        expiresAt: Date.now() + 60_000,
+        refreshToken: 'rt-in-message',
+        idToken: 'it-in-message',
+        credential: 'cred-in-message',
+        code: 'code-in-message',
+        nonce: 'nonce-in-message',
+        setupToken: 'setup-in-message',
       },
     } as MessageEvent);
 
-    expect(getAccessToken()).toBe(newToken);
-    expect(hasValidAccessToken()).toBe(true);
+    expect(getAccessToken()).toBe('old-token');
+    expect(hasValidAccessToken()).toBe(false);
   });
 
   it('listenForAuthEvents passes cleared event through to user callback', async () => {
@@ -723,7 +725,7 @@ describe('refreshAccessToken', () => {
     vi.restoreAllMocks();
   });
 
-  it('refreshAccessToken no-Web-Locks fallback uses broadcast result without posting again', async () => {
+  it('refreshAccessToken no-Web-Locks fallback does own cookie-based refresh when receiving a refreshed broadcast', async () => {
     Object.defineProperty(globalThis, 'navigator', {
       value: { locks: undefined },
       writable: true,
@@ -741,7 +743,15 @@ describe('refreshAccessToken', () => {
     });
 
     const mockFetch = vi.fn(() =>
-      Promise.resolve(new Response(null, { status: 500 })),
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            access_token: 'self-refreshed-token',
+            expires_in: 1800,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
     );
     globalThis.fetch = mockFetch;
 
@@ -753,16 +763,330 @@ describe('refreshAccessToken', () => {
     TestBroadcastChannel.instances[0]?.dispatch({
       type: 'refreshed',
       tabId: 'other-tab',
-      accessToken: 'shared-access-token',
-      expiresAt: Date.now() + 60_000,
     });
 
     const result = await refreshPromise;
     expect(result.success).toBe(true);
-    expect(getAccessToken()).toBe('shared-access-token');
+    expect(getAccessToken()).toBe('self-refreshed-token');
     expect(hasValidAccessToken()).toBe(true);
-    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [url, init] = mockFetch.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('/api/v1/auth/refresh');
+    expect(init.credentials).toBe('include');
 
+    vi.restoreAllMocks();
+  });
+});
+
+describe('BroadcastChannel secret-free invariant', () => {
+  beforeEach(() => {
+    mockNavigator.value = { locks: undefined };
+    mockLocalStorage.value = {};
+    mockBroadcastChannel.value = null;
+    TestBroadcastChannel.instances = [];
+    vi.resetModules();
+  });
+
+  const FORBIDDEN_FIELDS = [
+    'accessToken',
+    'access_token',
+    'refreshToken',
+    'refresh_token',
+    'idToken',
+    'id_token',
+    'expiresAt',
+    'expires_at',
+    'providerToken',
+    'googleCredential',
+    'credential',
+    'emailCode',
+    'code',
+    'nonce',
+    'setupToken',
+    'enrollmentCode',
+    'token',
+    'secret',
+  ];
+
+  function assertSecretFree(message: unknown, label: string): void {
+    expect(message, `${label} should be a non-null object`).toBeTruthy();
+    expect(typeof message, `${label} should be an object`).toBe('object');
+    const keys = Object.keys(message as Record<string, unknown>);
+    for (const forbidden of FORBIDDEN_FIELDS) {
+      expect(
+        keys,
+        `${label} must not contain forbidden field "${forbidden}" (saw ${JSON.stringify(
+          message,
+        )})`,
+      ).not.toContain(forbidden);
+    }
+    expect(keys.sort(), `${label} should have only type and tabId`).toEqual([
+      'tabId',
+      'type',
+    ]);
+  }
+
+  it('refreshAccessToken success broadcasts only type and tabId (no accessToken, no expiresAt)', async () => {
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { locks: undefined },
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'BroadcastChannel', {
+      configurable: true,
+      value: TestBroadcastChannel,
+    });
+    installStorage({});
+
+    const mockFetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            access_token: 'fresh-access',
+            refresh_token: 'should-be-ignored',
+            expires_in: 1800,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    globalThis.fetch = mockFetch;
+
+    const postSpy = vi.spyOn(TestBroadcastChannel.prototype, 'postMessage');
+
+    const { refreshAccessToken, setAccessToken } = await import('../lib/auth');
+    setAccessToken('expired', Date.now() - 1_000);
+    const result = await refreshAccessToken();
+
+    expect(result.success).toBe(true);
+    expect(postSpy).toHaveBeenCalled();
+    const refreshedMessage = postSpy.mock.calls.find(
+      (call) => (call[0] as { type?: string }).type === 'refreshed',
+    )?.[0];
+    expect(refreshedMessage).toBeDefined();
+    assertSecretFree(refreshedMessage, 'refreshed broadcast');
+    expect((refreshedMessage as { type: string }).type).toBe('refreshed');
+    expect(typeof (refreshedMessage as { tabId: string }).tabId).toBe('string');
+
+    vi.restoreAllMocks();
+  });
+
+  it('clearAuthState broadcasts only type and tabId (no accessToken, no expiresAt)', async () => {
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { locks: undefined },
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'BroadcastChannel', {
+      configurable: true,
+      value: TestBroadcastChannel,
+    });
+    installStorage({});
+
+    const { setAccessToken, clearAuthState } = await import('../lib/auth');
+    setAccessToken('doomed', Date.now() + 60_000);
+
+    const postSpy = vi.spyOn(TestBroadcastChannel.prototype, 'postMessage');
+    clearAuthState();
+
+    expect(postSpy).toHaveBeenCalled();
+    const clearedMessage = postSpy.mock.calls.find(
+      (call) => (call[0] as { type?: string }).type === 'cleared',
+    )?.[0];
+    expect(clearedMessage).toBeDefined();
+    assertSecretFree(clearedMessage, 'cleared broadcast');
+    expect((clearedMessage as { type: string }).type).toBe('cleared');
+
+    vi.restoreAllMocks();
+  });
+
+  it('401 refresh path broadcasts cleared event with only type and tabId', async () => {
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { locks: undefined },
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'BroadcastChannel', {
+      configurable: true,
+      value: TestBroadcastChannel,
+    });
+    installStorage({});
+
+    const mockFetch = vi.fn(() =>
+      Promise.resolve(new Response(null, { status: 401 })),
+    );
+    globalThis.fetch = mockFetch;
+
+    const postSpy = vi.spyOn(TestBroadcastChannel.prototype, 'postMessage');
+
+    const { refreshAccessToken, setAccessToken } = await import('../lib/auth');
+    setAccessToken('doomed', Date.now() - 1_000);
+    const result = await refreshAccessToken();
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('Session expired');
+
+    const broadcasts = postSpy.mock.calls.map(
+      (call) => call[0] as Record<string, unknown>,
+    );
+    expect(broadcasts.length).toBeGreaterThan(0);
+    for (const message of broadcasts) {
+      assertSecretFree(message, '401-path broadcast');
+    }
+    const clearedBroadcast = broadcasts.find((m) => m.type === 'cleared');
+    expect(clearedBroadcast).toBeDefined();
+
+    vi.restoreAllMocks();
+  });
+});
+
+describe('attemptPageLoadRefresh identity-session restore', () => {
+  beforeEach(() => {
+    mockNavigator.value = { locks: undefined };
+    mockLocalStorage.value = {};
+    mockBroadcastChannel.value = null;
+    vi.resetModules();
+  });
+
+  it('memory is empty after module load and refreshAccessToken restores via cookie', async () => {
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { locks: undefined },
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'BroadcastChannel', {
+      configurable: true,
+      value: TestBroadcastChannel,
+    });
+
+    const mockFetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            access_token: 'restored-from-cookie',
+            expires_in: 1800,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    globalThis.fetch = mockFetch;
+
+    const { refreshAccessToken, getAccessToken, hasValidAccessToken } =
+      await import('../lib/auth');
+
+    expect(getAccessToken()).toBeNull();
+    expect(hasValidAccessToken()).toBe(false);
+
+    const result = await refreshAccessToken();
+    expect(result.success).toBe(true);
+    expect(getAccessToken()).toBe('restored-from-cookie');
+    expect(hasValidAccessToken()).toBe(true);
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [url, init] = mockFetch.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('/api/v1/auth/refresh');
+    expect(init.credentials).toBe('include');
+    expect(init.method).toBe('POST');
+
+    vi.restoreAllMocks();
+  });
+
+  it('attemptPageLoadRefresh returns true after cookie refresh restores a session', async () => {
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { locks: undefined },
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'BroadcastChannel', {
+      configurable: true,
+      value: TestBroadcastChannel,
+    });
+
+    const mockFetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            access_token: 'identity-session-restored',
+            expires_in: 1800,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    globalThis.fetch = mockFetch;
+
+    const { attemptPageLoadRefresh, getAccessToken, hasValidAccessToken } =
+      await import('../lib/auth');
+
+    expect(getAccessToken()).toBeNull();
+
+    const ok = await attemptPageLoadRefresh();
+    expect(ok).toBe(true);
+    expect(hasValidAccessToken()).toBe(true);
+    expect(getAccessToken()).toBe('identity-session-restored');
+
+    vi.restoreAllMocks();
+  });
+
+  it('attemptPageLoadRefresh returns false and redirects to /setup on 401 for expired temporary sessions', async () => {
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { locks: undefined },
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'BroadcastChannel', {
+      configurable: true,
+      value: TestBroadcastChannel,
+    });
+
+    const mockFetch = vi.fn(() =>
+      Promise.resolve(new Response(null, { status: 401 })),
+    );
+    globalThis.fetch = mockFetch;
+
+    const assignedHref: { value: string | null } = { value: null };
+    const originalLocation = window.location;
+    const locationSpy = vi.spyOn(window, 'location', 'get').mockReturnValue({
+      ...originalLocation,
+      set href(value: string) {
+        assignedHref.value = value;
+      },
+    } as unknown as Location);
+
+    const { attemptPageLoadRefresh, getAccessToken } =
+      await import('../lib/auth');
+
+    const ok = await attemptPageLoadRefresh();
+    expect(ok).toBe(false);
+    expect(getAccessToken()).toBeNull();
+    expect(assignedHref.value).toBe('/setup');
+
+    locationSpy.mockRestore();
+    vi.restoreAllMocks();
+  });
+
+  it('attemptPageLoadRefresh returns false on 401 with read-only window.location (no throw)', async () => {
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { locks: undefined },
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'BroadcastChannel', {
+      configurable: true,
+      value: TestBroadcastChannel,
+    });
+
+    const mockFetch = vi.fn(() =>
+      Promise.resolve(new Response(null, { status: 401 })),
+    );
+    globalThis.fetch = mockFetch;
+
+    const { attemptPageLoadRefresh, getAccessToken } =
+      await import('../lib/auth');
+
+    const ok = await attemptPageLoadRefresh();
+    expect(ok).toBe(false);
+    expect(getAccessToken()).toBeNull();
     vi.restoreAllMocks();
   });
 });

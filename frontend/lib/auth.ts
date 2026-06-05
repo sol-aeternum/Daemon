@@ -63,8 +63,6 @@ type AuthEventType = 'refresh-needed' | 'cleared' | 'refreshed';
 interface AuthEvent {
   type: AuthEventType;
   tabId: string;
-  accessToken?: string;
-  expiresAt?: number;
 }
 
 let _tabId: string | null = null;
@@ -88,14 +86,10 @@ export function _getChannel(): BroadcastChannel | null {
   }
 }
 
-function _broadcastAuthEvent(
-  type: AuthEventType,
-  accessToken?: string,
-  expiresAt?: number,
-): void {
+function _broadcastAuthEvent(type: AuthEventType): void {
   const channel = _getChannel();
   if (!channel) return;
-  const event: AuthEvent = { type, tabId: _getTabId(), accessToken, expiresAt };
+  const event: AuthEvent = { type, tabId: _getTabId() };
   try {
     channel.postMessage(event);
   } catch {
@@ -197,7 +191,9 @@ async function _waitForRefreshCompletion(): Promise<RefreshResult | null> {
 
     const handler = (type: AuthEventType, _tabId: string) => {
       if (type === 'refreshed') {
-        resolveOnce({ success: hasValidAccessToken() });
+        void doRefresh()
+          .then((result) => resolveOnce(result))
+          .catch(() => resolveOnce(null));
         return;
       }
       if (type === 'cleared') {
@@ -257,17 +253,7 @@ export function listenForAuthEvents(
     const type = event.type as AuthEventType;
     const tabId = event.tabId;
 
-    if (type === 'refreshed') {
-      const accessToken = event.accessToken as string | undefined;
-      const expiresAt = event.expiresAt as number | undefined;
-      if (
-        typeof accessToken === 'string' &&
-        typeof expiresAt === 'number' &&
-        expiresAt > Date.now()
-      ) {
-        setAccessToken(accessToken, expiresAt);
-      }
-    } else if (type === 'cleared') {
+    if (type === 'cleared') {
       clearLocalAuthState();
     }
 
@@ -364,7 +350,7 @@ async function doRefresh(): Promise<RefreshResult> {
       const expiresIn = (data.expires_in as number) || 1800;
       const expiresAtMs = Date.now() + expiresIn * 1000;
       setAccessToken(accessToken, expiresAtMs);
-      _broadcastAuthEvent('refreshed', accessToken, expiresAtMs);
+      _broadcastAuthEvent('refreshed');
       return { success: true };
     } catch {
       return { success: false, error: 'Invalid refresh response' };
