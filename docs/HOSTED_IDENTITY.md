@@ -166,10 +166,15 @@ The hosted landing and Google sign-in button are gated by two `NEXT_PUBLIC_*` en
 are baked at Next.js build time. They mirror the backend hosted-identity knobs and must be
 set in `.env.example` and the frontend `docker-compose.yml` environment block:
 
-| Var | Default | Effect |
-|---|---|---|
-| `NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE` | `self-hosted` (when unset) | `hosted` switches the landing to Google / email sign-in primary; `self-hosted` keeps the setup-first landing. |
-| `NEXT_PUBLIC_GOOGLE_CLIENT_ID` | empty (no Google button) | Public Google OAuth web client ID. When set, the hosted landing renders the Google sign-in button. Must match the backend's `DAEMON_GOOGLE_CLIENT_ID`. |
+| Var                                  | Default                    | Effect                                                                                                                                                 |
+| ------------------------------------ | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE` | `self-hosted` (when unset) | `hosted` switches the landing to Google / email sign-in primary; `self-hosted` keeps the setup-first landing.                                          |
+| `NEXT_PUBLIC_GOOGLE_CLIENT_ID`       | empty (no Google button)   | Public Google OAuth web client ID. When set, the hosted landing renders the Google sign-in button. Must match the backend's `DAEMON_GOOGLE_CLIENT_ID`. |
+
+Required pairing:
+
+- `DAEMON_HOSTED_IDENTITY_ENABLED=true` ↔ `NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE=hosted`
+- `DAEMON_GOOGLE_CLIENT_ID=<server client id>` ↔ `NEXT_PUBLIC_GOOGLE_CLIENT_ID=<same public client id>`
 
 Hosted mode and the Google button are only meaningful when the backend has
 `DAEMON_HOSTED_IDENTITY_ENABLED=true`; the backend `fail-closed` gate in
@@ -177,6 +182,12 @@ Hosted mode and the Google button are only meaningful when the backend has
 `404 hosted_identity_disabled` regardless of frontend configuration when the backend is
 self-hosted. Setup, enrollment, and device endpoints remain available for self-hosted and
 recovery flows on the same router.
+
+When hosted auth runs through the Next.js `/api/v1/auth/*` proxy, operators may optionally set
+`DAEMON_TRUST_PROXY_FORWARDED_CLIENT_IP=true` so identity rate limits key on the original
+browser IP carried in trusted forwarded headers instead of the proxy/container hop. Leave the
+flag false for direct/self-hosted deployments; the default safe posture is to trust only the
+immediate socket IP and ignore arbitrary forwarded headers.
 
 ## Self-Hosted Advanced Setup
 

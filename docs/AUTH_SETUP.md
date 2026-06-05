@@ -26,13 +26,21 @@ Hosted identity still has residual phishing and social-engineering risk: users c
 
 The hosted landing and Google button are gated on the frontend by
 `NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE` (`self-hosted` default; set `hosted` to switch the
-landing) and `NEXT_PUBLIC_GOOGLE_CLIENT_ID` (the public Google OAuth web client ID). The
-backend hosted email and Google endpoints additionally require `DAEMON_HOSTED_IDENTITY_ENABLED=true`
-on the FastAPI side; when that flag is off, those endpoints return
+landing) and `NEXT_PUBLIC_GOOGLE_CLIENT_ID` (the public Google OAuth web client ID). Pair
+`DAEMON_HOSTED_IDENTITY_ENABLED=true` with `NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE=hosted`, and
+pair `DAEMON_GOOGLE_CLIENT_ID` with the same public client id in
+`NEXT_PUBLIC_GOOGLE_CLIENT_ID`. The backend hosted email and Google endpoints additionally
+require `DAEMON_HOSTED_IDENTITY_ENABLED=true` on the FastAPI side; when that flag is off,
+those endpoints return
 `404 hosted_identity_disabled` before any challenge, rate-limit, or provider-token work.
 Setup, enrollment, and device endpoints remain reachable on the same router for self-hosted
 and recovery flows. See [`docs/HOSTED_IDENTITY.md`](HOSTED_IDENTITY.md) for the full
 contract.
+
+If you proxy `/api/v1/auth/*` through the Next.js frontend and want hosted-identity rate
+limits to key on the real browser IP instead of the proxy/container hop, enable
+`DAEMON_TRUST_PROXY_FORWARDED_CLIENT_IP=true`. Leave it false for direct/self-hosted
+deployments; the default safe posture is to trust only the immediate socket IP.
 
 ---
 
@@ -136,10 +144,10 @@ During development with `DAEMON_ENVIRONMENT=development`:
 
 `DAEMON_AUTH_PEPPER` is a shared secret used to derive enrollment code verifiers. It is never stored in the database.
 
-| Environment | Requirement |
-|-------------|-------------|
-| **Production** | Must be set. Must be at least **32 random bytes** / **43 base64url characters**. Missing or weak values cause startup to fail. |
-| **Development** | If absent, a per-process random pepper is generated with a warning. All pre-restart pending enrollments are invalidated. |
+| Environment     | Requirement                                                                                                                    |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| **Production**  | Must be set. Must be at least **32 random bytes** / **43 base64url characters**. Missing or weak values cause startup to fail. |
+| **Development** | If absent, a per-process random pepper is generated with a warning. All pre-restart pending enrollments are invalidated.       |
 
 Generate a strong pepper for production:
 
@@ -155,9 +163,9 @@ Store the pepper in your deployment's secret management system (environment vari
 
 Daemon's web authentication uses a split-token design:
 
-| Token | Storage | Lifetime |
-|-------|---------|----------|
-| `access_token` | JavaScript memory only | 30 minutes |
+| Token           | Storage                                                                                  | Lifetime          |
+| --------------- | ---------------------------------------------------------------------------------------- | ----------------- |
+| `access_token`  | JavaScript memory only                                                                   | 30 minutes        |
 | `refresh_token` | `__Host-daemon_refresh` HttpOnly cookie (`daemon_refresh` only for insecure development) | 90 days, rotating |
 
 ### What This Means
@@ -219,15 +227,15 @@ Daemon rejects requests that mix cookie-based and body-based refresh in the same
 
 ## Summary
 
-| Topic | Key Point |
-|-------|-----------|
+| Topic           | Key Point                                                                                      |
+| --------------- | ---------------------------------------------------------------------------------------------- |
 | Hosted identity | Google/email prove identity only; Daemon-issued device/session tokens are the API auth surface |
-| Google sign-in | Server nonce challenge + manual GIS callback; no `login_uri` auto-post flow |
-| First boot | Advanced self-hosted/recovery path; form-based one-time token from server logs, never in URL |
-| Adding devices | Hosted identity sign-in or enrollment QR/manual code; web cookie or native JSON-body token |
-| Revoking | Immediate session/token invalidation; current-device revoke clears cookie |
-| Recovery | Zero active devices + restart → new setup token logged |
-| Pepper | Production requires ≥32 bytes / 43 base64url chars; missing/weak fails startup |
-| Browser auth | Access token in JS memory; refresh in HttpOnly `__Host-` cookie |
-| Native auth | Access + refresh returned in JSON; refresh must use platform secure storage |
-| Out of scope | GitHub sign-in and provider-token API auth |
+| Google sign-in  | Server nonce challenge + manual GIS callback; no `login_uri` auto-post flow                    |
+| First boot      | Advanced self-hosted/recovery path; form-based one-time token from server logs, never in URL   |
+| Adding devices  | Hosted identity sign-in or enrollment QR/manual code; web cookie or native JSON-body token     |
+| Revoking        | Immediate session/token invalidation; current-device revoke clears cookie                      |
+| Recovery        | Zero active devices + restart → new setup token logged                                         |
+| Pepper          | Production requires ≥32 bytes / 43 base64url chars; missing/weak fails startup                 |
+| Browser auth    | Access token in JS memory; refresh in HttpOnly `__Host-` cookie                                |
+| Native auth     | Access + refresh returned in JSON; refresh must use platform secure storage                    |
+| Out of scope    | GitHub sign-in and provider-token API auth                                                     |

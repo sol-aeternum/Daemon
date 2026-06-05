@@ -1,5 +1,16 @@
 # TRIAGE.md
 
+## 2026-06-05 UTC — Worktree LSP import resolution misses project deps under /tmp review worktree
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: PR #7 review-comment fix verification
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: `lsp_diagnostics` on changed Python test files in `/tmp/opencode/hosted-identity-f4-fix` reported missing imports for `fastapi`, `httpx`, `pytest`, `pytest_asyncio`, and `starlette.requests` even though the branch intentionally reuses the main repo's pinned backend/frontend environments. The same scan also reported broad frontend dependency/type resolution failures on TSX files because the `/tmp` worktree does not have a fully-resolved TypeScript language-server environment.
+- **Evidence**: `lsp_diagnostics` returned `Import "fastapi" could not be resolved` for `orchestrator/routes/auth_setup.py`, `Import "httpx" could not be resolved` / `Import "pytest" could not be resolved` for changed backend tests, and TSX dependency errors like `Cannot find module 'react' or its corresponding type declarations` in `frontend/components/AuthLanding.tsx`.
+- **Likely cause**: The OpenCode language-server environment for the detached `/tmp` worktree is not inheriting the repo's Python venv / frontend dependency graph the same way as runtime test commands do (confidence 90%).
+- **Suggested action**: Treat runtime verification (`/home/sol/daemon/.venv/bin/python -m pytest`, `npm run ...` in the existing frontend install) as the authoritative gate for this worktree, or configure the LSP environment to resolve dependencies from the shared repo installation paths.
+
 ## 2026-06-05 UTC — Doc freshness migration metadata drift
 - **Severity**: warning
 - **Scope**: project
@@ -178,6 +189,7 @@
   - `Unauthorized: {"type":"error","error":{"type":"CreditsError","message":"Insufficient balance. Manage your billing here: https://opencode.ai/workspace/wrk_01KFQJSNM8KAAP52SN02MF4GTQ/billing"}}`
 - **Likely cause**: The selected subagent/model route for the first Task 1 delegation required workspace credits that are currently unavailable for that provider path (confidence 93%).
 - **Suggested action**: Retry the task with an available agent/model route or restore workspace billing balance before relying on this provider for further delegations.
+- **Seen again**: 2026-06-05 during PR #7 hosted-identity review-comment verification when a background `explore` audit of the uncommitted `/tmp/opencode/hosted-identity-f4-fix` diff failed immediately with the same `CreditsError` / insufficient workspace balance before returning any code review findings.
 
 ## 2026-04-14 23:47 — LSP JSON Diagnostics Blocked By Missing Biome Server
 - **Severity**: warning
@@ -1497,6 +1509,7 @@
 - **Evidence**: `npm run type-check` output shows errors only in pre-existing files; no errors in newly created/modified Task 15 files.
 - **Likely cause**: Advisor event types were refactored without updating all consumers; `tool_call_id` and `advisor_id` fields were removed from base event types but still used in tests and `lib/advisorEvents.ts` (confidence 90%).
 - **Suggested action**: Update `lib/advisorEvents.ts` and related tests to match current event type definitions, or restore the missing type fields.
+- **Seen again**: 2026-06-05 during PR #7 hosted-identity review-comment verification when `./node_modules/.bin/tsc --noEmit --pretty false -p tsconfig.json` failed only in the same pre-existing advisor/tool-call event files while the targeted auth/deployment Vitest suite, changed-file eslint, and changed-file prettier checks passed.
 
 ## 2026-06-05 UTC — Frontend lint has pre-existing errors across 29 files
 - **Severity**: warning
