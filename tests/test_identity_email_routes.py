@@ -616,6 +616,7 @@ class TestEmailCompleteRoute:
         }
 
         async def fake_consume(_self, request):
+            assert pool.transaction_depth == 0
             return EmailChallengeRow(
                 id=request.challenge_id,
                 normalized_email="user@example.com",
