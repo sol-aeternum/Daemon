@@ -910,13 +910,13 @@ class TestClientIpForKey:
         )
         assert client_ip_for_key(request) == "203.0.113.10"
 
-    def test_trusted_proxy_mode_uses_forwarded_for_when_proxy_hop_is_private(
+    def test_trusted_proxy_mode_uses_internal_header_when_proxy_hop_is_private(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("DAEMON_TRUST_PROXY_FORWARDED_CLIENT_IP", "true")
         request = _make_request(
             host="10.0.0.12",
-            headers=[(b"x-forwarded-for", b"198.51.100.8, 10.0.0.12")],
+            headers=[(b"x-daemon-client-ip", b"198.51.100.8")],
         )
         assert client_ip_for_key(request) == "198.51.100.8"
 
@@ -926,16 +926,16 @@ class TestClientIpForKey:
         monkeypatch.setenv("DAEMON_TRUST_PROXY_FORWARDED_CLIENT_IP", "true")
         request = _make_request(
             host="8.8.8.8",
-            headers=[(b"x-forwarded-for", b"198.51.100.8")],
+            headers=[(b"x-daemon-client-ip", b"198.51.100.8")],
         )
         assert client_ip_for_key(request) == "8.8.8.8"
 
-    def test_uses_forwarded_header_when_x_forwarded_for_missing(
+    def test_invalid_internal_header_falls_back_to_socket_peer(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("DAEMON_TRUST_PROXY_FORWARDED_CLIENT_IP", "true")
         request = _make_request(
             host="127.0.0.1",
-            headers=[(b"forwarded", b"for=198.51.100.9;proto=https")],
+            headers=[(b"x-daemon-client-ip", b"198.51.100.9, 10.0.0.12")],
         )
-        assert client_ip_for_key(request) == "198.51.100.9"
+        assert client_ip_for_key(request) == "127.0.0.1"

@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-import re
 from collections.abc import Sequence
 from typing import Literal
 
@@ -74,10 +73,10 @@ def _client_ip(request: Request) -> str:
 
     Default-safe posture: use the immediate socket address only.
     When `daemon_trust_proxy_forwarded_client_ip=true`, the helper will
-    honor `X-Forwarded-For` / `Forwarded` / `X-Real-IP` only if the
+    honor only the internal `X-Daemon-Client-IP` header, and only when the
     immediate socket hop is loopback/private (the expected Next.js proxy
     path). Direct/self-hosted callers keep the immediate-socket behavior,
-    so arbitrary forwarded headers are not trusted by default.
+    so arbitrary caller-controlled forwarded headers are not trusted.
 
     Returns "unknown" when the address is unavailable so the key
     namespace still has a stable, non-empty value to hash.
@@ -88,7 +87,7 @@ def _client_ip(request: Request) -> str:
 
     settings = get_settings()
     if settings.daemon_trust_proxy_forwarded_client_ip and _is_trusted_proxy_hop(immediate):
-        forwarded_ip = _forwarded_client_ip(request)
+        forwarded_ip = _daemon_client_ip_header(request)
         if forwarded_ip is not None:
             return forwarded_ip
 
@@ -103,29 +102,8 @@ def _is_trusted_proxy_hop(host: str) -> bool:
     return ip.is_loopback or ip.is_private
 
 
-def _forwarded_client_ip(request: Request) -> str | None:
-    x_forwarded_for = request.headers.get("x-forwarded-for")
-    if x_forwarded_for:
-        for candidate in x_forwarded_for.split(","):
-            valid = _normalize_forwarded_ip(candidate)
-            if valid is not None:
-                return valid
-
-    forwarded = request.headers.get("forwarded")
-    if forwarded:
-        for token in re.split(r"\s*,\s*", forwarded):
-            match = re.search(r'for=(?P<value>"?\[[^\]]+\]"?|"?[^;,\"]+"?)', token)
-            if not match:
-                continue
-            valid = _normalize_forwarded_ip(match.group("value"))
-            if valid is not None:
-                return valid
-
-    x_real_ip = request.headers.get("x-real-ip")
-    if x_real_ip:
-        return _normalize_forwarded_ip(x_real_ip)
-
-    return None
+def _daemon_client_ip_header(request: Request) -> str | None:
+    return _normalize_forwarded_ip(request.headers.get("x-daemon-client-ip"))
 
 
 def _normalize_forwarded_ip(raw: str | None) -> str | None:
@@ -133,6 +111,8 @@ def _normalize_forwarded_ip(raw: str | None) -> str | None:
         return None
     value = raw.strip().strip('"')
     if not value or value.lower() == "unknown":
+        return None
+    if "," in value:
         return None
     if value.startswith("[") and value.endswith("]"):
         value = value[1:-1]
