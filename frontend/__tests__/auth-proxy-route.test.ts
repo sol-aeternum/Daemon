@@ -46,9 +46,68 @@ describe('auth proxy forwarded header handling', () => {
     expect(headers.get('X-Forwarded-For')).toBeNull();
     expect(headers.get('X-Real-IP')).toBeNull();
     expect(headers.get('Forwarded')).toBeNull();
+    expect(headers.get('X-Daemon-Client-IP')).toBeNull();
     expect(headers.get('X-Forwarded-Host')).toBe('localhost:3000');
     expect(headers.get('X-Forwarded-Proto')).toBe('https');
     expect(headers.get('Authorization')).toBe('Bearer daemon-token');
+  });
+
+  it('synthesizes X-Daemon-Client-IP from trusted platform headers', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const req = new Request('http://localhost:3000/api/v1/auth/refresh', {
+      method: 'POST',
+      headers: {
+        host: 'localhost:3000',
+        'x-forwarded-host': 'localhost:3000',
+        'x-forwarded-proto': 'https',
+        'cf-connecting-ip': '198.51.100.9',
+        'x-vercel-forwarded-for': '203.0.113.10',
+        'x-forwarded-for': '203.0.113.11',
+      },
+    });
+
+    await POST(req, {
+      params: Promise.resolve({ path: ['refresh'] }),
+    });
+
+    const [, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+    const headers = new Headers(init.headers);
+    expect(headers.get('X-Daemon-Client-IP')).toBe('198.51.100.9');
+  });
+
+  it('does not synthesize X-Daemon-Client-IP for invalid or comma-list values', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const req = new Request('http://localhost:3000/api/v1/auth/refresh', {
+      method: 'POST',
+      headers: {
+        host: 'localhost:3000',
+        'x-forwarded-host': 'localhost:3000',
+        'x-forwarded-proto': 'https',
+        'cf-connecting-ip': '198.51.100.9, 10.0.0.12',
+        'x-vercel-forwarded-for': 'unknown',
+        'x-forwarded-for': '203.0.113.11, 10.0.0.12',
+      },
+    });
+
+    await POST(req, {
+      params: Promise.resolve({ path: ['refresh'] }),
+    });
+
+    const [, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+    const headers = new Headers(init.headers);
+    expect(headers.get('X-Daemon-Client-IP')).toBeNull();
   });
 
   it('preserves original query strings when forwarding to backend', async () => {

@@ -9,6 +9,22 @@ const API_URLS = [
 
 type RouteContext = { params: Promise<{ path: string[] }> };
 
+function normalizeClientIp(value: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (
+    !trimmed ||
+    trimmed.toLowerCase() === 'unknown' ||
+    trimmed.includes(',')
+  ) {
+    return null;
+  }
+  if (/^[0-9a-fA-F:.]+$/.test(trimmed)) {
+    return trimmed;
+  }
+  return null;
+}
+
 function buildProxyHeaders(req: Request): Headers {
   const headers = new Headers();
 
@@ -32,6 +48,11 @@ function buildProxyHeaders(req: Request): Headers {
 
   const xForwardedProto = req.headers.get('x-forwarded-proto');
   if (xForwardedProto) headers.set('X-Forwarded-Proto', xForwardedProto);
+
+  const daemonClientIp =
+    normalizeClientIp(req.headers.get('cf-connecting-ip')) ??
+    normalizeClientIp(req.headers.get('x-vercel-forwarded-for'));
+  if (daemonClientIp) headers.set('X-Daemon-Client-IP', daemonClientIp);
 
   const authorization = req.headers.get('authorization');
   if (authorization) headers.set('Authorization', authorization);
