@@ -83,6 +83,12 @@ def test_google_enabled_without_client_id_fails() -> None:
         settings.validate_hosted_identity_config()
 
 
+def test_google_enabled_with_whitespace_client_id_fails() -> None:
+    settings = _hosted_base(daemon_google_client_id="   ")
+    with pytest.raises(HostedIdentityConfigError, match="daemon_google_client_id"):
+        settings.validate_hosted_identity_config()
+
+
 def test_google_disabled_does_not_require_client_id() -> None:
     """If Google is disabled, client ID is not required."""
     settings = _hosted_base(daemon_google_enabled=False)
@@ -142,6 +148,30 @@ def test_production_with_smtp_sink_and_host_passes() -> None:
         daemon_mail_smtp_host="smtp.example.com",
     )
     settings.validate_hosted_identity_config()
+
+
+def test_production_with_smtp_sink_empty_from_address_fails() -> None:
+    settings = _hosted_base(
+        daemon_environment="production",
+        redis_url="redis://redis:6379/0",
+        daemon_mail_sender_mode="smtp",
+        daemon_mail_smtp_host="smtp.example.com",
+        daemon_mail_from_address="",
+    )
+    with pytest.raises(HostedIdentityConfigError, match="daemon_mail_from_address"):
+        settings.validate_hosted_identity_config()
+
+
+def test_production_with_smtp_sink_whitespace_from_address_fails() -> None:
+    settings = _hosted_base(
+        daemon_environment="production",
+        redis_url="redis://redis:6379/0",
+        daemon_mail_sender_mode="smtp",
+        daemon_mail_smtp_host="smtp.example.com",
+        daemon_mail_from_address="   ",
+    )
+    with pytest.raises(HostedIdentityConfigError, match="daemon_mail_from_address"):
+        settings.validate_hosted_identity_config()
 
 
 def test_production_with_smtp_sink_no_host_fails() -> None:

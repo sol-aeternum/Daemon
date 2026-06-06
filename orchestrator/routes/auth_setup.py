@@ -216,6 +216,7 @@ async def _create_first_device_and_session(
     conn,
     user_id: uuid.UUID,
     tenant_id: uuid.UUID,
+    private_refresh_ttl_days: int,
 ) -> tuple[str, str]:
     device_id = await conn.fetchval(
         """
@@ -230,7 +231,7 @@ async def _create_first_device_and_session(
     )
     now = datetime.now(timezone.utc)
     access_expires = now + timedelta(minutes=ACCESS_TOKEN_TTL_MINUTES)
-    refresh_expires = now + timedelta(days=REFRESH_TOKEN_TTL_DAYS)
+    refresh_expires = now + timedelta(days=private_refresh_ttl_days)
     access_token = generate_token()
     refresh_token = generate_token()
     await conn.execute(
@@ -1136,11 +1137,12 @@ async def setup_endpoint(
                 conn,
                 user_id,
                 tenant_id,
+                settings.daemon_private_refresh_ttl_days,
             )
 
     app_state.setup_token_hash = None
 
-    refresh_max_age = int(timedelta(days=REFRESH_TOKEN_TTL_DAYS).total_seconds())
+    refresh_max_age = int(timedelta(days=settings.daemon_private_refresh_ttl_days).total_seconds())
     cookie_headers = build_refresh_cookie(
         value=refresh_token,
         config=cookie_config,
@@ -1403,14 +1405,11 @@ async def enroll_complete_endpoint(
 
             if exc_to_raise is None:
                 user_id: uuid.UUID = pending_row["user_id"]
-                tenant_row = await AccountService(
-                    cast(SupportsIdentityQueries, conn)
-                ).find_personal_tenant(user_id)
+                account_service = AccountService(cast(SupportsIdentityQueries, conn))
+                tenant_row = await account_service.find_personal_tenant(user_id)
                 if tenant_row is None:
-                    raise HTTPException(
-                        status_code=500,
-                        detail="Enrollment tenant unavailable",
-                    )
+                    tenant_row, _ = await account_service.ensure_personal_tenant(user_id)
+                    await account_service.ensure_owner_membership(tenant_row.id, user_id)
                 device_id = await conn.fetchval(
                     """
                     INSERT INTO devices (user_id, tenant_id, display_name, platform)
@@ -1425,7 +1424,7 @@ async def enroll_complete_endpoint(
 
                 now = datetime.now(timezone.utc)
                 access_expires = now + timedelta(minutes=ACCESS_TOKEN_TTL_MINUTES)
-                refresh_expires = now + timedelta(days=REFRESH_TOKEN_TTL_DAYS)
+                refresh_expires = now + timedelta(days=settings.daemon_private_refresh_ttl_days)
                 access_token = generate_token()
                 refresh_token = generate_token()
 
@@ -1465,7 +1464,9 @@ async def enroll_complete_endpoint(
 
     if body.client_kind == "web":
         assert cookie_config is not None
-        refresh_max_age = int(timedelta(days=REFRESH_TOKEN_TTL_DAYS).total_seconds())
+        refresh_max_age = int(
+            timedelta(days=settings.daemon_private_refresh_ttl_days).total_seconds()
+        )
         cookie_headers = build_refresh_cookie(
             value=refresh_token,
             config=cookie_config,

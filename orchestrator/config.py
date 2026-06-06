@@ -644,8 +644,15 @@ class Settings(BaseSettings):
                     "daemon_mail_smtp_host is empty. Configure a non-empty "
                     "daemon_mail_smtp_host before deploying to production."
                 )
+            if self.daemon_mail_sender_mode == "smtp" and not self.daemon_mail_from_address.strip():
+                raise HostedIdentityConfigError(
+                    "Hosted identity is enabled in production with the email "
+                    "provider and mail sender mode 'smtp', but "
+                    "daemon_mail_from_address is empty. Configure a non-empty "
+                    "daemon_mail_from_address before deploying to production."
+                )
 
-        if self.daemon_google_enabled and not self.daemon_google_client_id:
+        if self.daemon_google_enabled and not (self.daemon_google_client_id or "").strip():
             raise HostedIdentityConfigError(
                 "Hosted identity is enabled with Google provider but "
                 "daemon_google_client_id is not set. Set the Google OAuth client ID."
