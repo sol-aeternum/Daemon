@@ -35,6 +35,7 @@ class RouteMockConn:
     async def fetchrow(self, query: str, *args):
         q = " ".join(query.split())
         if q.startswith("SELECT id, normalized_email FROM email_challenges WHERE id = $1"):
+            self._pool.challenge_lookup_calls += 1
             challenge_id = args[0]
             row = self._pool.challenge_lookup.get(challenge_id)
             return None if row is None else dict(row)
@@ -67,6 +68,7 @@ class RouteMockConn:
 class RouteMockPool:
     def __init__(self) -> None:
         self.challenge_lookup: dict[uuid.UUID, dict[str, object]] = {}
+        self.challenge_lookup_calls = 0
         self.invite_hash_by_email: dict[str, str] = {}
         self.transaction_depth = 0
         self.claim_markers: list[str] = []
@@ -351,6 +353,41 @@ class TestEmailStartRoute:
 
 class TestEmailCompleteRoute:
     @pytest.mark.asyncio
+    async def test_ip_rate_limit_runs_before_challenge_lookup(self, route_client, monkeypatch):
+        from fastapi import HTTPException
+
+        client, pool = route_client
+        challenge_id = uuid.uuid4()
+        calls = []
+
+        async def fake_enforce_rate_limit(**kwargs):
+            calls.append(kwargs["policies"])
+            if len(calls) == 1:
+                raise HTTPException(status_code=429, detail="rate_limited")
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+
+        response = await client.post(
+            "/v1/auth/email/complete",
+            json={
+                "challenge_id": str(challenge_id),
+                "code": "123456",
+                "client_kind": "web",
+                "device_persistence": "private",
+            },
+            headers={
+                "Origin": "https://app.daemon.ai",
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+
+        assert response.status_code == 429
+        assert len(calls) == 1
+        assert pool.challenge_lookup_calls == 0
+
+    @pytest.mark.asyncio
     async def test_web_private_returns_access_only_and_refresh_cookie(
         self, route_client, monkeypatch
     ):
@@ -365,6 +402,7 @@ class TestEmailCompleteRoute:
         captured_policies = []
 
         async def fake_consume(_self, request):
+            pool.claim_markers.append("email-challenge-consumed")
             return EmailChallengeRow(
                 id=request.challenge_id,
                 normalized_email="user@example.com",
@@ -437,6 +475,7 @@ class TestEmailCompleteRoute:
         }
 
         async def fake_consume(_self, request):
+            pool.claim_markers.append("email-challenge-consumed")
             return EmailChallengeRow(
                 id=request.challenge_id,
                 normalized_email="user@example.com",
@@ -638,8 +677,10 @@ class TestEmailCompleteRoute:
             "id": challenge_id,
             "normalized_email": "user@example.com",
         }
+        consume_state = {"consumed": False}
 
         async def fake_consume(_self, request):
+            consume_state["consumed"] = True
             return EmailChallengeRow(
                 id=request.challenge_id,
                 normalized_email="user@example.com",
@@ -692,6 +733,7 @@ class TestEmailCompleteRoute:
 
         assert pool.transaction_depth == 0
         assert pool.claim_markers == []
+        assert consume_state["consumed"] is True
 
     @pytest.mark.asyncio
     async def test_native_returns_refresh_json_and_no_cookie(self, route_client, monkeypatch):
@@ -830,6 +872,49 @@ class TestEmailCompleteRoute:
         assert response.json() == {"detail": "code_invalid_or_expired"}
         assert "refresh-token" not in response.text
         assert response.headers.get("set-cookie") is None
+
+    @pytest.mark.asyncio
+    async def test_wrong_code_persists_failed_attempt_decrement(self, route_client, monkeypatch):
+        client, pool = route_client
+        challenge_id = uuid.uuid4()
+        pool.challenge_lookup[challenge_id] = {
+            "id": challenge_id,
+            "normalized_email": "user@example.com",
+        }
+        attempts = {"remaining": 2}
+
+        async def fake_consume(_self, _request):
+            attempts["remaining"] -= 1
+            raise EmailChallengeInvalid("wrong code")
+
+        async def fake_enforce_rate_limit(**_kwargs):
+            return None
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.EmailChallengeService.consume_challenge",
+            fake_consume,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+
+        response = await client.post(
+            "/v1/auth/email/complete",
+            json={
+                "challenge_id": str(challenge_id),
+                "code": "000000",
+                "client_kind": "web",
+                "device_persistence": "private",
+            },
+            headers={
+                "Origin": "https://app.daemon.ai",
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+
+        assert response.status_code == 401
+        assert response.json() == {"detail": "code_invalid_or_expired"}
+        assert attempts["remaining"] == 1
 
     @pytest.mark.asyncio
     async def test_complete_rejects_native_when_refresh_cookie_present(self, route_client):

@@ -795,6 +795,42 @@ class TestGoogleCompleteRoute:
 
         assert pool.transaction_depth == 0
         assert pool.claim_markers == []
+        assert pool.nonce_store[0]["consumed_at"] is not None
+
+    @pytest.mark.asyncio
+    async def test_invalid_token_failure_leaves_nonce_consumed(self, route_client, monkeypatch):
+        client, pool = route_client
+        plaintext = "plaintext-nonce-invalid-token"
+        challenge_id = _seed_nonce(pool, plaintext)
+
+        _install_stub_verifier(monkeypatch, error=GoogleTokenInvalid("audience rejected"))
+
+        async def fake_enforce_rate_limit(**_kwargs):
+            return None
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+
+        response = await client.post(
+            "/v1/auth/google/complete",
+            json={
+                "challenge_id": str(challenge_id),
+                "nonce": plaintext,
+                "id_token": "id-token",
+                "client_kind": "web",
+                "device_persistence": "private",
+            },
+            headers={
+                "Origin": "https://app.daemon.ai",
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+
+        assert response.status_code == 401, response.text
+        assert response.json() == {"detail": "google_sign_in_failed"}
+        assert pool.nonce_store[0]["consumed_at"] is not None
+        assert all("INSERT INTO sessions" not in call[0] for call in pool.calls)
 
     @pytest.mark.asyncio
     async def test_native_returns_refresh_json_and_no_cookie(self, route_client, monkeypatch):

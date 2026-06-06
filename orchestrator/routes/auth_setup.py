@@ -321,7 +321,6 @@ def _email_start_rate_limit_policies(
 
 
 def _email_complete_rate_limit_policies(
-    request: Request,
     *,
     scope_value: str,
     settings,
@@ -331,8 +330,24 @@ def _email_complete_rate_limit_policies(
         window_seconds=3600,
     )
     return [
-        ("ip", client_ip_for_key(request), policy),
         ("email", scope_value, policy),
+    ]
+
+
+def _email_complete_ip_rate_limit_policies(
+    request: Request,
+    *,
+    settings,
+) -> list[tuple[ScopeKind, str, RateLimitPolicy]]:
+    return [
+        (
+            "ip",
+            client_ip_for_key(request),
+            RateLimitPolicy(
+                limit=settings.daemon_rate_limit_email_complete_per_ip_per_hour,
+                window_seconds=3600,
+            ),
+        )
     ]
 
 
@@ -559,6 +574,16 @@ async def email_complete_endpoint(
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     async with app_state.db_pool.acquire() as conn:
+        await enforce_rate_limit(
+            request=request,
+            limiter=limiter,
+            endpoint="auth:email:complete",
+            policies=_email_complete_ip_rate_limit_policies(
+                request,
+                settings=settings,
+            ),
+        )
+
         challenge_lookup = await _load_email_challenge_lookup(conn, challenge_uuid)
         challenge_scope = body.challenge_id
         if challenge_lookup is not None and challenge_lookup["normalized_email"]:
@@ -569,7 +594,6 @@ async def email_complete_endpoint(
             limiter=limiter,
             endpoint="auth:email:complete",
             policies=_email_complete_rate_limit_policies(
-                request,
                 scope_value=challenge_scope,
                 settings=settings,
             ),
@@ -584,19 +608,19 @@ async def email_complete_endpoint(
         )
         account_service = AccountService(cast(SupportsIdentityQueries, conn))
 
-        async with conn.transaction():
-            try:
-                consumed_challenge: EmailChallengeRow = await challenge_service.consume_challenge(
-                    EmailChallengeConsumeRequest(
-                        challenge_id=challenge_uuid,
-                        plaintext_code=normalized_code,
-                    )
+        try:
+            consumed_challenge: EmailChallengeRow = await challenge_service.consume_challenge(
+                EmailChallengeConsumeRequest(
+                    challenge_id=challenge_uuid,
+                    plaintext_code=normalized_code,
                 )
-            except (EmailChallengeInvalid, EmailChallengeLocked):
-                raise _email_complete_failure()
-            except EmailChallengeUnavailable as exc:
-                raise HTTPException(status_code=503, detail="service_unavailable") from exc
+            )
+        except (EmailChallengeInvalid, EmailChallengeLocked):
+            raise _email_complete_failure()
+        except EmailChallengeUnavailable as exc:
+            raise HTTPException(status_code=503, detail="service_unavailable") from exc
 
+        async with conn.transaction():
             try:
                 claim_result = await account_service.claim_email_identity_in_transaction(
                     normalized_email=consumed_challenge.normalized_email,
@@ -925,29 +949,29 @@ async def google_complete_endpoint(
         )
         account_service = AccountService(cast(SupportsIdentityQueries, conn))
 
+        try:
+            consumed_nonce = await verifier_service.consume_nonce(
+                GoogleNonceConsumeRequest(plaintext_nonce=body.nonce)
+            )
+        except GoogleNonceInvalid as exc:
+            raise _google_complete_failure() from exc
+        except GoogleVerifierUnavailable as exc:
+            raise HTTPException(status_code=503, detail="google_unavailable") from exc
+
+        try:
+            verified = await verifier_service.verify_id_token(
+                GoogleIdTokenVerifyRequest(
+                    id_token_str=body.id_token,
+                    plaintext_nonce=body.nonce,
+                    consumed_nonce=consumed_nonce,
+                )
+            )
+        except GoogleTokenInvalid as exc:
+            raise _google_complete_failure() from exc
+        except GoogleVerifierUnavailable as exc:
+            raise HTTPException(status_code=503, detail="google_unavailable") from exc
+
         async with conn.transaction():
-            try:
-                consumed_nonce = await verifier_service.consume_nonce(
-                    GoogleNonceConsumeRequest(plaintext_nonce=body.nonce)
-                )
-            except GoogleNonceInvalid as exc:
-                raise _google_complete_failure() from exc
-            except GoogleVerifierUnavailable as exc:
-                raise HTTPException(status_code=503, detail="google_unavailable") from exc
-
-            try:
-                verified = await verifier_service.verify_id_token(
-                    GoogleIdTokenVerifyRequest(
-                        id_token_str=body.id_token,
-                        plaintext_nonce=body.nonce,
-                        consumed_nonce=consumed_nonce,
-                    )
-                )
-            except GoogleTokenInvalid as exc:
-                raise _google_complete_failure() from exc
-            except GoogleVerifierUnavailable as exc:
-                raise HTTPException(status_code=503, detail="google_unavailable") from exc
-
             try:
                 claim_result = await account_service.claim_google_identity_in_transaction(
                     google_sub=verified.provider_subject,
