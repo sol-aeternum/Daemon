@@ -545,6 +545,7 @@ class TestEmailCompleteRoute:
         get_settings.cache_clear()
 
         async def fake_consume(_self, request):
+            assert pool.transaction_depth == 0
             return EmailChallengeRow(
                 id=request.challenge_id,
                 normalized_email="user@example.com",
@@ -680,6 +681,7 @@ class TestEmailCompleteRoute:
         consume_state = {"consumed": False}
 
         async def fake_consume(_self, request):
+            assert pool.transaction_depth == 0
             consume_state["consumed"] = True
             return EmailChallengeRow(
                 id=request.challenge_id,
@@ -884,6 +886,7 @@ class TestEmailCompleteRoute:
         attempts = {"remaining": 2}
 
         async def fake_consume(_self, _request):
+            assert pool.transaction_depth == 0
             attempts["remaining"] -= 1
             raise EmailChallengeInvalid("wrong code")
 

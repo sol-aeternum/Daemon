@@ -553,18 +553,16 @@ describe('AuthLanding — hosted mode', () => {
     expect(screen.queryByLabelText(/verification code/i)).toBeNull();
   });
 
-  it('hides the hosted email form when the public email flag is disabled', async () => {
+  it('shows the hosted email form when the public email flag is unset', async () => {
     process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
-    process.env.NEXT_PUBLIC_EMAIL_ENABLED = 'false';
 
     render(<AuthLanding mode="hosted" />);
     await waitForLoadingToFinish();
 
-    expect(screen.queryByLabelText(/email address/i)).toBeNull();
+    expect(screen.getByLabelText(/email address/i)).toBeTruthy();
     expect(
-      screen.queryByRole('button', { name: /send verification code/i }),
-    ).toBeNull();
-    expect(screen.queryByLabelText(/verification code/i)).toBeNull();
+      screen.getByRole('button', { name: /send verification code/i }),
+    ).toBeTruthy();
   });
 });
 

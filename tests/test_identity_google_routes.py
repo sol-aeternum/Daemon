@@ -708,6 +708,30 @@ class TestGoogleCompleteRoute:
         challenge_id = _seed_nonce(pool, plaintext)
         _install_stub_verifier(monkeypatch, claims=_good_claims(nonce=plaintext))
 
+        async def fake_consume(_self, _request):
+            assert pool.transaction_depth == 0
+            row = pool.nonce_store[0]
+            row["consumed_at"] = datetime.now(timezone.utc)
+            from orchestrator.services.identity import GoogleNonceRow
+
+            return GoogleNonceRow(
+                id=row["id"],
+                nonce_verifier_hash=row["nonce_verifier_hash"],
+                user_id_proposed=row["user_id_proposed"],
+                expires_at=row["expires_at"],
+                consumed_at=row["consumed_at"],
+                created_at=row["created_at"],
+            )
+
+        async def fake_verify(_self, _request):
+            assert pool.transaction_depth == 0
+            return VerifiedGoogleIdentity(
+                provider_subject="google-sub-123",
+                normalized_email="user@example.com",
+                original_email="user@example.com",
+                verified_at=datetime.now(timezone.utc),
+            )
+
         async def fake_claim(_self, **_kwargs):
             assert pool.transaction_depth == 1
             pool.claim_markers.append("google-claim")
@@ -721,6 +745,14 @@ class TestGoogleCompleteRoute:
         async def fake_enforce_rate_limit(**_kwargs):
             return None
 
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.GoogleVerifierService.consume_nonce",
+            fake_consume,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.GoogleVerifierService.verify_id_token",
+            fake_verify,
+        )
         monkeypatch.setattr(
             "orchestrator.routes.auth_setup.AccountService.claim_google_identity_in_transaction",
             fake_claim,
@@ -756,6 +788,30 @@ class TestGoogleCompleteRoute:
         challenge_id = _seed_nonce(pool, plaintext)
         _install_stub_verifier(monkeypatch, claims=_good_claims(nonce=plaintext))
 
+        async def fake_consume(_self, _request):
+            assert pool.transaction_depth == 0
+            row = pool.nonce_store[0]
+            row["consumed_at"] = datetime.now(timezone.utc)
+            from orchestrator.services.identity import GoogleNonceRow
+
+            return GoogleNonceRow(
+                id=row["id"],
+                nonce_verifier_hash=row["nonce_verifier_hash"],
+                user_id_proposed=row["user_id_proposed"],
+                expires_at=row["expires_at"],
+                consumed_at=row["consumed_at"],
+                created_at=row["created_at"],
+            )
+
+        async def fake_verify(_self, _request):
+            assert pool.transaction_depth == 0
+            return VerifiedGoogleIdentity(
+                provider_subject="google-sub-123",
+                normalized_email="user@example.com",
+                original_email="user@example.com",
+                verified_at=datetime.now(timezone.utc),
+            )
+
         async def fake_claim(_self, **_kwargs):
             assert pool.transaction_depth == 1
             pool.claim_markers.append("google-claim")
@@ -768,6 +824,14 @@ class TestGoogleCompleteRoute:
         async def fake_enforce_rate_limit(**_kwargs):
             return None
 
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.GoogleVerifierService.consume_nonce",
+            fake_consume,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.GoogleVerifierService.verify_id_token",
+            fake_verify,
+        )
         monkeypatch.setattr(
             "orchestrator.routes.auth_setup.AccountService.claim_google_identity_in_transaction",
             fake_claim,
@@ -803,11 +867,36 @@ class TestGoogleCompleteRoute:
         plaintext = "plaintext-nonce-invalid-token"
         challenge_id = _seed_nonce(pool, plaintext)
 
-        _install_stub_verifier(monkeypatch, error=GoogleTokenInvalid("audience rejected"))
+        async def fake_consume(_self, _request):
+            assert pool.transaction_depth == 0
+            row = pool.nonce_store[0]
+            row["consumed_at"] = datetime.now(timezone.utc)
+            from orchestrator.services.identity import GoogleNonceRow
+
+            return GoogleNonceRow(
+                id=row["id"],
+                nonce_verifier_hash=row["nonce_verifier_hash"],
+                user_id_proposed=row["user_id_proposed"],
+                expires_at=row["expires_at"],
+                consumed_at=row["consumed_at"],
+                created_at=row["created_at"],
+            )
+
+        async def fake_verify(_self, _request):
+            assert pool.transaction_depth == 0
+            raise GoogleTokenInvalid("audience rejected")
 
         async def fake_enforce_rate_limit(**_kwargs):
             return None
 
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.GoogleVerifierService.consume_nonce",
+            fake_consume,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.GoogleVerifierService.verify_id_token",
+            fake_verify,
+        )
         monkeypatch.setattr(
             "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
         )
