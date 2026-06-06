@@ -21,3 +21,12 @@ export function getGoogleClientId(mode?: DeploymentMode): string {
   }
   return process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID?.trim() ?? '';
 }
+
+export function getEmailEnabled(mode?: DeploymentMode): boolean {
+  if ((mode ?? getDeploymentMode()) !== 'hosted') {
+    return false;
+  }
+
+  const env = process.env.NEXT_PUBLIC_EMAIL_ENABLED?.trim().toLowerCase();
+  return env !== 'false';
+}

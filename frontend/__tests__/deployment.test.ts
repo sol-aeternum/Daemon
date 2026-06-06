@@ -1,11 +1,16 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { getDeploymentMode, getGoogleClientId } from '../lib/deployment';
+import {
+  getDeploymentMode,
+  getEmailEnabled,
+  getGoogleClientId,
+} from '../lib/deployment';
 
 describe('deployment config helpers', () => {
   afterEach(() => {
     delete process.env.NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE;
     delete process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
+    delete process.env.NEXT_PUBLIC_EMAIL_ENABLED;
   });
 
   it('defaults to self-hosted when no deployment mode is configured', () => {
@@ -29,5 +34,16 @@ describe('deployment config helpers', () => {
     process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = ' public-client-id ';
 
     expect(getGoogleClientId()).toBe('public-client-id');
+  });
+
+  it('defaults hosted email to enabled when unset', () => {
+    process.env.NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE = 'hosted';
+    expect(getEmailEnabled()).toBe(true);
+  });
+
+  it('returns false for hosted email when NEXT_PUBLIC_EMAIL_ENABLED=false', () => {
+    process.env.NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE = 'hosted';
+    process.env.NEXT_PUBLIC_EMAIL_ENABLED = 'false';
+    expect(getEmailEnabled()).toBe(false);
   });
 });

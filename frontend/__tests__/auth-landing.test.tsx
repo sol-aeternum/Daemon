@@ -109,6 +109,7 @@ function installGoogleMock(): void {
 beforeEach(() => {
   mockSearchParams = new URLSearchParams();
   delete process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
+  delete process.env.NEXT_PUBLIC_EMAIL_ENABLED;
   delete (window as Window & { google?: unknown }).google;
   capturedGoogleCallback = null;
   capturedPromptCallback = null;
@@ -133,6 +134,7 @@ async function waitForLoadingToFinish(): Promise<void> {
 describe('AuthLanding — hosted mode', () => {
   it('renders identity entry points before enrollment', async () => {
     process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
+    process.env.NEXT_PUBLIC_EMAIL_ENABLED = 'true';
 
     render(<AuthLanding mode="hosted" />);
     await waitForLoadingToFinish();
@@ -535,6 +537,34 @@ describe('AuthLanding — hosted mode', () => {
     expect(
       screen.getByRole('button', { name: /complete enrollment/i }),
     ).toBeTruthy();
+  });
+
+  it('hides the hosted email form when the public email flag is disabled', async () => {
+    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
+    process.env.NEXT_PUBLIC_EMAIL_ENABLED = 'false';
+
+    render(<AuthLanding mode="hosted" />);
+    await waitForLoadingToFinish();
+
+    expect(screen.queryByLabelText(/email address/i)).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: /send verification code/i }),
+    ).toBeNull();
+    expect(screen.queryByLabelText(/verification code/i)).toBeNull();
+  });
+
+  it('hides the hosted email form when the public email flag is disabled', async () => {
+    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
+    process.env.NEXT_PUBLIC_EMAIL_ENABLED = 'false';
+
+    render(<AuthLanding mode="hosted" />);
+    await waitForLoadingToFinish();
+
+    expect(screen.queryByLabelText(/email address/i)).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: /send verification code/i }),
+    ).toBeNull();
+    expect(screen.queryByLabelText(/verification code/i)).toBeNull();
   });
 });
 
