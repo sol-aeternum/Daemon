@@ -914,7 +914,7 @@ async def google_complete_endpoint(
             )
 
     try:
-        uuid.UUID(body.challenge_id)
+        challenge_uuid = uuid.UUID(body.challenge_id)
     except (ValueError, AttributeError):
         raise _google_complete_failure()
 
@@ -951,9 +951,12 @@ async def google_complete_endpoint(
 
         try:
             consumed_nonce = await verifier_service.consume_nonce(
-                GoogleNonceConsumeRequest(plaintext_nonce=body.nonce)
+                GoogleNonceConsumeRequest(
+                    challenge_id=challenge_uuid,
+                    plaintext_nonce=body.nonce,
+                )
             )
-        except GoogleNonceInvalid as exc:
+        except (GoogleNonceInvalid, ValueError) as exc:
             raise _google_complete_failure() from exc
         except GoogleVerifierUnavailable as exc:
             raise HTTPException(status_code=503, detail="google_unavailable") from exc
@@ -966,7 +969,7 @@ async def google_complete_endpoint(
                     consumed_nonce=consumed_nonce,
                 )
             )
-        except GoogleTokenInvalid as exc:
+        except (GoogleTokenInvalid, ValueError) as exc:
             raise _google_complete_failure() from exc
         except GoogleVerifierUnavailable as exc:
             raise HTTPException(status_code=503, detail="google_unavailable") from exc

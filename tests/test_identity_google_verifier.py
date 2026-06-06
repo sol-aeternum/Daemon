@@ -231,17 +231,19 @@ class _GoogleMockConn:
         return _Record(self._public_view(row))
 
     def _handle_select_by_verifier(self, args: tuple[Any, ...]) -> _Record | None:
-        presented_verifier = args[0]
+        challenge_id = args[0]
+        presented_verifier = args[1]
         for row in self._store["google_nonce_challenges"]:
-            if row["nonce_verifier_hash"] == presented_verifier:
+            if row["id"] == challenge_id and row["nonce_verifier_hash"] == presented_verifier:
                 return _Record(self._public_view(row))
         return None
 
     def _handle_consume(self, args: tuple[Any, ...]) -> _Record | None:
-        presented_verifier = args[0]
+        challenge_id = args[0]
+        presented_verifier = args[1]
         now = datetime.now(timezone.utc)
         for row in self._store["google_nonce_challenges"]:
-            if row["nonce_verifier_hash"] != presented_verifier:
+            if row["id"] != challenge_id or row["nonce_verifier_hash"] != presented_verifier:
                 continue
             if row["consumed_at"] is not None:
                 return None
@@ -777,7 +779,10 @@ class TestConsumeNonce:
                 ttl_seconds=600,
             )
         )
-        consumed = await service.consume_nonce(GoogleNonceConsumeRequest(plaintext_nonce=plaintext))
+        challenge_id = conn._store["google_nonce_challenges"][0]["id"]
+        consumed = await service.consume_nonce(
+            GoogleNonceConsumeRequest(challenge_id=challenge_id, plaintext_nonce=plaintext)
+        )
         assert consumed.consumed_at is not None
         assert consumed.nonce_verifier_hash == compute_nonce_verifier(plaintext, pepper)
 
@@ -787,7 +792,9 @@ class TestConsumeNonce:
         service = GoogleVerifierService(conn, _dev_settings(), _StubVerifier(claims={}))
         with pytest.raises(GoogleNonceInvalid):
             await service.consume_nonce(
-                GoogleNonceConsumeRequest(plaintext_nonce="nonexistent-nonce")
+                GoogleNonceConsumeRequest(
+                    challenge_id=uuid.uuid4(), plaintext_nonce="nonexistent-nonce"
+                )
             )
 
     @pytest.mark.asyncio
@@ -816,7 +823,12 @@ class TestConsumeNonce:
             }
         )
         with pytest.raises(GoogleNonceInvalid):
-            await service.consume_nonce(GoogleNonceConsumeRequest(plaintext_nonce=plaintext))
+            await service.consume_nonce(
+                GoogleNonceConsumeRequest(
+                    challenge_id=conn._store["google_nonce_challenges"][0]["id"],
+                    plaintext_nonce=plaintext,
+                )
+            )
 
     @pytest.mark.asyncio
     async def test_consume_rejects_already_consumed_replay(self) -> None:
@@ -830,10 +842,15 @@ class TestConsumeNonce:
             )
         )
         # First consume succeeds.
-        await service.consume_nonce(GoogleNonceConsumeRequest(plaintext_nonce=plaintext))
+        challenge_id = conn._store["google_nonce_challenges"][0]["id"]
+        await service.consume_nonce(
+            GoogleNonceConsumeRequest(challenge_id=challenge_id, plaintext_nonce=plaintext)
+        )
         # Second consume (replay) fails.
         with pytest.raises(GoogleNonceInvalid):
-            await service.consume_nonce(GoogleNonceConsumeRequest(plaintext_nonce=plaintext))
+            await service.consume_nonce(
+                GoogleNonceConsumeRequest(challenge_id=challenge_id, plaintext_nonce=plaintext)
+            )
 
     @pytest.mark.asyncio
     async def test_consume_writes_only_to_google_nonce_challenges(self) -> None:
@@ -846,7 +863,10 @@ class TestConsumeNonce:
                 ttl_seconds=600,
             )
         )
-        await service.consume_nonce(GoogleNonceConsumeRequest(plaintext_nonce=plaintext))
+        challenge_id = conn._store["google_nonce_challenges"][0]["id"]
+        await service.consume_nonce(
+            GoogleNonceConsumeRequest(challenge_id=challenge_id, plaintext_nonce=plaintext)
+        )
         for query, _args in conn.calls:
             assert "google_nonce_challenges" in query
             assert "users" not in query
@@ -864,7 +884,33 @@ class TestConsumeNonce:
         conn = _GoogleMockConn()
         service = GoogleVerifierService(conn, _dev_settings(), _StubVerifier(claims={}))
         with pytest.raises(ValueError):
-            await service.consume_nonce(GoogleNonceConsumeRequest(plaintext_nonce=""))
+            await service.consume_nonce(
+                GoogleNonceConsumeRequest(challenge_id=uuid.uuid4(), plaintext_nonce="")
+            )
+
+    @pytest.mark.asyncio
+    async def test_consume_rejects_wrong_challenge_id_without_consuming_real_row(self) -> None:
+        conn = _GoogleMockConn()
+        service = GoogleVerifierService(conn, _dev_settings(), _StubVerifier(claims={}))
+        _, plaintext = await service.issue_nonce(
+            GoogleNonceIssueRequest(
+                ip_hash=None,
+                user_agent_hash=None,
+                ttl_seconds=600,
+            )
+        )
+        real_id = conn._store["google_nonce_challenges"][0]["id"]
+
+        with pytest.raises(GoogleNonceInvalid):
+            await service.consume_nonce(
+                GoogleNonceConsumeRequest(
+                    challenge_id=uuid.uuid4(),
+                    plaintext_nonce=plaintext,
+                )
+            )
+
+        assert conn._store["google_nonce_challenges"][0]["id"] == real_id
+        assert conn._store["google_nonce_challenges"][0]["consumed_at"] is None
 
 
 # ============================================================================

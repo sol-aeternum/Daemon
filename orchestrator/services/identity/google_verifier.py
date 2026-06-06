@@ -616,6 +616,10 @@ class GoogleNonceConsumeRequest:
     """Per-request inputs for
     `GoogleVerifierService.consume_nonce`.
 
+    `challenge_id` is the server-issued nonce row id the
+    client received from `issue_nonce` and echoed back on the
+    completion request.
+
     `plaintext_nonce` is the nonce the client received
     from `issue_nonce` and presented back on the
     `complete` call. The service computes the HMAC
@@ -627,6 +631,7 @@ class GoogleNonceConsumeRequest:
     database, and never returned in any error message.
     """
 
+    challenge_id: UUID
     plaintext_nonce: str
 
 
@@ -855,8 +860,10 @@ class GoogleVerifierService:
                    consumed_at,
                    created_at
             FROM google_nonce_challenges
-            WHERE nonce_verifier_hash = $1
+            WHERE id = $1
+              AND nonce_verifier_hash = $2
             """,
+            request.challenge_id,
             presented_verifier,
         )
         if existing is None:
@@ -880,7 +887,8 @@ class GoogleVerifierService:
             """
             UPDATE google_nonce_challenges
             SET consumed_at = NOW()
-            WHERE nonce_verifier_hash = $1
+            WHERE id = $1
+              AND nonce_verifier_hash = $2
               AND consumed_at IS NULL
               AND expires_at > NOW()
             RETURNING id,
@@ -890,6 +898,7 @@ class GoogleVerifierService:
                       consumed_at,
                       created_at
             """,
+            request.challenge_id,
             presented_verifier,
         )
         if consumed is None:
@@ -904,8 +913,10 @@ class GoogleVerifierService:
                        consumed_at,
                        created_at
                 FROM google_nonce_challenges
-                WHERE nonce_verifier_hash = $1
+                WHERE id = $1
+                  AND nonce_verifier_hash = $2
                 """,
+                request.challenge_id,
                 presented_verifier,
             )
             if post is None:
