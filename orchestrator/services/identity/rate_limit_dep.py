@@ -174,9 +174,8 @@ async def enforce_rate_limit(
     Each policy is either a `(scope_kind, raw_value, policy)` tuple or a
     `(scope_kind, raw_value, policy, endpoint_override)` tuple. A request
     passes only if every check returns `allowed=True`. If any check
-    returns `allowed=False`, the function raises a 429 with the
-    `Retry-After` from the most-restrictive failure (the maximum
-    `retry_after_seconds` across all failed checks).
+    returns `allowed=False`, the function raises a 429 immediately and
+    does not charge later scopes on the already-rejected request.
 
     Fail-closed behavior in hosted production:
       - If `daemon_hosted_identity_enabled` is true and
@@ -201,8 +200,6 @@ async def enforce_rate_limit(
             _raise_503()
         return
 
-    worst_retry_after = 0
-    blocked = False
     for policy_spec in policies:
         if len(policy_spec) == 3:
             scope_kind, raw_value, policy = policy_spec
@@ -228,22 +225,7 @@ async def enforce_rate_limit(
             return
 
         if not decision.allowed:
-            blocked = True
-            if decision.retry_after_seconds > worst_retry_after:
-                worst_retry_after = decision.retry_after_seconds
-
-    if blocked:
-        # Synthetic decision: advertise the worst-case Retry-After
-        # without exposing the per-scope count/limit in the response.
-        _raise_429(
-            RateLimitDecision(
-                allowed=False,
-                count=0,
-                limit=0,
-                window_seconds=0,
-                retry_after_seconds=worst_retry_after,
-            )
-        )
+            _raise_429(decision)
 
 
 def client_ip_for_key(request: Request) -> str:

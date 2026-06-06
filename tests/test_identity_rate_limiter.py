@@ -570,6 +570,59 @@ class TestEnforceRateLimit:
             get_settings.cache_clear()
 
     @pytest.mark.asyncio
+    async def test_stops_after_first_blocked_scope(
+        self, request_factory, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from fastapi import HTTPException
+
+        from orchestrator.services.identity import enforce_rate_limit
+
+        monkeypatch.setenv("DAEMON_HOSTED_IDENTITY_ENABLED", "true")
+        monkeypatch.setenv("DAEMON_HOSTED_IDENTITY_REQUIRE_REDIS", "true")
+        monkeypatch.setenv("DAEMON_AUTH_PEPPER", HMAC_SECRET)
+        from orchestrator.config import get_settings
+
+        get_settings.cache_clear()
+        try:
+            fake = cast(ArqRedis, FakeRedis())
+            limiter = RateLimiter(fake, hmac_secret=HMAC_SECRET)
+            blocked_key = limiter.build_key("auth:email:start:ip:hour", "ip", "1.2.3.4")
+            cast(Any, fake).store[blocked_key] = [5, 3_600_000]
+            req = request_factory("1.2.3.4", redis=fake)
+
+            with pytest.raises(HTTPException) as excinfo:
+                await enforce_rate_limit(
+                    request=req,
+                    limiter=limiter,
+                    endpoint="auth:email:start",
+                    policies=[
+                        (
+                            "ip",
+                            "1.2.3.4",
+                            RateLimitPolicy(limit=3, window_seconds=3600),
+                            "auth:email:start:ip:hour",
+                        ),
+                        (
+                            "email",
+                            "user@example.com",
+                            RateLimitPolicy(limit=10, window_seconds=86400),
+                            "auth:email:start:email:day",
+                        ),
+                    ],
+                )
+
+            assert excinfo.value.status_code == 429
+            assert len(fake.script.calls) == 1
+            second_key = limiter.build_key(
+                "auth:email:start:email:day",
+                "email",
+                "user@example.com",
+            )
+            assert second_key not in fake.store
+        finally:
+            get_settings.cache_clear()
+
+    @pytest.mark.asyncio
     async def test_raises_503_when_redis_absent_in_hosted_production(
         self, request_factory, monkeypatch: pytest.MonkeyPatch
     ) -> None:
