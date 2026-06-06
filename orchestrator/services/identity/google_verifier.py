@@ -799,14 +799,16 @@ class GoogleVerifierService:
         The verification is
         `HMAC-SHA256(plaintext_nonce, pepper)` compared
         to `nonce_verifier_hash` via guarded SQL
-        equality on the consume UPDATE. The verifier
-        for the presented nonce is computed locally
-        with `compute_nonce_verifier` and then matched
-        inside the
-        `WHERE consumed_at IS NULL AND expires_at > NOW() AND nonce_verifier_hash = $1`
-        clause; a non-matching row leaves the UPDATE
-        with `RETURNING NULL` and the helper raises the
-        typed error. There is no in-Python
+        equality on the consume UPDATE, and it is bound
+        to the server-issued row id from
+        `request.challenge_id`. The verifier for the
+        presented nonce is computed locally with
+        `compute_nonce_verifier` and then matched inside
+        the `WHERE id = $1 AND nonce_verifier_hash = $2
+        AND consumed_at IS NULL AND expires_at > NOW()`
+        clause; a wrong challenge id or wrong nonce
+        leaves the UPDATE with `RETURNING NULL` and the
+        helper raises the typed error. There is no in-Python
         `hmac.compare_digest` call: the SQL equality is
         the authoritative match, and the same WHERE
         guard is what makes the consume atomic with the
