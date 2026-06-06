@@ -288,6 +288,20 @@ def normalize_email(raw: str) -> str:
     normalized = raw.strip().lower()
     if not normalized:
         raise ValueError("normalize_email requires a non-empty input")
+    if any(ch.isspace() for ch in normalized):
+        raise ValueError("normalize_email requires a single-line email address")
+    if normalized.count("@") != 1:
+        raise ValueError("normalize_email requires exactly one @")
+    local_part, domain = normalized.split("@", 1)
+    if not local_part or not domain:
+        raise ValueError("normalize_email requires non-empty local and domain parts")
+    if "." not in domain:
+        raise ValueError("normalize_email requires a dotted domain")
+    labels = domain.split(".")
+    if any(not label for label in labels):
+        raise ValueError("normalize_email requires non-empty domain labels")
+    if any(any(ord(ch) < 33 or ord(ch) == 127 for ch in label) for label in [local_part, *labels]):
+        raise ValueError("normalize_email contains control characters")
     return normalized
 
 

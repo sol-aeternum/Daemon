@@ -642,6 +642,18 @@ class TestNormalizeEmail:
         with pytest.raises(ValueError):
             normalize_email(None)  # type: ignore[arg-type]
 
+    def test_rejects_missing_at_sign(self) -> None:
+        with pytest.raises(ValueError):
+            normalize_email("not-an-address")
+
+    def test_rejects_missing_domain_dot(self) -> None:
+        with pytest.raises(ValueError):
+            normalize_email("user@example")
+
+    def test_rejects_empty_domain_label(self) -> None:
+        with pytest.raises(ValueError):
+            normalize_email("user@example..com")
+
 
 # ---------------------------------------------------------------------------
 # Lookups

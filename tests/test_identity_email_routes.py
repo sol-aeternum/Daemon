@@ -268,6 +268,38 @@ class TestEmailStartRoute:
         ]
 
     @pytest.mark.asyncio
+    async def test_email_start_rejects_malformed_email_before_challenge_or_mail(
+        self, route_client, monkeypatch
+    ) -> None:
+        client, _pool = route_client
+
+        def fail_get_rate_limiter(_request):
+            raise AssertionError("get_rate_limiter should not be called for malformed email")
+
+        async def fail_create(_self, _request):
+            raise AssertionError("challenge should not be created for malformed email")
+
+        def fail_get_mail_sender(_settings):
+            raise AssertionError("mail sender should not be built for malformed email")
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.get_rate_limiter", fail_get_rate_limiter
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.EmailChallengeService.create_challenge_for_delivery",
+            fail_create,
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.get_mail_sender", fail_get_mail_sender)
+
+        response = await client.post(
+            "/v1/auth/email/start",
+            json={"email": "not-an-address"},
+        )
+
+        assert response.status_code == 400, response.text
+        assert response.json() == {"detail": "invalid_email"}
+
+    @pytest.mark.asyncio
     async def test_email_start_blocks_when_email_provider_disabled(
         self, route_client, monkeypatch
     ) -> None:
