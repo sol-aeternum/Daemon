@@ -1376,13 +1376,22 @@ async def enroll_complete_endpoint(
 
             if exc_to_raise is None:
                 user_id: uuid.UUID = pending_row["user_id"]
+                tenant_row = await AccountService(
+                    cast(SupportsIdentityQueries, conn)
+                ).find_personal_tenant(user_id)
+                if tenant_row is None:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Enrollment tenant unavailable",
+                    )
                 device_id = await conn.fetchval(
                     """
-                    INSERT INTO devices (user_id, display_name, platform)
-                    VALUES ($1, $2, $3)
+                    INSERT INTO devices (user_id, tenant_id, display_name, platform)
+                    VALUES ($1, $2, $3, $4)
                     RETURNING id
                     """,
                     user_id,
+                    tenant_row.id,
                     "Enrolled Device",
                     body.client_kind,
                 )
@@ -1396,16 +1405,17 @@ async def enroll_complete_endpoint(
                 await conn.execute(
                     """
                     INSERT INTO sessions (
-                        user_id, device_id, client_kind,
+                        user_id, device_id, client_kind, tenant_id,
                         access_token_hash, access_expires_at,
                         refresh_token_hash, refresh_expires_at,
                         created_at
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                     """,
                     user_id,
                     device_id,
                     body.client_kind,
+                    tenant_row.id,
                     hash_token(access_token),
                     access_expires,
                     hash_token(refresh_token),
