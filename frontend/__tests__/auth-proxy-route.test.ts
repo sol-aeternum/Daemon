@@ -50,4 +50,34 @@ describe('auth proxy forwarded header handling', () => {
     expect(headers.get('X-Forwarded-Proto')).toBe('https');
     expect(headers.get('Authorization')).toBe('Bearer daemon-token');
   });
+
+  it('preserves original query strings when forwarding to backend', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const req = new Request(
+      'http://localhost:3000/api/v1/auth/devices?include_revoked=true&limit=5',
+      {
+        method: 'GET',
+        headers: {
+          host: 'localhost:3000',
+          'x-forwarded-host': 'localhost:3000',
+          'x-forwarded-proto': 'https',
+        },
+      },
+    );
+
+    const response = await POST(req, {
+      params: Promise.resolve({ path: ['devices'] }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [url] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toMatch(/\/v1\/auth\/devices\?include_revoked=true&limit=5$/);
+  });
 });

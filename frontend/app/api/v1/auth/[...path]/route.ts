@@ -46,6 +46,7 @@ async function proxyRequest(
   const method = req.method.toUpperCase();
   const { path } = await context.params;
   const normalizedPath = path.join('/');
+  const search = new URL(req.url).search;
 
   const requestHeaders = buildProxyHeaders(req);
 
@@ -62,7 +63,7 @@ async function proxyRequest(
 
   for (const apiUrl of API_URLS) {
     try {
-      backendRes = await fetch(`${apiUrl}/v1/auth/${normalizedPath}`, {
+      backendRes = await fetch(`${apiUrl}/v1/auth/${normalizedPath}${search}`, {
         method,
         headers: requestHeaders,
         credentials: 'include',
