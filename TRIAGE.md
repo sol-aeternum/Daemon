@@ -11,6 +11,7 @@
 - **Likely cause**: The OpenCode language-server environment for the detached `/tmp` worktree is not inheriting the repo's Python venv / frontend dependency graph the same way as runtime test commands do (confidence 90%).
 - **Suggested action**: Treat runtime verification (`/home/sol/daemon/.venv/bin/python -m pytest`, `npm run ...` in the existing frontend install) as the authoritative gate for this worktree, or configure the LSP environment to resolve dependencies from the shared repo installation paths.
 - **Seen again**: 2026-06-05 during the PR #7 current-head follow-up fix pass when `lsp_diagnostics` on `frontend/lib/deployment.ts` and `orchestrator/routes/auth_setup.py` again reported `/tmp` worktree dependency-resolution noise (`Cannot find name 'process'` / unresolved `fastapi`) while runtime frontend/backend verification passed from the shared repo toolchains.
+- **Seen again**: 2026-06-07 during the final six-comment hosted-identity fix batch when changed-file diagnostics in `/tmp/opencode/hosted-identity-f4-fix` again reported unresolved `fastapi` / `pytest` / `pytest_asyncio` / `httpx` imports and no `.sql` LSP server for `migrations/032_hosted_identity_claim.sql`, while command-line verification in the shared backend/frontend environments remained the intended source of truth.
 
 ## 2026-06-05 UTC — Doc freshness migration metadata drift
 - **Severity**: warning
@@ -92,6 +93,18 @@
 - **Suggested action**: Fix `lib/events.ts` to export `isAdvisorEvent` or remove the broken import from `lib/advisorEvents.ts`. Out of scope for Task 17.
 - **Seen again**: 2026-05-28 during PR #4 review-fix QA when `npm run build` in `frontend/` failed at the same `./lib/advisorEvents.ts:3:21` missing `isAdvisorEvent` export after successful webpack compilation.
 - **Seen again**: 2026-05-31 during PR #4 newest review-comment fix verification when `npx tsc --noEmit --project tsconfig.json --pretty false` failed only in the known advisor/tool-call event debt files: `__tests__/advisor-events.test.ts`, `__tests__/tool-call-log.test.ts`, and `lib/advisorEvents.ts`; changed files had clean LSP diagnostics and targeted auth tests passed.
+- **Seen again**: 2026-06-07 during the final six-comment hosted-identity fix batch when `npm run build` in `frontend/` compiled the touched auth proxy route successfully, then failed in the pre-existing advisor path at `./lib/advisorEvents.ts:3:21` with `Module '"./events"' has no exported member 'isAdvisorEvent'`.
+
+## 2026-06-07 UTC — Frontend type-check expects missing .next cache-life type artifact
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: final six-comment hosted-identity fix batch verification
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: `npm run type-check` in `frontend/` failed before reaching the changed auth proxy files because `tsc --noEmit` includes `.next/types/**/*.ts` and expected `.next/types/cache-life.d.ts`, but the generated `.next/types/` directory only contained `app/`, `package.json`, `routes.d.ts`, and `validator.ts`.
+- **Evidence**: `error TS6053: File '/tmp/opencode/hosted-identity-f4-fix/frontend/.next/types/cache-life.d.ts' not found. The file is in the program because: Matched by include pattern '.next/types/**/*.ts' in '/tmp/opencode/hosted-identity-f4-fix/frontend/tsconfig.json'`; `ls .next/types` returned `app`, `package.json`, `routes.d.ts`, `validator.ts`.
+- **Likely cause**: The current frontend `tsconfig.json`/Next 16 type-generation setup expects a `cache-life.d.ts` artifact that is not being emitted in this worktree's generated `.next/types` output (confidence 85%).
+- **Suggested action**: Reconcile the `.next/types/**/*.ts` include with the actual Next-generated type artifacts (or ensure `next typegen` emits `cache-life.d.ts`) before treating full frontend type-check as green.
 
 ## 2026-05-28T12:56:31Z — Broad memories route tests now fail unauthorized after auth hardening
 
