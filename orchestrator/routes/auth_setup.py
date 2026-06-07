@@ -463,6 +463,7 @@ async def email_start_endpoint(
 
     challenge_row: EmailChallengeRow | None = None
     plaintext_code: str | None = None
+    sender = None
     eligible_for_delivery = settings.daemon_signup_mode == "open"
 
     async with app_state.db_pool.acquire() as conn:
@@ -475,6 +476,10 @@ async def email_start_endpoint(
             eligible_for_delivery = existing_user is not None
 
         if eligible_for_delivery:
+            try:
+                sender = get_mail_sender(settings)
+            except MailSenderConfigError as exc:
+                raise HTTPException(status_code=503, detail="email_unavailable") from exc
             service = EmailChallengeService(cast(SupportsEmailChallengeQueries, conn), settings)
             try:
                 challenge_row, plaintext_code = await service.create_challenge_for_delivery(
@@ -502,10 +507,7 @@ async def email_start_endpoint(
         )
 
     if eligible_for_delivery and plaintext_code is not None:
-        try:
-            sender = get_mail_sender(settings)
-        except MailSenderConfigError as exc:
-            raise HTTPException(status_code=503, detail="email_unavailable") from exc
+        assert sender is not None
         background_tasks.add_task(
             sender.send,
             _build_email_code_message(

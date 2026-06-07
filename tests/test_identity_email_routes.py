@@ -422,6 +422,53 @@ class TestEmailStartRoute:
         assert len(sender.messages) == 1
 
     @pytest.mark.asyncio
+    async def test_email_start_eligible_mail_sender_failure_happens_before_challenge_create(
+        self, route_client, monkeypatch
+    ) -> None:
+        client, _pool = route_client
+        create_called = False
+
+        async def fail_create(_self, _request):
+            nonlocal create_called
+            create_called = True
+            raise AssertionError(
+                "challenge should not be created when mail sender config is invalid"
+            )
+
+        async def fake_enforce_rate_limit(**_kwargs):
+            return None
+
+        async def no_sleep(_started_at: float) -> None:
+            return None
+
+        def fail_get_mail_sender(_settings):
+            from orchestrator.services.identity import MailSenderConfigError
+
+            raise MailSenderConfigError("sender misconfigured")
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.EmailChallengeService.create_challenge_for_delivery",
+            fail_create,
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.get_mail_sender", fail_get_mail_sender)
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup._sleep_for_start_timing_floor", no_sleep
+        )
+
+        response = await client.post(
+            "/v1/auth/email/start",
+            json={"email": "eligible@example.com"},
+            headers={"User-Agent": "pytest-agent/1.0"},
+        )
+
+        assert response.status_code == 503, response.text
+        assert response.json() == {"detail": "email_unavailable"}
+        assert create_called is False
+
+    @pytest.mark.asyncio
     async def test_email_start_blocks_when_email_provider_disabled(
         self, route_client, monkeypatch
     ) -> None:
