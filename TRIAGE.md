@@ -284,6 +284,7 @@
 - **Suggested action**: Commission a frontend dependency remediation task using npm-managed upgrades and explicit regression testing for Next/PWA/AI SDK flows.
 - **Seen again**: 2026-05-31 during Task 6 when `npm install --save-dev @commitlint/cli @commitlint/config-conventional` completed but again reported `26 vulnerabilities (4 low, 8 moderate, 14 high)`; commitlint installation proceeded, and vulnerability remediation remains out of scope for Task 6.
 - **Seen again**: 2026-05-31T06:31Z during Task 7 local CI parity; `.sisyphus/evidence/task-7-ci-local-parity.txt` shows `npm ci` reporting 26 vulnerabilities and `npm run audit:ci` exiting 1.
+- **Seen again / changed count**: 2026-06-05T03:34Z during F3 Real Manual QA, `npm ci` in `/tmp/opencode/hosted-identity-pr-f3/frontend` completed but reported `27 vulnerabilities (4 low, 8 moderate, 14 high, 1 critical)`. Install succeeded, but the audit inventory is worse than the previously recorded 26-vulnerability state.
 
 ## 2026-05-31 05:54 UTC — npm ci Emits Deprecated Frontend Dependency Warnings
 - **Severity**: warning
@@ -1239,6 +1240,7 @@
 - **Evidence**: `SyntaxError: unterminated triple-quoted string literal (detected at line 27)` followed by `/usr/bin/bash: -c: line 32: unexpected EOF while looking for matching ``'`.
 - **Likely cause**: The append payload embedded a nested `PY` heredoc marker and fenced code block inside a triple-quoted Python string, prematurely terminating the outer heredoc (confidence 99%).
 - **Suggested action**: For artifact append commands, avoid nested heredoc markers inside Python string literals or use a generated text file/string without matching delimiter text.
+- **Seen again 2026-06-05T03:12:52Z**: F1 plan-compliance report write failed with `SyntaxError: unterminated triple-quoted string literal (detected at line 222)` because the report body contained an exact `PY` heredoc delimiter line inside a fenced code block. Retried with a unique heredoc delimiter.
 
 ## 2026-05-27 UTC — Workspace had unrelated uncommitted files during W1 plan patch verification
 - **Severity**: warning
@@ -1403,6 +1405,7 @@
 - **Seen again**: 2026-06-07 during PR hosted-identity follow-up for failing backend gates. `uv run bandit -r orchestrator providers scripts tests` exited 1 with `Low: 4535`, `Medium: 25`, `High: 0`, and `tests/test_video_e2e.py (syntax error while parsing AST from file)`; `uv run pip-audit` exited 1 with `Found 41 known vulnerabilities in 14 packages`; `PYTHONPATH=. uv run pytest -q` exited 2 with the same 8 collection errors/import drifts plus `tests/test_video_e2e.py:596 SyntaxError: unmatched ')'`.
 - **Likely cause**: The CI baseline PR intentionally introduced first-run inventories before the existing project debt was remediated, but several inventory commands were still wired as required/failing steps (confidence 95%).
 - **Suggested action**: Keep these inventory steps non-blocking until dedicated remediation tasks upgrade dependencies, repair pytest collection, fix frontend contracts/tests, and apply mechanical formatting.
+- **Seen again**: 2026-06-07 during PR #8 review-fix verification when `uv run bandit -r orchestrator providers scripts tests` exited 1 with pre-existing inventory (`Low: 3480`, `Medium: 26`, `High: 0`) and `tests/test_video_e2e.py (syntax error while parsing AST from file)`. A scoped production-file Bandit check for `orchestrator/eval/fact_harness.py` and `orchestrator/eval/chunk_harness.py` passed with no issues.
 
 ## [2026-05-31T10:02:00Z] — BasedPyright Baseline Was Not Loaded By Default Command
 - **Severity**: warning

@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from types import SimpleNamespace
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from orchestrator.eval.runner import (
-    LongMemEvalRunner,
+from orchestrator.eval.fact_harness import (
+    LongMemEvalFactRunner,
     load_dataset,
     load_runner_checkpoint,
 )
@@ -23,8 +23,8 @@ def write_dataset(path: Path, payload: list[dict[str, Any]]) -> None:
 
 def make_runner(
     tmp_path: Path, dataset_path: Path, *, limit: int | None = None
-) -> LongMemEvalRunner:
-    return LongMemEvalRunner(
+) -> LongMemEvalFactRunner:
+    return LongMemEvalFactRunner(
         dataset_path=dataset_path,
         output_path=tmp_path / "results.jsonl",
         checkpoint_path=tmp_path / "checkpoint.json",
@@ -144,26 +144,26 @@ async def test_ingest_resumes_from_checkpoint(
 
     mock_pool = AsyncMock()
     monkeypatch.setattr(
-        "orchestrator.eval.runner.get_settings",
+        "orchestrator.eval.fact_harness.get_settings",
         lambda: SimpleNamespace(
             database_url="postgresql://daemon:daemon@postgres/daemon",
             daemon_encryption_key="test-key",
         ),
     )
     monkeypatch.setattr(
-        "orchestrator.eval.runner.asyncpg.create_pool",
+        "orchestrator.eval.fact_harness.asyncpg.create_pool",
         AsyncMock(return_value=mock_pool),
     )
-    monkeypatch.setattr("orchestrator.eval.runner.ContentEncryption", lambda key: object())
+    monkeypatch.setattr("orchestrator.eval.fact_harness.ContentEncryption", lambda key: object())
     monkeypatch.setattr(
-        "orchestrator.eval.runner.MemoryStore", lambda db_pool, encryption: MagicMock()
+        "orchestrator.eval.fact_harness.MemoryStore", lambda db_pool, encryption: MagicMock()
     )
     monkeypatch.setattr(
-        "orchestrator.eval.runner.create_test_user", AsyncMock(return_value="user-id")
+        "orchestrator.eval.fact_harness.create_test_user", AsyncMock(return_value="user-id")
     )
 
     ingest_session_mock = AsyncMock(return_value={"session_id": "session-2", "status": "complete"})
-    monkeypatch.setattr("orchestrator.eval.runner.ingest_session", ingest_session_mock)
+    monkeypatch.setattr("orchestrator.eval.fact_harness.ingest_session", ingest_session_mock)
 
     results = await runner.ingest()
 
@@ -241,19 +241,19 @@ async def test_evaluate_resumes_from_checkpoint_and_writes_results(
 
     mock_pool = AsyncMock()
     monkeypatch.setattr(
-        "orchestrator.eval.runner.get_settings",
+        "orchestrator.eval.fact_harness.get_settings",
         lambda: SimpleNamespace(
             database_url="postgresql://daemon:daemon@postgres/daemon",
             daemon_encryption_key="test-key",
         ),
     )
     monkeypatch.setattr(
-        "orchestrator.eval.runner.asyncpg.create_pool",
+        "orchestrator.eval.fact_harness.asyncpg.create_pool",
         AsyncMock(return_value=mock_pool),
     )
-    monkeypatch.setattr("orchestrator.eval.runner.ContentEncryption", lambda key: object())
+    monkeypatch.setattr("orchestrator.eval.fact_harness.ContentEncryption", lambda key: object())
     monkeypatch.setattr(
-        "orchestrator.eval.runner.MemoryStore", lambda pool, encryption: MagicMock()
+        "orchestrator.eval.fact_harness.MemoryStore", lambda pool, encryption: MagicMock()
     )
 
     evaluate_single_mock = AsyncMock(
@@ -267,7 +267,7 @@ async def test_evaluate_resumes_from_checkpoint_and_writes_results(
             "memories_used": 1,
         }
     )
-    monkeypatch.setattr("orchestrator.eval.runner.evaluate_single", evaluate_single_mock)
+    monkeypatch.setattr("orchestrator.eval.fact_harness.evaluate_single", evaluate_single_mock)
 
     results = await runner.evaluate()
 
@@ -318,22 +318,22 @@ async def test_run_reuses_shared_corpus_across_multiple_questions(
 
     mock_pool = AsyncMock()
     monkeypatch.setattr(
-        "orchestrator.eval.runner.get_settings",
+        "orchestrator.eval.fact_harness.get_settings",
         lambda: SimpleNamespace(
             database_url="postgresql://daemon:daemon@postgres/daemon",
             daemon_encryption_key="test-key",
         ),
     )
     monkeypatch.setattr(
-        "orchestrator.eval.runner.asyncpg.create_pool",
+        "orchestrator.eval.fact_harness.asyncpg.create_pool",
         AsyncMock(return_value=mock_pool),
     )
-    monkeypatch.setattr("orchestrator.eval.runner.ContentEncryption", lambda key: object())
+    monkeypatch.setattr("orchestrator.eval.fact_harness.ContentEncryption", lambda key: object())
     monkeypatch.setattr(
-        "orchestrator.eval.runner.MemoryStore", lambda db_pool, encryption: MagicMock()
+        "orchestrator.eval.fact_harness.MemoryStore", lambda db_pool, encryption: MagicMock()
     )
     monkeypatch.setattr(
-        "orchestrator.eval.runner.create_test_user", AsyncMock(return_value="user-id")
+        "orchestrator.eval.fact_harness.create_test_user", AsyncMock(return_value="user-id")
     )
 
     async def fake_ingest_session(**kwargs: Any) -> dict[str, Any]:
@@ -356,9 +356,11 @@ async def test_run_reuses_shared_corpus_across_multiple_questions(
             "memories_used": 1,
         }
 
-    monkeypatch.setattr("orchestrator.eval.runner.ingest_session", fake_ingest_session)
-    monkeypatch.setattr("orchestrator.eval.runner.evaluate_single", fake_evaluate_single)
-    monkeypatch.setattr("orchestrator.eval.runner.print_results", lambda results, accuracy: None)
+    monkeypatch.setattr("orchestrator.eval.fact_harness.ingest_session", fake_ingest_session)
+    monkeypatch.setattr("orchestrator.eval.fact_harness.evaluate_single", fake_evaluate_single)
+    monkeypatch.setattr(
+        "orchestrator.eval.fact_harness.print_results", lambda results, accuracy: None
+    )
 
     payload = await runner.run()
 
@@ -405,7 +407,9 @@ def test_score_uses_checkpoint_results_and_writes_summary(
             }
         )
     )
-    monkeypatch.setattr("orchestrator.eval.runner.print_results", lambda results, accuracy: None)
+    monkeypatch.setattr(
+        "orchestrator.eval.fact_harness.print_results", lambda results, accuracy: None
+    )
 
     payload = runner.score()
 
@@ -545,7 +549,9 @@ def test_score_falls_back_to_jsonl_when_evaluate_results_empty(
         )
     )
 
-    monkeypatch.setattr("orchestrator.eval.runner.print_results", lambda results, accuracy: None)
+    monkeypatch.setattr(
+        "orchestrator.eval.fact_harness.print_results", lambda results, accuracy: None
+    )
 
     payload = runner.score()
 
@@ -585,3 +591,233 @@ def test_score_raises_when_no_results_available(tmp_path: Path) -> None:
 
     with pytest.raises(FileNotFoundError, match="No evaluation results available"):
         runner.score()
+
+
+@pytest.mark.asyncio
+async def test_reset_canonical_benchmark_removes_checkpoint_and_reports_reset(
+    tmp_path: Path,
+) -> None:
+    from orchestrator.eval.fact_harness import CANONICAL_RESET_TABLES, reset_canonical_benchmark
+
+    checkpoint_path = tmp_path / "longmemeval_checkpoint.json"
+    checkpoint_path.write_text(json.dumps({"version": 2}))
+
+    class FakePool:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        async def execute(self, query: str, *_args: object) -> str:
+            self.queries.append(query)
+            return "DELETE 2"
+
+    pool = FakePool()
+
+    summary = await reset_canonical_benchmark(cast(Any, pool), checkpoint_path, cleanup_redis=False)
+
+    assert summary.success is True
+    assert summary.error is None
+    assert summary.total_rows_deleted == 2 * len(CANONICAL_RESET_TABLES)
+    assert summary.checkpoint_reset == {
+        "checkpoint_path": str(checkpoint_path),
+        "checkpoint_existed": True,
+        "checkpoint_removed": True,
+    }
+    assert not checkpoint_path.exists()
+    assert len(pool.queries) == len(CANONICAL_RESET_TABLES)
+
+
+@pytest.mark.asyncio
+async def test_reset_canonical_benchmark_reports_missing_checkpoint(
+    tmp_path: Path,
+) -> None:
+    from orchestrator.eval.fact_harness import reset_canonical_benchmark
+
+    checkpoint_path = tmp_path / "missing_checkpoint.json"
+
+    class FakePool:
+        async def execute(self, _query: str, *_args: object) -> str:
+            return "DELETE 0"
+
+    summary = await reset_canonical_benchmark(
+        cast(Any, FakePool()), checkpoint_path, cleanup_redis=False
+    )
+
+    assert summary.success is True
+    assert summary.checkpoint_reset == {
+        "checkpoint_path": str(checkpoint_path),
+        "checkpoint_existed": False,
+        "checkpoint_removed": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_reset_canonical_benchmark_redis_cleanup_default_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When cleanup_redis is omitted, the redis helper must NOT be invoked."""
+    from orchestrator.eval import fact_harness
+
+    called = {"n": 0}
+
+    def _spy() -> dict[str, Any]:
+        called["n"] += 1
+        return {"keys_deleted": 999, "error": None}
+
+    monkeypatch.setattr(fact_harness, "_cleanup_redis_keys", _spy)
+
+    class FakePool:
+        async def execute(self, _query: str, *_args: object) -> str:
+            return "DELETE 1"
+
+    summary = await fact_harness.reset_canonical_benchmark(
+        cast(Any, FakePool()), tmp_path / "ckpt.json"
+    )
+    assert summary.success is True
+    assert summary.redis_keys_deleted == 0
+    assert called["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_reset_canonical_benchmark_redis_cleanup_when_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When cleanup_redis=True, the helper runs and its key-count is reported."""
+    from orchestrator.eval import fact_harness
+
+    def _spy() -> dict[str, Any]:
+        return {"keys_deleted": 7, "error": None}
+
+    monkeypatch.setattr(fact_harness, "_cleanup_redis_keys", _spy)
+
+    class FakePool:
+        async def execute(self, _query: str, *_args: object) -> str:
+            return "DELETE 2"
+
+    summary = await fact_harness.reset_canonical_benchmark(
+        cast(Any, FakePool()), tmp_path / "ckpt.json", cleanup_redis=True
+    )
+    assert summary.success is True
+    assert summary.redis_keys_deleted == 7
+    assert summary.redis_error is None
+
+
+@pytest.mark.asyncio
+async def test_reset_canonical_benchmark_redis_failure_does_not_fail_reset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Redis errors are surfaced via redis_error but success stays True (best-effort)."""
+    from orchestrator.eval import fact_harness
+
+    def _spy() -> dict[str, Any]:
+        return {"keys_deleted": 0, "error": "connection refused"}
+
+    monkeypatch.setattr(fact_harness, "_cleanup_redis_keys", _spy)
+
+    class FakePool:
+        async def execute(self, _query: str, *_args: object) -> str:
+            return "DELETE 3"
+
+    summary = await fact_harness.reset_canonical_benchmark(
+        cast(Any, FakePool()), tmp_path / "ckpt.json", cleanup_redis=True
+    )
+    assert summary.success is True
+    assert summary.redis_keys_deleted == 0
+    assert summary.redis_error == "connection refused"
+
+
+@pytest.mark.asyncio
+async def test_reset_canonical_benchmark_redis_not_attempted_when_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When cleanup_redis=False (the default), redis_error stays None and the helper is not called."""
+    from orchestrator.eval import fact_harness
+
+    called = {"n": 0}
+
+    def _spy() -> dict[str, Any]:
+        called["n"] += 1
+        return {"keys_deleted": 0, "error": "should-not-be-seen"}
+
+    monkeypatch.setattr(fact_harness, "_cleanup_redis_keys", _spy)
+
+    class FakePool:
+        async def execute(self, _query: str, *_args: object) -> str:
+            return "DELETE 1"
+
+    summary = await fact_harness.reset_canonical_benchmark(
+        cast(Any, FakePool()), tmp_path / "ckpt.json"
+    )
+    assert called["n"] == 0
+    assert summary.redis_keys_deleted == 0
+    assert summary.redis_error is None
+
+
+@pytest.mark.asyncio
+async def test_reset_canonical_benchmark_checkpoint_reset_default_is_empty_dict() -> None:
+    """When no checkpoint_path is passed, checkpoint_reset defaults to an empty
+    dict (not None) so callers that do ``summary.checkpoint_reset.get(...)`` don't crash.
+    """
+    from orchestrator.eval.fact_harness import reset_canonical_benchmark
+
+    class FakePool:
+        async def execute(self, _query: str, *_args: object) -> str:
+            return "DELETE 1"
+
+    summary = await reset_canonical_benchmark(cast(Any, FakePool()))
+    assert summary.checkpoint_reset == {
+        "checkpoint_path": None,
+        "checkpoint_existed": False,
+        "checkpoint_removed": False,
+    }
+
+
+def test_legacy_runner_module_re_exports_filename_constants() -> None:
+    """Back-compat: ``from orchestrator.eval.runner import RESULTS_FILENAME`` must work."""
+    from orchestrator.eval.runner import (
+        CHECKPOINT_FILENAME,
+        DEFAULT_OUTPUT_DIR,
+        RESULTS_FILENAME,
+    )
+    from tests.longmemeval.evaluate import (
+        CHECKPOINT_FILENAME as EXPECTED_CHECKPOINT,
+        RESULTS_FILENAME as EXPECTED_RESULTS,
+    )
+
+    assert RESULTS_FILENAME == EXPECTED_RESULTS
+    assert CHECKPOINT_FILENAME == EXPECTED_CHECKPOINT
+    assert isinstance(DEFAULT_OUTPUT_DIR, Path)
+
+
+def test_legacy_chunk_shim_resolve_output_paths_legacy_returns_two_tuple(
+    tmp_path: Path,
+) -> None:
+    """``resolve_output_paths_legacy`` preserves the 2-tuple arity AND the
+    legacy ``longmemeval_fast_*`` filenames for old callers."""
+    from orchestrator.eval.longmemeval_fast import (
+        LEGACY_CHECKPOINT_FILENAME,
+        LEGACY_RESULTS_FILENAME,
+        resolve_output_paths_legacy,
+    )
+
+    results, checkpoint = resolve_output_paths_legacy(tmp_path)
+    assert results == tmp_path / LEGACY_RESULTS_FILENAME
+    assert checkpoint == tmp_path / LEGACY_CHECKPOINT_FILENAME
+    assert LEGACY_RESULTS_FILENAME == "longmemeval_fast_results.jsonl"
+    assert LEGACY_CHECKPOINT_FILENAME == "longmemeval_fast_checkpoint.json"
+
+
+def test_legacy_runner_module_path_exports_fact_harness_aliases() -> None:
+    """Back-compat: ``from orchestrator.eval.runner import LongMemEvalRunner`` must work."""
+    from orchestrator.eval.fact_harness import (
+        LongMemEvalFactRunner as _Fact,
+        reset_canonical_benchmark as _reset,
+    )
+    from orchestrator.eval.runner import (
+        LongMemEvalFactRunner,
+        LongMemEvalRunner,
+        reset_canonical_benchmark,
+    )
+
+    assert LongMemEvalRunner is _Fact
+    assert LongMemEvalFactRunner is _Fact
+    assert reset_canonical_benchmark is _reset

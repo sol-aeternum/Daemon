@@ -104,7 +104,7 @@ def run_reset(run_dir: Path) -> tuple[int, str]:
 import asyncio, sys, json
 from pathlib import Path
 sys.path.insert(0, '{PROJECT_ROOT}')
-from orchestrator.eval.runner import reset_canonical_benchmark
+from orchestrator.eval.fact_harness import reset_canonical_benchmark
 from orchestrator.config import get_settings
 import asyncpg
 
@@ -158,7 +158,7 @@ import asyncio, sys, json, uuid
 from pathlib import Path
 sys.path.insert(0, '{PROJECT_ROOT}')
 
-from orchestrator.eval.runner import LongMemEvalRunner
+from orchestrator.eval.fact_harness import LongMemEvalFactRunner
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.extraction import get_benchmark_tracking
 from orchestrator.config import get_settings
@@ -172,7 +172,7 @@ async def main():
     OUTPUT = Path('{run_dir_str}')
     OUTPUT.mkdir(parents=True, exist_ok=True)
 
-    runner = LongMemEvalRunner(
+    runner = LongMemEvalFactRunner(
         dataset_path=Path('{dataset_str}'),
         output_path=OUTPUT / "longmemeval_results.jsonl",
         checkpoint_path=OUTPUT / "longmemeval_checkpoint.json",

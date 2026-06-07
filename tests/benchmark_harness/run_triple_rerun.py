@@ -79,7 +79,7 @@ _dedup.check_contradiction = _patched_check_contradiction
 RESET_CODE = PATCH_CODE + f"""
 import asyncio, sys, json
 sys.path.insert(0, "{PROJECT_ROOT}")
-from orchestrator.eval.runner import reset_canonical_benchmark
+from orchestrator.eval.fact_harness import reset_canonical_benchmark
 from orchestrator.config import get_settings
 from pathlib import Path
 import asyncpg
@@ -108,10 +108,10 @@ asyncio.run(main())
 INGEST_CODE = PATCH_CODE + f"""
 import asyncio, sys, json
 sys.path.insert(0, "{PROJECT_ROOT}")
-from orchestrator.eval.runner import LongMemEvalRunner
+from orchestrator.eval.fact_harness import LongMemEvalFactRunner
 from pathlib import Path
 
-runner = LongMemEvalRunner(
+runner = LongMemEvalFactRunner(
     dataset_path=Path("{PROJECT_ROOT}/tests/benchmark_longmemeval/fixtures/dev_subset.json"),
     output_path=Path("{output_dir}/longmemeval_results.jsonl"),
     checkpoint_path=Path("{output_dir}/longmemeval_checkpoint.json"),

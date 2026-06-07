@@ -9,5 +9,7 @@
     "TR": 0.1
   },
   "generated_at": "2026-04-18T15:45:01+00:00",
-  "result_count": 50
+  "result_count": 50,
+  "substrate": "fact",
+  "benchmark_name": "longmemeval_fact"
 }

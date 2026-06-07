@@ -102,7 +102,7 @@ RESET_CODE = (
     + """
 import asyncio, sys
 sys.path.insert(0, {!r})
-from orchestrator.eval.runner import reset_canonical_benchmark
+from orchestrator.eval.fact_harness import reset_canonical_benchmark
 from orchestrator.config import get_settings
 import asyncpg
 
@@ -134,13 +134,13 @@ INGEST_CODE = (
     + """
 import asyncio, sys, json
 sys.path.insert(0, {!r})
-from orchestrator.eval.runner import LongMemEvalRunner
+from orchestrator.eval.fact_harness import LongMemEvalFactRunner
 from pathlib import Path
 
 OUTPUT = Path({!r})
 OUTPUT.mkdir(parents=True, exist_ok=True)
 
-runner = LongMemEvalRunner(
+runner = LongMemEvalFactRunner(
     dataset_path=Path({!r}),
     output_path=OUTPUT / "longmemeval_results.jsonl",
     checkpoint_path=OUTPUT / "longmemeval_checkpoint.json",

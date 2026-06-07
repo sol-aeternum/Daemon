@@ -10,9 +10,10 @@ from pathlib import Path
 from typing import Any, cast
 
 import tests.longmemeval.evaluate as evaluate_module
-import orchestrator.eval.runner as runner_module
+import orchestrator.eval.fact_harness as runner_module
 import orchestrator.memory.retrieval as retrieval_module
-from orchestrator.eval.runner import LongMemEvalRunner
+from orchestrator.eval.fact_harness import LongMemEvalFactRunner
+from orchestrator.eval.substrate import SubstrateMismatchError, load_tagged_score
 from tests.benchmark_longmemeval.top_k_sweep import (
     CHECKPOINT_FILENAME,
     RESULTS_FILENAME,
@@ -156,7 +157,16 @@ def _run_is_complete(output_dir: Path) -> bool:
         output_dir / SCORE_FILENAME,
         output_dir / RUN_SUMMARY_FILENAME,
     )
-    return all(path.exists() for path in required)
+    if not all(path.exists() for path in required):
+        return False
+    # Reject cached scores from a different substrate (e.g. legacy
+    # fast/chunk outputs left from a previous harness version); the
+    # substrate guard would let them pass silently otherwise.
+    try:
+        score = load_tagged_score(output_dir / SCORE_FILENAME)
+    except (FileNotFoundError, ValueError, SubstrateMismatchError):
+        return False
+    return score.get("substrate") == "fact"
 
 
 def _load_current_baseline() -> dict[str, Any]:
@@ -551,7 +561,7 @@ async def run_sweep() -> dict[str, Any]:
             await reset_retrieval_side_effects(pool)
 
             with patched_retrieval_min_score(min_final_score):
-                runner = LongMemEvalRunner(
+                runner = LongMemEvalFactRunner(
                     dataset_path=DATASET_PATH,
                     output_path=results_path,
                     checkpoint_path=checkpoint_path,

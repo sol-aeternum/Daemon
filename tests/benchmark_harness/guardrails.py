@@ -90,14 +90,14 @@ def run_provider_health_check(
 
 
 # ---------------------------------------------------------------------------
-# Canonical outcome mapping (mirrors orchestrator.eval.runner._extract_outcome)
+# Canonical outcome mapping (mirrors orchestrator.eval.fact_harness._extract_outcome)
 # ---------------------------------------------------------------------------
 
 
 def _canonical_outcome(status: str) -> str:
     """Derive outcome from status using the canonical mapping.
 
-    Mirrors the logic in orchestrator.eval.runner._extract_outcome():
+    Mirrors the logic in orchestrator.eval.fact_harness._extract_outcome():
       - complete/completed -> completed
       - extraction_failed/error -> errored
       - extraction_timeout -> timed_out

@@ -9,7 +9,7 @@ import dotenv
 dotenv.load_dotenv()
 os.environ['DATABASE_URL'] = 'postgresql://daemon:daemon@127.0.0.1:5432/daemon'
 
-from orchestrator.eval.runner import LongMemEvalRunner
+from orchestrator.eval.fact_harness import LongMemEvalFactRunner
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.extraction import get_benchmark_tracking, BENCHMARK_EXTRACTION_ENDPOINT_SLUG
 from orchestrator.config import get_settings
@@ -70,7 +70,7 @@ async def main():
     OUTPUT = Path('tests/benchmark_results/wave0_rerun_v1/run_1')
     OUTPUT.mkdir(parents=True, exist_ok=True)
 
-    runner = LongMemEvalRunner(
+    runner = LongMemEvalFactRunner(
         dataset_path=Path('tests/benchmark_longmemeval/fixtures/dev_subset.json'),
         output_path=OUTPUT / 'longmemeval_results.jsonl',
         checkpoint_path=OUTPUT / 'longmemeval_checkpoint.json',

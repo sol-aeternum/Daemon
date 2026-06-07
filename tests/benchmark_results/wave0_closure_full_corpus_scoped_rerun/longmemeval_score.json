@@ -9,5 +9,7 @@
     "KU": 0.1794871794871795,
     "TR": 0.022556390977443608,
     "ABS": 0.0
-  }
+  },
+  "substrate": "fact",
+  "benchmark_name": "longmemeval_fact"
 }

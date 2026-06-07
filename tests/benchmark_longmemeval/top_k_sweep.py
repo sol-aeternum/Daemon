@@ -14,14 +14,15 @@ from typing import Any
 import asyncpg
 
 import tests.longmemeval.evaluate as evaluate_module
-import orchestrator.eval.runner as runner_module
+import orchestrator.eval.fact_harness as runner_module
 from orchestrator.config import get_settings
-from orchestrator.eval.runner import (
-    LongMemEvalRunner,
+from orchestrator.eval.fact_harness import (
+    LongMemEvalFactRunner,
     build_question_order,
     resolve_question_conversation_ids,
     resolve_question_corpus_refs,
 )
+from orchestrator.eval.substrate import SubstrateMismatchError, load_tagged_score
 from orchestrator.memory.embedding import embed_query
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
@@ -252,15 +253,22 @@ def taxonomy_lookup() -> dict[str, dict[str, str]]:
 
 
 def baseline_payload() -> dict[str, Any]:
+    from orchestrator.eval.substrate import assert_substrate_match, load_tagged_score
+
     payload: dict[str, Any] = {}
+    score_paths: list[Path] = []
     for run_name in ("run1", "run2"):
         results = read_jsonl(BASELINE_ROOT / run_name / RESULTS_FILENAME)
-        score = read_json(BASELINE_ROOT / run_name / SCORE_FILENAME)
+        score_path = BASELINE_ROOT / run_name / SCORE_FILENAME
+        score = load_tagged_score(score_path)
+        score_paths.append(score_path)
         payload[run_name] = {
             "strict_accuracy": strict_accuracy(results),
             "accuracy": score["accuracy"],
             "judgments": judgment_map(results),
         }
+    if len(score_paths) == 2:
+        assert_substrate_match(score_paths[0], score_paths[1])
     payload["mean_strict_accuracy"] = statistics.mean(
         [payload["run1"]["strict_accuracy"], payload["run2"]["strict_accuracy"]]
     )
@@ -279,7 +287,16 @@ def run_is_complete(output_dir: Path) -> bool:
         output_dir / RUN_SUMMARY_FILENAME,
         output_dir / RUN_DIAGNOSTICS_FILENAME,
     )
-    return all(path.exists() for path in required)
+    if not all(path.exists() for path in required):
+        return False
+    # Reject cached scores from a different substrate (e.g. legacy
+    # fast/chunk outputs left from a previous harness version); the
+    # substrate guard would let them pass silently otherwise.
+    try:
+        score = load_tagged_score(output_dir / SCORE_FILENAME)
+    except (FileNotFoundError, ValueError, SubstrateMismatchError):
+        return False
+    return score.get("substrate") == "fact"
 
 
 def build_manifest_entry(top_k: int, output_dir: Path, summary: dict[str, Any]) -> dict[str, Any]:
@@ -753,7 +770,7 @@ async def run_sweep() -> dict[str, Any]:
             if should_reset_retrieval:
                 await reset_retrieval_side_effects(pool)
 
-            runner = LongMemEvalRunner(
+            runner = LongMemEvalFactRunner(
                 dataset_path=DATASET_PATH,
                 output_path=results_path,
                 checkpoint_path=checkpoint_path,
@@ -765,6 +782,12 @@ async def run_sweep() -> dict[str, Any]:
             results = await runner.evaluate()
             await wait_for_retrieval_logs(pool, expected_count=len(results))
             score_payload = runner.score()
+            from orchestrator.eval.substrate import assert_substrate_match
+
+            assert_substrate_match(
+                output_dir / SCORE_FILENAME,
+                BASELINE_ROOT / "run1" / SCORE_FILENAME,
+            )
             summary = await build_run_artifacts(
                 store,
                 top_k=top_k,

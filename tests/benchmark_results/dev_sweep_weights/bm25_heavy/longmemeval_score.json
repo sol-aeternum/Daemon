@@ -9,5 +9,7 @@
     "KU": 0.2222222222222222,
     "TR": 0.3,
     "ABS": 0.0
-  }
+  },
+  "substrate": "chunk",
+  "benchmark_name": "longmemeval_chunk"
 }
