@@ -13,7 +13,7 @@ import asyncpg
 import pytest
 
 from orchestrator.config import get_settings
-from orchestrator.eval.longmemeval_fast import cleanup_benchmark_state, ingest_question_chunks
+from orchestrator.eval.chunk_harness import cleanup_benchmark_state, ingest_question_chunks
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
 from tests.longmemeval.evaluate import evaluate_single
@@ -206,7 +206,7 @@ Date: {timestamp}
 This audit exercised the live benchmark code paths with deterministic local doubles for extraction, embeddings, answer generation, and judging so the only variable under test was database teardown behavior.
 
 - Canonical lane exercised `tests.longmemeval.ingest.ingest_session()` plus `tests.longmemeval.evaluate.evaluate_single()`, which are the concrete units looped by `orchestrator/eval/runner.py`.
-- Fast lane exercised `orchestrator.eval.longmemeval_fast.cleanup_benchmark_state()` plus `ingest_question_chunks()` plus `evaluate_single()`, mirroring the per-question loop in `LongMemEvalFastRunner.run()`.
+- Fast lane exercised `orchestrator.eval.chunk_harness.cleanup_benchmark_state()` plus `ingest_question_chunks()` plus `evaluate_single()`, mirroring the per-question loop in `LongMemEvalChunkRunner.run()`.
 
 ### Instrumentation note
 
@@ -326,7 +326,7 @@ async def test_teardown_audit_writes_report(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr("tests.longmemeval.evaluate.embed_query", fake_embed_query)
     monkeypatch.setattr("tests.longmemeval.evaluate.answer_with_llm", fake_answer)
     monkeypatch.setattr("tests.longmemeval.evaluate.judge_answer", fake_judge)
-    monkeypatch.setattr("orchestrator.eval.longmemeval_fast.embed_documents", fake_embed_documents)
+    monkeypatch.setattr("orchestrator.eval.chunk_harness.embed_documents", fake_embed_documents)
 
     canonical_user_id: uuid.UUID | None = None
     fast_user_id: uuid.UUID | None = None

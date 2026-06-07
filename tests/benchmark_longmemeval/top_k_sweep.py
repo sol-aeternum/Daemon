@@ -14,10 +14,10 @@ from typing import Any
 import asyncpg
 
 import tests.longmemeval.evaluate as evaluate_module
-import orchestrator.eval.runner as runner_module
+import orchestrator.eval.fact_harness as runner_module
 from orchestrator.config import get_settings
-from orchestrator.eval.runner import (
-    LongMemEvalRunner,
+from orchestrator.eval.fact_harness import (
+    LongMemEvalFactRunner,
     build_question_order,
     resolve_question_conversation_ids,
     resolve_question_corpus_refs,
@@ -753,7 +753,7 @@ async def run_sweep() -> dict[str, Any]:
             if should_reset_retrieval:
                 await reset_retrieval_side_effects(pool)
 
-            runner = LongMemEvalRunner(
+            runner = LongMemEvalFactRunner(
                 dataset_path=DATASET_PATH,
                 output_path=results_path,
                 checkpoint_path=checkpoint_path,

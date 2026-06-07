@@ -6,12 +6,12 @@ import logging
 from pathlib import Path
 from typing import Sequence
 
-from orchestrator.eval.runner import (
+from orchestrator.eval.fact_harness import (
     CHECKPOINT_FILENAME,
     DEFAULT_OUTPUT_DIR,
     RESULTS_FILENAME,
     SCORE_FILENAME,
-    LongMemEvalRunner,
+    LongMemEvalFactRunner,
     parse_positive_int,
     resolve_output_paths,
 )
@@ -56,7 +56,10 @@ def add_shared_path_arguments(parser: argparse.ArgumentParser, *, require_datase
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m orchestrator.eval.longmemeval",
-        description="Canonical LongMemEval benchmark entrypoint.",
+        description=(
+            "Fact-substrate LongMemEval benchmark entrypoint. Substrate=fact; "
+            "use this CLI for wave-gate evaluation that mirrors production memory substrate."
+        ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -112,7 +115,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         checkpoint_path=args.checkpoint,
         score_path=args.score_output,
     )
-    runner = LongMemEvalRunner(
+    runner = LongMemEvalFactRunner(
         dataset_path=args.dataset or Path("."),
         output_path=output_path,
         checkpoint_path=checkpoint_path,

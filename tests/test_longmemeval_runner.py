@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from orchestrator.eval.runner import (
-    LongMemEvalRunner,
+from orchestrator.eval.fact_harness import (
+    LongMemEvalFactRunner,
     load_dataset,
     load_runner_checkpoint,
 )
@@ -23,8 +23,8 @@ def write_dataset(path: Path, payload: list[dict[str, Any]]) -> None:
 
 def make_runner(
     tmp_path: Path, dataset_path: Path, *, limit: int | None = None
-) -> LongMemEvalRunner:
-    return LongMemEvalRunner(
+) -> LongMemEvalFactRunner:
+    return LongMemEvalFactRunner(
         dataset_path=dataset_path,
         output_path=tmp_path / "results.jsonl",
         checkpoint_path=tmp_path / "checkpoint.json",
@@ -144,26 +144,26 @@ async def test_ingest_resumes_from_checkpoint(
 
     mock_pool = AsyncMock()
     monkeypatch.setattr(
-        "orchestrator.eval.runner.get_settings",
+        "orchestrator.eval.fact_harness.get_settings",
         lambda: SimpleNamespace(
             database_url="postgresql://daemon:daemon@postgres/daemon",
             daemon_encryption_key="test-key",
         ),
     )
     monkeypatch.setattr(
-        "orchestrator.eval.runner.asyncpg.create_pool",
+        "orchestrator.eval.fact_harness.asyncpg.create_pool",
         AsyncMock(return_value=mock_pool),
     )
-    monkeypatch.setattr("orchestrator.eval.runner.ContentEncryption", lambda key: object())
+    monkeypatch.setattr("orchestrator.eval.fact_harness.ContentEncryption", lambda key: object())
     monkeypatch.setattr(
-        "orchestrator.eval.runner.MemoryStore", lambda db_pool, encryption: MagicMock()
+        "orchestrator.eval.fact_harness.MemoryStore", lambda db_pool, encryption: MagicMock()
     )
     monkeypatch.setattr(
-        "orchestrator.eval.runner.create_test_user", AsyncMock(return_value="user-id")
+        "orchestrator.eval.fact_harness.create_test_user", AsyncMock(return_value="user-id")
     )
 
     ingest_session_mock = AsyncMock(return_value={"session_id": "session-2", "status": "complete"})
-    monkeypatch.setattr("orchestrator.eval.runner.ingest_session", ingest_session_mock)
+    monkeypatch.setattr("orchestrator.eval.fact_harness.ingest_session", ingest_session_mock)
 
     results = await runner.ingest()
 
@@ -241,19 +241,19 @@ async def test_evaluate_resumes_from_checkpoint_and_writes_results(
 
     mock_pool = AsyncMock()
     monkeypatch.setattr(
-        "orchestrator.eval.runner.get_settings",
+        "orchestrator.eval.fact_harness.get_settings",
         lambda: SimpleNamespace(
             database_url="postgresql://daemon:daemon@postgres/daemon",
             daemon_encryption_key="test-key",
         ),
     )
     monkeypatch.setattr(
-        "orchestrator.eval.runner.asyncpg.create_pool",
+        "orchestrator.eval.fact_harness.asyncpg.create_pool",
         AsyncMock(return_value=mock_pool),
     )
-    monkeypatch.setattr("orchestrator.eval.runner.ContentEncryption", lambda key: object())
+    monkeypatch.setattr("orchestrator.eval.fact_harness.ContentEncryption", lambda key: object())
     monkeypatch.setattr(
-        "orchestrator.eval.runner.MemoryStore", lambda pool, encryption: MagicMock()
+        "orchestrator.eval.fact_harness.MemoryStore", lambda pool, encryption: MagicMock()
     )
 
     evaluate_single_mock = AsyncMock(
@@ -267,7 +267,7 @@ async def test_evaluate_resumes_from_checkpoint_and_writes_results(
             "memories_used": 1,
         }
     )
-    monkeypatch.setattr("orchestrator.eval.runner.evaluate_single", evaluate_single_mock)
+    monkeypatch.setattr("orchestrator.eval.fact_harness.evaluate_single", evaluate_single_mock)
 
     results = await runner.evaluate()
 
@@ -318,22 +318,22 @@ async def test_run_reuses_shared_corpus_across_multiple_questions(
 
     mock_pool = AsyncMock()
     monkeypatch.setattr(
-        "orchestrator.eval.runner.get_settings",
+        "orchestrator.eval.fact_harness.get_settings",
         lambda: SimpleNamespace(
             database_url="postgresql://daemon:daemon@postgres/daemon",
             daemon_encryption_key="test-key",
         ),
     )
     monkeypatch.setattr(
-        "orchestrator.eval.runner.asyncpg.create_pool",
+        "orchestrator.eval.fact_harness.asyncpg.create_pool",
         AsyncMock(return_value=mock_pool),
     )
-    monkeypatch.setattr("orchestrator.eval.runner.ContentEncryption", lambda key: object())
+    monkeypatch.setattr("orchestrator.eval.fact_harness.ContentEncryption", lambda key: object())
     monkeypatch.setattr(
-        "orchestrator.eval.runner.MemoryStore", lambda db_pool, encryption: MagicMock()
+        "orchestrator.eval.fact_harness.MemoryStore", lambda db_pool, encryption: MagicMock()
     )
     monkeypatch.setattr(
-        "orchestrator.eval.runner.create_test_user", AsyncMock(return_value="user-id")
+        "orchestrator.eval.fact_harness.create_test_user", AsyncMock(return_value="user-id")
     )
 
     async def fake_ingest_session(**kwargs: Any) -> dict[str, Any]:
@@ -356,9 +356,11 @@ async def test_run_reuses_shared_corpus_across_multiple_questions(
             "memories_used": 1,
         }
 
-    monkeypatch.setattr("orchestrator.eval.runner.ingest_session", fake_ingest_session)
-    monkeypatch.setattr("orchestrator.eval.runner.evaluate_single", fake_evaluate_single)
-    monkeypatch.setattr("orchestrator.eval.runner.print_results", lambda results, accuracy: None)
+    monkeypatch.setattr("orchestrator.eval.fact_harness.ingest_session", fake_ingest_session)
+    monkeypatch.setattr("orchestrator.eval.fact_harness.evaluate_single", fake_evaluate_single)
+    monkeypatch.setattr(
+        "orchestrator.eval.fact_harness.print_results", lambda results, accuracy: None
+    )
 
     payload = await runner.run()
 
@@ -405,7 +407,9 @@ def test_score_uses_checkpoint_results_and_writes_summary(
             }
         )
     )
-    monkeypatch.setattr("orchestrator.eval.runner.print_results", lambda results, accuracy: None)
+    monkeypatch.setattr(
+        "orchestrator.eval.fact_harness.print_results", lambda results, accuracy: None
+    )
 
     payload = runner.score()
 
@@ -545,7 +549,9 @@ def test_score_falls_back_to_jsonl_when_evaluate_results_empty(
         )
     )
 
-    monkeypatch.setattr("orchestrator.eval.runner.print_results", lambda results, accuracy: None)
+    monkeypatch.setattr(
+        "orchestrator.eval.fact_harness.print_results", lambda results, accuracy: None
+    )
 
     payload = runner.score()
 

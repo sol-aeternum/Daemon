@@ -35,8 +35,16 @@ logger = logging.getLogger(__name__)
 
 PhaseName = Literal["ingest", "evaluate", "score"]
 
-SCORE_FILENAME = "longmemeval_score.json"
+SCORE_FILENAME = "longmemeval_fact_score.json"
 CHECKPOINT_VERSION = 2
+DEFAULT_OUTPUT_DIR = Path("tests/benchmark_results")
+BENCHMARK_NAME = "longmemeval_fact"
+BENCHMARK_SUBSTRATE = "fact"
+
+HARNESS_BANNER = (
+    "[fact-harness] LongMemEval FACT-substrate runner — LLM-extracted facts via "
+    "production store.insert_memory. Use for wave-gate evaluation."
+)
 
 
 def utc_now_iso() -> str:
@@ -189,6 +197,8 @@ def ordered_results(results_by_key: dict[str, dict[str, Any]]) -> list[dict[str,
 def build_score_payload(results: list[dict[str, Any]]) -> dict[str, Any]:
     accuracy = score_accuracy(results)
     return {
+        "substrate": BENCHMARK_SUBSTRATE,
+        "benchmark_name": BENCHMARK_NAME,
         "generated_at": utc_now_iso(),
         "result_count": len(results),
         "accuracy": accuracy,
@@ -239,7 +249,67 @@ def resolve_question_conversation_ids(
 
 
 @dataclass(slots=True)
-class LongMemEvalRunner:
+class ResetSummary:
+    success: bool
+    tables_cleared: dict[str, int]
+    total_rows_deleted: int
+    error: str | None = None
+
+
+CANONICAL_RESET_TABLES: tuple[str, ...] = (
+    "retrieval_log",
+    "dream_log",
+    "entities",
+    "memories",
+    "memory_extraction_log",
+    "messages",
+    "conversations",
+)
+
+
+async def reset_canonical_benchmark(
+    pool: asyncpg.Pool,
+    checkpoint_path: Path | str | None = None,
+    *,
+    cleanup_redis: bool = False,
+) -> ResetSummary:
+    """Reset the fact-substrate canonical benchmark state for the canonical test user.
+
+    The ``checkpoint_path`` is accepted for call-site symmetry with the harness
+    runners and is not used by this implementation — the canonical user is
+    identified by a fixed UUID from ``tests.longmemeval.ingest.TEST_USER_ID``.
+    """
+    _ = checkpoint_path
+    tables_cleared: dict[str, int] = {}
+    total = 0
+    try:
+        from tests.longmemeval.ingest import TEST_USER_ID
+
+        for table in CANONICAL_RESET_TABLES:
+            result = await pool.execute(
+                f"DELETE FROM {table} WHERE user_id = $1",
+                TEST_USER_ID,
+            )
+            deleted = int(str(result).split()[-1]) if isinstance(result, str) else 0
+            tables_cleared[table] = deleted
+            total += deleted
+    except Exception as exc:
+        return ResetSummary(
+            success=False,
+            tables_cleared=tables_cleared,
+            total_rows_deleted=total,
+            error=str(exc),
+        )
+    _ = cleanup_redis
+    return ResetSummary(
+        success=True,
+        tables_cleared=tables_cleared,
+        total_rows_deleted=total,
+    )
+
+
+@dataclass(slots=True)
+class LongMemEvalFactRunner:
     dataset_path: Path
     output_path: Path
     checkpoint_path: Path
@@ -505,6 +575,7 @@ class LongMemEvalRunner:
         return payload
 
     async def run(self) -> dict[str, Any]:
+        logger.info(HARNESS_BANNER)
         ingest_results = await self.ingest()
         evaluation_results = await self.evaluate()
         score_payload = self.score()

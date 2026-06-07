@@ -14,10 +14,10 @@ from typing import Any, cast
 import asyncpg
 
 import orchestrator.config as config_module
-import orchestrator.eval.runner as runner_module
+import orchestrator.eval.fact_harness as runner_module
 import orchestrator.memory.retrieval as retrieval_module
 import tests.longmemeval.evaluate as evaluate_module
-from orchestrator.eval.runner import LongMemEvalRunner
+from orchestrator.eval.fact_harness import LongMemEvalFactRunner
 from orchestrator.memory.dedup import deduplicate_facts
 from orchestrator.memory.extraction import ExtractedFact
 from tests.benchmark_longmemeval.top_k_sweep import (
@@ -686,7 +686,7 @@ async def _run_single_point(
         _apply_replay_failures_to_checkpoint(checkpoint_payload, replay_stats)
         write_json(checkpoint_path, checkpoint_payload)
 
-        runner = LongMemEvalRunner(
+        runner = LongMemEvalFactRunner(
             dataset_path=DATASET_PATH,
             output_path=results_path,
             checkpoint_path=checkpoint_path,
@@ -754,7 +754,7 @@ async def run_sweep() -> dict[str, Any]:
                 _apply_replay_failures_to_checkpoint(checkpoint_payload, replay_stats)
                 write_json(checkpoint_path, checkpoint_payload)
 
-                runner = LongMemEvalRunner(
+                runner = LongMemEvalFactRunner(
                     dataset_path=DATASET_PATH,
                     output_path=results_path,
                     checkpoint_path=checkpoint_path,

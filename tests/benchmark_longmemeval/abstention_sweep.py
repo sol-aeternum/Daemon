@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any, cast
 
 import tests.longmemeval.evaluate as evaluate_module
-import orchestrator.eval.runner as runner_module
-from orchestrator.eval.runner import LongMemEvalRunner
+import orchestrator.eval.fact_harness as runner_module
+from orchestrator.eval.fact_harness import LongMemEvalFactRunner
 from orchestrator.prompts import MEMORY_EVIDENCE_ABSTENTION_GUARDRAIL
 from tests.benchmark_longmemeval.dev_subset import load_fixture
 from tests.benchmark_longmemeval.taxonomy import build_taxonomy_entries, load_failure_rows
@@ -502,7 +502,7 @@ async def run_sweep() -> dict[str, Any]:
             await reset_retrieval_side_effects(pool)
 
             with patched_answer_prompt(enabled=prompt_enabled):
-                runner = LongMemEvalRunner(
+                runner = LongMemEvalFactRunner(
                     dataset_path=DATASET_PATH,
                     output_path=results_path,
                     checkpoint_path=checkpoint_path,

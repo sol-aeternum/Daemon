@@ -11,13 +11,13 @@ from unittest.mock import AsyncMock
 import pytest
 from cryptography.fernet import Fernet
 
-from orchestrator.eval.longmemeval_fast import (
+from orchestrator.eval.chunk_harness import (
     BENCHMARK_NAME,
     BENCHMARK_SOURCE_TYPE,
     BenchmarkUser,
     DEFAULT_CHUNK_MAX_CHARS,
     DEFAULT_OVERLAP_TURNS,
-    LongMemEvalFastRunner,
+    LongMemEvalChunkRunner,
     build_question_chunks,
     chunk_session_messages,
 )
@@ -67,12 +67,14 @@ async def test_fast_runner_inserts_direct_memories_and_resumes_checkpoint(
     dataset_path = tmp_path / "dataset.json"
     write_dataset(dataset_path, dataset)
 
-    output_path = tmp_path / "fast_results.jsonl"
-    checkpoint_path = tmp_path / "fast_checkpoint.json"
-    runner = LongMemEvalFastRunner(
+    output_path = tmp_path / "chunk_results.jsonl"
+    checkpoint_path = tmp_path / "chunk_checkpoint.json"
+    score_path = tmp_path / "chunk_score.json"
+    runner = LongMemEvalChunkRunner(
         dataset_path=dataset_path,
         output_path=output_path,
         checkpoint_path=checkpoint_path,
+        score_path=score_path,
         chunk_max_chars=85,
     )
 
@@ -123,7 +125,7 @@ async def test_fast_runner_inserts_direct_memories_and_resumes_checkpoint(
     )
 
     monkeypatch.setattr(
-        "orchestrator.eval.longmemeval_fast.get_settings",
+        "orchestrator.eval.chunk_harness.get_settings",
         lambda: SimpleNamespace(
             database_url="postgresql://daemon:daemon@localhost/daemon",
             daemon_encryption_key=Fernet.generate_key().decode(),
@@ -131,15 +133,15 @@ async def test_fast_runner_inserts_direct_memories_and_resumes_checkpoint(
         ),
     )
     monkeypatch.setattr(
-        "orchestrator.eval.longmemeval_fast.asyncpg.create_pool",
+        "orchestrator.eval.chunk_harness.asyncpg.create_pool",
         AsyncMock(return_value=fake_pool),
     )
     monkeypatch.setattr(
-        "orchestrator.eval.longmemeval_fast.MemoryStore",
+        "orchestrator.eval.chunk_harness.MemoryStore",
         lambda pool, encryption: fake_store,
     )
     monkeypatch.setattr(
-        "orchestrator.eval.longmemeval_fast.build_benchmark_user",
+        "orchestrator.eval.chunk_harness.build_benchmark_user",
         lambda _run_id: BenchmarkUser(
             user_id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
             email="longmemeval+fast-test@daemon.test",
@@ -147,11 +149,11 @@ async def test_fast_runner_inserts_direct_memories_and_resumes_checkpoint(
         ),
     )
     monkeypatch.setattr(
-        "orchestrator.eval.longmemeval_fast.embed_documents",
+        "orchestrator.eval.chunk_harness.embed_documents",
         embed_documents_mock,
     )
     monkeypatch.setattr(
-        "orchestrator.eval.longmemeval_fast.evaluate_single",
+        "orchestrator.eval.chunk_harness.evaluate_single",
         evaluate_single_mock,
     )
 
@@ -173,7 +175,7 @@ async def test_fast_runner_inserts_direct_memories_and_resumes_checkpoint(
     first_insert_query = fake_pool.fetchrow.await_args_list[2].args[0]
     assert first_insert_args[0] == uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
     assert "to_tsvector('english', $13)" in first_insert_query
-    assert first_insert_args[4] == "fact"
+    assert first_insert_args[4] == "chunk"
     assert first_insert_args[5] == BENCHMARK_SOURCE_TYPE
     assert first_insert_args[7] == 1.0
     assert first_insert_args[8] == "active"

@@ -195,7 +195,7 @@ async def full_reset_with_verification(
 
     # Step 1: Run production reset (import lazily to avoid patching issues)
     try:
-        from orchestrator.eval.runner import reset_canonical_benchmark
+        from orchestrator.eval.fact_harness import reset_canonical_benchmark
 
         summary = await reset_canonical_benchmark(
             pool,

@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Any, cast
 
 import tests.longmemeval.evaluate as evaluate_module
-import orchestrator.eval.runner as runner_module
+import orchestrator.eval.fact_harness as runner_module
 import orchestrator.memory.retrieval as retrieval_module
-from orchestrator.eval.runner import LongMemEvalRunner
+from orchestrator.eval.fact_harness import LongMemEvalFactRunner
 from tests.benchmark_longmemeval.top_k_sweep import (
     CHECKPOINT_FILENAME,
     RESULTS_FILENAME,
@@ -551,7 +551,7 @@ async def run_sweep() -> dict[str, Any]:
             await reset_retrieval_side_effects(pool)
 
             with patched_retrieval_min_score(min_final_score):
-                runner = LongMemEvalRunner(
+                runner = LongMemEvalFactRunner(
                     dataset_path=DATASET_PATH,
                     output_path=results_path,
                     checkpoint_path=checkpoint_path,

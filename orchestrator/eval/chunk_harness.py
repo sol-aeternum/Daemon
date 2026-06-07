@@ -7,6 +7,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -29,14 +30,21 @@ from tests.longmemeval.ingest import TEST_USER_NAME
 logger = logging.getLogger(__name__)
 
 DEFAULT_OUTPUT_DIR = Path("tests/benchmark_results")
-RESULTS_FILENAME = "longmemeval_fast_results.jsonl"
-CHECKPOINT_FILENAME = "longmemeval_fast_checkpoint.json"
+RESULTS_FILENAME = "longmemeval_chunk_results.jsonl"
+CHECKPOINT_FILENAME = "longmemeval_chunk_checkpoint.json"
+SCORE_FILENAME = "longmemeval_chunk_score.json"
 
-BENCHMARK_NAME = "longmemeval_fast"
+BENCHMARK_NAME = "longmemeval_chunk"
 BENCHMARK_SOURCE_TYPE = "import"
-BENCHMARK_CATEGORY = "fact"
+BENCHMARK_CATEGORY = "chunk"
 DEFAULT_CHUNK_MAX_CHARS = 4000
 DEFAULT_OVERLAP_TURNS = 2
+BENCHMARK_SUBSTRATE = "chunk"
+
+HARNESS_BANNER = (
+    "[chunk-harness] LongMemEval CHUNK-substrate runner — direct 4000-char chunk "
+    "inserts (no LLM extraction). For retrieval-mechanism smoke only. NOT a wave gate."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,11 +72,26 @@ def parse_positive_int(value: str) -> int:
 def resolve_output_paths(
     output_dir: Path,
     checkpoint_path: Path | None = None,
-) -> tuple[Path, Path]:
+    score_path: Path | None = None,
+) -> tuple[Path, Path, Path]:
     return (
         output_dir / RESULTS_FILENAME,
         checkpoint_path or output_dir / CHECKPOINT_FILENAME,
+        score_path or output_dir / SCORE_FILENAME,
     )
+
+
+def build_score_payload(results: list[dict[str, Any]]) -> dict[str, Any]:
+    from tests.longmemeval.evaluate import score_accuracy
+
+    accuracy = score_accuracy(results)
+    return {
+        "substrate": BENCHMARK_SUBSTRATE,
+        "benchmark_name": BENCHMARK_NAME,
+        "generated_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
+        "result_count": len(results),
+        "accuracy": accuracy,
+    }
 
 
 def load_dataset(dataset_path: Path) -> list[dict[str, Any]]:
@@ -96,8 +119,8 @@ def normalize_question_id(entry: dict[str, Any], idx: int) -> str:
 def build_benchmark_user(run_id: str) -> BenchmarkUser:
     return BenchmarkUser(
         user_id=uuid.uuid4(),
-        email=f"longmemeval+fast-{run_id}@daemon.test",
-        name=f"{TEST_USER_NAME}_fast_{run_id}",
+        email=f"longmemeval+chunk-{run_id}@daemon.test",
+        name=f"{TEST_USER_NAME}_chunk_{run_id}",
     )
 
 
@@ -259,7 +282,7 @@ async def ensure_benchmark_user(pool: asyncpg.Pool, benchmark_user: BenchmarkUse
         benchmark_user.name,
     )
     if created_row is None:
-        raise RuntimeError("Failed to create isolated LongMemEval fast benchmark user")
+        raise RuntimeError("Failed to create isolated LongMemEval chunk benchmark user")
     return created_row["id"]
 
 
@@ -348,7 +371,7 @@ async def ingest_question_chunks(
         conversation = await store.create_conversation(
             user_id=user_id,
             pipeline="cloud",
-            title=f"LongMemEval Fast {question_id}: {chunk.session_id[:32]}",
+            title=f"LongMemEval Chunk {question_id}: {chunk.session_id[:32]}",
         )
         conversation_ids_by_session[chunk.session_id] = conversation["id"]
 
@@ -366,10 +389,11 @@ async def ingest_question_chunks(
 
 
 @dataclass(slots=True)
-class LongMemEvalFastRunner:
+class LongMemEvalChunkRunner:
     dataset_path: Path
     output_path: Path
     checkpoint_path: Path
+    score_path: Path
     limit: int | None = None
     chunk_max_chars: int = DEFAULT_CHUNK_MAX_CHARS
     overlap_turns: int = DEFAULT_OVERLAP_TURNS
@@ -409,8 +433,9 @@ class LongMemEvalFastRunner:
             benchmark_user = build_benchmark_user(run_id)
             benchmark_user_id = await ensure_benchmark_user(pool, benchmark_user)
 
+            logger.info(HARNESS_BANNER)
             logger.info(
-                "[fast] Starting LongMemEval fast run for %s questions (%s already checkpointed)",
+                "[chunk] Starting LongMemEval chunk run for %s questions (%s already checkpointed)",
                 len(question_order),
                 len(checkpoint_results),
             )
@@ -419,7 +444,7 @@ class LongMemEvalFastRunner:
                 question_id = question_order[idx]
                 if question_id in checkpoint_results:
                     logger.info(
-                        "[fast] [%s/%s] %s skip (checkpoint)",
+                        "[chunk] [%s/%s] %s skip (checkpoint)",
                         idx + 1,
                         len(question_order),
                         question_id,
@@ -432,7 +457,7 @@ class LongMemEvalFastRunner:
                 category = CATEGORY_MAP.get(category_raw, "IE-user")
 
                 logger.info(
-                    "[fast] [%s/%s] %s ingest -> retrieve -> answer -> judge",
+                    "[chunk] [%s/%s] %s ingest -> retrieve -> answer -> judge",
                     idx + 1,
                     len(question_order),
                     question_id,
@@ -467,7 +492,7 @@ class LongMemEvalFastRunner:
                     result["source_type"] = BENCHMARK_SOURCE_TYPE
                     checkpoint_results[question_id] = result
                 except Exception as exc:
-                    logger.exception("[fast] Question %s failed", question_id)
+                    logger.exception("[chunk] Question %s failed", question_id)
                     checkpoint_results[question_id] = {
                         "question_id": question_id,
                         "question": question_text,
@@ -498,28 +523,42 @@ class LongMemEvalFastRunner:
 
         results = [checkpoint_results[qid] for qid in question_order if qid in checkpoint_results]
         accuracy = score_accuracy(results)
-        logger.info("[fast] Complete: %s results written to %s", len(results), self.output_path)
-        logger.info("[fast] Accuracy snapshot: %s", accuracy)
+        score_payload = build_score_payload(results)
+        score_path = self.score_path
+        score_path.parent.mkdir(parents=True, exist_ok=True)
+        score_path.write_text(json.dumps(score_payload, indent=2))
+        logger.info("[chunk] Complete: %s results written to %s", len(results), self.output_path)
+        logger.info("[chunk] Score written to %s (substrate=%s)", score_path, BENCHMARK_SUBSTRATE)
+        logger.info("[chunk] Accuracy snapshot: %s", accuracy)
         return results
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m orchestrator.eval.longmemeval_fast",
-        description="Standalone fast LongMemEval harness using direct memory inserts.",
+        prog="python -m orchestrator.eval.chunk_harness",
+        description=(
+            "Standalone chunk-substrate LongMemEval harness using direct memory "
+            "chunk inserts. Substrate=chunk; not a wave gate."
+        ),
     )
     parser.add_argument("--dataset", type=Path, required=True, help="Path to dataset JSON.")
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=DEFAULT_OUTPUT_DIR,
-        help=f"Directory for {RESULTS_FILENAME} and {CHECKPOINT_FILENAME}.",
+        help=f"Directory for {RESULTS_FILENAME}, {CHECKPOINT_FILENAME}, {SCORE_FILENAME}.",
     )
     parser.add_argument(
         "--checkpoint",
         type=Path,
         default=None,
         help=f"Optional checkpoint path (default: <output-dir>/{CHECKPOINT_FILENAME}).",
+    )
+    parser.add_argument(
+        "--score-output",
+        type=Path,
+        default=None,
+        help=f"Optional score summary path (default: <output-dir>/{SCORE_FILENAME}).",
     )
     parser.add_argument(
         "--limit",
@@ -548,14 +587,16 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args(list(argv) if argv is not None else None)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)
 
-    output_path, checkpoint_path = resolve_output_paths(
+    output_path, checkpoint_path, score_path = resolve_output_paths(
         output_dir=args.output_dir,
         checkpoint_path=args.checkpoint,
+        score_path=args.score_output,
     )
-    runner = LongMemEvalFastRunner(
+    runner = LongMemEvalChunkRunner(
         dataset_path=args.dataset,
         output_path=output_path,
         checkpoint_path=checkpoint_path,
+        score_path=score_path,
         limit=args.limit,
         chunk_max_chars=args.chunk_max_chars,
         overlap_turns=args.overlap_turns,

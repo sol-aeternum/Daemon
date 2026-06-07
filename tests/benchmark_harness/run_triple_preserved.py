@@ -85,7 +85,7 @@ _dedup.check_contradiction = _patched_contradiction
 
 print("Patches applied")
 
-from orchestrator.eval.runner import LongMemEvalRunner  # noqa: E402
+from orchestrator.eval.fact_harness import LongMemEvalFactRunner  # noqa: E402
 from orchestrator.memory.encryption import ContentEncryption  # noqa: E402
 from orchestrator.memory.extraction import get_benchmark_tracking  # noqa: E402
 from orchestrator.config import get_settings  # noqa: E402
@@ -189,7 +189,7 @@ async def ingest_and_preserve(run_dir):
     pool = await asyncpg.create_pool(dsn=settings.database_url, min_size=2, max_size=5)
     encryption = ContentEncryption(settings.daemon_encryption_key)
 
-    runner = LongMemEvalRunner(
+    runner = LongMemEvalFactRunner(
         dataset_path=PROJECT_ROOT
         / "tests"
         / "benchmark_longmemeval"

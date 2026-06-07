@@ -142,13 +142,13 @@ INGEST_CODE = (
     + """
 import asyncio, sys, json
 sys.path.insert(0, '{}')
-from orchestrator.eval.runner import LongMemEvalRunner
+from orchestrator.eval.fact_harness import LongMemEvalFactRunner
 from pathlib import Path
 
 OUTPUT = Path('{}')
 OUTPUT.mkdir(parents=True, exist_ok=True)
 
-runner = LongMemEvalRunner(
+runner = LongMemEvalFactRunner(
     dataset_path=Path('{}'),
     output_path=OUTPUT / "longmemeval_results.jsonl",
     checkpoint_path=OUTPUT / "longmemeval_checkpoint.json",

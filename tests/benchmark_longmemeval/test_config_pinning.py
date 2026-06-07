@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 
 from orchestrator.config import Settings
-from orchestrator.eval.runner import (
+from orchestrator.eval.fact_harness import (
     BENCHMARK_CONFIG_PIN_PATH,
-    LongMemEvalRunner,
+    LongMemEvalFactRunner,
     build_longmemeval_pinned_config,
 )
 from tests.longmemeval.evaluate import build_answer_prompt
@@ -19,8 +19,8 @@ def _default_benchmark_settings() -> Settings:
     return Settings.model_validate({})
 
 
-def _make_runner(tmp_path: Path, dataset_path: Path) -> LongMemEvalRunner:
-    return LongMemEvalRunner(
+def _make_runner(tmp_path: Path, dataset_path: Path) -> LongMemEvalFactRunner:
+    return LongMemEvalFactRunner(
         dataset_path=dataset_path,
         output_path=tmp_path / "longmemeval_results.jsonl",
         checkpoint_path=tmp_path / "longmemeval_checkpoint.json",
@@ -59,7 +59,7 @@ def test_answer_prompt_sha256_tracks_aligned_contract_not_only_thin_prompt(
         return "patched aligned prompt"
 
     monkeypatch.setattr(
-        "orchestrator.eval.runner.build_assembled_system_prompt",
+        "orchestrator.eval.fact_harness.build_assembled_system_prompt",
         fake_aligned_builder,
     )
     aligned_hash = build_longmemeval_pinned_config(settings=settings)["shared"]["answer"][
@@ -72,7 +72,7 @@ def test_runner_load_checkpoint_emits_effective_benchmark_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings = _default_benchmark_settings()
-    monkeypatch.setattr("orchestrator.eval.runner.get_settings", lambda: settings)
+    monkeypatch.setattr("orchestrator.eval.fact_harness.get_settings", lambda: settings)
 
     dataset_path = tmp_path / "dataset.json"
     dataset_path.write_text("[]")
@@ -104,13 +104,13 @@ def test_runner_load_checkpoint_warns_on_benchmark_config_drift(
     settings = _default_benchmark_settings().model_copy(
         update={"embedding_query_model": "voyage-4-large"}
     )
-    monkeypatch.setattr("orchestrator.eval.runner.get_settings", lambda: settings)
+    monkeypatch.setattr("orchestrator.eval.fact_harness.get_settings", lambda: settings)
 
     dataset_path = tmp_path / "dataset.json"
     dataset_path.write_text("[]")
     runner = _make_runner(tmp_path, dataset_path)
 
-    with caplog.at_level("WARNING", logger="orchestrator.eval.runner"):
+    with caplog.at_level("WARNING", logger="orchestrator.eval.fact_harness"):
         checkpoint = runner.load_checkpoint()
 
     warnings = checkpoint["benchmark_config_drift_warnings"]

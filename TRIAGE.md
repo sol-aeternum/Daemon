@@ -1,5 +1,66 @@
 # TRIAGE.md
 
+## 2026-06-04 (Australia/Adelaide) — LongMemEval harness deconfliction: silent substrate-tag bug fixed
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Harness deconfliction (decision token `harness-deconfliction-complete-2026-06-04`)
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: `orchestrator/eval/longmemeval_fast.py:37` had `BENCHMARK_CATEGORY = "fact"` even though the file inserts raw 4000-char chunks, not LLM-extracted facts. The chunk-substrate file was silently mis-tagging itself as fact, which polluted cross-substrate comparisons in historical artifacts (`task15_mr_comparison.json`, sweep reports, etc.). Refactor renamed file → `chunk_harness.py`, fixed the constant to `"chunk"`, added `substrate: "chunk"` to all score JSONs, and added `orchestrator/eval/substrate.py::assert_substrate_match` as the single gate-guard for any cross-score comparison site.
+- **Evidence**: `tests/benchmark_results/harness_deconfliction.md` + `docs/HARNESS_TAXONOMY.md` + `tests/benchmark_results/HARNESS_NAMING_LEGEND.md`. Pre-refactor: `grep -n "BENCHMARK_CATEGORY" orchestrator/eval/longmemeval_fast.py` returned `"fact"`. Post-refactor: `"chunk"`.
+- **Likely cause**: The constant was set during the original 2025 W0 ingest-speed work when the file was named for "fast" performance characteristics, not substrate. The "fact" category was a copy-paste error from the canonical runner, never corrected.
+- **Suggested action**: Future substrate-aware work should call `assert_substrate_match(score_a, score_b)` from `orchestrator/eval/substrate.py` before any cross-score comparison. The gate hard-fails on substrate disagreement or missing `substrate` field, which is the desired loud-failure behavior.
+
+## 2026-06-04 (Australia/Adelaide) — `reset_canonical_benchmark` is a phantom import in 5 files
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Harness deconfliction (post-rename import discovery)
+- **Category**: build-error
+- **Blocked current task**: no (out of scope for the rename refactor)
+- **What happened**: 5 files import `reset_canonical_benchmark` from `orchestrator.eval.runner` (now `fact_harness`):
+  - `tests/benchmark_harness/ingestion_rerun.py:105, 113`
+  - `tests/benchmark_harness/ingestion_rerun_preserved.py:107, 117`
+  - `tests/benchmark_harness/reset_verify_helper.py:198, 200`
+  - `tests/benchmark_harness/run_single_preserved.py:80, 112`
+  - `tests/benchmark_harness/run_triple_rerun.py:82, 92`
+  
+  But the function **does not exist** anywhere in `orchestrator/eval/` (verified via `grep -rn "def reset_canonical_benchmark"`). The imports were broken before the rename refactor and remain broken after.
+- **Evidence**: `PYTHONPATH=. python -c "from orchestrator.eval.fact_harness import reset_canonical_benchmark"` raises `ImportError: cannot import name 'reset_canonical_benchmark'`.
+- **Likely cause**: The function was either removed during a previous refactor without updating the 5 importers, or the 5 importers were copy-pasted from a working version that no longer exists.
+- **Suggested action**: Investigate the function's expected behavior. It probably lives in `tests/longmemeval/ingest.py` or a dedicated `tests/benchmark_harness/reset.py` module. If not needed, the 5 imports can be deleted. If needed, it needs to be re-implemented (signature suggests it takes `pool, checkpoint_path, cleanup_redis=False` and returns a `summary` dict).
+
+## 2026-06-04 (Australia/Adelaide) — `DEFAULT_OUTPUT_DIR` was imported from runner.py but never defined
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Harness deconfliction (CLI test of `longmemeval --help`)
+- **Category**: build-error
+- **Blocked current task**: yes (the CLI was broken before this refactor)
+- **What happened**: `orchestrator/eval/longmemeval.py:11` imports `DEFAULT_OUTPUT_DIR` from `orchestrator.eval.runner`. But the constant was never defined in `runner.py` (now `fact_harness.py`). The CLI's `--help` command crashed with `ImportError: cannot import name 'DEFAULT_OUTPUT_DIR'`.
+- **Evidence**: `python -m orchestrator.eval.longmemeval --help` raised the ImportError. Same for any code path that imported `longmemeval.py`.
+- **Likely cause**: The constant was probably defined in an earlier version of `runner.py` and removed without updating the CLI importer. Or the CLI was always broken (never exercised via `python -m orchestrator.eval.longmemeval --help` in CI).
+- **Suggested action**: Fixed in this refactor — added `DEFAULT_OUTPUT_DIR = Path("tests/benchmark_results")` to `fact_harness.py`. CLI now works.
+## 2026-06-05T03:34:00Z — uv hardlink fallback in temp PR snapshot
+- **Severity**: info
+- **Scope**: host
+- **Encountered during**: F3 Real Manual QA — backend hosted identity route/smoke probes
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Running targeted pytest from the archived PR snapshot under `/tmp/opencode/hosted-identity-pr-f3` succeeded, but `uv` could not hardlink packages into the temporary virtualenv and fell back to full file copies. This only affected install/runtime performance for the throwaway QA snapshot.
+- **Evidence**: `PYTHONPATH=/tmp/opencode/hosted-identity-pr-f3 uv run --project /tmp/opencode/hosted-identity-pr-f3 pytest -q /tmp/opencode/hosted-identity-pr-f3/tests/test_refresh_flow.py -k 'temporary_web_refresh_stays_temporary_no_max_age or temporary_web_refresh_db_expiry_uses_short_cap or native_refresh_preserves_persistence_no_cookie or native_token_via_cookie_returns_400_no_replacement'` printed `warning: Failed to hardlink files; falling back to full copy. This may lead to degraded performance... If this is intentional, set export UV_LINK_MODE=copy or use --link-mode=copy to suppress this warning.` The test command still ended `4 passed, 20 deselected, 18 warnings in 4.76s`.
+- **Likely cause**: The `uv` cache and `/tmp/opencode` snapshot/venv are on filesystems or mount boundaries where hardlinks are unsupported (confidence 85%).
+- **Suggested action**: For future `/tmp/opencode` PR-snapshot QA runs, set `UV_LINK_MODE=copy` or pass `--link-mode=copy` when creating throwaway environments if the warning becomes noisy.
+
+## 2026-06-05 UTC — Temp hosted-identity remediation worktree ran out of disk space
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: F4 rerun — Scope Fidelity Check for hosted-identity remediation head `e8910ce7`
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: Targeted reruns in `/tmp/opencode/hosted-identity-f4-fix` could not complete because `uv` failed while creating the worktree virtual environment: the host ran out of disk space during package copy/extraction. This prevented fresh local execution of the remediated route tests and ruff in that temp snapshot, but equivalent verification evidence remained available from Atlas plus direct source inspection.
+- **Evidence**: `PYTHONPATH=/tmp/opencode/hosted-identity-f4-fix uv run --project /tmp/opencode/hosted-identity-f4-fix pytest -q /tmp/opencode/hosted-identity-f4-fix/tests/test_identity_email_routes.py /tmp/opencode/hosted-identity-f4-fix/tests/test_identity_google_routes.py` failed with `No space left on device (os error 28)` while installing `basedpyright-1.39.6-py3-none-any.whl`; `uv run --project /tmp/opencode/hosted-identity-f4-fix ruff check /tmp/opencode/hosted-identity-f4-fix/orchestrator/routes/auth_setup.py /tmp/opencode/hosted-identity-f4-fix/tests/test_identity_email_routes.py /tmp/opencode/hosted-identity-f4-fix/tests/test_identity_google_routes.py` failed similarly while installing `pip-audit==2.10.0` with `No space left on device (os error 28)`.
+- **Likely cause**: Insufficient free space in `/tmp/opencode` or the backing filesystem while `uv` copied cached packages into the temp worktree `.venv` (confidence 95%).
+- **Suggested action**: Reclaim space in `/tmp/opencode` or the backing filesystem before relying on temp-worktree `uv run` verification, or point `uv`/virtualenv creation at a roomier path for large verification snapshots.
+
 ## 2026-05-31 05:18 UTC — TOML diagnostics unavailable for pyproject changes
 - **Severity**: info
 - **Scope**: tooling
@@ -233,6 +294,7 @@
 - **Suggested action**: Commission a frontend dependency remediation task using npm-managed upgrades and explicit regression testing for Next/PWA/AI SDK flows.
 - **Seen again**: 2026-05-31 during Task 6 when `npm install --save-dev @commitlint/cli @commitlint/config-conventional` completed but again reported `26 vulnerabilities (4 low, 8 moderate, 14 high)`; commitlint installation proceeded, and vulnerability remediation remains out of scope for Task 6.
 - **Seen again**: 2026-05-31T06:31Z during Task 7 local CI parity; `.sisyphus/evidence/task-7-ci-local-parity.txt` shows `npm ci` reporting 26 vulnerabilities and `npm run audit:ci` exiting 1.
+- **Seen again / changed count**: 2026-06-05T03:34Z during F3 Real Manual QA, `npm ci` in `/tmp/opencode/hosted-identity-pr-f3/frontend` completed but reported `27 vulnerabilities (4 low, 8 moderate, 14 high, 1 critical)`. Install succeeded, but the audit inventory is worse than the previously recorded 26-vulnerability state.
 
 ## 2026-05-31 05:54 UTC — npm ci Emits Deprecated Frontend Dependency Warnings
 - **Severity**: warning
@@ -1186,6 +1248,7 @@
 - **Evidence**: `SyntaxError: unterminated triple-quoted string literal (detected at line 27)` followed by `/usr/bin/bash: -c: line 32: unexpected EOF while looking for matching ``'`.
 - **Likely cause**: The append payload embedded a nested `PY` heredoc marker and fenced code block inside a triple-quoted Python string, prematurely terminating the outer heredoc (confidence 99%).
 - **Suggested action**: For artifact append commands, avoid nested heredoc markers inside Python string literals or use a generated text file/string without matching delimiter text.
+- **Seen again 2026-06-05T03:12:52Z**: F1 plan-compliance report write failed with `SyntaxError: unterminated triple-quoted string literal (detected at line 222)` because the report body contained an exact `PY` heredoc delimiter line inside a fenced code block. Retried with a unique heredoc delimiter.
 
 ## 2026-05-27 UTC — Workspace had unrelated uncommitted files during W1 plan patch verification
 - **Severity**: warning
@@ -1417,3 +1480,15 @@
 - **Evidence**: `uv run basedpyright --level error -p pyproject.toml` printed `Pyproject file cannot have both pyright and basedpyright sections. pick one` and exited `3`; after config consolidation, `uv run basedpyright --level error` reported `tests/benchmark_harness/verify_recovery_logic.py:156:5 - error: No overloads for "update" match the provided arguments` plus the same pattern at lines 157, 211, and 212.
 - **Likely cause**: The default command had been loading `pyrightconfig.json`, hiding the invalid pyproject basedpyright config; once the config was unified, dict inference for recovery result rows was too narrow for later inserting list-valued `raw_session_ids` rows (confidence 95%).
 - **Suggested action**: Keep basedpyright settings in one `[tool.basedpyright]` section and keep `pyrightconfig.json` synchronized for editor/default CLI discovery; continue ratcheting the baseline as real errors are fixed.
+
+## 2026-06-05T03:10:27Z — gh pr diff unavailable for large PR #7
+
+- **Severity**: info
+- **Scope**: upstream
+- **Encountered during**: F1 Plan Compliance Audit — final-wave approval gate for PR #7
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: `gh pr diff 7 --name-only` failed because GitHub refused to render the oversized diff. The compliance check proceeded using the GitHub PR files API (`gh api repos/sol-aeternum/Daemon/pulls/7/files --paginate --jq '.[].filename'`) and refreshed remote git refs instead.
+- **Evidence**: `could not find pull request diff: HTTP 406: Sorry, the diff exceeded the maximum number of lines (20000) (https://api.github.com/repos/sol-aeternum/Daemon/pulls/7)` followed by `PullRequest.diff too_large`.
+- **Likely cause**: GitHub diff-rendering limit for large PRs; confidence 95%.
+- **Suggested action**: For large PR compliance audits, use the PR files API or `git diff origin/main..origin/<branch> --name-only` for artifact-path checks instead of `gh pr diff`.
