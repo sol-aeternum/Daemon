@@ -2,9 +2,6 @@ import DOMPurify, { type Config } from "dompurify";
 
 const sanitizeConfig: Config = {
   ALLOWED_TAGS: [
-    "html",
-    "head",
-    "body",
     "div",
     "span",
     "p",
@@ -14,13 +11,8 @@ const sanitizeConfig: Config = {
     "h4",
     "h5",
     "h6",
-    "script",
-    "style",
-    "input",
     "button",
     "label",
-    "form",
-    "canvas",
     "svg",
     "path",
     "rect",
@@ -51,11 +43,9 @@ const sanitizeConfig: Config = {
   ALLOWED_ATTR: [
     "class",
     "id",
-    "style",
     "type",
     "value",
     "placeholder",
-    "onclick",
     "for",
     "href",
     "src",
@@ -74,6 +64,7 @@ const sanitizeConfig: Config = {
   ],
   ALLOW_DATA_ATTR: false,
   FORBID_ATTR: [
+    "onclick",
     "onload",
     "onerror",
     "onmouseover",
@@ -87,8 +78,26 @@ const sanitizeConfig: Config = {
     "oncontextmenu",
     "ondrag",
     "ondrop",
+    "style",
   ],
-  FORBID_TAGS: ["iframe", "frame", "object", "embed", "link", "meta", "base", "formaction", "formmethod"],
+  FORBID_TAGS: [
+    "script",
+    "style",
+    "iframe",
+    "frame",
+    "object",
+    "embed",
+    "link",
+    "meta",
+    "base",
+    "form",
+    "formaction",
+    "formmethod",
+    "input",
+    "textarea",
+    "select",
+    "option",
+  ],
 };
 
 export function sanitizeHtml(html: string): string {
