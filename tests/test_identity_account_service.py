@@ -125,6 +125,7 @@ class _IdentityMockConn:
         self._transaction_active: bool = False
         self.transaction_stack: list[bool] = []
         self.reserved_user_ids: set[uuid.UUID] = {uuid.UUID("00000000-0000-0000-0000-000000000000")}
+        self.miss_next_user_lookup_for: set[str] = set()
 
     # ----- helpers used by tests -----
 
@@ -273,6 +274,9 @@ class _IdentityMockConn:
             "SELECT id, normalized_email, email_verified_at FROM users WHERE normalized_email"
         ):
             target = args[0]
+            if target in self.miss_next_user_lookup_for:
+                self.miss_next_user_lookup_for.remove(target)
+                return None
             for row in self._store["users"]:
                 if row["normalized_email"] == target:
                     return _Record(row)
@@ -319,6 +323,8 @@ class _IdentityMockConn:
                 )
             for u in self._store["users"]:
                 if u["normalized_email"] == normalized_email:
+                    if "ON CONFLICT" in q:
+                        return None
                     raise _UniqueViolationError("unique violation on users.normalized_email")
             new_id = uuid.uuid4()
             self._store["users"].append(
@@ -1556,6 +1562,30 @@ class TestUsernameNotNullRegression:
         assert insert_calls, "expected an INSERT INTO users call"
         for q, _ in insert_calls:
             assert "username" in q
+
+    @pytest.mark.asyncio
+    async def test_claim_email_identity_handles_insert_conflict_without_aborting_transaction(
+        self, service: AccountService, conn: _IdentityMockConn
+    ) -> None:
+        existing_user_id = conn.add_user(
+            normalized_email="race@example.com",
+            email_verified_at=datetime.now(timezone.utc),
+            username="race",
+        )
+        conn.miss_next_user_lookup_for.add("race@example.com")
+
+        result = await service.claim_email_identity(
+            normalized_email="race@example.com",
+            email_verified_at=datetime.now(timezone.utc),
+            signup_mode="open",
+            invite_token_verifier_hash=None,
+        )
+
+        assert result.user.id == existing_user_id
+        assert result.is_new_user is False
+        insert_calls = [q for q, _ in conn.calls if "INSERT INTO users" in q]
+        assert insert_calls
+        assert any("ON CONFLICT (normalized_email)" in q for q in insert_calls)
 
 
 class TestInviteConsumeUsesRealUserIdRegression:

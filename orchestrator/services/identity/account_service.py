@@ -1184,33 +1184,46 @@ class AccountService:
         race-condition retry from the route layer does not
         double-create.
         """
-        # Step 1: user. Use the existing user lookup to handle
-        # the race where another caller already inserted the
-        # user with the same normalized email between our
-        # pre-check and this INSERT.
-        try:
-            user = await self.create_user(
-                normalized_email=normalized_email,
-                email_verified_at=email_verified_at,
+        # Step 1: user. Use non-aborting conflict handling so a
+        # concurrent first-time sign-in that wins the insert does not
+        # poison the surrounding transaction. If the INSERT returns no
+        # row, a separate read resolves the existing user.
+        username = _derive_username(normalized_email)
+        row = await self._conn.fetchrow(
+            """
+            INSERT INTO users (
+                username,
+                email,
+                name,
+                normalized_email,
+                email_verified_at
             )
-            is_new_user = True
-        except AccountServiceError:
-            raise
-        except Exception as exc:
-            exc_name = type(exc).__name__
-            if "UniqueViolation" in exc_name:
-                # Another caller won the race; fall through to
-                # the existing-user path.
-                existing = await self.find_user_by_normalized_email(normalized_email)
-                if existing is None:
-                    raise AccountServiceError(
-                        f"unique violation on user insert but no user found: {exc_name}"
-                    ) from exc
-                return await self._ensure_account_for_existing_user(
-                    existing,
-                    email_verified_at=(email_verified_at or _now_utc()),
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (normalized_email)
+            WHERE normalized_email IS NOT NULL
+            DO NOTHING
+            RETURNING id,
+                      normalized_email,
+                      email_verified_at
+            """,
+            username,
+            normalized_email,
+            normalized_email,
+            normalized_email,
+            email_verified_at,
+        )
+        if row is None:
+            existing = await self.find_user_by_normalized_email(normalized_email)
+            if existing is None:
+                raise AccountServiceError(
+                    "create_user INSERT conflicted but no user was found on follow-up lookup"
                 )
-            raise AccountServiceError(f"create_user failed: {exc_name}") from exc
+            return await self._ensure_account_for_existing_user(
+                existing,
+                email_verified_at=(email_verified_at or _now_utc()),
+            )
+        user = _user_row_from_record(row)
+        is_new_user = True
 
         # Step 2 + 3: tenant + membership (idempotent).
         tenant, is_new_tenant = await self.ensure_personal_tenant(user.id)
