@@ -452,11 +452,6 @@ async def email_start_endpoint(
     if app_state.db_pool is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
 
-    try:
-        sender = get_mail_sender(settings)
-    except MailSenderConfigError as exc:
-        raise HTTPException(status_code=503, detail="email_unavailable") from exc
-
     pepper = validate_and_get_pepper(settings)
     ip_hash = hash_ip_for_storage(client_ip_for_key(request), pepper)
     user_agent = request.headers.get("User-Agent")
@@ -466,29 +461,59 @@ async def email_start_endpoint(
         else None
     )
 
-    async with app_state.db_pool.acquire() as conn:
-        service = EmailChallengeService(cast(SupportsEmailChallengeQueries, conn), settings)
-        try:
-            challenge_row, plaintext_code = await service.create_challenge_for_delivery(
-                EmailChallengeIssueRequest(
-                    normalized_email=normalized_email,
-                    ip_hash=ip_hash,
-                    user_agent_hash=user_agent_hash,
-                    ttl_seconds=settings.daemon_email_challenge_ttl_seconds,
-                    max_attempts=settings.daemon_email_challenge_max_attempts,
-                )
-            )
-        except EmailChallengeUnavailable as exc:
-            raise HTTPException(status_code=503, detail="email_unavailable") from exc
+    challenge_row: EmailChallengeRow | None = None
+    plaintext_code: str | None = None
+    eligible_for_delivery = settings.daemon_signup_mode == "open"
 
-    background_tasks.add_task(
-        sender.send,
-        _build_email_code_message(
+    async with app_state.db_pool.acquire() as conn:
+        account_service = AccountService(cast(SupportsIdentityQueries, conn))
+        existing_user = await account_service.find_user_by_normalized_email(normalized_email)
+        if settings.daemon_signup_mode == "invite_only":
+            active_invite = await account_service.find_active_invite(normalized_email)
+            eligible_for_delivery = existing_user is not None or active_invite is not None
+        elif settings.daemon_signup_mode == "disabled":
+            eligible_for_delivery = existing_user is not None
+
+        if eligible_for_delivery:
+            service = EmailChallengeService(cast(SupportsEmailChallengeQueries, conn), settings)
+            try:
+                challenge_row, plaintext_code = await service.create_challenge_for_delivery(
+                    EmailChallengeIssueRequest(
+                        normalized_email=normalized_email,
+                        ip_hash=ip_hash,
+                        user_agent_hash=user_agent_hash,
+                        ttl_seconds=settings.daemon_email_challenge_ttl_seconds,
+                        max_attempts=settings.daemon_email_challenge_max_attempts,
+                    )
+                )
+            except EmailChallengeUnavailable as exc:
+                raise HTTPException(status_code=503, detail="email_unavailable") from exc
+
+    if challenge_row is None:
+        challenge_row = EmailChallengeRow(
+            id=uuid.uuid4(),
             normalized_email=normalized_email,
-            plaintext_code=plaintext_code,
-            ttl_seconds=settings.daemon_email_challenge_ttl_seconds,
-        ),
-    )
+            attempts_remaining=settings.daemon_email_challenge_max_attempts,
+            expires_at=datetime.now(timezone.utc)
+            + timedelta(seconds=settings.daemon_email_challenge_ttl_seconds),
+            consumed_at=None,
+            locked_at=None,
+            created_at=datetime.now(timezone.utc),
+        )
+
+    if eligible_for_delivery and plaintext_code is not None:
+        try:
+            sender = get_mail_sender(settings)
+        except MailSenderConfigError as exc:
+            raise HTTPException(status_code=503, detail="email_unavailable") from exc
+        background_tasks.add_task(
+            sender.send,
+            _build_email_code_message(
+                normalized_email=normalized_email,
+                plaintext_code=plaintext_code,
+                ttl_seconds=settings.daemon_email_challenge_ttl_seconds,
+            ),
+        )
 
     await _sleep_for_start_timing_floor(started_at)
     return EmailStartResponse(

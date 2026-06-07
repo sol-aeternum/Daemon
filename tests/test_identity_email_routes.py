@@ -39,6 +39,16 @@ class RouteMockConn:
             challenge_id = args[0]
             row = self._pool.challenge_lookup.get(challenge_id)
             return None if row is None else dict(row)
+        if q.startswith(
+            "SELECT id, normalized_email, email_verified_at FROM users WHERE normalized_email"
+        ):
+            row = self._pool.user_by_email.get(args[0])
+            return None if row is None else dict(row)
+        if q.startswith(
+            "SELECT id, normalized_email, status, expires_at, used_by_user_id FROM signup_invites WHERE normalized_email"
+        ):
+            row = self._pool.active_invite_by_email.get(args[0])
+            return None if row is None else dict(row)
         return None
 
     async def fetchval(self, query: str, *args):
@@ -70,6 +80,8 @@ class RouteMockPool:
         self.challenge_lookup: dict[uuid.UUID, dict[str, object]] = {}
         self.challenge_lookup_calls = 0
         self.invite_hash_by_email: dict[str, str] = {}
+        self.user_by_email: dict[str, dict[str, object]] = {}
+        self.active_invite_by_email: dict[str, dict[str, object]] = {}
         self.transaction_depth = 0
         self.claim_markers: list[str] = []
 
@@ -298,6 +310,116 @@ class TestEmailStartRoute:
 
         assert response.status_code == 400, response.text
         assert response.json() == {"detail": "invalid_email"}
+
+    @pytest.mark.asyncio
+    async def test_email_start_invite_only_suppresses_delivery_for_ineligible_email(
+        self, route_client, monkeypatch
+    ) -> None:
+        client, _pool = route_client
+        captured_policies = []
+
+        monkeypatch.setenv("DAEMON_SIGNUP_MODE", "invite_only")
+        get_settings.cache_clear()
+
+        async def fake_enforce_rate_limit(*, policies, **_kwargs):
+            captured_policies.extend(policies)
+
+        async def fail_create(_self, _request):
+            raise AssertionError("challenge should not be created for ineligible invite-only email")
+
+        def fail_get_mail_sender(_settings):
+            raise AssertionError("mail sender should not be built for ineligible invite-only email")
+
+        async def no_sleep(_started_at: float) -> None:
+            return None
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.EmailChallengeService.create_challenge_for_delivery",
+            fail_create,
+        )
+        monkeypatch.setattr("orchestrator.routes.auth_setup.get_mail_sender", fail_get_mail_sender)
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup._sleep_for_start_timing_floor", no_sleep
+        )
+
+        response = await client.post(
+            "/v1/auth/email/start",
+            json={"email": "new-user@example.com"},
+            headers={"User-Agent": "pytest-agent/1.0"},
+        )
+
+        assert response.status_code == 202, response.text
+        data = response.json()
+        assert data["accepted"] is True
+        assert uuid.UUID(data["challenge_id"])
+        assert isinstance(data["expires_at"], int)
+        assert [policy[0] for policy in captured_policies] == ["ip", "ip", "email", "email"]
+
+    @pytest.mark.asyncio
+    async def test_email_start_invite_only_sends_when_active_invite_exists(
+        self, route_client, monkeypatch
+    ) -> None:
+        client, pool = route_client
+        sender = FakeMailSender()
+        challenge_id = uuid.uuid4()
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+
+        monkeypatch.setenv("DAEMON_SIGNUP_MODE", "invite_only")
+        get_settings.cache_clear()
+        pool.active_invite_by_email["invited@example.com"] = {
+            "id": uuid.uuid4(),
+            "normalized_email": "invited@example.com",
+            "status": "active",
+            "expires_at": datetime.now(timezone.utc) + timedelta(days=1),
+            "used_by_user_id": None,
+        }
+
+        async def fake_create(_self, request):
+            return (
+                EmailChallengeRow(
+                    id=challenge_id,
+                    normalized_email=request.normalized_email,
+                    attempts_remaining=5,
+                    expires_at=expires_at,
+                    consumed_at=None,
+                    locked_at=None,
+                    created_at=datetime.now(timezone.utc),
+                ),
+                "123456",
+            )
+
+        async def fake_enforce_rate_limit(**_kwargs):
+            return None
+
+        async def no_sleep(_started_at: float) -> None:
+            return None
+
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.EmailChallengeService.create_challenge_for_delivery",
+            fake_create,
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.get_mail_sender", lambda _settings: sender
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup.enforce_rate_limit", fake_enforce_rate_limit
+        )
+        monkeypatch.setattr(
+            "orchestrator.routes.auth_setup._sleep_for_start_timing_floor", no_sleep
+        )
+
+        response = await client.post(
+            "/v1/auth/email/start",
+            json={"email": "invited@example.com"},
+            headers={"User-Agent": "pytest-agent/1.0"},
+        )
+
+        assert response.status_code == 202, response.text
+        assert response.json()["challenge_id"] == str(challenge_id)
+        assert len(sender.messages) == 1
 
     @pytest.mark.asyncio
     async def test_email_start_blocks_when_email_provider_disabled(
