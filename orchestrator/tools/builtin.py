@@ -89,35 +89,137 @@ class CalculateTool(Tool):
     }
 
     async def execute(self, **kwargs: Any) -> str:
-        import ast
-
         expression = kwargs.get("expression", "")
-
-        ALLOWED_NODES = (
-            ast.Expression,
-            ast.BinOp,
-            ast.UnaryOp,
-            ast.Constant,
-            ast.Add,
-            ast.Sub,
-            ast.Mult,
-            ast.Div,
-            ast.Pow,
-            ast.Mod,
-            ast.USub,
-            ast.UAdd,
-            ast.Load,
-        )
-
+        if not isinstance(expression, str):
+            return json.dumps({"error": "expression must be a string"})
         try:
-            tree = ast.parse(expression, mode="eval")
-            for node in ast.walk(tree):
-                if not isinstance(node, ALLOWED_NODES):
-                    return json.dumps({"error": f"Disallowed expression: {type(node).__name__}"})
-            result = eval(compile(tree, "<string>", "eval"), {"__builtins__": {}}, {})
-            return json.dumps({"expression": expression, "result": result})
-        except Exception as e:
-            return json.dumps({"error": f"Calculation failed: {str(e)}"})
+            result = _evaluate_math_expression(expression)
+        except _MathError as e:
+            return json.dumps({"error": f"Calculation failed: {e}"})
+        return json.dumps({"expression": expression, "result": result})
+
+
+class _MathError(ValueError):
+    pass
+
+
+class _MathParser:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.pos = 0
+        self.length = len(text)
+
+    def peek(self) -> str:
+        return self.text[self.pos] if self.pos < self.length else ""
+
+    def consume(self) -> str:
+        ch = self.text[self.pos]
+        self.pos += 1
+        return ch
+
+    def skip_whitespace(self) -> None:
+        while self.pos < self.length and self.text[self.pos].isspace():
+            self.pos += 1
+
+    def parse_expression(self) -> float:
+        value = self.parse_term()
+        while True:
+            self.skip_whitespace()
+            ch = self.peek()
+            if ch == "+":
+                self.consume()
+                value = value + self.parse_term()
+            elif ch == "-":
+                self.consume()
+                value = value - self.parse_term()
+            else:
+                return value
+
+    def parse_term(self) -> float:
+        value = self.parse_factor()
+        while True:
+            self.skip_whitespace()
+            ch = self.peek()
+            if ch == "*":
+                self.consume()
+                value = value * self.parse_factor()
+            elif ch == "/":
+                self.consume()
+                divisor = self.parse_factor()
+                if divisor == 0:
+                    raise _MathError("division by zero")
+                value = value / divisor
+            elif ch == "%":
+                self.consume()
+                divisor = self.parse_factor()
+                if divisor == 0:
+                    raise _MathError("division by zero")
+                value = value % divisor
+            else:
+                return value
+
+    def parse_factor(self) -> float:
+        self.skip_whitespace()
+        ch = self.peek()
+        if ch == "+":
+            self.consume()
+            return self.parse_factor()
+        if ch == "-":
+            self.consume()
+            return -self.parse_factor()
+        if ch == "(":
+            self.consume()
+            value = self.parse_expression()
+            self.skip_whitespace()
+            if self.peek() != ")":
+                raise _MathError("unmatched '('")
+            self.consume()
+            return value
+        return self.parse_unary()
+
+    def parse_unary(self) -> float:
+        base = self.parse_number()
+        self.skip_whitespace()
+        if self.peek() == "*" and self.pos + 1 < self.length and self.text[self.pos + 1] == "*":
+            self.consume()
+            self.consume()
+            exponent = self.parse_unary()
+            return base ** exponent
+        return base
+
+    def parse_number(self) -> float:
+        self.skip_whitespace()
+        start = self.pos
+        if self.peek() == ".":
+            self.consume()
+        while self.pos < self.length and self.text[self.pos].isdigit():
+            self.pos += 1
+        if self.pos < self.length and self.text[self.pos] == ".":
+            self.pos += 1
+            while self.pos < self.length and self.text[self.pos].isdigit():
+                self.pos += 1
+        if self.pos < self.length and self.text[self.pos] in ("e", "E"):
+            self.pos += 1
+            if self.pos < self.length and self.text[self.pos] in ("+", "-"):
+                self.pos += 1
+            while self.pos < self.length and self.text[self.pos].isdigit():
+                self.pos += 1
+        literal = self.text[start:self.pos]
+        if not literal or literal == ".":
+            raise _MathError(f"unexpected character {self.peek()!r}")
+        try:
+            return float(literal)
+        except ValueError as e:
+            raise _MathError(f"invalid number {literal!r}") from e
+
+
+def _evaluate_math_expression(expression: str) -> float:
+    parser = _MathParser(expression)
+    result = parser.parse_expression()
+    parser.skip_whitespace()
+    if parser.pos != parser.length:
+        raise _MathError(f"unexpected trailing input at position {parser.pos}")
+    return result
 
 
 def create_default_registry(
