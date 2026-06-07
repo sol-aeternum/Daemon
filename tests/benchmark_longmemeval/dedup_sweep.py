@@ -18,6 +18,7 @@ import orchestrator.eval.fact_harness as runner_module
 import orchestrator.memory.retrieval as retrieval_module
 import tests.longmemeval.evaluate as evaluate_module
 from orchestrator.eval.fact_harness import LongMemEvalFactRunner
+from orchestrator.eval.substrate import SubstrateMismatchError, load_tagged_score
 from orchestrator.memory.dedup import deduplicate_facts
 from orchestrator.memory.extraction import ExtractedFact
 from tests.benchmark_longmemeval.top_k_sweep import (
@@ -111,7 +112,16 @@ def _run_is_complete(output_dir: Path) -> bool:
         output_dir / SCORE_FILENAME,
         output_dir / RUN_SUMMARY_FILENAME,
     )
-    return all(path.exists() for path in required)
+    if not all(path.exists() for path in required):
+        return False
+    # Reject cached scores from a different substrate (e.g. legacy
+    # fast/chunk outputs left from a previous harness version); the
+    # substrate guard would let them pass silently otherwise.
+    try:
+        score = load_tagged_score(output_dir / SCORE_FILENAME)
+    except (FileNotFoundError, ValueError, SubstrateMismatchError):
+        return False
+    return score.get("substrate") == "fact"
 
 
 def _protected_cells_from_accuracy(accuracy: dict[str, Any]) -> dict[str, dict[str, Any]]:

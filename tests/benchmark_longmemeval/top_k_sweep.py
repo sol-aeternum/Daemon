@@ -22,6 +22,7 @@ from orchestrator.eval.fact_harness import (
     resolve_question_conversation_ids,
     resolve_question_corpus_refs,
 )
+from orchestrator.eval.substrate import SubstrateMismatchError, load_tagged_score
 from orchestrator.memory.embedding import embed_query
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
@@ -286,7 +287,16 @@ def run_is_complete(output_dir: Path) -> bool:
         output_dir / RUN_SUMMARY_FILENAME,
         output_dir / RUN_DIAGNOSTICS_FILENAME,
     )
-    return all(path.exists() for path in required)
+    if not all(path.exists() for path in required):
+        return False
+    # Reject cached scores from a different substrate (e.g. legacy
+    # fast/chunk outputs left from a previous harness version); the
+    # substrate guard would let them pass silently otherwise.
+    try:
+        score = load_tagged_score(output_dir / SCORE_FILENAME)
+    except (FileNotFoundError, ValueError, SubstrateMismatchError):
+        return False
+    return score.get("substrate") == "fact"
 
 
 def build_manifest_entry(top_k: int, output_dir: Path, summary: dict[str, Any]) -> dict[str, Any]:
