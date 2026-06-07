@@ -183,7 +183,7 @@ Hosted mode and the Google button are only meaningful when the backend has
 self-hosted. Setup, enrollment, and device endpoints remain available for self-hosted and
 recovery flows on the same router.
 
-When hosted auth runs through the Next.js `/api/v1/auth/*` proxy, operators may optionally set
+When hosted auth runs through the Next.js frontend auth proxy, operators may optionally set
 `DAEMON_TRUST_PROXY_FORWARDED_CLIENT_IP=true` so identity rate limits key on the original
 browser IP carried in trusted forwarded headers instead of the proxy/container hop. Leave the
 flag false for direct/self-hosted deployments; the default safe posture is to trust only the

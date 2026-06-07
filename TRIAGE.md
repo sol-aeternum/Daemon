@@ -23,6 +23,7 @@
 - **Evidence**: `/home/sol/daemon/docs/TECHNICAL_SPECS.md:1 [CheckId.MIGRATION_COUNT] expected='32' observed='31'; /home/sol/daemon/docs/TECHNICAL_SPECS.md:90 [CheckId.MIGRATION_LATEST] expected='032_hosted_identity_claim.sql' observed='031_auth_device_model.sql'; /home/sol/daemon/docs/PROJECT_CONTEXT.md:1 [CheckId.MIGRATION_COUNT] expected='32' observed='31'; /home/sol/daemon/docs/PROJECT_CONTEXT.md:71 [CheckId.MIGRATION_LATEST] expected='032_hosted_identity_claim.sql' observed='031_auth_device_model.sql`; command exit code 1.
 - **Likely cause**: Hosted identity migration documentation was updated to expect migration `032_hosted_identity_claim.sql`, but the current repository migration set still reports latest applied/source migration `031_auth_device_model.sql` (confidence 85%).
 - **Suggested action**: In a separate docs/schema synchronization task, reconcile `docs/TECHNICAL_SPECS.md` and `docs/PROJECT_CONTEXT.md` with the actual hosted identity migration source state, or restore the missing migration artifact if it should exist in this branch.
+- **Seen again**: 2026-06-07 during PR follow-up for failing CI; `python scripts/check_doc_freshness.py --mode fail` failed on the same migration metadata drift and additionally reported stale literal route docs for `/api/v1/auth/*` in `docs/HOSTED_IDENTITY.md` and `docs/AUTH_SETUP.md`. This follow-up updates the gated docs instead of suppressing the check.
 
 ## 2026-06-05 09:31 UTC — TypeScript LSP all-severity output lagged behind file contents
 - **Severity**: info
@@ -1458,6 +1459,7 @@
 - **Likely cause**: The local container's outbound proxy blocks Go toolchain discovery for pre-commit's golang language environment (confidence 90%).
 - **Suggested action**: Validate gitleaks in CI or in a host with Go/pre-commit network access; do not weaken the hook config for this host limitation.
 - **Seen again**: 2026-05-31T10:26:58Z during PR follow-up basedpyright verification; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` and the explicit commitlint hook passed.
+- **Seen again**: 2026-06-07 during PR follow-up for failing CI; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`.
 
 ## 2026-05-31T10:24:30Z — BasedPyright config consolidation surfaced benchmark harness typing debt
 - **Severity**: warning

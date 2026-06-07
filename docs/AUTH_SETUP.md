@@ -37,7 +37,7 @@ Setup, enrollment, and device endpoints remain reachable on the same router for 
 and recovery flows. See [`docs/HOSTED_IDENTITY.md`](HOSTED_IDENTITY.md) for the full
 contract.
 
-If you proxy `/api/v1/auth/*` through the Next.js frontend and want hosted-identity rate
+If you proxy hosted auth endpoints through the Next.js frontend and want hosted-identity rate
 limits to key on the real browser IP instead of the proxy/container hop, enable
 `DAEMON_TRUST_PROXY_FORWARDED_CLIENT_IP=true`. Leave it false for direct/self-hosted
 deployments; the default safe posture is to trust only the immediate socket IP.
