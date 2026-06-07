@@ -36,7 +36,7 @@ SCORE_FILENAME = "longmemeval_chunk_score.json"
 
 BENCHMARK_NAME = "longmemeval_chunk"
 BENCHMARK_SOURCE_TYPE = "import"
-BENCHMARK_CATEGORY = "chunk"
+BENCHMARK_CATEGORY = "observation"
 DEFAULT_CHUNK_MAX_CHARS = 4000
 DEFAULT_OVERLAP_TURNS = 2
 BENCHMARK_SUBSTRATE = "chunk"
@@ -315,6 +315,7 @@ async def insert_chunk_memories(
         metadata = {
             "benchmark": BENCHMARK_NAME,
             "benchmark_source_tag": BENCHMARK_NAME,
+            "benchmark_substrate": BENCHMARK_SUBSTRATE,
             "question_id": question_id,
             "session_id": chunk.session_id,
             "session_index": chunk.session_index,

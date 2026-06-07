@@ -4,7 +4,7 @@ import argparse
 import json
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -253,18 +253,42 @@ class ResetSummary:
     success: bool
     tables_cleared: dict[str, int]
     total_rows_deleted: int
+    checkpoint_reset: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
 
 
-CANONICAL_RESET_TABLES: tuple[str, ...] = (
-    "retrieval_log",
-    "dream_log",
-    "entities",
-    "memories",
-    "memory_extraction_log",
-    "messages",
-    "conversations",
+CANONICAL_RESET_STATEMENTS: tuple[tuple[str, str], ...] = (
+    ("retrieval_log", "DELETE FROM retrieval_log WHERE user_id = $1"),
+    ("dream_log", "DELETE FROM dream_log WHERE user_id = $1"),
+    ("entities", "DELETE FROM entities WHERE user_id = $1"),
+    ("memories", "DELETE FROM memories WHERE user_id = $1"),
+    ("memory_extraction_log", "DELETE FROM memory_extraction_log WHERE user_id = $1"),
+    ("messages", "DELETE FROM messages WHERE user_id = $1"),
+    ("conversations", "DELETE FROM conversations WHERE user_id = $1"),
 )
+CANONICAL_RESET_TABLES: tuple[str, ...] = tuple(
+    table for table, _statement in CANONICAL_RESET_STATEMENTS
+)
+
+
+def _reset_checkpoint_file(checkpoint_path: Path | str | None) -> dict[str, Any]:
+    """Remove a benchmark checkpoint so the next ingest cannot skip reset DB state."""
+    if checkpoint_path is None:
+        return {
+            "checkpoint_path": None,
+            "checkpoint_existed": False,
+            "checkpoint_removed": False,
+        }
+
+    path = Path(checkpoint_path)
+    existed = path.exists()
+    if existed:
+        path.unlink()
+    return {
+        "checkpoint_path": str(path),
+        "checkpoint_existed": existed,
+        "checkpoint_removed": existed and not path.exists(),
+    }
 
 
 async def reset_canonical_benchmark(
@@ -275,21 +299,19 @@ async def reset_canonical_benchmark(
 ) -> ResetSummary:
     """Reset the fact-substrate canonical benchmark state for the canonical test user.
 
-    The ``checkpoint_path`` is accepted for call-site symmetry with the harness
-    runners and is not used by this implementation — the canonical user is
-    identified by a fixed UUID from ``tests.longmemeval.ingest.TEST_USER_ID``.
+    When a checkpoint path is supplied, the checkpoint is deleted along with the
+    database rows so the next ingest cannot resume past missing benchmark state.
     """
-    _ = checkpoint_path
     tables_cleared: dict[str, int] = {}
     total = 0
+    checkpoint_reset: dict[str, Any] = {}
     try:
         from tests.longmemeval.ingest import TEST_USER_ID
 
-        for table in CANONICAL_RESET_TABLES:
-            result = await pool.execute(
-                f"DELETE FROM {table} WHERE user_id = $1",
-                TEST_USER_ID,
-            )
+        checkpoint_reset = _reset_checkpoint_file(checkpoint_path)
+
+        for table, statement in CANONICAL_RESET_STATEMENTS:
+            result = await pool.execute(statement, TEST_USER_ID)
             deleted = int(str(result).split()[-1]) if isinstance(result, str) else 0
             tables_cleared[table] = deleted
             total += deleted
@@ -298,6 +320,7 @@ async def reset_canonical_benchmark(
             success=False,
             tables_cleared=tables_cleared,
             total_rows_deleted=total,
+            checkpoint_reset=checkpoint_reset,
             error=str(exc),
         )
     _ = cleanup_redis
@@ -305,6 +328,7 @@ async def reset_canonical_benchmark(
         success=True,
         tables_cleared=tables_cleared,
         total_rows_deleted=total,
+        checkpoint_reset=checkpoint_reset,
     )
 
 

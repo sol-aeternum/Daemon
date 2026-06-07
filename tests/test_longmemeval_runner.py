@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from types import SimpleNamespace
 import uuid
 from unittest.mock import AsyncMock, MagicMock
@@ -591,3 +591,60 @@ def test_score_raises_when_no_results_available(tmp_path: Path) -> None:
 
     with pytest.raises(FileNotFoundError, match="No evaluation results available"):
         runner.score()
+
+
+@pytest.mark.asyncio
+async def test_reset_canonical_benchmark_removes_checkpoint_and_reports_reset(
+    tmp_path: Path,
+) -> None:
+    from orchestrator.eval.fact_harness import CANONICAL_RESET_TABLES, reset_canonical_benchmark
+
+    checkpoint_path = tmp_path / "longmemeval_checkpoint.json"
+    checkpoint_path.write_text(json.dumps({"version": 2}))
+
+    class FakePool:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        async def execute(self, query: str, *_args: object) -> str:
+            self.queries.append(query)
+            return "DELETE 2"
+
+    pool = FakePool()
+
+    summary = await reset_canonical_benchmark(cast(Any, pool), checkpoint_path, cleanup_redis=False)
+
+    assert summary.success is True
+    assert summary.error is None
+    assert summary.total_rows_deleted == 2 * len(CANONICAL_RESET_TABLES)
+    assert summary.checkpoint_reset == {
+        "checkpoint_path": str(checkpoint_path),
+        "checkpoint_existed": True,
+        "checkpoint_removed": True,
+    }
+    assert not checkpoint_path.exists()
+    assert len(pool.queries) == len(CANONICAL_RESET_TABLES)
+
+
+@pytest.mark.asyncio
+async def test_reset_canonical_benchmark_reports_missing_checkpoint(
+    tmp_path: Path,
+) -> None:
+    from orchestrator.eval.fact_harness import reset_canonical_benchmark
+
+    checkpoint_path = tmp_path / "missing_checkpoint.json"
+
+    class FakePool:
+        async def execute(self, _query: str, *_args: object) -> str:
+            return "DELETE 0"
+
+    summary = await reset_canonical_benchmark(
+        cast(Any, FakePool()), checkpoint_path, cleanup_redis=False
+    )
+
+    assert summary.success is True
+    assert summary.checkpoint_reset == {
+        "checkpoint_path": str(checkpoint_path),
+        "checkpoint_existed": False,
+        "checkpoint_removed": False,
+    }

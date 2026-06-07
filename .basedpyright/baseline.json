@@ -338,16 +338,6 @@
                 }
             }
         ],
-        "./orchestrator/eval/longmemeval.py": [
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 4,
-                    "endColumn": 22,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./orchestrator/main.py": [
             {
                 "code": "reportDeprecated",
@@ -1246,16 +1236,6 @@
                 }
             }
         ],
-        "./tests/benchmark_harness/reset_verify_helper.py": [
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 45,
-                    "endColumn": 70,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./tests/benchmark_harness/run_single_preserved.py": [
             {
                 "code": "reportAttributeAccessIssue",
@@ -1310,14 +1290,6 @@
                 "range": {
                     "startColumn": 43,
                     "endColumn": 57,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 56,
-                    "endColumn": 81,
                     "lineCount": 1
                 }
             },

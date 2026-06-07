@@ -619,6 +619,7 @@
 - **Likely cause**: Current pinned versions of LiteLLM and arq are not yet updated for Python 3.14's coroutine-inspection deprecation path (confidence 95%).
 - **Suggested action**: Track dependency updates or pin compatible versions before Python 3.16 removes the deprecated API.
 - **Seen again**: 2026-05-29 during generated-audio protection verification when `PYTHONPATH=. uv run pytest tests/test_route_auth_hardening.py -q` passed but emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
+- **Seen again**: 2026-06-07 during PR #8 review-fix verification when `PYTHONPATH=. uv run pytest -q tests/test_longmemeval_fast.py tests/test_longmemeval_runner.py tests/test_substrate_gate.py` passed with 38 tests but emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 
 ## 2026-04-10 12:30 — BasedPyright Warning Debt In Dreaming-Touched Python Modules
 - **Severity**: warning
@@ -1412,6 +1413,7 @@
 - **Evidence**: `uv run bandit -r orchestrator providers scripts tests` exited 1 with `Low: 3500`, `Medium: 30`, `High: 0`, and `tests/test_video_e2e.py (syntax error while parsing AST from file)`; `uv run pip-audit` exited 1 with `Found 29 known vulnerabilities in 13 packages`; `PYTHONPATH=. uv run pytest -q` exited 2 with 8 collection errors including `tests/test_video_e2e.py:596 SyntaxError: unmatched ')'`; frontend `npm run type-check`, `npm run lint`, `npm run format:check`, `npm run audit:ci`, `npm run test:run`, and `npm run build` exited non-zero on existing advisor-event, lint, format, audit, test, and build debt.
 - **Likely cause**: The CI baseline PR intentionally introduced first-run inventories before the existing project debt was remediated, but several inventory commands were still wired as required/failing steps (confidence 95%).
 - **Suggested action**: Keep these inventory steps non-blocking until dedicated remediation tasks upgrade dependencies, repair pytest collection, fix frontend contracts/tests, and apply mechanical formatting.
+- **Seen again**: 2026-06-07 during PR #8 review-fix verification when `uv run bandit -r orchestrator providers scripts tests` exited 1 with pre-existing inventory (`Low: 3480`, `Medium: 26`, `High: 0`) and `tests/test_video_e2e.py (syntax error while parsing AST from file)`. A scoped production-file Bandit check for `orchestrator/eval/fact_harness.py` and `orchestrator/eval/chunk_harness.py` passed with no issues.
 
 ## [2026-05-31T10:02:00Z] — BasedPyright Baseline Was Not Loaded By Default Command
 - **Severity**: warning
@@ -1492,3 +1494,14 @@
 - **Evidence**: `could not find pull request diff: HTTP 406: Sorry, the diff exceeded the maximum number of lines (20000) (https://api.github.com/repos/sol-aeternum/Daemon/pulls/7)` followed by `PullRequest.diff too_large`.
 - **Likely cause**: GitHub diff-rendering limit for large PRs; confidence 95%.
 - **Suggested action**: For large PR compliance audits, use the PR files API or `git diff origin/main..origin/<branch> --name-only` for artifact-path checks instead of `gh pr diff`.
+
+## [2026-06-07T03:04:00Z] — Pre-commit Gitleaks Environment Install Blocked By 403 Tunnel
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: PR #8 review-fix verification
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: The aggregate pre-commit gate could not install the gitleaks hook environment from GitHub, so the hook suite exited before running project checks.
+- **Evidence**: `uv run pre-commit run --all-files` exited 3 after `Initializing environment for https://github.com/gitleaks/gitleaks` with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>` and pointed to `/root/.cache/pre-commit/pre-commit.log`.
+- **Likely cause**: The container's outbound tunnel/proxy blocks this GitHub hook environment fetch even though other local tools run normally (confidence 85%).
+- **Suggested action**: Preinstall/cache the gitleaks pre-commit environment in CI/dev containers or allow the GitHub hook URL through the proxy before relying on local pre-commit in this host.
