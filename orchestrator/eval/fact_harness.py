@@ -255,6 +255,7 @@ class ResetSummary:
     total_rows_deleted: int
     checkpoint_reset: dict[str, Any] = field(default_factory=dict)
     redis_keys_deleted: int = 0
+    redis_error: str | None = None
     error: str | None = None
     checkpoint_reset: dict[str, Any] | None = None
 
@@ -382,9 +383,11 @@ async def reset_canonical_benchmark(
             error=str(exc),
         )
 
+    redis_error_value: str | None = None
     if cleanup_redis:
         redis_result = _cleanup_redis_keys()
         redis_keys_deleted = int(redis_result.get("keys_deleted", 0))
+        redis_error_value = redis_result.get("error")
 
     return ResetSummary(
         success=True,
@@ -392,6 +395,7 @@ async def reset_canonical_benchmark(
         total_rows_deleted=total,
         checkpoint_reset=checkpoint_reset,
         redis_keys_deleted=redis_keys_deleted,
+        redis_error=redis_error_value,
     )
 
 

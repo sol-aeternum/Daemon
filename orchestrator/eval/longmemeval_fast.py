@@ -50,22 +50,28 @@ from orchestrator.eval.chunk_harness import (
     resolve_output_paths,
 )
 
+LEGACY_RESULTS_FILENAME = "longmemeval_fast_results.jsonl"
+LEGACY_CHECKPOINT_FILENAME = "longmemeval_fast_checkpoint.json"
+LEGACY_SCORE_FILENAME = "longmemeval_fast_score.json"
+
 
 def resolve_output_paths_legacy(
     output_dir: Path,
     checkpoint_path: Path | None = None,
 ) -> tuple[Path, Path]:
-    """Legacy 2-tuple variant of ``resolve_output_paths``.
+    """Legacy 2-tuple variant of ``resolve_output_paths`` with the original
+    ``longmemeval_fast_*`` artifact filenames.
 
-    The pre-2026-06-04 ``resolve_output_paths`` returned
-    ``(results_path, checkpoint_path)``. After the substrate-tag refactor
-    the chunk-harness resolver returns ``(results_path, checkpoint_path, score_path)``.
-    This wrapper preserves the 2-tuple arity for legacy callers.
+    The pre-2026-06-04 resolver returned
+    ``(results_path, checkpoint_path)`` using filenames prefixed with
+    ``longmemeval_fast_``. The substrate-tag refactor renamed those
+    artifacts to ``longmemeval_chunk_*``. This wrapper restores the
+    legacy 2-tuple arity AND the legacy filenames so existing automation
+    that reads from the documented ``longmemeval_fast_results.jsonl``
+    files keeps working.
     """
-    results, checkpoint, _score = resolve_output_paths(
-        output_dir=output_dir,
-        checkpoint_path=checkpoint_path,
-    )
+    results = output_dir / LEGACY_RESULTS_FILENAME
+    checkpoint = checkpoint_path or (output_dir / LEGACY_CHECKPOINT_FILENAME)
     return results, checkpoint
 
 
@@ -116,6 +122,9 @@ __all__ = [
     "DEFAULT_OUTPUT_DIR",
     "DEFAULT_OVERLAP_TURNS",
     "HARNESS_BANNER",
+    "LEGACY_CHECKPOINT_FILENAME",
+    "LEGACY_RESULTS_FILENAME",
+    "LEGACY_SCORE_FILENAME",
     "LongMemEvalChunkRunner",
     "LongMemEvalFastRunner",
     "RESULTS_FILENAME",

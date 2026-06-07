@@ -698,13 +698,14 @@ async def test_reset_canonical_benchmark_redis_cleanup_when_enabled(
     )
     assert summary.success is True
     assert summary.redis_keys_deleted == 7
+    assert summary.redis_error is None
 
 
 @pytest.mark.asyncio
 async def test_reset_canonical_benchmark_redis_failure_does_not_fail_reset(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Redis errors are reported but success stays True (best-effort)."""
+    """Redis errors are surfaced via redis_error but success stays True (best-effort)."""
     from orchestrator.eval import fact_harness
 
     def _spy() -> dict[str, Any]:
@@ -721,6 +722,34 @@ async def test_reset_canonical_benchmark_redis_failure_does_not_fail_reset(
     )
     assert summary.success is True
     assert summary.redis_keys_deleted == 0
+    assert summary.redis_error == "connection refused"
+
+
+@pytest.mark.asyncio
+async def test_reset_canonical_benchmark_redis_not_attempted_when_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When cleanup_redis=False (the default), redis_error stays None and the helper is not called."""
+    from orchestrator.eval import fact_harness
+
+    called = {"n": 0}
+
+    def _spy() -> dict[str, Any]:
+        called["n"] += 1
+        return {"keys_deleted": 0, "error": "should-not-be-seen"}
+
+    monkeypatch.setattr(fact_harness, "_cleanup_redis_keys", _spy)
+
+    class FakePool:
+        async def execute(self, _query: str, *_args: object) -> str:
+            return "DELETE 1"
+
+    summary = await fact_harness.reset_canonical_benchmark(
+        cast(Any, FakePool()), tmp_path / "ckpt.json"
+    )
+    assert called["n"] == 0
+    assert summary.redis_keys_deleted == 0
+    assert summary.redis_error is None
 
 
 def test_legacy_runner_module_re_exports_filename_constants() -> None:
@@ -743,12 +772,19 @@ def test_legacy_runner_module_re_exports_filename_constants() -> None:
 def test_legacy_chunk_shim_resolve_output_paths_legacy_returns_two_tuple(
     tmp_path: Path,
 ) -> None:
-    """``resolve_output_paths_legacy`` preserves the 2-tuple arity for old callers."""
-    from orchestrator.eval.longmemeval_fast import resolve_output_paths_legacy
+    """``resolve_output_paths_legacy`` preserves the 2-tuple arity AND the
+    legacy ``longmemeval_fast_*`` filenames for old callers."""
+    from orchestrator.eval.longmemeval_fast import (
+        LEGACY_CHECKPOINT_FILENAME,
+        LEGACY_RESULTS_FILENAME,
+        resolve_output_paths_legacy,
+    )
 
     results, checkpoint = resolve_output_paths_legacy(tmp_path)
-    assert results == tmp_path / "longmemeval_chunk_results.jsonl"
-    assert checkpoint == tmp_path / "longmemeval_chunk_checkpoint.json"
+    assert results == tmp_path / LEGACY_RESULTS_FILENAME
+    assert checkpoint == tmp_path / LEGACY_CHECKPOINT_FILENAME
+    assert LEGACY_RESULTS_FILENAME == "longmemeval_fast_results.jsonl"
+    assert LEGACY_CHECKPOINT_FILENAME == "longmemeval_fast_checkpoint.json"
 
 
 def test_legacy_runner_module_path_exports_fact_harness_aliases() -> None:

@@ -10,6 +10,6 @@
     "TR": 0.2,
     "ABS": 0.0
   },
-  "substrate": "fact",
-  "benchmark_name": "longmemeval_fact"
+  "substrate": "chunk",
+  "benchmark_name": "longmemeval_chunk"
 }
