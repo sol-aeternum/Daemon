@@ -12,6 +12,43 @@ from orchestrator.tools.registry import ToolRegistry
 from orchestrator.tools.executor import ToolExecutor
 
 
+# Tool results reach the LLM as plain text. Adversarial tool outputs (web pages,
+# fetched files, memory records) can contain instructions like "Ignore previous
+# instructions and ...". To bound the prompt-injection surface we wrap every tool
+# result in a strict XML fence with a `trust="untrusted"` attribute, and the
+# system prompt explicitly tells the model to treat the contents as DATA, not
+# INSTRUCTIONS. The model is also instructed to ignore any instruction-like text
+# inside the fence. This mirrors the <memory_records> fence from issue #19.
+_TOOL_RESULT_FENCE_TAG = "tool_result"
+
+
+def _sanitize_xml_attr(value: str) -> str:
+    """Escape characters that could break out of an XML attribute value.
+
+    Tool names originate from the trusted registry, but a defense-in-depth
+    escape prevents any future tool name from being able to terminate the
+    `<tool_result tool="...">` attribute and inject a fake closing tag.
+    """
+    return value.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
+
+
+def _wrap_tool_result_untrusted(tool_name: str, body: str) -> str:
+    """Wrap a tool result body in a strict <tool_result> fence.
+
+    The fence has a `trust="untrusted"` attribute so the model can pattern-match
+    on it after the system prompt teaches it to. The body is preserved verbatim
+    so existing parsers (e.g. session_id extraction from spawn_agent results)
+    continue to work. The opening and closing tags are on their own lines so
+    log scrapers and regex audits can detect them unambiguously.
+    """
+    safe_name = _sanitize_xml_attr(tool_name)
+    return (
+        f'<{_TOOL_RESULT_FENCE_TAG} tool="{safe_name}" trust="untrusted">\n'
+        f"{body}\n"
+        f"</{_TOOL_RESULT_FENCE_TAG}>"
+    )
+
+
 def _looks_like_tools_unsupported_error(err: Exception) -> bool:
     msg = str(err)
     needles = [
@@ -478,17 +515,20 @@ async def completion_with_tools(
                             "tool_call_id": tc["id"],
                             "role": "tool",
                             "name": func_name,
-                            "content": result,
+                            "content": _wrap_tool_result_untrusted(func_name, result),
                         }
                     )
                 else:
                     current_messages.append(
                         {
                             "role": "assistant",
-                            "content": (
-                                "Tool result available. Use it to answer the user.\n"
-                                f"tool_name: {func_name}\n"
-                                f"tool_result: {result}"
+                            "content": _wrap_tool_result_untrusted(
+                                func_name,
+                                (
+                                    "Tool result available. Use it to answer the user.\n"
+                                    f"tool_name: {func_name}\n"
+                                    f"tool_result: {result}"
+                                ),
                             ),
                         }
                     )
@@ -553,17 +593,20 @@ async def completion_with_tools(
                             "tool_call_id": "auto_spawn_agent",
                             "role": "tool",
                             "name": "spawn_agent",
-                            "content": result,
+                            "content": _wrap_tool_result_untrusted("spawn_agent", result),
                         }
                     )
                 else:
                     current_messages.append(
                         {
                             "role": "assistant",
-                            "content": (
-                                "Tool result available. Use it to answer the user.\n"
-                                "tool_name: spawn_agent\n"
-                                f"tool_result: {result}"
+                            "content": _wrap_tool_result_untrusted(
+                                "spawn_agent",
+                                (
+                                    "Tool result available. Use it to answer the user.\n"
+                                    "tool_name: spawn_agent\n"
+                                    f"tool_result: {result}"
+                                ),
                             ),
                         }
                     )
