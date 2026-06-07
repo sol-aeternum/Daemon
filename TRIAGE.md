@@ -1400,6 +1400,7 @@
 - **Blocked current task**: yes
 - **What happened**: Local verification confirmed several CI steps still exit non-zero on known inventory debt, so the follow-up keeps those steps visible but non-blocking in CI while preserving their output.
 - **Evidence**: `uv run bandit -r orchestrator providers scripts tests` exited 1 with `Low: 3500`, `Medium: 30`, `High: 0`, and `tests/test_video_e2e.py (syntax error while parsing AST from file)`; `uv run pip-audit` exited 1 with `Found 29 known vulnerabilities in 13 packages`; `PYTHONPATH=. uv run pytest -q` exited 2 with 8 collection errors including `tests/test_video_e2e.py:596 SyntaxError: unmatched ')'`; frontend `npm run type-check`, `npm run lint`, `npm run format:check`, `npm run audit:ci`, `npm run test:run`, and `npm run build` exited non-zero on existing advisor-event, lint, format, audit, test, and build debt.
+- **Seen again**: 2026-06-07 during PR hosted-identity follow-up for failing backend gates. `uv run bandit -r orchestrator providers scripts tests` exited 1 with `Low: 4535`, `Medium: 25`, `High: 0`, and `tests/test_video_e2e.py (syntax error while parsing AST from file)`; `uv run pip-audit` exited 1 with `Found 41 known vulnerabilities in 14 packages`; `PYTHONPATH=. uv run pytest -q` exited 2 with the same 8 collection errors/import drifts plus `tests/test_video_e2e.py:596 SyntaxError: unmatched ')'`.
 - **Likely cause**: The CI baseline PR intentionally introduced first-run inventories before the existing project debt was remediated, but several inventory commands were still wired as required/failing steps (confidence 95%).
 - **Suggested action**: Keep these inventory steps non-blocking until dedicated remediation tasks upgrade dependencies, repair pytest collection, fix frontend contracts/tests, and apply mechanical formatting.
 
@@ -1460,6 +1461,7 @@
 - **Suggested action**: Validate gitleaks in CI or in a host with Go/pre-commit network access; do not weaken the hook config for this host limitation.
 - **Seen again**: 2026-05-31T10:26:58Z during PR follow-up basedpyright verification; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` and the explicit commitlint hook passed.
 - **Seen again**: 2026-06-07 during PR follow-up for failing CI; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`.
+- **Seen again**: 2026-06-07 during PR hosted-identity follow-up for failing backend gates; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` passed.
 
 ## 2026-05-31T10:24:30Z — BasedPyright config consolidation surfaced benchmark harness typing debt
 - **Severity**: warning
@@ -1572,3 +1574,14 @@
 - **Evidence**: `npm run test:run -- __tests__/auth-proxy-route.test.ts` output included `npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.`
 - **Likely cause**: The host or project npm environment includes a legacy `http-proxy` config key that current npm accepts with a warning but plans to reject in a future major version (confidence 80%).
 - **Suggested action**: Inspect npm config sources (`npm config list`) and remove or rename the legacy `http-proxy` setting if it is not required by the container/network environment.
+
+## 2026-06-07 UTC — Backend basedpyright failed on fake Redis test cast
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: PR hosted-identity follow-up for failing backend gates
+- **Category**: test-failure
+- **Blocked current task**: yes
+- **What happened**: The backend type gate failed because a test cast a `FakeRedis` instance to `ArqRedis` and then accessed fake-only `script` and `store` attributes through the casted variable. The production code was unaffected, but the strict `basedpyright --level error` gate rejected the test.
+- **Evidence**: `uv run basedpyright --level error` reported `tests/test_identity_rate_limiter.py:615:29 - error: Cannot access attribute "script" for class "ArqRedis"` and `tests/test_identity_rate_limiter.py:621:43 - error: Cannot access attribute "store" for class "ArqRedis"`.
+- **Likely cause**: The regression test needed an `ArqRedis`-typed value for `RateLimiter`, but reused that typed variable for fake-specific assertions instead of keeping the concrete fake object for inspection. Confidence: 98%.
+- **Suggested action**: Keep future Redis fakes as concrete variables for fake-only assertions and pass a separately cast value only across the production API boundary.

@@ -584,11 +584,12 @@ class TestEnforceRateLimit:
 
         get_settings.cache_clear()
         try:
-            fake = cast(ArqRedis, FakeRedis())
-            limiter = RateLimiter(fake, hmac_secret=HMAC_SECRET)
+            fake_redis = FakeRedis()
+            redis = cast(ArqRedis, fake_redis)
+            limiter = RateLimiter(redis, hmac_secret=HMAC_SECRET)
             blocked_key = limiter.build_key("auth:email:start:ip:hour", "ip", "1.2.3.4")
-            cast(Any, fake).store[blocked_key] = [5, 3_600_000]
-            req = request_factory("1.2.3.4", redis=fake)
+            fake_redis.store[blocked_key] = [5, 3_600_000]
+            req = request_factory("1.2.3.4", redis=redis)
 
             with pytest.raises(HTTPException) as excinfo:
                 await enforce_rate_limit(
@@ -612,13 +613,13 @@ class TestEnforceRateLimit:
                 )
 
             assert excinfo.value.status_code == 429
-            assert len(fake.script.calls) == 1
+            assert len(fake_redis.script.calls) == 1
             second_key = limiter.build_key(
                 "auth:email:start:email:day",
                 "email",
                 "user@example.com",
             )
-            assert second_key not in fake.store
+            assert second_key not in fake_redis.store
         finally:
             get_settings.cache_clear()
 
