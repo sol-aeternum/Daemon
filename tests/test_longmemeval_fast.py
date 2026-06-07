@@ -347,3 +347,53 @@ def test_legacy_fast_runner_4arg_constructor_honors_explicit_score_path(
         score_path=explicit,
     )
     assert runner.score_path == explicit
+
+
+def test_legacy_fast_shim_cli_strips_run_subcommand(monkeypatch, tmp_path: Path) -> None:
+    """The documented ``run --dataset ...`` shape is accepted by the shim."""
+    from orchestrator.eval import longmemeval_fast, chunk_harness
+
+    captured: dict[str, object] = {}
+
+    def _fake_main(argv: object) -> None:
+        captured["argv"] = argv
+
+    monkeypatch.setattr(chunk_harness, "main", _fake_main)
+
+    longmemeval_fast.main(
+        [
+            "run",
+            "--dataset",
+            str(tmp_path / "ds.json"),
+            "--output-dir",
+            str(tmp_path / "out"),
+        ]
+    )
+    forwarded = captured["argv"]
+    assert isinstance(forwarded, list)
+    assert forwarded[0] == "--dataset"
+    assert "run" not in forwarded
+
+
+def test_legacy_fast_shim_cli_passes_through_without_run(monkeypatch, tmp_path: Path) -> None:
+    """Direct-flag invocation (no ``run`` prefix) is forwarded unchanged."""
+    from orchestrator.eval import longmemeval_fast, chunk_harness
+
+    captured: dict[str, object] = {}
+
+    def _fake_main(argv: object) -> None:
+        captured["argv"] = argv
+
+    monkeypatch.setattr(chunk_harness, "main", _fake_main)
+
+    longmemeval_fast.main(
+        [
+            "--dataset",
+            str(tmp_path / "ds.json"),
+            "--output-dir",
+            str(tmp_path / "out"),
+        ]
+    )
+    forwarded = captured["argv"]
+    assert isinstance(forwarded, list)
+    assert forwarded[0] == "--dataset"

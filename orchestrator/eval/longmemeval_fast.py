@@ -17,9 +17,11 @@ alias is implemented as a thin wrapper that derives a default score path
 from ``output_path`` when callers omit it.
 """
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from orchestrator.eval import chunk_harness as _chunk_harness
 from orchestrator.eval.chunk_harness import (
     BENCHMARK_MEMORY_CATEGORY,
     BENCHMARK_NAME,
@@ -43,7 +45,6 @@ from orchestrator.eval.chunk_harness import (
     ensure_benchmark_user,
     ingest_question_chunks,
     insert_chunk_memories,
-    main,
     normalize_question_id,
     parse_positive_int,
     resolve_output_paths,
@@ -129,12 +130,28 @@ __all__ = [
     "ensure_benchmark_user",
     "ingest_question_chunks",
     "insert_chunk_memories",
-    "main",
     "normalize_question_id",
     "parse_positive_int",
     "resolve_output_paths",
     "resolve_output_paths_legacy",
 ]
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    """Legacy CLI entrypoint.
+
+    Translates the documented ``run`` subcommand shape
+    (``python -m orchestrator.eval.longmemeval_fast run --dataset ...``) by
+    stripping the leading ``run`` token and forwarding the remaining args to
+    ``chunk_harness.main``. Argv without the ``run`` prefix is forwarded as-is
+    so any modern direct-flag invocation also works.
+    """
+    import sys
+
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    if args_list and args_list[0] == "run":
+        args_list = args_list[1:]
+    _chunk_harness.main(args_list)
 
 
 if __name__ == "__main__":
