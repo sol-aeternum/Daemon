@@ -241,6 +241,18 @@ def test_audience_allowlist_with_valid_entries_passes() -> None:
     settings.validate_hosted_identity_config()
 
 
+def test_production_rejects_non_empty_google_audience_allowlist() -> None:
+    settings = _hosted_base(
+        daemon_environment="production",
+        redis_url="redis://redis:6379/0",
+        daemon_mail_sender_mode="smtp",
+        daemon_mail_smtp_host="smtp.example.com",
+        daemon_google_audience_allowlist="id-a.apps.googleusercontent.com",
+    )
+    with pytest.raises(HostedIdentityConfigError, match="audience allowlist"):
+        settings.validate_hosted_identity_config()
+
+
 def test_email_only_deployment_passes() -> None:
     """Email-only deployment (Google disabled) passes with a configured mail sink."""
     settings = _hosted_base(

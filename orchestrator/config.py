@@ -659,6 +659,12 @@ class Settings(BaseSettings):
             )
 
         allowlist_raw = self.daemon_google_audience_allowlist or ""
+        if is_production and allowlist_raw.strip() != "":
+            raise HostedIdentityConfigError(
+                "Hosted identity is enabled in production with Google provider, but "
+                "daemon_google_audience_allowlist is non-empty. The audience allowlist "
+                "is for development/staging only and must be empty in production."
+            )
         if allowlist_raw != "":
             for entry in allowlist_raw.split(","):
                 if entry.strip() == "":
