@@ -1559,3 +1559,14 @@
 - **Evidence**: `lsp_diagnostics(filePath="/home/sol/daemon/.sisyphus/evidence/hosted-identity-claim/task-22-oracle.txt", severity="error")` returned `Error: No LSP server configured for extension: .txt` and listed only code-oriented servers (`typescript, deno, vue, eslint, oxlint, biome, gopls, ruby-lsp, basedpyright, pyright...`).
 - **Likely cause**: OpenCode LSP configuration in this environment does not include a plain-text-capable language server, so `.txt` evidence artifacts cannot participate in changed-file diagnostics (confidence 99%).
 - **Suggested action**: If plain-text evidence files are expected to satisfy changed-file diagnostics, add a `.txt`-capable LSP to the workspace or treat grep/read validation as the canonical check for text artifacts.
+
+## 2026-06-07 UTC — npm emits unknown http-proxy config warning
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: PR #7 Codex review follow-up for hosted auth proxy IP header precedence
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Frontend npm script execution emitted a warning before running the targeted Vitest suite. The tests still passed, and the warning did not affect the review fix.
+- **Evidence**: `npm run test:run -- __tests__/auth-proxy-route.test.ts` output included `npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.`
+- **Likely cause**: The host or project npm environment includes a legacy `http-proxy` config key that current npm accepts with a warning but plans to reject in a future major version (confidence 80%).
+- **Suggested action**: Inspect npm config sources (`npm config list`) and remove or rename the legacy `http-proxy` setting if it is not required by the container/network environment.

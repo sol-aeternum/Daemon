@@ -58,7 +58,7 @@ describe('auth proxy forwarded header handling', () => {
     expect(headers.get('Authorization')).toBe('Bearer daemon-token');
   });
 
-  it('synthesizes X-Daemon-Client-IP from trusted platform headers', async () => {
+  it('prefers the platform-overwritten Vercel IP over Cloudflare headers', async () => {
     process.env.DAEMON_TRUST_PLATFORM_CLIENT_IP_HEADERS = 'true';
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ ok: true }), {
@@ -76,6 +76,35 @@ describe('auth proxy forwarded header handling', () => {
         'cf-connecting-ip': '198.51.100.9',
         'x-vercel-forwarded-for': '203.0.113.10',
         'x-forwarded-for': '203.0.113.11',
+      },
+    });
+
+    const POST = await loadPostHandler();
+    await POST(req, {
+      params: Promise.resolve({ path: ['refresh'] }),
+    });
+
+    const [, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+    const headers = new Headers(init.headers);
+    expect(headers.get('X-Daemon-Client-IP')).toBe('203.0.113.10');
+  });
+
+  it('falls back to Cloudflare IP only when the Vercel IP is unavailable', async () => {
+    process.env.DAEMON_TRUST_PLATFORM_CLIENT_IP_HEADERS = 'true';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const req = new Request('http://localhost:3000/api/v1/auth/refresh', {
+      method: 'POST',
+      headers: {
+        host: 'localhost:3000',
+        'x-forwarded-host': 'localhost:3000',
+        'x-forwarded-proto': 'https',
+        'cf-connecting-ip': '198.51.100.9',
       },
     });
 

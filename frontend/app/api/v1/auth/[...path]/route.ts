@@ -54,8 +54,8 @@ function buildProxyHeaders(req: Request): Headers {
   if (xForwardedProto) headers.set('X-Forwarded-Proto', xForwardedProto);
 
   const daemonClientIp = shouldTrustPlatformClientIpHeaders()
-    ? (normalizeClientIp(req.headers.get('cf-connecting-ip')) ??
-      normalizeClientIp(req.headers.get('x-vercel-forwarded-for')))
+    ? (normalizeClientIp(req.headers.get('x-vercel-forwarded-for')) ??
+      normalizeClientIp(req.headers.get('cf-connecting-ip')))
     : null;
   if (daemonClientIp) headers.set('X-Daemon-Client-IP', daemonClientIp);
 
