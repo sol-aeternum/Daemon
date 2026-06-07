@@ -43,6 +43,10 @@ from orchestrator.eval.fact_harness import (
     utc_now_iso,
     write_json,
 )
+from tests.longmemeval.evaluate import (
+    CHECKPOINT_FILENAME,
+    RESULTS_FILENAME,
+)
 
 LongMemEvalRunner = LongMemEvalFactRunner
 
@@ -51,12 +55,14 @@ __all__ = [
     "BENCHMARK_SUBSTRATE",
     "CANONICAL_RESET_STATEMENTS",
     "CANONICAL_RESET_TABLES",
+    "CHECKPOINT_FILENAME",
     "CHECKPOINT_VERSION",
     "DEFAULT_OUTPUT_DIR",
     "HARNESS_BANNER",
     "LongMemEvalFactRunner",
     "LongMemEvalRunner",
     "PhaseName",
+    "RESULTS_FILENAME",
     "ResetSummary",
     "SCORE_FILENAME",
     "build_corpus_results_lookup",

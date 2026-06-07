@@ -50,6 +50,24 @@ from orchestrator.eval.chunk_harness import (
 )
 
 
+def resolve_output_paths_legacy(
+    output_dir: Path,
+    checkpoint_path: Path | None = None,
+) -> tuple[Path, Path]:
+    """Legacy 2-tuple variant of ``resolve_output_paths``.
+
+    The pre-2026-06-04 ``resolve_output_paths`` returned
+    ``(results_path, checkpoint_path)``. After the substrate-tag refactor
+    the chunk-harness resolver returns ``(results_path, checkpoint_path, score_path)``.
+    This wrapper preserves the 2-tuple arity for legacy callers.
+    """
+    results, checkpoint, _score = resolve_output_paths(
+        output_dir=output_dir,
+        checkpoint_path=checkpoint_path,
+    )
+    return results, checkpoint
+
+
 class LongMemEvalFastRunner:
     """Back-compat wrapper preserving the legacy 3-arg constructor.
 
@@ -115,6 +133,7 @@ __all__ = [
     "normalize_question_id",
     "parse_positive_int",
     "resolve_output_paths",
+    "resolve_output_paths_legacy",
 ]
 
 

@@ -254,6 +254,7 @@ class ResetSummary:
     tables_cleared: dict[str, int]
     total_rows_deleted: int
     checkpoint_reset: dict[str, Any] = field(default_factory=dict)
+    redis_keys_deleted: int = 0
     error: str | None = None
     checkpoint_reset: dict[str, Any] | None = None
 
@@ -291,7 +292,55 @@ def _reset_checkpoint_file(checkpoint_path: Path | str | None) -> dict[str, Any]
         "checkpoint_removed": existed and not path.exists(),
     }
 
+
 CANONICAL_TEST_USER_EMAIL = "longmemeval@daemon.test"
+
+REDIS_EXTRACT_PATTERNS: tuple[str, ...] = (
+    "extract:*",
+    "arq:job:extract:*",
+    "arq:result:extract:*",
+    "arq:retry:extract:*",
+)
+
+
+def _scan_delete_redis_keys(client: Any, pattern: str) -> int:
+    """Delete every Redis key matching ``pattern`` (cursor-scanned)."""
+    count = 0
+    cursor = 0
+    while True:
+        scan_result = client.scan(cursor=cursor, match=pattern, count=500)
+        if isinstance(scan_result, tuple) and len(scan_result) == 2:
+            cursor, keys = scan_result
+            if keys:
+                count += int(client.delete(*keys))
+        else:
+            break
+        if cursor == 0:
+            break
+    return count
+
+
+def _cleanup_redis_keys() -> dict[str, Any]:
+    """Best-effort cleanup of ARQ extraction Redis keys.
+
+    Returns a dict with ``keys_deleted`` (int) and ``error`` (str | None).
+    Never raises — failures are reported in the dict so the caller can log
+    or include them in a summary without breaking the overall reset.
+    """
+    try:
+        import redis  # type: ignore[import-not-found]
+    except Exception as exc:
+        return {"keys_deleted": 0, "error": f"redis_unavailable: {exc}"}
+    try:
+        from orchestrator.config import get_settings
+
+        settings = get_settings()
+        redis_url = getattr(settings, "redis_url", None) or "redis://localhost:6379/0"
+        client = redis.Redis.from_url(redis_url, decode_responses=True)
+        total = sum(_scan_delete_redis_keys(client, p) for p in REDIS_EXTRACT_PATTERNS)
+        return {"keys_deleted": total, "error": None}
+    except Exception as exc:
+        return {"keys_deleted": 0, "error": str(exc)}
 
 
 async def reset_canonical_benchmark(
@@ -304,10 +353,16 @@ async def reset_canonical_benchmark(
 
     When a checkpoint path is supplied, the checkpoint is deleted along with the
     database rows so the next ingest cannot resume past missing benchmark state.
+
+    When ``cleanup_redis`` is True, ARQ extraction Redis keys matching
+    ``REDIS_EXTRACT_PATTERNS`` are also deleted after the DB cleanup succeeds.
+    Redis failures are reported via ``redis_keys_deleted`` and do not flip
+    ``success`` to False.
     """
     tables_cleared: dict[str, int] = {}
     total = 0
     checkpoint_reset: dict[str, Any] = {}
+    redis_keys_deleted = 0
     try:
         from tests.longmemeval.ingest import TEST_USER_ID
 
@@ -327,11 +382,16 @@ async def reset_canonical_benchmark(
             error=str(exc),
         )
 
+    if cleanup_redis:
+        redis_result = _cleanup_redis_keys()
+        redis_keys_deleted = int(redis_result.get("keys_deleted", 0))
+
     return ResetSummary(
         success=True,
         tables_cleared=tables_cleared,
         total_rows_deleted=total,
         checkpoint_reset=checkpoint_reset,
+        redis_keys_deleted=redis_keys_deleted,
     )
 
 
