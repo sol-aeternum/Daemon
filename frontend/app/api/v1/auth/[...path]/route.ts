@@ -9,6 +9,10 @@ const API_URLS = [
 
 type RouteContext = { params: Promise<{ path: string[] }> };
 
+function shouldTrustPlatformClientIpHeaders(): boolean {
+  return process.env.DAEMON_TRUST_PLATFORM_CLIENT_IP_HEADERS === 'true';
+}
+
 function normalizeClientIp(value: string | null): string | null {
   if (!value) return null;
   const trimmed = value.trim();
@@ -49,9 +53,10 @@ function buildProxyHeaders(req: Request): Headers {
   const xForwardedProto = req.headers.get('x-forwarded-proto');
   if (xForwardedProto) headers.set('X-Forwarded-Proto', xForwardedProto);
 
-  const daemonClientIp =
-    normalizeClientIp(req.headers.get('cf-connecting-ip')) ??
-    normalizeClientIp(req.headers.get('x-vercel-forwarded-for'));
+  const daemonClientIp = shouldTrustPlatformClientIpHeaders()
+    ? (normalizeClientIp(req.headers.get('cf-connecting-ip')) ??
+      normalizeClientIp(req.headers.get('x-vercel-forwarded-for')))
+    : null;
   if (daemonClientIp) headers.set('X-Daemon-Client-IP', daemonClientIp);
 
   const authorization = req.headers.get('authorization');
@@ -66,7 +71,15 @@ async function proxyRequest(
 ): Promise<Response> {
   const method = req.method.toUpperCase();
   const { path } = await context.params;
-  const normalizedPath = path.join('/');
+  if (path.some((segment) => segment === '.' || segment === '..')) {
+    return new Response(JSON.stringify({ error: 'Invalid auth path' }), {
+      status: 400,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+  const normalizedPath = path
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
   const search = new URL(req.url).search;
 
   const requestHeaders = buildProxyHeaders(req);

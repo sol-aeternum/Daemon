@@ -1,10 +1,15 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 
-import { POST } from '../app/api/v1/auth/[...path]/route';
+async function loadPostHandler() {
+  vi.resetModules();
+  const route = await import('../app/api/v1/auth/[...path]/route');
+  return route.POST;
+}
 
 describe('auth proxy forwarded header handling', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    delete process.env.DAEMON_TRUST_PLATFORM_CLIENT_IP_HEADERS;
   });
 
   it('drops user-controlled forwarded client IP headers', async () => {
@@ -34,6 +39,7 @@ describe('auth proxy forwarded header handling', () => {
       body: JSON.stringify({ refresh_token: 'abc' }),
     });
 
+    const POST = await loadPostHandler();
     const response = await POST(req, {
       params: Promise.resolve({ path: ['refresh'] }),
     });
@@ -53,6 +59,7 @@ describe('auth proxy forwarded header handling', () => {
   });
 
   it('synthesizes X-Daemon-Client-IP from trusted platform headers', async () => {
+    process.env.DAEMON_TRUST_PLATFORM_CLIENT_IP_HEADERS = 'true';
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ ok: true }), {
         status: 200,
@@ -72,6 +79,7 @@ describe('auth proxy forwarded header handling', () => {
       },
     });
 
+    const POST = await loadPostHandler();
     await POST(req, {
       params: Promise.resolve({ path: ['refresh'] }),
     });
@@ -82,6 +90,7 @@ describe('auth proxy forwarded header handling', () => {
   });
 
   it('does not synthesize X-Daemon-Client-IP for invalid or comma-list values', async () => {
+    process.env.DAEMON_TRUST_PLATFORM_CLIENT_IP_HEADERS = 'true';
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ ok: true }), {
         status: 200,
@@ -101,6 +110,7 @@ describe('auth proxy forwarded header handling', () => {
       },
     });
 
+    const POST = await loadPostHandler();
     await POST(req, {
       params: Promise.resolve({ path: ['refresh'] }),
     });
@@ -130,6 +140,7 @@ describe('auth proxy forwarded header handling', () => {
       },
     );
 
+    const POST = await loadPostHandler();
     const response = await POST(req, {
       params: Promise.resolve({ path: ['devices'] }),
     });
@@ -138,5 +149,29 @@ describe('auth proxy forwarded header handling', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [url] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toMatch(/\/v1\/auth\/devices\?include_revoked=true&limit=5$/);
+  });
+
+  it('rejects decoded dot segments before proxying auth paths', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const POST = await loadPostHandler();
+
+    const req = new Request('http://localhost:3000/api/v1/auth/../refresh', {
+      method: 'POST',
+      headers: {
+        host: 'localhost:3000',
+        'x-forwarded-host': 'localhost:3000',
+        'x-forwarded-proto': 'https',
+      },
+    });
+
+    const response = await POST(req, {
+      params: Promise.resolve({ path: ['..', 'refresh'] }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: 'Invalid auth path',
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
