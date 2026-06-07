@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { useTheme } from "next-themes";
 import { Settings, LogOut, Sun, Moon, Monitor, ChevronUp } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { useAuth } from "@/components/AuthProvider";
 
 interface AccountWidgetProps {
   displayName?: string;
@@ -20,6 +21,7 @@ export function AccountWidget({
   const buttonRef = useRef<HTMLButtonElement>(null);
   const { theme, setTheme } = useTheme();
   const router = useRouter();
+  const { logout } = useAuth();
 
   useEffect(() => {
     setMounted(true);
@@ -82,8 +84,8 @@ export function AccountWidget({
   };
 
   const handleLogout = () => {
-    // Placeholder for logout action
     setIsOpen(false);
+    void logout();
   };
 
   const toggleTheme = (newTheme: string) => {
