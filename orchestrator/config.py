@@ -72,6 +72,9 @@ class Settings(BaseSettings):
 
     daemon_admin_api_key: str | None = None
 
+    daemon_max_grant_amount_per_request: int = 100
+    daemon_min_grant_description_length: int = 5
+
     # Auth environment: "production" or "development".
     # Production requires strong pepper and rejects insecure cookies.
     daemon_environment: str = Field(default="production")
