@@ -648,3 +648,20 @@ async def test_reset_canonical_benchmark_reports_missing_checkpoint(
         "checkpoint_existed": False,
         "checkpoint_removed": False,
     }
+
+
+def test_legacy_runner_module_path_exports_fact_harness_aliases() -> None:
+    """Back-compat: ``from orchestrator.eval.runner import LongMemEvalRunner`` must work."""
+    from orchestrator.eval.fact_harness import (
+        LongMemEvalFactRunner as _Fact,
+        reset_canonical_benchmark as _reset,
+    )
+    from orchestrator.eval.runner import (
+        LongMemEvalFactRunner,
+        LongMemEvalRunner,
+        reset_canonical_benchmark,
+    )
+
+    assert LongMemEvalRunner is _Fact
+    assert LongMemEvalFactRunner is _Fact
+    assert reset_canonical_benchmark is _reset

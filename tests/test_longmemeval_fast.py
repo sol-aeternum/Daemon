@@ -310,3 +310,40 @@ def test_build_question_chunks_respects_overlap_turns() -> None:
     assert all(isinstance(c.session_id, str) for c in chunks)
     assert [c.chunk_index for c in chunks] == [0, 1, 2]
     assert [c.session_index for c in chunks] == [0, 0, 0]
+
+
+def test_legacy_fast_runner_3arg_constructor_derives_score_path(tmp_path: Path) -> None:
+    """Back-compat: legacy 3-arg LongMemEvalFastRunner(ds, out, ckpt) must work."""
+    from orchestrator.eval.longmemeval_fast import (
+        LongMemEvalFastRunner,
+        SCORE_FILENAME as CHUNK_SCORE_FILENAME,
+    )
+
+    output_path = tmp_path / "fast_results.jsonl"
+    runner = LongMemEvalFastRunner(
+        dataset_path=tmp_path / "dataset.json",
+        output_path=output_path,
+        checkpoint_path=tmp_path / "fast_checkpoint.json",
+    )
+
+    assert isinstance(runner, LongMemEvalFastRunner)
+    assert runner.dataset_path == tmp_path / "dataset.json"
+    assert runner.output_path == output_path
+    assert runner.checkpoint_path == tmp_path / "fast_checkpoint.json"
+    assert runner.score_path == output_path.parent / CHUNK_SCORE_FILENAME
+
+
+def test_legacy_fast_runner_4arg_constructor_honors_explicit_score_path(
+    tmp_path: Path,
+) -> None:
+    """Explicit score_path is honored over the default."""
+    from orchestrator.eval.longmemeval_fast import LongMemEvalFastRunner
+
+    explicit = tmp_path / "custom_score.json"
+    runner = LongMemEvalFastRunner(
+        dataset_path=tmp_path / "dataset.json",
+        output_path=tmp_path / "fast_results.jsonl",
+        checkpoint_path=tmp_path / "fast_checkpoint.json",
+        score_path=explicit,
+    )
+    assert runner.score_path == explicit
