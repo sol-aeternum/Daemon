@@ -1,5 +1,41 @@
 # TRIAGE.md
 
+## 2026-06-05 UTC — Worktree LSP import resolution misses project deps under /tmp review worktree
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: PR #7 review-comment fix verification
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: `lsp_diagnostics` on changed Python test files in `/tmp/opencode/hosted-identity-f4-fix` reported missing imports for `fastapi`, `httpx`, `pytest`, `pytest_asyncio`, and `starlette.requests` even though the branch intentionally reuses the main repo's pinned backend/frontend environments. The same scan also reported broad frontend dependency/type resolution failures on TSX files because the `/tmp` worktree does not have a fully-resolved TypeScript language-server environment.
+- **Evidence**: `lsp_diagnostics` returned `Import "fastapi" could not be resolved` for `orchestrator/routes/auth_setup.py`, `Import "httpx" could not be resolved` / `Import "pytest" could not be resolved` for changed backend tests, and TSX dependency errors like `Cannot find module 'react' or its corresponding type declarations` in `frontend/components/AuthLanding.tsx`.
+- **Likely cause**: The OpenCode language-server environment for the detached `/tmp` worktree is not inheriting the repo's Python venv / frontend dependency graph the same way as runtime test commands do (confidence 90%).
+- **Suggested action**: Treat runtime verification (`/home/sol/daemon/.venv/bin/python -m pytest`, `npm run ...` in the existing frontend install) as the authoritative gate for this worktree, or configure the LSP environment to resolve dependencies from the shared repo installation paths.
+- **Seen again**: 2026-06-05 during the PR #7 current-head follow-up fix pass when `lsp_diagnostics` on `frontend/lib/deployment.ts` and `orchestrator/routes/auth_setup.py` again reported `/tmp` worktree dependency-resolution noise (`Cannot find name 'process'` / unresolved `fastapi`) while runtime frontend/backend verification passed from the shared repo toolchains.
+- **Seen again**: 2026-06-07 during the final six-comment hosted-identity fix batch when changed-file diagnostics in `/tmp/opencode/hosted-identity-f4-fix` again reported unresolved `fastapi` / `pytest` / `pytest_asyncio` / `httpx` imports and no `.sql` LSP server for `migrations/032_hosted_identity_claim.sql`, while command-line verification in the shared backend/frontend environments remained the intended source of truth.
+
+## 2026-06-05 UTC — Doc freshness migration metadata drift
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 20 — Update Setup, Hosted Identity, and Feature Matrix Documentation
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: The required `python scripts/check_doc_freshness.py --mode fail` attempt failed on migration metadata in existing gated docs outside this task's requested edit set. The task evidence records the failure, but the current documentation synchronization scope only allows `AUTH_SETUP.md`, `HOSTED_IDENTITY.md`, `FEATURE_MATRIX.md`, optional matrix linter changes, and task evidence.
+- **Evidence**: `/home/sol/daemon/docs/TECHNICAL_SPECS.md:1 [CheckId.MIGRATION_COUNT] expected='32' observed='31'; /home/sol/daemon/docs/TECHNICAL_SPECS.md:90 [CheckId.MIGRATION_LATEST] expected='032_hosted_identity_claim.sql' observed='031_auth_device_model.sql'; /home/sol/daemon/docs/PROJECT_CONTEXT.md:1 [CheckId.MIGRATION_COUNT] expected='32' observed='31'; /home/sol/daemon/docs/PROJECT_CONTEXT.md:71 [CheckId.MIGRATION_LATEST] expected='032_hosted_identity_claim.sql' observed='031_auth_device_model.sql`; command exit code 1.
+- **Likely cause**: Hosted identity migration documentation was updated to expect migration `032_hosted_identity_claim.sql`, but the current repository migration set still reports latest applied/source migration `031_auth_device_model.sql` (confidence 85%).
+- **Suggested action**: In a separate docs/schema synchronization task, reconcile `docs/TECHNICAL_SPECS.md` and `docs/PROJECT_CONTEXT.md` with the actual hosted identity migration source state, or restore the missing migration artifact if it should exist in this branch.
+- **Seen again**: 2026-06-07 during PR follow-up for failing CI; `python scripts/check_doc_freshness.py --mode fail` failed on the same migration metadata drift and additionally reported stale literal route docs for `/api/v1/auth/*` in `docs/HOSTED_IDENTITY.md` and `docs/AUTH_SETUP.md`. This follow-up updates the gated docs instead of suppressing the check.
+
+## 2026-06-05 09:31 UTC — TypeScript LSP all-severity output lagged behind file contents
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: TODO17 Frontend Google Sign-In Flow verification
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: After fixing tuple casts in `frontend/__tests__/auth.test.ts` and removing an unused import from `frontend/components/AuthLanding.tsx`, an all-severity `lsp_diagnostics` call still reported the old TypeScript errors/hints. Reading the files showed the fixes were present, and rerunning `lsp_diagnostics` at error severity immediately returned no diagnostics for all changed files.
+- **Evidence**: stale all-severity output included `frontend/__tests__/auth.test.ts` TypeScript 2352 tuple-cast errors at lines 210/274/397/430 and an unused `Mail` hint in `AuthLanding.tsx`; subsequent `lsp_diagnostics(filePath="/home/sol/daemon/frontend/__tests__/auth.test.ts", severity="error")` and error-level checks on all changed files returned `No diagnostics found`.
+- **Likely cause**: LSP diagnostics cache or all-severity server state lag in the OpenCode TypeScript tooling (confidence 80%).
+- **Suggested action**: When all-severity diagnostics contradict current file contents, rerun error-level diagnostics or restart the TypeScript language server before treating stale hints/errors as current.
+
 ## 2026-05-31 05:18 UTC — TOML diagnostics unavailable for pyproject changes
 - **Severity**: info
 - **Scope**: tooling
@@ -22,6 +58,7 @@
 - **Evidence**: `npm test -- --run __tests__/auth.test.ts` passed `19 tests` and printed `(node:3845559) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.`
 - **Likely cause**: Current Vitest/jsdom/Node runtime exposes a localStorage-related experimental warning unless Node is launched with `--localstorage-file`, even when tests provide their own localStorage mock (confidence 80%).
 - **Suggested action**: If the warning becomes noisy, configure the frontend test runner with an explicit localStorage file or suppress the Node experimental warning for this test environment.
+- **Seen again**: 2026-06-05 during the PR #7 current-head follow-up fix pass when the targeted Vitest command for `__tests__/auth.test.ts`, `__tests__/auth-landing.test.tsx`, and `__tests__/deployment.test.ts` passed but still printed the same `ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.`
 
 ## 2026-05-29 UTC — Studio Kling provider value is not accepted or forwarded by backend video paths
 - **Severity**: warning
@@ -57,6 +94,18 @@
 - **Suggested action**: Fix `lib/events.ts` to export `isAdvisorEvent` or remove the broken import from `lib/advisorEvents.ts`. Out of scope for Task 17.
 - **Seen again**: 2026-05-28 during PR #4 review-fix QA when `npm run build` in `frontend/` failed at the same `./lib/advisorEvents.ts:3:21` missing `isAdvisorEvent` export after successful webpack compilation.
 - **Seen again**: 2026-05-31 during PR #4 newest review-comment fix verification when `npx tsc --noEmit --project tsconfig.json --pretty false` failed only in the known advisor/tool-call event debt files: `__tests__/advisor-events.test.ts`, `__tests__/tool-call-log.test.ts`, and `lib/advisorEvents.ts`; changed files had clean LSP diagnostics and targeted auth tests passed.
+- **Seen again**: 2026-06-07 during the final six-comment hosted-identity fix batch when `npm run build` in `frontend/` compiled the touched auth proxy route successfully, then failed in the pre-existing advisor path at `./lib/advisorEvents.ts:3:21` with `Module '"./events"' has no exported member 'isAdvisorEvent'`.
+
+## 2026-06-07 UTC — Frontend type-check expects missing .next cache-life type artifact
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: final six-comment hosted-identity fix batch verification
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: `npm run type-check` in `frontend/` failed before reaching the changed auth proxy files because `tsc --noEmit` includes `.next/types/**/*.ts` and expected `.next/types/cache-life.d.ts`, but the generated `.next/types/` directory only contained `app/`, `package.json`, `routes.d.ts`, and `validator.ts`.
+- **Evidence**: `error TS6053: File '/tmp/opencode/hosted-identity-f4-fix/frontend/.next/types/cache-life.d.ts' not found. The file is in the program because: Matched by include pattern '.next/types/**/*.ts' in '/tmp/opencode/hosted-identity-f4-fix/frontend/tsconfig.json'`; `ls .next/types` returned `app`, `package.json`, `routes.d.ts`, `validator.ts`.
+- **Likely cause**: The current frontend `tsconfig.json`/Next 16 type-generation setup expects a `cache-life.d.ts` artifact that is not being emitted in this worktree's generated `.next/types` output (confidence 85%).
+- **Suggested action**: Reconcile the `.next/types/**/*.ts` include with the actual Next-generated type artifacts (or ensure `next typegen` emits `cache-life.d.ts`) before treating full frontend type-check as green.
 
 ## 2026-05-28T12:56:31Z — Broad memories route tests now fail unauthorized after auth hardening
 
@@ -102,6 +151,7 @@
 - **Evidence**: `lsp_diagnostics` on `tests/benchmark_results/harness_parity_baseline_stability.md` and `.sisyphus/notepads/longmemeval-parity-baseline-completion/learnings.md` returned `Error: No LSP server configured for extension: .md`.
 - **Seen again**: 2026-05-28 during PR #4 review-fix QA when `lsp_diagnostics` on `TRIAGE.md` and `.sisyphus/notepads/pr-4-review-fix-qa/learnings.md` returned `Error: No LSP server configured for extension: .md`.
 - **Seen again**: 2026-05-29 during generated-audio protection verification when `lsp_diagnostics` on the updated `TRIAGE.md` returned `Error: No LSP server configured for extension: .md`.
+- **Seen again**: 2026-06-05 during Task 20 docs verification when `lsp_diagnostics` on `docs/AUTH_SETUP.md`, `docs/HOSTED_IDENTITY.md`, and `docs/FEATURE_MATRIX.md` returned `Error: No LSP server configured for extension: .md`.
 - **Likely cause**: OpenCode LSP configuration in this workspace defines language servers for code and JSON-oriented extensions but does not include a Markdown-capable server such as Marksman (confidence 98%).
 - **Suggested action**: Add a Markdown LSP server to the workspace tooling if artifact-only tasks are expected to satisfy the changed-file diagnostics requirement without fallback checks.
 
@@ -155,6 +205,7 @@
   - `Unauthorized: {"type":"error","error":{"type":"CreditsError","message":"Insufficient balance. Manage your billing here: https://opencode.ai/workspace/wrk_01KFQJSNM8KAAP52SN02MF4GTQ/billing"}}`
 - **Likely cause**: The selected subagent/model route for the first Task 1 delegation required workspace credits that are currently unavailable for that provider path (confidence 93%).
 - **Suggested action**: Retry the task with an available agent/model route or restore workspace billing balance before relying on this provider for further delegations.
+- **Seen again**: 2026-06-05 during PR #7 hosted-identity review-comment verification when a background `explore` audit of the uncommitted `/tmp/opencode/hosted-identity-f4-fix` diff failed immediately with the same `CreditsError` / insufficient workspace balance before returning any code review findings.
 
 ## 2026-04-14 23:47 — LSP JSON Diagnostics Blocked By Missing Biome Server
 - **Severity**: warning
@@ -557,6 +608,8 @@
 - **Likely cause**: Current pinned versions of LiteLLM and arq are not yet updated for Python 3.14's coroutine-inspection deprecation path (confidence 95%).
 - **Suggested action**: Track dependency updates or pin compatible versions before Python 3.16 removes the deprecated API.
 - **Seen again**: 2026-05-29 during generated-audio protection verification when `PYTHONPATH=. uv run pytest tests/test_route_auth_hardening.py -q` passed but emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
+- **Seen again**: 2026-06-05 during hosted-identity Task 11 email-route verification when `PYTHONPATH=. uv run pytest tests/test_identity_email_routes.py tests/test_identity_email_challenge.py tests/test_identity_session_issuance.py tests/test_identity_account_service.py -q` passed (140 passed) but still emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14 from `litellm_core_utils/logging_utils.py:273`.
+- **Seen again**: 2026-06-05 during hosted-identity Task 11 corrective verification when the same focused command passed again (`142 passed`) after the `daemon_email_enabled` route-gating fix, but still emitted the same 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 
 ## 2026-04-10 12:30 — BasedPyright Warning Debt In Dreaming-Touched Python Modules
 - **Severity**: warning
@@ -1347,6 +1400,7 @@
 - **Blocked current task**: yes
 - **What happened**: Local verification confirmed several CI steps still exit non-zero on known inventory debt, so the follow-up keeps those steps visible but non-blocking in CI while preserving their output.
 - **Evidence**: `uv run bandit -r orchestrator providers scripts tests` exited 1 with `Low: 3500`, `Medium: 30`, `High: 0`, and `tests/test_video_e2e.py (syntax error while parsing AST from file)`; `uv run pip-audit` exited 1 with `Found 29 known vulnerabilities in 13 packages`; `PYTHONPATH=. uv run pytest -q` exited 2 with 8 collection errors including `tests/test_video_e2e.py:596 SyntaxError: unmatched ')'`; frontend `npm run type-check`, `npm run lint`, `npm run format:check`, `npm run audit:ci`, `npm run test:run`, and `npm run build` exited non-zero on existing advisor-event, lint, format, audit, test, and build debt.
+- **Seen again**: 2026-06-07 during PR hosted-identity follow-up for failing backend gates. `uv run bandit -r orchestrator providers scripts tests` exited 1 with `Low: 4535`, `Medium: 25`, `High: 0`, and `tests/test_video_e2e.py (syntax error while parsing AST from file)`; `uv run pip-audit` exited 1 with `Found 41 known vulnerabilities in 14 packages`; `PYTHONPATH=. uv run pytest -q` exited 2 with the same 8 collection errors/import drifts plus `tests/test_video_e2e.py:596 SyntaxError: unmatched ')'`.
 - **Likely cause**: The CI baseline PR intentionally introduced first-run inventories before the existing project debt was remediated, but several inventory commands were still wired as required/failing steps (confidence 95%).
 - **Suggested action**: Keep these inventory steps non-blocking until dedicated remediation tasks upgrade dependencies, repair pytest collection, fix frontend contracts/tests, and apply mechanical formatting.
 
@@ -1406,6 +1460,8 @@
 - **Likely cause**: The local container's outbound proxy blocks Go toolchain discovery for pre-commit's golang language environment (confidence 90%).
 - **Suggested action**: Validate gitleaks in CI or in a host with Go/pre-commit network access; do not weaken the hook config for this host limitation.
 - **Seen again**: 2026-05-31T10:26:58Z during PR follow-up basedpyright verification; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` and the explicit commitlint hook passed.
+- **Seen again**: 2026-06-07 during PR follow-up for failing CI; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`.
+- **Seen again**: 2026-06-07 during PR hosted-identity follow-up for failing backend gates; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` passed.
 
 ## 2026-05-31T10:24:30Z — BasedPyright config consolidation surfaced benchmark harness typing debt
 - **Severity**: warning
@@ -1417,3 +1473,115 @@
 - **Evidence**: `uv run basedpyright --level error -p pyproject.toml` printed `Pyproject file cannot have both pyright and basedpyright sections. pick one` and exited `3`; after config consolidation, `uv run basedpyright --level error` reported `tests/benchmark_harness/verify_recovery_logic.py:156:5 - error: No overloads for "update" match the provided arguments` plus the same pattern at lines 157, 211, and 212.
 - **Likely cause**: The default command had been loading `pyrightconfig.json`, hiding the invalid pyproject basedpyright config; once the config was unified, dict inference for recovery result rows was too narrow for later inserting list-valued `raw_session_ids` rows (confidence 95%).
 - **Suggested action**: Keep basedpyright settings in one `[tool.basedpyright]` section and keep `pyrightconfig.json` synchronized for editor/default CLI discovery; continue ratcheting the baseline as real errors are fixed.
+
+## 2026-06-04 UTC — Council lifespan test fails pre-existing on pepper validation
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: TODO 6 startup-wiring fix verification
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: `tests/council/test_sse_integration.py` (3 tests) error during fixture setup with `PepperValidationError: daemon_auth_pepper is required in production`. The test fixture sets `DATABASE_URL`, `REDIS_URL`, and `MOCK_LLM` env vars but does not set `DAEMON_ENVIRONMENT=development` or a valid `DAEMON_AUTH_PEPPER`. The `Settings` default for `daemon_environment` is `"production"` (`orchestrator/config.py:63`), so lifespan startup fails on the existing pepper gate.
+- **Evidence**: `pytest tests/council/test_sse_integration.py` → `ERROR ... PepperValidationError: daemon_auth_pepper is required in production`. Verified pre-existing by `git checkout 973c4b4d` (the prior TODO 6 commit) and re-running; the same 3 errors appear, confirming they are not introduced by the TODO 6 startup-wiring fix.
+- **Likely cause**: The council test fixture predates any startup-time pepper validation enforcement and was never updated when the pepper check became mandatory in production. Confidence: high.
+- **Suggested action**: Update `tests/council/test_sse_integration.py` fixture to also `monkeypatch.setenv("DAEMON_ENVIRONMENT", "development")` (or set a dev-acceptable pepper). This is a test-infra fix, not a TODO 6 scope item.
+
+## 2026-06-04 UTC — Auth user-scoping tests fail pre-existing on pepper env
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: TODO 7 rate-limiter verification (running the auth test surface)
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: `tests/test_auth_user_scoping.py` (5 tests) error during fixture setup with `PepperValidationError: daemon_auth_pepper is required in production`. Same root cause as the council lifespan entry above: the fixture does not set `DAEMON_ENVIRONMENT=development` or a test pepper.
+- **Evidence**: `pytest tests/test_auth_user_scoping.py` → 5 errors, all `PepperValidationError: daemon_auth_pepper is required in production`. Verified pre-existing by `git stash` of the TODO 7 changes and re-running on commit `1455a63b` — the same 5 errors appear.
+- **Likely cause**: The user-scoping test fixture predates startup-time pepper validation. Confidence: high.
+- **Suggested action**: Follow-up test-fixture update (set `DAEMON_ENVIRONMENT=development` or a test pepper), same fix pattern as the council lifespan entry.
+
+## 2026-06-04 UTC — Auth smoke lifecycle test fails pre-existing on 401 vs 410
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: TODO 7 rate-limiter verification
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: `tests/test_auth_smoke.py::TestAuthDeviceLifecycleSmoke::test_full_lifecycle_smoke` assertion failure: `assert 401 == 410`. The test expects a consumed-reuse path to return 410, but the route returns 401. The drift predates TODO 7.
+- **Evidence**: `pytest tests/test_auth_smoke.py::TestAuthDeviceLifecycleSmoke::test_full_lifecycle_smoke` → `FAILED ... assert 401 == 410`. Verified pre-existing by `git stash` of the TODO 7 changes and re-running on commit `1455a63b` — the same failure appears.
+- **Likely cause**: Status code drift between the test expectation and the actual route response (likely the route was changed to return 401 on a path the test expected to be 410). Confidence: high.
+- **Suggested action**: Follow-up: decide whether the test or the route is correct and reconcile.
+
+## 2026-06-05 UTC — Frontend build fails on missing qrcode.react dependency
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 15 — Auth landing component verification
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: `npm run build` in `frontend/` fails with `Module not found: Can't resolve 'qrcode.react'` from `components/settings/EnrollmentModal.tsx`. This is a pre-existing dependency issue unrelated to Task 15 changes.
+- **Evidence**: `npm run build` output: `./components/settings/EnrollmentModal.tsx Module not found: Can't resolve 'qrcode.react'`
+- **Likely cause**: `qrcode.react` is listed in `package.json` dependencies but may not be installed, or its types are missing (confidence 85%).
+- **Suggested action**: Verify `qrcode.react` is installed in `frontend/node_modules/`; if missing, run `npm ci` or check for installation issues.
+
+## 2026-06-05 UTC — Frontend type-check has pre-existing advisorEvents and tool_call_log errors
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 15 — Auth landing component verification
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: `npm run type-check` reports 80+ errors in `lib/advisorEvents.ts`, `__tests__/advisor-events.test.ts`, `__tests__/tool-call-log.test.ts`, and `components/settings/EnrollmentModal.tsx`. Task 15 files (`lib/deployment.ts`, `components/AuthLanding.tsx`, `app/setup/page.tsx`, `__tests__/auth-landing.test.tsx`) have zero type errors.
+- **Evidence**: `npm run type-check` output shows errors only in pre-existing files; no errors in newly created/modified Task 15 files.
+- **Likely cause**: Advisor event types were refactored without updating all consumers; `tool_call_id` and `advisor_id` fields were removed from base event types but still used in tests and `lib/advisorEvents.ts` (confidence 90%).
+- **Suggested action**: Update `lib/advisorEvents.ts` and related tests to match current event type definitions, or restore the missing type fields.
+- **Seen again**: 2026-06-05 during PR #7 hosted-identity review-comment verification when `./node_modules/.bin/tsc --noEmit --pretty false -p tsconfig.json` failed only in the same pre-existing advisor/tool-call event files while the targeted auth/deployment Vitest suite, changed-file eslint, and changed-file prettier checks passed.
+
+## 2026-06-05 UTC — Frontend lint has pre-existing errors across 29 files
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Task 15 — Auth landing component verification
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: `npm run lint` reports 29 errors and 13 warnings across existing files (e.g., `app/page.tsx`, `components/ToolCallBlock.tsx`, `hooks/useLocalStorage.ts`). Task 15 files have zero lint errors.
+- **Evidence**: `npm run lint` output shows 42 total problems; none in `lib/deployment.ts`, `components/AuthLanding.tsx`, `app/setup/page.tsx`, or `__tests__/auth-landing.test.tsx`.
+- **Likely cause**: These are pre-existing lint violations from earlier development, likely introduced before the current strict eslint config was applied (confidence 95%).
+- **Suggested action**: Run a dedicated lint-fix pass across the frontend, or grandfather existing violations and enforce lint only on changed files.
+
+## 2026-06-05 UTC — Temporary refresh sessions rotate into 90-day persistent sessions
+- **Severity**: critical
+- **Scope**: project
+- **Encountered during**: Task 22 — Hosted Identity Oracle security/product review
+- **Category**: security
+- **Blocked current task**: no
+- **What happened**: A temporary hosted-identity session is issued with session-cookie / short-TTL semantics, but `/v1/auth/refresh` does not preserve that temporary posture. Refresh rotation recreates the session with the global 90-day refresh lifetime and sets a persistent `Max-Age=7776000` cookie, silently upgrading a temporary/public-computer session into a long-lived private session.
+- **Evidence**: `orchestrator/routes/auth_setup.py:1601-1649` hardcodes `refresh_expires = now + timedelta(days=REFRESH_TOKEN_TTL_DAYS)` and `build_refresh_cookie(... max_age=refresh_max_age)` on every successful web refresh; `orchestrator/services/identity/session_issuance.py:251-286` is where temporary sessions are initially distinguished; targeted ASGI proof command on 2026-06-05 returned `status 200`, `set_cookie __Host-daemon_refresh=...; Max-Age=7776000`, and `rotated_refresh_days 90.0` after seeding a 10-minute temporary web refresh token.
+- **Likely cause**: The pre-existing refresh endpoint only keys on `client_kind` and has no persisted `device_persistence` / temporary-session flag to carry forward during rotation, so temporary hosted-identity sessions fall back to the legacy 90-day refresh path on first refresh (confidence 97%).
+- **Suggested action**: In a follow-up auth fix, persist temporary/private refresh semantics (or an equivalent session-scope marker) and teach `/v1/auth/refresh` to rotate temporary sessions without lengthening TTL or minting persistent cookies/JSON refresh tokens.
+
+
+## 2026-06-05 UTC — Plain text artifacts cannot satisfy changed-file LSP diagnostics
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Task 22 — Hosted Identity Oracle security/product review verification
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Required changed-file diagnostics could not run on the new evidence artifact `.sisyphus/evidence/hosted-identity-claim/task-22-oracle.txt` because this workspace has no LSP server configured for `.txt` files. The review/report content was still verified via direct reads and grep-based checks.
+- **Evidence**: `lsp_diagnostics(filePath="/home/sol/daemon/.sisyphus/evidence/hosted-identity-claim/task-22-oracle.txt", severity="error")` returned `Error: No LSP server configured for extension: .txt` and listed only code-oriented servers (`typescript, deno, vue, eslint, oxlint, biome, gopls, ruby-lsp, basedpyright, pyright...`).
+- **Likely cause**: OpenCode LSP configuration in this environment does not include a plain-text-capable language server, so `.txt` evidence artifacts cannot participate in changed-file diagnostics (confidence 99%).
+- **Suggested action**: If plain-text evidence files are expected to satisfy changed-file diagnostics, add a `.txt`-capable LSP to the workspace or treat grep/read validation as the canonical check for text artifacts.
+
+## 2026-06-07 UTC — npm emits unknown http-proxy config warning
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: PR #7 Codex review follow-up for hosted auth proxy IP header precedence
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Frontend npm script execution emitted a warning before running the targeted Vitest suite. The tests still passed, and the warning did not affect the review fix.
+- **Evidence**: `npm run test:run -- __tests__/auth-proxy-route.test.ts` output included `npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.`
+- **Likely cause**: The host or project npm environment includes a legacy `http-proxy` config key that current npm accepts with a warning but plans to reject in a future major version (confidence 80%).
+- **Suggested action**: Inspect npm config sources (`npm config list`) and remove or rename the legacy `http-proxy` setting if it is not required by the container/network environment.
+
+## 2026-06-07 UTC — Backend basedpyright failed on fake Redis test cast
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: PR hosted-identity follow-up for failing backend gates
+- **Category**: test-failure
+- **Blocked current task**: yes
+- **What happened**: The backend type gate failed because a test cast a `FakeRedis` instance to `ArqRedis` and then accessed fake-only `script` and `store` attributes through the casted variable. The production code was unaffected, but the strict `basedpyright --level error` gate rejected the test.
+- **Evidence**: `uv run basedpyright --level error` reported `tests/test_identity_rate_limiter.py:615:29 - error: Cannot access attribute "script" for class "ArqRedis"` and `tests/test_identity_rate_limiter.py:621:43 - error: Cannot access attribute "store" for class "ArqRedis"`.
+- **Likely cause**: The regression test needed an `ArqRedis`-typed value for `RateLimiter`, but reused that typed variable for fake-specific assertions instead of keeping the concrete fake object for inspection. Confidence: 98%.
+- **Suggested action**: Keep future Redis fakes as concrete variables for fake-only assertions and pass a separately cast value only across the production API boundary.

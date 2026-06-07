@@ -1,7 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { SkeletonLine, SkeletonBlock, SkeletonCircle } from '@/components/ui/Skeleton';
+import {
+  SkeletonLine,
+  SkeletonBlock,
+  SkeletonCircle,
+} from '@/components/ui/Skeleton';
 import {
   Smartphone,
   Monitor,
@@ -45,7 +49,26 @@ function formatDevicePlatform(clientKind: string): string {
   if (kind === 'android') return 'Android';
   if (kind === 'native') return 'Native app';
   if (kind === 'desktop') return 'Desktop';
+  if (kind === 'macos') return 'macOS';
+  if (kind === 'windows') return 'Windows';
+  if (kind === 'linux') return 'Linux';
+  if (kind === 'chromeos') return 'Chrome OS';
   return clientKind.charAt(0).toUpperCase() + clientKind.slice(1);
+}
+
+function inferSessionLabel(deviceName: string): string | null {
+  const name = deviceName.toLowerCase();
+  if (
+    name.includes('temporary') ||
+    name.includes('public') ||
+    name.includes('guest')
+  ) {
+    return 'Temporary session';
+  }
+  if (name.includes('mobile') || name.includes('phone')) {
+    return 'Mobile';
+  }
+  return null;
 }
 
 export default function DevicesTab() {
@@ -70,7 +93,9 @@ export default function DevicesTab() {
         setLoadStatus('error');
       }
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : 'Failed to load devices');
+      setErrorMessage(
+        err instanceof Error ? err.message : 'Failed to load devices',
+      );
       setLoadStatus('error');
     }
   }, []);
@@ -96,7 +121,9 @@ export default function DevicesTab() {
         setErrorMessage(result.error || 'Failed to revoke device');
       }
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : 'Failed to revoke device');
+      setErrorMessage(
+        err instanceof Error ? err.message : 'Failed to revoke device',
+      );
     } finally {
       setRevokingId(null);
       setConfirmDevice(null);
@@ -116,7 +143,10 @@ export default function DevicesTab() {
 
         <div className="space-y-4">
           {[1, 2, 3].map((i) => (
-            <div key={i} className="flex items-center gap-4 p-4 rounded-lg border border-border-primary bg-bg-secondary">
+            <div
+              key={i}
+              className="flex items-center gap-4 p-4 rounded-lg border border-border-primary bg-bg-secondary"
+            >
               <SkeletonCircle size={40} />
               <div className="flex-1 space-y-2">
                 <SkeletonLine width={160} height={16} />
@@ -138,7 +168,10 @@ export default function DevicesTab() {
         </div>
         <div>
           <h2 className="text-lg font-semibold text-text-primary">Devices</h2>
-          <p className="text-sm text-text-muted">Manage your connected devices and sessions</p>
+          <p className="text-sm text-text-muted">
+            Manage your signed-in devices and sessions. You can sign in on as
+            many devices as you need.
+          </p>
         </div>
       </div>
 
@@ -164,8 +197,10 @@ export default function DevicesTab() {
         {devices.length === 0 && loadStatus === 'success' ? (
           <div className="text-center py-12 rounded-lg border border-border-primary bg-bg-secondary">
             <Smartphone className="w-8 h-8 text-text-muted mx-auto mb-3" />
-            <p className="text-sm text-text-muted">No devices found</p>
-            <p className="text-xs text-text-muted mt-1">Add a new device to get started</p>
+            <p className="text-sm text-text-muted">No active sessions found</p>
+            <p className="text-xs text-text-muted mt-1">
+              Sign in on this or another device to get started
+            </p>
           </div>
         ) : (
           devices.map((device) => {
@@ -196,12 +231,25 @@ export default function DevicesTab() {
                   </div>
                   <div className="flex items-center gap-2 text-xs text-text-muted mt-0.5 flex-wrap">
                     <span>{formatDevicePlatform(device.client_kind)}</span>
-                    <span>·</span>
-                    <span>Added {formatRelativeTime(device.created_at)}</span>
-                    {device.last_seen_at && (
+                    {inferSessionLabel(device.device_name) && (
                       <>
                         <span>·</span>
-                        <span>Last seen {formatRelativeTime(device.last_seen_at)}</span>
+                        <span>{inferSessionLabel(device.device_name)}</span>
+                      </>
+                    )}
+                    <span>·</span>
+                    <span>Added {formatRelativeTime(device.created_at)}</span>
+                    {device.last_seen_at ? (
+                      <>
+                        <span>·</span>
+                        <span>
+                          Last seen {formatRelativeTime(device.last_seen_at)}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span>·</span>
+                        <span>Not seen yet</span>
                       </>
                     )}
                   </div>
@@ -250,14 +298,16 @@ export default function DevicesTab() {
                   <AlertTriangle className="w-5 h-5 text-status-error" />
                 </div>
                 <div>
-                  <h3 className="text-lg font-semibold text-text-primary">Revoke device?</h3>
+                  <h3 className="text-lg font-semibold text-text-primary">
+                    Revoke device?
+                  </h3>
                 </div>
               </div>
 
               <p className="text-sm text-text-secondary mb-6">
                 {confirmDevice.current
-                  ? 'This will revoke your current device and sign you out. You will need to set up this device again.'
-                  : `This will revoke access for "${confirmDevice.device_name || 'Unnamed device'}". This action cannot be undone.`}
+                  ? 'This will sign you out of this browser. You can sign in again at any time.'
+                  : `This will sign out that session and remove its access. The user can sign in again to regain access.`}
               </p>
 
               <div className="flex items-center justify-end gap-3">

@@ -24,36 +24,65 @@ class MockConn:
         self._pool = pool
         self._in_transaction = False
         self._session_insert_args = None
+        self._device_insert_args = None
         self._pending_insert_args = None
         self._pending_update_args = None
         self._update_wrong_attempts = None
 
     async def fetchval(self, sql, *args):
-        if "COUNT(*)" in sql and "devices" in sql:
+        q = " ".join(sql.split())
+        if "COUNT(*)" in q and "devices" in q:
             return self._pool._active_count
-        if "SELECT id FROM users" in sql and str(SINGLETON_ID) in str(args):
+        if "SELECT id FROM users" in q and str(SINGLETON_ID) in str(args):
             return SINGLETON_ID if self._pool._singleton_exists else None
-        if "INSERT INTO users" in sql:
+        if "INSERT INTO users" in q:
             self._pool._singleton_exists = True
             return SINGLETON_ID
-        if "SELECT NOW()" in sql:
+        if "INSERT INTO tenants" in q:
+            user_id = args[0]
+            if user_id in self._pool._tenant_by_user_id:
+                return None
+            tenant_id = uuid.uuid4()
+            self._pool._tenant_by_user_id[user_id] = tenant_id
+            self._pool._tenant_insert_args = args
+            return tenant_id
+        if "SELECT NOW()" in q:
             return datetime.now(timezone.utc)
-        if "INSERT INTO devices" in sql:
+        if "INSERT INTO devices" in q:
             self._pool._device_created = True
             self._pool._active_count += 1
+            self._device_insert_args = args
             return uuid.uuid4()
-        if "INSERT INTO sessions" in sql:
+        if "INSERT INTO sessions" in q:
             self._session_insert_args = args
             return uuid.uuid4()
-        if "INSERT INTO pending_enrollments" in sql:
+        if "INSERT INTO pending_enrollments" in q:
             self._pending_insert_args = args
             return None
-        if "SELECT id, user_id, code_verifier_hash" in sql:
+        if "INSERT INTO tenant_memberships" in q:
+            tenant_id = args[0]
+            user_id = args[1]
+            for membership in self._pool._tenant_memberships:
+                if membership["tenant_id"] == tenant_id and membership["user_id"] == user_id:
+                    return None
+            self._pool._tenant_memberships.append(
+                {"tenant_id": tenant_id, "user_id": user_id, "role": "owner"}
+            )
+            self._pool._owner_membership_args = args
+            return "owner"
+        if "SELECT role" in q and "tenant_memberships" in q:
+            tenant_id = args[0]
+            user_id = args[1]
+            for membership in self._pool._tenant_memberships:
+                if membership["tenant_id"] == tenant_id and membership["user_id"] == user_id:
+                    return membership["role"]
+            return None
+        if "SELECT id, user_id, code_verifier_hash" in q:
             pending_id = args[0]
             if pending_id in self._pool._pending_enrollments:
                 return self._pool._pending_enrollments[pending_id]
             return None
-        if "UPDATE pending_enrollments" in sql:
+        if "UPDATE pending_enrollments" in q:
             if self._update_wrong_attempts is not None:
                 self._update_wrong_attempts.append(args)
             else:
@@ -62,13 +91,14 @@ class MockConn:
         return None
 
     async def execute(self, sql, *args):
-        if "INSERT INTO sessions" in sql:
+        q = " ".join(sql.split())
+        if "INSERT INTO sessions" in q:
             self._session_insert_args = args
-        if "INSERT INTO pending_enrollments" in sql:
+        if "INSERT INTO pending_enrollments" in q:
             self._pending_insert_args = args
-        if "UPDATE pending_enrollments" in sql:
-            if "wrong_attempts_remaining" in sql:
-                if "wrong_attempts_remaining = 0" in sql:
+        if "UPDATE pending_enrollments" in q:
+            if "wrong_attempts_remaining" in q:
+                if "wrong_attempts_remaining = 0" in q:
                     new_wrong_attempts = 0
                     pending_id = args[0]
                 else:
@@ -87,7 +117,8 @@ class MockConn:
         return None
 
     async def fetchrow(self, sql, *args):
-        if "SELECT id, user_id, created_by_device_id, code_verifier_hash" in sql:
+        q = " ".join(sql.split())
+        if "SELECT id, user_id, created_by_device_id, code_verifier_hash" in q:
             pending_id = args[0]
             if pending_id in self._pool._pending_enrollments:
                 row = self._pool._pending_enrollments[pending_id]
@@ -98,13 +129,31 @@ class MockConn:
                     }
                 return row
             return None
-        if "SELECT revoked_at FROM devices" in sql:
+        if "SELECT revoked_at FROM devices" in q:
             device_id = args[0]
             key = device_id if device_id in self._pool._devices else str(device_id)
             if key in self._pool._devices:
                 return {"revoked_at": self._pool._devices[key].get("revoked_at")}
             return {"revoked_at": None}
-        if "SELECT id FROM users" in sql:
+        if "SELECT id, owner_user_id, kind, name FROM tenants" in q:
+            user_id = args[0]
+            if self._pool._tenant_by_user_id and user_id in self._pool._tenant_by_user_id:
+                tenant_id = self._pool._tenant_by_user_id[user_id]
+                return {
+                    "id": tenant_id,
+                    "owner_user_id": user_id,
+                    "kind": "personal",
+                    "name": "Personal",
+                }
+            return None
+        if "SELECT role FROM tenant_memberships" in q:
+            tenant_id = args[0]
+            user_id = args[1]
+            for membership in self._pool._tenant_memberships:
+                if membership["tenant_id"] == tenant_id and membership["user_id"] == user_id:
+                    return {"role": membership["role"]}
+            return None
+        if "SELECT id FROM users" in q:
             return {"id": SINGLETON_ID}
         return None
 
@@ -129,6 +178,16 @@ class MockPool:
         self._user_id = SINGLETON_ID
         self._session_insert_args = None
         self._update_wrong_attempts = None
+        self._tenant_by_user_id = {SINGLETON_ID: uuid.uuid4()}
+        self._tenant_insert_args = None
+        self._owner_membership_args = None
+        self._tenant_memberships = [
+            {
+                "tenant_id": self._tenant_by_user_id[SINGLETON_ID],
+                "user_id": SINGLETON_ID,
+                "role": "owner",
+            }
+        ]
 
     async def fetchval(self, sql, *args):
         if "COUNT(*)" in sql and "devices" in sql:
@@ -320,8 +379,97 @@ class TestEnrollHappyPath:
                     assert mock_pool._device_created is True
 
                     conn = mock_pool._connections[-1]
+                    assert conn._device_insert_args is not None
                     assert conn._session_insert_args is not None
+                    assert conn._device_insert_args[1] == mock_pool._tenant_by_user_id[SINGLETON_ID]
                     assert conn._session_insert_args[2] == "web"
+                    assert (
+                        conn._session_insert_args[3] == mock_pool._tenant_by_user_id[SINGLETON_ID]
+                    )
+
+                auth_module._verify_access_token = original_verify
+        finally:
+            restore_init(original)
+
+    @pytest.mark.asyncio
+    async def test_enroll_complete_creates_missing_personal_tenant(self, setup_env, monkeypatch):
+        legacy_user_id = uuid.uuid4()
+        mock_pool = MockPool(active_device_count=1)
+        mock_pool._tenant_by_user_id = {}
+        mock_pool._user_id = legacy_user_id
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                state = app.state.app_state
+                settings = get_settings()
+                pepper = validate_and_get_pepper(settings)
+
+                access_token = "test-access-token-no-tenant"
+                state.db_pool._access_token = access_token
+                state.db_pool._access_token_hash = hash_token(access_token)
+                state.db_pool._user_id = legacy_user_id
+                state.db_pool._device_id = uuid.uuid4()
+                state.db_pool._session_id = uuid.uuid4()
+
+                async def mock_verify(pool, token):
+                    if token == access_token:
+                        from orchestrator.auth import AuthenticatedDevice
+
+                        return AuthenticatedDevice(
+                            user_id=legacy_user_id,
+                            device_id=pool._device_id,
+                            session_id=pool._session_id,
+                        )
+                    return None
+
+                import orchestrator.auth as auth_module
+
+                original_verify = auth_module._verify_access_token
+                auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
+
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    start_response = await client.post(
+                        "/v1/auth/enroll/start",
+                        headers=make_auth_headers(access_token),
+                    )
+                    assert start_response.status_code == 200
+                    start_data = start_response.json()
+                    pending_id = start_data["pending_id"]
+                    code = start_data["code"]
+                    code_verifier_hash = hash_enrollment_code(code, pepper)
+
+                    state.db_pool._pending_enrollments[uuid.UUID(pending_id)] = {
+                        "id": uuid.UUID(pending_id),
+                        "user_id": legacy_user_id,
+                        "code_verifier_hash": code_verifier_hash,
+                        "wrong_attempts_remaining": 3,
+                        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
+                        "consumed_at": None,
+                    }
+
+                    complete_response = await client.post(
+                        "/v1/auth/enroll/complete",
+                        json={
+                            "pending_id": pending_id,
+                            "code": code,
+                            "client_kind": "web",
+                        },
+                        headers={
+                            "Origin": "https://app.daemon.ai",
+                            "Sec-Fetch-Site": "same-origin",
+                        },
+                    )
+
+                    assert complete_response.status_code == 200, complete_response.text
+                    conn = mock_pool._connections[-1]
+                    assert mock_pool._tenant_insert_args is not None
+                    assert mock_pool._owner_membership_args is not None
+                    created_tenant_id = mock_pool._tenant_by_user_id[legacy_user_id]
+                    assert conn._device_insert_args is not None
+                    assert conn._device_insert_args[1] == created_tenant_id
+                    assert conn._session_insert_args is not None
+                    assert conn._session_insert_args[3] == created_tenant_id
 
                 auth_module._verify_access_token = original_verify
         finally:
@@ -407,6 +555,9 @@ class TestEnrollHappyPath:
                     conn = mock_pool._connections[-1]
                     assert conn._session_insert_args is not None
                     assert conn._session_insert_args[2] == "native"
+                    assert (
+                        conn._session_insert_args[3] == mock_pool._tenant_by_user_id[SINGLETON_ID]
+                    )
 
                     pending_id_2 = str(uuid.uuid4())
                     pending_row_2 = {
@@ -431,6 +582,89 @@ class TestEnrollHappyPath:
 
                     assert mixed_response.status_code == 400
                     assert "native" in mixed_response.json()["detail"]
+
+                auth_module._verify_access_token = original_verify
+        finally:
+            restore_init(original)
+
+    @pytest.mark.asyncio
+    async def test_enroll_complete_uses_configured_private_refresh_ttl(
+        self, setup_env, monkeypatch
+    ):
+        monkeypatch.setenv("DAEMON_PRIVATE_REFRESH_TTL_DAYS", "7")
+        get_settings.cache_clear()
+        mock_pool = MockPool(active_device_count=1)
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                state = app.state.app_state
+                settings = get_settings()
+                pepper = validate_and_get_pepper(settings)
+
+                access_token = "test-access-token-short-ttl"
+                state.db_pool._access_token = access_token
+                state.db_pool._access_token_hash = hash_token(access_token)
+                state.db_pool._user_id = SINGLETON_ID
+                state.db_pool._device_id = uuid.uuid4()
+                state.db_pool._session_id = uuid.uuid4()
+
+                async def mock_verify(pool, token):
+                    if token == access_token:
+                        from orchestrator.auth import AuthenticatedDevice
+
+                        return AuthenticatedDevice(
+                            user_id=SINGLETON_ID,
+                            device_id=pool._device_id,
+                            session_id=pool._session_id,
+                        )
+                    return None
+
+                import orchestrator.auth as auth_module
+
+                original_verify = auth_module._verify_access_token
+                auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
+
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    start_response = await client.post(
+                        "/v1/auth/enroll/start",
+                        headers=make_auth_headers(access_token),
+                    )
+                    pending_id = start_response.json()["pending_id"]
+                    code = start_response.json()["code"]
+                    code_verifier_hash = hash_enrollment_code(code, pepper)
+
+                    state.db_pool._pending_enrollments[uuid.UUID(pending_id)] = {
+                        "id": uuid.UUID(pending_id),
+                        "user_id": SINGLETON_ID,
+                        "code_verifier_hash": code_verifier_hash,
+                        "wrong_attempts_remaining": 3,
+                        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
+                        "consumed_at": None,
+                    }
+
+                    complete_response = await client.post(
+                        "/v1/auth/enroll/complete",
+                        json={
+                            "pending_id": pending_id,
+                            "code": code,
+                            "client_kind": "web",
+                        },
+                        headers={
+                            "Origin": "https://app.daemon.ai",
+                            "Sec-Fetch-Site": "same-origin",
+                        },
+                    )
+
+                    assert complete_response.status_code == 200, complete_response.text
+                    assert "Max-Age=604800" in complete_response.headers.get("set-cookie", "")
+                    conn = mock_pool._connections[-1]
+                    assert conn._session_insert_args is not None
+                    refresh_expires_at = conn._session_insert_args[7]
+                    delta_days = (
+                        refresh_expires_at - datetime.now(timezone.utc)
+                    ).total_seconds() / 86400
+                    assert 6.5 <= delta_days <= 7.5
 
                 auth_module._verify_access_token = original_verify
         finally:

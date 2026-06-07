@@ -2,6 +2,8 @@
 
 This document locks the architecture for replacing the legacy shared-credential authentication model with per-device opaque-token authentication. It is derived from `.sisyphus/plans/auth-device-model.md`, `_scratch_auth_audit.md`, and `_scratch_auth_research.md` only.
 
+Hosted identity is specified separately in [`docs/HOSTED_IDENTITY.md`](HOSTED_IDENTITY.md). That layer uses Google or email proof to claim an account and issue Daemon-owned device sessions; it does not change this document's core rule that protected APIs trust only Daemon-issued access/device/session tokens.
+
 ## Locked Decisions
 
 ### Decision 1 — Hard-remove legacy credential model
@@ -294,4 +296,6 @@ SSE/chat requests pre-refresh before opening long streams. The access token is a
 
 ## Out-of-Scope Follow-Ups
 
-The following are explicitly not part of this architecture task or auth-device-model implementation: OAuth/PKCE, social login/OIDC, passkeys/WebAuthn/FIDO2, 2FA/TOTP, multi-user auth, email/password recovery, mobile UI, push auth, API-key coexistence, runtime auth-mode switches, migration helpers, fallback auth env vars, and setup-token URLs.
+The OAuth/PKCE and social login/OIDC exclusions below were scoped to the prior auth-device-model architecture task and implementation. Hosted Google/email identity claim is now specified by [`docs/HOSTED_IDENTITY.md`](HOSTED_IDENTITY.md) and remains an identity-proof-to-Daemon-session exchange, not direct provider-token API authorization.
+
+The following remain explicitly out of scope for the auth-device-model foundation and hosted identity claim unless a later plan says otherwise: passkeys/WebAuthn/FIDO2, 2FA/TOTP, email/password recovery, push auth, API-key coexistence, runtime auth-mode switches, migration helpers, fallback auth env vars, setup-token URLs, broad organization administration, and provider tokens as protected API credentials.

@@ -45,6 +45,7 @@ tests/tests/results/
 =1.2.0
 feature-matrix-2026-05-25-tag-snapshot.txt
 auth-device-model-2026-05-27-tag-snapshot.txt
+hosted-identity-claim-2026-05-31-tag-snapshot.txt
 
 # Data directories
 data/
@@ -65,6 +66,7 @@ yarn-error.log*
 
 # Sisyphus / AI agent artifacts
 .sisyphus/
+.sisyphus/evidence/hosted-identity-claim/**
 
 # Backups
 backups/

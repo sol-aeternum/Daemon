@@ -80,7 +80,12 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Memory Management Settings | Cross-client stable | Cross-client stable | Not started | Not started | GET /memories, DELETE /memories/{id}, POST /memories/{id}/confirm, DELETE /memories?confirm=true | No |
 | **Auth & Sessions** | — | — | — | — | — | — |
 | First-boot Setup | Backend stable | Backend stable | Backend stable | Backend stable | Setup token: process-memory one-time token, advisory lock, zero-active-device condition | Yes |
+| Hosted Auth Landing | Cross-client stable | Cross-client stable | Not started | Not started | Hosted auth landing UI routes users to identity sign-in or Advanced self-hosted setup | No |
+| Email Sign-In | Cross-client stable | Cross-client stable | Backend stable | Backend stable | Email code identity proof exchanges for Daemon-issued device/session tokens | Yes |
+| Google Sign-In | Cross-client stable | Cross-client stable | Not started | Not started | Google-start/complete identity proof with server nonce challenge and manual GIS callback | Yes |
+| Identity-Created Device Sessions | Cross-client stable | Cross-client stable | Backend stable | Backend stable | Hosted identity completion creates web or native devices and Daemon sessions; provider tokens are not API auth | Yes |
 | Device Management | Backend stable | Backend stable | Backend stable | Backend stable | GET /devices, DELETE /devices/{id} | No |
+| Hosted Identity Device Management | Cross-client stable | Cross-client stable | Not started | Not started | Identity-aware devices UI distinguishes web, native, enrollment-created, and identity-created devices | No |
 | Device Enrollment | Backend stable | Backend stable | Backend stable | Backend stable | POST /enroll/initiate (pending-id), POST /enroll/complete (pending-id lookup) | Yes |
 | Refresh Token Rotation | Backend stable | Backend stable | Backend stable | Backend stable | POST /refresh (cookie-backed web refresh, native JSON-body refresh, rotate on use) | Yes |
 | **Notifications** | — | — | — | — | — | — |
