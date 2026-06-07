@@ -36,10 +36,10 @@ SCORE_FILENAME = "longmemeval_chunk_score.json"
 
 BENCHMARK_NAME = "longmemeval_chunk"
 BENCHMARK_SOURCE_TYPE = "import"
-BENCHMARK_CATEGORY = "observation"
+BENCHMARK_SUBSTRATE = "chunk"
+BENCHMARK_MEMORY_CATEGORY = "summary"
 DEFAULT_CHUNK_MAX_CHARS = 4000
 DEFAULT_OVERLAP_TURNS = 2
-BENCHMARK_SUBSTRATE = "chunk"
 
 HARNESS_BANNER = (
     "[chunk-harness] LongMemEval CHUNK-substrate runner — direct 4000-char chunk "
@@ -334,7 +334,7 @@ async def insert_chunk_memories(
             encrypted_content,
             _vector_literal(embedding),
             embedding_model,
-            BENCHMARK_CATEGORY,
+            BENCHMARK_MEMORY_CATEGORY,
             BENCHMARK_SOURCE_TYPE,
             conversation_ids_by_session[chunk.session_id],
             1.0,

@@ -29,8 +29,8 @@ One-liner old→new mapping for readers of historical artifacts.
 |---|---|
 | `longmemeval_fast_results.jsonl` | `longmemeval_chunk_results.jsonl` |
 | `longmemeval_fast_checkpoint.json` | `longmemeval_chunk_checkpoint.json` |
-| *(no score JSON — bug)* | `longmemeval_chunk_score.json` |
-| `longmemeval_score.json` | `longmemeval_fact_score.json` |
+| *(no score JSON — gap)* | `longmemeval_chunk_score.json` |
+| `longmemeval_score.json` | `longmemeval_score.json` (canonical contract preserved; only the JSON content gained `substrate`/`benchmark_name` fields) |
 
 ## User pattern
 

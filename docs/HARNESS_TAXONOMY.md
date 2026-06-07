@@ -12,16 +12,19 @@ document is the authoritative reference for which harness to use and when.
 |---|---|
 | Module | `orchestrator.eval.chunk_harness` |
 | CLI | `python -m orchestrator.eval.chunk_harness` |
+| Compat CLI (legacy) | `python -m orchestrator.eval.longmemeval_fast` (shim → chunk_harness) |
 | Main class | `LongMemEvalChunkRunner` |
-| Filename prefix | `longmemeval_chunk_*` (results.jsonl, checkpoint.json, score.json) |
+| Filenames | `longmemeval_chunk_results.jsonl`, `longmemeval_chunk_checkpoint.json`, `longmemeval_chunk_score.json` |
 | User pattern | `longmemeval+chunk-{run_id}@daemon.test` |
+| Memory category | `summary` (valid per `memories_category_check`; see migrations 009/024) |
+| Substrate tag | `summary` is just the memory category; the substrate is in the score JSON (`substrate: "chunk"`) |
 | Memory substrate | Raw 4000-char overlapping window chunks inserted directly into `memories` |
 | LLM extraction | **No** — direct INSERT, no `process_extraction()` call |
 | Ingest cost | Cheap (~1-2h for full corpus; only Voyage `embed_documents` calls) |
 | Re-ingest cost | Cheap; auto-cleans per question |
 | Cleanup | Auto (per question, in `finally:`) |
 | User scope | Isolated per-run user, auto-deleted at run end |
-| Substrate tag | `substrate: "chunk"` in `longmemeval_chunk_score.json` |
+| Substrate tag in score JSON | `substrate: "chunk"` |
 
 ### fact
 
@@ -30,7 +33,7 @@ document is the authoritative reference for which harness to use and when.
 | Module | `orchestrator.eval.fact_harness` |
 | CLI | `python -m orchestrator.eval.longmemeval` |
 | Main class | `LongMemEvalFactRunner` |
-| Filename prefix | `longmemeval_fact_*` (results.jsonl, checkpoint.json, score.json) |
+| Filenames | `longmemeval_results.jsonl`, `longmemeval_checkpoint.json`, `longmemeval_score.json` (canonical names) |
 | User pattern | `longmemeval@daemon.test` (canonical single user) |
 | Memory substrate | LLM-extracted facts via `process_extraction()` then `store.insert_memory()` |
 | LLM extraction | **Yes** — full production extraction pipeline (gpt-4o-mini) |
@@ -38,7 +41,7 @@ document is the authoritative reference for which harness to use and when.
 | Re-ingest cost | Expensive; manual `--cleanup` flag only |
 | Cleanup | Manual (CLI flag) |
 | User scope | Single canonical user, persists across runs |
-| Substrate tag | `substrate: "fact"` in `longmemeval_fact_score.json` |
+| Substrate tag in score JSON | `substrate: "fact"` |
 
 ## When to use which
 

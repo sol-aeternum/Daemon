@@ -12,7 +12,7 @@ import pytest
 from cryptography.fernet import Fernet
 
 from orchestrator.eval.chunk_harness import (
-    BENCHMARK_CATEGORY,
+    BENCHMARK_MEMORY_CATEGORY,
     BENCHMARK_NAME,
     BENCHMARK_SOURCE_TYPE,
     BenchmarkUser,
@@ -176,7 +176,7 @@ async def test_fast_runner_inserts_direct_memories_and_resumes_checkpoint(
     first_insert_query = fake_pool.fetchrow.await_args_list[2].args[0]
     assert first_insert_args[0] == uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
     assert "to_tsvector('english', $13)" in first_insert_query
-    assert first_insert_args[4] == BENCHMARK_CATEGORY
+    assert first_insert_args[4] == BENCHMARK_MEMORY_CATEGORY
     assert first_insert_args[5] == BENCHMARK_SOURCE_TYPE
     assert first_insert_args[7] == 1.0
     assert first_insert_args[8] == "active"

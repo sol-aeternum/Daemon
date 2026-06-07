@@ -1,5 +1,15 @@
 # TRIAGE.md
 
+## 2026-06-07 (Australia/Adelaide) — task15_mr_standard/longmemeval_score.json is root-owned and untaggable
+- **Severity**: info
+- **Scope**: host
+- **Encountered during**: Codex review follow-up on PR #8
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: `tests/benchmark_results/task15_mr_standard/longmemeval_score.json` is owned by root (mode 0644). Cannot add the `substrate` field without sudo. The 31 other score JSONs in `tests/benchmark_results/` were tagged with `substrate: "fact"` (ad-hoc chmod). This one file is the historical 14.0% chunk-substrate baseline and **should be tagged `substrate: "chunk"`** (not fact), but the permission wall blocks it.
+- **Evidence**: `ls -la tests/benchmark_results/task15_mr_standard/longmemeval_score.json` → `-rw-r--r-- 1 root root 223 Apr 12 20:15`. `task15_mr_comparison.json` explicitly notes "standard side reuses the cached isolated replay of `orchestrator.eval.longmemeval_fast`" — confirming the substrate is chunk, not fact.
+- **Likely cause**: The file was probably written by a `docker exec` or CI job running as root, and the working directory mount left the file root-owned.
+- **Suggested action**: Run `sudo chown sol:sol tests/benchmark_results/task15_mr_standard/longmemeval_score.json` then re-tag with `substrate: "chunk"`. The `assert_substrate_match` gate will hard-fail on this file as long as it remains untagged, but the comparison code paths in `task15_mr_comparison.json` itself don't currently go through the gate (they pre-date the refactor). Future substrate-aware report sites will need the tag.
 ## 2026-06-04 (Australia/Adelaide) — LongMemEval harness deconfliction: silent substrate-tag bug fixed
 - **Severity**: warning
 - **Scope**: project
@@ -216,6 +226,7 @@
   - `Unauthorized: {"type":"error","error":{"type":"CreditsError","message":"Insufficient balance. Manage your billing here: https://opencode.ai/workspace/wrk_01KFQJSNM8KAAP52SN02MF4GTQ/billing"}}`
 - **Likely cause**: The selected subagent/model route for the first Task 1 delegation required workspace credits that are currently unavailable for that provider path (confidence 93%).
 - **Suggested action**: Retry the task with an available agent/model route or restore workspace billing balance before relying on this provider for further delegations.
+- **Seen again**: 2026-06-07 (Australia/Adelaide) during hosted-auth-landing diagnosis — all 5 background `task()` delegations (5 × `explore` agents covering `/setup` redirects, auth guard, hosted landing route, deployment-mode plumbing, and hosted identity endpoints) failed immediately with the same `Insufficient balance. Manage your billing here: https://opencode.ai/workspace/wrk_01KFQJSNM8KAAP52SN02MF4GTQ/billing` error and zero partial output. Workaround: fell back to direct Grep/Glob/Read with no delegated results to duplicate. The 5 task IDs that failed: `bg_7600a25e`, `bg_342dca82`, `bg_5e9cafef`, `bg_b9d9ca4c`, `bg_be96c5fa`. Investigation completed and diagnosis report delivered at `_scratch_auth_landing_diagnosis.md` using direct tools. Workspace billing balance has not been restored between 2026-04-15 and 2026-06-07.
 
 ## 2026-04-14 23:47 — LSP JSON Diagnostics Blocked By Missing Biome Server
 - **Severity**: warning

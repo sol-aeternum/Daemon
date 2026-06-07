@@ -252,15 +252,22 @@ def taxonomy_lookup() -> dict[str, dict[str, str]]:
 
 
 def baseline_payload() -> dict[str, Any]:
+    from orchestrator.eval.substrate import assert_substrate_match, load_tagged_score
+
     payload: dict[str, Any] = {}
+    score_paths: list[Path] = []
     for run_name in ("run1", "run2"):
         results = read_jsonl(BASELINE_ROOT / run_name / RESULTS_FILENAME)
-        score = read_json(BASELINE_ROOT / run_name / SCORE_FILENAME)
+        score_path = BASELINE_ROOT / run_name / SCORE_FILENAME
+        score = load_tagged_score(score_path)
+        score_paths.append(score_path)
         payload[run_name] = {
             "strict_accuracy": strict_accuracy(results),
             "accuracy": score["accuracy"],
             "judgments": judgment_map(results),
         }
+    if len(score_paths) == 2:
+        assert_substrate_match(score_paths[0], score_paths[1])
     payload["mean_strict_accuracy"] = statistics.mean(
         [payload["run1"]["strict_accuracy"], payload["run2"]["strict_accuracy"]]
     )
@@ -765,6 +772,12 @@ async def run_sweep() -> dict[str, Any]:
             results = await runner.evaluate()
             await wait_for_retrieval_logs(pool, expected_count=len(results))
             score_payload = runner.score()
+            from orchestrator.eval.substrate import assert_substrate_match
+
+            assert_substrate_match(
+                output_dir / SCORE_FILENAME,
+                BASELINE_ROOT / "run1" / SCORE_FILENAME,
+            )
             summary = await build_run_artifacts(
                 store,
                 top_k=top_k,

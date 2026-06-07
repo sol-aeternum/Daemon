@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 PhaseName = Literal["ingest", "evaluate", "score"]
 
-SCORE_FILENAME = "longmemeval_fact_score.json"
+SCORE_FILENAME = "longmemeval_score.json"
 CHECKPOINT_VERSION = 2
 DEFAULT_OUTPUT_DIR = Path("tests/benchmark_results")
 BENCHMARK_NAME = "longmemeval_fact"
@@ -255,6 +255,7 @@ class ResetSummary:
     total_rows_deleted: int
     checkpoint_reset: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
+    checkpoint_reset: dict[str, Any] | None = None
 
 
 CANONICAL_RESET_STATEMENTS: tuple[tuple[str, str], ...] = (
@@ -290,6 +291,8 @@ def _reset_checkpoint_file(checkpoint_path: Path | str | None) -> dict[str, Any]
         "checkpoint_removed": existed and not path.exists(),
     }
 
+CANONICAL_TEST_USER_EMAIL = "longmemeval@daemon.test"
+
 
 async def reset_canonical_benchmark(
     pool: asyncpg.Pool,
@@ -323,7 +326,7 @@ async def reset_canonical_benchmark(
             checkpoint_reset=checkpoint_reset,
             error=str(exc),
         )
-    _ = cleanup_redis
+
     return ResetSummary(
         success=True,
         tables_cleared=tables_cleared,

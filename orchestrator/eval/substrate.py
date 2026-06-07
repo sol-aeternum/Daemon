@@ -73,3 +73,22 @@ def assert_substrate_match(
     payload_a = json.loads(score_path_a.read_text())
     payload_b = json.loads(score_path_b.read_text())
     return payload_a, payload_b
+
+
+def load_tagged_score(score_path: Path) -> dict[str, Any]:
+    """Load a single score JSON, validating its substrate tag.
+
+    Use this at any site that reads a score JSON for downstream processing
+    (delta computation, reporting, or comparison). The validation ensures
+    the file was produced by a substrate-tagged harness; pre-tag files
+    hard-fail here.
+
+    Raises:
+        FileNotFoundError: if the score path is missing.
+        SubstrateMismatchError: if the file is missing the ``substrate`` field.
+    """
+    read_score_substrate(score_path)
+    payload = json.loads(score_path.read_text())
+    if not isinstance(payload, dict):
+        raise ValueError(f"Score JSON must be an object: {score_path}")
+    return payload
