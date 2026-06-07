@@ -42,6 +42,35 @@ ALTER TABLE users
 -- rows where normalized_email is NULL and email is not NULL). The service
 -- layer (TODO 8) will re-normalize on every identity claim to apply
 -- Gmail-style dot/+ normalization; this backfill is a safe best-effort.
+DO $$
+DECLARE
+    v_duplicate_normalized_email TEXT;
+    v_duplicate_user_ids TEXT;
+BEGIN
+    SELECT normalized_candidate,
+           string_agg(id::text, ', ' ORDER BY id::text)
+    INTO v_duplicate_normalized_email, v_duplicate_user_ids
+    FROM (
+        SELECT id,
+               LOWER(TRIM(email)) AS normalized_candidate
+        FROM users
+        WHERE normalized_email IS NULL
+          AND email IS NOT NULL
+          AND email <> ''
+    ) candidates
+    GROUP BY normalized_candidate
+    HAVING COUNT(*) > 1
+    ORDER BY normalized_candidate
+    LIMIT 1;
+
+    IF v_duplicate_normalized_email IS NOT NULL THEN
+        RAISE EXCEPTION
+            'hosted_identity_claim migration aborted: duplicate normalized_email candidate % across users [%]. Resolve duplicates before applying migration 032.',
+            v_duplicate_normalized_email,
+            v_duplicate_user_ids;
+    END IF;
+END $$;
+
 UPDATE users
 SET normalized_email = LOWER(TRIM(email))
 WHERE normalized_email IS NULL

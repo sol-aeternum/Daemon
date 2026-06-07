@@ -30,3 +30,11 @@ def test_hosted_identity_migration_does_not_use_now_in_partial_invite_index_pred
     assert "CREATE UNIQUE INDEX IF NOT EXISTS idx_signup_invites_active_email" in sql
     assert "WHERE status = 'active'" in sql
     assert "WHERE status = 'active' AND expires_at > NOW()" not in sql
+
+
+def test_hosted_identity_migration_aborts_when_legacy_emails_normalize_to_duplicates() -> None:
+    sql = _read("migrations/032_hosted_identity_claim.sql")
+
+    assert "duplicate normalized_email candidate" in sql
+    assert "LOWER(TRIM(email)) AS normalized_candidate" in sql
+    assert "Resolve duplicates before applying migration 032" in sql
