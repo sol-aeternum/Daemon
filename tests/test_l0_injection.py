@@ -131,7 +131,8 @@ async def test_build_memory_context_l0_at_top() -> None:
     result = await build_memory_context(store, conversation_id)
     assert "[FROZEN MEMORIES]" in result
     assert "Python developer" in result
-    assert result.startswith("[FROZEN MEMORIES]")
+    assert result.startswith('<memory_records trust="user_data">')
+    assert result.rstrip().endswith("</memory_records>")
 
 
 @pytest.mark.asyncio

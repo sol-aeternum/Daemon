@@ -293,11 +293,16 @@ async def build_memory_context(
         return ""
 
     if l0_block and not context:
-        return l0_block
+        raw_block = l0_block
+    elif l0_block:
+        raw_block = l0_block + "\n\n" + context
+    else:
+        raw_block = context
 
-    if l0_block:
-        return l0_block + "\n\n" + context
-    return context
+    # Wrap the entire memory block in an explicit XML fence (defense in depth against
+    # prompt injection via planted memory content; see issue #19). The system prompt
+    # at orchestrator/prompts.py explicitly disclaims instructions found inside.
+    return f'<memory_records trust="user_data">\n{raw_block}\n</memory_records>'
 
 
 async def assemble_system_prompt(
