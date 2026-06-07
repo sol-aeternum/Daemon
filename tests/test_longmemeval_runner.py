@@ -752,6 +752,25 @@ async def test_reset_canonical_benchmark_redis_not_attempted_when_disabled(
     assert summary.redis_error is None
 
 
+@pytest.mark.asyncio
+async def test_reset_canonical_benchmark_checkpoint_reset_default_is_empty_dict() -> None:
+    """When no checkpoint_path is passed, checkpoint_reset defaults to an empty
+    dict (not None) so callers that do ``summary.checkpoint_reset.get(...)`` don't crash.
+    """
+    from orchestrator.eval.fact_harness import reset_canonical_benchmark
+
+    class FakePool:
+        async def execute(self, _query: str, *_args: object) -> str:
+            return "DELETE 1"
+
+    summary = await reset_canonical_benchmark(cast(Any, FakePool()))
+    assert summary.checkpoint_reset == {
+        "checkpoint_path": None,
+        "checkpoint_existed": False,
+        "checkpoint_removed": False,
+    }
+
+
 def test_legacy_runner_module_re_exports_filename_constants() -> None:
     """Back-compat: ``from orchestrator.eval.runner import RESULTS_FILENAME`` must work."""
     from orchestrator.eval.runner import (

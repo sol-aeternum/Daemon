@@ -257,7 +257,6 @@ class ResetSummary:
     redis_keys_deleted: int = 0
     redis_error: str | None = None
     error: str | None = None
-    checkpoint_reset: dict[str, Any] | None = None
 
 
 CANONICAL_RESET_STATEMENTS: tuple[tuple[str, str], ...] = (
