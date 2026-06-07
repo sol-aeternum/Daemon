@@ -89,5 +89,28 @@ def build_refresh_cookie(
     return {"Set-Cookie": cookie_str}
 
 
+def build_temporary_refresh_cookie(
+    value: str,
+    config: RefreshCookieConfig,
+) -> dict[str, str]:
+    """Build a refresh cookie for `device_persistence="temporary"`.
+
+    Returns a Set-Cookie header with HttpOnly + Secure + SameSite=Strict
+    attributes (same policy as the private cookie) but NO `Max-Age`
+    attribute, which makes the browser treat it as a session cookie
+    cleared on close. This is the narrow "public computer" web session
+    shape from the hosted-identity decision lock
+    (`_scratch_identity_decision_lock.md`, row "temporary/public
+    session capabilities"). The cookie name follows the production/
+    development policy from `make_refresh_cookie_config`; there is no
+    new name for temporary sessions.
+
+    The route layer is responsible for NOT exposing a refresh token in
+    the response body for this path; this helper handles only the
+    Set-Cookie shape.
+    """
+    return build_refresh_cookie(value, config, max_age=None)
+
+
 def clear_refresh_cookie(config: RefreshCookieConfig) -> dict[str, str]:
     return build_refresh_cookie("", config, max_age=0)

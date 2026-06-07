@@ -1,4 +1,4 @@
-"use client";
+'use client';
 
 import {
   createContext,
@@ -7,7 +7,7 @@ import {
   useEffect,
   useState,
   type ReactNode,
-} from "react";
+} from 'react';
 import {
   attemptPageLoadRefresh,
   clearAuthState,
@@ -19,7 +19,7 @@ import {
   refreshAccessToken,
   setAccessToken,
   type RefreshResult,
-} from "@/lib/auth";
+} from '@/lib/auth';
 
 interface AuthContextValue {
   isAuthenticated: boolean;
@@ -51,7 +51,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
     let mounted = true;
 
     async function init() {
-      if (typeof window !== "undefined" && window.location.pathname === "/setup") {
+      if (
+        typeof window !== 'undefined' &&
+        window.location.pathname === '/setup'
+      ) {
         updateAuthState();
         return;
       }
@@ -61,8 +64,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
       updateAuthState();
 
       if (!success) {
-        if (typeof window !== "undefined") {
-          window.location.href = "/setup";
+        if (typeof window !== 'undefined') {
+          window.location.href = '/setup';
         }
         return;
       }
@@ -72,11 +75,17 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
     const unsubscribe = listenForAuthEvents((event) => {
       if (!mounted) return;
-      if (event === "cleared") {
+      if (event === 'cleared') {
         clearLocalAuthState();
         updateAuthState();
-      } else if (event === "refreshed") {
-        updateAuthState();
+      } else if (event === 'refreshed') {
+        if (!hasValidAccessToken()) {
+          void refreshAccessToken().then(() => {
+            if (mounted) updateAuthState();
+          });
+        } else {
+          updateAuthState();
+        }
       }
     });
 
@@ -95,15 +104,18 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const logout = useCallback(() => {
     clearAuthState();
     updateAuthState();
-    if (typeof window !== "undefined") {
-      window.location.href = "/setup";
+    if (typeof window !== 'undefined') {
+      window.location.href = '/setup';
     }
   }, [updateAuthState]);
 
-  const setToken = useCallback((token: string, expiresAtMs: number) => {
-    setAccessToken(token, expiresAtMs);
-    updateAuthState();
-  }, [updateAuthState]);
+  const setToken = useCallback(
+    (token: string, expiresAtMs: number) => {
+      setAccessToken(token, expiresAtMs);
+      updateAuthState();
+    },
+    [updateAuthState],
+  );
 
   const authHeader = getAuthHeader();
 
@@ -126,7 +138,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
 export function useAuth(): AuthContextValue {
   const context = useContext(AuthContext);
   if (!context) {
-    throw new Error("useAuth must be used within an AuthProvider");
+    throw new Error('useAuth must be used within an AuthProvider');
   }
   return context;
 }

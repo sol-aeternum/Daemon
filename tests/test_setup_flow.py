@@ -6,6 +6,7 @@ import asyncio
 import logging
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
@@ -33,13 +34,26 @@ class MockConn:
         if "INSERT INTO users" in sql:
             self._pool._singleton_exists = True
             return SINGLETON_ID
+        if "INSERT INTO tenants" in sql:
+            if self._pool._tenant_id is None:
+                self._pool._tenant_id = uuid.uuid4()
+                return self._pool._tenant_id
+            return None
+        if "SELECT role" in sql and "tenant_memberships" in sql:
+            return "owner" if self._pool._membership_exists else None
         if "INSERT INTO devices" in sql:
             self._pool._device_created = True
             self._pool._active_count = 1
+            self._pool._device_insert_args = args
             return uuid.uuid4()
         if "INSERT INTO sessions" in sql:
             self._session_insert_args = args
             return uuid.uuid4()
+        if "INSERT INTO tenant_memberships" in sql:
+            if self._pool._membership_exists:
+                return None
+            self._pool._membership_exists = True
+            return "owner"
         return None
 
     async def execute(self, sql, *args):
@@ -52,6 +66,16 @@ class MockConn:
         return None
 
     async def fetchrow(self, sql, *args):
+        if (
+            "SELECT id, owner_user_id, kind, name FROM tenants" in sql
+            and self._pool._tenant_id is not None
+        ):
+            return {
+                "id": self._pool._tenant_id,
+                "owner_user_id": SINGLETON_ID,
+                "kind": "personal",
+                "name": "Personal",
+            }
         return None
 
     @asynccontextmanager
@@ -71,6 +95,9 @@ class MockPool:
         self._closed = False
         self._lock_acquired = False
         self._device_created = False
+        self._device_insert_args = None
+        self._tenant_id = None
+        self._membership_exists = False
         self._connections = []
 
     async def fetchval(self, sql, *args):
@@ -231,6 +258,49 @@ class TestSetupHappyPath:
                     assert session_insert_args[2] == "web", (
                         f"Expected client_kind='web', got {session_insert_args[2]}"
                     )
+                    assert mock_pool._tenant_id is not None
+                    assert mock_pool._device_insert_args is not None
+                    assert mock_pool._device_insert_args[1] == mock_pool._tenant_id
+                    assert session_insert_args[3] == mock_pool._tenant_id
+        finally:
+            restore_init(original)
+
+    @pytest.mark.asyncio
+    async def test_setup_uses_configured_private_refresh_ttl(self, setup_env, monkeypatch):
+        monkeypatch.setenv("DAEMON_PRIVATE_REFRESH_TTL_DAYS", "7")
+        get_settings.cache_clear()
+        mock_pool = MockPool(active_device_count=0, singleton_user_exists=False)
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                state = app.state.app_state
+                plaintext = generate_setup_token()
+                state.setup_token_hash = hash_token(plaintext)
+
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    response = await client.post(
+                        "/v1/auth/setup",
+                        json={"setup_token": plaintext},
+                        headers={
+                            "Origin": "https://app.daemon.ai",
+                            "Sec-Fetch-Site": "same-origin",
+                        },
+                    )
+
+                    assert response.status_code == 200, response.text
+                    assert "Max-Age=604800" in response.headers.get("set-cookie", "")
+                    session_insert_args = None
+                    for conn in mock_pool._connections:
+                        if conn._session_insert_args is not None:
+                            session_insert_args = conn._session_insert_args
+                            break
+                    assert session_insert_args is not None
+                    refresh_expires_at = session_insert_args[7]
+                    delta_days = (
+                        refresh_expires_at - datetime.now(timezone.utc)
+                    ).total_seconds() / 86400
+                    assert 6.5 <= delta_days <= 7.5
         finally:
             restore_init(original)
 

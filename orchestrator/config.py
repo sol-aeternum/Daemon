@@ -3,10 +3,24 @@ from __future__ import annotations
 # pyright: reportMissingImports=false
 
 from functools import lru_cache
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+# ===== Hosted identity config constants =====
+# Allowlist of signup modes. invite_only is the default per hosted identity
+# decision lock; open is gated behind a deliberate operator change; disabled
+# blocks all new hosted signups but leaves existing accounts functional.
+HOSTED_SIGNUP_MODES: tuple[str, ...] = ("invite_only", "open", "disabled")
+# Allowlist of mail-sender modes. console is dev-only and is rejected in
+# production by validate_hosted_identity_config().
+HOSTED_MAIL_SENDER_MODES: tuple[str, ...] = ("console", "smtp", "disabled")
+
+
+class HostedIdentityConfigError(ValueError):
+    """Raised when hosted identity configuration fails fail-closed validation."""
 
 
 class ProviderConfig(BaseSettings):
@@ -318,6 +332,82 @@ class Settings(BaseSettings):
         description="Minimum autonomous skills needed before consolidation nudge evaluates merge potential",
     )
 
+    # ===== HOSTED IDENTITY CONFIG =====
+    # When false, hosted identity routes (Google/email) are not exposed and
+    # validate_hosted_identity_config() is a no-op. Default off preserves the
+    # self-hosted setup-first default; explicit opt-in is required.
+    daemon_hosted_identity_enabled: bool = False
+
+    # Signup policy. invite_only is the locked default per hosted identity
+    # decision lock; open requires a deliberate operator change; disabled
+    # blocks all new hosted signups but leaves existing accounts functional.
+    daemon_signup_mode: Literal["invite_only", "open", "disabled"] = "invite_only"
+
+    # ----- Google provider config -----
+    daemon_google_enabled: bool = True
+    # Required when Google is enabled and daemon_hosted_identity_enabled is true.
+    # Validated by validate_hosted_identity_config().
+    daemon_google_client_id: str | None = None
+    # Comma-separated additional audience allowlist (dev/staging only). Empty
+    # in production deployments. Each entry is validated as a non-empty string
+    # by validate_hosted_identity_config().
+    daemon_google_audience_allowlist: str = ""
+
+    # ----- Email provider config -----
+    daemon_email_enabled: bool = True
+
+    # ----- Challenge defaults (TODO 10/12 consume these) -----
+    # Email code challenge TTL in seconds. Research recommends 10 minutes.
+    daemon_email_challenge_ttl_seconds: int = Field(default=600, ge=30, le=3600)
+    # Email code max attempts per challenge row. Research recommends 5.
+    daemon_email_challenge_max_attempts: int = Field(default=5, ge=1, le=10)
+    # Google nonce challenge TTL in seconds. Matches email code TTL by default.
+    daemon_google_nonce_ttl_seconds: int = Field(default=600, ge=30, le=3600)
+
+    # ----- Rate-limit thresholds (TODO 7 consumes these) -----
+    # Per-normalized-email limits for /email/start.
+    daemon_rate_limit_email_start_per_email_per_hour: int = Field(default=3, ge=1)
+    daemon_rate_limit_email_start_per_email_per_day: int = Field(default=10, ge=1)
+    # Per-IP limits for /email/start.
+    daemon_rate_limit_email_start_per_ip_per_hour: int = Field(default=5, ge=1)
+    daemon_rate_limit_email_start_per_ip_per_day: int = Field(default=20, ge=1)
+    # Per-IP limit for /email/complete.
+    daemon_rate_limit_email_complete_per_ip_per_hour: int = Field(default=20, ge=1)
+
+    # ----- Mail sender config (TODO 10 consumes this) -----
+    # console is dev-only and is rejected in production by
+    # validate_hosted_identity_config(). smtp uses daemon_mail_smtp_*.
+    daemon_mail_sender_mode: Literal["console", "smtp", "disabled"] = "console"
+    daemon_mail_from_address: str = "noreply@daemon.ai"
+    # SMTP settings (only used when daemon_mail_sender_mode == "smtp").
+    daemon_mail_smtp_host: str = ""
+    daemon_mail_smtp_port: int = Field(default=587, ge=1, le=65535)
+    daemon_mail_smtp_username: str = ""
+    daemon_mail_smtp_password: str = ""
+    daemon_mail_smtp_use_tls: bool = True
+
+    # ----- Native / web / temporary refresh transport knobs (TODO 9) -----
+    # Long-lived refresh TTL for the web and native private persistence.
+    daemon_private_refresh_ttl_days: int = Field(default=90, ge=1, le=365)
+    # Temporary/public refresh TTL in seconds. 0 means session cookie
+    # (cleared on browser close). TODO 9 picks the exact shape.
+    daemon_temporary_refresh_ttl_seconds: int = Field(default=0, ge=0, le=86400)
+
+    # ----- Hosted identity Redis requirements -----
+    # When true, validate_hosted_identity_config() requires redis_url to be
+    # set. This is the fail-closed knob for the decision lock's "Redis
+    # unavailable in hosted production fails closed for identity
+    # nonce/challenge/rate-limit enforcement" rule.
+    daemon_hosted_identity_require_redis: bool = True
+
+    # ----- Trusted auth-proxy forwarding -----
+    # Default safe posture: do NOT trust forwarded client-IP headers.
+    # Hosted deployments that front `/api/v1/auth/*` with the Next.js proxy
+    # may opt in so rate limits key on the original client IP instead of the
+    # proxy/container hop. The rate-limit helper still requires the immediate
+    # socket hop to be loopback/private before honoring forwarded headers.
+    daemon_trust_proxy_forwarded_client_ip: bool = False
+
     def get_tier_config(self, tier: str | None = None) -> TierConfig:
         """Get model configuration for a specific tier.
 
@@ -483,6 +573,117 @@ class Settings(BaseSettings):
                     providers.append(provider_name)
 
         return providers
+
+    def validate_hosted_identity_config(self) -> None:
+        """Validate hosted identity configuration and fail closed on misconfig.
+
+        Returns silently when daemon_hosted_identity_enabled is False so
+        self-hosted setup-first deployments are not impacted. When hosted
+        identity is enabled, this enforces:
+
+        - at least one of (Google, email) is enabled as an identity provider;
+        - in production: Redis URL is set (fail-closed for nonce/challenge
+          /rate-limit enforcement per the decision lock);
+        - in production, when the email provider is enabled: the mail
+          sender must be a real provider — daemon_mail_sender_mode must
+          not be 'console' (dev sink), 'disabled' (no sender), or 'smtp'
+          with an empty daemon_mail_smtp_host;
+        - in production: Google provider (if enabled) has a client ID;
+        - signup mode and mail sender mode are within their allowlists
+          (Literal type checks at construction enforce this, but we
+          double-check for runtime robustness against env-var drift);
+        - the Google audience allowlist is a comma-separated list of
+          non-empty strings (each entry trimmed).
+
+        Production deployments where only the Google provider is enabled
+        (daemon_email_enabled=False) intentionally allow non-real mail
+        sinks (including 'disabled') because no email codes are ever
+        generated or sent on that code path. The mail sink is irrelevant
+        when email is disabled.
+
+        Raises:
+            HostedIdentityConfigError: on any of the above violations.
+        """
+        if not self.daemon_hosted_identity_enabled:
+            return
+
+        is_production = self.daemon_environment.lower().strip() == "production"
+
+        if not self.daemon_google_enabled and not self.daemon_email_enabled:
+            raise HostedIdentityConfigError(
+                "Hosted identity is enabled but both Google and email providers "
+                "are disabled. At least one identity provider must be enabled."
+            )
+
+        if is_production and self.daemon_hosted_identity_require_redis and not self.redis_url:
+            raise HostedIdentityConfigError(
+                "Hosted identity is enabled in production but redis_url is not "
+                "set. Redis is required for hosted identity nonce/challenge/"
+                "rate-limit enforcement; refusing to start with a weakened posture."
+            )
+
+        if is_production and self.daemon_email_enabled:
+            if self.daemon_mail_sender_mode == "console":
+                raise HostedIdentityConfigError(
+                    "Hosted identity is enabled in production with the email "
+                    "provider, but mail sender mode is 'console' (dev sink). "
+                    "Configure daemon_mail_sender_mode=smtp with a real host "
+                    "before deploying to production."
+                )
+            if self.daemon_mail_sender_mode == "disabled":
+                raise HostedIdentityConfigError(
+                    "Hosted identity is enabled in production with the email "
+                    "provider, but mail sender mode is 'disabled'. The email "
+                    "sign-in flow requires a real sender; refusing to start "
+                    "with email codes that can never be delivered."
+                )
+            if self.daemon_mail_sender_mode == "smtp" and not self.daemon_mail_smtp_host.strip():
+                raise HostedIdentityConfigError(
+                    "Hosted identity is enabled in production with the email "
+                    "provider and mail sender mode 'smtp', but "
+                    "daemon_mail_smtp_host is empty. Configure a non-empty "
+                    "daemon_mail_smtp_host before deploying to production."
+                )
+            if self.daemon_mail_sender_mode == "smtp" and not self.daemon_mail_from_address.strip():
+                raise HostedIdentityConfigError(
+                    "Hosted identity is enabled in production with the email "
+                    "provider and mail sender mode 'smtp', but "
+                    "daemon_mail_from_address is empty. Configure a non-empty "
+                    "daemon_mail_from_address before deploying to production."
+                )
+
+        if self.daemon_google_enabled and not (self.daemon_google_client_id or "").strip():
+            raise HostedIdentityConfigError(
+                "Hosted identity is enabled with Google provider but "
+                "daemon_google_client_id is not set. Set the Google OAuth client ID."
+            )
+
+        allowlist_raw = self.daemon_google_audience_allowlist or ""
+        if is_production and allowlist_raw.strip() != "":
+            raise HostedIdentityConfigError(
+                "Hosted identity is enabled in production with Google provider, but "
+                "daemon_google_audience_allowlist is non-empty. The audience allowlist "
+                "is for development/staging only and must be empty in production."
+            )
+        if allowlist_raw != "":
+            for entry in allowlist_raw.split(","):
+                if entry.strip() == "":
+                    raise HostedIdentityConfigError(
+                        "daemon_google_audience_allowlist contains an empty entry. "
+                        "Each comma-separated value must be a non-empty client ID."
+                    )
+
+        if self.daemon_signup_mode not in HOSTED_SIGNUP_MODES:
+            raise HostedIdentityConfigError(
+                f"daemon_signup_mode must be one of {HOSTED_SIGNUP_MODES}, "
+                f"got: {self.daemon_signup_mode!r}"
+            )
+
+        if self.daemon_mail_sender_mode not in HOSTED_MAIL_SENDER_MODES:
+            raise HostedIdentityConfigError(
+                f"daemon_mail_sender_mode must be one of {HOSTED_MAIL_SENDER_MODES}, "
+                f"got: {self.daemon_mail_sender_mode!r}"
+            )
 
 
 @lru_cache

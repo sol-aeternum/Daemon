@@ -33,7 +33,12 @@ from fastapi.responses import FileResponse, StreamingResponse
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.auth_pepper import PepperValidationError, validate_and_get_pepper
 from orchestrator.council.sse import stream_council, stream_council_interview_response
-from orchestrator.config import ProviderConfig, Settings, get_settings
+from orchestrator.config import (
+    HostedIdentityConfigError,
+    ProviderConfig,
+    Settings,
+    get_settings,
+)
 from orchestrator.daemon import (
     effective_provider_and_model,
     new_conversation_id,
@@ -91,14 +96,30 @@ from orchestrator.tools.completion import completion_with_tools
 logger = logging.getLogger(__name__)
 
 
+def _validate_startup_config(settings: Settings) -> None:
+    """Run all fail-closed startup-time config validations.
+
+    Centralized so the FastAPI lifespan hook stays compact and the
+    validation chain is testable in isolation (see
+    tests/test_hosted_identity_config.py). Order is intentional: pepper
+    first (authentication substrate), then hosted identity (deployment
+    posture). Either failure aborts startup before any AppState work.
+    """
+    validate_and_get_pepper(settings)
+    settings.validate_hosted_identity_config()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
 
     try:
-        validate_and_get_pepper(settings)
+        _validate_startup_config(settings)
     except PepperValidationError as exc:
         logger.critical("Production pepper validation failed: %s", exc)
+        raise
+    except HostedIdentityConfigError as exc:
+        logger.critical("Hosted identity config validation failed: %s", exc)
         raise
 
     state = await init_app_state(settings)

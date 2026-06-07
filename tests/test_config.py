@@ -75,3 +75,99 @@ def test_background_reasoning_model_empty_string_preserved(monkeypatch) -> None:
     monkeypatch.setenv("BACKGROUND_REASONING_MODEL", "")
     settings = Settings()
     assert settings.background_reasoning_model == ""
+
+
+def test_hosted_identity_defaults() -> None:
+    """Hosted identity is off by default; signup invite_only; mail sink console."""
+    settings = Settings()
+    assert settings.daemon_hosted_identity_enabled is False
+    assert settings.daemon_signup_mode == "invite_only"
+    assert settings.daemon_google_enabled is True
+    assert settings.daemon_google_client_id is None
+    assert settings.daemon_google_audience_allowlist == ""
+    assert settings.daemon_email_enabled is True
+    assert settings.daemon_mail_sender_mode == "console"
+    assert settings.daemon_mail_from_address == "noreply@daemon.ai"
+    assert settings.daemon_mail_smtp_host == ""
+    assert settings.daemon_mail_smtp_port == 587
+    assert settings.daemon_mail_smtp_use_tls is True
+    assert settings.daemon_email_challenge_ttl_seconds == 600
+    assert settings.daemon_email_challenge_max_attempts == 5
+    assert settings.daemon_google_nonce_ttl_seconds == 600
+    assert settings.daemon_rate_limit_email_start_per_email_per_hour == 3
+    assert settings.daemon_rate_limit_email_start_per_email_per_day == 10
+    assert settings.daemon_rate_limit_email_start_per_ip_per_hour == 5
+    assert settings.daemon_rate_limit_email_start_per_ip_per_day == 20
+    assert settings.daemon_rate_limit_email_complete_per_ip_per_hour == 20
+    assert settings.daemon_private_refresh_ttl_days == 90
+    assert settings.daemon_temporary_refresh_ttl_seconds == 0
+    assert settings.daemon_hosted_identity_require_redis is True
+
+
+def test_hosted_identity_env_overrides(monkeypatch) -> None:
+    """Hosted identity settings are overridable via env vars."""
+    monkeypatch.setenv("DAEMON_HOSTED_IDENTITY_ENABLED", "true")
+    monkeypatch.setenv("DAEMON_SIGNUP_MODE", "open")
+    monkeypatch.setenv("DAEMON_GOOGLE_CLIENT_ID", "my-client-id.apps.googleusercontent.com")
+    monkeypatch.setenv("DAEMON_GOOGLE_AUDIENCE_ALLOWLIST", "id-a, id-b")
+    monkeypatch.setenv("DAEMON_EMAIL_CHALLENGE_TTL_SECONDS", "900")
+    monkeypatch.setenv("DAEMON_MAIL_SENDER_MODE", "smtp")
+    settings = Settings()
+    assert settings.daemon_hosted_identity_enabled is True
+    assert settings.daemon_signup_mode == "open"
+    assert settings.daemon_google_client_id == "my-client-id.apps.googleusercontent.com"
+    assert settings.daemon_google_audience_allowlist == "id-a, id-b"
+    assert settings.daemon_email_challenge_ttl_seconds == 900
+    assert settings.daemon_mail_sender_mode == "smtp"
+
+
+def test_signup_mode_invalid_rejected_by_literal() -> None:
+    """Invalid daemon_signup_mode is rejected at construction time."""
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Settings(daemon_signup_mode="free_for_all")  # type: ignore[arg-type]
+
+
+def test_mail_sender_mode_invalid_rejected_by_literal() -> None:
+    """Invalid daemon_mail_sender_mode is rejected at construction time."""
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Settings(daemon_mail_sender_mode="sendmail")  # type: ignore[arg-type]
+
+
+def test_email_challenge_ttl_bounds_enforced() -> None:
+    """TTL field enforces ge/le bounds at construction time."""
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Settings(daemon_email_challenge_ttl_seconds=10)
+    with pytest.raises(ValidationError):
+        Settings(daemon_email_challenge_ttl_seconds=10_000)
+
+
+def test_email_challenge_attempts_bounds_enforced() -> None:
+    """Attempts field enforces ge/le bounds at construction time."""
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Settings(daemon_email_challenge_max_attempts=0)
+    with pytest.raises(ValidationError):
+        Settings(daemon_email_challenge_max_attempts=100)
+
+
+def test_validate_hosted_identity_noop_when_disabled() -> None:
+    """Validation is a no-op when hosted identity is disabled (self-hosted default)."""
+    settings = Settings(
+        daemon_hosted_identity_enabled=False,
+        daemon_environment="production",
+        redis_url=None,
+        daemon_google_client_id=None,
+        daemon_mail_sender_mode="console",
+    )
+    settings.validate_hosted_identity_config()
