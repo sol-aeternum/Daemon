@@ -1092,6 +1092,25 @@ async def setup_endpoint(
     response: Response,
     body: SetupRequest,
 ) -> SetupResponse:
+    # Deployment-mode gate: hosted deployments cannot initialize owner/admin
+    # state via /v1/auth/setup. The check fires BEFORE rate-limit and app_state
+    # access so a misconfigured hosted deployment fails fast without consuming
+    # DB connections. The gate is independent of daemon_hosted_identity_enabled
+    # because mode=hosted + identity_enabled=false is a valid staging config
+    # that must still refuse owner/admin init.
+    settings = get_settings()
+    if settings.daemon_deployment_mode == "hosted":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "setup_disabled_in_hosted_mode",
+                "detail": (
+                    "hosted deployments cannot initialize owner/admin state "
+                    "via /v1/auth/setup; use a hosted identity provider"
+                ),
+            },
+        )
+
     limiter = get_rate_limiter(request)
     await enforce_rate_limit(
         request=request,
