@@ -1624,3 +1624,25 @@
 - **Evidence**: Command output: `updated ./.basedpyright/baseline.json with 520 errors (went down by 51)`. `git diff --stat` showed `.basedpyright/baseline.json | 405 -----------------------------------------`.
 - **Likely cause**: basedpyright refreshes the configured baseline opportunistically when invoked, and the original PR deleted a file that still had baseline entries (90% confidence).
 - **Suggested action**: Decide separately whether baseline cleanup belongs in the original deletion PR; this follow-up reverted the unrelated baseline mutation.
+
+## 2026-06-08 UTC — Backend Ruff format gate reports pre-existing formatting debt
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: PR #107 review-comment follow-up — register auth config router
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: The backend lint command passed, but the full repository `uv run ruff format --check .` gate stopped the chained verification before basedpyright because two files outside this change need formatting. The touched router registration file was not reported.
+- **Evidence**: `uv run ruff check . && uv run ruff format --check . && uv run basedpyright --level error` printed `All checks passed!` then `Would reformat: orchestrator/routes/video_credits.py` and `Would reformat: tests/test_orchestrator_legacy_image_gen.py`; command exit code 1.
+- **Likely cause**: Pre-existing formatting drift in unrelated files that were not part of this review-comment fix (confidence 92%).
+- **Suggested action**: Run a separate mechanical formatting remediation for the reported files, or establish a backend formatting baseline if those files are intentionally deferred.
+
+## 2026-06-08 UTC — Backend basedpyright gate reports unrelated video credits test type debt
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: PR #107 review-comment follow-up — register auth config router
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: The full backend `basedpyright --level error` gate failed on an existing test type error outside the auth router registration change.
+- **Evidence**: `uv run basedpyright --level error` reported `tests/test_video_credits_grant_bounds.py:89:42 - error: Argument of type "None" cannot be assigned to parameter "admin_key" of type "str" in function "_settings"` and exited 1.
+- **Likely cause**: A pre-existing test helper type annotation does not accept `None` for a call path that intentionally passes `None` (confidence 95%).
+- **Suggested action**: Fix the helper annotation or call site in a dedicated video credits typing cleanup so the backend type gate can pass again.
