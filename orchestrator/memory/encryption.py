@@ -8,43 +8,50 @@ from cryptography.fernet import Fernet, InvalidToken
 logger = logging.getLogger(__name__)
 
 
+class EncryptionKeyMissing(ValueError):
+    pass
+
+
 class ContentEncryption:
     def __init__(self, key: str | None = None) -> None:
-        self.key = key or os.environ.get("DAEMON_ENCRYPTION_KEY", "")
-        self._cipher: Fernet | None = None
+        resolved = key if key is not None else os.environ.get("DAEMON_ENCRYPTION_KEY")
+        if not resolved:
+            raise EncryptionKeyMissing(
+                "DAEMON_ENCRYPTION_KEY is required. Generate one with: "
+                "python -c 'from cryptography.fernet import Fernet; "
+                "print(Fernet.generate_key().decode())'"
+            )
 
-        if self.key:
-            try:
-                self._cipher = Fernet(self.key.encode() if isinstance(self.key, str) else self.key)
-            except Exception as e:
-                logger.warning(
-                    f"Failed to initialize encryption cipher: {e}. "
-                    "Content will be stored in plaintext."
-                )
-                self._cipher = None
+        if isinstance(resolved, str):
+            resolved_bytes = resolved.encode()
         else:
-            logger.warning("DAEMON_ENCRYPTION_KEY not set. Content will be stored in plaintext.")
+            resolved_bytes = resolved
+
+        if len(resolved_bytes) < 43:
+            raise EncryptionKeyMissing(
+                "DAEMON_ENCRYPTION_KEY is too short. Fernet requires a "
+                "32-byte url-safe base64-encoded key (~43 characters)."
+            )
+
+        try:
+            self._cipher: Fernet = Fernet(resolved_bytes)
+        except Exception as e:
+            raise EncryptionKeyMissing(
+                f"DAEMON_ENCRYPTION_KEY is not a valid Fernet key: {e}"
+            ) from e
 
     def encrypt(self, plaintext: str) -> str:
-        if not self._cipher:
-            return plaintext
-
         try:
             encrypted_bytes = self._cipher.encrypt(plaintext.encode())
-            return encrypted_bytes.decode()
         except Exception as e:
-            logger.error(f"Encryption failed: {e}. Returning plaintext.")
-            return plaintext
+            raise RuntimeError(f"Encryption failed: {e}") from e
+        return encrypted_bytes.decode()
 
     def decrypt(self, ciphertext: str) -> str:
-        if not self._cipher:
-            return ciphertext
-
         try:
             decrypted_bytes = self._cipher.decrypt(ciphertext.encode())
-            return decrypted_bytes.decode()
-        except InvalidToken:
-            raise ValueError("Invalid ciphertext: decryption failed (wrong key or corrupted data)")
-        except Exception as e:
-            logger.error(f"Decryption failed: {e}. Returning ciphertext as-is.")
-            return ciphertext
+        except InvalidToken as e:
+            raise ValueError(
+                "Invalid ciphertext: decryption failed (wrong key or corrupted data)"
+            ) from e
+        return decrypted_bytes.decode()

@@ -285,6 +285,7 @@
 - **Seen again**: 2026-05-31 during Task 6 when `npm install --save-dev @commitlint/cli @commitlint/config-conventional` completed but again reported `26 vulnerabilities (4 low, 8 moderate, 14 high)`; commitlint installation proceeded, and vulnerability remediation remains out of scope for Task 6.
 - **Seen again**: 2026-05-31T06:31Z during Task 7 local CI parity; `.sisyphus/evidence/task-7-ci-local-parity.txt` shows `npm ci` reporting 26 vulnerabilities and `npm run audit:ci` exiting 1.
 - **Seen again / changed count**: 2026-06-05T03:34Z during F3 Real Manual QA, `npm ci` in `/tmp/opencode/hosted-identity-pr-f3/frontend` completed but reported `27 vulnerabilities (4 low, 8 moderate, 14 high, 1 critical)`. Install succeeded, but the audit inventory is worse than the previously recorded 26-vulnerability state.
+- **Seen again**: 2026-06-08 during PR #21 Studio image API retirement follow-up; local `npm ci` reported the same `27 vulnerabilities (4 low, 8 moderate, 14 high, 1 critical)` inventory.
 
 ## 2026-05-31 05:54 UTC — npm ci Emits Deprecated Frontend Dependency Warnings
 - **Severity**: warning
@@ -296,6 +297,7 @@
 - **Evidence**: `.sisyphus/evidence/task-5-frontend-positive.txt` lines 2-28 show `npm ci` exit code 0 and the warning list.
 - **Likely cause**: Existing frontend dependency graph includes older transitive packages, especially from PWA/build tooling (confidence 90%).
 - **Suggested action**: Address during the same frontend dependency remediation task as the npm audit findings.
+- **Seen again**: 2026-06-08 during PR #21 Studio image API retirement follow-up; `npm ci` succeeded but emitted the same deprecated transitive dependency warnings (`@types/dompurify`, `inflight`, `rimraf@2`, `rollup-plugin-terser`, `glob@7`, Workbox packages) plus `sourcemap-codec` and `source-map@0.8.0-beta.0`.
 
 ## 2026-05-31 06:17 UTC — Gitleaks Negative Probe Requires Staged Content
 - **Severity**: info
@@ -457,6 +459,7 @@
 - **Seen again**: 2026-04-15 during Task 1 regression gate verification — plain `pytest tests/test_longmemeval_fast.py tests/test_longmemeval_runner.py tests/test_longmemeval_ingest.py` failed with `ModuleNotFoundError: No module named 'orchestrator'`; confirmed `PYTHONPATH=. pytest ...` passes (29 tests).
 - **Seen again**: 2026-04-16 during autonomous-skill-creation Task 11 focused suite verification — exact `pytest tests/test_skill_extraction_prompt.py tests/test_skill_dedup.py tests/test_skill_injection.py tests/test_skill_manage.py tests/test_skill_protection.py tests/test_skill_api_contracts.py -q` failed in `tests/conftest.py` with `ModuleNotFoundError: No module named 'orchestrator'`; confirmed the same six-file suite passes as `PYTHONPATH=. pytest ...` (88 tests).
 - **Seen again**: 2026-04-16 during autonomous-skill-creation Task 13 when `python tests/benchmark_extraction.py --json --no-save` failed in `tests/benchmark_extraction.py:465` with `ModuleNotFoundError: No module named 'orchestrator'`; the benchmark script also requires `PYTHONPATH=.` in this host-shell setup.
+- **Seen again**: 2026-06-08 during PR #18 follow-up verification — plain `uv run pytest tests/test_daemon_message_persistence.py -q` failed in `tests/conftest.py` with `ModuleNotFoundError: No module named 'orchestrator'`; rerunning as `PYTHONPATH=. uv run pytest tests/test_daemon_message_persistence.py -q` passed (3 tests).
 
 ## 2026-04-06 — LongMemEval Re-ingestion Blocked (TODO 5)
 - **Severity**: critical
@@ -611,6 +614,7 @@
 - **Seen again**: 2026-05-29 during generated-audio protection verification when `PYTHONPATH=. uv run pytest tests/test_route_auth_hardening.py -q` passed but emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 - **Seen again**: 2026-06-05 during hosted-identity Task 11 email-route verification when `PYTHONPATH=. uv run pytest tests/test_identity_email_routes.py tests/test_identity_email_challenge.py tests/test_identity_session_issuance.py tests/test_identity_account_service.py -q` passed (140 passed) but still emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14 from `litellm_core_utils/logging_utils.py:273`.
 - **Seen again**: 2026-06-05 during hosted-identity Task 11 corrective verification when the same focused command passed again (`142 passed`) after the `daemon_email_enabled` route-gating fix, but still emitted the same 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
+- **Seen again**: 2026-06-08 during PR #20 benchmark replay follow-up verification when `PYTHONPATH=. DAEMON_ENVIRONMENT=development uv run pytest -q tests/memory/test_encryption.py tests/test_longmemeval_runner.py tests/test_benchmark_extraction.py` passed (38 passed) but still emitted the same 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 
 ## 2026-04-10 12:30 — BasedPyright Warning Debt In Dreaming-Touched Python Modules
 - **Severity**: warning
@@ -1410,6 +1414,7 @@
 - **Seen again**: 2026-06-08 during PR #17 unary-recursion review follow-up. `scripts/local_ci.sh backend` passed blocking gates, but inventory reported `uv run bandit -r orchestrator providers scripts tests` exit 1 with pre-existing inventory (`Low: 4611`, `Medium: 24`, `High: 0`) and `tests/test_video_e2e.py (syntax error while parsing AST from file)`; `uv run pip-audit` exit 1 with `Found 41 known vulnerabilities in 14 packages`; `PYTHONPATH=. uv run pytest -q` exit 2 with the same 8 collection errors/import drifts plus `tests/test_video_e2e.py:596 SyntaxError: unmatched ')'`.
 - **Seen again**: 2026-06-08 during PR #17 complex-result review follow-up. `scripts/local_ci.sh backend` passed blocking gates, but inventory reported `uv run bandit -r orchestrator providers scripts tests` exit 1 with pre-existing inventory (`Low: 4613`, `Medium: 24`, `High: 0`) and `tests/test_video_e2e.py (syntax error while parsing AST from file)`; `uv run pip-audit` exit 1 with `Found 41 known vulnerabilities in 14 packages`; `PYTHONPATH=. uv run pytest -q` exit 2 with the same 8 collection errors/import drifts plus `tests/test_video_e2e.py:596 SyntaxError: unmatched ')'`.
 - **Seen again**: 2026-06-07 during PR #8 review-fix verification when `uv run bandit -r orchestrator providers scripts tests` exited 1 with pre-existing inventory (`Low: 3480`, `Medium: 26`, `High: 0`) and `tests/test_video_e2e.py (syntax error while parsing AST from file)`. A scoped production-file Bandit check for `orchestrator/eval/fact_harness.py` and `orchestrator/eval/chunk_harness.py` passed with no issues.
+- **Seen again**: 2026-06-08 during PR #20 benchmark replay follow-up verification when `scripts/local_ci.sh backend` passed all blocking backend gates but reported non-blocking inventory: `uv run bandit -r orchestrator providers scripts tests` exited 1 with `Low: 4585`, `Medium: 25`, `High: 0`, and `tests/test_video_e2e.py (syntax error while parsing AST from file)`; `uv run pip-audit` exited 1 with `Found 41 known vulnerabilities in 14 packages`; `PYTHONPATH=. uv run pytest -q` exited 2 with the same 8 collection errors/import drifts plus `tests/test_video_e2e.py:596 SyntaxError: unmatched )`.
 
 ## [2026-05-31T10:02:00Z] — BasedPyright Baseline Was Not Loaded By Default Command
 - **Severity**: warning
@@ -1444,6 +1449,7 @@
 - **Likely cause**: Host/container Node version is older than the workflow-pinned Node runtime (confidence 99%).
 - **Suggested action**: Use Node 24 locally when validating commitlint/frontend gates, or rely on the workflow setup-node step for CI parity.
 - **Seen again**: 2026-05-31T10:25:43Z during PR follow-up basedpyright verification; `npm ci` completed but emitted the same `EBADENGINE Unsupported engine` warnings for `@commitlint/*@21` under local Node `v20.20.2`.
+- **Seen again**: 2026-06-08 during PR #21 Studio image API retirement follow-up; `npm ci` completed but emitted the same `EBADENGINE Unsupported engine` warnings for `@commitlint/*@21` under local Node `v20.20.2`.
 
 ## [2026-05-31T10:05:00Z] — PyYAML Missing In Backend Environment For Ad Hoc Workflow Validation
 - **Severity**: info
@@ -1469,10 +1475,7 @@
 - **Seen again**: 2026-05-31T10:26:58Z during PR follow-up basedpyright verification; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` and the explicit commitlint hook passed.
 - **Seen again**: 2026-06-07 during PR follow-up for failing CI; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`.
 - **Seen again**: 2026-06-07 during PR hosted-identity follow-up for failing backend gates; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` passed.
-- **Seen again**: 2026-06-08 during PR #17 review-comment follow-up; `scripts/local_ci.sh aggregate` failed at `uv run pre-commit run --all-files` while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` passed doc-freshness and ruff hooks while skipping gitleaks.
-- **Seen again**: 2026-06-08 during PR #17 integer-precision review follow-up; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` passed doc-freshness, ruff check, and ruff format while skipping gitleaks.
-- **Seen again**: 2026-06-08 during PR #17 unary-recursion review follow-up; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` passed doc-freshness, ruff check, and ruff format while skipping gitleaks.
-- **Seen again**: 2026-06-08 during PR #17 complex-result review follow-up; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` passed doc-freshness, ruff check, and ruff format while skipping gitleaks.
+- **Seen again**: 2026-06-08 during PR #20 benchmark replay follow-up verification; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` passed.
 
 ## 2026-05-31T10:24:30Z — BasedPyright config consolidation surfaced benchmark harness typing debt
 - **Severity**: warning
@@ -1540,6 +1543,7 @@
 - **Likely cause**: Advisor event types were refactored without updating all consumers; `tool_call_id` and `advisor_id` fields were removed from base event types but still used in tests and `lib/advisorEvents.ts` (confidence 90%).
 - **Suggested action**: Update `lib/advisorEvents.ts` and related tests to match current event type definitions, or restore the missing type fields.
 - **Seen again**: 2026-06-05 during PR #7 hosted-identity review-comment verification when `./node_modules/.bin/tsc --noEmit --pretty false -p tsconfig.json` failed only in the same pre-existing advisor/tool-call event files while the targeted auth/deployment Vitest suite, changed-file eslint, and changed-file prettier checks passed.
+- **Seen again**: 2026-06-08 during PR #21 Studio image API retirement follow-up when `npm run type-check` failed in the same pre-existing `__tests__/advisor-events.test.ts` and `lib/advisorEvents.ts` advisor/tool-call event types after `next typegen` succeeded.
 
 ## 2026-06-05 UTC — Frontend lint has pre-existing errors across 29 files
 - **Severity**: warning
@@ -1585,6 +1589,7 @@
 - **Evidence**: `npm run test:run -- __tests__/auth-proxy-route.test.ts` output included `npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.`
 - **Likely cause**: The host or project npm environment includes a legacy `http-proxy` config key that current npm accepts with a warning but plans to reject in a future major version (confidence 80%).
 - **Suggested action**: Inspect npm config sources (`npm config list`) and remove or rename the legacy `http-proxy` setting if it is not required by the container/network environment.
+- **Seen again**: 2026-06-08 during PR #21 Studio image API retirement follow-up; `npm ci` and `npm run type-check` emitted `npm warn Unknown env config "http-proxy"`.
 
 ## 2026-06-07 UTC — Backend basedpyright failed on fake Redis test cast
 - **Severity**: warning
@@ -1597,14 +1602,24 @@
 - **Likely cause**: The regression test needed an `ArqRedis`-typed value for `RateLimiter`, but reused that typed variable for fake-specific assertions instead of keeping the concrete fake object for inspection. Confidence: 98%.
 - **Suggested action**: Keep future Redis fakes as concrete variables for fake-only assertions and pass a separately cast value only across the production API boundary.
 
-## [2026-06-08T02:47:00Z] — Bare Python Invocation Missed Project Virtualenv
+## [2026-06-08 01:41 UTC] — Local edit script quoting error
 - **Severity**: info
 - **Scope**: tooling
-- **Encountered during**: PR #17 integer-precision review follow-up
+- **Encountered during**: PR review follow-up for multiline `extend-exclude` guard
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: A one-off Python edit script failed before modifying files because nested triple-quoted strings produced invalid Python syntax.
+- **Evidence**: `SyntaxError: unexpected character after line continuation character` from the inline `python - <<'PY'` command while constructing the multiline TOML regression test.
+- **Likely cause**: Agent-authored shell helper used conflicting quote delimiters in generated Python source (95% confidence).
+- **Suggested action**: No project action needed; corrected by rerunning the edit with distinct quote delimiters.
+
+## [2026-06-08 01:41 UTC] — basedpyright baseline rewrote deleted-file diagnostics
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR review follow-up for multiline `extend-exclude` guard
 - **Category**: config
 - **Blocked current task**: no
-- **What happened**: A manual calculator smoke probe run with bare `python` failed before reaching the target code because the shell was not using the uv-managed project environment. Re-running the same probe through `PYTHONPATH=. uv run python` loaded project dependencies correctly.
-- **Evidence**: Bare command output included `ModuleNotFoundError: No module named 'httpx'` while importing `orchestrator.tools.web_search`; the uv-managed retry executed and printed calculator outputs.
-- **Seen again**: 2026-06-08 during PR #17 unary-recursion review follow-up; a bare `python` calculator smoke probe again failed on `ModuleNotFoundError: No module named 'httpx'` before target-code execution.
-- **Likely cause**: The base interpreter does not include repo dependencies, while `.venv`/uv does (confidence 99%).
-- **Suggested action**: Continue running backend probes through `uv run` as required by the project instructions.
+- **What happened**: Running `uv run basedpyright --level error tests/test_test_files_parse.py` rewrote `.basedpyright/baseline.json`, removing 405 lines of diagnostics for the already-deleted `tests/test_video_e2e.py` even though this follow-up only changes the parse guard test.
+- **Evidence**: Command output: `updated ./.basedpyright/baseline.json with 520 errors (went down by 51)`. `git diff --stat` showed `.basedpyright/baseline.json | 405 -----------------------------------------`.
+- **Likely cause**: basedpyright refreshes the configured baseline opportunistically when invoked, and the original PR deleted a file that still had baseline entries (90% confidence).
+- **Suggested action**: Decide separately whether baseline cleanup belongs in the original deletion PR; this follow-up reverted the unrelated baseline mutation.

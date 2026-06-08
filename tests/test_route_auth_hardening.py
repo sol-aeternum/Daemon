@@ -322,6 +322,29 @@ class TestImageGenRoutesAreProtected:
         assert response.status_code == 401
 
 
+class TestRetiredImageGenRoutesReturnGoneWhenAuthenticated:
+    @pytest.mark.asyncio
+    async def test_models_returns_410(self, authenticated_client):
+        client, token = authenticated_client
+        response = await client.get(
+            "/api/images/models",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 410
+        assert "retired" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_generate_returns_410(self, authenticated_client):
+        client, token = authenticated_client
+        response = await client.post(
+            "/api/images/generate",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"models": ["flux"], "prompt": "test"},
+        )
+        assert response.status_code == 410
+        assert "retired" in response.json()["detail"]
+
+
 class TestGeneratedArtifactRoutesAreProtected:
     @pytest.mark.asyncio
     async def test_generated_images_returns_401(self, client):
