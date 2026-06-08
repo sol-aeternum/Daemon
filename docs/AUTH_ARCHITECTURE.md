@@ -284,7 +284,7 @@ Audit gaps to harden:
 - `memories.py`: currently partial auth; admin `/dream` protected but memory list/import/export/reembed/delete/create/update/confirm/consolidate routes are unprotected.
 - `skills.py`: currently partial auth; admin sync protected but skill CRUD/upload/download/toggle routes are unprotected.
 - `video_credits.py`: currently fully protected with legacy API-key/admin-key helpers and must move to device auth/admin semantics.
-- `backend/image_gen/router.py`: currently fully protected with legacy API-key helper and must move to device auth.
+- `orchestrator/routes/images.py`: legacy Studio image endpoints are retained as device-authenticated retired routes that return 410 after auth; a hosted-identity replacement is tracked separately.
 
 `/health` remains public. Generated media/file serving and model/catalog endpoints must be explicitly classified during hardening rather than inheriting accidental public/private behavior.
 

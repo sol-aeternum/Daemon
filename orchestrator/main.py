@@ -59,6 +59,7 @@ from orchestrator.session_cleanup import (
 )
 from orchestrator.routes import (
     conversations,
+    images,
     memories,
     skills,
     system,
@@ -2018,6 +2019,7 @@ async def chat(
 
 
 app.include_router(conversations.router)
+app.include_router(images.router)
 app.include_router(memories.router)
 app.include_router(skills.router)
 app.include_router(system.router)

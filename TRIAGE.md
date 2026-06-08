@@ -285,6 +285,7 @@
 - **Seen again**: 2026-05-31 during Task 6 when `npm install --save-dev @commitlint/cli @commitlint/config-conventional` completed but again reported `26 vulnerabilities (4 low, 8 moderate, 14 high)`; commitlint installation proceeded, and vulnerability remediation remains out of scope for Task 6.
 - **Seen again**: 2026-05-31T06:31Z during Task 7 local CI parity; `.sisyphus/evidence/task-7-ci-local-parity.txt` shows `npm ci` reporting 26 vulnerabilities and `npm run audit:ci` exiting 1.
 - **Seen again / changed count**: 2026-06-05T03:34Z during F3 Real Manual QA, `npm ci` in `/tmp/opencode/hosted-identity-pr-f3/frontend` completed but reported `27 vulnerabilities (4 low, 8 moderate, 14 high, 1 critical)`. Install succeeded, but the audit inventory is worse than the previously recorded 26-vulnerability state.
+- **Seen again**: 2026-06-08 during PR #21 Studio image API retirement follow-up; local `npm ci` reported the same `27 vulnerabilities (4 low, 8 moderate, 14 high, 1 critical)` inventory.
 
 ## 2026-05-31 05:54 UTC — npm ci Emits Deprecated Frontend Dependency Warnings
 - **Severity**: warning
@@ -296,6 +297,7 @@
 - **Evidence**: `.sisyphus/evidence/task-5-frontend-positive.txt` lines 2-28 show `npm ci` exit code 0 and the warning list.
 - **Likely cause**: Existing frontend dependency graph includes older transitive packages, especially from PWA/build tooling (confidence 90%).
 - **Suggested action**: Address during the same frontend dependency remediation task as the npm audit findings.
+- **Seen again**: 2026-06-08 during PR #21 Studio image API retirement follow-up; `npm ci` succeeded but emitted the same deprecated transitive dependency warnings (`@types/dompurify`, `inflight`, `rimraf@2`, `rollup-plugin-terser`, `glob@7`, Workbox packages) plus `sourcemap-codec` and `source-map@0.8.0-beta.0`.
 
 ## 2026-05-31 06:17 UTC — Gitleaks Negative Probe Requires Staged Content
 - **Severity**: info
@@ -611,6 +613,7 @@
 - **Seen again**: 2026-05-29 during generated-audio protection verification when `PYTHONPATH=. uv run pytest tests/test_route_auth_hardening.py -q` passed but emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 - **Seen again**: 2026-06-05 during hosted-identity Task 11 email-route verification when `PYTHONPATH=. uv run pytest tests/test_identity_email_routes.py tests/test_identity_email_challenge.py tests/test_identity_session_issuance.py tests/test_identity_account_service.py -q` passed (140 passed) but still emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14 from `litellm_core_utils/logging_utils.py:273`.
 - **Seen again**: 2026-06-05 during hosted-identity Task 11 corrective verification when the same focused command passed again (`142 passed`) after the `daemon_email_enabled` route-gating fix, but still emitted the same 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
+- **Seen again**: 2026-06-08 during PR #21 Studio image API retirement follow-up when `PYTHONPATH=. uv run pytest tests/test_route_auth_hardening.py::TestImageGenRoutesAreProtected tests/test_route_auth_hardening.py::TestRetiredImageGenRoutesReturnGoneWhenAuthenticated tests/test_orchestrator_legacy_image_gen.py -q` passed but emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 
 ## 2026-04-10 12:30 — BasedPyright Warning Debt In Dreaming-Touched Python Modules
 - **Severity**: warning
@@ -1440,6 +1443,7 @@
 - **Likely cause**: Host/container Node version is older than the workflow-pinned Node runtime (confidence 99%).
 - **Suggested action**: Use Node 24 locally when validating commitlint/frontend gates, or rely on the workflow setup-node step for CI parity.
 - **Seen again**: 2026-05-31T10:25:43Z during PR follow-up basedpyright verification; `npm ci` completed but emitted the same `EBADENGINE Unsupported engine` warnings for `@commitlint/*@21` under local Node `v20.20.2`.
+- **Seen again**: 2026-06-08 during PR #21 Studio image API retirement follow-up; `npm ci` completed but emitted the same `EBADENGINE Unsupported engine` warnings for `@commitlint/*@21` under local Node `v20.20.2`.
 
 ## [2026-05-31T10:05:00Z] — PyYAML Missing In Backend Environment For Ad Hoc Workflow Validation
 - **Severity**: info
@@ -1532,6 +1536,7 @@
 - **Likely cause**: Advisor event types were refactored without updating all consumers; `tool_call_id` and `advisor_id` fields were removed from base event types but still used in tests and `lib/advisorEvents.ts` (confidence 90%).
 - **Suggested action**: Update `lib/advisorEvents.ts` and related tests to match current event type definitions, or restore the missing type fields.
 - **Seen again**: 2026-06-05 during PR #7 hosted-identity review-comment verification when `./node_modules/.bin/tsc --noEmit --pretty false -p tsconfig.json` failed only in the same pre-existing advisor/tool-call event files while the targeted auth/deployment Vitest suite, changed-file eslint, and changed-file prettier checks passed.
+- **Seen again**: 2026-06-08 during PR #21 Studio image API retirement follow-up when `npm run type-check` failed in the same pre-existing `__tests__/advisor-events.test.ts` and `lib/advisorEvents.ts` advisor/tool-call event types after `next typegen` succeeded.
 
 ## 2026-06-05 UTC — Frontend lint has pre-existing errors across 29 files
 - **Severity**: warning
@@ -1577,6 +1582,7 @@
 - **Evidence**: `npm run test:run -- __tests__/auth-proxy-route.test.ts` output included `npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.`
 - **Likely cause**: The host or project npm environment includes a legacy `http-proxy` config key that current npm accepts with a warning but plans to reject in a future major version (confidence 80%).
 - **Suggested action**: Inspect npm config sources (`npm config list`) and remove or rename the legacy `http-proxy` setting if it is not required by the container/network environment.
+- **Seen again**: 2026-06-08 during PR #21 Studio image API retirement follow-up; `npm ci` and `npm run type-check` emitted `npm warn Unknown env config "http-proxy"`.
 
 ## 2026-06-07 UTC — Backend basedpyright failed on fake Redis test cast
 - **Severity**: warning
@@ -1588,3 +1594,69 @@
 - **Evidence**: `uv run basedpyright --level error` reported `tests/test_identity_rate_limiter.py:615:29 - error: Cannot access attribute "script" for class "ArqRedis"` and `tests/test_identity_rate_limiter.py:621:43 - error: Cannot access attribute "store" for class "ArqRedis"`.
 - **Likely cause**: The regression test needed an `ArqRedis`-typed value for `RateLimiter`, but reused that typed variable for fake-specific assertions instead of keeping the concrete fake object for inspection. Confidence: 98%.
 - **Suggested action**: Keep future Redis fakes as concrete variables for fake-only assertions and pass a separately cast value only across the production API boundary.
+
+## [2026-06-08T00:00:00Z] — Targeted ruff format check caught test formatting
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: PR follow-up for retired Studio image API review
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: Targeted `uv run ruff format --check` reported that `tests/test_route_auth_hardening.py` needed formatting after adding image-route retirement assertions.
+- **Evidence**: `Would reformat: tests/test_route_auth_hardening.py`; command exited 1 after `uv run ruff format --check orchestrator/main.py orchestrator/routes/images.py tests/test_route_auth_hardening.py`.
+- **Likely cause**: Newly inserted test code was not formatted before the check (confidence 95%).
+- **Suggested action**: Run `uv run ruff format tests/test_route_auth_hardening.py` and rerun the targeted format gate.
+
+## [2026-06-08T00:00:00Z] — Doc freshness rejects wildcard API route prose
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: PR follow-up for retired Studio image API review
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: `python scripts/check_doc_freshness.py --mode fail` treated prose references to `/api/images/*` as stale documented routes even though concrete retired image routes are registered.
+- **Evidence**: `/workspace/Daemon/docs/FEATURE_MATRIX.md:103 [CheckId.ROUTE] expected='all source routes: 58 paths' observed='stale: /api/images/*'` and `/workspace/Daemon/docs/PROJECT_CONTEXT.md:78 [CheckId.ROUTE] expected='all source routes: 58 paths' observed='stale: /api/images/*'`.
+- **Likely cause**: The freshness linter matches slash-prefixed route-like tokens literally and does not expand wildcard route shorthand (confidence 90%).
+- **Suggested action**: Use concrete route paths in gated documentation, or avoid wildcard shorthand in prose covered by route freshness checks.
+
+## [2026-06-08T00:00:00Z] — Studio page eslint blocked synchronous state updates in effect
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: PR follow-up for retired Studio image API review
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Targeted eslint on the touched Studio page failed because the existing localStorage hydration effect called `setUserId`/`setTier` synchronously inside `useEffect`.
+- **Evidence**: `frontend/app/studio/page.tsx:536:7 error react-hooks/set-state-in-effect Avoid calling setState() directly within an effect`.
+- **Likely cause**: React hooks lint now enforces avoiding synchronous state updates in effects; the pre-existing hydration code predated that rule or was not previously checked as a changed-file target (confidence 85%).
+- **Suggested action**: Keep localStorage hydration asynchronous or refactor to a subscription/snapshot model if this pattern recurs.
+
+## [2026-06-08T00:00:00Z] — Playwright screenshot blocked by missing browser download
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: PR follow-up for retired Studio image API review
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Attempting to capture the Studio UI screenshot failed because the Playwright Chromium executable was not installed, and installing it was blocked by the download host returning 403 `Domain forbidden`.
+- **Evidence**: `browserType.launch: Executable doesn't exist at /root/.cache/ms-playwright/chromium_headless_shell-1208/...`; `npx playwright install chromium` failed with `Download failed: server returned code 403 body 'Domain forbidden'` for `https://cdn.playwright.dev/builds/cft/145.0.7632.6/linux64/chrome-linux64.zip`.
+- **Likely cause**: Browser binaries are absent from the container and the execution environment blocks the Playwright CDN domain (confidence 95%).
+- **Suggested action**: Preinstall Playwright browser binaries in the image or allow the CDN domain for screenshot verification tasks.
+
+## [2026-06-08T00:00:00Z] — Frontend patch helper used repo-relative path from frontend cwd
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR follow-up for retired Studio image API review
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: A Python one-off patch command was launched from `frontend/` but attempted to read `frontend/app/studio/page.tsx`, producing a FileNotFoundError. The subsequent Prettier command still ran on `app/studio/page.tsx`.
+- **Evidence**: `FileNotFoundError: [Errno 2] No such file or directory: 'frontend/app/studio/page.tsx'`.
+- **Likely cause**: Mixed repo-relative and frontend-relative paths in a chained shell command (confidence 99%).
+- **Suggested action**: Use cwd-relative paths consistently when running helper scripts from subdirectories.
+
+## [2026-06-08T00:00:00Z] — Pre-commit gitleaks hook install blocked by proxy 403
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: PR follow-up for retired Studio image API review
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: `uv run pre-commit run --all-files` could not initialize the gitleaks hook environment because the GitHub fetch path was blocked by a tunnel/proxy 403.
+- **Evidence**: `An unexpected error has occurred: URLError: <urlopen error Tunnel connection failed: 403 Forbidden>` after `Initializing environment for https://github.com/gitleaks/gitleaks`.
+- **Likely cause**: The container's network/proxy policy blocks pre-commit from downloading hook repositories from GitHub (confidence 90%).
+- **Suggested action**: Cache pre-commit hook environments in the image or permit the gitleaks repository fetch for local gate runs.

@@ -123,6 +123,7 @@ Hybrid search combining:
 | **Skills** | `/skills/{skill_id}` (GET/PUT/PATCH/DELETE), `/skills/upload`, `/skills/admin/sync` |
 | **Audio** | `/tts`, `/stt`, `/audio/token`, `/audio/scribe-token`, `/sound-effects` |
 | **Video** | `/video-credits/balance`, `/video-credits/estimate`, `/video-credits/transactions` |
+| **Retired Image API** | `/api/images/models`, `/api/images/generate`, `/api/images/upload-reference`, `/api/images/{image_id}`, `/api/images/{image_id}/metadata` (authenticated 410) |
 | **System** | `/status`, `/health`, `/generated-images/{filename}`, `/generated-audio/{filename}`, `/generated-files/{filename}` |
 
 ---
