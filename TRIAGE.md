@@ -1643,3 +1643,36 @@
 - **Evidence**: Root command output: `npm error Missing script: "test:run"`; a root-scoped `npx eslint frontend/components/AuthLanding.tsx` also loaded an incompatible global ESLint/plugin path and failed with `TypeError: Error while loading rule 'react/display-name': contextOrFilename.getFilename is not a function`; corrected commands were rerun from `frontend/`.
 - **Likely cause**: Operator working-directory mistake while chaining formatting and test commands (confidence 100%).
 - **Suggested action**: Keep frontend package commands scoped to `frontend/` or invoke with `npm --prefix frontend ...`.
+
+## 2026-06-08 04:12 UTC — Mixed frontend/backend formatter invocation during PR comment follow-up
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR hosted-auth-fixes review comment follow-up for runtime Google client ID and auth config provider master gate
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: A targeted `npx prettier --write` command accidentally included Python backend files alongside frontend/docs files. Prettier formatted supported files but returned exit code 2 for the Python paths; Python formatting was rerun with Ruff instead.
+- **Evidence**: `npx prettier --write frontend/components/AuthLanding.tsx frontend/__tests__/auth-landing.test.tsx orchestrator/routes/auth_config.py tests/test_deployment_mode_endpoint.py docs/HOSTED_IDENTITY.md` output included `[error] No parser could be inferred for file "/workspace/Daemon/orchestrator/routes/auth_config.py"` and the same message for `tests/test_deployment_mode_endpoint.py`.
+- **Likely cause**: Operator command-scope mistake; Prettier is not configured to parse Python in this repo (confidence 100%).
+- **Suggested action**: Continue using `npx prettier` only for frontend/docs files and `uv run ruff format` for Python files.
+
+## 2026-06-08 04:13 UTC — Pre-existing advisor-events type-check debt seen again
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: PR hosted-auth-fixes review comment follow-up for runtime Google client ID and auth config provider master gate
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: The frontend type-check gate still fails on the previously triaged advisor-events/event-union debt. This is a duplicate "seen again" occurrence of the existing `Pre-existing advisor-events / tool-call-log test failures` and `Pre-existing gate debt surfaced by scripts/local_ci.sh` entries, not a new regression from this follow-up.
+- **Evidence**: `npm run type-check` reported `__tests__/advisor-events.test.ts(4,3): error TS2305: Module '"../lib/events"' has no exported member 'isAdvisorEndEvent'.`, `__tests__/advisor-events.test.ts(5,3): error TS2305: Module '"../lib/events"' has no exported member 'isAdvisorEvent'.`, and many related advisor event union errors in `lib/advisorEvents.ts`.
+- **Likely cause**: Same pre-existing advisor-events partial refactor/type-union drift already logged in TRIAGE.md (confidence 95%).
+- **Suggested action**: Fix advisor event exports/types in a separate follow-up; keep this PR-comment fix scoped to hosted auth runtime config.
+
+## 2026-06-08 04:14 UTC — Pre-existing video credits basedpyright debt seen again
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: PR hosted-auth-fixes review comment follow-up for runtime Google client ID and auth config provider master gate
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: The backend type-check gate still fails on the previously triaged video credits test type-narrowing issue. This is a duplicate "seen again" occurrence of the existing `Pre-existing gate debt surfaced by scripts/local_ci.sh` entry, not a new regression from this follow-up.
+- **Evidence**: `uv run basedpyright --level error` reported `tests/test_video_credits_grant_bounds.py:89:42 - error: Argument of type "None" cannot be assigned to parameter "admin_key" of type "str" in function "_settings"`.
+- **Likely cause**: Same pre-existing test-only type-narrowing issue already logged in TRIAGE.md (confidence 95%).
+- **Suggested action**: Fix the video credits test helper type contract in a separate follow-up; keep this PR-comment fix scoped to hosted auth runtime config.

@@ -137,6 +137,19 @@ export default function AuthLanding({
     searchParams.get('invite_token')?.trim() ||
     searchParams.get('invite')?.trim() ||
     undefined;
+  const isHosted = mode === 'hosted';
+  const googleClientId = isHosted
+    ? runtimeConfig
+      ? runtimeConfig.google.enabled
+        ? runtimeConfig.google.clientId
+        : ''
+      : getGoogleClientId(mode)
+    : '';
+  const emailEnabled = isHosted
+    ? runtimeConfig
+      ? runtimeConfig.email.enabled
+      : getEmailEnabled(mode)
+    : false;
 
   useEffect(() => {
     let cancelled = false;
@@ -160,8 +173,7 @@ export default function AuthLanding({
   }, [router]);
 
   async function handleGoogleSignIn() {
-    const clientId = getGoogleClientId(mode);
-    if (!clientId) return;
+    if (!googleClientId) return;
 
     setGoogleError(null);
     setIsGoogleStarting(true);
@@ -198,7 +210,7 @@ export default function AuthLanding({
         };
 
         google.accounts.id.initialize({
-          client_id: clientId,
+          client_id: googleClientId,
           nonce: startResult.nonce!,
           callback: (response) => {
             if (response.credential) {
@@ -423,20 +435,6 @@ export default function AuthLanding({
       </div>
     );
   }
-
-  const isHosted = mode === 'hosted';
-  const googleClientId = isHosted
-    ? runtimeConfig
-      ? runtimeConfig.google.enabled
-        ? runtimeConfig.google.clientId
-        : ''
-      : getGoogleClientId(mode)
-    : '';
-  const emailEnabled = isHosted
-    ? runtimeConfig
-      ? runtimeConfig.email.enabled
-      : getEmailEnabled(mode)
-    : false;
 
   return (
     <div className="flex min-h-screen w-full items-center justify-center bg-[var(--color-bg-tertiary)] px-4 py-12">

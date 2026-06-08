@@ -113,8 +113,8 @@ async def test_auth_config_endpoint_is_unauthenticated_self_hosted() -> None:
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["mode"] == "self_hosted"
-    assert body["email"] == {"enabled": True}
-    assert body["google"] == {"enabled": True, "clientId": ""}
+    assert body["email"] == {"enabled": False}
+    assert body["google"] == {"enabled": False, "clientId": ""}
 
 
 @pytest.mark.asyncio
@@ -142,8 +142,57 @@ async def test_auth_config_endpoint_response_shape_self_hosted_default() -> None
 
 
 @pytest.mark.asyncio
+async def test_auth_config_endpoint_reports_providers_enabled_when_identity_enabled(
+    monkeypatch,
+) -> None:
+    """Provider flags become available only when the hosted identity master flag is on."""
+    monkeypatch.setenv("DAEMON_HOSTED_IDENTITY_ENABLED", "true")
+    get_settings.cache_clear()
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/v1/auth/config")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["email"] == {"enabled": True}
+        assert body["google"]["enabled"] is True
+    finally:
+        monkeypatch.delenv("DAEMON_HOSTED_IDENTITY_ENABLED", raising=False)
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_auth_config_endpoint_gates_providers_on_identity_master_flag(monkeypatch) -> None:
+    """Master identity off keeps providers disabled even when individual flags are on."""
+    monkeypatch.setenv("DAEMON_DEPLOYMENT_MODE", "hosted")
+    monkeypatch.setenv("DAEMON_HOSTED_IDENTITY_ENABLED", "false")
+    monkeypatch.setenv("DAEMON_EMAIL_ENABLED", "true")
+    monkeypatch.setenv("DAEMON_GOOGLE_ENABLED", "true")
+    monkeypatch.setenv("DAEMON_GOOGLE_CLIENT_ID", "demo.apps.googleusercontent.com")
+    get_settings.cache_clear()
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/v1/auth/config")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["mode"] == "hosted"
+        assert body["email"] == {"enabled": False}
+        assert body["google"] == {
+            "enabled": False,
+            "clientId": "demo.apps.googleusercontent.com",
+        }
+    finally:
+        monkeypatch.delenv("DAEMON_DEPLOYMENT_MODE", raising=False)
+        monkeypatch.delenv("DAEMON_HOSTED_IDENTITY_ENABLED", raising=False)
+        monkeypatch.delenv("DAEMON_EMAIL_ENABLED", raising=False)
+        monkeypatch.delenv("DAEMON_GOOGLE_ENABLED", raising=False)
+        monkeypatch.delenv("DAEMON_GOOGLE_CLIENT_ID", raising=False)
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
 async def test_auth_config_endpoint_reflects_email_disabled(monkeypatch) -> None:
     """`email.enabled` is False when DAEMON_EMAIL_ENABLED=false."""
+    monkeypatch.setenv("DAEMON_HOSTED_IDENTITY_ENABLED", "true")
     monkeypatch.setenv("DAEMON_EMAIL_ENABLED", "false")
     get_settings.cache_clear()
     try:
@@ -153,6 +202,7 @@ async def test_auth_config_endpoint_reflects_email_disabled(monkeypatch) -> None
         body = response.json()
         assert body["email"] == {"enabled": False}
     finally:
+        monkeypatch.delenv("DAEMON_HOSTED_IDENTITY_ENABLED", raising=False)
         monkeypatch.delenv("DAEMON_EMAIL_ENABLED", raising=False)
         get_settings.cache_clear()
 
@@ -160,6 +210,7 @@ async def test_auth_config_endpoint_reflects_email_disabled(monkeypatch) -> None
 @pytest.mark.asyncio
 async def test_auth_config_endpoint_reflects_google_disabled(monkeypatch) -> None:
     """`google.enabled` is False when DAEMON_GOOGLE_ENABLED=false."""
+    monkeypatch.setenv("DAEMON_HOSTED_IDENTITY_ENABLED", "true")
     monkeypatch.setenv("DAEMON_GOOGLE_ENABLED", "false")
     get_settings.cache_clear()
     try:
@@ -171,6 +222,7 @@ async def test_auth_config_endpoint_reflects_google_disabled(monkeypatch) -> Non
         # clientId is still the (possibly empty) configured value
         assert "clientId" in body["google"]
     finally:
+        monkeypatch.delenv("DAEMON_HOSTED_IDENTITY_ENABLED", raising=False)
         monkeypatch.delenv("DAEMON_GOOGLE_ENABLED", raising=False)
         get_settings.cache_clear()
 

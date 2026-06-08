@@ -24,25 +24,27 @@ router = APIRouter(prefix="/v1/auth/config", tags=["auth-config"])
 async def get_auth_config() -> Response:
     """Return deployment mode and provider availability flags.
 
-    Reads exactly four fields from settings:
-        - daemon_deployment_mode  -> "mode"
-        - daemon_email_enabled    -> "email.enabled"
-        - daemon_google_enabled   -> "google.enabled"
-        - daemon_google_client_id -> "google.clientId" (public, not a secret)
+    Reads exactly five fields from settings:
+        - daemon_deployment_mode           -> "mode"
+        - daemon_hosted_identity_enabled   -> gates provider enabled flags
+        - daemon_email_enabled             -> "email.enabled" when identity is enabled
+        - daemon_google_enabled            -> "google.enabled" when identity is enabled
+        - daemon_google_client_id          -> "google.clientId" (public, not a secret)
 
     Returns 200 with Cache-Control: no-store. No other config field is
     serialized; the FORBIDDEN_FIELDS contract is enforced by tests, not
-    by this function (the function only reads four fields, by
+    by this function (the function reads only the runtime-safe fields, by
     construction).
     """
     settings = get_settings()
+    identity_enabled = settings.daemon_hosted_identity_enabled
     body = {
         "mode": settings.daemon_deployment_mode,
         "email": {
-            "enabled": settings.daemon_email_enabled,
+            "enabled": identity_enabled and settings.daemon_email_enabled,
         },
         "google": {
-            "enabled": settings.daemon_google_enabled,
+            "enabled": identity_enabled and settings.daemon_google_enabled,
             "clientId": settings.daemon_google_client_id or "",
         },
     }

@@ -551,6 +551,56 @@ describe('AuthLanding — hosted mode', () => {
     expect(screen.getByLabelText(/email address/i)).toBeTruthy();
   });
 
+  it('initializes Google sign-in with the runtime client ID', async () => {
+    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = '';
+    installGoogleMock();
+    mockedStartGoogle.mockResolvedValueOnce({
+      success: true,
+      challengeId: 'google-challenge',
+      nonce: 'server-nonce',
+      expiresAt: 1234567890,
+    });
+    mockedCompleteGoogle.mockResolvedValueOnce({ success: true });
+
+    render(
+      <AuthLanding
+        mode="hosted"
+        runtimeConfig={{
+          email: { enabled: false },
+          google: { enabled: true, clientId: 'runtime-client-id' },
+        }}
+      />,
+    );
+    await waitForLoadingToFinish();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /continue with google/i }),
+    );
+
+    await waitFor(() => {
+      expect(mockedStartGoogle).toHaveBeenCalledTimes(1);
+      expect(mockGoogleInitialize).toHaveBeenCalledWith({
+        client_id: 'runtime-client-id',
+        nonce: 'server-nonce',
+        callback: expect.any(Function),
+      });
+    });
+
+    await act(async () => {
+      capturedGoogleCallback?.({ credential: 'google-id-token' });
+    });
+
+    await waitFor(() => {
+      expect(mockedCompleteGoogle).toHaveBeenCalledWith(
+        'google-challenge',
+        'server-nonce',
+        'google-id-token',
+        'private',
+        undefined,
+      );
+    });
+  });
+
   it('hides the hosted email form when the public email flag is disabled', async () => {
     process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
     process.env.NEXT_PUBLIC_EMAIL_ENABLED = 'false';

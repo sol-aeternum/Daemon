@@ -205,9 +205,10 @@ or secret-adjacent value. The `google.clientId` is the public OAuth client ID,
 not a secret.
 
 `mode` is sourced from `DAEMON_DEPLOYMENT_MODE` (default `self_hosted`).
-`email.enabled` and `google.enabled` are sourced from `DAEMON_EMAIL_ENABLED` and
-`DAEMON_GOOGLE_ENABLED`. `google.clientId` is the value of
-`DAEMON_GOOGLE_CLIENT_ID` or `""` when unset.
+`email.enabled` is true only when both `DAEMON_HOSTED_IDENTITY_ENABLED` and
+`DAEMON_EMAIL_ENABLED` are true. `google.enabled` is true only when both
+`DAEMON_HOSTED_IDENTITY_ENABLED` and `DAEMON_GOOGLE_ENABLED` are true.
+`google.clientId` is the value of `DAEMON_GOOGLE_CLIENT_ID` or `""` when unset.
 
 When `mode == "hosted"`, the legacy `POST /v1/auth/setup` endpoint refuses to
 initialize owner/admin state with `403 setup_disabled_in_hosted_mode`. The
