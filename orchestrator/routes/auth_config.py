@@ -17,10 +17,10 @@ from fastapi.responses import JSONResponse
 from orchestrator.config import get_settings
 
 
-router = APIRouter(tags=["auth-config"])
+router = APIRouter(prefix="/v1/auth/config", tags=["auth-config"])
 
 
-@router.api_route("", methods=["GET"], include_in_schema=True)
+@router.get("", include_in_schema=True)
 async def get_auth_config() -> Response:
     """Return deployment mode and provider availability flags.
 
