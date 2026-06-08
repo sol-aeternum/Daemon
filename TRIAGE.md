@@ -1599,3 +1599,14 @@
 - **Evidence**: `npm run test:run` output shows failures like `chat route advisor event bridge > bootstraps advisor-only data events without sending nested text to the main reply stream`, `buildAdvisorTree - live SSE event tree building > builds tree with single advisor nested under consult_advisor tool call`, `ToolCallLog > keeps advisor-internal tool events out of the top-level tool log`. None of the 5 new test files (`auth-config.test.ts`, `auth-provider.test.tsx`) fail.
 - **Likely cause**: Pre-existing failures in the advisor-events event-tree code path, likely from a partial refactor in PR #7 that was never finished. Confidence 80%.
 - **Suggested action**: Open a separate task to investigate the advisor-events / tool-call-log test failures. Do NOT fix as part of hosted-auth-fixes — that plan's scope is auth config + mode-aware redirects + /auth route page.
+
+## 2026-06-08 UTC — Hosted Auth Fixes: deployment-mode + runtime config plan execution
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: hosted-auth-fixes-2026-06-07 TODO 10 surgical env/docs/matrix updates
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Plan execution added `DAEMON_DEPLOYMENT_MODE` (default `self_hosted`, allowed values `self_hosted`/`hosted`) as a first-class `Settings` field, a public no-store `GET /v1/auth/config` endpoint, a frontend runtime config client (`frontend/lib/auth-config.ts`), mode-aware `AuthProvider` redirects (`/auth` for hosted, `/setup` for self-hosted, safe `/setup` default on config error), a 5-line `frontend/app/auth/page.tsx` route, and a stricter `POST /v1/auth/setup` mode-gate that returns `403 setup_disabled_in_hosted_mode` whenever deployment mode is hosted regardless of `daemon_hosted_identity_enabled`. All new behavior is TDD-first; existing self-hosted setup/enrollment/device routes are untouched.
+- **Evidence**: branch `hosted-auth-fixes-2026-06-07` at `163adc80` (4 commits ahead of `main` 5233b96b); new files: `orchestrator/routes/auth_config.py`, `tests/test_deployment_mode_endpoint.py`, `tests/test_auth_config_hardening.py`, `frontend/lib/auth-config.ts`, `frontend/app/auth/page.tsx`, `frontend/__tests__/auth-config.test.ts`, `frontend/__tests__/auth-provider.test.tsx`, `frontend/__tests__/auth-page.test.tsx`; modified: `orchestrator/config.py`, `orchestrator/main.py`, `orchestrator/routes/auth_setup.py`, `frontend/components/AuthProvider.tsx`, `.env.example`, `docker-compose.yml`, `docs/HOSTED_IDENTITY.md`, `docs/FEATURE_MATRIX.md`; no new external dependencies.
+- **Likely cause**: Plan work, not a defect.
+- **Suggested action**: Continue Wave 7 (cross-boundary verification + F1-F4 review) and Wave 8 (cleanup + push-and-pr).
