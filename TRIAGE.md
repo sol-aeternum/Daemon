@@ -459,6 +459,7 @@
 - **Seen again**: 2026-04-15 during Task 1 regression gate verification — plain `pytest tests/test_longmemeval_fast.py tests/test_longmemeval_runner.py tests/test_longmemeval_ingest.py` failed with `ModuleNotFoundError: No module named 'orchestrator'`; confirmed `PYTHONPATH=. pytest ...` passes (29 tests).
 - **Seen again**: 2026-04-16 during autonomous-skill-creation Task 11 focused suite verification — exact `pytest tests/test_skill_extraction_prompt.py tests/test_skill_dedup.py tests/test_skill_injection.py tests/test_skill_manage.py tests/test_skill_protection.py tests/test_skill_api_contracts.py -q` failed in `tests/conftest.py` with `ModuleNotFoundError: No module named 'orchestrator'`; confirmed the same six-file suite passes as `PYTHONPATH=. pytest ...` (88 tests).
 - **Seen again**: 2026-04-16 during autonomous-skill-creation Task 13 when `python tests/benchmark_extraction.py --json --no-save` failed in `tests/benchmark_extraction.py:465` with `ModuleNotFoundError: No module named 'orchestrator'`; the benchmark script also requires `PYTHONPATH=.` in this host-shell setup.
+- **Seen again**: 2026-06-08 during PR #18 follow-up verification — plain `uv run pytest tests/test_daemon_message_persistence.py -q` failed in `tests/conftest.py` with `ModuleNotFoundError: No module named 'orchestrator'`; rerunning as `PYTHONPATH=. uv run pytest tests/test_daemon_message_persistence.py -q` passed (3 tests).
 
 ## 2026-04-06 — LongMemEval Re-ingestion Blocked (TODO 5)
 - **Severity**: critical
@@ -613,7 +614,7 @@
 - **Seen again**: 2026-05-29 during generated-audio protection verification when `PYTHONPATH=. uv run pytest tests/test_route_auth_hardening.py -q` passed but emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 - **Seen again**: 2026-06-05 during hosted-identity Task 11 email-route verification when `PYTHONPATH=. uv run pytest tests/test_identity_email_routes.py tests/test_identity_email_challenge.py tests/test_identity_session_issuance.py tests/test_identity_account_service.py -q` passed (140 passed) but still emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14 from `litellm_core_utils/logging_utils.py:273`.
 - **Seen again**: 2026-06-05 during hosted-identity Task 11 corrective verification when the same focused command passed again (`142 passed`) after the `daemon_email_enabled` route-gating fix, but still emitted the same 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
-- **Seen again**: 2026-06-08 during PR #21 Studio image API retirement follow-up when `PYTHONPATH=. uv run pytest tests/test_route_auth_hardening.py::TestImageGenRoutesAreProtected tests/test_route_auth_hardening.py::TestRetiredImageGenRoutesReturnGoneWhenAuthenticated tests/test_orchestrator_legacy_image_gen.py -q` passed but emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
+- **Seen again**: 2026-06-08 during PR #20 benchmark replay follow-up verification when `PYTHONPATH=. DAEMON_ENVIRONMENT=development uv run pytest -q tests/memory/test_encryption.py tests/test_longmemeval_runner.py tests/test_benchmark_extraction.py` passed (38 passed) but still emitted the same 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 
 ## 2026-04-10 12:30 — BasedPyright Warning Debt In Dreaming-Touched Python Modules
 - **Severity**: warning
@@ -1409,6 +1410,7 @@
 - **Likely cause**: The CI baseline PR intentionally introduced first-run inventories before the existing project debt was remediated, but several inventory commands were still wired as required/failing steps (confidence 95%).
 - **Suggested action**: Keep these inventory steps non-blocking until dedicated remediation tasks upgrade dependencies, repair pytest collection, fix frontend contracts/tests, and apply mechanical formatting.
 - **Seen again**: 2026-06-07 during PR #8 review-fix verification when `uv run bandit -r orchestrator providers scripts tests` exited 1 with pre-existing inventory (`Low: 3480`, `Medium: 26`, `High: 0`) and `tests/test_video_e2e.py (syntax error while parsing AST from file)`. A scoped production-file Bandit check for `orchestrator/eval/fact_harness.py` and `orchestrator/eval/chunk_harness.py` passed with no issues.
+- **Seen again**: 2026-06-08 during PR #20 benchmark replay follow-up verification when `scripts/local_ci.sh backend` passed all blocking backend gates but reported non-blocking inventory: `uv run bandit -r orchestrator providers scripts tests` exited 1 with `Low: 4585`, `Medium: 25`, `High: 0`, and `tests/test_video_e2e.py (syntax error while parsing AST from file)`; `uv run pip-audit` exited 1 with `Found 41 known vulnerabilities in 14 packages`; `PYTHONPATH=. uv run pytest -q` exited 2 with the same 8 collection errors/import drifts plus `tests/test_video_e2e.py:596 SyntaxError: unmatched )`.
 
 ## [2026-05-31T10:02:00Z] — BasedPyright Baseline Was Not Loaded By Default Command
 - **Severity**: warning
@@ -1469,6 +1471,7 @@
 - **Seen again**: 2026-05-31T10:26:58Z during PR follow-up basedpyright verification; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` and the explicit commitlint hook passed.
 - **Seen again**: 2026-06-07 during PR follow-up for failing CI; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`.
 - **Seen again**: 2026-06-07 during PR hosted-identity follow-up for failing backend gates; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` passed.
+- **Seen again**: 2026-06-08 during PR #20 benchmark replay follow-up verification; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` passed.
 
 ## 2026-05-31T10:24:30Z — BasedPyright config consolidation surfaced benchmark harness typing debt
 - **Severity**: warning
@@ -1595,68 +1598,24 @@
 - **Likely cause**: The regression test needed an `ArqRedis`-typed value for `RateLimiter`, but reused that typed variable for fake-specific assertions instead of keeping the concrete fake object for inspection. Confidence: 98%.
 - **Suggested action**: Keep future Redis fakes as concrete variables for fake-only assertions and pass a separately cast value only across the production API boundary.
 
-## [2026-06-08T00:00:00Z] — Targeted ruff format check caught test formatting
-- **Severity**: info
-- **Scope**: project
-- **Encountered during**: PR follow-up for retired Studio image API review
-- **Category**: other
-- **Blocked current task**: no
-- **What happened**: Targeted `uv run ruff format --check` reported that `tests/test_route_auth_hardening.py` needed formatting after adding image-route retirement assertions.
-- **Evidence**: `Would reformat: tests/test_route_auth_hardening.py`; command exited 1 after `uv run ruff format --check orchestrator/main.py orchestrator/routes/images.py tests/test_route_auth_hardening.py`.
-- **Likely cause**: Newly inserted test code was not formatted before the check (confidence 95%).
-- **Suggested action**: Run `uv run ruff format tests/test_route_auth_hardening.py` and rerun the targeted format gate.
-
-## [2026-06-08T00:00:00Z] — Doc freshness rejects wildcard API route prose
-- **Severity**: info
-- **Scope**: project
-- **Encountered during**: PR follow-up for retired Studio image API review
-- **Category**: config
-- **Blocked current task**: no
-- **What happened**: `python scripts/check_doc_freshness.py --mode fail` treated prose references to `/api/images/*` as stale documented routes even though concrete retired image routes are registered.
-- **Evidence**: `/workspace/Daemon/docs/FEATURE_MATRIX.md:103 [CheckId.ROUTE] expected='all source routes: 58 paths' observed='stale: /api/images/*'` and `/workspace/Daemon/docs/PROJECT_CONTEXT.md:78 [CheckId.ROUTE] expected='all source routes: 58 paths' observed='stale: /api/images/*'`.
-- **Likely cause**: The freshness linter matches slash-prefixed route-like tokens literally and does not expand wildcard route shorthand (confidence 90%).
-- **Suggested action**: Use concrete route paths in gated documentation, or avoid wildcard shorthand in prose covered by route freshness checks.
-
-## [2026-06-08T00:00:00Z] — Studio page eslint blocked synchronous state updates in effect
-- **Severity**: info
-- **Scope**: project
-- **Encountered during**: PR follow-up for retired Studio image API review
-- **Category**: config
-- **Blocked current task**: no
-- **What happened**: Targeted eslint on the touched Studio page failed because the existing localStorage hydration effect called `setUserId`/`setTier` synchronously inside `useEffect`.
-- **Evidence**: `frontend/app/studio/page.tsx:536:7 error react-hooks/set-state-in-effect Avoid calling setState() directly within an effect`.
-- **Likely cause**: React hooks lint now enforces avoiding synchronous state updates in effects; the pre-existing hydration code predated that rule or was not previously checked as a changed-file target (confidence 85%).
-- **Suggested action**: Keep localStorage hydration asynchronous or refactor to a subscription/snapshot model if this pattern recurs.
-
-## [2026-06-08T00:00:00Z] — Playwright screenshot blocked by missing browser download
-- **Severity**: warning
-- **Scope**: host
-- **Encountered during**: PR follow-up for retired Studio image API review
-- **Category**: config
-- **Blocked current task**: no
-- **What happened**: Attempting to capture the Studio UI screenshot failed because the Playwright Chromium executable was not installed, and installing it was blocked by the download host returning 403 `Domain forbidden`.
-- **Evidence**: `browserType.launch: Executable doesn't exist at /root/.cache/ms-playwright/chromium_headless_shell-1208/...`; `npx playwright install chromium` failed with `Download failed: server returned code 403 body 'Domain forbidden'` for `https://cdn.playwright.dev/builds/cft/145.0.7632.6/linux64/chrome-linux64.zip`.
-- **Likely cause**: Browser binaries are absent from the container and the execution environment blocks the Playwright CDN domain (confidence 95%).
-- **Suggested action**: Preinstall Playwright browser binaries in the image or allow the CDN domain for screenshot verification tasks.
-
-## [2026-06-08T00:00:00Z] — Frontend patch helper used repo-relative path from frontend cwd
+## [2026-06-08 01:41 UTC] — Local edit script quoting error
 - **Severity**: info
 - **Scope**: tooling
-- **Encountered during**: PR follow-up for retired Studio image API review
+- **Encountered during**: PR review follow-up for multiline `extend-exclude` guard
 - **Category**: other
 - **Blocked current task**: no
-- **What happened**: A Python one-off patch command was launched from `frontend/` but attempted to read `frontend/app/studio/page.tsx`, producing a FileNotFoundError. The subsequent Prettier command still ran on `app/studio/page.tsx`.
-- **Evidence**: `FileNotFoundError: [Errno 2] No such file or directory: 'frontend/app/studio/page.tsx'`.
-- **Likely cause**: Mixed repo-relative and frontend-relative paths in a chained shell command (confidence 99%).
-- **Suggested action**: Use cwd-relative paths consistently when running helper scripts from subdirectories.
+- **What happened**: A one-off Python edit script failed before modifying files because nested triple-quoted strings produced invalid Python syntax.
+- **Evidence**: `SyntaxError: unexpected character after line continuation character` from the inline `python - <<'PY'` command while constructing the multiline TOML regression test.
+- **Likely cause**: Agent-authored shell helper used conflicting quote delimiters in generated Python source (95% confidence).
+- **Suggested action**: No project action needed; corrected by rerunning the edit with distinct quote delimiters.
 
-## [2026-06-08T00:00:00Z] — Pre-commit gitleaks hook install blocked by proxy 403
-- **Severity**: warning
-- **Scope**: host
-- **Encountered during**: PR follow-up for retired Studio image API review
+## [2026-06-08 01:41 UTC] — basedpyright baseline rewrote deleted-file diagnostics
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR review follow-up for multiline `extend-exclude` guard
 - **Category**: config
 - **Blocked current task**: no
-- **What happened**: `uv run pre-commit run --all-files` could not initialize the gitleaks hook environment because the GitHub fetch path was blocked by a tunnel/proxy 403.
-- **Evidence**: `An unexpected error has occurred: URLError: <urlopen error Tunnel connection failed: 403 Forbidden>` after `Initializing environment for https://github.com/gitleaks/gitleaks`.
-- **Likely cause**: The container's network/proxy policy blocks pre-commit from downloading hook repositories from GitHub (confidence 90%).
-- **Suggested action**: Cache pre-commit hook environments in the image or permit the gitleaks repository fetch for local gate runs.
+- **What happened**: Running `uv run basedpyright --level error tests/test_test_files_parse.py` rewrote `.basedpyright/baseline.json`, removing 405 lines of diagnostics for the already-deleted `tests/test_video_e2e.py` even though this follow-up only changes the parse guard test.
+- **Evidence**: Command output: `updated ./.basedpyright/baseline.json with 520 errors (went down by 51)`. `git diff --stat` showed `.basedpyright/baseline.json | 405 -----------------------------------------`.
+- **Likely cause**: basedpyright refreshes the configured baseline opportunistically when invoked, and the original PR deleted a file that still had baseline entries (90% confidence).
+- **Suggested action**: Decide separately whether baseline cleanup belongs in the original deletion PR; this follow-up reverted the unrelated baseline mutation.

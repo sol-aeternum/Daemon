@@ -1,5 +1,7 @@
 """Video credits API routes."""
 
+import hmac
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Header
 from pydantic import BaseModel
 from typing import List
@@ -20,7 +22,9 @@ def require_admin_api_key(settings: Settings, authorization: str | None) -> None
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token")
     token = authorization.removeprefix("Bearer ").strip()
-    if token != settings.daemon_admin_api_key:
+    if not hmac.compare_digest(
+        token.encode(), settings.daemon_admin_api_key.encode()
+    ):
         raise HTTPException(status_code=403, detail="Invalid admin bearer token")
 
 
@@ -112,6 +116,28 @@ async def grant_credits(
     """
     require_admin_api_key(settings, authorization)
 
+    if grant_request.amount <= 0:
+        raise HTTPException(status_code=422, detail="amount must be a positive integer")
+    max_amount = settings.daemon_max_grant_amount_per_request
+    if grant_request.amount > max_amount:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"amount exceeds per-request maximum of {max_amount} "
+                "(adjust DAEMON_MAX_GRANT_AMOUNT_PER_REQUEST if needed)"
+            ),
+        )
+    cleaned_description = grant_request.description.strip()
+    if len(cleaned_description) < settings.daemon_min_grant_description_length:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "description must be at least "
+                f"{settings.daemon_min_grant_description_length} "
+                "characters after trimming"
+            ),
+        )
+
     if app_state.video_credits_dal is None:
         raise HTTPException(status_code=503, detail="Video credits service unavailable")
 
@@ -119,7 +145,7 @@ async def grant_credits(
         grant_request.user_id,
         grant_request.amount,
         "admin_grant",
-        grant_request.description,
+        cleaned_description,
     )
 
     if not result.success:
