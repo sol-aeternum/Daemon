@@ -67,6 +67,19 @@ yarn-error.log*
 # Sisyphus / AI agent artifacts
 .sisyphus/
 .sisyphus/evidence/hosted-identity-claim/**
+.sisyphus/evidence/hosted-auth-fixes/**
+
+# Agent runtime outputs
+agent-output/
+
+# Next.js PWA build artifacts
+frontend/public/workbox-*.js
+
+# Wave 4 bitemporal benchmark research
+tests/benchmark_results/w4_*.md
+
+# Branch tag snapshots
+*-tag-snapshot.txt
 
 # Backups
 backups/

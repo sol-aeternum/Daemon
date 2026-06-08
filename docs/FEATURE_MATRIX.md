@@ -82,6 +82,8 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | **Auth & Sessions** | — | — | — | — | — | — |
 | First-boot Setup | Backend stable | Backend stable | Backend stable | Backend stable | Setup token: process-memory one-time token, advisory lock, zero-active-device condition | Yes |
 | Hosted Auth Landing | Cross-client stable | Cross-client stable | Not started | Not started | Hosted auth landing UI routes users to identity sign-in or Advanced self-hosted setup | No |
+| Hosted `/auth` route | Cross-client stable | Cross-client stable | Not started | Not started | `/auth` page wraps `AuthLanding` with mode-aware redirects; runtime mode sourced from `GET /v1/auth/config` | No |
+| Runtime auth config endpoint (`GET /v1/auth/config`) | Cross-client stable | Cross-client stable | Backend stable | Backend stable | Public no-store endpoint exposes `{mode, email, google}` so the frontend can decide `/auth` vs `/setup` without rebuilding | No |
 | Email Sign-In | Cross-client stable | Cross-client stable | Backend stable | Backend stable | Email code identity proof exchanges for Daemon-issued device/session tokens | Yes |
 | Google Sign-In | Cross-client stable | Cross-client stable | Not started | Not started | Google-start/complete identity proof with server nonce challenge and manual GIS callback | Yes |
 | Identity-Created Device Sessions | Cross-client stable | Cross-client stable | Backend stable | Backend stable | Hosted identity completion creates web or native devices and Daemon sessions; provider tokens are not API auth | Yes |

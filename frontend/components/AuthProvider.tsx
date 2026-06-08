@@ -20,6 +20,13 @@ import {
   setAccessToken,
   type RefreshResult,
 } from '@/lib/auth';
+import {
+  fetchAuthConfig,
+  getCachedAuthConfig,
+  subscribeAuthConfig,
+  type AuthConfig,
+  type AuthConfigResult,
+} from '@/lib/auth-config';
 
 interface AuthContextValue {
   isAuthenticated: boolean;
@@ -36,9 +43,22 @@ interface AuthProviderProps {
   children: ReactNode;
 }
 
+const PUBLIC_AUTH_PATHS = new Set(['/setup', '/auth']);
+
+function resolveLandingTarget(mode: AuthConfig['mode'] | 'unknown'): string {
+  if (mode === 'hosted') return '/auth';
+  return '/setup';
+}
+
 export function AuthProvider({ children }: AuthProviderProps) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [accessToken, setAccessTokenState] = useState<string | null>(null);
+  const [mode, setMode] = useState<AuthConfig['mode'] | 'unknown' | 'error'>(
+    () => {
+      const cached = getCachedAuthConfig();
+      return cached ? cached.mode : 'unknown';
+    },
+  );
 
   const updateAuthState = useCallback(() => {
     const token = getAccessToken();
@@ -50,28 +70,67 @@ export function AuthProvider({ children }: AuthProviderProps) {
   useEffect(() => {
     let mounted = true;
 
+    function applyConfig(result: AuthConfigResult): void {
+      if (!mounted) return;
+      if (result.status === 'resolved') {
+        setMode(result.config.mode);
+      } else {
+        setMode('error');
+      }
+    }
+
+    const cached = getCachedAuthConfig();
+    if (!cached) {
+      void fetchAuthConfig().then(applyConfig);
+    }
+    const unsubscribeConfig = subscribeAuthConfig(applyConfig);
+
+    function doRedirect(target: string): void {
+      if (typeof window !== 'undefined') {
+        window.location.href = target;
+      }
+    }
+
+    function decideAndRedirect(
+      refreshSucceeded: boolean,
+      resolvedMode: AuthConfig['mode'] | 'unknown' | 'error',
+    ): void {
+      if (refreshSucceeded) return;
+      if (resolvedMode === 'unknown') return;
+      if (typeof window === 'undefined') return;
+      if (PUBLIC_AUTH_PATHS.has(window.location.pathname)) return;
+      const target =
+        resolvedMode === 'error'
+          ? '/setup'
+          : resolveLandingTarget(resolvedMode);
+      doRedirect(target);
+    }
+
     async function init() {
       if (
         typeof window !== 'undefined' &&
-        window.location.pathname === '/setup'
+        PUBLIC_AUTH_PATHS.has(window.location.pathname)
       ) {
         updateAuthState();
         return;
       }
 
-      const success = await attemptPageLoadRefresh();
+      const success = await attemptPageLoadRefresh({
+        redirectOnExpiredSession: false,
+      });
       if (!mounted) return;
       updateAuthState();
 
-      if (!success) {
-        if (typeof window !== 'undefined') {
-          window.location.href = '/setup';
-        }
-        return;
-      }
+      if (success) return;
+
+      const result = await fetchAuthConfig();
+      if (!mounted) return;
+      const resolvedMode =
+        result.status === 'resolved' ? result.config.mode : 'error';
+      decideAndRedirect(false, resolvedMode);
     }
 
-    init();
+    void init();
 
     const unsubscribe = listenForAuthEvents((event) => {
       if (!mounted) return;
@@ -92,8 +151,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
     return () => {
       mounted = false;
       unsubscribe();
+      unsubscribeConfig();
     };
-  }, [updateAuthState]);
+  }, [updateAuthState, mode]);
 
   const refreshAuth = useCallback(async () => {
     const result = await refreshAccessToken();
@@ -104,10 +164,11 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const logout = useCallback(() => {
     clearAuthState();
     updateAuthState();
+    const target = resolveLandingTarget(mode === 'error' ? 'unknown' : mode);
     if (typeof window !== 'undefined') {
-      window.location.href = '/setup';
+      window.location.href = target;
     }
-  }, [updateAuthState]);
+  }, [updateAuthState, mode]);
 
   const setToken = useCallback(
     (token: string, expiresAtMs: number) => {

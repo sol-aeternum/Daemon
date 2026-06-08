@@ -57,6 +57,11 @@ const mockedCompleteEmail = vi.mocked(completeEmailSignIn);
 const mockedStartGoogle = vi.mocked(startGoogleSignIn);
 const mockedCompleteGoogle = vi.mocked(completeGoogleSignIn);
 
+const hostedEmailRuntimeConfig = {
+  email: { enabled: true },
+  google: { enabled: false, clientId: '' },
+};
+
 interface TestGoogleCredentialResponse {
   credential?: string;
 }
@@ -134,9 +139,16 @@ async function waitForLoadingToFinish(): Promise<void> {
 describe('AuthLanding — hosted mode', () => {
   it('renders identity entry points before enrollment', async () => {
     process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
-    process.env.NEXT_PUBLIC_EMAIL_ENABLED = 'true';
 
-    render(<AuthLanding mode="hosted" />);
+    render(
+      <AuthLanding
+        mode="hosted"
+        runtimeConfig={{
+          email: { enabled: true },
+          google: { enabled: true, clientId: 'public-client-id' },
+        }}
+      />,
+    );
     await waitForLoadingToFinish();
 
     const googleButton = screen.getByRole('button', {
@@ -507,24 +519,15 @@ describe('AuthLanding — hosted mode', () => {
     ).toBeNull();
   });
 
-  it('hides setup token form behind an advanced section', async () => {
+  it('does not render the self-hosted setup form in hosted mode', async () => {
     render(<AuthLanding mode="hosted" />);
     await waitForLoadingToFinish();
 
     expect(screen.queryByLabelText(/setup token/i)).toBeNull();
-
-    const advancedButton = screen.getByRole('button', {
-      name: /advanced/i,
-    });
-    expect(advancedButton).toBeTruthy();
-    expect(advancedButton.getAttribute('aria-expanded')).toBe('false');
-
-    await act(async () => {
-      fireEvent.click(advancedButton);
-    });
-    expect(advancedButton.getAttribute('aria-expanded')).toBe('true');
-
-    expect(screen.getByLabelText(/setup token/i)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /advanced/i })).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: /complete setup/i }),
+    ).toBeNull();
   });
 
   it('shows enrollment form in hosted mode', async () => {
@@ -539,11 +542,81 @@ describe('AuthLanding — hosted mode', () => {
     ).toBeTruthy();
   });
 
-  it('hides the hosted email form when the public email flag is disabled', async () => {
-    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
+  it('uses runtime provider config instead of build-time provider flags', async () => {
+    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = '';
     process.env.NEXT_PUBLIC_EMAIL_ENABLED = 'false';
 
-    render(<AuthLanding mode="hosted" />);
+    render(
+      <AuthLanding
+        mode="hosted"
+        runtimeConfig={{
+          email: { enabled: true },
+          google: { enabled: true, clientId: 'runtime-client-id' },
+        }}
+      />,
+    );
+    await waitForLoadingToFinish();
+
+    expect(
+      screen.getByRole('button', { name: /continue with google/i }),
+    ).toBeTruthy();
+    expect(screen.getByLabelText(/email address/i)).toBeTruthy();
+  });
+
+  it('initializes Google sign-in with the runtime client ID', async () => {
+    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = '';
+    installGoogleMock();
+    mockedStartGoogle.mockResolvedValueOnce({
+      success: true,
+      challengeId: 'google-challenge',
+      nonce: 'server-nonce',
+      expiresAt: 1234567890,
+    });
+    mockedCompleteGoogle.mockResolvedValueOnce({ success: true });
+
+    render(
+      <AuthLanding
+        mode="hosted"
+        runtimeConfig={{
+          email: { enabled: false },
+          google: { enabled: true, clientId: 'runtime-client-id' },
+        }}
+      />,
+    );
+    await waitForLoadingToFinish();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /continue with google/i }),
+    );
+
+    await waitFor(() => {
+      expect(mockedStartGoogle).toHaveBeenCalledTimes(1);
+      expect(mockGoogleInitialize).toHaveBeenCalledWith({
+        client_id: 'runtime-client-id',
+        nonce: 'server-nonce',
+        callback: expect.any(Function),
+      });
+    });
+
+    await act(async () => {
+      capturedGoogleCallback?.({ credential: 'google-id-token' });
+    });
+
+    await waitFor(() => {
+      expect(mockedCompleteGoogle).toHaveBeenCalledWith(
+        'google-challenge',
+        'server-nonce',
+        'google-id-token',
+        'private',
+        undefined,
+      );
+    });
+  });
+
+  it('hides the hosted email form while runtime config is loading', async () => {
+    process.env.NEXT_PUBLIC_EMAIL_ENABLED = 'true';
+
+    render(<AuthLanding mode="hosted" runtimeConfigLoading />);
     await waitForLoadingToFinish();
 
     expect(screen.queryByLabelText(/email address/i)).toBeNull();
@@ -553,16 +626,16 @@ describe('AuthLanding — hosted mode', () => {
     expect(screen.queryByLabelText(/verification code/i)).toBeNull();
   });
 
-  it('shows the hosted email form when the public email flag is unset', async () => {
-    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
+  it('keeps the hosted email form hidden when runtime config is unavailable', async () => {
+    process.env.NEXT_PUBLIC_EMAIL_ENABLED = 'true';
 
     render(<AuthLanding mode="hosted" />);
     await waitForLoadingToFinish();
 
-    expect(screen.getByLabelText(/email address/i)).toBeTruthy();
+    expect(screen.queryByLabelText(/email address/i)).toBeNull();
     expect(
-      screen.getByRole('button', { name: /send verification code/i }),
-    ).toBeTruthy();
+      screen.queryByRole('button', { name: /send verification code/i }),
+    ).toBeNull();
   });
 });
 
@@ -733,7 +806,9 @@ describe('AuthLanding — email sign-in flow', () => {
       expiresAt: 1234567890,
     });
 
-    render(<AuthLanding mode="hosted" />);
+    render(
+      <AuthLanding mode="hosted" runtimeConfig={hostedEmailRuntimeConfig} />,
+    );
     await waitForLoadingToFinish();
 
     const emailInput = screen.getByLabelText(/email address/i);
@@ -761,7 +836,9 @@ describe('AuthLanding — email sign-in flow', () => {
     mockedCompleteEmail.mockResolvedValueOnce({ success: true });
     mockPush.mockClear();
 
-    render(<AuthLanding mode="hosted" />);
+    render(
+      <AuthLanding mode="hosted" runtimeConfig={hostedEmailRuntimeConfig} />,
+    );
     await waitForLoadingToFinish();
 
     const emailInput = screen.getByLabelText(/email address/i);
@@ -806,7 +883,9 @@ describe('AuthLanding — email sign-in flow', () => {
     });
     mockedCompleteEmail.mockResolvedValueOnce({ success: true });
 
-    render(<AuthLanding mode="hosted" />);
+    render(
+      <AuthLanding mode="hosted" runtimeConfig={hostedEmailRuntimeConfig} />,
+    );
     await waitForLoadingToFinish();
 
     fireEvent.change(screen.getByLabelText(/email address/i), {
@@ -845,7 +924,9 @@ describe('AuthLanding — email sign-in flow', () => {
     });
     mockedCompleteEmail.mockResolvedValueOnce({ success: true });
 
-    render(<AuthLanding mode="hosted" />);
+    render(
+      <AuthLanding mode="hosted" runtimeConfig={hostedEmailRuntimeConfig} />,
+    );
     await waitForLoadingToFinish();
 
     const emailInput = screen.getByLabelText(/email address/i);
@@ -888,7 +969,9 @@ describe('AuthLanding — email sign-in flow', () => {
       error: 'Rate limit exceeded',
     });
 
-    render(<AuthLanding mode="hosted" />);
+    render(
+      <AuthLanding mode="hosted" runtimeConfig={hostedEmailRuntimeConfig} />,
+    );
     await waitForLoadingToFinish();
 
     const emailInput = screen.getByLabelText(/email address/i);
@@ -915,7 +998,9 @@ describe('AuthLanding — email sign-in flow', () => {
       error: 'Invalid or expired code. Please try again.',
     });
 
-    render(<AuthLanding mode="hosted" />);
+    render(
+      <AuthLanding mode="hosted" runtimeConfig={hostedEmailRuntimeConfig} />,
+    );
     await waitForLoadingToFinish();
 
     const emailInput = screen.getByLabelText(/email address/i);
@@ -951,7 +1036,9 @@ describe('AuthLanding — email sign-in flow', () => {
       expiresAt: 1234567890,
     });
 
-    render(<AuthLanding mode="hosted" />);
+    render(
+      <AuthLanding mode="hosted" runtimeConfig={hostedEmailRuntimeConfig} />,
+    );
     await waitForLoadingToFinish();
 
     const emailInput = screen.getByLabelText(/email address/i);

@@ -66,6 +66,7 @@ from orchestrator.routes import (
     users,
     video_credits,
 )
+from orchestrator.routes.auth_config import router as auth_config_router
 from orchestrator.routes.auth_setup import router as auth_setup_router
 from orchestrator.models_cache import fetch_openrouter_models
 from orchestrator.model_router import select_model_tier
@@ -106,6 +107,7 @@ def _validate_startup_config(settings: Settings) -> None:
     posture). Either failure aborts startup before any AppState work.
     """
     validate_and_get_pepper(settings)
+    settings.validate_deployment_mode()
     settings.validate_hosted_identity_config()
 
 
@@ -124,6 +126,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     state = await init_app_state(settings)
     app.state.app_state = state
+    app.state.settings = settings
     logger.info("AppState initialised")
 
     cleanup_task = None
@@ -2025,4 +2028,5 @@ app.include_router(skills.router)
 app.include_router(system.router)
 app.include_router(users.router)
 app.include_router(video_credits.router)
+app.include_router(auth_config_router)
 app.include_router(auth_setup_router)

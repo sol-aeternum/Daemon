@@ -189,6 +189,31 @@ browser IP carried in trusted forwarded headers instead of the proxy/container h
 flag false for direct/self-hosted deployments; the default safe posture is to trust only the
 immediate socket IP and ignore arbitrary forwarded headers.
 
+## Runtime Config
+
+Daemon exposes a public, unauthenticated, no-store endpoint that lets the frontend
+read its deployment mode and provider availability at runtime instead of relying
+on a build-time `NEXT_PUBLIC_*` env:
+
+| Method | Path                | Auth     | Cache                    | Body                                                                                                                                                                                                                |
+| ------ | ------------------- | -------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/v1/auth/config`   | None     | `Cache-Control: no-store` | `{ "mode": "self_hosted" \| "hosted", "email": { "enabled": <bool> }, "google": { "enabled": <bool>, "clientId": <public id or ""> } }` |
+
+The endpoint returns only non-secret runtime data. It never serializes the
+audience allowlist, mail sender mode, refresh TTLs, pepper, or any other secret
+or secret-adjacent value. The `google.clientId` is the public OAuth client ID,
+not a secret.
+
+`mode` is sourced from `DAEMON_DEPLOYMENT_MODE` (default `self_hosted`).
+`email.enabled` is true only when both `DAEMON_HOSTED_IDENTITY_ENABLED` and
+`DAEMON_EMAIL_ENABLED` are true. `google.enabled` is true only when both
+`DAEMON_HOSTED_IDENTITY_ENABLED` and `DAEMON_GOOGLE_ENABLED` are true.
+`google.clientId` is the value of `DAEMON_GOOGLE_CLIENT_ID` or `""` when unset.
+
+When `mode == "hosted"`, the legacy `POST /v1/auth/setup` endpoint refuses to
+initialize owner/admin state with `403 setup_disabled_in_hosted_mode`. The
+self-hosted setup-token flow remains available in `self_hosted` mode.
+
 ## Self-Hosted Advanced Setup
 
 Hosted deployments should present Google and email code sign-in first. The self-hosted

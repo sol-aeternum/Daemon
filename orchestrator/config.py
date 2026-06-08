@@ -335,6 +335,18 @@ class Settings(BaseSettings):
         description="Minimum autonomous skills needed before consolidation nudge evaluates merge potential",
     )
 
+    # ===== DEPLOYMENT MODE =====
+    # User-facing concept: which landing page do we show? self_hosted
+    # surfaces /setup (legacy owner/admin enrollment); hosted surfaces /auth
+    # (Google/email sign-in). Defaults to self_hosted so a fresh clone never
+    # accidentally exposes the hosted sign-in surface. This is orthogonal
+    # to daemon_hosted_identity_enabled (a feature flag for whether the
+    # identity routes are wired up at all) — a deployment with
+    # mode=hosted + identity_enabled=false is a valid staging config; a
+    # deployment with mode=self_hosted + identity_enabled=true is a valid
+    # dev/QA config. Validated at construction time by the Literal.
+    daemon_deployment_mode: Literal["self_hosted", "hosted"] = "self_hosted"
+
     # ===== HOSTED IDENTITY CONFIG =====
     # When false, hosted identity routes (Google/email) are not exposed and
     # validate_hosted_identity_config() is a no-op. Default off preserves the
@@ -576,6 +588,26 @@ class Settings(BaseSettings):
                     providers.append(provider_name)
 
         return providers
+
+    def validate_deployment_mode(self) -> None:
+        """Validate deployment-mode configuration.
+
+        Today the Literal type-check at construction time already rejects
+        any value outside {"self_hosted", "hosted"}; this method is the
+        explicit fail-closed hook for future cross-field rules (e.g.,
+        refusing mode=hosted without daemon_public_origin). Keeping it as
+        a no-op when the value is well-formed makes the validation chain
+        symmetric with validate_hosted_identity_config() and gives the
+        lifespan hook a stable call site.
+
+        Raises:
+            HostedIdentityConfigError: on a current or future violation.
+        """
+        if self.daemon_deployment_mode not in ("self_hosted", "hosted"):
+            raise HostedIdentityConfigError(
+                f"daemon_deployment_mode must be one of ('self_hosted', 'hosted'), "
+                f"got {self.daemon_deployment_mode!r}"
+            )
 
     def validate_hosted_identity_config(self) -> None:
         """Validate hosted identity configuration and fail closed on misconfig.

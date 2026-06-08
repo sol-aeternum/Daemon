@@ -818,14 +818,19 @@ export async function revokeDevice(deviceId: string): Promise<{
   }
 }
 
-export async function attemptPageLoadRefresh(): Promise<boolean> {
+export async function attemptPageLoadRefresh(options?: {
+  redirectOnExpiredSession?: boolean;
+}): Promise<boolean> {
   if (hasValidAccessToken()) {
     return true;
   }
 
   const result = await refreshAccessToken();
   if (!result.success && result.error === 'Session expired') {
-    if (typeof window !== 'undefined') {
+    if (
+      (options?.redirectOnExpiredSession ?? true) &&
+      typeof window !== 'undefined'
+    ) {
       window.location.href = '/setup';
     }
     return false;

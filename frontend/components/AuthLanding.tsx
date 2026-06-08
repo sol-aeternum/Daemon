@@ -11,17 +11,9 @@ import {
   startGoogleSignIn,
   completeGoogleSignIn,
 } from '../lib/auth';
-import { getEmailEnabled, getGoogleClientId } from '../lib/deployment';
-import {
-  Sparkles,
-  Shield,
-  AlertCircle,
-  Chrome,
-  ChevronDown,
-  ChevronUp,
-  KeyRound,
-  Monitor,
-} from 'lucide-react';
+import { getGoogleClientId } from '../lib/deployment';
+import type { AuthConfig } from '../lib/auth-config';
+import { Sparkles, Shield, AlertCircle, Chrome, Monitor } from 'lucide-react';
 
 export type DeploymentMode = 'hosted' | 'self-hosted';
 
@@ -105,9 +97,15 @@ function loadGoogleIdentityServices(): Promise<GoogleIdentityServices> {
 
 interface AuthLandingProps {
   mode: DeploymentMode;
+  runtimeConfig?: Pick<AuthConfig, 'email' | 'google'>;
+  runtimeConfigLoading?: boolean;
 }
 
-export default function AuthLanding({ mode }: AuthLandingProps) {
+export default function AuthLanding({
+  mode,
+  runtimeConfig,
+  runtimeConfigLoading = false,
+}: AuthLandingProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [isChecking, setIsChecking] = useState(true);
@@ -122,8 +120,6 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
   const [enrollmentCode, setEnrollmentCode] = useState('');
   const [isEnrolling, setIsEnrolling] = useState(false);
   const [enrollmentError, setEnrollmentError] = useState<string | null>(null);
-
-  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const [email, setEmail] = useState('');
   const [emailChallengeId, setEmailChallengeId] = useState('');
@@ -141,6 +137,15 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
     searchParams.get('invite_token')?.trim() ||
     searchParams.get('invite')?.trim() ||
     undefined;
+  const isHosted = mode === 'hosted';
+  const googleClientId = isHosted
+    ? runtimeConfig
+      ? runtimeConfig.google.enabled
+        ? runtimeConfig.google.clientId
+        : ''
+      : getGoogleClientId(mode)
+    : '';
+  const emailEnabled = isHosted ? runtimeConfig?.email.enabled === true : false;
 
   useEffect(() => {
     let cancelled = false;
@@ -164,8 +169,7 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
   }, [router]);
 
   async function handleGoogleSignIn() {
-    const clientId = getGoogleClientId(mode);
-    if (!clientId) return;
+    if (!googleClientId) return;
 
     setGoogleError(null);
     setIsGoogleStarting(true);
@@ -202,7 +206,7 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
         };
 
         google.accounts.id.initialize({
-          client_id: clientId,
+          client_id: googleClientId,
           nonce: startResult.nonce!,
           callback: (response) => {
             if (response.credential) {
@@ -428,10 +432,6 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
     );
   }
 
-  const isHosted = mode === 'hosted';
-  const googleClientId = getGoogleClientId(mode);
-  const emailEnabled = getEmailEnabled(mode);
-
   return (
     <div className="flex min-h-screen w-full items-center justify-center bg-[var(--color-bg-tertiary)] px-4 py-12">
       <div className="w-full max-w-md space-y-8">
@@ -456,7 +456,13 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
 
         {isHosted && (
           <div className="space-y-3">
-            {googleClientId ? (
+            {runtimeConfigLoading ? (
+              <IdentityCard
+                icon={<Chrome className="w-5 h-5" />}
+                label="Loading sign-in providers..."
+                disabled
+              />
+            ) : googleClientId ? (
               <IdentityCard
                 icon={<Chrome className="w-5 h-5" />}
                 label={
@@ -644,6 +650,26 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
           </form>
         )}
 
+        {!isHosted && (
+          <div className="flex items-start gap-3 rounded-xl border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-4 py-3">
+            <Shield className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-accent-primary)]" />
+            <div className="space-y-1">
+              <p className="text-xs font-medium text-[var(--color-text-secondary)]">
+                Why a form, not a URL?
+              </p>
+              <p className="text-xs text-[var(--color-text-muted)] leading-relaxed">
+                Pasting the token into this form avoids leakage through browser
+                history, Referer headers, access logs, and bookmarks. The token
+                is sent in a POST body only.
+              </p>
+              <p className="text-xs text-[var(--color-text-muted)] leading-relaxed">
+                Server logs remain sensitive — the startup token is printed
+                there at first boot. Treat your logs as confidential.
+              </p>
+            </div>
+          </div>
+        )}
+
         <div className="border-t border-[var(--color-border-primary)] pt-6">
           <h2 className="text-lg font-semibold text-[var(--color-text-primary)] mb-1">
             Continue Enrollment
@@ -728,120 +754,6 @@ export default function AuthLanding({ mode }: AuthLandingProps) {
             </button>
           </form>
         </div>
-
-        {isHosted && (
-          <div className="border-t border-[var(--color-border-primary)] pt-4">
-            <button
-              type="button"
-              onClick={() => setShowAdvanced((s) => !s)}
-              className="flex items-center gap-2 text-sm text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] transition-colors"
-              aria-expanded={showAdvanced}
-            >
-              {showAdvanced ? (
-                <ChevronUp className="w-4 h-4" />
-              ) : (
-                <ChevronDown className="w-4 h-4" />
-              )}
-              <span>Advanced — Self-hosted setup</span>
-            </button>
-
-            {showAdvanced && (
-              <div className="mt-4 space-y-4 animate-fade-in">
-                <form onSubmit={handleSetupSubmit} className="space-y-4">
-                  <div>
-                    <label
-                      htmlFor="setup-token-advanced"
-                      className="block text-sm font-medium text-[var(--color-text-secondary)] mb-1.5"
-                    >
-                      Setup Token
-                    </label>
-                    <input
-                      id="setup-token-advanced"
-                      type="text"
-                      autoComplete="off"
-                      placeholder="Paste your setup token here"
-                      value={setupToken}
-                      onChange={(e) => setSetupToken(e.target.value)}
-                      disabled={isSubmitting}
-                      className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
-                    />
-                  </div>
-
-                  <div>
-                    <label
-                      htmlFor="display-name-advanced"
-                      className="block text-sm font-medium text-[var(--color-text-secondary)] mb-1.5"
-                    >
-                      Display Name{' '}
-                      <span className="text-[var(--color-text-muted)] font-normal">
-                        (optional)
-                      </span>
-                    </label>
-                    <input
-                      id="display-name-advanced"
-                      type="text"
-                      autoComplete="off"
-                      placeholder="e.g. MacBook Pro, Work Laptop"
-                      value={displayName}
-                      onChange={(e) => setDisplayName(e.target.value)}
-                      disabled={isSubmitting}
-                      className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
-                    />
-                  </div>
-
-                  {setupError && (
-                    <div className="flex items-start gap-2.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5">
-                      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
-                      <p className="text-sm text-red-300">{setupError}</p>
-                    </div>
-                  )}
-
-                  <button
-                    type="submit"
-                    disabled={isSubmitting || !setupToken.trim()}
-                    className="w-full rounded-xl bg-[var(--color-accent-muted)] px-4 py-3 text-sm font-semibold text-[var(--color-text-primary)] shadow-sm hover:bg-[var(--color-accent-subtle)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  >
-                    {isSubmitting ? 'Setting up...' : 'Complete Setup'}
-                  </button>
-                </form>
-
-                <div className="flex items-start gap-3 rounded-xl border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-4 py-3">
-                  <KeyRound className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-accent-primary)]" />
-                  <div className="space-y-1">
-                    <p className="text-xs font-medium text-[var(--color-text-secondary)]">
-                      Why a form, not a URL?
-                    </p>
-                    <p className="text-xs text-[var(--color-text-muted)] leading-relaxed">
-                      Pasting the token into this form avoids leakage through
-                      browser history, Referer headers, access logs, and
-                      bookmarks. The token is sent in a POST body only.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {!isHosted && (
-          <div className="flex items-start gap-3 rounded-xl border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-4 py-3">
-            <Shield className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-accent-primary)]" />
-            <div className="space-y-1">
-              <p className="text-xs font-medium text-[var(--color-text-secondary)]">
-                Why a form, not a URL?
-              </p>
-              <p className="text-xs text-[var(--color-text-muted)] leading-relaxed">
-                Pasting the token into this form avoids leakage through browser
-                history, Referer headers, access logs, and bookmarks. The token
-                is sent in a POST body only.
-              </p>
-              <p className="text-xs text-[var(--color-text-muted)] leading-relaxed">
-                Server logs remain sensitive — the startup token is printed
-                there at first boot. Treat your logs as confidential.
-              </p>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
