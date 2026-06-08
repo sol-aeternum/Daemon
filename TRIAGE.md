@@ -1588,3 +1588,14 @@
 - **Evidence**: `uv run basedpyright --level error` reported `tests/test_identity_rate_limiter.py:615:29 - error: Cannot access attribute "script" for class "ArqRedis"` and `tests/test_identity_rate_limiter.py:621:43 - error: Cannot access attribute "store" for class "ArqRedis"`.
 - **Likely cause**: The regression test needed an `ArqRedis`-typed value for `RateLimiter`, but reused that typed variable for fake-specific assertions instead of keeping the concrete fake object for inspection. Confidence: 98%.
 - **Suggested action**: Keep future Redis fakes as concrete variables for fake-only assertions and pass a separately cast value only across the production API boundary.
+
+## 2026-06-08 UTC — Pre-existing advisor-events / tool-call-log test failures
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Wave 3 of `hosted-auth-fixes-2026-06-07` (frontend TDD for `/v1/auth/config` client + mode-aware AuthProvider)
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: `npm run test:run` reports 19 failing tests in `__tests__/chat-route-advisor-events.test.ts`, `__tests__/advisor-events.test.ts`, and `__tests__/tool-call-log.test.ts`. Failures are in advisor-event tree building / correlation and tool-call-log filtering, completely unrelated to auth-provider, auth-config, deployment, devices, council, sanitizeHtml, or the new auth-config runtime client.
+- **Evidence**: `npm run test:run` output shows failures like `chat route advisor event bridge > bootstraps advisor-only data events without sending nested text to the main reply stream`, `buildAdvisorTree - live SSE event tree building > builds tree with single advisor nested under consult_advisor tool call`, `ToolCallLog > keeps advisor-internal tool events out of the top-level tool log`. None of the 5 new test files (`auth-config.test.ts`, `auth-provider.test.tsx`) fail.
+- **Likely cause**: Pre-existing failures in the advisor-events event-tree code path, likely from a partial refactor in PR #7 that was never finished. Confidence 80%.
+- **Suggested action**: Open a separate task to investigate the advisor-events / tool-call-log test failures. Do NOT fix as part of hosted-auth-fixes — that plan's scope is auth config + mode-aware redirects + /auth route page.
