@@ -285,6 +285,7 @@
 - **Seen again**: 2026-05-31 during Task 6 when `npm install --save-dev @commitlint/cli @commitlint/config-conventional` completed but again reported `26 vulnerabilities (4 low, 8 moderate, 14 high)`; commitlint installation proceeded, and vulnerability remediation remains out of scope for Task 6.
 - **Seen again**: 2026-05-31T06:31Z during Task 7 local CI parity; `.sisyphus/evidence/task-7-ci-local-parity.txt` shows `npm ci` reporting 26 vulnerabilities and `npm run audit:ci` exiting 1.
 - **Seen again / changed count**: 2026-06-05T03:34Z during F3 Real Manual QA, `npm ci` in `/tmp/opencode/hosted-identity-pr-f3/frontend` completed but reported `27 vulnerabilities (4 low, 8 moderate, 14 high, 1 critical)`. Install succeeded, but the audit inventory is worse than the previously recorded 26-vulnerability state.
+- **Seen again**: 2026-06-08 during PR #21 Studio image API retirement follow-up; local `npm ci` reported the same `27 vulnerabilities (4 low, 8 moderate, 14 high, 1 critical)` inventory.
 
 ## 2026-05-31 05:54 UTC — npm ci Emits Deprecated Frontend Dependency Warnings
 - **Severity**: warning
@@ -296,6 +297,7 @@
 - **Evidence**: `.sisyphus/evidence/task-5-frontend-positive.txt` lines 2-28 show `npm ci` exit code 0 and the warning list.
 - **Likely cause**: Existing frontend dependency graph includes older transitive packages, especially from PWA/build tooling (confidence 90%).
 - **Suggested action**: Address during the same frontend dependency remediation task as the npm audit findings.
+- **Seen again**: 2026-06-08 during PR #21 Studio image API retirement follow-up; `npm ci` succeeded but emitted the same deprecated transitive dependency warnings (`@types/dompurify`, `inflight`, `rimraf@2`, `rollup-plugin-terser`, `glob@7`, Workbox packages) plus `sourcemap-codec` and `source-map@0.8.0-beta.0`.
 
 ## 2026-05-31 06:17 UTC — Gitleaks Negative Probe Requires Staged Content
 - **Severity**: info
@@ -1443,6 +1445,7 @@
 - **Likely cause**: Host/container Node version is older than the workflow-pinned Node runtime (confidence 99%).
 - **Suggested action**: Use Node 24 locally when validating commitlint/frontend gates, or rely on the workflow setup-node step for CI parity.
 - **Seen again**: 2026-05-31T10:25:43Z during PR follow-up basedpyright verification; `npm ci` completed but emitted the same `EBADENGINE Unsupported engine` warnings for `@commitlint/*@21` under local Node `v20.20.2`.
+- **Seen again**: 2026-06-08 during PR #21 Studio image API retirement follow-up; `npm ci` completed but emitted the same `EBADENGINE Unsupported engine` warnings for `@commitlint/*@21` under local Node `v20.20.2`.
 
 ## [2026-05-31T10:05:00Z] — PyYAML Missing In Backend Environment For Ad Hoc Workflow Validation
 - **Severity**: info
@@ -1536,6 +1539,7 @@
 - **Likely cause**: Advisor event types were refactored without updating all consumers; `tool_call_id` and `advisor_id` fields were removed from base event types but still used in tests and `lib/advisorEvents.ts` (confidence 90%).
 - **Suggested action**: Update `lib/advisorEvents.ts` and related tests to match current event type definitions, or restore the missing type fields.
 - **Seen again**: 2026-06-05 during PR #7 hosted-identity review-comment verification when `./node_modules/.bin/tsc --noEmit --pretty false -p tsconfig.json` failed only in the same pre-existing advisor/tool-call event files while the targeted auth/deployment Vitest suite, changed-file eslint, and changed-file prettier checks passed.
+- **Seen again**: 2026-06-08 during PR #21 Studio image API retirement follow-up when `npm run type-check` failed in the same pre-existing `__tests__/advisor-events.test.ts` and `lib/advisorEvents.ts` advisor/tool-call event types after `next typegen` succeeded.
 
 ## 2026-06-05 UTC — Frontend lint has pre-existing errors across 29 files
 - **Severity**: warning
@@ -1581,6 +1585,7 @@
 - **Evidence**: `npm run test:run -- __tests__/auth-proxy-route.test.ts` output included `npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.`
 - **Likely cause**: The host or project npm environment includes a legacy `http-proxy` config key that current npm accepts with a warning but plans to reject in a future major version (confidence 80%).
 - **Suggested action**: Inspect npm config sources (`npm config list`) and remove or rename the legacy `http-proxy` setting if it is not required by the container/network environment.
+- **Seen again**: 2026-06-08 during PR #21 Studio image API retirement follow-up; `npm ci` and `npm run type-check` emitted `npm warn Unknown env config "http-proxy"`.
 
 ## 2026-06-07 UTC — Backend basedpyright failed on fake Redis test cast
 - **Severity**: warning
