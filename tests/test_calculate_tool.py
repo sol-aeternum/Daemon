@@ -22,37 +22,41 @@ class TestCalculateHappyPath:
         assert json.loads(_run(tool, "2 + 2")) == {"expression": "2 + 2", "result": 4}
 
     def test_precedence(self, tool):
-        assert json.loads(_run(tool, "2 + 3 * 4")) == {
-            "expression": "2 + 3 * 4", "result": 14
-        }
+        assert json.loads(_run(tool, "2 + 3 * 4")) == {"expression": "2 + 3 * 4", "result": 14}
 
     def test_parentheses(self, tool):
-        assert json.loads(_run(tool, "(2 + 3) * 4")) == {
-            "expression": "(2 + 3) * 4", "result": 20
-        }
+        assert json.loads(_run(tool, "(2 + 3) * 4")) == {"expression": "(2 + 3) * 4", "result": 20}
 
     def test_unary_minus(self, tool):
-        assert json.loads(_run(tool, "-5 + 10")) == {
-            "expression": "-5 + 10", "result": 5
-        }
+        assert json.loads(_run(tool, "-5 + 10")) == {"expression": "-5 + 10", "result": 5}
 
     def test_power(self, tool):
-        assert json.loads(_run(tool, "2 ** 10")) == {
-            "expression": "2 ** 10", "result": 1024
+        assert json.loads(_run(tool, "2 ** 10")) == {"expression": "2 ** 10", "result": 1024}
+
+    def test_power_with_parenthesized_base(self, tool):
+        assert json.loads(_run(tool, "(2 + 3) ** 2")) == {
+            "expression": "(2 + 3) ** 2",
+            "result": 25,
         }
+
+    def test_power_with_parenthesized_exponent(self, tool):
+        assert json.loads(_run(tool, "2 ** (1 + 2)")) == {"expression": "2 ** (1 + 2)", "result": 8}
+
+    def test_power_with_signed_exponent(self, tool):
+        assert json.loads(_run(tool, "2 ** -1")) == {"expression": "2 ** -1", "result": 0.5}
+
+    def test_power_is_right_associative(self, tool):
+        assert json.loads(_run(tool, "2 ** 3 ** 2")) == {"expression": "2 ** 3 ** 2", "result": 512}
+
+    def test_unary_minus_binds_less_tightly_than_power(self, tool):
+        assert json.loads(_run(tool, "-2 ** 2")) == {"expression": "-2 ** 2", "result": -4}
 
     def test_division_and_modulo(self, tool):
-        assert json.loads(_run(tool, "17 % 5")) == {
-            "expression": "17 % 5", "result": 2
-        }
-        assert json.loads(_run(tool, "10 / 4")) == {
-            "expression": "10 / 4", "result": 2.5
-        }
+        assert json.loads(_run(tool, "17 % 5")) == {"expression": "17 % 5", "result": 2}
+        assert json.loads(_run(tool, "10 / 4")) == {"expression": "10 / 4", "result": 2.5}
 
     def test_decimals_and_scientific(self, tool):
-        assert json.loads(_run(tool, "1.5e2")) == {
-            "expression": "1.5e2", "result": 150.0
-        }
+        assert json.loads(_run(tool, "1.5e2")) == {"expression": "1.5e2", "result": 150.0}
 
 
 class TestCalculateRejectsMalformed:
@@ -71,6 +75,12 @@ class TestCalculateRejectsMalformed:
     def test_division_by_zero(self, tool):
         out = _run(tool, "1 / 0")
         assert "error" in json.loads(out)
+
+    def test_arithmetic_exception(self, tool):
+        out = _run(tool, "10 ** 1000000")
+        result = json.loads(out)
+        assert "error" in result
+        assert "result" not in result
 
     def test_non_string(self, tool):
         out = _run(tool, None)  # type: ignore[arg-type]
@@ -103,7 +113,7 @@ class TestCalculateRejectsSandboxEscapes:
         "True",
         "None",
         "'a'",
-        "\"a\"",
+        '"a"',
         "f'{1}'",
     ]
 

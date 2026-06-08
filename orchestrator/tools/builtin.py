@@ -94,7 +94,7 @@ class CalculateTool(Tool):
             return json.dumps({"error": "expression must be a string"})
         try:
             result = _evaluate_math_expression(expression)
-        except _MathError as e:
+        except (_MathError, ArithmeticError) as e:
             return json.dumps({"error": f"Calculation failed: {e}"})
         return json.dumps({"expression": expression, "result": result})
 
@@ -167,7 +167,21 @@ class _MathParser:
         if ch == "-":
             self.consume()
             return -self.parse_factor()
-        if ch == "(":
+        return self.parse_power()
+
+    def parse_power(self) -> float:
+        base = self.parse_primary()
+        self.skip_whitespace()
+        if self.peek() == "*" and self.pos + 1 < self.length and self.text[self.pos + 1] == "*":
+            self.consume()
+            self.consume()
+            exponent = self.parse_factor()
+            return base**exponent
+        return base
+
+    def parse_primary(self) -> float:
+        self.skip_whitespace()
+        if self.peek() == "(":
             self.consume()
             value = self.parse_expression()
             self.skip_whitespace()
@@ -175,17 +189,7 @@ class _MathParser:
                 raise _MathError("unmatched '('")
             self.consume()
             return value
-        return self.parse_unary()
-
-    def parse_unary(self) -> float:
-        base = self.parse_number()
-        self.skip_whitespace()
-        if self.peek() == "*" and self.pos + 1 < self.length and self.text[self.pos + 1] == "*":
-            self.consume()
-            self.consume()
-            exponent = self.parse_unary()
-            return base ** exponent
-        return base
+        return self.parse_number()
 
     def parse_number(self) -> float:
         self.skip_whitespace()
@@ -204,7 +208,7 @@ class _MathParser:
                 self.pos += 1
             while self.pos < self.length and self.text[self.pos].isdigit():
                 self.pos += 1
-        literal = self.text[start:self.pos]
+        literal = self.text[start : self.pos]
         if not literal or literal == ".":
             raise _MathError(f"unexpected character {self.peek()!r}")
         try:
