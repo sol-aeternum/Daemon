@@ -58,6 +58,10 @@ class TestCalculateHappyPath:
     def test_decimals_and_scientific(self, tool):
         assert json.loads(_run(tool, "1.5e2")) == {"expression": "1.5e2", "result": 150.0}
 
+    def test_large_integer_literals_preserve_precision(self, tool):
+        expression = "9007199254740993 - 9007199254740992"
+        assert json.loads(_run(tool, expression)) == {"expression": expression, "result": 1}
+
 
 class TestCalculateRejectsMalformed:
     def test_unmatched_paren(self, tool):
@@ -77,6 +81,12 @@ class TestCalculateRejectsMalformed:
         assert "error" in json.loads(out)
 
     def test_arithmetic_exception(self, tool):
+        out = _run(tool, "10.0 ** 1000000")
+        result = json.loads(out)
+        assert "error" in result
+        assert "result" not in result
+
+    def test_oversized_integer_result_returns_error(self, tool):
         out = _run(tool, "10 ** 1000000")
         result = json.loads(out)
         assert "error" in result

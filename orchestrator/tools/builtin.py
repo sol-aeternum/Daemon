@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
-from typing import Any
+from typing import Any, TypeAlias
 
 from zoneinfo import ZoneInfo
 
@@ -94,13 +94,16 @@ class CalculateTool(Tool):
             return json.dumps({"error": "expression must be a string"})
         try:
             result = _evaluate_math_expression(expression)
-        except (_MathError, ArithmeticError) as e:
+            return json.dumps({"expression": expression, "result": result})
+        except (_MathError, ArithmeticError, ValueError) as e:
             return json.dumps({"error": f"Calculation failed: {e}"})
-        return json.dumps({"expression": expression, "result": result})
 
 
 class _MathError(ValueError):
     pass
+
+
+Number: TypeAlias = int | float
 
 
 class _MathParser:
@@ -121,7 +124,7 @@ class _MathParser:
         while self.pos < self.length and self.text[self.pos].isspace():
             self.pos += 1
 
-    def parse_expression(self) -> float:
+    def parse_expression(self) -> Number:
         value = self.parse_term()
         while True:
             self.skip_whitespace()
@@ -135,7 +138,7 @@ class _MathParser:
             else:
                 return value
 
-    def parse_term(self) -> float:
+    def parse_term(self) -> Number:
         value = self.parse_factor()
         while True:
             self.skip_whitespace()
@@ -158,7 +161,7 @@ class _MathParser:
             else:
                 return value
 
-    def parse_factor(self) -> float:
+    def parse_factor(self) -> Number:
         self.skip_whitespace()
         ch = self.peek()
         if ch == "+":
@@ -169,7 +172,7 @@ class _MathParser:
             return -self.parse_factor()
         return self.parse_power()
 
-    def parse_power(self) -> float:
+    def parse_power(self) -> Number:
         base = self.parse_primary()
         self.skip_whitespace()
         if self.peek() == "*" and self.pos + 1 < self.length and self.text[self.pos + 1] == "*":
@@ -179,7 +182,7 @@ class _MathParser:
             return base**exponent
         return base
 
-    def parse_primary(self) -> float:
+    def parse_primary(self) -> Number:
         self.skip_whitespace()
         if self.peek() == "(":
             self.consume()
@@ -191,7 +194,7 @@ class _MathParser:
             return value
         return self.parse_number()
 
-    def parse_number(self) -> float:
+    def parse_number(self) -> Number:
         self.skip_whitespace()
         start = self.pos
         if self.peek() == ".":
@@ -212,12 +215,14 @@ class _MathParser:
         if not literal or literal == ".":
             raise _MathError(f"unexpected character {self.peek()!r}")
         try:
+            if "." not in literal and "e" not in literal.lower():
+                return int(literal)
             return float(literal)
         except ValueError as e:
             raise _MathError(f"invalid number {literal!r}") from e
 
 
-def _evaluate_math_expression(expression: str) -> float:
+def _evaluate_math_expression(expression: str) -> Number:
     parser = _MathParser(expression)
     result = parser.parse_expression()
     parser.skip_whitespace()

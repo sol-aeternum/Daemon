@@ -1406,6 +1406,7 @@
 - **Likely cause**: The CI baseline PR intentionally introduced first-run inventories before the existing project debt was remediated, but several inventory commands were still wired as required/failing steps (confidence 95%).
 - **Suggested action**: Keep these inventory steps non-blocking until dedicated remediation tasks upgrade dependencies, repair pytest collection, fix frontend contracts/tests, and apply mechanical formatting.
 - **Seen again**: 2026-06-08 during PR #17 review-comment follow-up. `scripts/local_ci.sh backend` reported `uv run bandit -r orchestrator providers scripts tests` exit 1 with pre-existing inventory (`Low: 4606`, `Medium: 24`, `High: 0`) and `tests/test_video_e2e.py (syntax error while parsing AST from file)`; `uv run pip-audit` exit 1 with `Found 41 known vulnerabilities in 14 packages`; `PYTHONPATH=. uv run pytest -q` exit 2 with the same 8 collection errors/import drifts plus `tests/test_video_e2e.py:596 SyntaxError: unmatched ')'`.
+- **Seen again**: 2026-06-08 during PR #17 integer-precision review follow-up. `scripts/local_ci.sh backend` passed blocking gates, but inventory reported `uv run bandit -r orchestrator providers scripts tests` exit 1 with pre-existing inventory (`Low: 4609`, `Medium: 24`, `High: 0`) and `tests/test_video_e2e.py (syntax error while parsing AST from file)`; `uv run pip-audit` exit 1 with `Found 41 known vulnerabilities in 14 packages`; `PYTHONPATH=. uv run pytest -q` exit 2 with the same 8 collection errors/import drifts plus `tests/test_video_e2e.py:596 SyntaxError: unmatched ')'`.
 - **Seen again**: 2026-06-07 during PR #8 review-fix verification when `uv run bandit -r orchestrator providers scripts tests` exited 1 with pre-existing inventory (`Low: 3480`, `Medium: 26`, `High: 0`) and `tests/test_video_e2e.py (syntax error while parsing AST from file)`. A scoped production-file Bandit check for `orchestrator/eval/fact_harness.py` and `orchestrator/eval/chunk_harness.py` passed with no issues.
 
 ## [2026-05-31T10:02:00Z] — BasedPyright Baseline Was Not Loaded By Default Command
@@ -1467,6 +1468,7 @@
 - **Seen again**: 2026-06-07 during PR follow-up for failing CI; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`.
 - **Seen again**: 2026-06-07 during PR hosted-identity follow-up for failing backend gates; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` passed.
 - **Seen again**: 2026-06-08 during PR #17 review-comment follow-up; `scripts/local_ci.sh aggregate` failed at `uv run pre-commit run --all-files` while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` passed doc-freshness and ruff hooks while skipping gitleaks.
+- **Seen again**: 2026-06-08 during PR #17 integer-precision review follow-up; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` passed doc-freshness, ruff check, and ruff format while skipping gitleaks.
 
 ## 2026-05-31T10:24:30Z — BasedPyright config consolidation surfaced benchmark harness typing debt
 - **Severity**: warning
@@ -1590,3 +1592,14 @@
 - **Evidence**: `uv run basedpyright --level error` reported `tests/test_identity_rate_limiter.py:615:29 - error: Cannot access attribute "script" for class "ArqRedis"` and `tests/test_identity_rate_limiter.py:621:43 - error: Cannot access attribute "store" for class "ArqRedis"`.
 - **Likely cause**: The regression test needed an `ArqRedis`-typed value for `RateLimiter`, but reused that typed variable for fake-specific assertions instead of keeping the concrete fake object for inspection. Confidence: 98%.
 - **Suggested action**: Keep future Redis fakes as concrete variables for fake-only assertions and pass a separately cast value only across the production API boundary.
+
+## [2026-06-08T02:47:00Z] — Bare Python Invocation Missed Project Virtualenv
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR #17 integer-precision review follow-up
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: A manual calculator smoke probe run with bare `python` failed before reaching the target code because the shell was not using the uv-managed project environment. Re-running the same probe through `PYTHONPATH=. uv run python` loaded project dependencies correctly.
+- **Evidence**: Bare command output included `ModuleNotFoundError: No module named 'httpx'` while importing `orchestrator.tools.web_search`; the uv-managed retry executed and printed calculator outputs.
+- **Likely cause**: The base interpreter does not include repo dependencies, while `.venv`/uv does (confidence 99%).
+- **Suggested action**: Continue running backend probes through `uv run` as required by the project instructions.
