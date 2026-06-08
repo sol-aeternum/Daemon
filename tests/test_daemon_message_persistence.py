@@ -28,3 +28,23 @@ def test_daemon_calls_update_message_with_content_kwarg():
         "orchestrator/daemon.py must call MemoryStore.update_message(content=...) "
         "for incremental content persistence (issue #18)."
     )
+
+
+def test_daemon_persists_accumulated_partial_content():
+    text = DAEMON_PY.read_text(encoding="utf-8", errors="ignore")
+    incremental_block = re.search(
+        r"# Periodic persistence of incremental content(?P<block>.*?)_last_persist_s = current_time",
+        text,
+        re.DOTALL,
+    )
+    assert incremental_block, "Could not find the incremental persistence block in daemon.py."
+
+    block = incremental_block.group("block")
+    assert 'content="".join(final_text_parts)' in block, (
+        "Incremental persistence must write the accumulated streamed response, "
+        "not only the latest delta_text chunk."
+    )
+    assert "content=delta_text" not in block, (
+        "MemoryStore.update_message(content=...) replaces content, so persisting only "
+        "delta_text would leave interrupted streams with just the last persisted chunk."
+    )

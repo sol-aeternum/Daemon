@@ -457,6 +457,7 @@
 - **Seen again**: 2026-04-15 during Task 1 regression gate verification — plain `pytest tests/test_longmemeval_fast.py tests/test_longmemeval_runner.py tests/test_longmemeval_ingest.py` failed with `ModuleNotFoundError: No module named 'orchestrator'`; confirmed `PYTHONPATH=. pytest ...` passes (29 tests).
 - **Seen again**: 2026-04-16 during autonomous-skill-creation Task 11 focused suite verification — exact `pytest tests/test_skill_extraction_prompt.py tests/test_skill_dedup.py tests/test_skill_injection.py tests/test_skill_manage.py tests/test_skill_protection.py tests/test_skill_api_contracts.py -q` failed in `tests/conftest.py` with `ModuleNotFoundError: No module named 'orchestrator'`; confirmed the same six-file suite passes as `PYTHONPATH=. pytest ...` (88 tests).
 - **Seen again**: 2026-04-16 during autonomous-skill-creation Task 13 when `python tests/benchmark_extraction.py --json --no-save` failed in `tests/benchmark_extraction.py:465` with `ModuleNotFoundError: No module named 'orchestrator'`; the benchmark script also requires `PYTHONPATH=.` in this host-shell setup.
+- **Seen again**: 2026-06-08 during PR #18 follow-up verification — plain `uv run pytest tests/test_daemon_message_persistence.py -q` failed in `tests/conftest.py` with `ModuleNotFoundError: No module named 'orchestrator'`; rerunning as `PYTHONPATH=. uv run pytest tests/test_daemon_message_persistence.py -q` passed (3 tests).
 
 ## 2026-04-06 — LongMemEval Re-ingestion Blocked (TODO 5)
 - **Severity**: critical
@@ -1406,6 +1407,7 @@
 - **Likely cause**: The CI baseline PR intentionally introduced first-run inventories before the existing project debt was remediated, but several inventory commands were still wired as required/failing steps (confidence 95%).
 - **Suggested action**: Keep these inventory steps non-blocking until dedicated remediation tasks upgrade dependencies, repair pytest collection, fix frontend contracts/tests, and apply mechanical formatting.
 - **Seen again**: 2026-06-07 during PR #8 review-fix verification when `uv run bandit -r orchestrator providers scripts tests` exited 1 with pre-existing inventory (`Low: 3480`, `Medium: 26`, `High: 0`) and `tests/test_video_e2e.py (syntax error while parsing AST from file)`. A scoped production-file Bandit check for `orchestrator/eval/fact_harness.py` and `orchestrator/eval/chunk_harness.py` passed with no issues.
+- **Seen again**: 2026-06-08 during PR #18 follow-up verification. `uv run bandit -r orchestrator providers scripts tests` exited 1 with pre-existing inventory (`Low: 4589`, `Medium: 25`, `High: 0`) and `tests/test_video_e2e.py (syntax error while parsing AST from file)`; `uv run pip-audit` exited 1 with `Found 41 known vulnerabilities in 14 packages`; `PYTHONPATH=. uv run pytest -q` exited 2 with the same 8 collection errors/import drifts plus `tests/test_video_e2e.py:596 SyntaxError: unmatched ')'`.
 
 ## [2026-05-31T10:02:00Z] — BasedPyright Baseline Was Not Loaded By Default Command
 - **Severity**: warning
@@ -1465,6 +1467,7 @@
 - **Seen again**: 2026-05-31T10:26:58Z during PR follow-up basedpyright verification; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` and the explicit commitlint hook passed.
 - **Seen again**: 2026-06-07 during PR follow-up for failing CI; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`.
 - **Seen again**: 2026-06-07 during PR hosted-identity follow-up for failing backend gates; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` passed.
+- **Seen again**: 2026-06-08 during PR #18 follow-up verification; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`.
 
 ## 2026-05-31T10:24:30Z — BasedPyright config consolidation surfaced benchmark harness typing debt
 - **Severity**: warning
