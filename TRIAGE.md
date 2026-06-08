@@ -457,6 +457,7 @@
 - **Seen again**: 2026-04-15 during Task 1 regression gate verification — plain `pytest tests/test_longmemeval_fast.py tests/test_longmemeval_runner.py tests/test_longmemeval_ingest.py` failed with `ModuleNotFoundError: No module named 'orchestrator'`; confirmed `PYTHONPATH=. pytest ...` passes (29 tests).
 - **Seen again**: 2026-04-16 during autonomous-skill-creation Task 11 focused suite verification — exact `pytest tests/test_skill_extraction_prompt.py tests/test_skill_dedup.py tests/test_skill_injection.py tests/test_skill_manage.py tests/test_skill_protection.py tests/test_skill_api_contracts.py -q` failed in `tests/conftest.py` with `ModuleNotFoundError: No module named 'orchestrator'`; confirmed the same six-file suite passes as `PYTHONPATH=. pytest ...` (88 tests).
 - **Seen again**: 2026-04-16 during autonomous-skill-creation Task 13 when `python tests/benchmark_extraction.py --json --no-save` failed in `tests/benchmark_extraction.py:465` with `ModuleNotFoundError: No module named 'orchestrator'`; the benchmark script also requires `PYTHONPATH=.` in this host-shell setup.
+- **Seen again**: 2026-06-08 during PR #18 follow-up verification — plain `uv run pytest tests/test_daemon_message_persistence.py -q` failed in `tests/conftest.py` with `ModuleNotFoundError: No module named 'orchestrator'`; rerunning as `PYTHONPATH=. uv run pytest tests/test_daemon_message_persistence.py -q` passed (3 tests).
 
 ## 2026-04-06 — LongMemEval Re-ingestion Blocked (TODO 5)
 - **Severity**: critical

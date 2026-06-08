@@ -429,9 +429,9 @@ async def stream_sse_chat(
                                 or (current_time - _last_persist_s) >= _persist_interval_s
                             ):
                                 try:
-                                    await memory_store.update_message_content(
+                                    await memory_store.update_message(
                                         message_id=assistant_message_id,
-                                        content_delta=delta_text,
+                                        content="".join(final_text_parts),
                                     )
                                     _last_persist_s = current_time
                                 except Exception as e:
