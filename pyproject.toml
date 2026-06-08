@@ -47,7 +47,6 @@ include = [
     "scripts/**/*.py",
     "tests/**/*.py",
 ]
-extend-exclude = ["tests/test_video_e2e.py"]
 
 [tool.ruff.lint]
 extend-select = ["RUF100"]
