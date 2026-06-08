@@ -115,7 +115,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
         return;
       }
 
-      const success = await attemptPageLoadRefresh();
+      const success = await attemptPageLoadRefresh({
+        redirectOnExpiredSession: false,
+      });
       if (!mounted) return;
       updateAuthState();
 

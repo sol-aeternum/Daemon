@@ -1214,6 +1214,44 @@ describe('attemptPageLoadRefresh identity-session restore', () => {
     vi.restoreAllMocks();
   });
 
+  it('attemptPageLoadRefresh can suppress the legacy /setup redirect on expired sessions', async () => {
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { locks: undefined },
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'BroadcastChannel', {
+      configurable: true,
+      value: TestBroadcastChannel,
+    });
+
+    const mockFetch = vi.fn(() =>
+      Promise.resolve(new Response(null, { status: 401 })),
+    );
+    globalThis.fetch = mockFetch;
+
+    const assignedHref: { value: string | null } = { value: null };
+    const originalLocation = window.location;
+    const locationSpy = vi.spyOn(window, 'location', 'get').mockReturnValue({
+      ...originalLocation,
+      set href(value: string) {
+        assignedHref.value = value;
+      },
+    } as unknown as Location);
+
+    const { attemptPageLoadRefresh, getAccessToken } =
+      await import('../lib/auth');
+
+    const ok = await attemptPageLoadRefresh({
+      redirectOnExpiredSession: false,
+    });
+    expect(ok).toBe(false);
+    expect(getAccessToken()).toBeNull();
+    expect(assignedHref.value).toBeNull();
+
+    locationSpy.mockRestore();
+    vi.restoreAllMocks();
+  });
+
   it('attemptPageLoadRefresh returns false on 401 with read-only window.location (no throw)', async () => {
     Object.defineProperty(globalThis, 'navigator', {
       value: { locks: undefined },

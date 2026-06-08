@@ -1,5 +1,5 @@
-import AuthLanding from '../../components/AuthLanding';
+import AuthPageContent from '../../components/AuthPageContent';
 
 export default function AuthPage() {
-  return <AuthLanding mode="hosted" />;
+  return <AuthPageContent />;
 }

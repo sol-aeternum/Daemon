@@ -507,24 +507,15 @@ describe('AuthLanding — hosted mode', () => {
     ).toBeNull();
   });
 
-  it('hides setup token form behind an advanced section', async () => {
+  it('does not render the self-hosted setup form in hosted mode', async () => {
     render(<AuthLanding mode="hosted" />);
     await waitForLoadingToFinish();
 
     expect(screen.queryByLabelText(/setup token/i)).toBeNull();
-
-    const advancedButton = screen.getByRole('button', {
-      name: /advanced/i,
-    });
-    expect(advancedButton).toBeTruthy();
-    expect(advancedButton.getAttribute('aria-expanded')).toBe('false');
-
-    await act(async () => {
-      fireEvent.click(advancedButton);
-    });
-    expect(advancedButton.getAttribute('aria-expanded')).toBe('true');
-
-    expect(screen.getByLabelText(/setup token/i)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /advanced/i })).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: /complete setup/i }),
+    ).toBeNull();
   });
 
   it('shows enrollment form in hosted mode', async () => {
@@ -537,6 +528,27 @@ describe('AuthLanding — hosted mode', () => {
     expect(
       screen.getByRole('button', { name: /complete enrollment/i }),
     ).toBeTruthy();
+  });
+
+  it('uses runtime provider config instead of build-time provider flags', async () => {
+    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = '';
+    process.env.NEXT_PUBLIC_EMAIL_ENABLED = 'false';
+
+    render(
+      <AuthLanding
+        mode="hosted"
+        runtimeConfig={{
+          email: { enabled: true },
+          google: { enabled: true, clientId: 'runtime-client-id' },
+        }}
+      />,
+    );
+    await waitForLoadingToFinish();
+
+    expect(
+      screen.getByRole('button', { name: /continue with google/i }),
+    ).toBeTruthy();
+    expect(screen.getByLabelText(/email address/i)).toBeTruthy();
   });
 
   it('hides the hosted email form when the public email flag is disabled', async () => {

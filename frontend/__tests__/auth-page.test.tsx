@@ -1,40 +1,38 @@
 /**
- * Tests for `frontend/app/auth/page.tsx` — the hosted landing route.
- *
- * The /auth route is a thin wrapper that mounts the existing
- * AuthLanding component with mode="hosted" hard-coded. The decision
- * to redirect to /auth vs /setup is owned by the AuthProvider, which
- * reads the runtime /v1/auth/config response. The page itself must:
- *
- *  1. Mount AuthLanding with mode="hosted" (not derived from
- *     build-time getDeploymentMode()).
- *  2. Expose the "Advanced self-hosted setup" affordance so hosted
- *     users can fall through to /setup if their environment allows
- *     it.
- *  3. Survive AuthProvider's runtime config fetch (loading state
- *     must not crash the page).
- *  4. Be reachable as the public-guard exception path (the
- *     AuthProvider's redirect logic must NOT bounce an unauthenticated
- *     user from /auth back to /setup, which is covered separately
- *     in auth-provider.test.tsx — these tests just confirm the page
- *     mounts cleanly inside AuthProvider).
- *
- * AuthLanding's own internals (email-code form, Google button,
- * advanced self-hosted setup button, etc.) are exhaustively covered
- * in auth-landing.test.tsx. These tests focus on the page's
- * composition contract.
+ * Tests for the hosted /auth route composition.
  */
 
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render } from '@testing-library/react';
+import { render, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
+
+const runtimeConfig = {
+  mode: 'hosted' as const,
+  email: { enabled: false },
+  google: { enabled: true, clientId: 'runtime-google-client' },
+};
 
 const mockAuthLanding = vi.fn();
 vi.mock('../components/AuthLanding', () => ({
-  default: (props: { mode: 'hosted' | 'self-hosted' }) => {
+  default: (props: {
+    mode: 'hosted' | 'self-hosted';
+    runtimeConfig?: unknown;
+    runtimeConfigLoading?: boolean;
+  }) => {
     mockAuthLanding(props);
     return <div data-testid="auth-landing" data-mode={props.mode} />;
   },
+}));
+
+const mockFetchAuthConfig = vi.fn(() =>
+  Promise.resolve({ status: 'resolved' as const, config: runtimeConfig }),
+);
+const mockGetCachedAuthConfig = vi.fn(() => undefined);
+const mockSubscribeAuthConfig = vi.fn(() => () => {});
+vi.mock('../lib/auth-config', () => ({
+  fetchAuthConfig: () => mockFetchAuthConfig(),
+  getCachedAuthConfig: () => mockGetCachedAuthConfig(),
+  subscribeAuthConfig: (cb: unknown) => mockSubscribeAuthConfig(cb),
 }));
 
 const mockGetDeploymentMode = vi.fn(
@@ -49,39 +47,52 @@ import AuthPage from '../app/auth/page';
 describe('AuthPage — /auth route composition', () => {
   beforeEach(() => {
     mockAuthLanding.mockClear();
+    mockFetchAuthConfig.mockClear();
+    mockGetCachedAuthConfig.mockClear();
+    mockSubscribeAuthConfig.mockClear();
     mockGetDeploymentMode.mockClear();
     mockGetDeploymentMode.mockReturnValue('self-hosted');
+    mockGetCachedAuthConfig.mockReturnValue(undefined);
+    mockFetchAuthConfig.mockResolvedValue({
+      status: 'resolved' as const,
+      config: runtimeConfig,
+    });
   });
 
-  it('mounts AuthLanding with mode="hosted" regardless of build-time deployment mode', () => {
+  it('mounts AuthLanding with mode="hosted" regardless of build-time deployment mode', async () => {
     mockGetDeploymentMode.mockReturnValue('self-hosted');
     render(<AuthPage />);
-    expect(mockAuthLanding).toHaveBeenCalledTimes(1);
-    expect(mockAuthLanding.mock.calls[0]?.[0]).toEqual({ mode: 'hosted' });
+
+    await waitFor(() => {
+      expect(mockAuthLanding).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'hosted' }),
+      );
+    });
   });
 
-  it('does not consult getDeploymentMode — /auth is always the hosted landing', () => {
+  it('does not consult getDeploymentMode — /auth is always the hosted landing', async () => {
     mockGetDeploymentMode.mockReturnValue('hosted');
     render(<AuthPage />);
-    // The page is hard-coded to "hosted" — it does not read
-    // getDeploymentMode at all. If a future refactor adds that
-    // import, this test will fail and force an explicit decision.
+
+    await waitFor(() => {
+      expect(mockAuthLanding).toHaveBeenCalled();
+    });
     expect(mockGetDeploymentMode).not.toHaveBeenCalled();
   });
 
-  it('renders an Advanced self-hosted setup affordance (link to /setup) via AuthLanding', () => {
-    // AuthLanding owns the Advanced self-hosted setup button (the
-    // public surface). The page must not strip it: hosted users
-    // must always be able to reach /setup if their environment
-    // supports self-hosted fallback.
+  it('fetches runtime auth config and passes provider flags to AuthLanding', async () => {
     render(<AuthPage />);
-    // The mock returns data-testid="auth-landing" with data-mode.
-    // We assert the page mounted AuthLanding (the affordance lives
-    // inside it). The presence/absence of the button itself is
-    // exhaustively tested in auth-landing.test.tsx.
-    const landing = document.querySelector('[data-testid="auth-landing"]');
-    expect(landing).toBeTruthy();
-    expect(landing?.getAttribute('data-mode')).toBe('hosted');
+
+    await waitFor(() => {
+      expect(mockAuthLanding).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mode: 'hosted',
+          runtimeConfig,
+          runtimeConfigLoading: false,
+        }),
+      );
+    });
+    expect(mockFetchAuthConfig).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -91,11 +102,6 @@ describe('AuthPage — survives AuthProvider wrapping', () => {
   });
 
   it('does not crash when AuthProvider is in "loading" state for runtime auth config', async () => {
-    // Wrap the page in a synthetic AuthProvider that simulates the
-    // loading state. We use a minimal stub here because the real
-    // AuthProvider has its own contract tests in
-    // auth-provider.test.tsx — we only care that the page mounts
-    // without throwing while config is in flight.
     function StubAuthProvider({ children }: { children: ReactNode }) {
       return <div data-testid="stub-auth-provider">{children}</div>;
     }
@@ -108,6 +114,10 @@ describe('AuthPage — survives AuthProvider wrapping', () => {
       ),
     ).not.toThrow();
 
-    expect(mockAuthLanding).toHaveBeenCalledWith({ mode: 'hosted' });
+    await waitFor(() => {
+      expect(mockAuthLanding).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'hosted' }),
+      );
+    });
   });
 });

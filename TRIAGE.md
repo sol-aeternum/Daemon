@@ -1621,3 +1621,25 @@
 - **Evidence**: `bash scripts/local_ci.sh` output blocks the following: `Blocking failures: backend/basedpyright (exit=1), frontend/type-check (exit=2), frontend/lint (exit=1), frontend/format-check (exit=1), aggregate/pre-commit (exit=1)`. After the route-prefix fix in this commit, re-running pre-commit `doc-freshness` passes (this plan's contribution is fixed); the remaining four blocking failures are out-of-scope debt.
 - **Likely cause**: The advisor-events debt is the same root cause as the Wave 3 entry (partial refactor in PR #7 that was never finished). The `test_video_credits_grant_bounds.py` basedpyright error is a test-only type-narrowing issue in a file this plan does not own. Confidence 90%.
 - **Suggested action**: Open separate follow-up tasks: (a) advisor-events refactor to expose `isAdvisorEvent` from `lib/events.ts`; (b) type-narrowing fix in `test_video_credits_grant_bounds.py`. Do NOT fix as part of hosted-auth-fixes — the plan's scope is runtime config + mode-aware redirects + /auth route, all of which are TDD-green on their own.
+
+## 2026-06-08 UTC — Targeted auth.test stale-lock failure during PR comment follow-up
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: PR hosted-auth-fixes review comment follow-up
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: Running the direct `auth.test.ts` target failed one pre-existing no-Web-Locks refresh coordination test while the new PR-comment-targeted AuthProvider/AuthLanding/AuthPage tests passed. The failing assertion is unrelated to the hosted-mode redirect suppression and runtime provider config changes.
+- **Evidence**: `npm run test:run -- auth.test.ts` failed with `__tests__/auth.test.ts:831:30` / `__tests__/auth.test.ts:839:30` reporting `expected null to be 'invalid-token'`; the same run also emitted jsdom's known `Error: Not implemented: navigation (except hash changes)` warning when exercising the legacy `/setup` href assignment.
+- **Likely cause**: The existing no-Web-Locks stale-lock test does not reliably hold a competing refresh lock long enough to prevent the production fallback from attempting `doRefresh()`, whose mocked 401 response clears local auth state (confidence 75%).
+- **Suggested action**: In a separate test-hardening pass, make the stale-lock test deterministic with fake timers or an explicit long-lived competing lock plus bounded wait helper; do not mix this with hosted auth redirect review fixes.
+
+## 2026-06-08 UTC — Mis-scoped frontend npm command during PR comment follow-up
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR hosted-auth-fixes review comment follow-up
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: A frontend test command was accidentally launched from the repository root rather than `frontend/`, so npm could not find the frontend-only `test:run` script. The command was immediately rerun from `frontend/`.
+- **Evidence**: Root command output: `npm error Missing script: "test:run"`; a root-scoped `npx eslint frontend/components/AuthLanding.tsx` also loaded an incompatible global ESLint/plugin path and failed with `TypeError: Error while loading rule 'react/display-name': contextOrFilename.getFilename is not a function`; corrected commands were rerun from `frontend/`.
+- **Likely cause**: Operator working-directory mistake while chaining formatting and test commands (confidence 100%).
+- **Suggested action**: Keep frontend package commands scoped to `frontend/` or invoke with `npm --prefix frontend ...`.

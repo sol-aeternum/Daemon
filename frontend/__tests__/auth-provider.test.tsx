@@ -172,6 +172,9 @@ describe('AuthProvider mode-aware redirects', () => {
     mockRefresh.mockResolvedValue(false);
     renderProvider();
     await flush();
+    expect(mockRefresh).toHaveBeenCalledWith({
+      redirectOnExpiredSession: false,
+    });
     resolveConfig({
       mode: 'hosted',
       email: { enabled: true },
