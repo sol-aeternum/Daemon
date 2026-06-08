@@ -95,6 +95,8 @@ class CalculateTool(Tool):
         try:
             result = _evaluate_math_expression(expression)
             return json.dumps({"expression": expression, "result": result})
+        except RecursionError:
+            return json.dumps({"error": "Calculation failed: expression is too deeply nested"})
         except (_MathError, ArithmeticError, ValueError) as e:
             return json.dumps({"error": f"Calculation failed: {e}"})
 
@@ -162,15 +164,18 @@ class _MathParser:
                 return value
 
     def parse_factor(self) -> Number:
-        self.skip_whitespace()
-        ch = self.peek()
-        if ch == "+":
-            self.consume()
-            return self.parse_factor()
-        if ch == "-":
-            self.consume()
-            return -self.parse_factor()
-        return self.parse_power()
+        sign = 1
+        while True:
+            self.skip_whitespace()
+            ch = self.peek()
+            if ch == "+":
+                self.consume()
+            elif ch == "-":
+                self.consume()
+                sign *= -1
+            else:
+                value = self.parse_power()
+                return value if sign == 1 else -value
 
     def parse_power(self) -> Number:
         base = self.parse_primary()

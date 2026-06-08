@@ -92,6 +92,14 @@ class TestCalculateRejectsMalformed:
         assert "error" in result
         assert "result" not in result
 
+    def test_long_unary_sign_run_does_not_escape_tool(self, tool):
+        expression = "+" * 2500 + "1"
+        assert json.loads(_run(tool, expression)) == {"expression": expression, "result": 1}
+
+    def test_long_mixed_unary_sign_run_does_not_escape_tool(self, tool):
+        expression = "-" * 2501 + "1"
+        assert json.loads(_run(tool, expression)) == {"expression": expression, "result": -1}
+
     def test_non_string(self, tool):
         out = _run(tool, None)  # type: ignore[arg-type]
         assert "error" in json.loads(out)
