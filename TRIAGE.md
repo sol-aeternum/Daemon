@@ -1591,3 +1591,25 @@
 - **Evidence**: `uv run basedpyright --level error` reported `tests/test_identity_rate_limiter.py:615:29 - error: Cannot access attribute "script" for class "ArqRedis"` and `tests/test_identity_rate_limiter.py:621:43 - error: Cannot access attribute "store" for class "ArqRedis"`.
 - **Likely cause**: The regression test needed an `ArqRedis`-typed value for `RateLimiter`, but reused that typed variable for fake-specific assertions instead of keeping the concrete fake object for inspection. Confidence: 98%.
 - **Suggested action**: Keep future Redis fakes as concrete variables for fake-only assertions and pass a separately cast value only across the production API boundary.
+
+## [2026-06-08 01:41 UTC] — Local edit script quoting error
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR review follow-up for multiline `extend-exclude` guard
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: A one-off Python edit script failed before modifying files because nested triple-quoted strings produced invalid Python syntax.
+- **Evidence**: `SyntaxError: unexpected character after line continuation character` from the inline `python - <<'PY'` command while constructing the multiline TOML regression test.
+- **Likely cause**: Agent-authored shell helper used conflicting quote delimiters in generated Python source (95% confidence).
+- **Suggested action**: No project action needed; corrected by rerunning the edit with distinct quote delimiters.
+
+## [2026-06-08 01:41 UTC] — basedpyright baseline rewrote deleted-file diagnostics
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR review follow-up for multiline `extend-exclude` guard
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Running `uv run basedpyright --level error tests/test_test_files_parse.py` rewrote `.basedpyright/baseline.json`, removing 405 lines of diagnostics for the already-deleted `tests/test_video_e2e.py` even though this follow-up only changes the parse guard test.
+- **Evidence**: Command output: `updated ./.basedpyright/baseline.json with 520 errors (went down by 51)`. `git diff --stat` showed `.basedpyright/baseline.json | 405 -----------------------------------------`.
+- **Likely cause**: basedpyright refreshes the configured baseline opportunistically when invoked, and the original PR deleted a file that still had baseline entries (90% confidence).
+- **Suggested action**: Decide separately whether baseline cleanup belongs in the original deletion PR; this follow-up reverted the unrelated baseline mutation.
