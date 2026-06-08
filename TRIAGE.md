@@ -285,6 +285,7 @@
 - **Seen again**: 2026-05-31 during Task 6 when `npm install --save-dev @commitlint/cli @commitlint/config-conventional` completed but again reported `26 vulnerabilities (4 low, 8 moderate, 14 high)`; commitlint installation proceeded, and vulnerability remediation remains out of scope for Task 6.
 - **Seen again**: 2026-05-31T06:31Z during Task 7 local CI parity; `.sisyphus/evidence/task-7-ci-local-parity.txt` shows `npm ci` reporting 26 vulnerabilities and `npm run audit:ci` exiting 1.
 - **Seen again / changed count**: 2026-06-05T03:34Z during F3 Real Manual QA, `npm ci` in `/tmp/opencode/hosted-identity-pr-f3/frontend` completed but reported `27 vulnerabilities (4 low, 8 moderate, 14 high, 1 critical)`. Install succeeded, but the audit inventory is worse than the previously recorded 26-vulnerability state.
+- **Seen again**: 2026-06-08 during PR #21 Studio image API retirement follow-up; local `npm ci` reported the same `27 vulnerabilities (4 low, 8 moderate, 14 high, 1 critical)` inventory.
 
 ## 2026-05-31 05:54 UTC — npm ci Emits Deprecated Frontend Dependency Warnings
 - **Severity**: warning
@@ -296,6 +297,7 @@
 - **Evidence**: `.sisyphus/evidence/task-5-frontend-positive.txt` lines 2-28 show `npm ci` exit code 0 and the warning list.
 - **Likely cause**: Existing frontend dependency graph includes older transitive packages, especially from PWA/build tooling (confidence 90%).
 - **Suggested action**: Address during the same frontend dependency remediation task as the npm audit findings.
+- **Seen again**: 2026-06-08 during PR #21 Studio image API retirement follow-up; `npm ci` succeeded but emitted the same deprecated transitive dependency warnings (`@types/dompurify`, `inflight`, `rimraf@2`, `rollup-plugin-terser`, `glob@7`, Workbox packages) plus `sourcemap-codec` and `source-map@0.8.0-beta.0`.
 
 ## 2026-05-31 06:17 UTC — Gitleaks Negative Probe Requires Staged Content
 - **Severity**: info
@@ -457,6 +459,7 @@
 - **Seen again**: 2026-04-15 during Task 1 regression gate verification — plain `pytest tests/test_longmemeval_fast.py tests/test_longmemeval_runner.py tests/test_longmemeval_ingest.py` failed with `ModuleNotFoundError: No module named 'orchestrator'`; confirmed `PYTHONPATH=. pytest ...` passes (29 tests).
 - **Seen again**: 2026-04-16 during autonomous-skill-creation Task 11 focused suite verification — exact `pytest tests/test_skill_extraction_prompt.py tests/test_skill_dedup.py tests/test_skill_injection.py tests/test_skill_manage.py tests/test_skill_protection.py tests/test_skill_api_contracts.py -q` failed in `tests/conftest.py` with `ModuleNotFoundError: No module named 'orchestrator'`; confirmed the same six-file suite passes as `PYTHONPATH=. pytest ...` (88 tests).
 - **Seen again**: 2026-04-16 during autonomous-skill-creation Task 13 when `python tests/benchmark_extraction.py --json --no-save` failed in `tests/benchmark_extraction.py:465` with `ModuleNotFoundError: No module named 'orchestrator'`; the benchmark script also requires `PYTHONPATH=.` in this host-shell setup.
+- **Seen again**: 2026-06-08 during PR #18 follow-up verification — plain `uv run pytest tests/test_daemon_message_persistence.py -q` failed in `tests/conftest.py` with `ModuleNotFoundError: No module named 'orchestrator'`; rerunning as `PYTHONPATH=. uv run pytest tests/test_daemon_message_persistence.py -q` passed (3 tests).
 
 ## 2026-04-06 — LongMemEval Re-ingestion Blocked (TODO 5)
 - **Severity**: critical
@@ -611,6 +614,7 @@
 - **Seen again**: 2026-05-29 during generated-audio protection verification when `PYTHONPATH=. uv run pytest tests/test_route_auth_hardening.py -q` passed but emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 - **Seen again**: 2026-06-05 during hosted-identity Task 11 email-route verification when `PYTHONPATH=. uv run pytest tests/test_identity_email_routes.py tests/test_identity_email_challenge.py tests/test_identity_session_issuance.py tests/test_identity_account_service.py -q` passed (140 passed) but still emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14 from `litellm_core_utils/logging_utils.py:273`.
 - **Seen again**: 2026-06-05 during hosted-identity Task 11 corrective verification when the same focused command passed again (`142 passed`) after the `daemon_email_enabled` route-gating fix, but still emitted the same 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
+- **Seen again**: 2026-06-08 during PR #20 benchmark replay follow-up verification when `PYTHONPATH=. DAEMON_ENVIRONMENT=development uv run pytest -q tests/memory/test_encryption.py tests/test_longmemeval_runner.py tests/test_benchmark_extraction.py` passed (38 passed) but still emitted the same 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 
 ## 2026-04-10 12:30 — BasedPyright Warning Debt In Dreaming-Touched Python Modules
 - **Severity**: warning
@@ -1405,7 +1409,12 @@
 - **Seen again**: 2026-06-07 during PR hosted-identity follow-up for failing backend gates. `uv run bandit -r orchestrator providers scripts tests` exited 1 with `Low: 4535`, `Medium: 25`, `High: 0`, and `tests/test_video_e2e.py (syntax error while parsing AST from file)`; `uv run pip-audit` exited 1 with `Found 41 known vulnerabilities in 14 packages`; `PYTHONPATH=. uv run pytest -q` exited 2 with the same 8 collection errors/import drifts plus `tests/test_video_e2e.py:596 SyntaxError: unmatched ')'`.
 - **Likely cause**: The CI baseline PR intentionally introduced first-run inventories before the existing project debt was remediated, but several inventory commands were still wired as required/failing steps (confidence 95%).
 - **Suggested action**: Keep these inventory steps non-blocking until dedicated remediation tasks upgrade dependencies, repair pytest collection, fix frontend contracts/tests, and apply mechanical formatting.
+- **Seen again**: 2026-06-08 during PR #17 review-comment follow-up. `scripts/local_ci.sh backend` reported `uv run bandit -r orchestrator providers scripts tests` exit 1 with pre-existing inventory (`Low: 4606`, `Medium: 24`, `High: 0`) and `tests/test_video_e2e.py (syntax error while parsing AST from file)`; `uv run pip-audit` exit 1 with `Found 41 known vulnerabilities in 14 packages`; `PYTHONPATH=. uv run pytest -q` exit 2 with the same 8 collection errors/import drifts plus `tests/test_video_e2e.py:596 SyntaxError: unmatched ')'`.
+- **Seen again**: 2026-06-08 during PR #17 integer-precision review follow-up. `scripts/local_ci.sh backend` passed blocking gates, but inventory reported `uv run bandit -r orchestrator providers scripts tests` exit 1 with pre-existing inventory (`Low: 4609`, `Medium: 24`, `High: 0`) and `tests/test_video_e2e.py (syntax error while parsing AST from file)`; `uv run pip-audit` exit 1 with `Found 41 known vulnerabilities in 14 packages`; `PYTHONPATH=. uv run pytest -q` exit 2 with the same 8 collection errors/import drifts plus `tests/test_video_e2e.py:596 SyntaxError: unmatched ')'`.
+- **Seen again**: 2026-06-08 during PR #17 unary-recursion review follow-up. `scripts/local_ci.sh backend` passed blocking gates, but inventory reported `uv run bandit -r orchestrator providers scripts tests` exit 1 with pre-existing inventory (`Low: 4611`, `Medium: 24`, `High: 0`) and `tests/test_video_e2e.py (syntax error while parsing AST from file)`; `uv run pip-audit` exit 1 with `Found 41 known vulnerabilities in 14 packages`; `PYTHONPATH=. uv run pytest -q` exit 2 with the same 8 collection errors/import drifts plus `tests/test_video_e2e.py:596 SyntaxError: unmatched ')'`.
+- **Seen again**: 2026-06-08 during PR #17 complex-result review follow-up. `scripts/local_ci.sh backend` passed blocking gates, but inventory reported `uv run bandit -r orchestrator providers scripts tests` exit 1 with pre-existing inventory (`Low: 4613`, `Medium: 24`, `High: 0`) and `tests/test_video_e2e.py (syntax error while parsing AST from file)`; `uv run pip-audit` exit 1 with `Found 41 known vulnerabilities in 14 packages`; `PYTHONPATH=. uv run pytest -q` exit 2 with the same 8 collection errors/import drifts plus `tests/test_video_e2e.py:596 SyntaxError: unmatched ')'`.
 - **Seen again**: 2026-06-07 during PR #8 review-fix verification when `uv run bandit -r orchestrator providers scripts tests` exited 1 with pre-existing inventory (`Low: 3480`, `Medium: 26`, `High: 0`) and `tests/test_video_e2e.py (syntax error while parsing AST from file)`. A scoped production-file Bandit check for `orchestrator/eval/fact_harness.py` and `orchestrator/eval/chunk_harness.py` passed with no issues.
+- **Seen again**: 2026-06-08 during PR #20 benchmark replay follow-up verification when `scripts/local_ci.sh backend` passed all blocking backend gates but reported non-blocking inventory: `uv run bandit -r orchestrator providers scripts tests` exited 1 with `Low: 4585`, `Medium: 25`, `High: 0`, and `tests/test_video_e2e.py (syntax error while parsing AST from file)`; `uv run pip-audit` exited 1 with `Found 41 known vulnerabilities in 14 packages`; `PYTHONPATH=. uv run pytest -q` exited 2 with the same 8 collection errors/import drifts plus `tests/test_video_e2e.py:596 SyntaxError: unmatched )`.
 
 ## [2026-05-31T10:02:00Z] — BasedPyright Baseline Was Not Loaded By Default Command
 - **Severity**: warning
@@ -1440,6 +1449,7 @@
 - **Likely cause**: Host/container Node version is older than the workflow-pinned Node runtime (confidence 99%).
 - **Suggested action**: Use Node 24 locally when validating commitlint/frontend gates, or rely on the workflow setup-node step for CI parity.
 - **Seen again**: 2026-05-31T10:25:43Z during PR follow-up basedpyright verification; `npm ci` completed but emitted the same `EBADENGINE Unsupported engine` warnings for `@commitlint/*@21` under local Node `v20.20.2`.
+- **Seen again**: 2026-06-08 during PR #21 Studio image API retirement follow-up; `npm ci` completed but emitted the same `EBADENGINE Unsupported engine` warnings for `@commitlint/*@21` under local Node `v20.20.2`.
 
 ## [2026-05-31T10:05:00Z] — PyYAML Missing In Backend Environment For Ad Hoc Workflow Validation
 - **Severity**: info
@@ -1465,6 +1475,7 @@
 - **Seen again**: 2026-05-31T10:26:58Z during PR follow-up basedpyright verification; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` and the explicit commitlint hook passed.
 - **Seen again**: 2026-06-07 during PR follow-up for failing CI; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`.
 - **Seen again**: 2026-06-07 during PR hosted-identity follow-up for failing backend gates; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` passed.
+- **Seen again**: 2026-06-08 during PR #20 benchmark replay follow-up verification; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` passed.
 
 ## 2026-05-31T10:24:30Z — BasedPyright config consolidation surfaced benchmark harness typing debt
 - **Severity**: warning
@@ -1532,6 +1543,7 @@
 - **Likely cause**: Advisor event types were refactored without updating all consumers; `tool_call_id` and `advisor_id` fields were removed from base event types but still used in tests and `lib/advisorEvents.ts` (confidence 90%).
 - **Suggested action**: Update `lib/advisorEvents.ts` and related tests to match current event type definitions, or restore the missing type fields.
 - **Seen again**: 2026-06-05 during PR #7 hosted-identity review-comment verification when `./node_modules/.bin/tsc --noEmit --pretty false -p tsconfig.json` failed only in the same pre-existing advisor/tool-call event files while the targeted auth/deployment Vitest suite, changed-file eslint, and changed-file prettier checks passed.
+- **Seen again**: 2026-06-08 during PR #21 Studio image API retirement follow-up when `npm run type-check` failed in the same pre-existing `__tests__/advisor-events.test.ts` and `lib/advisorEvents.ts` advisor/tool-call event types after `next typegen` succeeded.
 
 ## 2026-06-05 UTC — Frontend lint has pre-existing errors across 29 files
 - **Severity**: warning
@@ -1578,6 +1590,7 @@
 - **Seen again**: 2026-06-08 04:27-04:28 UTC during PR hosted-auth-fixes review comment follow-up for hiding hosted email until runtime config resolves; `npx prettier`, `npx eslint`, `npm run test:run -- auth-landing.test.tsx`, and `npm run type-check` emitted the same `npm warn Unknown env config "http-proxy"...` warning before continuing.
 - **Likely cause**: The host or project npm environment includes a legacy `http-proxy` config key that current npm accepts with a warning but plans to reject in a future major version (confidence 80%).
 - **Suggested action**: Inspect npm config sources (`npm config list`) and remove or rename the legacy `http-proxy` setting if it is not required by the container/network environment.
+- **Seen again**: 2026-06-08 during PR #21 Studio image API retirement follow-up; `npm ci` and `npm run type-check` emitted `npm warn Unknown env config "http-proxy"`.
 
 ## 2026-06-07 UTC — Backend basedpyright failed on fake Redis test cast
 - **Severity**: warning
@@ -1590,91 +1603,24 @@
 - **Likely cause**: The regression test needed an `ArqRedis`-typed value for `RateLimiter`, but reused that typed variable for fake-specific assertions instead of keeping the concrete fake object for inspection. Confidence: 98%.
 - **Suggested action**: Keep future Redis fakes as concrete variables for fake-only assertions and pass a separately cast value only across the production API boundary.
 
-## 2026-06-08 UTC — Pre-existing advisor-events / tool-call-log test failures
-- **Severity**: warning
-- **Scope**: project
-- **Encountered during**: Wave 3 of `hosted-auth-fixes-2026-06-07` (frontend TDD for `/v1/auth/config` client + mode-aware AuthProvider)
-- **Category**: test-failure
-- **Blocked current task**: no
-- **What happened**: `npm run test:run` reports 19 failing tests in `__tests__/chat-route-advisor-events.test.ts`, `__tests__/advisor-events.test.ts`, and `__tests__/tool-call-log.test.ts`. Failures are in advisor-event tree building / correlation and tool-call-log filtering, completely unrelated to auth-provider, auth-config, deployment, devices, council, sanitizeHtml, or the new auth-config runtime client.
-- **Evidence**: `npm run test:run` output shows failures like `chat route advisor event bridge > bootstraps advisor-only data events without sending nested text to the main reply stream`, `buildAdvisorTree - live SSE event tree building > builds tree with single advisor nested under consult_advisor tool call`, `ToolCallLog > keeps advisor-internal tool events out of the top-level tool log`. None of the 5 new test files (`auth-config.test.ts`, `auth-provider.test.tsx`) fail.
-- **Likely cause**: Pre-existing failures in the advisor-events event-tree code path, likely from a partial refactor in PR #7 that was never finished. Confidence 80%.
-- **Suggested action**: Open a separate task to investigate the advisor-events / tool-call-log test failures. Do NOT fix as part of hosted-auth-fixes — that plan's scope is auth config + mode-aware redirects + /auth route page.
-
-## 2026-06-08 UTC — Hosted Auth Fixes: deployment-mode + runtime config plan execution
+## [2026-06-08 01:41 UTC] — Local edit script quoting error
 - **Severity**: info
-- **Scope**: project
-- **Encountered during**: hosted-auth-fixes-2026-06-07 TODO 10 surgical env/docs/matrix updates
+- **Scope**: tooling
+- **Encountered during**: PR review follow-up for multiline `extend-exclude` guard
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: A one-off Python edit script failed before modifying files because nested triple-quoted strings produced invalid Python syntax.
+- **Evidence**: `SyntaxError: unexpected character after line continuation character` from the inline `python - <<'PY'` command while constructing the multiline TOML regression test.
+- **Likely cause**: Agent-authored shell helper used conflicting quote delimiters in generated Python source (95% confidence).
+- **Suggested action**: No project action needed; corrected by rerunning the edit with distinct quote delimiters.
+
+## [2026-06-08 01:41 UTC] — basedpyright baseline rewrote deleted-file diagnostics
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR review follow-up for multiline `extend-exclude` guard
 - **Category**: config
 - **Blocked current task**: no
-- **What happened**: Plan execution added `DAEMON_DEPLOYMENT_MODE` (default `self_hosted`, allowed values `self_hosted`/`hosted`) as a first-class `Settings` field, a public no-store `GET /v1/auth/config` endpoint, a frontend runtime config client (`frontend/lib/auth-config.ts`), mode-aware `AuthProvider` redirects (`/auth` for hosted, `/setup` for self-hosted, safe `/setup` default on config error), a 5-line `frontend/app/auth/page.tsx` route, and a stricter `POST /v1/auth/setup` mode-gate that returns `403 setup_disabled_in_hosted_mode` whenever deployment mode is hosted regardless of `daemon_hosted_identity_enabled`. All new behavior is TDD-first; existing self-hosted setup/enrollment/device routes are untouched.
-- **Evidence**: branch `hosted-auth-fixes-2026-06-07` at `163adc80` (4 commits ahead of `main` 5233b96b); new files: `orchestrator/routes/auth_config.py`, `tests/test_deployment_mode_endpoint.py`, `tests/test_auth_config_hardening.py`, `frontend/lib/auth-config.ts`, `frontend/app/auth/page.tsx`, `frontend/__tests__/auth-config.test.ts`, `frontend/__tests__/auth-provider.test.tsx`, `frontend/__tests__/auth-page.test.tsx`; modified: `orchestrator/config.py`, `orchestrator/main.py`, `orchestrator/routes/auth_setup.py`, `frontend/components/AuthProvider.tsx`, `.env.example`, `docker-compose.yml`, `docs/HOSTED_IDENTITY.md`, `docs/FEATURE_MATRIX.md`; no new external dependencies.
-- **Likely cause**: Plan work, not a defect.
-- **Suggested action**: Continue Wave 7 (cross-boundary verification + F1-F4 review) and Wave 8 (cleanup + push-and-pr).
-
-## 2026-06-08 UTC — Pre-existing gate debt surfaced by `scripts/local_ci.sh`
-- **Severity**: warning
-- **Scope**: project
-- **Encountered during**: Wave 7 of `hosted-auth-fixes-2026-06-07` (cross-boundary verification + `local_ci.sh` run)
-- **Category**: build-error
-- **Blocked current task**: no
-- **What happened**: Running `bash scripts/local_ci.sh` against the plan branch surfaced four blocking-gate failures that are all pre-existing on `main` (not caused by this plan's commits). Specifically: (1) `backend/basedpyright` fails on `tests/test_video_credits_grant_bounds.py:89:42` — an `Argument of type "None" cannot be assigned to parameter "admin_key" of type "str"` error in a test file this plan never touched; (2) `frontend/type-check` fails on `lib/advisorEvents.ts:3:21` — `Module '"./events"' has no exported member 'isAdvisorEvent'`; (3) `frontend/lint` and (4) `frontend/format-check` fail on pre-existing debt in long-format files unrelated to auth; `frontend/build` and the inventory `frontend/test-run` cascade from the same `isAdvisorEvent` root cause. `aggregate/pre-commit` had a `doc-freshness` failure (CheckId.ROUTE for `/v1/auth/config`) that IS this plan's surface — fixed in this commit by moving the route prefix into the router declaration so `scripts/check_doc_freshness.py`'s `_ROUTE_DEF_RE` matches the `router.get("")` decorator.
-- **Evidence**: `bash scripts/local_ci.sh` output blocks the following: `Blocking failures: backend/basedpyright (exit=1), frontend/type-check (exit=2), frontend/lint (exit=1), frontend/format-check (exit=1), aggregate/pre-commit (exit=1)`. After the route-prefix fix in this commit, re-running pre-commit `doc-freshness` passes (this plan's contribution is fixed); the remaining four blocking failures are out-of-scope debt.
-- **Likely cause**: The advisor-events debt is the same root cause as the Wave 3 entry (partial refactor in PR #7 that was never finished). The `test_video_credits_grant_bounds.py` basedpyright error is a test-only type-narrowing issue in a file this plan does not own. Confidence 90%.
-- **Suggested action**: Open separate follow-up tasks: (a) advisor-events refactor to expose `isAdvisorEvent` from `lib/events.ts`; (b) type-narrowing fix in `test_video_credits_grant_bounds.py`. Do NOT fix as part of hosted-auth-fixes — the plan's scope is runtime config + mode-aware redirects + /auth route, all of which are TDD-green on their own.
-
-## 2026-06-08 UTC — Targeted auth.test stale-lock failure during PR comment follow-up
-- **Severity**: warning
-- **Scope**: project
-- **Encountered during**: PR hosted-auth-fixes review comment follow-up
-- **Category**: test-failure
-- **Blocked current task**: no
-- **What happened**: Running the direct `auth.test.ts` target failed one pre-existing no-Web-Locks refresh coordination test while the new PR-comment-targeted AuthProvider/AuthLanding/AuthPage tests passed. The failing assertion is unrelated to the hosted-mode redirect suppression and runtime provider config changes.
-- **Evidence**: `npm run test:run -- auth.test.ts` failed with `__tests__/auth.test.ts:831:30` / `__tests__/auth.test.ts:839:30` reporting `expected null to be 'invalid-token'`; the same run also emitted jsdom's known `Error: Not implemented: navigation (except hash changes)` warning when exercising the legacy `/setup` href assignment.
-- **Likely cause**: The existing no-Web-Locks stale-lock test does not reliably hold a competing refresh lock long enough to prevent the production fallback from attempting `doRefresh()`, whose mocked 401 response clears local auth state (confidence 75%).
-- **Suggested action**: In a separate test-hardening pass, make the stale-lock test deterministic with fake timers or an explicit long-lived competing lock plus bounded wait helper; do not mix this with hosted auth redirect review fixes.
-
-## 2026-06-08 UTC — Mis-scoped frontend npm command during PR comment follow-up
-- **Severity**: info
-- **Scope**: tooling
-- **Encountered during**: PR hosted-auth-fixes review comment follow-up
-- **Category**: other
-- **Blocked current task**: no
-- **What happened**: A frontend test command was accidentally launched from the repository root rather than `frontend/`, so npm could not find the frontend-only `test:run` script. The command was immediately rerun from `frontend/`.
-- **Evidence**: Root command output: `npm error Missing script: "test:run"`; a root-scoped `npx eslint frontend/components/AuthLanding.tsx` also loaded an incompatible global ESLint/plugin path and failed with `TypeError: Error while loading rule 'react/display-name': contextOrFilename.getFilename is not a function`; corrected commands were rerun from `frontend/`.
-- **Likely cause**: Operator working-directory mistake while chaining formatting and test commands (confidence 100%).
-- **Suggested action**: Keep frontend package commands scoped to `frontend/` or invoke with `npm --prefix frontend ...`.
-
-## 2026-06-08 04:12 UTC — Mixed frontend/backend formatter invocation during PR comment follow-up
-- **Severity**: info
-- **Scope**: tooling
-- **Encountered during**: PR hosted-auth-fixes review comment follow-up for runtime Google client ID and auth config provider master gate
-- **Category**: other
-- **Blocked current task**: no
-- **What happened**: A targeted `npx prettier --write` command accidentally included Python backend files alongside frontend/docs files. Prettier formatted supported files but returned exit code 2 for the Python paths; Python formatting was rerun with Ruff instead.
-- **Evidence**: `npx prettier --write frontend/components/AuthLanding.tsx frontend/__tests__/auth-landing.test.tsx orchestrator/routes/auth_config.py tests/test_deployment_mode_endpoint.py docs/HOSTED_IDENTITY.md` output included `[error] No parser could be inferred for file "/workspace/Daemon/orchestrator/routes/auth_config.py"` and the same message for `tests/test_deployment_mode_endpoint.py`.
-- **Likely cause**: Operator command-scope mistake; Prettier is not configured to parse Python in this repo (confidence 100%).
-- **Suggested action**: Continue using `npx prettier` only for frontend/docs files and `uv run ruff format` for Python files.
-
-## 2026-06-08 04:13 UTC — Pre-existing advisor-events type-check debt seen again
-- **Severity**: warning
-- **Scope**: project
-- **Encountered during**: PR hosted-auth-fixes review comment follow-up for runtime Google client ID and auth config provider master gate
-- **Category**: build-error
-- **Blocked current task**: no
-- **What happened**: The frontend type-check gate still fails on the previously triaged advisor-events/event-union debt. This is a duplicate "seen again" occurrence of the existing `Pre-existing advisor-events / tool-call-log test failures` and `Pre-existing gate debt surfaced by scripts/local_ci.sh` entries, not a new regression from this follow-up.
-- **Evidence**: `npm run type-check` reported `__tests__/advisor-events.test.ts(4,3): error TS2305: Module '"../lib/events"' has no exported member 'isAdvisorEndEvent'.`, `__tests__/advisor-events.test.ts(5,3): error TS2305: Module '"../lib/events"' has no exported member 'isAdvisorEvent'.`, and many related advisor event union errors in `lib/advisorEvents.ts`.
-- **Seen again**: 2026-06-08 04:28 UTC during PR hosted-auth-fixes review comment follow-up for hiding hosted email until runtime config resolves; `npm run type-check` exited 2 with the same missing advisor-event exports and advisor event union errors in `__tests__/advisor-events.test.ts` / `lib/advisorEvents.ts`.
-- **Likely cause**: Same pre-existing advisor-events partial refactor/type-union drift already logged in TRIAGE.md (confidence 95%).
-- **Suggested action**: Fix advisor event exports/types in a separate follow-up; keep this PR-comment fix scoped to hosted auth runtime config.
-
-## 2026-06-08 04:14 UTC — Pre-existing video credits basedpyright debt seen again
-- **Severity**: warning
-- **Scope**: project
-- **Encountered during**: PR hosted-auth-fixes review comment follow-up for runtime Google client ID and auth config provider master gate
-- **Category**: build-error
-- **Blocked current task**: no
-- **What happened**: The backend type-check gate still fails on the previously triaged video credits test type-narrowing issue. This is a duplicate "seen again" occurrence of the existing `Pre-existing gate debt surfaced by scripts/local_ci.sh` entry, not a new regression from this follow-up.
-- **Evidence**: `uv run basedpyright --level error` reported `tests/test_video_credits_grant_bounds.py:89:42 - error: Argument of type "None" cannot be assigned to parameter "admin_key" of type "str" in function "_settings"`.
-- **Likely cause**: Same pre-existing test-only type-narrowing issue already logged in TRIAGE.md (confidence 95%).
-- **Suggested action**: Fix the video credits test helper type contract in a separate follow-up; keep this PR-comment fix scoped to hosted auth runtime config.
+- **What happened**: Running `uv run basedpyright --level error tests/test_test_files_parse.py` rewrote `.basedpyright/baseline.json`, removing 405 lines of diagnostics for the already-deleted `tests/test_video_e2e.py` even though this follow-up only changes the parse guard test.
+- **Evidence**: Command output: `updated ./.basedpyright/baseline.json with 520 errors (went down by 51)`. `git diff --stat` showed `.basedpyright/baseline.json | 405 -----------------------------------------`.
+- **Likely cause**: basedpyright refreshes the configured baseline opportunistically when invoked, and the original PR deleted a file that still had baseline entries (90% confidence).
+- **Suggested action**: Decide separately whether baseline cleanup belongs in the original deletion PR; this follow-up reverted the unrelated baseline mutation.

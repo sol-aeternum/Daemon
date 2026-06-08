@@ -1,5 +1,7 @@
 """Video credits API routes."""
 
+import hmac
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Header
 from pydantic import BaseModel
 from typing import List
@@ -20,7 +22,9 @@ def require_admin_api_key(settings: Settings, authorization: str | None) -> None
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token")
     token = authorization.removeprefix("Bearer ").strip()
-    if token != settings.daemon_admin_api_key:
+    if not hmac.compare_digest(
+        token.encode(), settings.daemon_admin_api_key.encode()
+    ):
         raise HTTPException(status_code=403, detail="Invalid admin bearer token")
 
 

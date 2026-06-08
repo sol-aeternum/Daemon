@@ -76,7 +76,7 @@ Daemon uses a tier-based model configuration system. Specific model assignments 
 ### Video Generation + Credits ✅
 - **Providers**: `fal` (Kling) as default; `xai` (Imagine) also supported.
 - **Credits**: Prepaid system with atomic debit/refund. Balance and transactions via `/video-credits`.
-- **Studio**: Dedicated UI for image and video generation.
+- **Studio**: Dedicated UI for video generation. Legacy image mode is retired; `/api/images/models`, `/api/images/generate`, and `/api/images/upload-reference` remain authenticated 410 routes until the hosted-identity image replacement lands.
 
 ### Frontend ✅
 - **Chat**: Streaming via Vercel AI SDK `useChat`.
@@ -114,7 +114,7 @@ For detailed architecture, see [MEMORY_LAYER.md](../MEMORY_LAYER.md).
 | Subagent | Status | Implementation |
 |----------|--------|----------------|
 | `@research` | Implemented | Brave Search + synthesis |
-| `@image` | Implemented | OpenRouter/Gemini (images), xAI/fal (video) |
+| `@image` | Implemented | OpenRouter/Gemini image subagent remains; Studio image API is retired; xAI/fal video remains |
 | `@audio` | Implemented | ElevenLabs SFX |
 | `generate_document` | Implemented | Deterministic CSV/DOCX generation via `generate_document` tool |
 | `@code` | **Reserved** | Not implemented |

@@ -390,7 +390,7 @@ async def consolidate_cluster(
     provider_config = settings.get_provider_config("openrouter")
 
     # Initialize encryption for decrypting source content
-    encryption = ContentEncryption(settings.daemon_encryption_key or "")
+    encryption = ContentEncryption(settings.daemon_encryption_key)
 
     # Collect source memory IDs
     source_memory_ids = [str(m.get("id")) for m in cluster.members if m.get("id")]

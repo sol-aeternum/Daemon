@@ -14,7 +14,8 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 - `Backend stable` = backend support shipped, no client surface yet;
 - `Mobile eligible` = client surfaces designed/architected, not yet implemented;
 - `Cross-client stable` = live and stable on every surface where it should exist;
-- `Platform-specific permanent` = deliberately scoped to this surface only (e.g., keyboard shortcuts on web, share intent on mobile).
+- `Platform-specific permanent` = deliberately scoped to this surface only (e.g., keyboard shortcuts on web, share intent on mobile);
+- `Retired` = intentionally removed from the active product surface while a replacement is tracked separately.
 
 ## Update protocol
 
@@ -101,7 +102,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | **Council/Studio** | — | — | — | — | — | — |
 | Council Deliberation (multi-perspective LLM debate) | Cross-client stable | Cross-client stable | Not started | Not started | Council streaming service | No |
 | Council Interview Flow (roster, rounds, audit config) | Cross-client stable | Cross-client stable | Not started | Not started | /council command → interview flow | No |
-| Studio Image Generation (web UI) | Cross-client stable | Cross-client stable | Not started | Not started | Studio image generation route | No |
+| Studio Image Generation (web UI) | Retired | Retired | Not started | Not started | Authenticated retired Studio image API surface returns 410; hosted-identity replacement tracked separately | No |
 | Studio Video Generation (web UI with credit check) | Cross-client stable | Cross-client stable | Not started | Not started | POST /video-credits/estimate + studio video generation route | No |
 | Video Credit Balance & Transactions | Cross-client stable | Cross-client stable | Not started | Not started | GET /video-credits/balance, GET /video-credits/transactions, GET /video-credits/estimate | No |
 | **BYOK** | — | — | — | — | — | — |

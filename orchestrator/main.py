@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import importlib
 import json
 import logging
 import os
@@ -60,6 +59,7 @@ from orchestrator.session_cleanup import (
 )
 from orchestrator.routes import (
     conversations,
+    images,
     memories,
     skills,
     system,
@@ -2021,15 +2021,11 @@ async def chat(
     )
 
 
-# Include memory layer API routes
-image_api_router = importlib.import_module("backend.image_gen.router")
-
 app.include_router(conversations.router)
+app.include_router(images.router)
 app.include_router(memories.router)
 app.include_router(skills.router)
 app.include_router(system.router)
 app.include_router(users.router)
 app.include_router(video_credits.router)
 app.include_router(auth_setup_router)
-app.include_router(auth_config_router)
-app.include_router(getattr(image_api_router, "router"))

@@ -480,7 +480,7 @@ async def run_evaluation(
     )
 
     try:
-        encryption = ContentEncryption(settings.daemon_encryption_key or "")
+        encryption = ContentEncryption(settings.daemon_encryption_key)
         store = MemoryStore(pool, encryption)
 
         # Process questions
