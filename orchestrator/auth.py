@@ -25,6 +25,7 @@ Token verification flow:
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hmac
 import uuid
 
 from fastapi import HTTPException, Request
@@ -230,7 +231,9 @@ async def require_admin_or_device_auth(
 
     settings = get_settings()
 
-    if settings.daemon_admin_api_key and token == settings.daemon_admin_api_key:
+    if settings.daemon_admin_api_key and hmac.compare_digest(
+        token.encode(), settings.daemon_admin_api_key.encode()
+    ):
         admin_device = AuthenticatedDevice(
             user_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
             device_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
