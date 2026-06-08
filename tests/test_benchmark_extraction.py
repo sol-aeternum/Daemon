@@ -5,6 +5,7 @@ import uuid
 from typing import Any
 
 import pytest
+from cryptography.fernet import Fernet
 
 from tests import benchmark_extraction
 
@@ -119,7 +120,7 @@ async def test_replay_benchmark_conversation_uses_cumulative_user_transcript(
         "invoke_benchmark_extraction",
         fake_invoke_benchmark_extraction,
     )
-    monkeypatch.setenv("DAEMON_ENCRYPTION_KEY", "")
+    monkeypatch.setenv("DAEMON_ENCRYPTION_KEY", Fernet.generate_key().decode())
 
     import orchestrator.memory.store as store_module
 

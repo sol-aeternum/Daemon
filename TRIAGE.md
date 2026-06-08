@@ -612,6 +612,7 @@
 - **Seen again**: 2026-05-29 during generated-audio protection verification when `PYTHONPATH=. uv run pytest tests/test_route_auth_hardening.py -q` passed but emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 - **Seen again**: 2026-06-05 during hosted-identity Task 11 email-route verification when `PYTHONPATH=. uv run pytest tests/test_identity_email_routes.py tests/test_identity_email_challenge.py tests/test_identity_session_issuance.py tests/test_identity_account_service.py -q` passed (140 passed) but still emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14 from `litellm_core_utils/logging_utils.py:273`.
 - **Seen again**: 2026-06-05 during hosted-identity Task 11 corrective verification when the same focused command passed again (`142 passed`) after the `daemon_email_enabled` route-gating fix, but still emitted the same 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
+- **Seen again**: 2026-06-08 during PR #20 benchmark replay follow-up verification when `PYTHONPATH=. DAEMON_ENVIRONMENT=development uv run pytest -q tests/memory/test_encryption.py tests/test_longmemeval_runner.py tests/test_benchmark_extraction.py` passed (38 passed) but still emitted the same 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 
 ## 2026-04-10 12:30 — BasedPyright Warning Debt In Dreaming-Touched Python Modules
 - **Severity**: warning
@@ -1407,7 +1408,7 @@
 - **Likely cause**: The CI baseline PR intentionally introduced first-run inventories before the existing project debt was remediated, but several inventory commands were still wired as required/failing steps (confidence 95%).
 - **Suggested action**: Keep these inventory steps non-blocking until dedicated remediation tasks upgrade dependencies, repair pytest collection, fix frontend contracts/tests, and apply mechanical formatting.
 - **Seen again**: 2026-06-07 during PR #8 review-fix verification when `uv run bandit -r orchestrator providers scripts tests` exited 1 with pre-existing inventory (`Low: 3480`, `Medium: 26`, `High: 0`) and `tests/test_video_e2e.py (syntax error while parsing AST from file)`. A scoped production-file Bandit check for `orchestrator/eval/fact_harness.py` and `orchestrator/eval/chunk_harness.py` passed with no issues.
-- **Seen again**: 2026-06-08 during PR #18 follow-up verification. `uv run bandit -r orchestrator providers scripts tests` exited 1 with pre-existing inventory (`Low: 4589`, `Medium: 25`, `High: 0`) and `tests/test_video_e2e.py (syntax error while parsing AST from file)`; `uv run pip-audit` exited 1 with `Found 41 known vulnerabilities in 14 packages`; `PYTHONPATH=. uv run pytest -q` exited 2 with the same 8 collection errors/import drifts plus `tests/test_video_e2e.py:596 SyntaxError: unmatched ')'`.
+- **Seen again**: 2026-06-08 during PR #20 benchmark replay follow-up verification when `scripts/local_ci.sh backend` passed all blocking backend gates but reported non-blocking inventory: `uv run bandit -r orchestrator providers scripts tests` exited 1 with `Low: 4585`, `Medium: 25`, `High: 0`, and `tests/test_video_e2e.py (syntax error while parsing AST from file)`; `uv run pip-audit` exited 1 with `Found 41 known vulnerabilities in 14 packages`; `PYTHONPATH=. uv run pytest -q` exited 2 with the same 8 collection errors/import drifts plus `tests/test_video_e2e.py:596 SyntaxError: unmatched )`.
 
 ## [2026-05-31T10:02:00Z] — BasedPyright Baseline Was Not Loaded By Default Command
 - **Severity**: warning
@@ -1467,7 +1468,7 @@
 - **Seen again**: 2026-05-31T10:26:58Z during PR follow-up basedpyright verification; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` and the explicit commitlint hook passed.
 - **Seen again**: 2026-06-07 during PR follow-up for failing CI; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`.
 - **Seen again**: 2026-06-07 during PR hosted-identity follow-up for failing backend gates; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` passed.
-- **Seen again**: 2026-06-08 during PR #18 follow-up verification; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`.
+- **Seen again**: 2026-06-08 during PR #20 benchmark replay follow-up verification; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` passed.
 
 ## 2026-05-31T10:24:30Z — BasedPyright config consolidation surfaced benchmark harness typing debt
 - **Severity**: warning
@@ -1591,3 +1592,25 @@
 - **Evidence**: `uv run basedpyright --level error` reported `tests/test_identity_rate_limiter.py:615:29 - error: Cannot access attribute "script" for class "ArqRedis"` and `tests/test_identity_rate_limiter.py:621:43 - error: Cannot access attribute "store" for class "ArqRedis"`.
 - **Likely cause**: The regression test needed an `ArqRedis`-typed value for `RateLimiter`, but reused that typed variable for fake-specific assertions instead of keeping the concrete fake object for inspection. Confidence: 98%.
 - **Suggested action**: Keep future Redis fakes as concrete variables for fake-only assertions and pass a separately cast value only across the production API boundary.
+
+## [2026-06-08 01:41 UTC] — Local edit script quoting error
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR review follow-up for multiline `extend-exclude` guard
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: A one-off Python edit script failed before modifying files because nested triple-quoted strings produced invalid Python syntax.
+- **Evidence**: `SyntaxError: unexpected character after line continuation character` from the inline `python - <<'PY'` command while constructing the multiline TOML regression test.
+- **Likely cause**: Agent-authored shell helper used conflicting quote delimiters in generated Python source (95% confidence).
+- **Suggested action**: No project action needed; corrected by rerunning the edit with distinct quote delimiters.
+
+## [2026-06-08 01:41 UTC] — basedpyright baseline rewrote deleted-file diagnostics
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: PR review follow-up for multiline `extend-exclude` guard
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: Running `uv run basedpyright --level error tests/test_test_files_parse.py` rewrote `.basedpyright/baseline.json`, removing 405 lines of diagnostics for the already-deleted `tests/test_video_e2e.py` even though this follow-up only changes the parse guard test.
+- **Evidence**: Command output: `updated ./.basedpyright/baseline.json with 520 errors (went down by 51)`. `git diff --stat` showed `.basedpyright/baseline.json | 405 -----------------------------------------`.
+- **Likely cause**: basedpyright refreshes the configured baseline opportunistically when invoked, and the original PR deleted a file that still had baseline entries (90% confidence).
+- **Suggested action**: Decide separately whether baseline cleanup belongs in the original deletion PR; this follow-up reverted the unrelated baseline mutation.
