@@ -94,10 +94,12 @@ class CalculateTool(Tool):
             return json.dumps({"error": "expression must be a string"})
         try:
             result = _evaluate_math_expression(expression)
+            if type(result) is complex:
+                raise _MathError("complex results are not supported")
             return json.dumps({"expression": expression, "result": result})
         except RecursionError:
             return json.dumps({"error": "Calculation failed: expression is too deeply nested"})
-        except (_MathError, ArithmeticError, ValueError) as e:
+        except (_MathError, ArithmeticError, TypeError, ValueError) as e:
             return json.dumps({"error": f"Calculation failed: {e}"})
 
 

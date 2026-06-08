@@ -86,6 +86,13 @@ class TestCalculateRejectsMalformed:
         assert "error" in result
         assert "result" not in result
 
+    @pytest.mark.parametrize("expression", ["(-1) ** 0.5", "(-8) ** (1/3)"])
+    def test_complex_result_returns_error(self, tool, expression):
+        out = _run(tool, expression)
+        result = json.loads(out)
+        assert "error" in result
+        assert "result" not in result
+
     def test_oversized_integer_result_returns_error(self, tool):
         out = _run(tool, "10 ** 1000000")
         result = json.loads(out)
