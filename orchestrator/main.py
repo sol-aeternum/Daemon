@@ -27,6 +27,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
@@ -301,6 +302,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# TrustedHostMiddleware: enforce an allowlist on the inbound Host header.
+# Without this, a Host-header injection (Host: attacker.com) can be used
+# to generate absolute URLs in error responses that point to attacker-
+# controlled domains, confuse reverse proxies, or bypass domain-based
+# authentication. The allowlist is read from DAEMON_ALLOWED_HOSTS via
+# the Settings class. In production an empty allowlist is rejected at
+# startup; in development it falls back to ["*"] for the dev experience.
+get_settings().validate_host_security_config()
+_allowed_hosts = get_settings().resolve_allowed_hosts()
+if _allowed_hosts == ["*"]:
+    logger.warning(
+        "TrustedHostMiddleware is configured with allowed_hosts=['*']; "
+        "the backend will accept any Host header. This is the default in "
+        "development but is unsafe in production. Set DAEMON_ALLOWED_HOSTS "
+        "to a comma-separated allowlist (e.g. 'app.daemon.ai,*.daemon.ai')."
+    )
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts)
 
 
 DEFAULT_BILLING_USER_ID = "00000000-0000-0000-0000-000000000001"

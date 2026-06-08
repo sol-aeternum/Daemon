@@ -23,6 +23,17 @@ class HostedIdentityConfigError(ValueError):
     """Raised when hosted identity configuration fails fail-closed validation."""
 
 
+class HostSecurityConfigError(ValueError):
+    """Raised when the deployment is misconfigured for Host-header security.
+
+    Mirrors HostedIdentityConfigError but covers the TrustedHostMiddleware
+    allowlist. Production deployments must set ``daemon_allowed_hosts`` to a
+    non-empty, non-wildcard value; otherwise the host-header attack surface
+    is left open and the backend may generate absolute URLs that point to
+    attacker-controlled domains.
+    """
+
+
 class ProviderConfig(BaseSettings):
     """Configuration for a single LLM provider."""
 
@@ -86,6 +97,12 @@ class Settings(BaseSettings):
 
     # Comma-separated list of allowed CORS origins. Default denies all cross-origin.
     daemon_allowed_origins: str = ""
+
+    # Comma-separated list of allowed Host header values for TrustedHostMiddleware.
+    # Supports `*.example.com` wildcards. Empty means "all hosts in development"
+    # and is rejected at startup in production. Setting this to `*` explicitly
+    # disables the host check (not recommended in production).
+    daemon_allowed_hosts: str = ""
 
     # Public origin for CSRF origin validation (e.g., "https://app.daemon.ai").
     daemon_public_origin: str | None = None
@@ -728,6 +745,68 @@ class Settings(BaseSettings):
             raise HostedIdentityConfigError(
                 f"daemon_mail_sender_mode must be one of {HOSTED_MAIL_SENDER_MODES}, "
                 f"got: {self.daemon_mail_sender_mode!r}"
+            )
+
+    def resolve_allowed_hosts(self) -> list[str]:
+        """Return the list of Host-header values to allow.
+
+        Development (``daemon_environment != "production"``): empty
+        ``daemon_allowed_hosts`` is treated as "all hosts allowed" and
+        the middleware is configured with ``["*"]``. Setting an explicit
+        non-empty list narrows the allowlist even in development.
+
+        Production: ``daemon_allowed_hosts`` MUST be set to a non-empty
+        list (or to a single ``"*"`` if the operator accepts the risk).
+        ``validate_host_security_config()`` enforces this at startup.
+
+        Each entry is a string. ``TrustedHostMiddleware`` natively
+        supports ``*.example.com`` wildcards, so we do not parse here.
+        Empty entries (from a trailing comma) are stripped.
+        """
+        raw = self.daemon_allowed_hosts or ""
+        entries = [entry.strip() for entry in raw.split(",") if entry.strip()]
+        if not entries:
+            is_production = self.daemon_environment.lower().strip() == "production"
+            if is_production:
+                # Caller is expected to have called validate_host_security_config()
+                # before reaching here. We still fail closed in case the caller
+                # forgot.
+                raise HostSecurityConfigError(
+                    "daemon_allowed_hosts is empty in production. Set the env var "
+                    "to a comma-separated list of allowed Host values (e.g. "
+                    "'app.daemon.ai,*.daemon.ai') or to a single '*' to "
+                    "explicitly opt out of the host check."
+                )
+            return ["*"]
+        return entries
+
+    def validate_host_security_config(self) -> None:
+        """Validate Host-header security configuration and fail closed.
+
+        Production deployments must set ``daemon_allowed_hosts`` to a
+        non-empty list. A wildcard ``"*"`` is allowed but logs a warning
+        at startup (see main.py); a non-wildcard allowlist is the
+        recommended posture. Development deployments are not subject to
+        this check (the dev experience is preserved).
+
+        Raises:
+            HostSecurityConfigError: on a production deployment with an
+                empty allowlist.
+        """
+        is_production = self.daemon_environment.lower().strip() == "production"
+        if not is_production:
+            return
+
+        raw = self.daemon_allowed_hosts or ""
+        entries = [entry.strip() for entry in raw.split(",") if entry.strip()]
+        if not entries:
+            raise HostSecurityConfigError(
+                "daemon_allowed_hosts is empty in production. The backend "
+                "would accept Host headers from any value, enabling URL "
+                "confusion and phishing. Set the env var to a "
+                "comma-separated list of allowed Host values (e.g. "
+                "'app.daemon.ai,*.daemon.ai') or to a single '*' to "
+                "explicitly opt out of the host check."
             )
 
 
