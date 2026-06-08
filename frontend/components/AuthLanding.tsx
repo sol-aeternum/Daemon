@@ -11,7 +11,7 @@ import {
   startGoogleSignIn,
   completeGoogleSignIn,
 } from '../lib/auth';
-import { getEmailEnabled, getGoogleClientId } from '../lib/deployment';
+import { getGoogleClientId } from '../lib/deployment';
 import type { AuthConfig } from '../lib/auth-config';
 import { Sparkles, Shield, AlertCircle, Chrome, Monitor } from 'lucide-react';
 
@@ -145,11 +145,7 @@ export default function AuthLanding({
         : ''
       : getGoogleClientId(mode)
     : '';
-  const emailEnabled = isHosted
-    ? runtimeConfig
-      ? runtimeConfig.email.enabled
-      : getEmailEnabled(mode)
-    : false;
+  const emailEnabled = isHosted ? runtimeConfig?.email.enabled === true : false;
 
   useEffect(() => {
     let cancelled = false;

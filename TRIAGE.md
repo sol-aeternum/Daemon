@@ -1575,6 +1575,7 @@
 - **Blocked current task**: no
 - **What happened**: Frontend npm script execution emitted a warning before running the targeted Vitest suite. The tests still passed, and the warning did not affect the review fix.
 - **Evidence**: `npm run test:run -- __tests__/auth-proxy-route.test.ts` output included `npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.`
+- **Seen again**: 2026-06-08 04:27-04:28 UTC during PR hosted-auth-fixes review comment follow-up for hiding hosted email until runtime config resolves; `npx prettier`, `npx eslint`, `npm run test:run -- auth-landing.test.tsx`, and `npm run type-check` emitted the same `npm warn Unknown env config "http-proxy"...` warning before continuing.
 - **Likely cause**: The host or project npm environment includes a legacy `http-proxy` config key that current npm accepts with a warning but plans to reject in a future major version (confidence 80%).
 - **Suggested action**: Inspect npm config sources (`npm config list`) and remove or rename the legacy `http-proxy` setting if it is not required by the container/network environment.
 
@@ -1663,6 +1664,7 @@
 - **Blocked current task**: no
 - **What happened**: The frontend type-check gate still fails on the previously triaged advisor-events/event-union debt. This is a duplicate "seen again" occurrence of the existing `Pre-existing advisor-events / tool-call-log test failures` and `Pre-existing gate debt surfaced by scripts/local_ci.sh` entries, not a new regression from this follow-up.
 - **Evidence**: `npm run type-check` reported `__tests__/advisor-events.test.ts(4,3): error TS2305: Module '"../lib/events"' has no exported member 'isAdvisorEndEvent'.`, `__tests__/advisor-events.test.ts(5,3): error TS2305: Module '"../lib/events"' has no exported member 'isAdvisorEvent'.`, and many related advisor event union errors in `lib/advisorEvents.ts`.
+- **Seen again**: 2026-06-08 04:28 UTC during PR hosted-auth-fixes review comment follow-up for hiding hosted email until runtime config resolves; `npm run type-check` exited 2 with the same missing advisor-event exports and advisor event union errors in `__tests__/advisor-events.test.ts` / `lib/advisorEvents.ts`.
 - **Likely cause**: Same pre-existing advisor-events partial refactor/type-union drift already logged in TRIAGE.md (confidence 95%).
 - **Suggested action**: Fix advisor event exports/types in a separate follow-up; keep this PR-comment fix scoped to hosted auth runtime config.
 
