@@ -19,6 +19,7 @@ The walker uses the filesystem, not ``pytest``'s collection, so
 from __future__ import annotations
 
 import ast
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,26 @@ def _iter_test_files() -> list[Path]:
     if not TESTS_DIR.is_dir():
         return []
     return sorted(path for path in TESTS_DIR.rglob("*.py") if "__pycache__" not in path.parts)
+
+
+def _ruff_extend_exclude_entries(pyproject: Path) -> list[str]:
+    """Parse Ruff's ``extend-exclude`` entries from ``pyproject.toml``."""
+    with pyproject.open("rb") as file_obj:
+        config = tomllib.load(file_obj)
+
+    tool_config = config.get("tool", {})
+    if not isinstance(tool_config, dict):
+        return []
+
+    ruff_config = tool_config.get("ruff", {})
+    if not isinstance(ruff_config, dict):
+        return []
+
+    extend_exclude = ruff_config.get("extend-exclude", [])
+    if not isinstance(extend_exclude, list):
+        pytest.fail("tool.ruff.extend-exclude must be a TOML array when configured")
+
+    return [entry for entry in extend_exclude if isinstance(entry, str)]
 
 
 def test_every_test_file_parses() -> None:
@@ -83,19 +104,39 @@ def test_no_ruff_extend_exclude_for_tests() -> None:
     if not pyproject.is_file():
         pytest.skip("pyproject.toml not found")
 
-    text = pyproject.read_text(encoding="utf-8")
-    # Naive parse: look for the line ``extend-exclude = [...]`` and
-    # check that none of the entries point inside ``tests/``.
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line.startswith("extend-exclude"):
-            continue
-        if "tests/" in line:
-            pytest.fail(
-                "pyproject.toml contains a tests/ path in extend-exclude. "
-                "If a test file is broken, delete it — do not hide it. "
-                f"Line: {raw_line!r}"
-            )
+    test_exclusions = [
+        entry
+        for entry in _ruff_extend_exclude_entries(pyproject)
+        if entry == "tests" or entry.startswith("tests/")
+    ]
+    if test_exclusions:
+        pytest.fail(
+            "pyproject.toml contains a tests/ path in tool.ruff.extend-exclude. "
+            "If a test file is broken, delete it — do not hide it. "
+            f"Entries: {test_exclusions!r}"
+        )
+
+
+def test_multiline_ruff_extend_exclude_for_tests_is_detected(tmp_path: Path) -> None:
+    """Multiline TOML arrays must not bypass the test exclusion guard."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        """[tool.ruff]
+extend-exclude = [
+    "orchestrator/generated.py",
+    "tests/hidden_broken_test.py",
+]
+""",
+        encoding="utf-8",
+    )
+
+    test_exclusions = [
+        entry
+        for entry in _ruff_extend_exclude_entries(pyproject)
+        if entry == "tests" or entry.startswith("tests/")
+    ]
+
+    assert test_exclusions == ["tests/hidden_broken_test.py"]
 
 
 def test_tests_dir_is_not_empty() -> None:
