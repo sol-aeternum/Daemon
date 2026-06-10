@@ -1,4 +1,4 @@
-"use client";
+'use client';
 
 import {
   createContext,
@@ -8,9 +8,9 @@ import {
   useCallback,
   useEffect,
   ReactNode,
-} from "react";
-import { ensureAuthHeader } from "../lib/auth";
-import { getProtectedMediaUrl } from "../hooks/useAuthenticatedImageUrl";
+} from 'react';
+import { ensureAuthHeader } from '../lib/auth';
+import { getProtectedMediaUrl } from '../hooks/useAuthenticatedImageUrl';
 
 /**
  * AudioPlaybackProvider manages a single HTMLAudioElement for cached TTS playback.
@@ -44,14 +44,14 @@ interface AudioPlaybackContextValue {
 }
 
 const AudioPlaybackContext = createContext<AudioPlaybackContextValue | null>(
-  null
+  null,
 );
 
 export function useAudioPlayback(): AudioPlaybackContextValue {
   const context = useContext(AudioPlaybackContext);
   if (!context) {
     throw new Error(
-      "useAudioPlayback must be used within an AudioPlaybackProvider"
+      'useAudioPlayback must be used within an AudioPlaybackProvider',
     );
   }
   return context;
@@ -114,7 +114,7 @@ export function AudioPlaybackProvider({
           playableUrl = URL.createObjectURL(blob);
           objectUrlRef.current = playableUrl;
         } catch (err) {
-          console.error("Failed to load authenticated audio:", err);
+          console.error('Failed to load authenticated audio:', err);
           stop();
           return;
         }
@@ -148,22 +148,22 @@ export function AudioPlaybackProvider({
           revokeObjectUrl();
         }
         setIsLoading(false);
-        console.error("Audio playback error");
+        console.error('Audio playback error');
       };
 
       audio.play().catch((err) => {
-        console.error("Failed to play audio:", err);
+        console.error('Failed to play audio:', err);
         stop();
       });
     },
-    [revokeObjectUrl, stop]
+    [revokeObjectUrl, stop],
   );
 
   const isPlaying = useCallback(
     (text: string) => {
       return currentlyPlayingText === text && audioRef.current !== null;
     },
-    [currentlyPlayingText]
+    [currentlyPlayingText],
   );
 
   const value: AudioPlaybackContextValue = {

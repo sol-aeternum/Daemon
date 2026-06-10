@@ -1,11 +1,55 @@
-"use client";
+'use client';
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import type { StudioGeneration, StudioModel, StudioReferenceImage } from "./types";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
+import type {
+  StudioGeneration,
+  StudioModel,
+  StudioReferenceImage,
+} from './types';
 
 const MAX_MODELS = 4;
-const STORAGE_MODELS_KEY = "studio:selectedModels";
-const STORAGE_ASPECT_RATIO_KEY = "studio:aspectRatio";
+const STORAGE_MODELS_KEY = 'studio:selectedModels';
+const STORAGE_ASPECT_RATIO_KEY = 'studio:aspectRatio';
+
+const readStoredModels = () => {
+  if (typeof localStorage === 'undefined') {
+    return [];
+  }
+
+  const storedModels = localStorage.getItem(STORAGE_MODELS_KEY);
+  if (!storedModels) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(storedModels);
+    if (Array.isArray(parsed)) {
+      return parsed
+        .filter((value): value is string => typeof value === 'string')
+        .slice(0, MAX_MODELS);
+    }
+  } catch {
+    localStorage.removeItem(STORAGE_MODELS_KEY);
+  }
+
+  return [];
+};
+
+const readStoredAspectRatio = () => {
+  if (typeof localStorage === 'undefined') {
+    return '1:1';
+  }
+
+  return localStorage.getItem(STORAGE_ASPECT_RATIO_KEY) || '1:1';
+};
 
 interface StudioContextValue {
   availableModels: StudioModel[];
@@ -34,32 +78,17 @@ const StudioContext = createContext<StudioContextValue | null>(null);
 
 export function StudioProvider({ children }: { children: ReactNode }) {
   const [availableModels, setAvailableModels] = useState<StudioModel[]>([]);
-  const [selectedModels, setSelectedModels] = useState<string[]>([]);
-  const [prompt, setPrompt] = useState<string>("");
-  const [referenceImage, setReferenceImage] = useState<StudioReferenceImage | null>(null);
-  const [aspectRatio, setAspectRatioState] = useState<string>("1:1");
-  const [resolution, setResolution] = useState<string>("1K");
+  const [selectedModels, setSelectedModels] =
+    useState<string[]>(readStoredModels);
+  const [prompt, setPrompt] = useState<string>('');
+  const [referenceImage, setReferenceImage] =
+    useState<StudioReferenceImage | null>(null);
+  const [aspectRatio, setAspectRatioState] = useState<string>(
+    readStoredAspectRatio,
+  );
+  const [resolution, setResolution] = useState<string>('1K');
   const [generations, setGenerations] = useState<StudioGeneration[]>([]);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
-
-  useEffect(() => {
-    const storedModels = localStorage.getItem(STORAGE_MODELS_KEY);
-    if (storedModels) {
-      try {
-        const parsed = JSON.parse(storedModels);
-        if (Array.isArray(parsed)) {
-          setSelectedModels(parsed.filter((value): value is string => typeof value === "string").slice(0, MAX_MODELS));
-        }
-      } catch {
-        localStorage.removeItem(STORAGE_MODELS_KEY);
-      }
-    }
-
-    const storedAspectRatio = localStorage.getItem(STORAGE_ASPECT_RATIO_KEY);
-    if (storedAspectRatio && typeof storedAspectRatio === "string") {
-      setAspectRatioState(storedAspectRatio);
-    }
-  }, []);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_MODELS_KEY, JSON.stringify(selectedModels));
@@ -97,18 +126,21 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     setGenerations((prev) => [value, ...prev]);
   }, []);
 
-  const upsertGeneration = useCallback((value: { id: string } & Partial<StudioGeneration>) => {
-    setGenerations((prev) => {
-      const index = prev.findIndex((item) => item.id === value.id);
-      if (index === -1) {
-        return [value as StudioGeneration, ...prev];
-      }
+  const upsertGeneration = useCallback(
+    (value: { id: string } & Partial<StudioGeneration>) => {
+      setGenerations((prev) => {
+        const index = prev.findIndex((item) => item.id === value.id);
+        if (index === -1) {
+          return [value as StudioGeneration, ...prev];
+        }
 
-      const copy = [...prev];
-      copy[index] = { ...copy[index], ...value } as StudioGeneration;
-      return copy;
-    });
-  }, []);
+        const copy = [...prev];
+        copy[index] = { ...copy[index], ...value } as StudioGeneration;
+        return copy;
+      });
+    },
+    [],
+  );
 
   const clearGallery = useCallback(() => {
     setGenerations([]);
@@ -156,13 +188,15 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     ],
   );
 
-  return <StudioContext.Provider value={value}>{children}</StudioContext.Provider>;
+  return (
+    <StudioContext.Provider value={value}>{children}</StudioContext.Provider>
+  );
 }
 
 export function useStudio() {
   const context = useContext(StudioContext);
   if (!context) {
-    throw new Error("useStudio must be used within a StudioProvider");
+    throw new Error('useStudio must be used within a StudioProvider');
   }
   return context;
 }

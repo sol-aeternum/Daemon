@@ -3,7 +3,10 @@
 import { Suspense } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { ConversationList, type SidebarSection } from '@/components/ConversationList';
+import {
+  ConversationList,
+  type SidebarSection,
+} from '@/components/ConversationList';
 import { useConversationHistory } from '@/hooks/useConversationHistory';
 
 const settingsNav = [
@@ -70,7 +73,11 @@ function ChatBackLink() {
   );
 }
 
-export default function SettingsLayout({ children }: { children: React.ReactNode }) {
+export default function SettingsLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   const pathname = usePathname();
 
   return (

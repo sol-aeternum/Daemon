@@ -1,5 +1,5 @@
 interface CouncilProgressEvent {
-  type: "council_progress";
+  type: 'council_progress';
   stage: string;
   current_round: number;
   total_rounds: number;
@@ -12,11 +12,11 @@ interface CouncilProgressProps {
 }
 
 export function CouncilProgress({ event }: CouncilProgressProps) {
-  const { stage, current_round, total_rounds, models_complete, models_total } = event;
+  const { stage, current_round, total_rounds, models_complete, models_total } =
+    event;
 
-  const progressPercentage = models_total > 0
-    ? (models_complete / models_total) * 100
-    : 0;
+  const progressPercentage =
+    models_total > 0 ? (models_complete / models_total) * 100 : 0;
 
   return (
     <div className="bg-[var(--color-bg-secondary)] rounded-lg shadow-lg border border-[var(--color-border-primary)] overflow-hidden w-full transition-all duration-300 ease-in-out">
@@ -39,7 +39,9 @@ export function CouncilProgress({ event }: CouncilProgressProps) {
 
         <div className="flex items-center justify-between text-xs text-[var(--color-text-muted)] mb-1">
           <span>Model responses</span>
-          <span>{models_complete}/{models_total}</span>
+          <span>
+            {models_complete}/{models_total}
+          </span>
         </div>
 
         <div className="w-full bg-[var(--color-border-primary)] rounded-full h-1.5">

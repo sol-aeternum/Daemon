@@ -1,6 +1,6 @@
-"use client";
+'use client';
 
-import { Component, ErrorInfo, ReactNode } from "react";
+import { Component, ErrorInfo, ReactNode } from 'react';
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -14,7 +14,10 @@ interface ErrorBoundaryState {
   showDetails: boolean;
 }
 
-export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+export class ErrorBoundary extends Component<
+  ErrorBoundaryProps,
+  ErrorBoundaryState
+> {
   constructor(props: ErrorBoundaryProps) {
     super(props);
     this.state = {
@@ -30,7 +33,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
-    console.error("ErrorBoundary caught an error:", error, errorInfo);
+    console.error('ErrorBoundary caught an error:', error, errorInfo);
     this.setState({
       error,
       errorInfo,
@@ -53,11 +56,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
           <div className="max-w-md w-full bg-[var(--color-bg-secondary)] rounded-lg shadow-lg p-6 text-center">
             <div className="mb-4 flex justify-center">
               <div className="w-16 h-16 rounded-full bg-[var(--color-status-error-bg)] flex items-center justify-center">
-                <svg
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path
                     strokeLinecap="round"
                     strokeLinejoin="round"
@@ -89,18 +88,20 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
               onClick={this.toggleDetails}
               className="text-sm text-[--daemon-text-secondary] hover:text-[--daemon-text-primary] mb-4 underline"
             >
-              {this.state.showDetails ? "Hide details" : "Show details"}
+              {this.state.showDetails ? 'Hide details' : 'Show details'}
             </button>
 
-            {this.state.showDetails && this.state.errorInfo && this.state.error?.stack && (
-              <div className="mb-4 p-3 bg-[var(--color-bg-tertiary)] rounded text-left overflow-auto max-h-48">
-                <p className="font-mono text-xs text-[var(--color-text-secondary)] whitespace-pre-wrap">
-                  {this.state.error.stack}
-                  {"\n\n"}
-                  {this.state.errorInfo.componentStack}
-                </p>
-              </div>
-            )}
+            {this.state.showDetails &&
+              this.state.errorInfo &&
+              this.state.error?.stack && (
+                <div className="mb-4 p-3 bg-[var(--color-bg-tertiary)] rounded text-left overflow-auto max-h-48">
+                  <p className="font-mono text-xs text-[var(--color-text-secondary)] whitespace-pre-wrap">
+                    {this.state.error.stack}
+                    {'\n\n'}
+                    {this.state.errorInfo.componentStack}
+                  </p>
+                </div>
+              )}
 
             <button
               onClick={this.handleReload}

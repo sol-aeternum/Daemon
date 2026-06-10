@@ -25,7 +25,9 @@ const getClassNameValue = (value: unknown): string => {
 
 const isInteractiveHtmlClassName = (className: string): boolean => {
   const normalized = className.toLowerCase();
-  return normalized.includes('language-html') && normalized.includes('interactive');
+  return (
+    normalized.includes('language-html') && normalized.includes('interactive')
+  );
 };
 
 const isInteractiveHtmlPreNode = (node: unknown): boolean => {
@@ -83,11 +85,7 @@ export default function MarkdownRenderer({
         rehypePlugins={[rehypeHighlight]}
         components={{
           a: ({ node, ...props }) => (
-            <a
-              {...props}
-              target="_blank"
-              rel="noopener noreferrer"
-            />
+            <a {...props} target="_blank" rel="noopener noreferrer" />
           ),
           code: ({ node, className, children, ...props }) => {
             const match = /language-(\w+)/.exec(className || '');
@@ -134,7 +132,10 @@ export default function MarkdownRenderer({
           },
           table: ({ node, ...props }) => (
             <div className="overflow-x-auto my-2">
-              <table {...props} className="min-w-full divide-y divide-[var(--color-border-primary)]" />
+              <table
+                {...props}
+                className="min-w-full divide-y divide-[var(--color-border-primary)]"
+              />
             </div>
           ),
         }}

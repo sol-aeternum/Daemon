@@ -1,8 +1,8 @@
-"use client";
+'use client';
 
-import { useEffect, useRef, useMemo } from "react";
-import { useStreamingTts } from "../hooks/useStreamingTts";
-import { Volume2, VolumeX } from "lucide-react";
+import { useEffect, useRef, useMemo } from 'react';
+import { useStreamingTts } from '../hooks/useStreamingTts';
+import { Volume2, VolumeX } from 'lucide-react';
 
 interface StreamingTtsMessageProps {
   messageId: string;
@@ -24,16 +24,24 @@ export function StreamingTtsMessage({
   model,
   speed,
 }: StreamingTtsMessageProps) {
-  const { isPlaying, isConnecting, startStreaming, stop, sendTextChunk, flushBuffer, isStreaming: isWsStreaming } = useStreamingTts({
+  const {
+    isPlaying,
+    isConnecting,
+    startStreaming,
+    stop,
+    sendTextChunk,
+    flushBuffer,
+    isStreaming: isWsStreaming,
+  } = useStreamingTts({
     voice,
     model,
     speed,
-    onError: (err) => console.error("TTS Error:", err),
+    onError: (err) => console.error('TTS Error:', err),
   });
 
   const startedRef = useRef(false);
   const lastSentLengthRef = useRef(0);
-  const formattedText = useMemo(() => text || "", [text]);
+  const formattedText = useMemo(() => text || '', [text]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -42,7 +50,14 @@ export function StreamingTtsMessage({
     if (startedRef.current || isConnecting || isWsStreaming) return;
     startStreaming();
     startedRef.current = true;
-  }, [enabled, autoStart, isStreaming, isConnecting, isWsStreaming, startStreaming]);
+  }, [
+    enabled,
+    autoStart,
+    isStreaming,
+    isConnecting,
+    isWsStreaming,
+    startStreaming,
+  ]);
 
   useEffect(() => {
     if (!startedRef.current) return;
@@ -93,13 +108,15 @@ export function StreamingTtsMessage({
     startedRef.current = true;
   };
 
-   return (
-     <button
-       type="button"
-       onClick={handleClick}
-       className="ml-2 inline-flex items-center gap-1 rounded px-1 py-0.5 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] transition-colors"
-       title={isPlaying ? "Stop TTS" : isConnecting ? "Connecting..." : "Play TTS"}
-     >
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      className="ml-2 inline-flex items-center gap-1 rounded px-1 py-0.5 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] transition-colors"
+      title={
+        isPlaying ? 'Stop TTS' : isConnecting ? 'Connecting...' : 'Play TTS'
+      }
+    >
       {isConnecting ? (
         <span className="animate-pulse">Connecting...</span>
       ) : isPlaying ? (
