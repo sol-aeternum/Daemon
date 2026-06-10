@@ -315,13 +315,14 @@ async def test_retrieve_memories_for_text_logs_with_l0_inclusion(mock_store):
         }
     ]
 
-    result = await retrieve_memories_for_text(
-        mock_store,
-        "test query",
-        user_id=user_id,
-        include_l0=True,
-        log_retrieval=True,
-    )
+    with patch("orchestrator.memory.retrieval.embed_query", new=AsyncMock(return_value=[0.1])):
+        result = await retrieve_memories_for_text(
+            mock_store,
+            "test query",
+            user_id=user_id,
+            include_l0=True,
+            log_retrieval=True,
+        )
     await _allow_background_tasks()
 
     assert len(result) >= 2
@@ -348,13 +349,14 @@ async def test_retrieve_memories_for_text_passes_triggered_by_to_inner_call(mock
         }
     ]
 
-    await retrieve_memories_for_text(
-        mock_store,
-        "test query",
-        user_id=user_id,
-        log_retrieval=True,
-        retrieval_triggered_by="memory_reflect",
-    )
+    with patch("orchestrator.memory.retrieval.embed_query", new=AsyncMock(return_value=[0.1])):
+        await retrieve_memories_for_text(
+            mock_store,
+            "test query",
+            user_id=user_id,
+            log_retrieval=True,
+            retrieval_triggered_by="memory_reflect",
+        )
     await _allow_background_tasks()
 
     mock_store.log_retrieval.assert_called_once()

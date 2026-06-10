@@ -286,3 +286,13 @@ def create_default_registry(
         registry.register(MemoryReflectTool(memory_store, user_id))
 
     return registry
+
+
+def create_advisor_registry():
+    """Create the constrained tool registry available inside advisor calls."""
+    from orchestrator.tools.registry import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.register(GetTimeTool())
+    registry.register(CalculateTool())
+    return registry

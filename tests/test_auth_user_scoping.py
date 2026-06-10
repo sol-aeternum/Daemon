@@ -10,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 
 from orchestrator.auth import AuthenticatedDevice
 from orchestrator.config import get_settings
+from orchestrator.db import get_app_state
 from orchestrator.main import app
 
 
@@ -19,22 +20,42 @@ def make_auth_headers(token: str) -> dict[str, str]:
 
 @pytest_asyncio.fixture
 async def authenticated_app(monkeypatch):
+    monkeypatch.setenv("DAEMON_ENVIRONMENT", "development")
     monkeypatch.setenv("DATABASE_URL", "")
     monkeypatch.setenv("REDIS_URL", "")
     monkeypatch.setenv("MOCK_LLM", "true")
     get_settings.cache_clear()
 
+    app_state = MagicMock()
+    app_state.db_pool = AsyncMock()
+    app_state.db_pool.fetchval = AsyncMock(return_value=1)
+    app_state.db_pool.close = AsyncMock()
+    app_state.redis = None
+    app_state.memory_store = None
+    app_state.video_credits_dal = None
+    monkeypatch.setattr(
+        "orchestrator.main.init_app_state",
+        AsyncMock(return_value=app_state),
+    )
+
     async with app.router.lifespan_context(app):
         original_app_state = app.state.app_state
-        app_state = MagicMock()
-        app_state.db_pool = object()
-        app_state.redis = None
-        app_state.memory_store = None
-        app_state.video_credits_dal = None
         app.state.app_state = app_state
+
+        settings = get_settings()
+
+        async def override_settings():
+            return settings
+
+        async def override_app_state():
+            return app.state.app_state
+
+        app.dependency_overrides[get_settings] = override_settings
+        app.dependency_overrides[get_app_state] = override_app_state
         try:
             yield app_state
         finally:
+            app.dependency_overrides.clear()
             app.state.app_state = original_app_state
             get_settings.cache_clear()
 

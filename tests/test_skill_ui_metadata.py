@@ -9,16 +9,17 @@ This module validates the API contracts for:
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import pytest_asyncio
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient, Response
 
+from orchestrator.auth import AdminOrDeviceAuth, AuthenticatedDevice
 from orchestrator.routes import skills as skills_router
 
 
@@ -49,13 +50,45 @@ class MockRecord:
         return self._data.get(key, default)
 
 
+class ASGISyncClient:
+    __test__ = False
+
+    def __init__(self, app: FastAPI) -> None:
+        self.app = app
+
+    def request(self, method: str, url: str, **kwargs: Any) -> Response:
+        async def _request() -> Response:
+            transport = ASGITransport(app=self.app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                return await client.request(method, url, **kwargs)
+
+        return asyncio_runner(_request())
+
+    def get(self, url: str, **kwargs: Any) -> Response:
+        return self.request("GET", url, **kwargs)
+
+    def post(self, url: str, **kwargs: Any) -> Response:
+        return self.request("POST", url, **kwargs)
+
+
+def asyncio_runner(awaitable: Any) -> Any:
+    import asyncio
+
+    return asyncio.run(awaitable)
+
+
+TestClient = ASGISyncClient
+
+
 def _set_db_pool(client: TestClient, db_pool: AsyncMock | None) -> None:
     """Helper to set db_pool on app state, bypassing type checking."""
     cast(Any, client.app).state.app_state.db_pool = db_pool
 
 
 @pytest.fixture
-def app_with_mock_db(mock_db_pool: AsyncMock) -> FastAPI:
+def app_with_mock_db(
+    mock_db_pool: AsyncMock, fake_authenticated_device: AuthenticatedDevice
+) -> FastAPI:
     """Create FastAPI app with mocked db pool in app state."""
     app = FastAPI()
     app.include_router(skills_router.router)
@@ -63,6 +96,20 @@ def app_with_mock_db(mock_db_pool: AsyncMock) -> FastAPI:
     mock_app_state = MagicMock()
     mock_app_state.db_pool = mock_db_pool
     cast(Any, app).state.app_state = mock_app_state
+
+    async def override_device_auth() -> AuthenticatedDevice:
+        return fake_authenticated_device
+
+    async def override_admin_or_device_auth() -> AdminOrDeviceAuth:
+        return AdminOrDeviceAuth(
+            authenticated_device=fake_authenticated_device,
+            is_admin=False,
+        )
+
+    app.dependency_overrides[skills_router.require_device_auth] = override_device_auth
+    app.dependency_overrides[skills_router.require_admin_or_device_auth] = (
+        override_admin_or_device_auth
+    )
 
     return app
 
@@ -73,10 +120,19 @@ def client(app_with_mock_db: FastAPI) -> TestClient:
     return TestClient(app_with_mock_db)
 
 
-@pytest_asyncio.fixture
-async def mock_db_pool() -> AsyncMock:
+@pytest.fixture
+def mock_db_pool() -> AsyncMock:
     """Create mock database pool."""
     return AsyncMock()
+
+
+@pytest.fixture
+def fake_authenticated_device() -> AuthenticatedDevice:
+    return AuthenticatedDevice(
+        user_id=uuid.UUID("11111111-1111-1111-1111-111111111111"),
+        device_id=uuid.UUID("22222222-2222-2222-2222-222222222222"),
+        session_id=uuid.UUID("33333333-3333-3333-3333-333333333333"),
+    )
 
 
 class TestSkillUIBadgeRendering:
@@ -619,9 +675,13 @@ Old content.
             assert data["local_version"] == "1.0.0"
 
             # Verify Apply/Dismiss endpoints exist
-            assert client.post(
-                "/skills/pending-skill/pending-update", json={"action": "apply"}
-            ).status_code in (200, 400)
+            with patch(
+                "orchestrator.skills_upgrade.embed_skill_content",
+                AsyncMock(return_value=[0.1, 0.2, 0.3]),
+            ):
+                assert client.post(
+                    "/skills/pending-skill/pending-update", json={"action": "apply"}
+                ).status_code in (200, 400)
             assert client.post(
                 "/skills/pending-skill/pending-update", json={"action": "dismiss"}
             ).status_code in (200, 400)

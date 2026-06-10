@@ -201,8 +201,6 @@ async def test_build_memory_context_l0_and_l1_separate() -> None:
         {"content": "Previous session discussed Python", "category": "summary"},
     ]
 
-    from unittest.mock import patch
-
     async def mock_retrieve(*args, **kwargs):
         return [
             {
@@ -213,19 +211,11 @@ async def test_build_memory_context_l0_and_l1_separate() -> None:
             }
         ]
 
-    with patch.object(store, "search_memories", new_callable=AsyncMock) as mock_search:
-        mock_search.return_value = [
-            {
-                "id": "retrieved-memory",
-                "content": "Retrieved fact about Python",
-                "category": "fact",
-                "similarity": 0.9,
-            }
-        ]
-        from orchestrator.memory import retrieval
-
-        with patch.object(retrieval, "retrieve_memories", mock_retrieve):
-            result = await build_memory_context(store, conversation_id)
+    with (
+        patch("orchestrator.memory.injection.embed_query", new=AsyncMock(return_value=[0.1])),
+        patch("orchestrator.memory.injection.retrieve_memories_for_text", mock_retrieve),
+    ):
+        result = await build_memory_context(store, conversation_id)
 
     assert "[FROZEN MEMORIES]" in result
     assert "Frozen fact" in result

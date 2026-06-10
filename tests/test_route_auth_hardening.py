@@ -9,9 +9,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
+from orchestrator.auth import require_admin_or_device_auth, require_device_auth
 from orchestrator.config import get_settings
+from orchestrator.db import AppState, get_app_state
+import orchestrator.main as main_module
 from orchestrator.main import app
 
 
@@ -21,11 +25,38 @@ async def client(monkeypatch):
     monkeypatch.setenv("REDIS_URL", "")
     monkeypatch.setenv("DAEMON_ENVIRONMENT", "development")
     get_settings.cache_clear()
+    monkeypatch.setattr(main_module, "fetch_openrouter_models", AsyncMock(return_value=[]))
 
-    async with app.router.lifespan_context(app):
+    settings = get_settings()
+    original_app_state = getattr(app.state, "app_state", None)
+    original_settings = getattr(app.state, "settings", None)
+    app.state.app_state = AppState(settings=settings)
+    app.state.settings = settings
+
+    async def reject_device_auth():
+        raise HTTPException(status_code=401, detail="test unauthenticated")
+
+    async def reject_admin_or_device_auth():
+        raise HTTPException(status_code=401, detail="test unauthenticated")
+
+    async def override_app_state():
+        return app.state.app_state
+
+    async def override_settings():
+        return get_settings()
+
+    app.dependency_overrides[get_app_state] = override_app_state
+    app.dependency_overrides[get_settings] = override_settings
+    app.dependency_overrides[require_device_auth] = reject_device_auth
+    app.dependency_overrides[require_admin_or_device_auth] = reject_admin_or_device_auth
+    try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             yield client
+    finally:
+        app.dependency_overrides.clear()
+        app.state.app_state = original_app_state
+        app.state.settings = original_settings
 
 
 @pytest_asyncio.fixture
@@ -67,13 +98,27 @@ async def authenticated_client(monkeypatch):
     app_state.memory_store = None
     app_state.video_credits_dal = None
 
-    async with app.router.lifespan_context(app):
-        original_app_state = app.state.app_state
+    original_app_state = getattr(app.state, "app_state", None)
+    original_settings = getattr(app.state, "settings", None)
+    app.state.settings = get_settings()
+
+    async def override_app_state():
+        return app.state.app_state
+
+    async def override_settings():
+        return get_settings()
+
+    app.dependency_overrides[get_app_state] = override_app_state
+    app.dependency_overrides[get_settings] = override_settings
+    try:
         app.state.app_state = app_state
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             yield client, "valid-token"
+    finally:
+        app.dependency_overrides.clear()
         app.state.app_state = original_app_state
+        app.state.settings = original_settings
 
 
 class TestConversationsRoutesAreProtected:

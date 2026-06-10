@@ -92,9 +92,17 @@ class TestThresholdBranchBehavior:
             return_value={"id": "00000000-0000-0000-0000-000000000003", "content": "test fact"}
         )
 
-        with patch(
-            "orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock
-        ) as mock_embed:
+        with (
+            patch(
+                "orchestrator.memory.dedup.embed_documents",
+                new_callable=AsyncMock,
+            ) as mock_embed,
+            patch(
+                "orchestrator.memory.dedup.check_contradiction",
+                new_callable=AsyncMock,
+                return_value=(True, "threshold test contradiction"),
+            ),
+        ):
             mock_embed.return_value = [[0.1] * 1024]
 
             # Case A: merge_threshold=0.0 → any candidate merges (similarity 0.5 >= 0.0)
@@ -197,9 +205,17 @@ class TestThresholdBranchBehavior:
         mock_store._pool.fetch = AsyncMock(return_value=[])
         mock_store._pool.execute = AsyncMock()
 
-        with patch(
-            "orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock
-        ) as mock_embed:
+        with (
+            patch(
+                "orchestrator.memory.dedup.embed_documents",
+                new_callable=AsyncMock,
+            ) as mock_embed,
+            patch(
+                "orchestrator.memory.dedup.check_contradiction",
+                new_callable=AsyncMock,
+                return_value=(True, "threshold test contradiction"),
+            ),
+        ):
             mock_embed.return_value = [[0.1] * 1024]
 
             # With same_slot_threshold=0.0, similarity 0.7 would supersede

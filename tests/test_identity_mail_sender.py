@@ -54,6 +54,7 @@ from orchestrator.services.identity.mail_sender import (
     SmtpMailSender,
     get_mail_sender,
 )
+from orchestrator.services.identity import mail_sender as mail_sender_module
 
 
 def _settings_with_mode(mode: str, **overrides: object) -> Settings:
@@ -81,6 +82,14 @@ def _sample_message(**overrides: object) -> MailMessage:
     }
     defaults.update(overrides)
     return MailMessage(**defaults)  # type: ignore[arg-type]
+
+
+@pytest.fixture(autouse=True)
+def _run_mail_sender_thread_boundary_inline(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def inline_to_thread(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(mail_sender_module.asyncio, "to_thread", inline_to_thread)
 
 
 # ============================================================================

@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import pytest_asyncio
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
-import uuid
+from httpx import ASGITransport, AsyncClient, Response
 
 from orchestrator.auth import AdminOrDeviceAuth, AuthenticatedDevice
 from orchestrator.config import get_settings
@@ -46,7 +44,41 @@ class MockRecord:
         return self._data.get(key, default)
 
 
-def _set_db_pool(client: TestClient, db_pool: AsyncMock | None) -> None:
+class ASGISyncClient:
+    def __init__(self, app: FastAPI) -> None:
+        self.app = app
+
+    def request(self, method: str, url: str, **kwargs: Any) -> Response:
+        async def _request() -> Response:
+            transport = ASGITransport(app=self.app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                return await client.request(method, url, **kwargs)
+
+        return asyncio_runner(_request())
+
+    def get(self, url: str, **kwargs: Any) -> Response:
+        return self.request("GET", url, **kwargs)
+
+    def post(self, url: str, **kwargs: Any) -> Response:
+        return self.request("POST", url, **kwargs)
+
+    def put(self, url: str, **kwargs: Any) -> Response:
+        return self.request("PUT", url, **kwargs)
+
+    def patch(self, url: str, **kwargs: Any) -> Response:
+        return self.request("PATCH", url, **kwargs)
+
+    def delete(self, url: str, **kwargs: Any) -> Response:
+        return self.request("DELETE", url, **kwargs)
+
+
+def asyncio_runner(awaitable: Any) -> Any:
+    import asyncio
+
+    return asyncio.run(awaitable)
+
+
+def _set_db_pool(client: ASGISyncClient, db_pool: AsyncMock | None) -> None:
     """Helper to set db_pool on app state, bypassing type checking."""
     cast(Any, client.app).state.app_state.db_pool = db_pool
 
@@ -65,19 +97,31 @@ def app_with_mock_db(
     mock_app_state.video_credits_dal = MagicMock()
     cast(Any, app).state.app_state = mock_app_state
 
-    app.dependency_overrides[skills_router.require_device_auth] = lambda: fake_authenticated_device
+    async def override_device_auth() -> AuthenticatedDevice:
+        return fake_authenticated_device
+
+    async def override_admin_or_device_auth() -> AdminOrDeviceAuth:
+        return AdminOrDeviceAuth(
+            authenticated_device=fake_authenticated_device,
+            is_admin=False,
+        )
+
+    app.dependency_overrides[skills_router.require_device_auth] = override_device_auth
+    app.dependency_overrides[skills_router.require_admin_or_device_auth] = (
+        override_admin_or_device_auth
+    )
 
     return app
 
 
 @pytest.fixture
-def client(app_with_mock_db: FastAPI) -> TestClient:
+def client(app_with_mock_db: FastAPI) -> ASGISyncClient:
     """Create test client."""
-    return TestClient(app_with_mock_db)
+    return ASGISyncClient(app_with_mock_db)
 
 
-@pytest_asyncio.fixture
-async def mock_db_pool() -> AsyncMock:
+@pytest.fixture
+def mock_db_pool() -> AsyncMock:
     """Create mock database pool with proper async context manager for device auth."""
     from contextlib import asynccontextmanager
 
@@ -122,7 +166,7 @@ This is a test skill with instructions.
 class TestSkillsListContract:
     """Tests for GET /skills endpoint contract."""
 
-    def test_list_skills_without_projection(self, client: TestClient, tmp_path: Path) -> None:
+    def test_list_skills_without_projection(self, client: ASGISyncClient, tmp_path: Path) -> None:
         """Skills list works when db is unavailable (graceful degradation)."""
         skill_file = tmp_path / "test-skill.md"
         skill_file.write_text("""---
@@ -154,7 +198,7 @@ Content.
             assert skill.get("repo_version") is None
 
     def test_list_skills_with_projection_metadata(
-        self, client: TestClient, tmp_path: Path, mock_db_pool: AsyncMock
+        self, client: ASGISyncClient, tmp_path: Path, mock_db_pool: AsyncMock
     ) -> None:
         """Skills list includes projection metadata when db available."""
         skill_file = tmp_path / "imported-skill.md"
@@ -208,7 +252,7 @@ Content.
             assert "last_used_at" in skill
 
     def test_list_skills_gracefully_handles_projection_failure(
-        self, client: TestClient, tmp_path: Path, mock_db_pool: AsyncMock
+        self, client: ASGISyncClient, tmp_path: Path, mock_db_pool: AsyncMock
     ) -> None:
         """Skills list returns canonical data when projection lookup fails."""
         skill_file = tmp_path / "failing-skill.md"
@@ -233,7 +277,7 @@ Content.
             assert data["skills"][0]["name"] == "Failing Skill"
 
     def test_list_skills_with_legacy_string_timestamp(
-        self, client: TestClient, tmp_path: Path, mock_db_pool: AsyncMock
+        self, client: ASGISyncClient, tmp_path: Path, mock_db_pool: AsyncMock
     ) -> None:
         """Skills list handles legacy string timestamps without crashing."""
         skill_file = tmp_path / "legacy-skill.md"
@@ -282,7 +326,7 @@ Content.
             assert skill["last_used_at"] == "2024-01-15T10:30:00"
 
     def test_list_skills_with_null_timestamp(
-        self, client: TestClient, tmp_path: Path, mock_db_pool: AsyncMock
+        self, client: ASGISyncClient, tmp_path: Path, mock_db_pool: AsyncMock
     ) -> None:
         """Skills list handles null last_used_at without crashing."""
         skill_file = tmp_path / "null-ts-skill.md"
@@ -333,7 +377,7 @@ Content.
 class TestSkillsGetContract:
     """Tests for GET /skills/{id} endpoint contract."""
 
-    def test_get_skill_without_projection(self, client: TestClient, tmp_path: Path) -> None:
+    def test_get_skill_without_projection(self, client: ASGISyncClient, tmp_path: Path) -> None:
         """Get skill works without projection layer (legacy mode)."""
         skill_file = tmp_path / "legacy-skill.md"
         skill_file.write_text("""---
@@ -361,7 +405,7 @@ Legacy content.
             assert data.get("origin_url") is None
 
     def test_get_skill_with_projection_metadata(
-        self, client: TestClient, tmp_path: Path, mock_db_pool: AsyncMock
+        self, client: ASGISyncClient, tmp_path: Path, mock_db_pool: AsyncMock
     ) -> None:
         """Get skill includes full projection metadata."""
         skill_file = tmp_path / "manual-skill.md"
@@ -411,13 +455,13 @@ Manual content here.
             assert data["use_count"] == 10
             assert data["enabled"] is False
 
-    def test_get_nonexistent_skill(self, client: TestClient) -> None:
+    def test_get_nonexistent_skill(self, client: ASGISyncClient) -> None:
         """Get skill returns 404 for missing skill."""
         response = client.get("/skills/nonexistent-skill-12345")
         assert response.status_code == 404
 
     def test_get_skill_gracefully_handles_projection_failure(
-        self, client: TestClient, tmp_path: Path, mock_db_pool: AsyncMock
+        self, client: ASGISyncClient, tmp_path: Path, mock_db_pool: AsyncMock
     ) -> None:
         """Get skill returns canonical data when projection lookup fails."""
         skill_file = tmp_path / "degraded-skill.md"
@@ -445,7 +489,7 @@ Content.
 class TestSkillsDownloadContract:
     """Tests for GET /skills/{id}/download endpoint."""
 
-    def test_download_skill_success(self, client: TestClient, tmp_path: Path) -> None:
+    def test_download_skill_success(self, client: ASGISyncClient, tmp_path: Path) -> None:
         """Download returns valid markdown with correct content-disposition."""
         skill_content = """---
 name: Exportable Skill
@@ -475,7 +519,7 @@ Export this content.
             assert "description: A skill for export testing" in body
             assert "# Exportable Skill" in body
 
-    def test_download_skill_can_be_reimported(self, client: TestClient, tmp_path: Path) -> None:
+    def test_download_skill_can_be_reimported(self, client: ASGISyncClient, tmp_path: Path) -> None:
         """Downloaded skill can be re-imported (roundtrip compatibility)."""
         original_content = """---
 name: Roundtrip Skill
@@ -506,7 +550,7 @@ Roundtrip content with special chars: <>&"'
             assert "Roundtrip content with special chars" in downloaded
             assert "## Instructions" in downloaded
 
-    def test_download_nonexistent_skill(self, client: TestClient) -> None:
+    def test_download_nonexistent_skill(self, client: ASGISyncClient) -> None:
         """Download returns 404 for missing skill."""
         response = client.get("/skills/missing-skill/download")
         assert response.status_code == 404
@@ -515,7 +559,7 @@ Roundtrip content with special chars: <>&"'
 class TestSkillsUploadCompatibility:
     """Tests for POST /skills/upload endpoint (legacy compatibility)."""
 
-    def test_upload_standard_markdown_format(self, client: TestClient, tmp_path: Path) -> None:
+    def test_upload_standard_markdown_format(self, client: ASGISyncClient, tmp_path: Path) -> None:
         """Upload accepts standard markdown format (# Title + ## Purpose)."""
         standard_md = """# Standard Skill
 
@@ -541,7 +585,7 @@ Do something useful.
             assert data["name"] == "Standard Skill"
             assert "enabled" in data
 
-    def test_upload_frontmatter_format(self, client: TestClient, tmp_path: Path) -> None:
+    def test_upload_frontmatter_format(self, client: ASGISyncClient, tmp_path: Path) -> None:
         """Upload accepts frontmatter format."""
         frontmatter_md = """---
 name: Frontmatter Skill
@@ -567,7 +611,9 @@ Content here.
             assert data["description"] == "From frontmatter"
             assert data["enabled"] is False
 
-    def test_upload_conflict_without_overwrite(self, client: TestClient, tmp_path: Path) -> None:
+    def test_upload_conflict_without_overwrite(
+        self, client: ASGISyncClient, tmp_path: Path
+    ) -> None:
         """Upload returns 409 if skill exists and overwrite=false."""
         existing = tmp_path / "existing.md"
         existing.write_text("---\nname: Existing\ndescription: Exists\n---\n\nContent")
@@ -589,7 +635,7 @@ Content here.
 class TestSkillsCreateUpdateContract:
     """Tests for POST /skills and PUT /skills/{id} contracts."""
 
-    def test_create_skill(self, client: TestClient, tmp_path: Path) -> None:
+    def test_create_skill(self, client: ASGISyncClient, tmp_path: Path) -> None:
         """Create skill returns detail with correct structure."""
         with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):
             response = client.post(
@@ -611,7 +657,7 @@ class TestSkillsCreateUpdateContract:
             assert data["enabled"] is True
             assert "updated_at" in data
 
-    def test_update_skill(self, client: TestClient, tmp_path: Path) -> None:
+    def test_update_skill(self, client: ASGISyncClient, tmp_path: Path) -> None:
         """Update skill returns updated detail."""
         # Create first
         skill_file = tmp_path / "updateable.md"
@@ -640,7 +686,7 @@ class TestSkillMetadataTypes:
     """Tests for metadata field types and constraints."""
 
     def test_source_type_enum_values(
-        self, client: TestClient, tmp_path: Path, mock_db_pool: AsyncMock
+        self, client: ASGISyncClient, tmp_path: Path, mock_db_pool: AsyncMock
     ) -> None:
         """source_type returns valid enum values."""
         skill_file = tmp_path / "enum-skill.md"
@@ -679,7 +725,7 @@ class TestSkillMetadataTypes:
                 assert data["source_type"] == source_type
 
     def test_pending_update_structure(
-        self, client: TestClient, tmp_path: Path, mock_db_pool: AsyncMock
+        self, client: ASGISyncClient, tmp_path: Path, mock_db_pool: AsyncMock
     ) -> None:
         """pending_update returns JSON object when present."""
         skill_file = tmp_path / "pending-skill.md"
@@ -723,7 +769,7 @@ class TestSkillMetadataTypes:
 class TestSkillsDeleteContract:
     """Tests for DELETE /skills/{id} endpoint."""
 
-    def test_delete_existing_skill(self, client: TestClient, tmp_path: Path) -> None:
+    def test_delete_existing_skill(self, client: ASGISyncClient, tmp_path: Path) -> None:
         """Delete removes skill and returns status."""
         skill_file = tmp_path / "deletable.md"
         skill_file.write_text("---\nname: Deletable\ndescription: To delete\n---\n\nContent")
@@ -736,7 +782,7 @@ class TestSkillsDeleteContract:
             response = client.get("/skills/deletable")
             assert response.status_code == 404
 
-    def test_delete_nonexistent_skill(self, client: TestClient) -> None:
+    def test_delete_nonexistent_skill(self, client: ASGISyncClient) -> None:
         """Delete returns 404 for missing skill."""
         response = client.delete("/skills/nonexistent-skill-xyz")
         assert response.status_code == 404
@@ -746,7 +792,7 @@ class TestSkillsAutonomousEditContract:
     """Tests for PATCH /skills/{id}/autonomous-edit endpoint."""
 
     def test_toggle_autonomous_edit_for_protected_skill(
-        self, client: TestClient, tmp_path: Path, mock_db_pool: AsyncMock
+        self, client: ASGISyncClient, tmp_path: Path, mock_db_pool: AsyncMock
     ) -> None:
         """Toggle autonomous edit for a protected skill (system/imported/manual) to opt-in."""
         skill_file = tmp_path / "system-skill.md"
@@ -789,7 +835,7 @@ class TestSkillsAutonomousEditContract:
             assert data["allow_autonomous_edit"] is True
 
     def test_toggle_autonomous_edit_for_imported_skill(
-        self, client: TestClient, tmp_path: Path, mock_db_pool: AsyncMock
+        self, client: ASGISyncClient, tmp_path: Path, mock_db_pool: AsyncMock
     ) -> None:
         """Toggle autonomous edit for an imported skill."""
         skill_file = tmp_path / "imported-skill.md"
@@ -828,7 +874,7 @@ class TestSkillsAutonomousEditContract:
             assert response.status_code == 200
             assert response.json()["allow_autonomous_edit"] is True
 
-    def test_toggle_autonomous_edit_no_db(self, client: TestClient, tmp_path: Path) -> None:
+    def test_toggle_autonomous_edit_no_db(self, client: ASGISyncClient, tmp_path: Path) -> None:
         """Toggle without db still returns success for existing skill."""
         skill_file = tmp_path / "manual-skill.md"
         skill_file.write_text("---\nname: Manual Skill\ndescription: Test\n---\n\nContent")
@@ -842,7 +888,7 @@ class TestSkillsAutonomousEditContract:
             )
             assert response.status_code == 200
 
-    def test_toggle_autonomous_edit_missing_skill(self, client: TestClient) -> None:
+    def test_toggle_autonomous_edit_missing_skill(self, client: ASGISyncClient) -> None:
         """Toggle returns 404 for missing skill."""
         response = client.patch(
             "/skills/nonexistent-skill/autonomous-edit",
@@ -855,7 +901,7 @@ class TestSkillsPendingUpdateContract:
     """Tests for POST /skills/{id}/pending-update endpoint."""
 
     def test_apply_pending_update_success(
-        self, client: TestClient, tmp_path: Path, mock_db_pool: AsyncMock
+        self, client: ASGISyncClient, tmp_path: Path, mock_db_pool: AsyncMock
     ) -> None:
         """Apply pending update routes through upgrade service to update skill safely."""
 
@@ -903,7 +949,13 @@ class TestSkillsPendingUpdateContract:
         mock_db_pool.fetchval.return_value = "UPDATE 1"
 
         with patch("orchestrator.skills_store.SKILLS_DIR", tmp_path):
-            with patch("orchestrator.skills_upgrade.SKILLS_DIR", tmp_path):
+            with (
+                patch("orchestrator.skills_upgrade.SKILLS_DIR", tmp_path),
+                patch(
+                    "orchestrator.skills_upgrade.embed_skill_content",
+                    AsyncMock(return_value=[0.1, 0.2, 0.3]),
+                ),
+            ):
                 response = client.post(
                     "/skills/pending-skill/pending-update",
                     json={"action": "apply"},
@@ -913,7 +965,7 @@ class TestSkillsPendingUpdateContract:
                 assert "Updated" in skill_file.read_text()
 
     def test_dismiss_pending_update_success(
-        self, client: TestClient, tmp_path: Path, mock_db_pool: AsyncMock
+        self, client: ASGISyncClient, tmp_path: Path, mock_db_pool: AsyncMock
     ) -> None:
         """Dismiss pending update clears pending_update field."""
         skill_file = tmp_path / "dismiss-skill.md"
@@ -960,7 +1012,7 @@ class TestSkillsPendingUpdateContract:
             assert "Local content" in content
 
     def test_pending_update_no_pending(
-        self, client: TestClient, tmp_path: Path, mock_db_pool: AsyncMock
+        self, client: ASGISyncClient, tmp_path: Path, mock_db_pool: AsyncMock
     ) -> None:
         """Apply/dismiss returns 400 when no pending update exists."""
         skill_file = tmp_path / "no-pending.md"
@@ -998,7 +1050,7 @@ class TestSkillsPendingUpdateContract:
             assert response.status_code == 400
             assert "No pending update" in response.json()["detail"]
 
-    def test_pending_update_no_db(self, client: TestClient, tmp_path: Path) -> None:
+    def test_pending_update_no_db(self, client: ASGISyncClient, tmp_path: Path) -> None:
         """Pending update returns 503 when database unavailable."""
         skill_file = tmp_path / "no-db-skill.md"
         skill_file.write_text("---\nname: No DB Skill\ndescription: Test\n---\n\nContent")
@@ -1014,7 +1066,7 @@ class TestSkillsPendingUpdateContract:
             assert "Database not available" in response.json()["detail"]
 
     def test_pending_update_missing_skill(
-        self, client: TestClient, mock_db_pool: AsyncMock
+        self, client: ASGISyncClient, mock_db_pool: AsyncMock
     ) -> None:
         """Pending update returns 404 when skill projection not found."""
         mock_db_pool.fetchrow.return_value = None
@@ -1026,7 +1078,7 @@ class TestSkillsPendingUpdateContract:
         assert response.status_code == 404
 
     def test_pending_update_invalid_action(
-        self, client: TestClient, tmp_path: Path, mock_db_pool: AsyncMock
+        self, client: ASGISyncClient, tmp_path: Path, mock_db_pool: AsyncMock
     ) -> None:
         """Pending update returns 400 for invalid action."""
         skill_file = tmp_path / "invalid-action.md"
@@ -1074,24 +1126,34 @@ class TestAdminSyncRoute:
         app.include_router(skills_router.router)
         app.state.app_state = MagicMock(spec=[])
 
-        test_client = TestClient(app)
+        test_client = ASGISyncClient(app)
         response = test_client.post(
             "/skills/admin/sync",
             headers={"Authorization": "Bearer test-secret-key"},
         )
         assert response.status_code == 503
 
-    @pytest.mark.asyncio
-    async def test_admin_sync_calls_run_upgrade_sync(
+    def test_admin_sync_calls_run_upgrade_sync(
         self,
         app_with_mock_db: FastAPI,
         mock_db_pool: AsyncMock,
+        fake_authenticated_device: AuthenticatedDevice,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
         """Admin sync route invokes run_upgrade_sync with repo contents."""
         monkeypatch.setenv("DAEMON_ADMIN_API_KEY", "test-secret-key")
         get_settings.cache_clear()
+
+        async def override_admin_auth() -> AdminOrDeviceAuth:
+            return AdminOrDeviceAuth(
+                authenticated_device=fake_authenticated_device,
+                is_admin=True,
+            )
+
+        app_with_mock_db.dependency_overrides[skills_router.require_admin_or_device_auth] = (
+            override_admin_auth
+        )
 
         repo_dir = tmp_path / "repo_skills"
         repo_dir.mkdir()
@@ -1122,7 +1184,7 @@ class TestAdminSyncRoute:
                 AsyncMock(return_value=mock_result),
             ),
         ):
-            test_client = TestClient(app_with_mock_db)
+            test_client = ASGISyncClient(app_with_mock_db)
             response = test_client.post(
                 "/skills/admin/sync",
                 headers={"Authorization": "Bearer test-secret-key"},
@@ -1134,11 +1196,11 @@ class TestAdminSyncRoute:
         assert data["success"] is True
         assert data["total_inserts"] == 1
 
-    @pytest.mark.asyncio
-    async def test_admin_sync_with_no_repo_skills(
+    def test_admin_sync_with_no_repo_skills(
         self,
         app_with_mock_db: FastAPI,
         mock_db_pool: AsyncMock,
+        fake_authenticated_device: AuthenticatedDevice,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
@@ -1146,10 +1208,20 @@ class TestAdminSyncRoute:
         monkeypatch.setenv("DAEMON_ADMIN_API_KEY", "test-secret-key")
         get_settings.cache_clear()
 
+        async def override_admin_auth() -> AdminOrDeviceAuth:
+            return AdminOrDeviceAuth(
+                authenticated_device=fake_authenticated_device,
+                is_admin=True,
+            )
+
+        app_with_mock_db.dependency_overrides[skills_router.require_admin_or_device_auth] = (
+            override_admin_auth
+        )
+
         empty_dir = tmp_path / "empty_repo_skills"
         empty_dir.mkdir()
 
-        test_client = TestClient(app_with_mock_db)
+        test_client = ASGISyncClient(app_with_mock_db)
         with patch(
             "orchestrator.skills_upgrade.REPO_SKILLS_DIR",
             empty_dir,
@@ -1170,8 +1242,9 @@ class TestAdminSyncRoute:
         """Admin sync returns 401 when no auth header is provided."""
         monkeypatch.setenv("DAEMON_ADMIN_API_KEY", "test-secret-key")
         get_settings.cache_clear()
+        del app_with_mock_db.dependency_overrides[skills_router.require_admin_or_device_auth]
 
-        test_client = TestClient(app_with_mock_db)
+        test_client = ASGISyncClient(app_with_mock_db)
         response = test_client.post("/skills/admin/sync")
 
         assert response.status_code == 401
@@ -1188,8 +1261,9 @@ class TestAdminSyncRoute:
         """
         monkeypatch.setenv("DAEMON_ADMIN_API_KEY", "test-secret-key")
         get_settings.cache_clear()
+        del app_with_mock_db.dependency_overrides[skills_router.require_admin_or_device_auth]
 
-        test_client = TestClient(app_with_mock_db)
+        test_client = ASGISyncClient(app_with_mock_db)
         response = test_client.post(
             "/skills/admin/sync",
             headers={"Authorization": "Bearer wrong-token"},
@@ -1215,11 +1289,15 @@ class TestAdminSyncRoute:
             authenticated_device=fake_authenticated_device,
             is_admin=False,
         )
-        app_with_mock_db.dependency_overrides[skills_router.require_admin_or_device_auth] = lambda: (
-            non_admin_auth
+
+        async def override_non_admin_auth() -> AdminOrDeviceAuth:
+            return non_admin_auth
+
+        app_with_mock_db.dependency_overrides[skills_router.require_admin_or_device_auth] = (
+            override_non_admin_auth
         )
 
-        test_client = TestClient(app_with_mock_db)
+        test_client = ASGISyncClient(app_with_mock_db)
         response = test_client.post(
             "/skills/admin/sync",
             headers={"Authorization": "Bearer valid-device-token"},

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -225,7 +226,7 @@ class TestArchiveOrgStrategy:
                 "closest": {
                     "available": True,
                     "url": "https://web.archive.org/web/20230101000000/https://example.com",
-                    "timestamp": "20260301000000",  # Recent timestamp within 90 days
+                    "timestamp": datetime.now(UTC).strftime("%Y%m%d%H%M%S"),
                 }
             }
         }

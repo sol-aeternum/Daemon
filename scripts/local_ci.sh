@@ -59,6 +59,7 @@ read -r -d '' GATE_TABLE <<'EOF' || true
 backend|ruff-check|blocking|uv run ruff check .
 backend|ruff-format|blocking|uv run ruff format --check .
 backend|basedpyright|blocking|uv run basedpyright --level error
+backend|pytest-collect|blocking|PYTHONPATH=. uv run pytest --collect-only -q
 backend|bandit|inventory|uv run bandit -r orchestrator providers scripts tests
 backend|pip-audit|inventory|uv run pip-audit
 backend|pytest|inventory|PYTHONPATH=. uv run pytest -q

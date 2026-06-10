@@ -1646,3 +1646,91 @@
 - **Evidence**: `uv run basedpyright --level error` reported `tests/test_video_credits_grant_bounds.py:89:42 - error: Argument of type "None" cannot be assigned to parameter "admin_key" of type "str" in function "_settings"` and exited 1.
 - **Likely cause**: A pre-existing test helper type annotation does not accept `None` for a call path that intentionally passes `None` (confidence 95%).
 - **Suggested action**: Fix the helper annotation or call site in a dedicated video credits typing cleanup so the backend type gate can pass again.
+
+## 2026-06-10 05:22 UTC — uv cache path is not writable in sandbox
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Issue #109 backend pytest collection restoration
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: The recommended backend sync command failed inside the sandbox because uv tried to use the default cache under `/home/sol/.cache/uv`, which is outside the writable workspace roots. Rerunning backend commands with `UV_CACHE_DIR=/tmp/uv-cache` avoided the host permission issue.
+- **Evidence**: `UV_PROJECT_ENVIRONMENT=.uv-venv uv sync --locked` failed with `error: failed to create directory '/home/sol/.cache/uv': Permission denied (os error 13)`.
+- **Likely cause**: The managed workspace sandbox allows writes to `/home/sol/daemon` and `/tmp`, but not to the host-level uv cache directory (confidence 98%).
+- **Suggested action**: Use `UV_CACHE_DIR=/tmp/uv-cache` for sandboxed backend gate commands, or configure a project-local uv cache for agent runs.
+
+## 2026-06-10 05:22 UTC — Full pytest run produced no terminal result after early failures
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: Issue #109 backend pytest collection restoration
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: A full `pytest -q` attempt printed early failures/errors and then produced no further output for several minutes. A narrower `pytest -x` pass was used afterward to surface actionable blockers one at a time.
+- **Evidence**: `PYTHONPATH=. UV_CACHE_DIR=/tmp/uv-cache UV_PROJECT_ENVIRONMENT=.uv-venv uv run pytest -q` printed `F...EEE...` and then did not return useful failure details before the session became non-interactive.
+- **Likely cause**: One of the early suite failures likely entered a slow wait or live-service path before pytest could summarize the run (confidence 70%).
+- **Suggested action**: Continue using `pytest -x` to identify the first concrete blocker, then rerun the full suite after DB-bound smoke tests are environment-gated.
+
+## 2026-06-10 05:22 UTC — Retrieval log smoke test required live database socket
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #109 backend pytest collection restoration
+- **Category**: test-failure
+- **Blocked current task**: yes
+- **What happened**: The full backend suite reached a LongMemEval retrieval smoke test that attempted to create a real asyncpg pool even though the audit says Postgres is not running by default. The test now skips when the database socket is unavailable and still runs when a configured database can be reached.
+- **Evidence**: `tests/benchmark_longmemeval/test_retrieval_log_smoke.py::test_benchmark_retrieval_path_persists_one_retrieval_log_row` failed in `asyncpg.create_pool(...)` with `PermissionError: [Errno 1] Operation not permitted`.
+- **Likely cause**: The test is an integration smoke test, not a hermetic unit test, and it lacked a skip path for socket-denied/no-Postgres local environments (confidence 95%).
+- **Suggested action**: Keep DB-bound smoke tests explicitly environment-gated, and run them in CI lanes that provision Postgres.
+
+## 2026-06-10 08:47 UTC — FastAPI TestClient route tests stalled under Python 3.14
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #109 backend pytest collection/runtime restoration
+- **Category**: test-failure
+- **Blocked current task**: yes
+- **What happened**: Several route-level tests using `fastapi.testclient.TestClient` or sync dependency overrides stopped producing output and did not complete reliably under the current Python 3.14/pytest-asyncio strict environment. Converting those tests to direct `httpx.ASGITransport` calls with async dependency overrides made them deterministic.
+- **Evidence**: Hangs occurred at `tests/test_skill_api_contracts.py`, `tests/test_skill_ui_metadata.py::TestSkillUIBadgeRendering::test_system_skill_badge_metadata`, and `tests/test_video_credits_grant_bounds.py::test_grant_rejects_zero_amount`; after conversion the focused files passed (`37 passed`, `23 passed`, and `8 passed` respectively).
+- **Likely cause**: Starlette/FastAPI sync test portals and sync overrides interact poorly with this Python 3.14 async test environment, especially when the route dependency graph uses async auth/app-state dependencies (confidence 85%).
+- **Suggested action**: Prefer `httpx.ASGITransport` plus async overrides for new backend route tests, and migrate remaining `TestClient` tests if they become flaky.
+
+## 2026-06-10 08:47 UTC — basedpyright config pointed at broken `.venv`
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #109 backend gate restoration
+- **Category**: config
+- **Blocked current task**: yes
+- **What happened**: `basedpyright --level error` reported missing imports for packages that were present in `.uv-venv` and importable at runtime. Verbose resolver output showed basedpyright reading `/home/sol/daemon/.venv/lib/python3.14/site-packages`, matching the known broken root-owned environment rather than the audit-required `.uv-venv`.
+- **Evidence**: `basedpyright --verbose orchestrator/services/fetch/extract.py` printed search paths under `/home/sol/daemon/.venv/...` and `Import "trafilatura" could not be resolved`; `UV_CACHE_DIR=/tmp/uv-cache UV_PROJECT_ENVIRONMENT=.uv-venv uv run python -c "import trafilatura, youtube_transcript_api, docx, fal_client"` printed `imports ok`.
+- **Likely cause**: `pyrightconfig.json` and `[tool.basedpyright]` still referenced `.venv` even though the repository audit mandates `.uv-venv` for backend work (confidence 99%).
+- **Suggested action**: Keep type-checker environment config aligned with the locked uv environment, and avoid recreating or relying on the root-owned `.venv`.
+
+## 2026-06-10 08:47 UTC — pip-audit reports dependency vulnerabilities when network is available
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #109 backend local CI
+- **Category**: dependency
+- **Blocked current task**: no
+- **What happened**: The backend local CI wrapper reached its non-blocking `pip-audit` inventory gate. In the sandboxed backend-only run it could not resolve PyPI, but in the escalated PR-wrapper run it reached PyPI and reported dependency vulnerabilities.
+- **Evidence**: Sandboxed `scripts/local_ci.sh backend` printed `Failed to resolve 'pypi.org' ([Errno -2] Name or service not known)`. Escalated `scripts/pr_create.sh` printed `Found 43 known vulnerabilities in 14 packages`, including `aiohttp 3.13.3`, `cryptography 46.0.5`, `litellm 1.81.1`, `starlette 0.50.0`, and `urllib3 2.6.3`.
+- **Likely cause**: The dependency lock contains packages with known advisories, and `pip-audit` is intentionally configured as inventory / continue-on-error for legacy debt (confidence 95%).
+- **Suggested action**: File a dependency-upgrade/security follow-up that updates the affected packages through the locked dependency workflow; do not hand-edit the lockfile.
+
+## 2026-06-10 08:47 UTC — Backend inventory gates report existing security and warning debt
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #109 backend local CI
+- **Category**: security
+- **Blocked current task**: no
+- **What happened**: `scripts/local_ci.sh backend` passed all blocking gates but reported the configured inventory gates as non-blocking. Bandit found existing low/medium issues across production and test code, and pytest completed with 95 warnings including third-party deprecations and several unawaited `AsyncMock` runtime warnings.
+- **Evidence**: Local CI summary: `blocking failures: 0`, `Inventory reports (non-blocking): backend/bandit (exit=1), backend/pip-audit (exit=1)`, `PASS All blocking gates passed`. Full pytest output: `1838 passed, 4 skipped, 95 warnings`.
+- **Likely cause**: The repository intentionally treats Bandit and pip-audit as inventory for legacy debt, and the test suite still has warning debt from third-party deprecations plus some mock shape mismatches (confidence 90%).
+- **Suggested action**: Track Bandit findings and pytest warnings in dedicated cleanup issues; keep them non-blocking until the inventory baseline is actively ratcheted.
+
+## 2026-06-10 08:47 UTC — PR wrapper blocked by unrelated frontend gates
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #109 PR creation
+- **Category**: build-error
+- **Blocked current task**: yes
+- **What happened**: `scripts/pr_create.sh` runs full `scripts/local_ci.sh` without an affected-family selector, so the backend-only #109 PR could not be created through the wrapper while Wave 0 frontend debt remains. Backend and aggregate blocking gates passed; frontend `type-check`, `lint`, and `format-check` failed.
+- **Evidence**: Wrapper summary: `blocking failures: 3` with `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`. Type-check evidence included missing advisor event exports from `frontend/lib/events`; lint reported 55 errors / 13 warnings; format-check reported style drift in 274 frontend files and generated `.next_broken` artifacts.
+- **Likely cause**: The wrapper enforces all families even though the issue sequence calls for affected-family local CI and explicitly notes frontend Wave 0 breakage for #108 (confidence 98%).
+- **Suggested action**: Either allow `scripts/pr_create.sh` to accept a local-CI family selector for backend-only PRs, or complete #108 before using the all-family wrapper path.

@@ -37,13 +37,40 @@ class MockConn:
         if "INSERT INTO users" in sql:
             self._pool._singleton_exists = True
             return SINGLETON_ID
+        if "INSERT INTO tenants" in sql:
+            user_id = args[0]
+            name = args[1]
+            existing = self._pool._tenants.get(user_id)
+            if existing is not None:
+                return None
+            tenant_id = uuid.uuid4()
+            self._pool._tenants[user_id] = {
+                "id": tenant_id,
+                "owner_user_id": user_id,
+                "kind": "personal",
+                "name": name,
+            }
+            return tenant_id
+        if "INSERT INTO tenant_memberships" in sql:
+            tenant_id = args[0]
+            user_id = args[1]
+            key = (tenant_id, user_id)
+            if key in self._pool._tenant_memberships:
+                return None
+            self._pool._tenant_memberships[key] = "owner"
+            return "owner"
+        if "SELECT role" in sql and "tenant_memberships" in sql:
+            tenant_id = args[0]
+            user_id = args[1]
+            return self._pool._tenant_memberships.get((tenant_id, user_id))
         if "INSERT INTO devices" in sql:
             device_id = uuid.uuid4()
             self._pool._devices[str(device_id)] = {
                 "id": device_id,
                 "user_id": SINGLETON_ID,
-                "display_name": args[1],
-                "platform": args[2],
+                "tenant_id": args[1],
+                "display_name": args[2],
+                "platform": args[3],
                 "created_at": datetime.now(timezone.utc),
                 "last_seen_at": datetime.now(timezone.utc),
                 "revoked_at": None,
@@ -54,17 +81,34 @@ class MockConn:
             return device_id
         if "INSERT INTO sessions" in sql:
             session_id = uuid.uuid4()
-            refresh_hash = args[5]
-            self._pool._sessions[refresh_hash] = {
+            if "device_persistence" in sql:
+                device_persistence = args[3]
+                tenant_id = args[4]
+                access_hash = args[5]
+                access_expires_at = args[6]
+                refresh_hash = args[7]
+            else:
+                device_persistence = "private"
+                tenant_id = args[3]
+                access_hash = args[4]
+                access_expires_at = args[5]
+                refresh_hash = args[6]
+            session = {
                 "id": session_id,
                 "user_id": args[0],
                 "device_id": args[1],
                 "client_kind": args[2],
+                "tenant_id": tenant_id,
+                "device_persistence": device_persistence,
                 "refresh_token_hash": refresh_hash,
+                "access_hash": access_hash,
+                "access_expires_at": access_expires_at,
                 "refresh_expires_at": datetime.now(timezone.utc) + timedelta(days=90),
                 "refresh_consumed_at": None,
                 "revoked_at": None,
             }
+            self._pool._sessions[access_hash] = session
+            self._pool._sessions[refresh_hash] = session
             return session_id
         if "INSERT INTO pending_enrollments" in sql:
             return None
@@ -78,12 +122,14 @@ class MockConn:
                 key_str
             ) or self._pool._pending_enrollments.get(key_uuid)
 
-        if "SELECT id, user_id, code_verifier_hash" in sql and "WHERE id =" in sql:
-            pending_id = args[0]
-            return _get_pending(pending_id)
-        if "SELECT id, user_id, code_verifier_hash" in sql and "FOR UPDATE" in sql:
+        if "FROM pending_enrollments" in sql and "WHERE id =" in sql:
             pending_id = args[0]
             result = _get_pending(pending_id)
+            if result is not None and "created_by_device_id" not in result:
+                active_devices = [
+                    d for d in self._pool._devices.values() if d.get("revoked_at") is None
+                ]
+                result["created_by_device_id"] = active_devices[0]["id"] if active_devices else None
             return result
         if "UPDATE pending_enrollments" in sql and "wrong_attempts_remaining" in sql:
             if "wrong_attempts_remaining = 0" in sql:
@@ -174,15 +220,27 @@ class MockConn:
                     "device_revoked_at": device.get("revoked_at"),
                 }
             return None
-        if "SELECT id, user_id, code_verifier_hash" in sql and "WHERE id =" in sql:
+        if "FROM pending_enrollments" in sql and "WHERE id =" in sql:
             pending_id = args[0]
             key_str = str(pending_id)
             entry = self._pool._pending_enrollments.get(
                 key_str
             ) or self._pool._pending_enrollments.get(pending_id)
+            if entry is not None and "created_by_device_id" not in entry:
+                active_devices = [
+                    d for d in self._pool._devices.values() if d.get("revoked_at") is None
+                ]
+                entry["created_by_device_id"] = active_devices[0]["id"] if active_devices else None
             return entry
+        if "SELECT revoked_at FROM devices WHERE id = $1" in sql:
+            device_id = args[0]
+            device = self._pool._devices.get(str(device_id)) or self._pool._devices.get(device_id)
+            return {"revoked_at": device.get("revoked_at")} if device else None
         if "SELECT id FROM users" in sql:
             return {"id": SINGLETON_ID}
+        if "FROM tenants" in sql and "owner_user_id" in sql:
+            user_id = args[0]
+            return self._pool._tenants.get(user_id)
         if (
             "SELECT id, display_name, platform, created_at, last_seen_at, revoked_at" in sql
             and "user_id" in sql
@@ -285,14 +343,25 @@ class MockConn:
                     sess["revoked_at"] = datetime.now(timezone.utc)
         if "INSERT INTO sessions" in sql:
             session_id = uuid.uuid4()
-            access_hash = args[3]
-            access_expires_at = args[4]
-            refresh_hash = args[5]
+            if "device_persistence" in sql:
+                device_persistence = args[3]
+                tenant_id = args[4]
+                access_hash = args[5]
+                access_expires_at = args[6]
+                refresh_hash = args[7]
+            else:
+                device_persistence = "private"
+                tenant_id = args[3]
+                access_hash = args[4]
+                access_expires_at = args[5]
+                refresh_hash = args[6]
             session = {
                 "id": session_id,
                 "user_id": args[0],
                 "device_id": args[1],
                 "client_kind": args[2],
+                "tenant_id": tenant_id,
+                "device_persistence": device_persistence,
                 "refresh_token_hash": refresh_hash,
                 "access_hash": access_hash,
                 "access_expires_at": access_expires_at,
@@ -318,6 +387,8 @@ class MockPool:
         self._devices: dict[str, Any] = {}
         self._sessions: dict[str, Any] = {}
         self._pending_enrollments: dict[str, Any] = {}
+        self._tenants: dict[uuid.UUID, dict[str, Any]] = {}
+        self._tenant_memberships: dict[tuple[uuid.UUID, uuid.UUID], str] = {}
         self._active_count = active_device_count
         self._singleton_exists = False
         self._closed = False

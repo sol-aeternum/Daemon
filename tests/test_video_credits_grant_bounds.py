@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import uuid
 from types import SimpleNamespace
+from typing import Any
 
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient, Response
 
 from orchestrator import db as db_module
 from orchestrator.routes import video_credits
@@ -13,14 +14,21 @@ from orchestrator.routes import video_credits
 def _build_app(settings, dal):
     app = FastAPI()
     app.include_router(video_credits.router)
-    app.dependency_overrides[video_credits.get_settings] = lambda: settings
-    app.dependency_overrides[db_module.get_app_state] = lambda: SimpleNamespace(
-        video_credits_dal=dal
-    )
+
+    async def override_settings():
+        return settings
+
+    async def override_app_state():
+        return SimpleNamespace(video_credits_dal=dal)
+
+    app.dependency_overrides[video_credits.get_settings] = override_settings
+    app.dependency_overrides[db_module.get_app_state] = override_app_state
     return app
 
 
-def _settings(*, admin_key="secret-admin-key", max_grant=100, min_desc=5):
+def _settings(
+    *, admin_key: str | None = "secret-admin-key", max_grant: int = 100, min_desc: int = 5
+) -> SimpleNamespace:
     return SimpleNamespace(
         daemon_admin_api_key=admin_key,
         daemon_max_grant_amount_per_request=max_grant,
@@ -41,7 +49,22 @@ def _fake_dal(success=True, message="ok", captured=None):
 
 def _post(app, body, token="secret-admin-key"):
     headers = {"Authorization": f"Bearer {token}"} if token else {}
-    return TestClient(app).post("/video-credits/grant", headers=headers, json=body)
+    return _run_asgi_request(app, "POST", "/video-credits/grant", headers=headers, json=body)
+
+
+def _run_asgi_request(app: FastAPI, method: str, url: str, **kwargs: Any) -> Response:
+    async def _request() -> Response:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.request(method, url, **kwargs)
+
+    return _asyncio_run(_request())
+
+
+def _asyncio_run(awaitable: Any) -> Any:
+    import asyncio
+
+    return asyncio.run(awaitable)
 
 
 def test_grant_rejects_zero_amount():

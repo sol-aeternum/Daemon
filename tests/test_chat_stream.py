@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import json
+import os
+import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
+from fastapi import HTTPException, Request
 from httpx import ASGITransport, AsyncClient
 
+from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.config import get_settings
+from orchestrator.db import AppState, get_app_state
 import orchestrator.daemon as daemon_module
 from orchestrator.main import app
 
@@ -16,14 +22,48 @@ from orchestrator.main import app
 @pytest_asyncio.fixture
 async def client(monkeypatch):
     """Create an async test client."""
+    monkeypatch.setenv("DAEMON_ENVIRONMENT", "development")
     monkeypatch.setenv("DATABASE_URL", "")
     monkeypatch.setenv("REDIS_URL", "")
     get_settings.cache_clear()
 
-    async with app.router.lifespan_context(app):
+    settings = get_settings()
+    app_state = AppState(settings=settings)
+
+    async def override_settings():
+        return get_settings()
+
+    async def override_app_state():
+        return app.state.app_state
+
+    async def override_auth(request: Request):
+        api_key = os.environ.get("DAEMON_API_KEY")
+        if api_key:
+            authorization = request.headers.get("Authorization", "")
+            if authorization != f"Bearer {api_key}":
+                raise HTTPException(status_code=401, detail="Invalid API key")
+        return AuthenticatedDevice(
+            user_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+            device_id=uuid.UUID("00000000-0000-0000-0000-000000000002"),
+            session_id=uuid.UUID("00000000-0000-0000-0000-000000000003"),
+        )
+
+    app.dependency_overrides[get_settings] = override_settings
+    app.dependency_overrides[get_app_state] = override_app_state
+    app.dependency_overrides[require_device_auth] = override_auth
+
+    original_app_state = getattr(app.state, "app_state", None)
+    original_settings = getattr(app.state, "settings", None)
+    app.state.app_state = app_state
+    app.state.settings = settings
+    try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             yield client
+    finally:
+        app.dependency_overrides.clear()
+        app.state.app_state = original_app_state
+        app.state.settings = original_settings
 
 
 @pytest.mark.asyncio
@@ -234,6 +274,17 @@ async def test_openai_models_endpoint_mock_mode(client, monkeypatch):
     monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
     monkeypatch.setenv("OPENROUTER_MODEL", "openrouter-uncensored")
     get_settings.cache_clear()
+    monkeypatch.setattr(
+        "orchestrator.main.fetch_openrouter_models",
+        AsyncMock(
+            return_value=[
+                {
+                    "id": "openrouter-uncensored",
+                    "created": 0,
+                }
+            ]
+        ),
+    )
 
     response = await client.get("/v1/models")
     assert response.status_code == 200

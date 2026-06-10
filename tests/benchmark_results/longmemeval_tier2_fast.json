@@ -9,6 +9,7 @@
   "dataset": "longmemeval_s.json",
   "question_count": 500,
   "overall_accuracy": 0.811,
+  "strict_correct_only_accuracy": 0.622,
   "category_accuracy": {
     "MR": {
       "accuracy": 0.8609022556390977,

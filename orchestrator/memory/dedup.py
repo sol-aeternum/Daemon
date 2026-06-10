@@ -56,6 +56,58 @@ SIMILARITY_SUPERSEDE_SAME_SLOT = (
     0.60  # Deprecated: use get_settings().dedup_supersede_same_slot_threshold
 )
 EXPLICIT_SUPPRESSION_WINDOW = timedelta(minutes=5)
+CONTRADICTION_TEMPERATURE = 0.1
+DEDUP_BENCHMARK_SEED = 42
+BENCHMARK_CONTRADICTION_MODEL = "openrouter/deepseek/deepseek-chat-v3-5"
+BENCHMARK_CONTRADICTION_ENDPOINT_SLUG = BENCHMARK_CONTRADICTION_MODEL
+DEDUP_BENCHMARK_MODE = False
+
+
+class DedupBenchmarkProviderError(RuntimeError):
+    """Provider or transport failure in dedup benchmark mode."""
+
+
+class DedupBenchmarkSamplingError(RuntimeError):
+    """Non-deterministic dedup benchmark sampling metadata was detected."""
+
+
+_DEDUP_BM_METADATA: dict[str, dict[str, str | None]] = {}
+
+
+def reset_dedup_benchmark_tracking() -> None:
+    _DEDUP_BM_METADATA.clear()
+
+
+def get_dedup_benchmark_tracking() -> dict[str, dict[str, str | None]]:
+    return {key: dict(value) for key, value in _DEDUP_BM_METADATA.items()}
+
+
+def _capture_dedup_benchmark_metadata(response_data: Any, *, key: str) -> None:
+    if not isinstance(response_data, dict):
+        return
+
+    fingerprint = response_data.get("system_fingerprint")
+    model = response_data.get("model")
+    normalized_fingerprint = fingerprint if isinstance(fingerprint, str) else None
+    normalized_model = model if isinstance(model, str) else None
+
+    previous = _DEDUP_BM_METADATA.get(key)
+    if previous is not None:
+        previous_fingerprint = previous.get("fingerprint")
+        if (
+            previous_fingerprint
+            and normalized_fingerprint
+            and previous_fingerprint != normalized_fingerprint
+        ):
+            raise DedupBenchmarkSamplingError(
+                f"Benchmark fingerprint drift in {key}: "
+                f"expected {previous_fingerprint!r}, got {normalized_fingerprint!r}"
+            )
+
+    _DEDUP_BM_METADATA[key] = {
+        "fingerprint": normalized_fingerprint,
+        "model": normalized_model,
+    }
 
 
 def _get_merge_threshold() -> float:
@@ -146,6 +198,7 @@ def _is_protected_explicit_match(
 async def check_contradiction(
     existing_content: str,
     new_content: str,
+    benchmark_mode: bool | None = None,
 ) -> tuple[bool, str]:
     """Check if two facts contradict each other.
 
@@ -153,10 +206,15 @@ async def check_contradiction(
     Contradiction detection is ADVISORY - callers should proceed regardless.
     LLM failures result in (False, "").
     """
+    is_benchmark = DEDUP_BENCHMARK_MODE if benchmark_mode is None else bool(benchmark_mode)
     try:
-        response = await litellm.acompletion(
-            model=get_settings().background_reasoning_model,
-            messages=[
+        call_params: dict[str, Any] = {
+            "model": (
+                BENCHMARK_CONTRADICTION_MODEL
+                if is_benchmark
+                else get_settings().background_reasoning_model
+            ),
+            "messages": [
                 {
                     "role": "user",
                     "content": (
@@ -166,9 +224,27 @@ async def check_contradiction(
                     ),
                 }
             ],
-            temperature=0.1,
-            max_tokens=50,
-        )
+            "temperature": 0.0 if is_benchmark else CONTRADICTION_TEMPERATURE,
+            "max_tokens": 50,
+        }
+        if is_benchmark:
+            call_params["seed"] = DEDUP_BENCHMARK_SEED
+            call_params["extra_body"] = {
+                "provider": {
+                    "order": [BENCHMARK_CONTRADICTION_ENDPOINT_SLUG],
+                    "allow_fallbacks": False,
+                }
+            }
+
+        try:
+            response = await litellm.acompletion(**call_params)
+        except Exception as exc:
+            if is_benchmark:
+                raise DedupBenchmarkProviderError(
+                    f"Benchmark-mode contradiction provider failure: {exc}"
+                ) from exc
+            raise
+
         response_data: Any = response
         model_dump = getattr(response, "model_dump", None)
         if callable(model_dump):
@@ -177,6 +253,9 @@ async def check_contradiction(
             dict_method = getattr(response, "dict", None)
             if callable(dict_method):
                 response_data = dict_method()
+
+        if is_benchmark:
+            _capture_dedup_benchmark_metadata(response_data, key="contradiction")
 
         content = None
         if isinstance(response_data, dict):
@@ -192,6 +271,8 @@ async def check_contradiction(
         contradiction_detected = content.lower().startswith("yes")
         explanation = content.strip() if contradiction_detected else ""
         return contradiction_detected, explanation
+    except (DedupBenchmarkProviderError, DedupBenchmarkSamplingError):
+        raise
     except Exception:
         return False, ""
 

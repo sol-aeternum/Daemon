@@ -1,6 +1,6 @@
 {
   "venvPath": ".",
-  "venv": ".venv",
+  "venv": ".uv-venv",
   "typeCheckingMode": "standard",
   "baselineFile": ".basedpyright/baseline.json"
 }

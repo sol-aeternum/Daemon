@@ -61,6 +61,7 @@ non-blocking failure path.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock
@@ -70,6 +71,7 @@ import pytest
 from fastapi import BackgroundTasks
 
 from orchestrator.config import Settings
+from orchestrator.services.identity import mail_sender as mail_sender_module
 from orchestrator.services.identity.device_notification import (
     NOTIFICATION_SUBJECT,
     REVOKE_GUIDANCE,
@@ -84,6 +86,13 @@ from orchestrator.services.identity.mail_sender import (
     MailSender,
 )
 from typing import Literal as _Literal
+
+
+@pytest.fixture(autouse=True)
+def _clear_console_mail_sender() -> Iterator[None]:
+    mail_sender_module._CONSOLE_MAIL_SENDER.drain()
+    yield
+    mail_sender_module._CONSOLE_MAIL_SENDER.drain()
 
 
 # ============================================================================

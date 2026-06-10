@@ -93,8 +93,31 @@ ANSWER_MAX_TOKENS = 256
 JUDGE_MODEL = "openrouter/openai/gpt-4o"
 JUDGE_TEMPERATURE = 0.0
 JUDGE_MAX_TOKENS = 256
+BENCHMARK_SEED = 42
+BENCHMARK_ANSWER_MODEL = "openrouter/openai/gpt-4o-2024-08-06"
+BENCHMARK_JUDGE_MODEL = "openrouter/openai/gpt-4o-2024-08-06"
+BENCHMARK_OPENAI_ENDPOINT_SLUG = "openai"
 
 logger = logging.getLogger(__name__)
+
+
+class BenchmarkProviderError(RuntimeError):
+    """Provider or transport failure in LongMemEval benchmark mode."""
+
+
+class BenchmarkSamplingError(RuntimeError):
+    """Non-deterministic LongMemEval benchmark metadata was detected."""
+
+
+_BM_METADATA: dict[str, dict[str, str | None]] = {}
+
+
+def reset_benchmark_tracking() -> None:
+    _BM_METADATA.clear()
+
+
+def get_benchmark_tracking() -> dict[str, dict[str, str | None]]:
+    return {key: dict(value) for key, value in _BM_METADATA.items()}
 
 
 def resolve_output_paths(
@@ -187,11 +210,40 @@ def _normalize_model_for_provider(model: str) -> str:
     return model
 
 
+def _capture_benchmark_metadata(response_data: Any, *, key: str) -> None:
+    if not isinstance(response_data, dict):
+        return
+
+    fingerprint = response_data.get("system_fingerprint")
+    model = response_data.get("model")
+    normalized_fingerprint = fingerprint if isinstance(fingerprint, str) else None
+    normalized_model = model if isinstance(model, str) else None
+
+    previous = _BM_METADATA.get(key)
+    if previous is not None:
+        previous_fingerprint = previous.get("fingerprint")
+        if (
+            previous_fingerprint
+            and normalized_fingerprint
+            and previous_fingerprint != normalized_fingerprint
+        ):
+            raise BenchmarkSamplingError(
+                f"Benchmark fingerprint drift in {key}: "
+                f"expected {previous_fingerprint!r}, got {normalized_fingerprint!r}"
+            )
+
+    _BM_METADATA[key] = {
+        "fingerprint": normalized_fingerprint,
+        "model": normalized_model,
+    }
+
+
 async def _call_llm_with_provider_config(
     model: str,
     messages: list[dict[str, str]],
     temperature: float,
     max_tokens: int,
+    bm_call_key: str | None = None,
 ) -> Any | None:
     """Call LLM with proper OpenRouter provider configuration."""
     import litellm
@@ -200,8 +252,15 @@ async def _call_llm_with_provider_config(
     settings = get_settings()
     provider_config = settings.get_provider_config("openrouter")
 
-    # Normalize model
-    model = _normalize_model_for_provider(model)
+    is_benchmark = bm_call_key is not None
+    if is_benchmark:
+        if bm_call_key == "judge":
+            model = BENCHMARK_JUDGE_MODEL
+        else:
+            model = BENCHMARK_ANSWER_MODEL
+        temperature = 0.0
+    else:
+        model = _normalize_model_for_provider(model)
 
     # Build call parameters
     call_params: dict[str, Any] = {
@@ -211,6 +270,14 @@ async def _call_llm_with_provider_config(
         "max_tokens": max_tokens,
         "timeout": provider_config.timeout_s,
     }
+    if is_benchmark:
+        call_params["seed"] = BENCHMARK_SEED
+        call_params["extra_body"] = {
+            "provider": {
+                "order": [BENCHMARK_OPENAI_ENDPOINT_SLUG],
+                "allow_fallbacks": False,
+            }
+        }
 
     # Add provider-specific configuration
     if provider_config.base_url:
@@ -222,10 +289,26 @@ async def _call_llm_with_provider_config(
 
     try:
         response = await litellm.acompletion(**call_params)
-        return response
     except Exception as e:
+        if is_benchmark:
+            raise BenchmarkProviderError(
+                f"Benchmark-mode {bm_call_key} provider failure: {e}"
+            ) from e
         logger.error(f"LLM call failed: {e}")
         return None
+
+    if is_benchmark:
+        response_data: Any = response
+        model_dump = getattr(response, "model_dump", None)
+        if callable(model_dump):
+            response_data = model_dump()
+        else:
+            dict_method = getattr(response, "dict", None)
+            if callable(dict_method):
+                response_data = dict_method()
+        _capture_benchmark_metadata(response_data, key=bm_call_key)
+
+    return response
 
 
 def _extract_content(response: Any) -> str:
@@ -267,7 +350,12 @@ def parse_answer(text: str) -> str:
     return text
 
 
-async def judge_answer(question_text: str, hypothesis: str, reference: str) -> str:
+async def judge_answer(
+    question_text: str,
+    hypothesis: str,
+    reference: str,
+    benchmark_mode: bool = False,
+) -> str:
     prompt = f"""You are judging whether an AI assistant's answer is factually correct.
 
 Question: {question_text}
@@ -289,6 +377,7 @@ Then a one-sentence explanation on the second line."""
         messages=[{"role": "user", "content": prompt}],
         temperature=JUDGE_TEMPERATURE,
         max_tokens=JUDGE_MAX_TOKENS,
+        bm_call_key="judge" if benchmark_mode else None,
     )
 
     if response is None:
@@ -318,6 +407,7 @@ Then a one-sentence explanation on the second line."""
 async def answer_with_llm(
     question: str,
     memories: list[dict[str, Any]],
+    benchmark_mode: bool = False,
 ) -> str:
     """Call GPT-4o via LiteLLM to generate an answer."""
     prompt = build_answer_prompt(question, memories)
@@ -327,6 +417,7 @@ async def answer_with_llm(
         messages=[{"role": "user", "content": prompt}],
         temperature=ANSWER_TEMPERATURE,
         max_tokens=ANSWER_MAX_TOKENS,
+        bm_call_key="answer" if benchmark_mode else None,
     )
 
     if response is None:
@@ -368,6 +459,7 @@ async def evaluate_single(
     log_retrieval: bool = False,
     allowed_source_conversation_ids: list[uuid.UUID] | None = None,
     user_id: uuid.UUID = TEST_USER_ID,
+    benchmark_mode: bool = False,
 ) -> dict[str, Any]:
     """Evaluate a single question."""
     # Get query embedding
@@ -385,10 +477,15 @@ async def evaluate_single(
     )
 
     # Generate answer
-    hypothesis = await answer_with_llm(question_text, memories)
+    hypothesis = await answer_with_llm(question_text, memories, benchmark_mode=benchmark_mode)
 
     # Judge answer
-    judgment = await judge_answer(question_text, hypothesis, reference)
+    judgment = await judge_answer(
+        question_text,
+        hypothesis,
+        reference,
+        benchmark_mode=benchmark_mode,
+    )
 
     return {
         "question_id": question_id,

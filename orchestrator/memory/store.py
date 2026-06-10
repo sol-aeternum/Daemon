@@ -40,6 +40,16 @@ class MemoryStore:
         self._pool = db_pool
         self._enc = encryption
 
+    def _decrypt_advisor_traces(self, value: Any) -> Any:
+        if value is None:
+            return None
+        try:
+            decrypted = self._enc.decrypt(value)
+            return json.loads(decrypted)
+        except Exception:
+            logger.warning("Failed to decrypt advisor_traces", exc_info=True)
+            return None
+
     # ------------------------------------------------------------------
     # Conversation operations
     # ------------------------------------------------------------------
@@ -211,6 +221,7 @@ class MemoryStore:
         tool_results: list[Any] | None = None,
         status: str = "streaming",
         metadata: dict[str, Any] | None = None,
+        advisor_traces: dict[str, Any] | None = None,
         reasoning_text: str | None = None,
         reasoning_duration_secs: int | None = None,
         reasoning_model: str | None = None,
@@ -219,13 +230,16 @@ class MemoryStore:
         encrypted_reasoning_text = (
             self._enc.encrypt(reasoning_text) if reasoning_text is not None else None
         )
+        encrypted_advisor_traces = (
+            self._enc.encrypt(json.dumps(advisor_traces)) if advisor_traces is not None else None
+        )
         row = await self._pool.fetchrow(
             """
             INSERT INTO messages
                 (conversation_id, user_id, role, content, model,
                  tokens_in, tokens_out, tool_calls, tool_results, status, metadata,
-                 reasoning_text, reasoning_duration_secs, reasoning_model)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11::jsonb, $12, $13, $14)
+                 reasoning_text, reasoning_duration_secs, reasoning_model, advisor_traces)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11::jsonb, $12, $13, $14, $15)
             RETURNING *
             """,
             conversation_id,
@@ -242,11 +256,14 @@ class MemoryStore:
             encrypted_reasoning_text,
             reasoning_duration_secs,
             reasoning_model,
+            encrypted_advisor_traces,
         )
         result = cast(dict[str, Any], dict(row))
         result["content"] = self._enc.decrypt(result["content"])
         if result.get("reasoning_text") is not None:
             result["reasoning_text"] = self._enc.decrypt(result["reasoning_text"])
+        if result.get("advisor_traces") is not None:
+            result["advisor_traces"] = self._decrypt_advisor_traces(result["advisor_traces"])
         return result
 
     async def get_messages(
@@ -294,6 +311,8 @@ class MemoryStore:
             d["content"] = self._enc.decrypt(d["content"])
             if d.get("reasoning_text") is not None:
                 d["reasoning_text"] = self._enc.decrypt(d["reasoning_text"])
+            if d.get("advisor_traces") is not None:
+                d["advisor_traces"] = self._decrypt_advisor_traces(d["advisor_traces"])
             results.append(_normalize_message(d))
         return results
 
@@ -312,6 +331,7 @@ class MemoryStore:
         content: str | None = None,
         status: str | None = None,
         metadata: dict[str, Any] | None = None,
+        advisor_traces: dict[str, Any] | None = None,
         tool_calls: list[Any] | None = None,
         tool_results: list[Any] | None = None,
         reasoning_text: str | None = None,
@@ -325,6 +345,9 @@ class MemoryStore:
         encrypted_reasoning_text = (
             self._enc.encrypt(reasoning_text) if reasoning_text is not None else None
         )
+        encrypted_advisor_traces = (
+            self._enc.encrypt(json.dumps(advisor_traces)) if advisor_traces is not None else None
+        )
         row = await self._pool.fetchrow(
             """
             UPDATE messages
@@ -335,7 +358,8 @@ class MemoryStore:
                 tool_results = COALESCE($6::jsonb, tool_results),
                 reasoning_text = COALESCE($7, reasoning_text),
                 reasoning_duration_secs = COALESCE($8, reasoning_duration_secs),
-                reasoning_model = COALESCE($9, reasoning_model)
+                reasoning_model = COALESCE($9, reasoning_model),
+                advisor_traces = COALESCE($10, advisor_traces)
             WHERE id = $1
             RETURNING *
             """,
@@ -348,6 +372,7 @@ class MemoryStore:
             encrypted_reasoning_text,
             reasoning_duration_secs,
             reasoning_model,
+            encrypted_advisor_traces,
         )
         if not row:
             return None
@@ -355,6 +380,8 @@ class MemoryStore:
         result["content"] = self._enc.decrypt(result["content"])
         if result.get("reasoning_text") is not None:
             result["reasoning_text"] = self._enc.decrypt(result["reasoning_text"])
+        if result.get("advisor_traces") is not None:
+            result["advisor_traces"] = self._decrypt_advisor_traces(result["advisor_traces"])
         return result
 
     async def get_recent_messages(
@@ -384,6 +411,8 @@ class MemoryStore:
             d["content"] = self._enc.decrypt(d["content"])
             if d.get("reasoning_text") is not None:
                 d["reasoning_text"] = self._enc.decrypt(d["reasoning_text"])
+            if d.get("advisor_traces") is not None:
+                d["advisor_traces"] = self._decrypt_advisor_traces(d["advisor_traces"])
             results.append(_normalize_message(d))
         return results
 
@@ -2146,6 +2175,12 @@ def _normalize_message(message: dict[str, Any]) -> dict[str, Any]:
         default={},
         expected_type=dict,
     )
+    if "advisor_traces" in message:
+        message["advisor_traces"] = _coerce_json_value(
+            message.get("advisor_traces"),
+            default=None,
+            expected_type=dict,
+        )
 
     return message
 

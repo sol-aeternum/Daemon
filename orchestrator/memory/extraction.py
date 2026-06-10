@@ -49,6 +49,10 @@ MAX_EXTRACTION_INPUT_CHARS = 4000
 EXTRACTION_TEMPERATURE = 0.0
 EXTRACTION_TOP_P = 1.0
 EXTRACTION_MAX_TOKENS = 2000
+BENCHMARK_SEED = 42
+BENCHMARK_EXTRACTION_MODEL = "openrouter/openai/gpt-4o-mini-2024-07-18"
+BENCHMARK_EXTRACTION_ENDPOINT_SLUG = BENCHMARK_EXTRACTION_MODEL
+BENCHMARK_MODE = False
 HEDGE_OVERRIDE_CONFIDENCE = 0.65
 STRONG_OVERRIDE_CONFIDENCE = 0.92
 CORRECTION_MIN_CONFIDENCE = 0.90
@@ -135,6 +139,53 @@ class ExtractionOutcome:
     calibrated_count: int
     rejected_count: int
     slot_coverage: int
+
+
+class BenchmarkProviderError(RuntimeError):
+    """Provider or transport failure in benchmark mode."""
+
+
+class BenchmarkSamplingError(RuntimeError):
+    """Non-deterministic benchmark sampling metadata was detected."""
+
+
+_BM_METADATA: dict[str, dict[str, str | None]] = {}
+
+
+def reset_benchmark_tracking() -> None:
+    _BM_METADATA.clear()
+
+
+def get_benchmark_tracking() -> dict[str, dict[str, str | None]]:
+    return {key: dict(value) for key, value in _BM_METADATA.items()}
+
+
+def _capture_benchmark_metadata(response_data: Any, *, key: str) -> None:
+    if not isinstance(response_data, dict):
+        return
+
+    fingerprint = response_data.get("system_fingerprint")
+    model = response_data.get("model")
+    normalized_fingerprint = fingerprint if isinstance(fingerprint, str) else None
+    normalized_model = model if isinstance(model, str) else None
+
+    previous = _BM_METADATA.get(key)
+    if previous is not None:
+        previous_fingerprint = previous.get("fingerprint")
+        if (
+            previous_fingerprint
+            and normalized_fingerprint
+            and previous_fingerprint != normalized_fingerprint
+        ):
+            raise BenchmarkSamplingError(
+                f"Benchmark fingerprint drift in {key}: "
+                f"expected {previous_fingerprint!r}, got {normalized_fingerprint!r}"
+            )
+
+    _BM_METADATA[key] = {
+        "fingerprint": normalized_fingerprint,
+        "model": normalized_model,
+    }
 
 
 EXTRACTION_PROMPT = """
@@ -394,15 +445,19 @@ async def extract_facts_from_text(
     *,
     summary: str | None = None,
     retry_hint: str | None = None,
+    benchmark_mode: bool | None = None,
 ) -> ExtractionOutcome:
     """Extract, calibrate, and validate memory facts from role-labeled text."""
+    is_benchmark = BENCHMARK_MODE if benchmark_mode is None else bool(benchmark_mode)
     try:
         bounded_text = text[-MAX_EXTRACTION_INPUT_CHARS:]
         if retry_hint:
             bounded_text = f"{bounded_text}\n\n[Retry hint]\n{retry_hint}"
 
         # Get provider call parameters
-        call_params = _get_provider_call_params(model)
+        call_params = _get_provider_call_params(
+            BENCHMARK_EXTRACTION_MODEL if is_benchmark else model
+        )
         call_params.update(
             {
                 "messages": [
@@ -427,8 +482,24 @@ async def extract_facts_from_text(
                 "response_format": {"type": "json_object"},
             }
         )
+        if is_benchmark:
+            call_params["temperature"] = 0.0
+            call_params["seed"] = BENCHMARK_SEED
+            call_params["extra_body"] = {
+                "provider": {
+                    "order": [BENCHMARK_EXTRACTION_ENDPOINT_SLUG],
+                    "allow_fallbacks": False,
+                }
+            }
 
-        response = await litellm.acompletion(**call_params)
+        try:
+            response = await litellm.acompletion(**call_params)
+        except Exception as exc:
+            if is_benchmark:
+                raise BenchmarkProviderError(
+                    f"Benchmark-mode extraction provider failure: {exc}"
+                ) from exc
+            raise
 
         response_data: Any = response
         model_dump = getattr(response, "model_dump", None)
@@ -438,6 +509,9 @@ async def extract_facts_from_text(
             dict_method = getattr(response, "dict", None)
             if callable(dict_method):
                 response_data = dict_method()
+
+        if is_benchmark:
+            _capture_benchmark_metadata(response_data, key="extraction")
 
         content = None
         if isinstance(response_data, dict):
@@ -500,6 +574,8 @@ async def extract_facts_from_text(
             rejected_count=rejected_count,
             slot_coverage=slot_coverage,
         )
+    except (BenchmarkProviderError, BenchmarkSamplingError):
+        raise
     except Exception:
         logger.error("Extraction error", exc_info=True)
         return ExtractionOutcome(

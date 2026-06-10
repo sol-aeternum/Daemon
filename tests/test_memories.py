@@ -39,10 +39,16 @@ async def client(monkeypatch):
     monkeypatch.setenv("DAEMON_ENVIRONMENT", "development")
     get_settings.cache_clear()
 
-    async with app.router.lifespan_context(app):
+    async def override_app_state() -> AppState:
+        return app.state.app_state
+
+    app.dependency_overrides[memories_router.get_app_state] = override_app_state
+    try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             yield client
+    finally:
+        app.dependency_overrides.clear()
 
 
 @pytest_asyncio.fixture
@@ -66,14 +72,21 @@ async def auth_client(monkeypatch):
         session_id=uuid.UUID("33333333-3333-3333-3333-333333333333"),
     )
 
-    app.dependency_overrides[memories_router.require_device_auth] = lambda: fake_device
+    async def override_app_state() -> AppState:
+        return app.state.app_state
 
-    async with app.router.lifespan_context(app):
+    async def override_device_auth() -> AuthenticatedDevice:
+        return fake_device
+
+    app.dependency_overrides[memories_router.get_app_state] = override_app_state
+    app.dependency_overrides[memories_router.require_device_auth] = override_device_auth
+
+    try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             yield client
-
-    app.dependency_overrides.clear()
+    finally:
+        app.dependency_overrides.clear()
 
 
 def create_mock_app_state(mock_store: AsyncMock | None = None) -> AppState:

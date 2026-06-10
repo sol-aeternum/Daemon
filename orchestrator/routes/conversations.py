@@ -25,6 +25,7 @@ class MessageOut(BaseModel):
     tool_results: list[object] = Field(default_factory=list)
     status: str | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
+    advisor_traces: dict[str, object] | None = None
     reasoning_text: str | None = None
     reasoning_duration_secs: int | None = None
     reasoning_model: str | None = None
