@@ -1,8 +1,14 @@
-"use client";
+'use client';
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, ChevronDown, ChevronRight, ExternalLink, RefreshCw } from "lucide-react";
-import { sanitizeHtml } from "../../lib/sanitizeHtml";
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  AlertCircle,
+  ChevronDown,
+  ChevronRight,
+  ExternalLink,
+  RefreshCw,
+} from 'lucide-react';
+import { sanitizeHtml } from '../../lib/sanitizeHtml';
 
 interface InlineArtifactProps {
   htmlContent: string;
@@ -27,43 +33,56 @@ interface ThemeVars {
 }
 
 const FALLBACK_THEME_VARS: ThemeVars = {
-  bgPrimary: "hsl(220, 13%, 10%)",
-  bgSecondary: "hsl(220, 15%, 14%)",
-  bgTertiary: "hsl(220, 13%, 18%)",
-  textPrimary: "hsl(220, 20%, 96%)",
-  textSecondary: "hsl(220, 15%, 75%)",
-  textMuted: "hsl(220, 10%, 55%)",
-  accent: "hsl(215, 60%, 55%)",
-  accentHover: "hsl(215, 65%, 60%)",
-  border: "hsl(220, 15%, 22%)",
-  borderSecondary: "hsl(220, 15%, 28%)",
-  statusSuccess: "hsl(145, 65%, 45%)",
-  statusWarning: "hsl(38, 85%, 55%)",
-  statusError: "hsl(0, 75%, 55%)",
+  bgPrimary: 'hsl(220, 13%, 10%)',
+  bgSecondary: 'hsl(220, 15%, 14%)',
+  bgTertiary: 'hsl(220, 13%, 18%)',
+  textPrimary: 'hsl(220, 20%, 96%)',
+  textSecondary: 'hsl(220, 15%, 75%)',
+  textMuted: 'hsl(220, 10%, 55%)',
+  accent: 'hsl(215, 60%, 55%)',
+  accentHover: 'hsl(215, 65%, 60%)',
+  border: 'hsl(220, 15%, 22%)',
+  borderSecondary: 'hsl(220, 15%, 28%)',
+  statusSuccess: 'hsl(145, 65%, 45%)',
+  statusWarning: 'hsl(38, 85%, 55%)',
+  statusError: 'hsl(0, 75%, 55%)',
 };
 
 const readThemeVars = (): ThemeVars => {
-  if (typeof window === "undefined") {
+  if (typeof window === 'undefined') {
     return FALLBACK_THEME_VARS;
   }
 
   const styles = getComputedStyle(document.documentElement);
-  const pick = (name: string, fallback: string) => styles.getPropertyValue(name).trim() || fallback;
+  const pick = (name: string, fallback: string) =>
+    styles.getPropertyValue(name).trim() || fallback;
 
   return {
-    bgPrimary: pick("--color-bg-primary", FALLBACK_THEME_VARS.bgPrimary),
-    bgSecondary: pick("--color-bg-secondary", FALLBACK_THEME_VARS.bgSecondary),
-    bgTertiary: pick("--color-bg-tertiary", FALLBACK_THEME_VARS.bgTertiary),
-    textPrimary: pick("--color-text-primary", FALLBACK_THEME_VARS.textPrimary),
-    textSecondary: pick("--color-text-secondary", FALLBACK_THEME_VARS.textSecondary),
-    textMuted: pick("--color-text-muted", FALLBACK_THEME_VARS.textMuted),
-    accent: pick("--color-accent-primary", FALLBACK_THEME_VARS.accent),
-    accentHover: pick("--color-accent-hover", FALLBACK_THEME_VARS.accentHover),
-    border: pick("--color-border-primary", FALLBACK_THEME_VARS.border),
-    borderSecondary: pick("--color-border-secondary", FALLBACK_THEME_VARS.borderSecondary),
-    statusSuccess: pick("--color-status-success", FALLBACK_THEME_VARS.statusSuccess),
-    statusWarning: pick("--color-status-warning", FALLBACK_THEME_VARS.statusWarning),
-    statusError: pick("--color-status-error", FALLBACK_THEME_VARS.statusError),
+    bgPrimary: pick('--color-bg-primary', FALLBACK_THEME_VARS.bgPrimary),
+    bgSecondary: pick('--color-bg-secondary', FALLBACK_THEME_VARS.bgSecondary),
+    bgTertiary: pick('--color-bg-tertiary', FALLBACK_THEME_VARS.bgTertiary),
+    textPrimary: pick('--color-text-primary', FALLBACK_THEME_VARS.textPrimary),
+    textSecondary: pick(
+      '--color-text-secondary',
+      FALLBACK_THEME_VARS.textSecondary,
+    ),
+    textMuted: pick('--color-text-muted', FALLBACK_THEME_VARS.textMuted),
+    accent: pick('--color-accent-primary', FALLBACK_THEME_VARS.accent),
+    accentHover: pick('--color-accent-hover', FALLBACK_THEME_VARS.accentHover),
+    border: pick('--color-border-primary', FALLBACK_THEME_VARS.border),
+    borderSecondary: pick(
+      '--color-border-secondary',
+      FALLBACK_THEME_VARS.borderSecondary,
+    ),
+    statusSuccess: pick(
+      '--color-status-success',
+      FALLBACK_THEME_VARS.statusSuccess,
+    ),
+    statusWarning: pick(
+      '--color-status-warning',
+      FALLBACK_THEME_VARS.statusWarning,
+    ),
+    statusError: pick('--color-status-error', FALLBACK_THEME_VARS.statusError),
   };
 };
 
@@ -80,9 +99,13 @@ const injectIntoDocument = (html: string, injection: string): string => {
 };
 
 const escapeSingleQuotedJsString = (value: string): string =>
-  value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 
-export function InlineArtifact({ htmlContent, title, artifactId }: InlineArtifactProps) {
+export function InlineArtifact({
+  htmlContent,
+  title,
+  artifactId,
+}: InlineArtifactProps) {
   const [isExpanded, setIsExpanded] = useState(true);
   const [height, setHeight] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -103,18 +126,20 @@ export function InlineArtifact({ htmlContent, title, artifactId }: InlineArtifac
     const observer = new MutationObserver(syncTheme);
     observer.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ["data-theme", "class", "style"],
+      attributeFilter: ['data-theme', 'class', 'style'],
     });
 
     return () => observer.disconnect();
   }, []);
 
   useEffect(() => {
-    setIsLoading(true);
-    setShowLoader(false);
-    setIsSlowLoading(false);
-    setHasError(false);
-    setHeight(null);
+    queueMicrotask(() => {
+      setIsLoading(true);
+      setShowLoader(false);
+      setIsSlowLoading(false);
+      setHasError(false);
+      setHeight(null);
+    });
   }, [htmlContent, reloadToken]);
 
   useEffect(() => {
@@ -127,7 +152,7 @@ export function InlineArtifact({ htmlContent, title, artifactId }: InlineArtifac
         return;
       }
 
-      if (event.data?.type !== "artifact-height") {
+      if (event.data?.type !== 'artifact-height') {
         return;
       }
 
@@ -149,18 +174,20 @@ export function InlineArtifact({ htmlContent, title, artifactId }: InlineArtifac
       setIsSlowLoading(false);
     };
 
-    window.addEventListener("message", handleMessage);
+    window.addEventListener('message', handleMessage);
 
     return () => {
-      window.removeEventListener("message", handleMessage);
+      window.removeEventListener('message', handleMessage);
       window.clearTimeout(fallbackTimer);
     };
   }, [htmlContent, reloadToken]);
 
   useEffect(() => {
     if (!isLoading) {
-      setShowLoader(false);
-      setIsSlowLoading(false);
+      queueMicrotask(() => {
+        setShowLoader(false);
+        setIsSlowLoading(false);
+      });
       return;
     }
 
@@ -180,7 +207,7 @@ export function InlineArtifact({ htmlContent, title, artifactId }: InlineArtifac
 
   const srcDoc = useMemo(() => {
     const sanitized = sanitizeHtml(htmlContent);
-    const safeArtifactId = escapeSingleQuotedJsString(artifactId ?? "");
+    const safeArtifactId = escapeSingleQuotedJsString(artifactId ?? '');
 
     const shellStyles = `
 <style>
@@ -408,9 +435,15 @@ export function InlineArtifact({ htmlContent, title, artifactId }: InlineArtifac
   };
 
   return (
-    <div className="my-2" role="region" aria-label={title || "Interactive artifact"}>
+    <div
+      className="my-2"
+      role="region"
+      aria-label={title || 'Interactive artifact'}
+    >
       <div className="mb-1 flex items-center justify-between px-0.5">
-        <span className="truncate text-[11px] text-[var(--color-text-muted)]">{title || "Interactive artifact"}</span>
+        <span className="truncate text-[11px] text-[var(--color-text-muted)]">
+          {title || 'Interactive artifact'}
+        </span>
 
         <div className="flex items-center gap-2">
           {artifactId && (
@@ -428,9 +461,13 @@ export function InlineArtifact({ htmlContent, title, artifactId }: InlineArtifac
           <button
             onClick={() => setIsExpanded((prev) => !prev)}
             className="rounded p-0.5 text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-text-secondary)]"
-            aria-label={isExpanded ? "Collapse artifact" : "Expand artifact"}
+            aria-label={isExpanded ? 'Collapse artifact' : 'Expand artifact'}
           >
-            {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+            {isExpanded ? (
+              <ChevronDown className="h-4 w-4" />
+            ) : (
+              <ChevronRight className="h-4 w-4" />
+            )}
           </button>
         </div>
       </div>
@@ -441,7 +478,9 @@ export function InlineArtifact({ htmlContent, title, artifactId }: InlineArtifac
             <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4">
               <div className="mb-2 flex items-center gap-2 text-red-400">
                 <AlertCircle className="h-5 w-5" />
-                <span className="text-sm font-medium">Artifact failed to render</span>
+                <span className="text-sm font-medium">
+                  Artifact failed to render
+                </span>
               </div>
 
               <button
@@ -461,24 +500,26 @@ export function InlineArtifact({ htmlContent, title, artifactId }: InlineArtifac
                       <div className="h-full w-1/2 animate-pulse rounded-full bg-[var(--color-accent-primary)]" />
                     </div>
                     <p className="mt-2 text-center text-xs text-[var(--color-text-muted)]">
-                      {isSlowLoading ? "Preparing interactive view..." : "Loading artifact..."}
+                      {isSlowLoading
+                        ? 'Preparing interactive view...'
+                        : 'Loading artifact...'}
                     </p>
                   </div>
                 </div>
               )}
 
               <iframe
-                key={`${artifactId ?? "artifact"}-${reloadToken}`}
+                key={`${artifactId ?? 'artifact'}-${reloadToken}`}
                 ref={iframeRef}
                 srcDoc={srcDoc}
                 sandbox="allow-scripts"
-                title={title || "Artifact"}
+                title={title || 'Artifact'}
                 onLoad={handleIframeLoad}
                 onError={handleIframeError}
                 className="min-h-[240px] w-full border-0 bg-transparent transition-opacity duration-200"
                 style={{
                   height: `${height ?? 560}px`,
-                  maxHeight: "2000px",
+                  maxHeight: '2000px',
                   opacity: isLoading ? 0.6 : 1,
                 }}
               />

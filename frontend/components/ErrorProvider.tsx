@@ -1,7 +1,13 @@
-"use client";
+'use client';
 
-import { createContext, useContext, useState, useCallback, ReactNode } from "react";
-import { ErrorToast } from "./ErrorToast";
+import {
+  createContext,
+  useContext,
+  useState,
+  useCallback,
+  ReactNode,
+} from 'react';
+import { ErrorToast } from './ErrorToast';
 
 interface ErrorContextType {
   showError: (message: string) => void;
@@ -32,7 +38,7 @@ export function ErrorProvider({ children }: { children: ReactNode }) {
 export function useError() {
   const context = useContext(ErrorContext);
   if (context === undefined) {
-    throw new Error("useError must be used within an ErrorProvider");
+    throw new Error('useError must be used within an ErrorProvider');
   }
   return context;
 }

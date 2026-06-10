@@ -1,13 +1,13 @@
-"use client";
+'use client';
 
-import { useCallback, useRef } from "react";
-import { useStudio } from "../StudioProvider";
-import { ensureAuthHeader } from "@/lib/auth";
+import { useCallback, useRef } from 'react';
+import { useStudio } from '../StudioProvider';
+import { ensureAuthHeader } from '@/lib/auth';
 
-type VideoSourceMode = "text-to-video" | "image-to-video";
-type VideoTier = "starter" | "pro" | "max" | "byok";
-type VideoProvider = "xai" | "kling";
-type KlingModel = "kling-v3-pro" | "kling-o3-pro";
+type VideoSourceMode = 'text-to-video' | 'image-to-video';
+type VideoTier = 'starter' | 'pro' | 'max' | 'byok';
+type VideoProvider = 'xai' | 'kling';
+type KlingModel = 'kling-v3-pro' | 'kling-o3-pro';
 
 interface GenerateVideoOptions {
   duration: number;
@@ -31,14 +31,14 @@ interface ToolResultExtract {
 }
 
 function getApiBaseUrl(): string {
-  const fromEnv = process.env.NEXT_PUBLIC_API_URL || "";
+  const fromEnv = process.env.NEXT_PUBLIC_API_URL || '';
   if (fromEnv.trim().length > 0) {
-    return fromEnv.replace(/\/$/, "");
+    return fromEnv.replace(/\/$/, '');
   }
-  if (process.env.NODE_ENV === "development") {
-    return "http://localhost:8000";
+  if (process.env.NODE_ENV === 'development') {
+    return 'http://localhost:8000';
   }
-  return "";
+  return '';
 }
 
 async function getAuthHeaders(): Promise<HeadersInit> {
@@ -48,26 +48,30 @@ async function getAuthHeaders(): Promise<HeadersInit> {
 }
 
 function toObject(value: unknown): JsonObject | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
   }
   return value as JsonObject;
 }
 
 function asString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+  return typeof value === 'string' && value.trim().length > 0
+    ? value
+    : undefined;
 }
 
 function asNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value
+    : undefined;
 }
 
 function asBoolean(value: unknown): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined;
+  return typeof value === 'boolean' ? value : undefined;
 }
 
 function parseJsonIfString(value: unknown): unknown {
-  if (typeof value !== "string") {
+  if (typeof value !== 'string') {
     return value;
   }
   try {
@@ -89,27 +93,27 @@ function extractToolResult(result: unknown): ToolResultExtract {
 
   const videoObj = toObject(dataObj.video);
   const videoUrl =
-    asString(dataObj.video_url)
-    ?? asString(dataObj.url)
-    ?? asString(dataObj.file_url)
-    ?? asString(videoObj?.url);
+    asString(dataObj.video_url) ??
+    asString(dataObj.url) ??
+    asString(dataObj.file_url) ??
+    asString(videoObj?.url);
 
   const durationSeconds =
-    asNumber(dataObj.duration_seconds)
-    ?? asNumber(dataObj.duration)
-    ?? asNumber(metadataObj?.duration);
+    asNumber(dataObj.duration_seconds) ??
+    asNumber(dataObj.duration) ??
+    asNumber(metadataObj?.duration);
 
   const cost = asNumber(metadataObj?.cost) ?? asNumber(dataObj.cost);
 
   const refunded =
-    asBoolean(dataObj.refunded)
-    ?? asBoolean(metadataObj?.refunded)
-    ?? (root.success === false ? true : undefined);
+    asBoolean(dataObj.refunded) ??
+    asBoolean(metadataObj?.refunded) ??
+    (root.success === false ? true : undefined);
 
   const error =
-    asString(dataObj.error)
-    ?? asString(root.error)
-    ?? (root.success === false ? "Video generation failed" : undefined);
+    asString(dataObj.error) ??
+    asString(root.error) ??
+    (root.success === false ? 'Video generation failed' : undefined);
 
   return {
     videoUrl,
@@ -121,16 +125,16 @@ function extractToolResult(result: unknown): ToolResultExtract {
 }
 
 function parseSseFrame(frame: string): { event: string; dataText: string } {
-  const lines = frame.split("\n");
-  let event = "message";
-  let dataText = "";
+  const lines = frame.split('\n');
+  let event = 'message';
+  let dataText = '';
 
   for (const line of lines) {
-    if (line.startsWith("event:")) {
+    if (line.startsWith('event:')) {
       event = line.slice(6).trim();
       continue;
     }
-    if (line.startsWith("data:")) {
+    if (line.startsWith('data:')) {
       dataText += `${line.slice(5).trim()}\n`;
     }
   }
@@ -138,9 +142,13 @@ function parseSseFrame(frame: string): { event: string; dataText: string } {
   return { event, dataText: dataText.trim() };
 }
 
-export function getVideoGenerationEndpointCandidates(apiBaseUrl: string): string[] {
-  const rawEndpoints = apiBaseUrl ? [`${apiBaseUrl}/chat`, "/chat"] : ["/chat"];
-  const bridgeEndpoints = apiBaseUrl ? [`${apiBaseUrl}/api/chat`, "/api/chat"] : ["/api/chat"];
+export function getVideoGenerationEndpointCandidates(
+  apiBaseUrl: string,
+): string[] {
+  const rawEndpoints = apiBaseUrl ? [`${apiBaseUrl}/chat`, '/chat'] : ['/chat'];
+  const bridgeEndpoints = apiBaseUrl
+    ? [`${apiBaseUrl}/api/chat`, '/api/chat']
+    : ['/api/chat'];
 
   return [...rawEndpoints, ...bridgeEndpoints];
 }
@@ -151,23 +159,33 @@ function buildVideoRequestMessage(options: {
   sourceMode: VideoSourceMode;
 }): string {
   const lines = [
-    "Generate a video.",
+    'Generate a video.',
     `Prompt: ${options.prompt}`,
-    "Use the Studio video settings from request metadata.",
+    'Use the Studio video settings from request metadata.',
     `Duration seconds: ${options.duration}`,
     `Source mode: ${options.sourceMode}`,
   ];
 
-  lines.push("Return completion or failure details.");
-  return lines.join("\n");
+  lines.push('Return completion or failure details.');
+  return lines.join('\n');
 }
 
 export function useVideoGeneration() {
-  const { prompt, referenceImage, setIsGenerating, upsertGeneration } = useStudio();
+  const { prompt, referenceImage, setIsGenerating, upsertGeneration } =
+    useStudio();
   const inFlightRef = useRef(false);
 
   const generateVideo = useCallback(
-    async ({ duration, sourceMode, tier, userId, provider, estimatedCredits, klingModel, audioEnabled }: GenerateVideoOptions) => {
+    async ({
+      duration,
+      sourceMode,
+      tier,
+      userId,
+      provider,
+      estimatedCredits,
+      klingModel,
+      audioEnabled,
+    }: GenerateVideoOptions) => {
       if (inFlightRef.current) {
         return;
       }
@@ -182,20 +200,24 @@ export function useVideoGeneration() {
       const referenceImageUrl = referenceImage?.url;
       const referenceImageId = referenceImage?.id;
 
-      const modelId = provider === "kling" ? klingModel ?? "kling-o3-pro" : "xai-grok-imagine-3-video";
-      const modelName = provider === "kling" ? "Kling 3.0" : "xAI Grok Imagine 3";
+      const modelId =
+        provider === 'kling'
+          ? (klingModel ?? 'kling-o3-pro')
+          : 'xai-grok-imagine-3-video';
+      const modelName =
+        provider === 'kling' ? 'Kling 3.0' : 'xAI Grok Imagine 3';
 
       upsertGeneration({
         id: generationId,
-        mediaType: "video",
+        mediaType: 'video',
         modelId,
         modelName,
         prompt: trimmedPrompt,
-        aspectRatio: "16:9",
-        resolution: "video",
+        aspectRatio: '16:9',
+        resolution: 'video',
         durationSeconds: duration,
         costEstimate: estimatedCredits,
-        status: "queued",
+        status: 'queued',
         createdAt,
       });
 
@@ -222,15 +244,15 @@ export function useVideoGeneration() {
 
           try {
             candidateResponse = await fetch(candidate, {
-              method: "POST",
+              method: 'POST',
               headers: {
-                "Content-Type": "application/json",
+                'Content-Type': 'application/json',
                 ...(await getAuthHeaders()),
               },
               body: JSON.stringify({
                 message,
-                model: "auto",
-                messages: [{ role: "user", content: message }],
+                model: 'auto',
+                messages: [{ role: 'user', content: message }],
                 metadata: {
                   video_generation: {
                     duration,
@@ -240,8 +262,9 @@ export function useVideoGeneration() {
                     provider,
                     reference_image_url: referenceImageUrl,
                     reference_image_id: referenceImageId,
-                    kling_model: provider === "kling" ? klingModel : undefined,
-                    audio_enabled: provider === "kling" ? audioEnabled : undefined,
+                    kling_model: provider === 'kling' ? klingModel : undefined,
+                    audio_enabled:
+                      provider === 'kling' ? audioEnabled : undefined,
                   },
                 },
               }),
@@ -253,7 +276,10 @@ export function useVideoGeneration() {
             throw error;
           }
 
-          if (candidateResponse.status === 404 && index < candidates.length - 1) {
+          if (
+            candidateResponse.status === 404 &&
+            index < candidates.length - 1
+          ) {
             continue;
           }
           response = candidateResponse;
@@ -261,14 +287,16 @@ export function useVideoGeneration() {
         }
 
         if (!response || !response.ok || !response.body) {
-          throw new Error(`Video generation request failed (${response?.status ?? "unknown"})`);
+          throw new Error(
+            `Video generation request failed (${response?.status ?? 'unknown'})`,
+          );
         }
 
-        upsertGeneration({ id: generationId, status: "generating" });
+        upsertGeneration({ id: generationId, status: 'generating' });
 
         const decoder = new TextDecoder();
         const reader = response.body.getReader();
-        let buffer = "";
+        let buffer = '';
 
         while (true) {
           const { done, value } = await reader.read();
@@ -277,8 +305,8 @@ export function useVideoGeneration() {
           }
 
           buffer += decoder.decode(value, { stream: true });
-          const frames = buffer.split("\n\n");
-          buffer = frames.pop() || "";
+          const frames = buffer.split('\n\n');
+          buffer = frames.pop() || '';
 
           for (const frame of frames) {
             const { event, dataText } = parseSseFrame(frame);
@@ -296,19 +324,23 @@ export function useVideoGeneration() {
             const payloadObj = toObject(payload);
             const dataObj = toObject(payloadObj?.data);
 
-            if (event === "video_generating") {
-              upsertGeneration({ id: generationId, status: "generating" });
+            if (event === 'video_generating') {
+              upsertGeneration({ id: generationId, status: 'generating' });
               continue;
             }
 
-            if (event === "video_complete") {
-              const videoUrl = asString(dataObj?.url) ?? asString(payloadObj?.url);
-              const completionDuration = asNumber(dataObj?.duration) ?? asNumber(payloadObj?.duration) ?? duration;
+            if (event === 'video_complete') {
+              const videoUrl =
+                asString(dataObj?.url) ?? asString(payloadObj?.url);
+              const completionDuration =
+                asNumber(dataObj?.duration) ??
+                asNumber(payloadObj?.duration) ??
+                duration;
               if (videoUrl) {
                 upsertGeneration({
                   id: generationId,
-                  status: "complete",
-                  mediaType: "video",
+                  status: 'complete',
+                  mediaType: 'video',
                   videoUrl,
                   durationSeconds: completionDuration,
                   refunded: false,
@@ -319,12 +351,16 @@ export function useVideoGeneration() {
               continue;
             }
 
-            if (event === "video_failed") {
-              const failedMessage = asString(dataObj?.error) ?? asString(payloadObj?.error) ?? "Video generation failed";
-              const refunded = asBoolean(dataObj?.refunded) ?? asBoolean(payloadObj?.refunded);
+            if (event === 'video_failed') {
+              const failedMessage =
+                asString(dataObj?.error) ??
+                asString(payloadObj?.error) ??
+                'Video generation failed';
+              const refunded =
+                asBoolean(dataObj?.refunded) ?? asBoolean(payloadObj?.refunded);
               upsertGeneration({
                 id: generationId,
-                status: "error",
+                status: 'error',
                 error: failedMessage,
                 refunded: refunded ?? false,
               });
@@ -332,13 +368,15 @@ export function useVideoGeneration() {
               continue;
             }
 
-            if (event === "tool_result") {
-              const extracted = extractToolResult(dataObj?.result ?? payloadObj?.result);
+            if (event === 'tool_result') {
+              const extracted = extractToolResult(
+                dataObj?.result ?? payloadObj?.result,
+              );
               if (extracted.videoUrl) {
                 upsertGeneration({
                   id: generationId,
-                  status: "complete",
-                  mediaType: "video",
+                  status: 'complete',
+                  mediaType: 'video',
                   videoUrl: extracted.videoUrl,
                   durationSeconds: extracted.durationSeconds ?? duration,
                   costEstimate: extracted.cost,
@@ -349,7 +387,7 @@ export function useVideoGeneration() {
               } else if (extracted.error) {
                 upsertGeneration({
                   id: generationId,
-                  status: "error",
+                  status: 'error',
                   error: extracted.error,
                   refunded: extracted.refunded ?? false,
                 });
@@ -358,11 +396,14 @@ export function useVideoGeneration() {
               continue;
             }
 
-            if (event === "error") {
-              const streamError = asString(dataObj?.error) ?? asString(payloadObj?.error) ?? "Video generation failed";
+            if (event === 'error') {
+              const streamError =
+                asString(dataObj?.error) ??
+                asString(payloadObj?.error) ??
+                'Video generation failed';
               upsertGeneration({
                 id: generationId,
-                status: "error",
+                status: 'error',
                 error: streamError,
               });
               latestError = streamError;
@@ -373,21 +414,23 @@ export function useVideoGeneration() {
         if (!didComplete) {
           upsertGeneration({
             id: generationId,
-            status: "error",
-            error: latestError ?? "Video generation did not return a playable video",
+            status: 'error',
+            error:
+              latestError ?? 'Video generation did not return a playable video',
           });
         }
       } catch (error) {
         upsertGeneration({
           id: generationId,
-          status: "error",
-          error: error instanceof Error ? error.message : "Video generation failed",
+          status: 'error',
+          error:
+            error instanceof Error ? error.message : 'Video generation failed',
         });
       } finally {
         inFlightRef.current = false;
         setIsGenerating(false);
-        if (typeof window !== "undefined") {
-          window.dispatchEvent(new CustomEvent("video-credits:refresh"));
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('video-credits:refresh'));
         }
       }
     },

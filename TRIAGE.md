@@ -1,5 +1,137 @@
 # TRIAGE.md
 
+## 2026-06-12T16:03:50+09:30 — GitHub Backend Gate Used .venv Instead Of .uv-venv
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: #111/#112 stacked CI verification
+- **Category**: config
+- **Blocked current task**: yes
+- **What happened**: GitHub Actions `Backend gates` failed on PR #123 even though the local PR wrapper passed. The workflow created `.venv` with plain `uv sync --locked`, but `pyrightconfig.json` expects `.uv-venv`, causing BasedPyright to exit non-zero despite reporting zero diagnostics.
+- **Evidence**: PR #123 `Backend gates` job 80972175090 logged `venv .uv-venv subdirectory not found in venv path /home/runner/work/Daemon/Daemon`, then `0 errors, 0 warnings, 0 notes`, followed by `Process completed with exit code 3`.
+- **Likely cause**: CI did not set the documented `UV_PROJECT_ENVIRONMENT=.uv-venv` environment used by local backend gates. Confidence: 95%.
+- **Suggested action**: Keep GitHub Actions uv sync/run commands aligned with the project-local `.uv-venv` environment path.
+
+## 2026-06-12T16:06:00+09:30 — Sandbox Blocked Linked Worktree Git Index Lock
+- **Severity**: info
+- **Scope**: host
+- **Encountered during**: #111 CI environment amend
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: The first `git add && git commit --amend --no-edit` attempt in the `/tmp/daemon-111` linked worktree failed because the sandbox could not write the linked worktree index lock under the main repository `.git` directory.
+- **Evidence**: `fatal: Unable to create '/home/sol/daemon/.git/worktrees/daemon-111/index.lock': Read-only file system`.
+- **Likely cause**: The managed sandbox allows editing files in `/tmp` and the workspace but treats the main `.git` metadata path as read-only unless the git command is escalated. Confidence: 95%.
+- **Suggested action**: Use escalated git commands for linked worktree index updates in this managed environment.
+
+## 2026-06-10T19:14:34+09:30 — Frontend Package Has Format Check But No Format Script
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: #111 green blocking gates
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: `npm run format` failed because `frontend/package.json` defines `format:check` but not a write-format counterpart. The issue scope requires a Prettier write sweep, so the local Prettier binary was used directly instead.
+- **Evidence**: `npm error Missing script: "format"`; `frontend/package.json` scripts include `format:check: prettier --check .`.
+- **Likely cause**: The repo intentionally exposes only the checking gate, or the write helper was omitted. Confidence: 85%.
+- **Suggested action**: Consider adding a documented `format` script if contributors are expected to run the same write command locally.
+
+## 2026-06-10T19:17:14+09:30 — #111 Type-Check Depends On Unmerged #108 Advisor Event Types
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: #111 green blocking gates
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: Running `npm run type-check` on #111 directly from `main` failed on the advisor event type errors that #108/PR #119 fixes. This is a Wave 0 sequencing dependency, so #111 needs to be verified stacked on `fix/blocker/advisor-event-types` or after #108 merges.
+- **Evidence**: `__tests__/advisor-events.test.ts(4,3): error TS2305: Module '"../lib/events"' has no exported member 'isAdvisorEndEvent'.`; repeated `advisor_start` / `advisor_text_delta` / `tool_call_id` type errors in `__tests__/advisor-events.test.ts`, `__tests__/tool-call-log.test.ts`, and `lib/advisorEvents.ts`.
+- **Likely cause**: #111 was started from current `main` while the Wave 0 #108 frontend build fix is still open as PR #119. Confidence: 99%.
+- **Suggested action**: Stack #111 on PR #119 for local verification, then retarget/rebase to `main` after #108 merges.
+
+## 2026-06-10T19:20:33+09:30 — Frontend Vitest Passes With AuthProvider Act And JSDOM Navigation Warnings
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: #111 green blocking gates
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: `npm run test:run` passed all tests but emitted repeated React test `act(...)` warnings for AuthProvider redirect cases and a jsdom navigation warning in `attemptPageLoadRefresh`.
+- **Evidence**: `An update to AuthProvider inside a test was not wrapped in act(...).`; `Error: Not implemented: navigation (except hash changes)` from `frontend/lib/auth.ts:834:23`; final result `Test Files 16 passed (16), Tests 206 passed (206)`.
+- **Likely cause**: Existing async state updates in auth tests are asserted without wrapping the full update cycle in `act`, and one auth test intentionally exercises a `window.location.href` branch that jsdom cannot implement. Confidence: 85%.
+- **Suggested action**: Tighten the affected auth tests with `act`/`waitFor` around redirect-triggering operations and mock navigation assignment for the jsdom-limited branch.
+
+## 2026-06-10T19:28:08+09:30 — UV Cache Defaults To Read-Only Home Cache In Worktree
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: #111 backend gates
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: `uv run` failed before running ruff because it tried to initialize cache files under `/home/sol/.cache/uv`, which is read-only in this sandbox. Setting `UV_CACHE_DIR=/tmp/uv-cache` allowed the gate to run.
+- **Evidence**: `error: Failed to initialize cache at /home/sol/.cache/uv`; `failed to open file /home/sol/.cache/uv/sdists-v9/.git: Read-only file system (os error 30)`.
+- **Likely cause**: The sandbox permits writes to the worktree and `/tmp`, but not the user-level uv cache directory. Confidence: 95%.
+- **Suggested action**: Use `UV_CACHE_DIR=/tmp/uv-cache` for sandboxed worktree gate commands, or configure uv cache to a writable project-local path.
+
+## 2026-06-10T19:28:08+09:30 — Full BasedPyright Gate Requires Unmerged #109 Code And Config
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: #111 backend gates
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: Full `basedpyright --level error` was not authoritative while #111 was stacked only on #108; it first read stale `.venv` config from `main`, then still reported #109-owned advisor/benchmark/type debt under a temporary config. Restacking #108 onto #109 and then #111 onto #108 resolved the code/config dependency.
+- **Evidence**: Default pre-restack run: `venv .venv subdirectory not found in venv path /tmp/daemon-111` followed by 301 missing-import errors. Temporary Wave 0 config run: 144 errors including `orchestrator/advisor_budget.py:47:23 - error: Cannot access attribute "advisor_budget_per_conversation"` and `orchestrator/tools/advisor.py:11:40 - error: "create_advisor_registry" is unknown import symbol`. After restacking and adding a local `.uv-venv` symlink for the `/tmp` worktree, `uv run basedpyright --level error` reported `0 errors, 0 warnings, 0 notes`.
+- **Likely cause**: #111 initially lacked #109's backend collection/type cleanup in its ancestry. Confidence: 99%.
+- **Suggested action**: Keep Wave 0 branches stacked in sequence until merged, or rerun full type gates after #109 and #108 land on `main`.
+
+## 2026-06-10T19:28:08+09:30 — Scoped BasedPyright Check Rewrote Baseline File
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: #111 backend gates
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: A scoped temporary BasedPyright project for `tests/test_video_credits_grant_bounds.py` passed with zero diagnostics, but the tool rewrote `.basedpyright/baseline.json` as a side effect. The tracked baseline was immediately restored.
+- **Evidence**: Command output: `updated ./.basedpyright/baseline.json with 520 errors (went down by 51)` followed by `0 errors, 0 warnings, 0 notes`.
+- **Likely cause**: BasedPyright auto-managed the repository default baseline because the scoped temp config omitted an explicit throwaway baseline file. Confidence: 80%.
+- **Suggested action**: For future scoped BasedPyright checks, set `baselineFile` to a temp path or pass a project config that cannot mutate tracked baseline files.
+
+## 2026-06-10T19:32:10+09:30 — Video Credits Bounds Test Hung In ASGI Test Harness
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: #111 backend gates
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: The original `TestClient` version of `tests/test_video_credits_grant_bounds.py` and a follow-up `httpx.ASGITransport` version with sync dependency overrides both hung when dispatching the request. Restacking on #109 brought in async dependency overrides for this endpoint-level test, and #111 preserved the type cleanup on top.
+- **Evidence**: Repeated session polls returned `Process running with session ID 47918` and no output. Escalation attempt failed with `Rejected("This action was rejected due to unacceptable risk... You've hit your usage limit...")`. Rerun command `timeout 90s env UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv UV_CACHE_DIR=/tmp/uv-cache PYTHONPATH=. uv run pytest -q tests/test_video_credits_grant_bounds.py` exited `124` with no output. Faulthandler showed `starlette/testclient.py` waiting in `handle_request`; the sync-override ASGITransport attempt showed an AnyIO worker thread waiting. With #109's async override pattern plus #111's `admin_key: str | None` settings typing, `pytest -q tests/test_video_credits_grant_bounds.py` passed during backend local CI.
+- **Likely cause**: FastAPI's sync dependency override execution path interacts poorly with the managed sandbox/Python 3.14 AnyIO worker thread in this focused test. Confidence: 70%.
+- **Suggested action**: Keep backend route tests on async dependency overrides; investigate the ASGI test harness separately if broader route tests begin hanging.
+
+## 2026-06-12T06:23:00+09:30 — /tmp Worktree Needs Local .uv-venv Link For BasedPyright Config
+- **Severity**: info
+- **Scope**: host
+- **Encountered during**: #111 stacked backend local CI
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: After #109's config fix, `pyrightconfig.json` expects `.uv-venv` under the active repository root. The detached `/tmp/daemon-111` worktree did not have that directory, so BasedPyright reported missing imports until a local untracked symlink pointed `.uv-venv` at `/home/sol/daemon/.uv-venv`.
+- **Evidence**: Backend local CI printed `venv .uv-venv subdirectory not found in venv path /tmp/daemon-111` followed by missing-import diagnostics. After `ln -s /home/sol/daemon/.uv-venv .uv-venv`, `uv run basedpyright --level error` reported `0 errors, 0 warnings, 0 notes`.
+- **Likely cause**: Linked worktrees under `/tmp` do not automatically share the root worktree's project-local uv environment. Confidence: 95%.
+- **Suggested action**: For detached worktree verification, either create a local `.uv-venv` symlink to the shared locked environment or run `uv sync --locked` with `UV_PROJECT_ENVIRONMENT=.uv-venv` inside that worktree.
+
+## 2026-06-12T06:23:00+09:30 — LongMemEval Contamination Test Missing Historical run.log Artifact
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: #111 stacked backend local CI
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: Backend local CI's inventory pytest gate ran the full suite and failed one benchmark artifact test because `tests/benchmark_results/longmemeval_tier2_fast/run.log` is absent from the worktree. The sibling checkpoint/results JSON artifacts are present.
+- **Evidence**: `tests/benchmark_longmemeval/test_contamination_analysis.py::test_failed_run_log_questions_reappear_as_clean_rows` failed with `FileNotFoundError: [Errno 2] No such file or directory: '/tmp/daemon-111/tests/benchmark_results/longmemeval_tier2_fast/run.log'`. Directory listing showed `longmemeval_fast_checkpoint.json` and `longmemeval_fast_results.jsonl`, but no `run.log`. Local CI summary still exited 0 because pytest is an inventory gate: `blocking failures: 0`, `inventory reports: backend/pytest (exit=1)`.
+- **Likely cause**: The historical run log required by the contamination analysis test was not committed or is not present in this worktree checkout. Confidence: 90%.
+- **Suggested action**: Commit the expected `run.log` artifact, adjust the test to skip with a clear reason when the historical artifact is intentionally absent, or remove the test's dependency on untracked run output.
+
+## 2026-06-12T06:27:00+09:30 — Frontend Format Gate Included Generated Next And Workbox Files
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: #111 frontend local CI
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: Frontend local CI's blocking `format:check` failed after `type-check` because `next typegen` regenerated `next-env.d.ts` in Next's default form. A prior build also left an ignored hashed Workbox chunk that Prettier traversed. `.prettierignore` already excluded generated `.next/`, locks, and `public/sw.js`, but not these generated outputs.
+- **Evidence**: `npm run format:check` reported `[warn] next-env.d.ts` and previously `[warn] public/workbox-6f5b1947.js`; rerunning Prettier manually could not survive the wrapper order because `next typegen` runs before `format:check`.
+- **Likely cause**: Generated frontend artifacts were inside Prettier's traversal scope, and `next typegen` rewrites `next-env.d.ts` before the format gate. Confidence: 95%.
+- **Suggested action**: Keep generated Next/PWA outputs in `.prettierignore`; format source files rather than generated artifacts.
+
 ## 2026-06-05 UTC — Worktree LSP import resolution misses project deps under /tmp review worktree
 - **Severity**: warning
 - **Scope**: tooling

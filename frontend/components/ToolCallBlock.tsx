@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import Image from 'next/image';
 import { ChatEvent, isToolCallEvent, isToolResultEvent } from '../lib/events';
 import { ensureAuthHeader } from '../lib/auth';
 import {
@@ -339,9 +340,12 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
 
         <div className="relative group rounded-xl overflow-hidden border border-[var(--color-border-primary)] bg-[var(--color-bg-tertiary)] shadow-sm max-w-md transition-all hover:shadow-md">
           {imageBlobUrl && !imageBlobLoadError ? (
-            <img
+            <Image
               src={imageBlobUrl}
               alt={prompt || 'Generated image'}
+              width={1024}
+              height={1024}
+              unoptimized
               className="w-full h-auto max-h-96 object-cover cursor-pointer hover:opacity-95 transition-opacity"
               onClick={() => setIsLightboxOpen(true)}
             />
@@ -377,7 +381,7 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
             {imageBlobUrl && !imageBlobLoadError ? (
               <a
                 href={imageBlobUrl}
-                download={`image-${Date.now()}.png`}
+                download={`image-${imagePath.split('/').pop() || 'generated'}.png`}
                 className="p-1.5 bg-black/50 hover:bg-black/70 text-white rounded-md backdrop-blur-sm transition-colors"
                 title="Download"
                 target="_blank"
@@ -403,9 +407,12 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
             </button>
 
             {imageBlobUrl && !imageBlobLoadError ? (
-              <img
+              <Image
                 src={imageBlobUrl}
                 alt={prompt || 'Full resolution image'}
+                width={1600}
+                height={1000}
+                unoptimized
                 className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
                 onClick={(e) => e.stopPropagation()}
               />
@@ -422,7 +429,7 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
               >
                 <a
                   href={imageBlobUrl}
-                  download={`image-${Date.now()}.png`}
+                  download={`image-${imagePath.split('/').pop() || 'generated'}.png`}
                   className="flex items-center gap-2 px-4 py-2 bg-[var(--color-bg-inverse)] text-[var(--color-text-inverse)] rounded-full font-medium hover:bg-[var(--color-bg-hover)] transition-colors shadow-lg"
                   target="_blank"
                   rel="noopener noreferrer"
@@ -731,7 +738,7 @@ function AudioPlayerBlock({ audioPath, prompt }: AudioPlayerBlockProps) {
         {displayUrl && !loading && !error ? (
           <a
             href={displayUrl}
-            download={`sound-effect-${Date.now()}.mp3`}
+            download={`sound-effect-${audioPath.split('/').pop() || 'generated'}.mp3`}
             className="flex-shrink-0 p-2 text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] rounded-lg transition-colors"
             title="Download"
             target="_blank"

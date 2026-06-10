@@ -10,6 +10,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  UV_PROJECT_ENVIRONMENT: .uv-venv
+
 jobs:
   backend:
     name: Backend gates

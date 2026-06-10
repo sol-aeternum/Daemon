@@ -1,7 +1,7 @@
-"use client";
+'use client';
 
-import { useState, useEffect, useRef, useCallback } from "react";
-import { Loader2, AlertCircle, FileText, Download } from "lucide-react";
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Loader2, AlertCircle, FileText, Download } from 'lucide-react';
 
 interface DocxPreviewProps {
   content: ArrayBuffer | string;
@@ -9,7 +9,7 @@ interface DocxPreviewProps {
 }
 
 const DOCX_RENDER_TIMEOUT_MS = 20000;
-const DOCX_CLASS_NAME = "docx-preview";
+const DOCX_CLASS_NAME = 'docx-preview';
 
 export function DocxPreview({ content, filename }: DocxPreviewProps) {
   const [isLoading, setIsLoading] = useState(true);
@@ -24,8 +24,8 @@ export function DocxPreview({ content, filename }: DocxPreviewProps) {
 
     const pages = Array.from(
       container.querySelectorAll<HTMLElement>(
-        `section.${DOCX_CLASS_NAME}, section.docx, .${DOCX_CLASS_NAME}`
-      )
+        `section.${DOCX_CLASS_NAME}, section.docx, .${DOCX_CLASS_NAME}`,
+      ),
     );
     if (!pages.length) return;
 
@@ -33,16 +33,16 @@ export function DocxPreview({ content, filename }: DocxPreviewProps) {
     if (!availableWidth) return;
 
     const supportsZoom =
-      typeof CSS !== "undefined" &&
-      typeof CSS.supports === "function" &&
-      CSS.supports("zoom", "1");
+      typeof CSS !== 'undefined' &&
+      typeof CSS.supports === 'function' &&
+      CSS.supports('zoom', '1');
 
     const naturalSizes = pages.map((page) => {
-      page.style.setProperty("zoom", "1");
-      page.style.removeProperty("transform");
-      page.style.removeProperty("transform-origin");
-      page.style.removeProperty("height");
-      page.style.removeProperty("max-width");
+      page.style.setProperty('zoom', '1');
+      page.style.removeProperty('transform');
+      page.style.removeProperty('transform-origin');
+      page.style.removeProperty('height');
+      page.style.removeProperty('max-width');
 
       const naturalWidth = page.scrollWidth;
       const naturalHeight = page.scrollHeight;
@@ -50,47 +50,52 @@ export function DocxPreview({ content, filename }: DocxPreviewProps) {
       return { page, naturalWidth, naturalHeight };
     });
 
-    const widestPage = Math.max(...naturalSizes.map(({ naturalWidth }) => naturalWidth));
+    const widestPage = Math.max(
+      ...naturalSizes.map(({ naturalWidth }) => naturalWidth),
+    );
     if (!widestPage) return;
 
     const scale = Math.min(1, availableWidth / widestPage);
     naturalSizes.forEach(({ page, naturalWidth, naturalHeight }) => {
-      page.style.setProperty("marginLeft", "auto");
-      page.style.setProperty("marginRight", "auto");
-      page.style.setProperty("transformOrigin", "top center");
+      page.style.setProperty('marginLeft', 'auto');
+      page.style.setProperty('marginRight', 'auto');
+      page.style.setProperty('transformOrigin', 'top center');
 
       if (supportsZoom) {
-        page.style.setProperty("zoom", String(scale));
-        page.style.removeProperty("transform");
-        page.style.removeProperty("height");
+        page.style.setProperty('zoom', String(scale));
+        page.style.removeProperty('transform');
+        page.style.removeProperty('height');
       } else {
-        page.style.setProperty("zoom", "1");
-        page.style.setProperty("transform", `scale(${scale})`);
-        page.style.setProperty("height", `${Math.ceil(naturalHeight * scale)}px`);
+        page.style.setProperty('zoom', '1');
+        page.style.setProperty('transform', `scale(${scale})`);
+        page.style.setProperty(
+          'height',
+          `${Math.ceil(naturalHeight * scale)}px`,
+        );
       }
     });
   }, []);
 
   const createBlobUrl = useCallback((data: ArrayBuffer | string): string => {
     let blob: Blob;
-    if (typeof data === "string") {
+    if (typeof data === 'string') {
       // If it's base64, decode it
-      if (data.includes("base64,")) {
-        const base64 = data.split("base64,")[1];
+      if (data.includes('base64,')) {
+        const base64 = data.split('base64,')[1];
         const binaryString = atob(base64);
         const bytes = new Uint8Array(binaryString.length);
         for (let i = 0; i < binaryString.length; i++) {
           bytes[i] = binaryString.charCodeAt(i);
         }
         blob = new Blob([bytes], {
-          type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         });
       } else {
-        blob = new Blob([data], { type: "text/plain" });
+        blob = new Blob([data], { type: 'text/plain' });
       }
     } else {
       blob = new Blob([data], {
-        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       });
     }
     return URL.createObjectURL(blob);
@@ -104,7 +109,7 @@ export function DocxPreview({ content, filename }: DocxPreviewProps) {
     const renderDocx = async () => {
       if (!containerRef.current) {
         if (!cancelled && runIdRef.current === runId) {
-          setError("DOCX preview container not available.");
+          setError('DOCX preview container not available.');
           setIsLoading(false);
         }
         return;
@@ -117,9 +122,9 @@ export function DocxPreview({ content, filename }: DocxPreviewProps) {
       try {
         // Convert content to ArrayBuffer if needed
         let docxData: ArrayBuffer;
-        if (typeof content === "string") {
-          if (content.includes("base64,")) {
-            const base64 = content.split("base64,")[1];
+        if (typeof content === 'string') {
+          if (content.includes('base64,')) {
+            const base64 = content.split('base64,')[1];
             const binaryString = atob(base64);
             const bytes = new Uint8Array(binaryString.length);
             for (let i = 0; i < binaryString.length; i++) {
@@ -130,7 +135,9 @@ export function DocxPreview({ content, filename }: DocxPreviewProps) {
             // Assume it's a URL - fetch it
             const response = await fetch(content);
             if (!response.ok) {
-              throw new Error(`Failed to fetch DOCX: ${response.status} ${response.statusText}`);
+              throw new Error(
+                `Failed to fetch DOCX: ${response.status} ${response.statusText}`,
+              );
             }
             docxData = await response.arrayBuffer();
           }
@@ -146,22 +153,26 @@ export function DocxPreview({ content, filename }: DocxPreviewProps) {
 
         // Clear container
         if (containerRef.current) {
-          containerRef.current.innerHTML = "";
+          containerRef.current.innerHTML = '';
         }
 
         // Render DOCX
-        const { renderAsync } = await import("docx-preview");
+        const { renderAsync } = await import('docx-preview');
 
         await Promise.race([
           Promise.resolve().then(() =>
             renderAsync(docxData, containerRef.current!, undefined, {
               className: DOCX_CLASS_NAME,
               inWrapper: true,
-            })
+            }),
           ),
           new Promise<never>((_, reject) => {
             timeoutId = window.setTimeout(() => {
-              reject(new Error("DOCX preview timed out. You can still download the file."));
+              reject(
+                new Error(
+                  'DOCX preview timed out. You can still download the file.',
+                ),
+              );
             }, DOCX_RENDER_TIMEOUT_MS);
           }),
         ]);
@@ -176,7 +187,9 @@ export function DocxPreview({ content, filename }: DocxPreviewProps) {
         }
       } catch (err) {
         if (!cancelled && runIdRef.current === runId) {
-          setError(err instanceof Error ? err.message : "Failed to render DOCX");
+          setError(
+            err instanceof Error ? err.message : 'Failed to render DOCX',
+          );
           setIsLoading(false);
         }
       } finally {
@@ -198,7 +211,7 @@ export function DocxPreview({ content, filename }: DocxPreviewProps) {
 
   useEffect(() => {
     const container = containerRef.current;
-    if (!container || typeof ResizeObserver === "undefined") return;
+    if (!container || typeof ResizeObserver === 'undefined') return;
 
     const observer = new ResizeObserver(() => {
       fitDocxToContainer();
@@ -214,11 +227,11 @@ export function DocxPreview({ content, filename }: DocxPreviewProps) {
   const handleDownload = useCallback(() => {
     if (!blobUrl) return;
 
-    const link = document.createElement("a");
+    const link = document.createElement('a');
     link.href = blobUrl;
-    link.download = filename || "document.docx";
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
+    link.download = filename || 'document.docx';
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -231,7 +244,7 @@ export function DocxPreview({ content, filename }: DocxPreviewProps) {
         <div className="flex items-center gap-2">
           <FileText className="w-4 h-4 text-blue-400" />
           <span className="text-sm font-medium text-[var(--color-text-secondary)]">
-            {filename || "DOCX Preview"}
+            {filename || 'DOCX Preview'}
           </span>
         </div>
         <button
@@ -253,7 +266,9 @@ export function DocxPreview({ content, filename }: DocxPreviewProps) {
         {isLoading && (
           <div className="absolute inset-4 flex items-center justify-center gap-3 bg-[var(--color-bg-tertiary)]/95 rounded-xl border border-[var(--color-border-primary)]">
             <Loader2 className="w-5 h-5 animate-spin text-[var(--color-accent-primary)]" />
-            <span className="text-sm text-[var(--color-text-muted)]">Rendering DOCX...</span>
+            <span className="text-sm text-[var(--color-text-muted)]">
+              Rendering DOCX...
+            </span>
           </div>
         )}
       </div>
@@ -263,7 +278,9 @@ export function DocxPreview({ content, filename }: DocxPreviewProps) {
           <div className="flex items-start gap-3">
             <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
             <div className="flex-1">
-              <p className="text-sm font-medium text-red-500">Failed to render DOCX</p>
+              <p className="text-sm font-medium text-red-500">
+                Failed to render DOCX
+              </p>
               <p className="text-xs text-red-400 mt-1">{error}</p>
             </div>
           </div>

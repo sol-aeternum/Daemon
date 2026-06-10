@@ -1,14 +1,23 @@
-"use client";
+'use client';
 
-import { useState, useMemo } from "react";
-import { FileText, AlertTriangle, Activity, BarChart3, ShieldAlert, ScrollText, ChevronDown, ChevronRight } from "lucide-react";
-import { isCouncilOutputEvent, isCouncilDoneEvent } from "../../lib/events";
-import type { ChatEvent } from "../../lib/events";
-import MarkdownMessage from "../MarkdownMessage";
-import { AdvisorCard } from "./AdvisorCard";
-import { AuditFindingCard } from "./AuditFindingCard";
-import { ROSTER_CONFIG } from "./constants";
-import { parseRound1Response, parseRound2Response } from "./parseResponse";
+import { useState, useMemo } from 'react';
+import {
+  FileText,
+  AlertTriangle,
+  Activity,
+  BarChart3,
+  ShieldAlert,
+  ScrollText,
+  ChevronDown,
+  ChevronRight,
+} from 'lucide-react';
+import { isCouncilOutputEvent, isCouncilDoneEvent } from '../../lib/events';
+import type { ChatEvent } from '../../lib/events';
+import MarkdownMessage from '../MarkdownMessage';
+import { AdvisorCard } from './AdvisorCard';
+import { AuditFindingCard } from './AuditFindingCard';
+import { ROSTER_CONFIG } from './constants';
+import { parseRound1Response, parseRound2Response } from './parseResponse';
 
 interface SectionConfig {
   key: string;
@@ -21,56 +30,62 @@ interface SectionConfig {
 
 const SECTIONS: SectionConfig[] = [
   {
-    key: "consensus",
-    label: "Where All Advisors Agree",
+    key: 'consensus',
+    label: 'Where All Advisors Agree',
     icon: FileText,
-    borderColor: "var(--color-status-success)",
-    headerColor: "var(--color-status-success)",
+    borderColor: 'var(--color-status-success)',
+    headerColor: 'var(--color-status-success)',
     defaultOpen: true,
   },
   {
-    key: "contested",
-    label: "Council Positions",
+    key: 'contested',
+    label: 'Council Positions',
     icon: AlertTriangle,
-    borderColor: "var(--color-status-warning)",
-    headerColor: "var(--color-status-warning)",
+    borderColor: 'var(--color-status-warning)',
+    headerColor: 'var(--color-status-warning)',
     defaultOpen: true,
   },
   {
-    key: "signals",
-    label: "Key Signals",
+    key: 'signals',
+    label: 'Key Signals',
     icon: Activity,
-    borderColor: "var(--color-status-info)",
-    headerColor: "var(--color-status-info)",
+    borderColor: 'var(--color-status-info)',
+    headerColor: 'var(--color-status-info)',
     defaultOpen: false,
   },
   {
-    key: "confidence",
-    label: "Confidence Level",
+    key: 'confidence',
+    label: 'Confidence Level',
     icon: BarChart3,
-    borderColor: "hsl(270, 70%, 65%)",
-    headerColor: "hsl(270, 70%, 65%)",
+    borderColor: 'hsl(270, 70%, 65%)',
+    headerColor: 'hsl(270, 70%, 65%)',
     defaultOpen: false,
   },
   {
-    key: "audit",
-    label: "Audit Findings",
+    key: 'audit',
+    label: 'Audit Findings',
     icon: ShieldAlert,
-    borderColor: "var(--color-status-error)",
-    headerColor: "var(--color-status-error)",
+    borderColor: 'var(--color-status-error)',
+    headerColor: 'var(--color-status-error)',
     defaultOpen: true,
   },
   {
-    key: "raw",
-    label: "Raw Reasoning",
+    key: 'raw',
+    label: 'Raw Reasoning',
     icon: ScrollText,
-    borderColor: "var(--color-text-muted)",
-    headerColor: "var(--color-text-muted)",
+    borderColor: 'var(--color-text-muted)',
+    headerColor: 'var(--color-text-muted)',
     defaultOpen: false,
   },
 ];
 
-const ADVISOR_ORDER = ["analyst", "strategist", "skeptic", "contrarian", "auditor"];
+const ADVISOR_ORDER = [
+  'analyst',
+  'strategist',
+  'skeptic',
+  'contrarian',
+  'auditor',
+];
 
 interface CouncilOutputViewerProps {
   events: ChatEvent[];
@@ -90,34 +105,41 @@ interface AdvisorResponse {
 }
 
 export function CouncilOutputViewer({ events }: CouncilOutputViewerProps) {
-  const outputEvents = events.filter(isCouncilOutputEvent);
-  const doneEvent = events.find(isCouncilDoneEvent);
-
-  const sectionContent: Record<string, string[]> = {};
-  outputEvents.forEach((event) => {
-    if (!sectionContent[event.section]) {
-      sectionContent[event.section] = [];
-    }
-    sectionContent[event.section].push(event.content);
-  });
-
-  const availableSections = SECTIONS.filter(
-    (section) => sectionContent[section.key] && sectionContent[section.key].length > 0
-  );
-
-  if (availableSections.length === 0) {
-    return null;
-  }
-
-  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() => {
+  const [expandedSections, setExpandedSections] = useState<
+    Record<string, boolean>
+  >(() => {
     const initial: Record<string, boolean> = {};
-    availableSections.forEach((section) => {
-      initial[section.key] = section.key === "audit" ? true : section.defaultOpen;
+    SECTIONS.forEach((section) => {
+      initial[section.key] =
+        section.key === 'audit' ? true : section.defaultOpen;
     });
     return initial;
   });
+  const [expandedAdvisors, setExpandedAdvisors] = useState<
+    Record<string, boolean>
+  >({});
+  const outputEvents = events.filter(isCouncilOutputEvent);
+  const doneEvent = events.find(isCouncilDoneEvent);
 
-  const [expandedAdvisors, setExpandedAdvisors] = useState<Record<string, boolean>>({});
+  const sectionContent = useMemo(() => {
+    const content: Record<string, string[]> = {};
+    outputEvents.forEach((event) => {
+      if (!content[event.section]) {
+        content[event.section] = [];
+      }
+      content[event.section].push(event.content);
+    });
+    return content;
+  }, [outputEvents]);
+
+  const availableSections = useMemo(
+    () =>
+      SECTIONS.filter(
+        (section) =>
+          sectionContent[section.key] && sectionContent[section.key].length > 0,
+      ),
+    [sectionContent],
+  );
 
   const toggleSection = (key: string) => {
     setExpandedSections((prev) => ({
@@ -146,28 +168,30 @@ export function CouncilOutputViewer({ events }: CouncilOutputViewerProps) {
   };
 
   const advisorResponses = useMemo((): AdvisorResponse[] => {
-    const contestedContent = sectionContent["contested"]?.join("\n\n") || "";
+    const contestedContent = sectionContent['contested']?.join('\n\n') || '';
     if (!contestedContent) return [];
 
     const responses: AdvisorResponse[] = [];
-    const lines = contestedContent.split("\n");
-    let currentRole = "";
+    const lines = contestedContent.split('\n');
+    let currentRole = '';
     let currentContent: string[] = [];
     let currentRound = 1;
 
     for (const line of lines) {
-      const roleMatch = line.match(/^(analyst|strategist|skeptic|contrarian|auditor):/i);
+      const roleMatch = line.match(
+        /^(analyst|strategist|skeptic|contrarian|auditor):/i,
+      );
       if (roleMatch) {
         if (currentRole && currentContent.length > 0) {
           responses.push({
             role: currentRole,
-            content: currentContent.join("\n"),
+            content: currentContent.join('\n'),
             round: currentRound,
           });
         }
         currentRole = roleMatch[1].toLowerCase();
-        currentContent = [line.replace(/^[^:]+:\s*/, "")];
-      } else if (line.includes("**Round 2**") || line.includes("**REVISED**")) {
+        currentContent = [line.replace(/^[^:]+:\s*/, '')];
+      } else if (line.includes('**Round 2**') || line.includes('**REVISED**')) {
         currentRound = 2;
       } else if (currentRole) {
         currentContent.push(line);
@@ -177,7 +201,7 @@ export function CouncilOutputViewer({ events }: CouncilOutputViewerProps) {
     if (currentRole && currentContent.length > 0) {
       responses.push({
         role: currentRole,
-        content: currentContent.join("\n"),
+        content: currentContent.join('\n'),
         round: currentRound,
       });
     }
@@ -185,22 +209,44 @@ export function CouncilOutputViewer({ events }: CouncilOutputViewerProps) {
     return responses;
   }, [sectionContent]);
 
-  const consensusContent = sectionContent["consensus"]?.join("\n\n") || "";
-  const hasRealConsensus = consensusContent && !consensusContent.toLowerCase().includes("no clear consensus") && !consensusContent.toLowerCase().includes("no unanimous");
+  if (availableSections.length === 0) {
+    return null;
+  }
 
-  const auditContent = sectionContent["audit"]?.join("\n\n") || "";
-  const rawContent = sectionContent["raw"]?.join("\n\n") || "";
+  const consensusContent = sectionContent['consensus']?.join('\n\n') || '';
+  const hasRealConsensus =
+    consensusContent &&
+    !consensusContent.toLowerCase().includes('no clear consensus') &&
+    !consensusContent.toLowerCase().includes('no unanimous');
+
+  const auditContent = sectionContent['audit']?.join('\n\n') || '';
+  const rawContent = sectionContent['raw']?.join('\n\n') || '';
 
   const formatMetadata = (metadata: SessionMetadata | undefined) => {
     if (!metadata) return null;
 
     return (
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--color-text-muted)]">
-        <span>Session: <span className="font-mono text-[var(--color-text-secondary)]">{metadata.session_id.slice(0, 8)}...</span></span>
-        <span>Tokens: <span className="text-[var(--color-text-secondary)]">{metadata.total_tokens.toLocaleString()}</span></span>
-        <span>Cost: <span className="text-[var(--color-text-secondary)]">${metadata.total_cost_usd.toFixed(4)}</span></span>
+        <span>
+          Session:{' '}
+          <span className="font-mono text-[var(--color-text-secondary)]">
+            {metadata.session_id.slice(0, 8)}...
+          </span>
+        </span>
+        <span>
+          Tokens:{' '}
+          <span className="text-[var(--color-text-secondary)]">
+            {metadata.total_tokens.toLocaleString()}
+          </span>
+        </span>
+        <span>
+          Cost:{' '}
+          <span className="text-[var(--color-text-secondary)]">
+            ${metadata.total_cost_usd.toFixed(4)}
+          </span>
+        </span>
         <span className="flex items-center gap-1">
-          Models: 
+          Models:
           <span className="text-[var(--color-text-secondary)]">
             {metadata.models_used.length} used
           </span>
@@ -218,7 +264,8 @@ export function CouncilOutputViewer({ events }: CouncilOutputViewerProps) {
               Council Output
             </h3>
             <p className="text-xs text-[var(--color-text-muted)] mt-0.5">
-              {availableSections.length} section{availableSections.length !== 1 ? "s" : ""} available
+              {availableSections.length} section
+              {availableSections.length !== 1 ? 's' : ''} available
             </p>
           </div>
         </div>
@@ -232,7 +279,7 @@ export function CouncilOutputViewer({ events }: CouncilOutputViewerProps) {
           >
             <button
               type="button"
-              onClick={() => toggleSection("consensus")}
+              onClick={() => toggleSection('consensus')}
               className="group flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-[var(--color-bg-hover)]"
             >
               <FileText
@@ -245,13 +292,13 @@ export function CouncilOutputViewer({ events }: CouncilOutputViewerProps) {
               >
                 {SECTIONS[0].label}
               </span>
-              {expandedSections["consensus"] ? (
+              {expandedSections['consensus'] ? (
                 <ChevronDown className="w-4 h-4 text-[var(--color-text-muted)]" />
               ) : (
                 <ChevronRight className="w-4 h-4 text-[var(--color-text-muted)]" />
               )}
             </button>
-            {expandedSections["consensus"] && (
+            {expandedSections['consensus'] && (
               <div className="px-4 pb-4">
                 <div className="pl-7">
                   <div className="prose prose-sm prose-invert max-w-none">
@@ -327,7 +374,7 @@ export function CouncilOutputViewer({ events }: CouncilOutputViewerProps) {
           >
             <button
               type="button"
-              onClick={() => toggleSection("raw")}
+              onClick={() => toggleSection('raw')}
               className="group flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-[var(--color-bg-hover)]"
             >
               <ScrollText
@@ -340,13 +387,13 @@ export function CouncilOutputViewer({ events }: CouncilOutputViewerProps) {
               >
                 {SECTIONS[5].label}
               </span>
-              {expandedSections["raw"] ? (
+              {expandedSections['raw'] ? (
                 <ChevronDown className="w-4 h-4 text-[var(--color-text-muted)]" />
               ) : (
                 <ChevronRight className="w-4 h-4 text-[var(--color-text-muted)]" />
               )}
             </button>
-            {expandedSections["raw"] && (
+            {expandedSections['raw'] && (
               <div className="px-4 pb-4">
                 <div className="pl-7">
                   <div className="prose prose-sm prose-invert max-w-none">
