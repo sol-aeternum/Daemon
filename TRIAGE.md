@@ -1734,3 +1734,69 @@
 - **Evidence**: Wrapper summary: `blocking failures: 3` with `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`. Type-check evidence included missing advisor event exports from `frontend/lib/events`; lint reported 55 errors / 13 warnings; format-check reported style drift in 274 frontend files and generated `.next_broken` artifacts.
 - **Likely cause**: The wrapper enforces all families even though the issue sequence calls for affected-family local CI and explicitly notes frontend Wave 0 breakage for #108 (confidence 98%).
 - **Suggested action**: Either allow `scripts/pr_create.sh` to accept a local-CI family selector for backend-only PRs, or complete #108 before using the all-family wrapper path.
+
+## 2026-06-10 09:35 UTC — Frontend type-check blocked by unrelated auth-page test mock
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #108 advisor event type fix
+- **Category**: build-error
+- **Blocked current task**: yes
+- **What happened**: After adding the missing advisor event types and guards, `npm run type-check` no longer reported advisor-related diagnostics, but it still failed on an auth page test mock outside the advisor event scope.
+- **Evidence**: `npm run type-check` printed `__tests__/auth-page.test.tsx(35,65): error TS2554: Expected 0 arguments, but got 1.`
+- **Likely cause**: The mocked `subscribeAuthConfig` wrapper is declared with a zero-argument function signature by inference, but the test mock passes through a callback argument under strict type checking (confidence 95%).
+- **Suggested action**: Fix the auth-page test mock typing in the gate-green work, or approve a tiny blocker-unlock change if #108 must make `npm run type-check` completely green.
+
+## 2026-06-10 09:45 UTC — Frontend build prerender fails on auth/setup Suspense boundary
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #108 advisor event type fix
+- **Category**: build-error
+- **Blocked current task**: yes
+- **What happened**: After the advisor event type errors were cleared, `npm run build` compiled and type-checked successfully but failed during static page generation. Normal output only reported `Next.js build worker exited with code: 1`; rerunning with `--debug-prerender` identified `/auth` and `/setup`.
+- **Evidence**: `npm run build -- --debug-prerender` printed `Export encountered errors on following paths: /auth/page: /auth; /setup/page: /setup`.
+- **Likely cause**: `AuthLanding` uses `useSearchParams`, and the `/auth` and `/setup` page entry points did not wrap that client subtree in a Suspense boundary required by Next 16 prerendering (confidence 90%).
+- **Suggested action**: Keep auth/setup page entry points wrapped in Suspense and add a lightweight build smoke if this pattern recurs.
+
+## 2026-06-10 10:00 UTC — Frontend lint gate blocked by existing React/generated-output debt
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #108 frontend gate verification
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: Full `npm run lint` failed after #108 type-check, tests, and build passed. The reported errors are broad existing React rule debt and generated `.next*` output being linted.
+- **Evidence**: `npm run lint` reported `68 problems (55 errors, 13 warnings)`, including `.next.root.1770199650/static/chunks/webpack.js` and `.next_broken/static/chunks/webpack.js` `@next/next/no-assign-module-variable`, plus React compiler/rules diagnostics in `app/artifacts/page.tsx`, `app/chats/page.tsx`, `app/page.tsx`, `components/TextToSpeechButton.tsx`, `components/council/*`, and others.
+- **Likely cause**: The frontend lint scope includes generated build directories and the codebase has existing React 19 lint debt slated for the gate-greening wave (confidence 95%).
+- **Suggested action**: Exclude generated `.next*` directories from lint inputs and resolve the React lint inventory in the dedicated gate-greening issue; do not weaken rules silently.
+
+## 2026-06-10 10:00 UTC — Frontend format gate blocked by repo-wide Prettier drift
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #108 frontend gate verification
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: Full `npm run format:check` failed on generated `.next*` output and broad source-format drift. The #108 touched frontend files were formatted and passed a scoped Prettier check.
+- **Evidence**: `npm run format:check` reported `Code style issues found in 274 files`; scoped `./node_modules/.bin/prettier --check __tests__/auth-page.test.tsx app/api/chat/route.ts app/auth/page.tsx app/setup/page.tsx components/ToolCallBlock.tsx lib/events.ts` reported `All matched files use Prettier code style!`.
+- **Likely cause**: The repo has existing frontend formatting drift and generated build artifacts are inside the formatter's traversal scope (confidence 95%).
+- **Suggested action**: Complete the planned mechanical Prettier sweep in the gate-greening wave and exclude generated `.next*` directories from format checks.
+
+## 2026-06-10 10:00 UTC — Frontend npm audit reports dependency vulnerabilities when network is available
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #108 frontend gate verification
+- **Category**: dependency
+- **Blocked current task**: no
+- **What happened**: `npm run audit:ci` could not contact the npm security advisory endpoint from the restricted sandbox. In escalated frontend local CI it reached the registry and reported dependency vulnerabilities.
+- **Evidence**: Sandboxed `npm run audit:ci` printed `getaddrinfo EAI_AGAIN registry.npmjs.org`. Escalated `scripts/local_ci.sh frontend` printed `27 vulnerabilities (4 low, 8 moderate, 14 high, 1 critical)`, including advisories for `@ai-sdk/provider-utils`, `next`, `vitest`, `vite`, `dompurify`, `lodash`, and related transitive packages.
+- **Likely cause**: The frontend lockfile contains packages with known advisories, and some fixes require breaking dependency upgrades (`ai@6`, `next@16.2.9`, `next-pwa@2.0.2`) (confidence 95%).
+- **Suggested action**: File a dependency-upgrade/security follow-up that updates affected packages through `npm ci` / lockfile-managed workflow; do not hand-edit the lockfile.
+
+## 2026-06-10 10:04 UTC — Sandboxed frontend npm ci leaves node_modules incomplete
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Issue #108 frontend local CI
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: Running `scripts/local_ci.sh frontend` inside the sandbox started with `npm ci`, which failed while validating esbuild and left local frontend executables unavailable. Rerunning the same command with escalation restored `node_modules` and proceeded through the remaining gates.
+- **Evidence**: Sandboxed local CI printed `spawnSync /home/sol/daemon/frontend/node_modules/esbuild/bin/esbuild EPERM`, then `next: command not found`, `eslint: command not found`, `prettier: command not found`, and `vitest: command not found`. Escalated local CI printed `added 959 packages in 21s` and then `PASS type-check`.
+- **Likely cause**: The sandbox blocks executing esbuild's install-time binary validation during `npm ci`, and `npm ci` removes the existing `node_modules` before that failure (confidence 95%).
+- **Suggested action**: Run frontend `npm ci` / local CI in an approved environment, or adjust sandbox policy to permit package install validation binaries.

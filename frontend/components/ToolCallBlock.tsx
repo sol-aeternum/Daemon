@@ -1,26 +1,37 @@
-import { useState, useRef, useEffect } from "react";
-import { ChatEvent, isToolCallEvent, isToolResultEvent } from "../lib/events";
-import { ensureAuthHeader } from "../lib/auth";
-import { Download, Maximize2, X, Loader2, ChevronRight, Check, Volume2, Play, Pause, Palette } from "lucide-react";
-import { VideoPlayer } from "./VideoPlayer";
-import { useAuthenticatedImageUrl } from "../hooks/useAuthenticatedImageUrl";
+import { useState, useRef, useEffect } from 'react';
+import { ChatEvent, isToolCallEvent, isToolResultEvent } from '../lib/events';
+import { ensureAuthHeader } from '../lib/auth';
+import {
+  Download,
+  Maximize2,
+  X,
+  Loader2,
+  ChevronRight,
+  Check,
+  Volume2,
+  Play,
+  Pause,
+  Palette,
+} from 'lucide-react';
+import { VideoPlayer } from './VideoPlayer';
+import { useAuthenticatedImageUrl } from '../hooks/useAuthenticatedImageUrl';
 
 type JsonRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is JsonRecord {
-  return typeof value === "object" && value !== null;
+  return typeof value === 'object' && value !== null;
 }
 
 function sanitizeProtectedArtifactPaths(text: string): string {
   return text
-    .replace(/\/generated-files\/[^\s"'`\\]+/g, "[protected generated file]")
-    .replace(/\/generated-audio\/[^\s"'`\\]+/g, "[protected generated audio]")
-    .replace(/\/generated-images\/[^\s"'`\\]+/g, "[protected generated image]")
-    .replace(/\/api\/images\/[^\s"'`\\]+/g, "[protected image]");
+    .replace(/\/generated-files\/[^\s"'`\\]+/g, '[protected generated file]')
+    .replace(/\/generated-audio\/[^\s"'`\\]+/g, '[protected generated audio]')
+    .replace(/\/generated-images\/[^\s"'`\\]+/g, '[protected generated image]')
+    .replace(/\/api\/images\/[^\s"'`\\]+/g, '[protected image]');
 }
 
 function getSpawnMode(call: ChatEvent): string | null {
-  if (!isToolCallEvent(call) || call.name !== "spawn_agent") {
+  if (!isToolCallEvent(call) || call.name !== 'spawn_agent') {
     return null;
   }
 
@@ -35,19 +46,29 @@ function getSpawnMode(call: ChatEvent): string | null {
   }
 
   const mode = context.mode;
-  return typeof mode === "string" ? mode : null;
+  return typeof mode === 'string' ? mode : null;
 }
 
-type ToolResultEvent = ChatEvent & { type: "tool_result"; name: string; result: unknown };
+type ToolResultEvent = ChatEvent & {
+  type: 'tool_result';
+  name: string;
+  result: unknown;
+};
 
-function deriveImagePath(result: ToolResultEvent | null, _isSpawnVideoCall: boolean): string | null {
+function deriveImagePath(
+  result: ToolResultEvent | null,
+  _isSpawnVideoCall: boolean,
+): string | null {
   if (!result) return null;
   try {
     const raw = result.result;
-    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
     const imgPath = parsed?.data?.image_path ?? parsed?.image_path;
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-    if (typeof imgPath === "string" && imgPath.startsWith("/generated-images/")) {
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+    if (
+      typeof imgPath === 'string' &&
+      imgPath.startsWith('/generated-images/')
+    ) {
       return `${apiUrl}${imgPath}`;
     }
   } catch {}
@@ -73,8 +94,8 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
   const result = rawResult && isToolResultEvent(rawResult) ? rawResult : null;
 
   const spawnMode = getSpawnMode(rawCall);
-  const isVideoRequested = spawnMode === "video";
-  const isAudioRequested = spawnMode === "audio";
+  const isVideoRequested = spawnMode === 'video';
+  const isAudioRequested = spawnMode === 'audio';
 
   const imagePath = deriveImagePath(result, isVideoRequested);
 
@@ -87,10 +108,13 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
       if (!imagePath) return;
       const authHeader = await ensureAuthHeader();
       const headers: HeadersInit = {};
-      if (authHeader) headers["Authorization"] = authHeader;
+      if (authHeader) headers['Authorization'] = authHeader;
 
       try {
-        const res = await fetch(imagePath as string, { headers, signal: controller.signal });
+        const res = await fetch(imagePath as string, {
+          headers,
+          signal: controller.signal,
+        });
         if (!res.ok) throw new Error(`fetch ${res.status}`);
         const blob = await res.blob();
         if (revoked) return;
@@ -118,11 +142,11 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
   }
 
   const call = rawCall;
-  const isSpawnVideoCall = call.name === "spawn_agent" && isVideoRequested;
+  const isSpawnVideoCall = call.name === 'spawn_agent' && isVideoRequested;
 
   const resultText = (() => {
-    if (!result) return "";
-    if (typeof result.result === "string") return result.result;
+    if (!result) return '';
+    if (typeof result.result === 'string') return result.result;
     try {
       return JSON.stringify(result.result, null, 2);
     } catch {
@@ -132,16 +156,16 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
 
   // 1. Loading State (Call exists, Result missing)
   if (!result) {
-    if (call.name === "spawn_agent") {
+    if (call.name === 'spawn_agent') {
       return (
         <div className="flex items-center gap-2 text-[var(--color-text-muted)] text-sm py-2 px-1 animate-pulse">
           <Loader2 className="w-4 h-4 animate-spin" />
           <span>
             {isVideoRequested
-              ? "Generating video..."
+              ? 'Generating video...'
               : isAudioRequested
-              ? "Creating sound effect..."
-              : "Creating image..."}
+                ? 'Creating sound effect...'
+                : 'Creating image...'}
           </span>
         </div>
       );
@@ -166,56 +190,79 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
 
   try {
     const raw = result.result;
-    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
     if (parsed?.error || parsed?.success === false) {
       isError = true;
-      if (typeof parsed?.error === "string") {
+      if (typeof parsed?.error === 'string') {
         errorMessage = parsed.error;
-      } else if (typeof parsed?.data?.error === "string") {
+      } else if (typeof parsed?.data?.error === 'string') {
         errorMessage = parsed.data.error;
       } else {
-        errorMessage = "Tool call failed. Continuing with best available information.";
+        errorMessage =
+          'Tool call failed. Continuing with best available information.';
       }
     }
 
     const imgPath = parsed?.data?.image_path ?? parsed?.image_path;
     const audPath = parsed?.data?.audio_path ?? parsed?.audio_path;
-    const vidPath = isSpawnVideoCall ? (parsed?.data?.video_path ?? parsed?.video_path) : undefined;
-    const vidUrl = isSpawnVideoCall
-      ? (parsed?.data?.video_url ?? parsed?.video_url ?? parsed?.data?.url ?? parsed?.url)
+    const vidPath = isSpawnVideoCall
+      ? (parsed?.data?.video_path ?? parsed?.video_path)
       : undefined;
-    const dur = parsed?.data?.duration_seconds ?? parsed?.duration_seconds ?? parsed?.data?.duration ?? parsed?.duration;
+    const vidUrl = isSpawnVideoCall
+      ? (parsed?.data?.video_url ??
+        parsed?.video_url ??
+        parsed?.data?.url ??
+        parsed?.url)
+      : undefined;
+    const dur =
+      parsed?.data?.duration_seconds ??
+      parsed?.duration_seconds ??
+      parsed?.data?.duration ??
+      parsed?.duration;
     const refundFlag = parsed?.data?.refunded ?? parsed?.refunded;
 
-    if (typeof dur === "number" && Number.isFinite(dur)) {
+    if (typeof dur === 'number' && Number.isFinite(dur)) {
       videoDuration = dur;
     }
-    if (typeof refundFlag === "boolean") {
+    if (typeof refundFlag === 'boolean') {
       refunded = refundFlag;
     }
 
     prompt = parsed?.data?.prompt ?? parsed?.prompt;
 
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
-    if (typeof imgPath === "string" && imgPath.startsWith("/generated-images/")) {
+    if (
+      typeof imgPath === 'string' &&
+      imgPath.startsWith('/generated-images/')
+    ) {
       isError = false;
     }
 
-    if (typeof audPath === "string" && audPath.startsWith("/generated-audio/")) {
+    if (
+      typeof audPath === 'string' &&
+      audPath.startsWith('/generated-audio/')
+    ) {
       audioPath = audPath;
       isError = false;
     }
 
-    if (typeof vidPath === "string" && vidPath.startsWith("/generated-videos/")) {
+    if (
+      typeof vidPath === 'string' &&
+      vidPath.startsWith('/generated-videos/')
+    ) {
       videoPath = `${apiUrl}${vidPath}`;
       isError = false;
     }
 
-    if (!videoPath && typeof vidUrl === "string") {
-      if (vidUrl.startsWith("/generated-videos/")) {
+    if (!videoPath && typeof vidUrl === 'string') {
+      if (vidUrl.startsWith('/generated-videos/')) {
         videoPath = `${apiUrl}${vidUrl}`;
-      } else if (vidUrl.startsWith("http://") || vidUrl.startsWith("https://") || vidUrl.startsWith("data:")) {
+      } else if (
+        vidUrl.startsWith('http://') ||
+        vidUrl.startsWith('https://') ||
+        vidUrl.startsWith('data:')
+      ) {
         videoPath = vidUrl;
       }
 
@@ -225,9 +272,11 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
     }
   } catch {
     const lowerResult = resultText.toLowerCase();
-    isError = lowerResult.includes("error") && !lowerResult.includes('"error": null');
+    isError =
+      lowerResult.includes('error') && !lowerResult.includes('"error": null');
     if (isError) {
-      errorMessage = "Tool call failed. Continuing with best available information.";
+      errorMessage =
+        'Tool call failed. Continuing with best available information.';
     }
   }
 
@@ -253,13 +302,16 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
   if (isVideoRequested && isError) {
     return (
       <div className="my-2 rounded-xl border border-[var(--color-status-warning)]/40 bg-[var(--color-status-warning-bg)]/30 p-3 max-w-2xl">
-        <div className="text-sm font-medium text-[var(--color-status-warning)] mb-1">Video generation failed</div>
+        <div className="text-sm font-medium text-[var(--color-status-warning)] mb-1">
+          Video generation failed
+        </div>
         <div className="text-sm text-[var(--color-text-secondary)]">
-          {errorMessage ?? "Video generation failed. Continuing with best available information."}
+          {errorMessage ??
+            'Video generation failed. Continuing with best available information.'}
         </div>
         {refunded !== null && (
           <div className="text-xs text-[var(--color-text-muted)] mt-2">
-            {refunded ? "Credits refunded." : "Refund not confirmed."}
+            {refunded ? 'Credits refunded.' : 'Refund not confirmed.'}
           </div>
         )}
       </div>
@@ -269,25 +321,27 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
   // Image Result UI
   if (imagePath) {
     const studioHref = `/studio?image=${encodeURIComponent(imagePath)}${
-      prompt ? `&prompt=${encodeURIComponent(prompt)}` : ""
+      prompt ? `&prompt=${encodeURIComponent(prompt)}` : ''
     }`;
 
     return (
       <div className="my-2">
         {prompt && (
-           <div className="text-sm text-[var(--color-text-muted)] mb-2 font-medium flex items-center gap-2">
-          <Check className="w-4 h-4 text-[var(--color-status-success)]" />
-             <span>Image created</span>
-             <span className="text-[var(--color-border-secondary)]">•</span>
-             <span className="truncate max-w-md" title={prompt}>{prompt}</span>
-           </div>
+          <div className="text-sm text-[var(--color-text-muted)] mb-2 font-medium flex items-center gap-2">
+            <Check className="w-4 h-4 text-[var(--color-status-success)]" />
+            <span>Image created</span>
+            <span className="text-[var(--color-border-secondary)]">•</span>
+            <span className="truncate max-w-md" title={prompt}>
+              {prompt}
+            </span>
+          </div>
         )}
-        
+
         <div className="relative group rounded-xl overflow-hidden border border-[var(--color-border-primary)] bg-[var(--color-bg-tertiary)] shadow-sm max-w-md transition-all hover:shadow-md">
           {imageBlobUrl && !imageBlobLoadError ? (
             <img
               src={imageBlobUrl}
-              alt={prompt || "Generated image"}
+              alt={prompt || 'Generated image'}
               className="w-full h-auto max-h-96 object-cover cursor-pointer hover:opacity-95 transition-opacity"
               onClick={() => setIsLightboxOpen(true)}
             />
@@ -300,7 +354,7 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
               <Loader2 className="w-6 h-6 text-[var(--color-text-muted)] animate-spin" />
             </div>
           )}
-          
+
           <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
             <a
               href={studioHref}
@@ -310,7 +364,7 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
             >
               <Palette className="w-4 h-4" />
             </a>
-             <button
+            <button
               onClick={(e) => {
                 e.stopPropagation();
                 setIsLightboxOpen(true);
@@ -337,18 +391,21 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
         </div>
 
         {isLightboxOpen && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/95 backdrop-blur-sm p-4 animate-in fade-in duration-200" onClick={() => setIsLightboxOpen(false)}>
+          <div
+            className="fixed inset-0 z-[60] flex items-center justify-center bg-black/95 backdrop-blur-sm p-4 animate-in fade-in duration-200"
+            onClick={() => setIsLightboxOpen(false)}
+          >
             <button
               onClick={() => setIsLightboxOpen(false)}
               className="absolute top-4 right-4 p-2 text-white/70 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-colors"
             >
               <X className="w-6 h-6" />
             </button>
-            
+
             {imageBlobUrl && !imageBlobLoadError ? (
               <img
                 src={imageBlobUrl}
-                alt={prompt || "Full resolution image"}
+                alt={prompt || 'Full resolution image'}
                 className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
                 onClick={(e) => e.stopPropagation()}
               />
@@ -359,7 +416,10 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
             )}
 
             {imageBlobUrl && !imageBlobLoadError && (
-              <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex gap-4" onClick={(e) => e.stopPropagation()}>
+              <div
+                className="absolute bottom-6 left-1/2 -translate-x-1/2 flex gap-4"
+                onClick={(e) => e.stopPropagation()}
+              >
                 <a
                   href={imageBlobUrl}
                   download={`image-${Date.now()}.png`}
@@ -380,35 +440,45 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
 
   // Audio Result UI
   if (audioPath) {
-    return (
-      <AudioPlayerBlock audioPath={audioPath} prompt={prompt} />
-    );
+    return <AudioPlayerBlock audioPath={audioPath} prompt={prompt} />;
   }
 
   // Standard Tool Result UI
 
   // Standard Tool Result UI
   return (
-    <div className={`border rounded-lg my-2 overflow-hidden ${
-      isError ? "bg-[var(--color-status-warning-bg)]/35 border-[var(--color-status-warning)]/40" : "bg-[var(--color-bg-tertiary)] border-[var(--color-border-primary)]"
-    }`}>
+    <div
+      className={`border rounded-lg my-2 overflow-hidden ${
+        isError
+          ? 'bg-[var(--color-status-warning-bg)]/35 border-[var(--color-status-warning)]/40'
+          : 'bg-[var(--color-bg-tertiary)] border-[var(--color-border-primary)]'
+      }`}
+    >
       <button
         onClick={() => setIsExpanded(!isExpanded)}
         className={`w-full px-4 py-2 flex items-center justify-between text-left transition-colors ${
-          isError ? "hover:bg-[var(--color-status-warning-bg)]/60" : "hover:bg-[var(--color-bg-hover)]"
+          isError
+            ? 'hover:bg-[var(--color-status-warning-bg)]/60'
+            : 'hover:bg-[var(--color-bg-hover)]'
         }`}
       >
         <div className="flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full ${isError ? "bg-[var(--color-status-warning)]" : "bg-[var(--color-status-success)]"}`}></span>
+          <span
+            className={`w-2 h-2 rounded-full ${isError ? 'bg-[var(--color-status-warning)]' : 'bg-[var(--color-status-success)]'}`}
+          ></span>
           <div className="flex flex-col">
-            <span className={`text-sm font-medium ${isError ? "text-[var(--color-status-warning)]" : "text-[var(--color-text-secondary)]"}`}>
+            <span
+              className={`text-sm font-medium ${isError ? 'text-[var(--color-status-warning)]' : 'text-[var(--color-text-secondary)]'}`}
+            >
               {call.name}
             </span>
           </div>
         </div>
         <ChevronRight
-          className={`w-4 h-4 transition-transform ${isExpanded ? "rotate-90" : ""} ${
-            isError ? "text-[var(--color-status-warning)]" : "text-[var(--color-text-muted)]"
+          className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-90' : ''} ${
+            isError
+              ? 'text-[var(--color-status-warning)]'
+              : 'text-[var(--color-text-muted)]'
           }`}
         />
       </button>
@@ -416,17 +486,26 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
         <div className="px-4 pb-3 space-y-2">
           {isError && (
             <div className="text-xs text-[var(--color-status-warning)] bg-[var(--color-status-warning-bg)]/45 border border-[var(--color-status-warning)]/35 rounded p-2">
-              {errorMessage ?? "Tool call failed. Continuing with best available information."}
+              {errorMessage ??
+                'Tool call failed. Continuing with best available information.'}
             </div>
           )}
-          <div className="text-xs text-[var(--color-text-muted)] font-medium">Input:</div>
+          <div className="text-xs text-[var(--color-text-muted)] font-medium">
+            Input:
+          </div>
           <pre className="text-xs text-[var(--color-text-secondary)] bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)] rounded p-2 overflow-x-auto">
             {JSON.stringify(call.arguments, null, 2)}
           </pre>
-          <div className="text-xs text-[var(--color-text-muted)] font-medium">Output:</div>
-          <pre className={`text-xs rounded p-2 overflow-x-auto overflow-y-auto max-h-80 whitespace-pre-wrap break-words ${
-            isError ? "text-[var(--color-text-secondary)] bg-[var(--color-bg-secondary)] border border-[var(--color-status-warning)]/35" : "text-[var(--color-text-secondary)] bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)]"
-          }`}>
+          <div className="text-xs text-[var(--color-text-muted)] font-medium">
+            Output:
+          </div>
+          <pre
+            className={`text-xs rounded p-2 overflow-x-auto overflow-y-auto max-h-80 whitespace-pre-wrap break-words ${
+              isError
+                ? 'text-[var(--color-text-secondary)] bg-[var(--color-bg-secondary)] border border-[var(--color-status-warning)]/35'
+                : 'text-[var(--color-text-secondary)] bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)]'
+            }`}
+          >
             {sanitizeProtectedArtifactPaths(resultText)}
           </pre>
         </div>
@@ -441,15 +520,31 @@ interface ToolCallLogProps {
 
 export function ToolCallLog({ events }: ToolCallLogProps) {
   const executions: ToolExecution[] = [];
+  const isAdvisorScoped = (event: ChatEvent) =>
+    'advisor_id' in event &&
+    typeof event.advisor_id === 'string' &&
+    event.advisor_id.length > 0;
 
   events.forEach((event) => {
+    if (isAdvisorScoped(event)) {
+      return;
+    }
+
     if (isToolCallEvent(event)) {
       executions.push({ call: event });
     } else if (isToolResultEvent(event)) {
-      const resultEvent = event as ChatEvent & { type: "tool_result"; name: string; result: unknown };
+      const resultEvent = event as ChatEvent & {
+        type: 'tool_result';
+        name: string;
+        result: unknown;
+      };
       let foundIndex = -1;
       for (let i = executions.length - 1; i >= 0; i--) {
-        const execCall = executions[i].call as ChatEvent & { type: "tool_call"; name: string; arguments: Record<string, unknown> };
+        const execCall = executions[i].call as ChatEvent & {
+          type: 'tool_call';
+          name: string;
+          arguments: Record<string, unknown>;
+        };
         if (execCall.name === resultEvent.name && !executions[i].result) {
           foundIndex = i;
           break;
@@ -466,33 +561,45 @@ export function ToolCallLog({ events }: ToolCallLogProps) {
     if (!execution.result || !isToolResultEvent(execution.result)) return null;
     try {
       const raw = execution.result.result;
-      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
       const path = parsed?.data?.image_path ?? parsed?.image_path;
-      return typeof path === "string" && path.startsWith("/generated-images/") ? path : null;
+      return typeof path === 'string' && path.startsWith('/generated-images/')
+        ? path
+        : null;
     } catch {
       return null;
     }
   };
 
   if (executions.length > 1) {
-    const spawnExecutions = executions.filter((execution) => 
-      isToolCallEvent(execution.call) && execution.call.name === "spawn_agent"
+    const spawnExecutions = executions.filter(
+      (execution) =>
+        isToolCallEvent(execution.call) &&
+        execution.call.name === 'spawn_agent',
     );
     if (spawnExecutions.length > 1) {
-      const lastWithImage = [...spawnExecutions].reverse().find((execution) => getImagePath(execution));
+      const lastWithImage = [...spawnExecutions]
+        .reverse()
+        .find((execution) => getImagePath(execution));
       if (lastWithImage) {
         const keep = new Set([lastWithImage]);
         for (let i = executions.length - 1; i >= 0; i -= 1) {
-          const execCall = executions[i].call as ChatEvent & { type: "tool_call"; name: string };
-          if (execCall.name === "spawn_agent" && !keep.has(executions[i])) {
+          const execCall = executions[i].call as ChatEvent & {
+            type: 'tool_call';
+            name: string;
+          };
+          if (execCall.name === 'spawn_agent' && !keep.has(executions[i])) {
             executions.splice(i, 1);
           }
         }
       } else {
         const lastSpawn = spawnExecutions[spawnExecutions.length - 1];
         for (let i = executions.length - 1; i >= 0; i -= 1) {
-          const execCall = executions[i].call as ChatEvent & { type: "tool_call"; name: string };
-          if (execCall.name === "spawn_agent" && executions[i] !== lastSpawn) {
+          const execCall = executions[i].call as ChatEvent & {
+            type: 'tool_call';
+            name: string;
+          };
+          if (execCall.name === 'spawn_agent' && executions[i] !== lastSpawn) {
             executions.splice(i, 1);
           }
         }
@@ -505,7 +612,9 @@ export function ToolCallLog({ events }: ToolCallLogProps) {
   return (
     <ol className="space-y-3">
       {executions.map((execution, idx) => {
-        const toolName = isToolCallEvent(execution.call) ? execution.call.name : "tool";
+        const toolName = isToolCallEvent(execution.call)
+          ? execution.call.name
+          : 'tool';
 
         return (
           <li key={`${toolName}-${idx}`} className="relative pl-8">
@@ -516,7 +625,8 @@ export function ToolCallLog({ events }: ToolCallLogProps) {
               {idx + 1}
             </span>
             <div className="mb-1 text-[11px] uppercase tracking-[0.08em] text-[var(--color-text-muted)]">
-              Step {idx + 1}{executions.length > 1 ? ` of ${executions.length}` : ""}
+              Step {idx + 1}
+              {executions.length > 1 ? ` of ${executions.length}` : ''}
             </div>
             <ToolCallBlock execution={execution} />
           </li>
@@ -550,7 +660,8 @@ function AudioPlayerBlock({ audioPath, prompt }: AudioPlayerBlockProps) {
 
   const handleTimeUpdate = () => {
     if (audioRef.current) {
-      const progress = (audioRef.current.currentTime / audioRef.current.duration) * 100;
+      const progress =
+        (audioRef.current.currentTime / audioRef.current.duration) * 100;
       setProgress(progress);
     }
   };
@@ -567,7 +678,9 @@ function AudioPlayerBlock({ audioPath, prompt }: AudioPlayerBlockProps) {
           <Check className="w-4 h-4 text-[var(--color-status-success)]" />
           <span>Sound effect created</span>
           <span className="text-[var(--color-border-secondary)]">•</span>
-          <span className="truncate max-w-md" title={prompt}>{prompt}</span>
+          <span className="truncate max-w-md" title={prompt}>
+            {prompt}
+          </span>
         </div>
       )}
 
@@ -586,7 +699,15 @@ function AudioPlayerBlock({ audioPath, prompt }: AudioPlayerBlockProps) {
           onClick={handlePlayPause}
           disabled={loading || error || !displayUrl}
           className="flex-shrink-0 w-10 h-10 flex items-center justify-center bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-white rounded-full transition-colors"
-          title={error ? "Audio failed to load" : loading ? "Loading audio" : isPlaying ? "Pause" : "Play"}
+          title={
+            error
+              ? 'Audio failed to load'
+              : loading
+                ? 'Loading audio'
+                : isPlaying
+                  ? 'Pause'
+                  : 'Play'
+          }
         >
           {isPlaying ? (
             <Pause className="w-5 h-5" />
@@ -623,7 +744,7 @@ function AudioPlayerBlock({ audioPath, prompt }: AudioPlayerBlockProps) {
             type="button"
             disabled
             className="flex-shrink-0 p-2 text-[var(--color-text-muted)]/50 rounded-lg cursor-not-allowed"
-            title={error ? "Audio failed to load" : "Audio download loading"}
+            title={error ? 'Audio failed to load' : 'Audio download loading'}
           >
             <Download className="w-4 h-4" />
           </button>
