@@ -16,7 +16,8 @@ import contextlib
 import ipaddress
 import os
 import socket
-from typing import Iterator
+import threading
+from typing import Any, Iterator
 from urllib.parse import urlparse
 
 # The set of non-publicly-routable ranges. An IP is rejected if it falls in
@@ -120,10 +121,15 @@ def validate_url(url: str) -> str:
         )
     if parsed.username is not None or parsed.password is not None:
         raise SsrfViolation("URLs containing userinfo (user:pass@) are not allowed")
-    host = parsed.hostname
+    try:
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        # urlparse defers netloc validation: malformed ports (e.g. :99999) and
+        # invalid IPv6 brackets raise here, not at parse time. Fail closed.
+        raise SsrfViolation(f"malformed host/port in URL: {exc}") from exc
     if not host:
         raise SsrfViolation("URL is missing a hostname")
-    port = parsed.port
     if port is not None and port not in ALLOWED_PORTS:
         raise SsrfViolation(f"port {port} is not allowed (allowed: {sorted(ALLOWED_PORTS)})")
     _resolve_and_check(host, port if port is not None else 443)
@@ -163,38 +169,59 @@ def check_egress_allowlist(host: str) -> None:
     raise SsrfViolation(f"hostname {host!r} is not in the egress allowlist")
 
 
+# socket_guard() patches process-global state, so overlapping requests must
+# share one installation: a naive save/restore pair would let the first
+# request's exit restore the unguarded resolver while the second request is
+# still in flight. The guard is therefore reference-counted under a lock and
+# only installed/removed at the 0<->1 transitions.
+_guard_lock = threading.Lock()
+_guard_depth = 0
+_real_getaddrinfo: Any = None
+
+
+def _guarded_getaddrinfo(host, *args, **kwargs):  # type: ignore[no-untyped-def]
+    real = _real_getaddrinfo
+    assert real is not None
+    if isinstance(host, str):
+        try:
+            literal = ipaddress.ip_address(host)
+        except ValueError:
+            literal = None
+        if literal is not None and is_disallowed_ip(literal):
+            raise SsrfViolation(f"literal IP {literal} is not allowed")
+        if literal is None:
+            infos = real(host, *args, **kwargs)
+            for _family, _stype, _proto, _canon, sockaddr in infos:
+                resolved = ipaddress.ip_address(sockaddr[0])
+                if is_disallowed_ip(resolved):
+                    raise SsrfViolation(
+                        f"hostname {host!r} resolves to blocked IP {resolved} "
+                        f"on connect (DNS-rebinding protection)"
+                    )
+            return infos
+    return real(host, *args, **kwargs)
+
+
 @contextlib.contextmanager
 def socket_guard() -> Iterator[None]:
     """Patch `socket.getaddrinfo` for the duration of a request.
 
     Every DNS lookup (initial validation, connect-time resolution, retries)
-    is forced through a validator that rejects non-public IPs. The original
-    `getaddrinfo` is restored on exit even if the wrapped block raises.
+    is forced through a validator that rejects non-public IPs. Re-entrant and
+    safe under overlapping requests; the original `getaddrinfo` is restored
+    when the last concurrent guard exits, even if the wrapped block raises.
     """
-    real_getaddrinfo = socket.getaddrinfo
-
-    def guarded_getaddrinfo(host, *args, **kwargs):  # type: ignore[no-untyped-def]
-        if isinstance(host, str):
-            try:
-                literal = ipaddress.ip_address(host)
-            except ValueError:
-                literal = None
-            if literal is not None and is_disallowed_ip(literal):
-                raise SsrfViolation(f"literal IP {literal} is not allowed")
-            if literal is None:
-                infos = real_getaddrinfo(host, *args, **kwargs)
-                for _family, _stype, _proto, _canon, sockaddr in infos:
-                    resolved = ipaddress.ip_address(sockaddr[0])
-                    if is_disallowed_ip(resolved):
-                        raise SsrfViolation(
-                            f"hostname {host!r} resolves to blocked IP {resolved} "
-                            f"on connect (DNS-rebinding protection)"
-                        )
-                return infos
-        return real_getaddrinfo(host, *args, **kwargs)
-
-    socket.getaddrinfo = guarded_getaddrinfo
+    global _guard_depth, _real_getaddrinfo
+    with _guard_lock:
+        _guard_depth += 1
+        if _guard_depth == 1:
+            _real_getaddrinfo = socket.getaddrinfo
+            socket.getaddrinfo = _guarded_getaddrinfo
     try:
         yield
     finally:
-        socket.getaddrinfo = real_getaddrinfo
+        with _guard_lock:
+            _guard_depth -= 1
+            if _guard_depth == 0:
+                socket.getaddrinfo = _real_getaddrinfo
+                _real_getaddrinfo = None

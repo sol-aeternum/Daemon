@@ -147,6 +147,13 @@ class TestValidateUrlPort:
         with pytest.raises(SsrfViolation, match="port"):
             validate_url(f"https://example.com:{port}/")
 
+    @pytest.mark.parametrize("url", ["https://example.com:99999/", "https://example.com:abc/"])
+    def test_malformed_port_rejected_not_valueerror(self, url: str) -> None:
+        # urlparse(...).port raises ValueError lazily; the guard must convert
+        # it to SsrfViolation so execute() returns a tool error, not a 500.
+        with pytest.raises(SsrfViolation, match="malformed"):
+            validate_url(url)
+
 
 class TestValidateUrlUserinfo:
     def test_userinfo_rejected(self) -> None:
@@ -254,15 +261,12 @@ class TestLoadAllowedDomains:
     def test_lowercases_entries(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DAEMON_HTTP_ALLOWED_DOMAINS", "FOO.com,Bar.ORG")
         result = _load_allowed_domains()
-        assert "foo.com" in result
-        assert "bar.org" in result
+        assert result == frozenset({"foo.com", "bar.org"})
 
     def test_filters_empty_segments(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DAEMON_HTTP_ALLOWED_DOMAINS", "a.com,,b.com,   ,")
         result = _load_allowed_domains()
-        assert "a.com" in result
-        assert "b.com" in result
-        assert "" not in result
+        assert result == frozenset({"a.com", "b.com"})
 
 
 class TestDomainMatches:
@@ -331,6 +335,33 @@ class TestSocketGuard:
 
         assert socket.getaddrinfo is original
 
+    def test_overlapping_guards_stay_guarded(self) -> None:
+        # Two overlapping requests share one installation; the inner exit must
+        # not restore the unguarded resolver while the outer is still active.
+        original = socket.getaddrinfo
+        with socket_guard():
+            with socket_guard():
+                with pytest.raises(SsrfViolation, match="literal IP"):
+                    socket.getaddrinfo("127.0.0.1", 443, type=socket.SOCK_STREAM)
+            # inner guard exited; outer must still be guarded
+            with pytest.raises(SsrfViolation, match="literal IP"):
+                socket.getaddrinfo("127.0.0.1", 443, type=socket.SOCK_STREAM)
+        assert socket.getaddrinfo is original
+
+    def test_interleaved_guards_restore_original(self) -> None:
+        # Simulates request A exiting while request B is still in flight.
+        original = socket.getaddrinfo
+        guard_a = socket_guard()
+        guard_b = socket_guard()
+        guard_a.__enter__()
+        guard_b.__enter__()
+        guard_a.__exit__(None, None, None)
+        # B still active: resolver must still be guarded
+        with pytest.raises(SsrfViolation, match="literal IP"):
+            socket.getaddrinfo("127.0.0.1", 443, type=socket.SOCK_STREAM)
+        guard_b.__exit__(None, None, None)
+        assert socket.getaddrinfo is original
+
 
 def _patch_async_client(handler):
     """Patch `orchestrator.tools.http_request.httpx.AsyncClient` to use `handler`.
@@ -378,6 +409,24 @@ class TestHttpRequestToolEgressAllowlist:
         parsed = json.loads(result)
         assert "SSRF blocked" in parsed["error"]
 
+    @pytest.mark.asyncio
+    async def test_allowlist_rejects_before_dns_resolution(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A non-allowlisted host must be rejected without ever resolving it,
+        # so attacker-chosen hostnames cannot trigger DNS-based exfiltration.
+        monkeypatch.setenv("DAEMON_HTTP_ALLOWED_DOMAINS", "allowed.example")
+
+        def fail_resolve(host: str, port: int) -> None:
+            raise AssertionError(f"DNS resolution attempted for {host!r}")
+
+        monkeypatch.setattr("orchestrator.tools.ssrf_guard._resolve_and_check", fail_resolve)
+        tool = HttpRequestTool()
+        result = await tool.execute(url="https://exfil-payload.attacker.example/")
+        parsed = json.loads(result)
+        assert "SSRF blocked" in parsed["error"]
+        assert "allowlist" in parsed["error"]
+
 
 class TestHttpRequestToolHappyPath:
     @pytest.mark.asyncio
@@ -407,6 +456,24 @@ class TestHttpRequestToolHappyPath:
         # Host header override is stripped — model cannot lie about destination.
         assert captured["headers"].get("host") not in ("evil.com", "evil.com:443")
         assert captured["headers"].get("Host") not in ("evil.com",)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("header_name", ["Host", "host", "HOST", "hOsT"])
+    async def test_host_header_stripped_case_insensitively(self, header_name: str) -> None:
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["headers"] = dict(request.headers)
+            return httpx.Response(200, json={"ok": True})
+
+        with _patch_async_client(handler):
+            tool = HttpRequestTool()
+            await tool.execute(
+                url="https://example.com/api",
+                headers={header_name: "evil.com"},
+            )
+
+        assert captured["headers"].get("host") not in ("evil.com", "evil.com:443")
 
     @pytest.mark.asyncio
     async def test_redirect_not_followed(self) -> None:

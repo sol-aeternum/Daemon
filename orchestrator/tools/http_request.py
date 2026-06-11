@@ -14,10 +14,11 @@ from orchestrator.tools.ssrf_guard import (
     validate_url,
 )
 
-# Host header overrides are stripped: the resolved host is what httpx will
-# connect to, and a model-supplied "Host" header would let it lie about its
-# destination (e.g. trick upstream proxies or virtual-host routers).
-_STRIPPED_HEADERS = frozenset({"Host", "host"})
+# Host header overrides are stripped (case-insensitively — HTTP header names
+# are case-insensitive): the resolved host is what httpx will connect to, and
+# a model-supplied "Host" header would let it lie about its destination
+# (e.g. trick upstream proxies or virtual-host routers).
+_STRIPPED_HEADERS = frozenset({"host"})
 
 
 class HttpRequestTool(Tool):
@@ -63,12 +64,19 @@ class HttpRequestTool(Tool):
             return json.dumps({"error": "URL is required"})
 
         try:
+            # Allowlist first: a non-allowlisted host must be rejected before
+            # validate_url() resolves it, so attacker-chosen hostnames cannot
+            # trigger DNS lookups (information leak / DNS-based exfiltration).
+            try:
+                hostname = urlparse(url).hostname or ""
+            except ValueError as exc:
+                return json.dumps({"error": f"SSRF blocked: malformed URL: {exc}"})
+            check_egress_allowlist(hostname)
             validate_url(url)
-            check_egress_allowlist(urlparse(url).hostname or "")
         except SsrfViolation as exc:
             return json.dumps({"error": f"SSRF blocked: {exc}"})
 
-        safe_headers = {k: v for k, v in headers.items() if k not in _STRIPPED_HEADERS}
+        safe_headers = {k: v for k, v in headers.items() if k.lower() not in _STRIPPED_HEADERS}
 
         try:
             with socket_guard():
