@@ -207,3 +207,31 @@ async def test_retrieve_memories_temporal_filter_falls_back_when_window_is_too_n
         )
 
     assert [memory["id"] for memory in result] == [only_candidate["id"]]
+
+
+@pytest.mark.asyncio
+async def test_retrieve_memories_for_text_threads_reference_time() -> None:
+    from orchestrator.memory.retrieval import retrieve_memories_for_text
+
+    user_id = uuid.uuid4()
+    captured: dict[str, object] = {}
+
+    async def fake_retrieve(**kwargs: object) -> list[dict[str, object]]:
+        captured.update(kwargs)
+        return []
+
+    with (
+        patch("orchestrator.memory.retrieval.retrieve_memories", new=fake_retrieve),
+        patch(
+            "orchestrator.memory.retrieval.embed_query",
+            new=AsyncMock(return_value=[0.1] * 8),
+        ),
+    ):
+        await retrieve_memories_for_text(
+            AsyncMock(),
+            "what happened in June?",
+            user_id=user_id,
+            query_reference_time="2023/07/01 (Sat) 02:36",
+        )
+
+    assert captured["query_reference_time"] == "2023/07/01 (Sat) 02:36"
