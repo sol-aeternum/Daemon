@@ -194,6 +194,27 @@ def test_unwrap_round_trips_wrapped_body() -> None:
     assert _unwrap_tool_result(wrapped) == body
 
 
+def test_unwrap_restores_escaped_closing_tag_in_body() -> None:
+    """The wrapper neutralizes literal closing tags; unwrap must reverse it
+    so parsed fields (e.g. spawn_agent generation_code containing the tag)
+    are not silently corrupted."""
+    body = json.dumps(
+        {
+            "success": True,
+            "metadata": {
+                "session_id": "sess-9",
+                "generation_code": "print('</tool_result>')",
+            },
+        }
+    )
+    wrapped = _wrap_tool_result_untrusted("spawn_agent", body)
+    assert _unwrap_tool_result(wrapped) == body
+    messages = [{"tool_call_id": "t1", "role": "tool", "name": "spawn_agent", "content": wrapped}]
+    spawn = _extract_last_spawn_result(messages)
+    assert spawn is not None
+    assert spawn["metadata"]["generation_code"] == "print('</tool_result>')"
+
+
 def test_unwrap_returns_unfenced_content_unchanged() -> None:
     assert _unwrap_tool_result('{"plain": "json"}') == '{"plain": "json"}'
     assert _unwrap_tool_result("") == ""

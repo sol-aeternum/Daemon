@@ -74,7 +74,12 @@ def _unwrap_tool_result(content: str) -> str:
     open_end = stripped.find(">")
     if open_end == -1:
         return content
-    return stripped[open_end + 1 : -len(closing)].strip("\n")
+    body = stripped[open_end + 1 : -len(closing)].strip("\n")
+    # Reverse the wrapper's neutralization so parsers (e.g. spawn_agent
+    # metadata fields that legitimately contain the literal closing tag)
+    # see the original data, not the entity-escaped form. Whitespace/case
+    # variants are normalized to the canonical tag on round-trip.
+    return body.replace("&lt;/tool_result&gt;", closing)
 
 
 def _looks_like_tools_unsupported_error(err: Exception) -> bool:
