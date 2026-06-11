@@ -36,17 +36,37 @@ def _wrap_tool_result_untrusted(tool_name: str, body: str) -> str:
     """Wrap a tool result body in a strict <tool_result> fence.
 
     The fence has a `trust="untrusted"` attribute so the model can pattern-match
-    on it after the system prompt teaches it to. The body is preserved verbatim
-    so existing parsers (e.g. session_id extraction from spawn_agent results)
-    continue to work. The opening and closing tags are on their own lines so
-    log scrapers and regex audits can detect them unambiguously.
+    on it after the system prompt teaches it to. Any literal closing tag inside
+    the body is neutralized so adversarial tool output cannot break out of the
+    fence; parsers that need the original body must go through
+    `_unwrap_tool_result`. The opening and closing tags are on their own lines
+    so log scrapers and regex audits can detect them unambiguously.
     """
     safe_name = _sanitize_xml_attr(tool_name)
+    safe_body = body.replace(f"</{_TOOL_RESULT_FENCE_TAG}>", "&lt;/tool_result&gt;")
     return (
         f'<{_TOOL_RESULT_FENCE_TAG} tool="{safe_name}" trust="untrusted">\n'
-        f"{body}\n"
+        f"{safe_body}\n"
         f"</{_TOOL_RESULT_FENCE_TAG}>"
     )
+
+
+def _unwrap_tool_result(content: str) -> str:
+    """Strip the fence added by `_wrap_tool_result_untrusted`, if present.
+
+    Returns the inner body so existing parsers (e.g. session_id extraction from
+    spawn_agent results) keep operating on the raw tool output. Body escaping in
+    the wrapper guarantees the final closing tag is ours. Content without a
+    fence is returned unchanged.
+    """
+    stripped = content.strip()
+    closing = f"</{_TOOL_RESULT_FENCE_TAG}>"
+    if not stripped.startswith(f"<{_TOOL_RESULT_FENCE_TAG} ") or not stripped.endswith(closing):
+        return content
+    open_end = stripped.find(">")
+    if open_end == -1:
+        return content
+    return stripped[open_end + 1 : -len(closing)].strip("\n")
 
 
 def _looks_like_tools_unsupported_error(err: Exception) -> bool:
@@ -70,12 +90,17 @@ def _extract_last_session_id(messages: list[dict[str, Any]]) -> str | None:
             if not content:
                 continue
             try:
-                parsed = json.loads(content) if isinstance(content, str) else content
+                parsed = (
+                    json.loads(_unwrap_tool_result(content))
+                    if isinstance(content, str)
+                    else content
+                )
             except Exception:
                 parsed = None
         elif role == "assistant" and isinstance(content, str):
-            if "Tool spawn_agent result:" in content:
-                payload = content.split("Tool spawn_agent result:", 1)[-1].strip()
+            unwrapped = _unwrap_tool_result(content)
+            if "Tool spawn_agent result:" in unwrapped:
+                payload = unwrapped.split("Tool spawn_agent result:", 1)[-1].strip()
                 try:
                     parsed = json.loads(payload)
                 except Exception:
@@ -108,12 +133,17 @@ def _extract_last_spawn_result(messages: list[dict[str, Any]]) -> dict[str, Any]
             if not content:
                 continue
             try:
-                parsed = json.loads(content) if isinstance(content, str) else content
+                parsed = (
+                    json.loads(_unwrap_tool_result(content))
+                    if isinstance(content, str)
+                    else content
+                )
             except Exception:
                 parsed = None
         elif role == "assistant" and isinstance(content, str):
-            if "tool_name: spawn_agent" in content and "tool_result:" in content:
-                payload = content.split("tool_result:", 1)[-1].strip()
+            unwrapped = _unwrap_tool_result(content)
+            if "tool_name: spawn_agent" in unwrapped and "tool_result:" in unwrapped:
+                payload = unwrapped.split("tool_result:", 1)[-1].strip()
                 try:
                     parsed = json.loads(payload)
                 except Exception:
