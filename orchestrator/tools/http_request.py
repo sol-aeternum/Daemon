@@ -80,7 +80,10 @@ class HttpRequestTool(Tool):
 
         try:
             with socket_guard():
-                async with httpx.AsyncClient(follow_redirects=False) as client:
+                # trust_env=False: environment proxies (HTTPS_PROXY/ALL_PROXY)
+                # would move destination resolution to the proxy, bypassing
+                # the connect-time DNS-rebinding guard below.
+                async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as client:
                     response = await client.request(
                         method=method,
                         url=url,

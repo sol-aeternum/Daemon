@@ -188,13 +188,39 @@ class TestValidateUrlIpChecks:
         with pytest.raises(SsrfViolation):
             validate_url(f"https://{ip}/")
 
+    @pytest.mark.parametrize(
+        "ip",
+        [
+            "2002:a00:1::",  # 6to4 encoding 10.0.0.1
+            "2001::1",  # Teredo
+            "2001:db8::1",  # documentation
+            "::ffff:0:127.0.0.1",  # SIIT/IPv4-translated encoding of loopback
+            "100::1",  # discard
+            "fe80::1",  # link-local
+        ],
+    )
+    def test_ipv6_special_use_literal_rejected(self, ip: str) -> None:
+        with pytest.raises(SsrfViolation):
+            validate_url(f"https://[{ip}]/")
+
+    def test_ipv6_global_unicast_allowed(self) -> None:
+        from orchestrator.tools.ssrf_guard import is_disallowed_ip
+        import ipaddress
+
+        assert is_disallowed_ip(ipaddress.ip_address("2607:f8b0::1")) is False
+
     def test_loopback_hostname_rejected(self) -> None:
         with pytest.raises(SsrfViolation):
             validate_url("https://localhost/")
 
     def test_public_dns_resolution_ok(self) -> None:
-        # dns.google has a stable public record; intentional real DNS hit.
-        result = validate_url("https://dns.google/")
+        # Stubbed DNS: CI/sandboxes may have no outbound resolver, and the
+        # assertion targets the guard logic, not network availability.
+        def fake_getaddrinfo(host, port, **kwargs):  # type: ignore[no-untyped-def]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))]
+
+        with patch("socket.getaddrinfo", side_effect=fake_getaddrinfo):
+            result = validate_url("https://dns.google/")
         assert result == "https://dns.google/"
 
 
@@ -318,8 +344,14 @@ class TestSocketGuard:
         assert infos
 
     def test_public_hostname_delegates_to_real(self) -> None:
-        with socket_guard():
-            infos = socket.getaddrinfo("dns.google", 443, type=socket.SOCK_STREAM)
+        # Stubbed DNS (see test_public_dns_resolution_ok): the guard must
+        # delegate to the underlying resolver when the result is public.
+        def fake_getaddrinfo(host, *args, **kwargs):  # type: ignore[no-untyped-def]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))]
+
+        with patch("socket.getaddrinfo", side_effect=fake_getaddrinfo):
+            with socket_guard():
+                infos = socket.getaddrinfo("dns.google", 443, type=socket.SOCK_STREAM)
         assert infos
 
     def test_resolved_private_ip_rejected(self) -> None:
@@ -509,6 +541,32 @@ class TestHttpRequestToolHappyPath:
         result = await tool.execute(url="")
         parsed = json.loads(result)
         assert parsed["error"] == "URL is required"
+
+
+class TestHttpRequestToolClientHardening:
+    @pytest.mark.asyncio
+    async def test_client_disables_env_proxies_and_redirects(self) -> None:
+        # HTTPS_PROXY/ALL_PROXY would move destination resolution to the
+        # proxy, bypassing the connect-time DNS-rebinding guard; redirects
+        # would allow 302 -> internal bounce. Both must stay off.
+        captured_kwargs: dict = {}
+        real_async_client = httpx.AsyncClient
+
+        def factory(**kwargs):  # type: ignore[no-untyped-def]
+            captured_kwargs.update(kwargs)
+            return real_async_client(
+                transport=httpx.MockTransport(
+                    lambda request: httpx.Response(200, json={"ok": True})
+                ),
+                follow_redirects=False,
+            )
+
+        with patch("orchestrator.tools.http_request.httpx.AsyncClient", factory):
+            tool = HttpRequestTool()
+            await tool.execute(url="https://example.com/")
+
+        assert captured_kwargs.get("trust_env") is False
+        assert captured_kwargs.get("follow_redirects") is False
 
 
 class TestHttpRequestToolNetworkErrors:

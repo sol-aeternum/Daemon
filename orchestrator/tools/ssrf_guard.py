@@ -62,6 +62,12 @@ MAX_URL_LENGTH = 2048
 ALLOWED_SCHEMES: frozenset[str] = frozenset({"https"})
 ALLOWED_PORTS: frozenset[int] = frozenset({443})
 
+# IANA only allocates global unicast from 2000::/3. Everything outside it is
+# special-use, reserved, or transition machinery (IPv4-compatible, SIIT
+# encodings like ::ffff:0:a.b.c.d, etc.) and is rejected outright so oddly
+# encoded literals cannot slip past the explicit denylist.
+_IPV6_GLOBAL_UNICAST = ipaddress.ip_network("2000::/3")
+
 
 class SsrfViolation(Exception):
     """Raised when a URL fails SSRF validation."""
@@ -71,14 +77,25 @@ def is_disallowed_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """True if `ip` is loopback, private, link-local, CGNAT, ULA, multicast, etc.
 
     IPv4-mapped IPv6 (e.g. `::ffff:127.0.0.1`) is unwrapped to its IPv4 form
-    so it cannot bypass the IPv4 blocklist.
+    so it cannot bypass the IPv4 blocklist. Beyond the auditable inline lists,
+    the stdlib `is_global` classification (IANA special-purpose registries) is
+    enforced for both families — this catches 6to4 (2002::/16), Teredo
+    (2001::/32), documentation, and other special-use ranges the hand-written
+    lists do not enumerate — and IPv6 must additionally fall inside the
+    2000::/3 global-unicast allocation.
     """
     if isinstance(ip, ipaddress.IPv6Address):
         mapped = ip.ipv4_mapped
         if mapped is not None:
             return is_disallowed_ip(mapped)
+        if ip not in _IPV6_GLOBAL_UNICAST:
+            return True
+        if not ip.is_global:
+            return True
         networks = _DISALLOWED_IPV6_NETWORKS
     else:
+        if not ip.is_global:
+            return True
         networks = _DISALLOWED_IPV4_NETWORKS
     return any(ip in net for net in networks)
 
