@@ -194,12 +194,10 @@ def test_middleware_allows_localhost() -> None:
 
 
 def test_middleware_rejects_case_sensitive_attempt() -> None:
-    """Host header values are case-insensitive in HTTP, but Starlette's
-    TrustedHostMiddleware matches case-sensitively. We do not rely on
-    case-insensitive matching: production allowlists must include the
-    exact case used in DNS / reverse proxy config. This test pins down
-    the actual behavior so a future Starlette upgrade that changes
-    matching semantics is caught."""
+    """Raw Starlette TrustedHostMiddleware matches case-sensitively; this
+    pins that behavior so a future Starlette upgrade that changes the
+    matching semantics is caught. Production uses the case-insensitive
+    subclass (next test)."""
     app = _build_test_app(allowed_hosts=["app.daemon.ai"])
     client = TestClient(app)
     # "APP.DAEMON.AI" is the same logical host but different case.
@@ -207,6 +205,60 @@ def test_middleware_rejects_case_sensitive_attempt() -> None:
     # Starlette will reject this (case-sensitive match). The test does
     # not assert either 200 or 400; it pins the current behavior.
     assert response.status_code in (200, 400)
+
+
+def test_case_insensitive_middleware_accepts_uppercase_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HTTP hostnames are case-insensitive (RFC 4343): the production
+    middleware subclass must accept ``Host: APP.DAEMON.AI`` against an
+    ``app.daemon.ai`` allowlist entry while still rejecting unlisted
+    hosts."""
+    monkeypatch.setenv("DAEMON_ALLOWED_HOSTS", "app.daemon.ai")
+    from orchestrator.config import get_settings as _get_settings
+
+    _get_settings.cache_clear()
+    from orchestrator.main import CaseInsensitiveTrustedHostMiddleware
+
+    app = FastAPI()
+
+    @app.get("/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    app.add_middleware(CaseInsensitiveTrustedHostMiddleware, allowed_hosts=["app.daemon.ai"])
+    client = TestClient(app)
+    assert client.get("/health", headers={"Host": "APP.DAEMON.AI"}).status_code == 200
+    assert client.get("/health", headers={"Host": "app.daemon.ai"}).status_code == 200
+    assert client.get("/health", headers={"Host": "EVIL.com"}).status_code == 400
+
+
+def test_resolve_allowed_hosts_lowercases_entries() -> None:
+    s = Settings(
+        daemon_environment="development",
+        daemon_allowed_hosts="APP.Daemon.AI,*.DAEMON.ai",
+    )
+    assert s.resolve_allowed_hosts() == ["app.daemon.ai", "*.daemon.ai"]
+
+
+def test_resolve_allowed_hosts_rejects_mixed_wildcard() -> None:
+    """``app.daemon.ai,*`` would silently disable the host check because
+    Starlette treats any ``*`` entry as allow-all. Fail closed instead."""
+    s = Settings(
+        daemon_environment="development",
+        daemon_allowed_hosts="app.daemon.ai,*",
+    )
+    with pytest.raises(HostSecurityConfigError, match="mixes"):
+        s.resolve_allowed_hosts()
+
+
+def test_validate_host_security_config_rejects_mixed_wildcard_in_prod() -> None:
+    s = Settings(
+        daemon_environment="production",
+        daemon_allowed_hosts="app.daemon.ai,*",
+    )
+    with pytest.raises(HostSecurityConfigError, match="mixes"):
+        s.validate_host_security_config()
 
 
 # ----------------------------------------------------------------------
@@ -247,7 +299,11 @@ def test_production_app_has_trusted_host_middleware(
             middleware_classes.add(type(current))
             current = getattr(current, "app", None)
 
-    assert TrustedHostMiddleware in middleware_classes, (
-        "Production FastAPI app is missing TrustedHostMiddleware. "
-        "orchestrator/main.py must call app.add_middleware(TrustedHostMiddleware, ...)."
+    assert any(
+        isinstance(cls, type) and issubclass(cls, TrustedHostMiddleware)
+        for cls in middleware_classes
+    ), (
+        "Production FastAPI app is missing TrustedHostMiddleware (or a "
+        "subclass). orchestrator/main.py must call "
+        "app.add_middleware(CaseInsensitiveTrustedHostMiddleware, ...)."
     )

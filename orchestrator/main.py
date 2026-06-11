@@ -28,6 +28,8 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from starlette.datastructures import MutableHeaders
+from starlette.types import Receive, Scope, Send
 from fastapi.responses import FileResponse, StreamingResponse
 
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
@@ -310,6 +312,30 @@ app.add_middleware(
 # authentication. The allowlist is read from DAEMON_ALLOWED_HOSTS via
 # the Settings class. In production an empty allowlist is rejected at
 # startup; in development it falls back to ["*"] for the dev experience.
+# NOTE for operators: requests proxied by the Next frontend reach the
+# backend with Host values like "backend:8000" or "localhost:8000" — those
+# internal hostnames must be included in DAEMON_ALLOWED_HOSTS.
+
+
+class CaseInsensitiveTrustedHostMiddleware(TrustedHostMiddleware):
+    """Starlette matches Host case-sensitively; hostnames are not.
+
+    Lowercase the inbound Host header before matching (and for downstream
+    consumers — DNS hostnames are case-insensitive by RFC 4343) so
+    ``Host: APP.DAEMON.AI`` matches an ``app.daemon.ai`` allowlist entry.
+    Allowlist entries are already lowercased by ``resolve_allowed_hosts``.
+    """
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if not self.allow_any and scope["type"] in ("http", "websocket"):
+            headers = MutableHeaders(scope=scope)
+            host = headers.get("host", "")
+            lowered = host.lower()
+            if lowered != host:
+                headers["host"] = lowered
+        await super().__call__(scope, receive, send)
+
+
 get_settings().validate_host_security_config()
 _allowed_hosts = get_settings().resolve_allowed_hosts()
 if _allowed_hosts == ["*"]:
@@ -319,7 +345,7 @@ if _allowed_hosts == ["*"]:
         "development but is unsafe in production. Set DAEMON_ALLOWED_HOSTS "
         "to a comma-separated allowlist (e.g. 'app.daemon.ai,*.daemon.ai')."
     )
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts)
+app.add_middleware(CaseInsensitiveTrustedHostMiddleware, allowed_hosts=_allowed_hosts)
 
 
 DEFAULT_BILLING_USER_ID = "00000000-0000-0000-0000-000000000001"

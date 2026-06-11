@@ -761,10 +761,21 @@ class Settings(BaseSettings):
 
         Each entry is a string. ``TrustedHostMiddleware`` natively
         supports ``*.example.com`` wildcards, so we do not parse here.
-        Empty entries (from a trailing comma) are stripped.
+        Empty entries (from a trailing comma) are stripped. Entries are
+        lowercased (hostnames are case-insensitive). A ``"*"`` mixed with
+        other entries is rejected: Starlette treats any ``"*"`` in the
+        list as "allow all hosts", which would silently disable the
+        check the operator thought they had narrowed.
         """
         raw = self.daemon_allowed_hosts or ""
-        entries = [entry.strip() for entry in raw.split(",") if entry.strip()]
+        entries = [entry.strip().lower() for entry in raw.split(",") if entry.strip()]
+        if "*" in entries and len(entries) > 1:
+            raise HostSecurityConfigError(
+                "daemon_allowed_hosts mixes '*' with explicit hosts "
+                f"({raw!r}). Starlette treats any '*' entry as 'allow all', "
+                "silently disabling the host check. Use either an explicit "
+                "allowlist or a single '*'."
+            )
         if not entries:
             is_production = self.daemon_environment.lower().strip() == "production"
             if is_production:
@@ -793,12 +804,20 @@ class Settings(BaseSettings):
             HostSecurityConfigError: on a production deployment with an
                 empty allowlist.
         """
+        raw = self.daemon_allowed_hosts or ""
+        entries = [entry.strip().lower() for entry in raw.split(",") if entry.strip()]
+        if "*" in entries and len(entries) > 1:
+            raise HostSecurityConfigError(
+                "daemon_allowed_hosts mixes '*' with explicit hosts "
+                f"({raw!r}). Starlette treats any '*' entry as 'allow all', "
+                "silently disabling the host check. Use either an explicit "
+                "allowlist or a single '*'."
+            )
+
         is_production = self.daemon_environment.lower().strip() == "production"
         if not is_production:
             return
 
-        raw = self.daemon_allowed_hosts or ""
-        entries = [entry.strip() for entry in raw.split(",") if entry.strip()]
         if not entries:
             raise HostSecurityConfigError(
                 "daemon_allowed_hosts is empty in production. The backend "
