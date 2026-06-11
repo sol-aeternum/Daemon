@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from typing import Any, cast
 
@@ -302,9 +303,15 @@ async def build_memory_context(
     # Wrap the entire memory block in an explicit XML fence (defense in depth against
     # prompt injection via planted memory content; see issue #19). The system prompt
     # at orchestrator/prompts.py explicitly disclaims instructions found inside.
-    # Neutralize any literal closing tag inside the block so planted content cannot
-    # break out of the fence.
-    raw_block = raw_block.replace("</memory_records>", "&lt;/memory_records&gt;")
+    # Neutralize anything shaped like a closing tag — including XML-valid
+    # whitespace variants such as "</memory_records >" — so planted content
+    # cannot break out of the fence.
+    raw_block = re.sub(
+        r"<\s*/\s*memory_records\s*>",
+        "&lt;/memory_records&gt;",
+        raw_block,
+        flags=re.IGNORECASE,
+    )
     return f'<memory_records trust="user_data">\n{raw_block}\n</memory_records>'
 
 
