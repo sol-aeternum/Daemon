@@ -34,6 +34,23 @@ class HostSecurityConfigError(ValueError):
     """
 
 
+def _strip_host_port(entry: str) -> str:
+    """Drop a ``:port`` suffix from an allowlist entry.
+
+    Starlette's TrustedHostMiddleware strips the port from the incoming
+    Host header before comparing, so ports in configured entries can never
+    match. Wildcard entries (``*``, ``*.example.com``) and bracketed IPv6
+    literals are returned unchanged apart from bracket-aware port removal.
+    """
+    if entry.startswith("["):
+        # [::1] or [::1]:8000 — keep the bracketed literal, drop the port.
+        closing = entry.find("]")
+        if closing != -1:
+            return entry[: closing + 1]
+        return entry
+    return entry.split(":", 1)[0]
+
+
 class ProviderConfig(BaseSettings):
     """Configuration for a single LLM provider."""
 
@@ -762,13 +779,20 @@ class Settings(BaseSettings):
         Each entry is a string. ``TrustedHostMiddleware`` natively
         supports ``*.example.com`` wildcards, so we do not parse here.
         Empty entries (from a trailing comma) are stripped. Entries are
-        lowercased (hostnames are case-insensitive). A ``"*"`` mixed with
-        other entries is rejected: Starlette treats any ``"*"`` in the
-        list as "allow all hosts", which would silently disable the
-        check the operator thought they had narrowed.
+        lowercased (hostnames are case-insensitive) and any ``:port``
+        suffix is dropped: Starlette compares the incoming Host with the
+        port already stripped (``host.split(":")[0]``), so an entry like
+        ``backend:8000`` copied from a real Host header would never
+        match. A ``"*"`` mixed with other entries is rejected: Starlette
+        treats any ``"*"`` in the list as "allow all hosts", which would
+        silently disable the check the operator thought they had
+        narrowed.
         """
         raw = self.daemon_allowed_hosts or ""
-        entries = [entry.strip().lower() for entry in raw.split(",") if entry.strip()]
+        entries = [
+            _strip_host_port(entry.strip().lower()) for entry in raw.split(",") if entry.strip()
+        ]
+        entries = [entry for entry in entries if entry]
         if "*" in entries and len(entries) > 1:
             raise HostSecurityConfigError(
                 "daemon_allowed_hosts mixes '*' with explicit hosts "
@@ -805,7 +829,10 @@ class Settings(BaseSettings):
                 empty allowlist.
         """
         raw = self.daemon_allowed_hosts or ""
-        entries = [entry.strip().lower() for entry in raw.split(",") if entry.strip()]
+        entries = [
+            _strip_host_port(entry.strip().lower()) for entry in raw.split(",") if entry.strip()
+        ]
+        entries = [entry for entry in entries if entry]
         if "*" in entries and len(entries) > 1:
             raise HostSecurityConfigError(
                 "daemon_allowed_hosts mixes '*' with explicit hosts "

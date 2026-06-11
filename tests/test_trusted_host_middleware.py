@@ -307,3 +307,38 @@ def test_production_app_has_trusted_host_middleware(
         "subclass). orchestrator/main.py must call "
         "app.add_middleware(CaseInsensitiveTrustedHostMiddleware, ...)."
     )
+
+
+def test_resolve_allowed_hosts_strips_ports() -> None:
+    """Starlette compares Host with the port already stripped, so entries
+    like 'backend:8000' copied from real Host headers must normalize to
+    the bare hostname or they would never match."""
+    s = Settings(
+        daemon_environment="development",
+        daemon_allowed_hosts="backend:8000,localhost:8000,app.daemon.ai",
+    )
+    assert s.resolve_allowed_hosts() == ["backend", "localhost", "app.daemon.ai"]
+
+
+def test_middleware_matches_proxy_host_with_port_after_normalization() -> None:
+    s = Settings(
+        daemon_environment="development",
+        daemon_allowed_hosts="backend:8000",
+    )
+    app = _build_test_app(allowed_hosts=s.resolve_allowed_hosts())
+    client = TestClient(app)
+    assert client.get("/health", headers={"Host": "backend:8000"}).status_code == 200
+    assert client.get("/health", headers={"Host": "evil.com"}).status_code == 400
+
+
+def test_production_misconfig_aborts_at_lifespan_not_import(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A production deployment with an empty allowlist must still fail
+    closed, but at lifespan startup (after the earlier fail-closed checks
+    can run) rather than at module import."""
+    from orchestrator.config import HostSecurityConfigError
+
+    s = Settings(daemon_environment="production", daemon_allowed_hosts="")
+    with pytest.raises(HostSecurityConfigError):
+        s.validate_host_security_config()

@@ -46,6 +46,7 @@ from orchestrator.auth_runtime_state import (
 )
 from orchestrator.council.sse import stream_council, stream_council_interview_response
 from orchestrator.config import (
+    HostSecurityConfigError,
     HostedIdentityConfigError,
     ProviderConfig,
     Settings,
@@ -130,6 +131,7 @@ def _validate_startup_config(settings: Settings) -> None:
     settings.validate_hosted_identity_config()
     if settings.daemon_encryption_key is not None:
         ContentEncryption(settings.daemon_encryption_key)
+    settings.validate_host_security_config()
 
 
 @asynccontextmanager
@@ -146,6 +148,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         raise
     except EncryptionInitError as exc:
         logger.critical("Encryption config validation failed: %s", exc)
+        raise
+    except HostSecurityConfigError as exc:
+        logger.critical("Host security config validation failed: %s", exc)
         raise
 
     state = await init_app_state(settings)
@@ -313,8 +318,10 @@ app.add_middleware(
 # the Settings class. In production an empty allowlist is rejected at
 # startup; in development it falls back to ["*"] for the dev experience.
 # NOTE for operators: requests proxied by the Next frontend reach the
-# backend with Host values like "backend:8000" or "localhost:8000" — those
-# internal hostnames must be included in DAEMON_ALLOWED_HOSTS.
+# backend with Host values like "backend:8000" or "localhost:8000".
+# Starlette strips the port before matching, so DAEMON_ALLOWED_HOSTS must
+# include the BARE internal hostnames (e.g. "backend", "localhost");
+# resolve_allowed_hosts() also drops any :port suffix it finds.
 
 
 class CaseInsensitiveTrustedHostMiddleware(TrustedHostMiddleware):
@@ -336,8 +343,19 @@ class CaseInsensitiveTrustedHostMiddleware(TrustedHostMiddleware):
         await super().__call__(scope, receive, send)
 
 
-get_settings().validate_host_security_config()
-_allowed_hosts = get_settings().resolve_allowed_hosts()
+# Import-time resolution must not raise: production-startup tests exercise
+# other fail-closed paths in _validate_startup_config and must be able to
+# import this module first. A misconfigured allowlist falls back to ["*"]
+# here, but the app still refuses to START because the lifespan validation
+# chain re-raises HostSecurityConfigError (fail-closed, just later).
+try:
+    _allowed_hosts = get_settings().resolve_allowed_hosts()
+except HostSecurityConfigError as _host_exc:
+    logger.critical(
+        "Host security config invalid; startup will abort in lifespan: %s",
+        _host_exc,
+    )
+    _allowed_hosts = ["*"]
 if _allowed_hosts == ["*"]:
     logger.warning(
         "TrustedHostMiddleware is configured with allowed_hosts=['*']; "
