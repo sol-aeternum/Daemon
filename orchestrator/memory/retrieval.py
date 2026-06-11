@@ -89,20 +89,30 @@ def _detect_temporal_query_window(
 
     for month_name, month in _MONTH_BY_NAME.items():
         if re.search(rf"\b{month_name}\b", normalized):
-            year = reference.year
-            if month > reference.month:
-                year -= 1
+            explicit_year = re.search(r"\b(19\d{2}|20\d{2})\b", normalized)
+            if explicit_year:
+                year = int(explicit_year.group(1))
+                detector = "month_and_year"
+            else:
+                year = reference.year
+                if month > reference.month:
+                    year -= 1
+                detector = "month_only"
             start = dt.datetime(year, month, 1, tzinfo=dt.timezone.utc)
             return TemporalQueryWindow(
                 start=start,
                 end=_month_end(year, month),
-                detector="month_only",
+                detector=detector,
             )
 
     relative_match = re.search(r"\b(\d+)\s+years?\s+ago\b", normalized)
     if relative_match:
         years = int(relative_match.group(1))
-        center = reference.replace(year=reference.year - years)
+        try:
+            center = reference.replace(year=reference.year - years)
+        except ValueError:
+            # Feb 29 reference with a non-leap target year.
+            center = reference.replace(month=2, day=28, year=reference.year - years)
         return TemporalQueryWindow(
             start=center - dt.timedelta(days=183),
             end=center + dt.timedelta(days=183),
