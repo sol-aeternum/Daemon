@@ -66,6 +66,10 @@ export type ChatEvent = BaseEvent &
     | ({ type: 'advisor_text_delta'; content: string } & AdvisorBaseEvent)
     | ({ type: 'advisor_text_done'; content: string } & AdvisorBaseEvent)
     | ({
+        type: 'advisor_error';
+        error: string;
+      } & AdvisorBaseEvent)
+    | ({
         type: 'advisor_end';
         status: 'completed' | 'error';
         error?: string;
@@ -126,6 +130,7 @@ export function isChatEvent(obj: unknown): obj is ChatEvent {
     'advisor_start',
     'advisor_text_delta',
     'advisor_text_done',
+    'advisor_error',
     'advisor_end',
     'pipeline_switch',
     'conversation',
@@ -157,12 +162,14 @@ export function isAdvisorEvent(event: ChatEvent): event is ChatEvent & {
     | 'advisor_start'
     | 'advisor_text_delta'
     | 'advisor_text_done'
+    | 'advisor_error'
     | 'advisor_end';
 } {
   return [
     'advisor_start',
     'advisor_text_delta',
     'advisor_text_done',
+    'advisor_error',
     'advisor_end',
   ].includes(event.type);
 }
