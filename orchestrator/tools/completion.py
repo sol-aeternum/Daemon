@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from typing import Any, AsyncIterator, cast
 
@@ -43,7 +44,14 @@ def _wrap_tool_result_untrusted(tool_name: str, body: str) -> str:
     so log scrapers and regex audits can detect them unambiguously.
     """
     safe_name = _sanitize_xml_attr(tool_name)
-    safe_body = body.replace(f"</{_TOOL_RESULT_FENCE_TAG}>", "&lt;/tool_result&gt;")
+    # Neutralize anything shaped like a closing tag, including XML-valid
+    # whitespace/case variants such as "</tool_result >".
+    safe_body = re.sub(
+        rf"<\s*/\s*{_TOOL_RESULT_FENCE_TAG}\s*>",
+        "&lt;/tool_result&gt;",
+        body,
+        flags=re.IGNORECASE,
+    )
     return (
         f'<{_TOOL_RESULT_FENCE_TAG} tool="{safe_name}" trust="untrusted">\n'
         f"{safe_body}\n"
