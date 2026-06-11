@@ -13,9 +13,11 @@ Specifically, every test function ``tests/.../test_*.py`` whose
 name starts with ``test_`` must:
 
 1. Contain at least one substantive statement (an assertion, a
-   call, an ``await``, a ``return`` of a value, etc.).
-2. NOT be decorated with ``@pytest.mark.skip(...)`` or
-   ``@pytest.mark.xfail(...)`` without a ``reason=`` argument.
+   call, an ``await``, a ``return`` of a value, etc.) — unless it is
+   deliberately parked with ``@pytest.mark.skip/xfail(reason=...)``.
+2. NOT use ``@pytest.mark.skip(...)`` / ``@pytest.mark.xfail(...)``
+   without a ``reason=`` argument — whether on the function, on the
+   enclosing class, or via a module-level ``pytestmark``.
 
 The walker uses the filesystem (not pytest collection) so that
 ``pyproject.toml`` ``extend-exclude`` cannot hide a violating file.
@@ -36,14 +38,14 @@ TESTS_DIR = REPO_ROOT / "tests"
 
 
 def _iter_test_files() -> list[Path]:
-    """Yield every ``*.py`` file under ``tests/`` (recursively)."""
+    """Yield every ``*.py`` file under ``tests/`` (recursively).
+
+    ``tests/benchmark`` is included: pytest collects it like any other
+    directory, so its tests are subject to the same rules.
+    """
     if not TESTS_DIR.is_dir():
         return []
-    return sorted(
-        path
-        for path in TESTS_DIR.rglob("*.py")
-        if "__pycache__" not in path.parts and "benchmark" not in path.parts
-    )
+    return sorted(path for path in TESTS_DIR.rglob("*.py") if "__pycache__" not in path.parts)
 
 
 def _parseable_test_files() -> tuple[list[Path], list[tuple[Path, SyntaxError]]]:
@@ -81,18 +83,85 @@ def _all_test_functions(path: Path) -> list[ast.FunctionDef | ast.AsyncFunctionD
     return functions
 
 
+def _mark_name_and_reason(d: ast.expr) -> tuple[str | None, bool]:
+    """Return ``(mark_name, has_reason)`` for a pytest mark expression.
+
+    Handles both ``pytest.mark.skip`` (bare Attribute) and
+    ``pytest.mark.skip(...)`` (Call). The bare form is shorthand for a
+    call with no kwargs, so it also lacks a reason. Returns
+    ``(None, False)`` for anything else.
+    """
+    if isinstance(d, ast.Attribute):
+        return d.attr, False
+    if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute):
+        has_reason = any(kw.arg == "reason" for kw in d.keywords)
+        return d.func.attr, has_reason
+    return None, False
+
+
+def _is_deliberately_parked(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True if the function carries ``@pytest.mark.skip/xfail(reason=...)``.
+
+    Such a placeholder is an explicitly documented TODO — the failure
+    message of the empty-body check names this as acceptable
+    remediation, so the check must not double-report it. Marks without
+    a reason are still violations (of the reason check).
+    """
+    for d in func.decorator_list:
+        name, has_reason = _mark_name_and_reason(d)
+        if name in ("skip", "xfail") and has_reason:
+            return True
+    return False
+
+
+def _iter_mark_expressions(value: ast.expr) -> list[ast.expr]:
+    """Flatten a ``pytestmark`` assignment value into mark expressions.
+
+    ``pytestmark`` may be a single mark or a list/tuple of marks.
+    """
+    if isinstance(value, (ast.List, ast.Tuple)):
+        return list(value.elts)
+    return [value]
+
+
+def _module_and_class_mark_violations(path: Path) -> list[tuple[int, str, str]]:
+    """Find skip/xfail marks without reason= outside function decorators.
+
+    Covers the two collection-affecting placements the function-decorator
+    walk cannot see: module-level ``pytestmark = ...`` assignments and
+    decorators on ``Test*`` classes.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    violations: list[tuple[int, str, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            if any(isinstance(t, ast.Name) and t.id == "pytestmark" for t in node.targets):
+                for mark in _iter_mark_expressions(node.value):
+                    name, has_reason = _mark_name_and_reason(mark)
+                    if name in ("skip", "xfail") and not has_reason:
+                        violations.append((node.lineno, "pytestmark", f"pytest.mark.{name}"))
+        elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+            for d in node.decorator_list:
+                name, has_reason = _mark_name_and_reason(d)
+                if name in ("skip", "xfail") and not has_reason:
+                    violations.append((node.lineno, node.name, f"@pytest.mark.{name}"))
+    return violations
+
+
 def _has_substantive_body(body: list[ast.stmt]) -> bool:
     """Return True if the function body has anything besides a
-    docstring, ``pass``, or ``...`` ellipsis statement.
+    docstring, ``pass``, ``...`` ellipsis, or bare ``return``.
 
-    A function whose entire body is:
+    A function whose entire body is built from:
 
-    - a single ``pass`` statement
-    - a single docstring (string expression)
-    - a docstring followed by a single ``pass`` statement
+    - ``pass`` statements
+    - a docstring (string expression)
+    - ``...`` ellipsis literals
+    - bare ``return`` / ``return None``
 
     is considered empty and must be either implemented, marked
-    ``@pytest.mark.skip(reason=...)``, or deleted.
+    ``@pytest.mark.skip(reason=...)``, or deleted. A bare ``return``
+    asserts nothing and passes exactly like ``pass``.
     """
     substantive = []
     for stmt in body:
@@ -106,6 +175,11 @@ def _has_substantive_body(body: list[ast.stmt]) -> bool:
                 continue
         if isinstance(stmt, ast.Pass):
             continue
+        if isinstance(stmt, ast.Return) and (
+            stmt.value is None
+            or (isinstance(stmt.value, ast.Constant) and stmt.value.value is None)
+        ):
+            continue
         substantive.append(stmt)
     return bool(substantive)
 
@@ -114,6 +188,10 @@ def test_no_test_function_is_pass_only() -> None:
     """Every test function must have at least one substantive
     statement. A function body that is only ``pass`` is the
     textbook definition of an empty test.
+
+    Functions explicitly parked with ``@pytest.mark.skip/xfail
+    (reason=...)`` are exempt — that is the remediation the failure
+    message recommends.
 
     Unparseable test files are reported as a soft warning (not a
     fail) so the empty-body check can still run on the rest of
@@ -125,6 +203,8 @@ def test_no_test_function_is_pass_only() -> None:
     violations: list[tuple[Path, int, str]] = []
     for path in parseable:
         for func in _all_test_functions(path):
+            if _is_deliberately_parked(func):
+                continue
             if not _has_substantive_body(func.body):
                 violations.append((path, func.lineno, func.name))
 
@@ -152,29 +232,22 @@ def test_no_test_function_is_pass_only() -> None:
 
 def test_every_pytest_mark_skip_has_reason() -> None:
     """``@pytest.mark.skip(...)`` and ``@pytest.mark.xfail(...)``
-    decorators MUST include a ``reason=`` argument. An unmarked
-    skip is indistinguishable from a forgotten TODO."""
+    MUST include a ``reason=`` argument. An unmarked skip is
+    indistinguishable from a forgotten TODO. Checked on function
+    decorators, ``Test*`` class decorators, and module-level
+    ``pytestmark`` assignments."""
     parseable, _ = _parseable_test_files()
     violations: list[tuple[Path, int, str, str]] = []
     for path in parseable:
         for func in _all_test_functions(path):
             for d in func.decorator_list:
-                # Two decorator shapes match: ``@pytest.mark.skip`` (bare
-                # Attribute, no parens) and ``@pytest.mark.skip(...)`` (Call).
-                # The bare form is a shorthand for ``@pytest.mark.skip()``
-                # with no kwargs, so it also lacks a reason.
-                if isinstance(d, ast.Attribute):
-                    name = d.attr
-                    has_reason = False
-                elif isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute):
-                    name = d.func.attr
-                    has_reason = any(kw.arg == "reason" for kw in d.keywords)
-                else:
-                    continue
+                name, has_reason = _mark_name_and_reason(d)
                 if name not in ("skip", "xfail"):
                     continue
                 if not has_reason:
                     violations.append((path, func.lineno, func.name, f"@pytest.mark.{name}"))
+        for lineno, where, decorator in _module_and_class_mark_violations(path):
+            violations.append((path, lineno, where, decorator))
 
     if violations:
         details = "\n".join(
@@ -182,7 +255,7 @@ def test_every_pytest_mark_skip_has_reason() -> None:
             for p, lineno, name, decorator in violations
         )
         pytest.fail(
-            f"{len(violations)} test function(s) use skip/xfail without a reason. "
+            f"{len(violations)} skip/xfail mark(s) without a reason. "
             f"Add a reason= argument explaining WHY the test is skipped:\n{details}"
         )
 
