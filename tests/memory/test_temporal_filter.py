@@ -71,6 +71,31 @@ def test_detect_temporal_query_window_requires_explicit_resolvable_time() -> Non
     )
 
 
+def test_detect_temporal_query_window_respects_explicit_year() -> None:
+    # "June 2022" with a 2024 reference must resolve to June 2022, not
+    # the reference-relative June 2024.
+    window = _detect_temporal_query_window(
+        "What happened in June 2022?",
+        query_reference_time=dt.datetime(2024, 8, 1, tzinfo=dt.timezone.utc),
+    )
+    assert window is not None
+    assert window.detector == "month_and_year"
+    assert window.start == dt.datetime(2022, 6, 1, tzinfo=dt.timezone.utc)
+    assert window.end == dt.datetime(2022, 7, 1, tzinfo=dt.timezone.utc)
+
+
+def test_detect_temporal_query_window_handles_leap_day_reference() -> None:
+    # A Feb 29 reference with "1 year ago" must not raise ValueError.
+    window = _detect_temporal_query_window(
+        "Where was I living 1 year ago?",
+        query_reference_time=dt.datetime(2024, 2, 29, 12, 0, tzinfo=dt.timezone.utc),
+    )
+    assert window is not None
+    assert window.detector == "relative_ago"
+    # Window centers on Feb 28 of the non-leap target year.
+    assert window.start < dt.datetime(2023, 2, 28, 12, 0, tzinfo=dt.timezone.utc) < window.end
+
+
 @pytest.mark.asyncio
 async def test_retrieve_memories_keeps_normal_queries_on_active_only_path() -> None:
     user_id = uuid.uuid4()
@@ -182,3 +207,31 @@ async def test_retrieve_memories_temporal_filter_falls_back_when_window_is_too_n
         )
 
     assert [memory["id"] for memory in result] == [only_candidate["id"]]
+
+
+@pytest.mark.asyncio
+async def test_retrieve_memories_for_text_threads_reference_time() -> None:
+    from orchestrator.memory.retrieval import retrieve_memories_for_text
+
+    user_id = uuid.uuid4()
+    captured: dict[str, object] = {}
+
+    async def fake_retrieve(**kwargs: object) -> list[dict[str, object]]:
+        captured.update(kwargs)
+        return []
+
+    with (
+        patch("orchestrator.memory.retrieval.retrieve_memories", new=fake_retrieve),
+        patch(
+            "orchestrator.memory.retrieval.embed_query",
+            new=AsyncMock(return_value=[0.1] * 8),
+        ),
+    ):
+        await retrieve_memories_for_text(
+            AsyncMock(),
+            "what happened in June?",
+            user_id=user_id,
+            query_reference_time="2023/07/01 (Sat) 02:36",
+        )
+
+    assert captured["query_reference_time"] == "2023/07/01 (Sat) 02:36"

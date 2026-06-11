@@ -14,6 +14,16 @@ def _new_fact(content: str, slot: str | None = None) -> ExtractedFact:
     return ExtractedFact(content=content, category="fact", confidence=0.9, slot=slot)
 
 
+@pytest.fixture(autouse=True)
+def _mock_contradiction_check():
+    with patch(
+        "orchestrator.memory.dedup.check_contradiction",
+        new_callable=AsyncMock,
+        return_value=(True, "bitemporal test contradiction"),
+    ):
+        yield
+
+
 @pytest.mark.asyncio
 async def test_dedup_slot_supersedes_with_similarity_threshold() -> None:
     store = AsyncMock()

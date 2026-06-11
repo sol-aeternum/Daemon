@@ -1,27 +1,58 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+import uuid
 from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.config import get_settings
+from orchestrator.db import AppState, get_app_state
 from orchestrator.main import app
 
 
 @pytest_asyncio.fixture
 async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncClient, None]:
+    monkeypatch.setenv("DAEMON_ENVIRONMENT", "development")
     monkeypatch.setenv("DATABASE_URL", "")
     monkeypatch.setenv("REDIS_URL", "")
     monkeypatch.setenv("MOCK_LLM", "true")
     get_settings.cache_clear()
 
-    async with app.router.lifespan_context(app):
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as http_client:
-            yield http_client
+    settings = get_settings()
+    app_state = AppState(settings=settings)
+
+    async def override_settings():
+        return settings
+
+    async def override_app_state():
+        return app_state
+
+    async def override_auth():
+        return AuthenticatedDevice(
+            user_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+            device_id=uuid.UUID("00000000-0000-0000-0000-000000000002"),
+            session_id=uuid.UUID("00000000-0000-0000-0000-000000000003"),
+        )
+
+    monkeypatch.setattr(
+        "orchestrator.main.init_app_state",
+        AsyncMock(return_value=app_state),
+    )
+    app.dependency_overrides[get_settings] = override_settings
+    app.dependency_overrides[get_app_state] = override_app_state
+    app.dependency_overrides[require_device_auth] = override_auth
+
+    try:
+        async with app.router.lifespan_context(app):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as http_client:
+                yield http_client
+    finally:
+        app.dependency_overrides.clear()
 
 
 @pytest.mark.asyncio

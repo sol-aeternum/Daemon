@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+import uuid
 
+from fastapi import Request
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from pydantic import BaseModel
 
+from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.config import get_settings
+from orchestrator.db import AppState, get_app_state
 from orchestrator.main import app
 
 
@@ -15,12 +19,41 @@ from orchestrator.main import app
 async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[AsyncClient]:
     monkeypatch.setenv("DATABASE_URL", "")
     monkeypatch.setenv("REDIS_URL", "")
+    monkeypatch.setenv("DAEMON_ENVIRONMENT", "development")
     get_settings.cache_clear()
 
-    async with app.router.lifespan_context(app):
+    settings = get_settings()
+    app_state = AppState(settings=settings)
+
+    async def override_settings():
+        return get_settings()
+
+    async def override_app_state():
+        return app.state.app_state
+
+    async def override_auth(_request: Request):
+        return AuthenticatedDevice(
+            user_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+            device_id=uuid.UUID("00000000-0000-0000-0000-000000000002"),
+            session_id=uuid.UUID("00000000-0000-0000-0000-000000000003"),
+        )
+
+    app.dependency_overrides[get_settings] = override_settings
+    app.dependency_overrides[get_app_state] = override_app_state
+    app.dependency_overrides[require_device_auth] = override_auth
+
+    original_app_state = getattr(app.state, "app_state", None)
+    original_settings = getattr(app.state, "settings", None)
+    app.state.app_state = app_state
+    app.state.settings = settings
+    try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             yield client
+    finally:
+        app.dependency_overrides.clear()
+        app.state.app_state = original_app_state
+        app.state.settings = original_settings
 
 
 class _SSEEnvelope(BaseModel):

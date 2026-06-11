@@ -57,10 +57,10 @@ _dedup.check_contradiction = _patched_check_contradiction
 print("Patches applied")
 """
 
-exec(PATCH_CODE)
-
 
 async def main():
+    exec(PATCH_CODE)
+
     settings = get_settings()
     print(f'DB URL: {settings.database_url}')
 
@@ -166,4 +166,5 @@ async def main():
     print(f'Memories: {memories_path} ({len(memory_rows)} rows)')
     print('INGEST_OK')
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

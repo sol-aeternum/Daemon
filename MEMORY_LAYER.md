@@ -137,9 +137,9 @@ Triggered after each conversation turn via the worker queue. `process_extraction
 
 | Scenario | Threshold | Action |
 |---|---|---|
-| Merge | ≥ 0.90 (config: `dedup_merge_threshold`) | Touch existing; don't insert |
-| Supersede (generic) | ≥ 0.82 (config: `dedup_supersede_threshold`) | Replace existing; apply trust penalty |
-| Supersede (same slot) | ≥ 0.65 (config: `dedup_supersede_same_slot_threshold`) | Replace within slot family |
+| Merge | `0.90` (config: `dedup_merge_threshold`) | Touch existing; don't insert |
+| Supersede (generic) | `0.82` (config: `dedup_supersede_threshold`) | Replace existing; apply trust penalty |
+| Supersede (same slot) | `0.65` (config: `dedup_supersede_same_slot_threshold`) | Replace within slot family |
 | Below thresholds | < 0.65 | Insert as new memory |
 
 Thresholds are calibrated from `tests/results/voyage_similarity_analysis.json`:
@@ -295,6 +295,10 @@ CONSOLIDATION_INTERVAL_DAYS=7
 - **Status:** Pending — blocked by host DB resolution (`socket.gaierror: [Errno -2] Name or service not known` when resolving the configured Postgres host)
 - The benchmark script `tests/longmemeval/evaluate.py --limit 10` cannot connect from the host environment; requires containerized execution with proper DNS resolution to the postgres service
 - IE-assistant (assistant→user implicit preference extraction) not yet independently verified against LongMemEval corpus
+
+### LongMemEval Phase 4d Closeout
+- **Status:** `no_shippable_composition`
+- Final variance review found zero eligible composition candidates, so no composition run or full-corpus triple run was executed.
 
 ### General System Caveats
 - **Assumption:** Voyage asymmetric embeddings provide sufficient separation between document and query spaces. The 0.90/0.82/0.65 thresholds were calibrated against within/cross-scenario similarity distributions but there is known overlap in the generic supersede band (cross-scenario p95=0.6080 vs threshold 0.82 — no overlap; within-scenario max=0.8374 vs 0.90 — no overlap; the diagnostic false-positive pair at 0.8046 is below the 0.82 generic supersede threshold).

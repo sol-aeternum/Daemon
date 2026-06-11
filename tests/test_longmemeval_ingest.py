@@ -259,8 +259,12 @@ class TestEnsureDataset:
                     "tests.longmemeval.ingest.DATASET_URL",
                     "http://localhost:9999/nonexistent.json",
                 ):
-                    with pytest.raises(Exception):
-                        await ensure_dataset()
+                    with patch(
+                        "httpx.AsyncClient.get",
+                        new=AsyncMock(side_effect=RuntimeError("download unavailable")),
+                    ):
+                        with pytest.raises(RuntimeError, match="download unavailable"):
+                            await ensure_dataset()
 
 
 class TestConstants:

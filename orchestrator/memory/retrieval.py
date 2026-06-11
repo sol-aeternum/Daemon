@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import re
 import time
 import uuid
+from dataclasses import dataclass
 from typing import cast
 
 from orchestrator.config import get_settings
@@ -21,6 +23,127 @@ MAX_RETURNED_MEMORIES = 5
 INITIAL_VECTOR_CANDIDATES = 10
 MIN_FINAL_SCORE = 0.15
 MAX_LOGGED_CONTENT_CHARS = 120
+
+
+@dataclass(frozen=True)
+class TemporalQueryWindow:
+    start: dt.datetime
+    end: dt.datetime
+    detector: str
+
+
+_MONTH_BY_NAME = {
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
+}
+
+
+def _coerce_reference_datetime(value: str | dt.datetime | None) -> dt.datetime | None:
+    if isinstance(value, dt.datetime):
+        reference = value
+    elif isinstance(value, str) and value.strip():
+        match = re.search(r"(\d{4})/(\d{1,2})/(\d{1,2})", value)
+        if not match:
+            return None
+        reference = dt.datetime(
+            int(match.group(1)),
+            int(match.group(2)),
+            int(match.group(3)),
+        )
+    else:
+        return None
+
+    if reference.tzinfo is None:
+        return reference.replace(tzinfo=dt.timezone.utc)
+    return reference.astimezone(dt.timezone.utc)
+
+
+def _month_end(year: int, month: int) -> dt.datetime:
+    if month == 12:
+        return dt.datetime(year + 1, 1, 1, tzinfo=dt.timezone.utc)
+    return dt.datetime(year, month + 1, 1, tzinfo=dt.timezone.utc)
+
+
+def _detect_temporal_query_window(
+    query_text: str | None,
+    *,
+    query_reference_time: str | dt.datetime | None = None,
+) -> TemporalQueryWindow | None:
+    normalized = _normalize_query_text(query_text).lower()
+    if not normalized:
+        return None
+
+    reference = _coerce_reference_datetime(query_reference_time)
+    if reference is None:
+        return None
+
+    for month_name, month in _MONTH_BY_NAME.items():
+        if re.search(rf"\b{month_name}\b", normalized):
+            explicit_year = re.search(r"\b(19\d{2}|20\d{2})\b", normalized)
+            if explicit_year:
+                year = int(explicit_year.group(1))
+                detector = "month_and_year"
+            else:
+                year = reference.year
+                if month > reference.month:
+                    year -= 1
+                detector = "month_only"
+            start = dt.datetime(year, month, 1, tzinfo=dt.timezone.utc)
+            return TemporalQueryWindow(
+                start=start,
+                end=_month_end(year, month),
+                detector=detector,
+            )
+
+    relative_match = re.search(r"\b(\d+)\s+years?\s+ago\b", normalized)
+    if relative_match:
+        years = int(relative_match.group(1))
+        try:
+            center = reference.replace(year=reference.year - years)
+        except ValueError:
+            # Feb 29 reference with a non-leap target year.
+            center = reference.replace(month=2, day=28, year=reference.year - years)
+        return TemporalQueryWindow(
+            start=center - dt.timedelta(days=183),
+            end=center + dt.timedelta(days=183),
+            detector="relative_ago",
+        )
+
+    return None
+
+
+def _overlaps_temporal_window(
+    memory: dict[str, object],
+    window: TemporalQueryWindow,
+) -> bool:
+    valid_from = memory.get("valid_from") or memory.get("created_at")
+    valid_to = memory.get("valid_to")
+    if not isinstance(valid_from, dt.datetime):
+        return False
+    if valid_from.tzinfo is None:
+        valid_from = valid_from.replace(tzinfo=dt.timezone.utc)
+    else:
+        valid_from = valid_from.astimezone(dt.timezone.utc)
+
+    if isinstance(valid_to, dt.datetime):
+        if valid_to.tzinfo is None:
+            valid_to = valid_to.replace(tzinfo=dt.timezone.utc)
+        else:
+            valid_to = valid_to.astimezone(dt.timezone.utc)
+    else:
+        valid_to = dt.datetime.max.replace(tzinfo=dt.timezone.utc)
+
+    return valid_from < window.end and valid_to >= window.start
 
 
 def _is_retrieval_logging_enabled(explicit_flag: bool) -> bool:
@@ -238,6 +361,7 @@ async def retrieve_memories_for_text(
     limit: int = 5,
     include_local: bool = False,
     include_historical: bool = False,
+    query_reference_time: str | dt.datetime | None = None,
     memory_slot: str | None = None,
     include_l0: bool = False,
     log_retrieval: bool = False,
@@ -272,6 +396,7 @@ async def retrieve_memories_for_text(
             limit=limit,
             include_local=include_local,
             include_historical=include_historical,
+            query_reference_time=query_reference_time,
             memory_slot=normalized_slot,
             log_retrieval=_is_retrieval_logging_enabled(log_retrieval) and not include_l0,
             retrieval_triggered_by=retrieval_triggered_by,
@@ -434,6 +559,7 @@ async def retrieve_memories(
     limit: int = 5,
     include_local: bool | None = None,
     include_historical: bool = False,
+    query_reference_time: str | dt.datetime | None = None,
     memory_slot: str | None = None,
     log_retrieval: bool = False,
     retrieval_triggered_by: str | None = None,
@@ -451,6 +577,11 @@ async def retrieve_memories(
     normalized_query = _normalize_query_text(query_text)
     normalized_slot = _normalize_memory_slot(memory_slot)
     effective_user_id: uuid.UUID | None = user_id
+    temporal_window = _detect_temporal_query_window(
+        normalized_query,
+        query_reference_time=query_reference_time,
+    )
+    effective_include_historical = include_historical or temporal_window is not None
 
     if conversation_id is not None:
         conversation = await store.get_conversation(conversation_id)
@@ -482,7 +613,7 @@ async def retrieve_memories(
             query_embedding=query_embedding,
             limit=vector_limit,
             include_local=effective_include_local,
-            include_historical=include_historical,
+            include_historical=effective_include_historical,
             memory_slot=normalized_slot,
             include_dream_observations=include_dream_observations,
             source_conversation_ids=allowed_source_conversation_ids,
@@ -498,7 +629,7 @@ async def retrieve_memories(
                 query=normalized_query,
                 limit=vector_limit,
                 include_local=effective_include_local,
-                include_historical=include_historical,
+                include_historical=effective_include_historical,
                 memory_slot=normalized_slot,
                 include_dream_observations=include_dream_observations,
                 source_conversation_ids=allowed_source_conversation_ids,
@@ -562,10 +693,17 @@ async def retrieve_memories(
                 query_text=normalized_query,
                 ranked=[],
                 include_local=effective_include_local,
-                include_historical=include_historical,
+                include_historical=effective_include_historical,
                 memory_slot=normalized_slot,
             )
         return []
+
+    if temporal_window is not None:
+        temporal_candidates = [
+            item for item in all_candidates if _overlaps_temporal_window(item, temporal_window)
+        ]
+        if temporal_candidates:
+            all_candidates = temporal_candidates
 
     _normalize_bm25_scores(all_candidates)
 
@@ -600,8 +738,10 @@ async def retrieve_memories(
 
     ranked = sorted(
         filtered,
-        key=lambda item: _as_float(item.get("final_score"), 0.0),
-        reverse=True,
+        key=lambda item: (
+            -_as_float(item.get("final_score"), 0.0),
+            str(item.get("id", "")),
+        ),
     )[:target_limit]
 
     if _is_retrieval_logging_enabled(log_retrieval):
@@ -609,7 +749,7 @@ async def retrieve_memories(
             query_text=normalized_query,
             ranked=ranked,
             include_local=effective_include_local,
-            include_historical=include_historical,
+            include_historical=effective_include_historical,
             memory_slot=normalized_slot,
         )
 

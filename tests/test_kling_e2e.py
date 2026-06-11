@@ -14,7 +14,7 @@ import asyncio
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -239,6 +239,18 @@ def mock_config(fake_pool: FakePool) -> dict[str, Any]:
     }
 
 
+@pytest.fixture(autouse=True)
+def fake_provider_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FAL_KEY", "test-fal-key")
+    monkeypatch.setenv("XAI_API_KEY", "test-xai-key")
+
+
+def install_video_provider(subagent: ImageSubagent, provider_name: str, provider: object) -> None:
+    subagent.provider = provider
+    subagent.provider_name = provider_name
+    subagent.video_provider_name = provider_name
+
+
 # Test 1: Success path - grant credits, request video with fal provider, verify debit, mock success
 @pytest.mark.asyncio
 async def test_kling_e2e_success_path(
@@ -250,7 +262,7 @@ async def test_kling_e2e_success_path(
     """Test successful Kling video generation flow with credit debit."""
     # Step 1: Grant credits to user
     fake_db_state.balances[test_user_id] = 1000
-    video_credits_dal = VideoCreditsDAL(fake_pool)
+    video_credits_dal = VideoCreditsDAL(cast(Any, fake_pool))
 
     initial_balance = await video_credits_dal.get_balance(test_user_id)
     assert initial_balance == 1000, "Initial balance should be 1000"
@@ -285,8 +297,7 @@ async def test_kling_e2e_success_path(
     kling_provider.client = mock_client
 
     # Override the provider selection to use our mock
-    original_provider = subagent.provider  # noqa: F841
-    subagent.provider = kling_provider
+    install_video_provider(subagent, "fal", kling_provider)
 
     # Step 3: Request video generation with fal provider
     context = {
@@ -331,7 +342,7 @@ async def test_kling_e2e_failure_path_with_refund(
     """Test Kling video generation failure triggers refund."""
     # Step 1: Grant credits
     fake_db_state.balances[test_user_id] = 1000
-    video_credits_dal = VideoCreditsDAL(fake_pool)
+    video_credits_dal = VideoCreditsDAL(cast(Any, fake_pool))
 
     initial_balance = await video_credits_dal.get_balance(test_user_id)
     assert initial_balance == 1000
@@ -357,7 +368,7 @@ async def test_kling_e2e_failure_path_with_refund(
 
     kling_provider = FalKlingProvider("test-fal-key")
     kling_provider.client = mock_client
-    subagent.provider = kling_provider
+    install_video_provider(subagent, "fal", kling_provider)
 
     # Step 3: Request video generation
     context = {
@@ -393,7 +404,7 @@ async def test_kling_e2e_provider_switching(
     """Test switching between xAI and Kling providers."""
     # Grant credits
     fake_db_state.balances[test_user_id] = 2000
-    video_credits_dal = VideoCreditsDAL(fake_pool)
+    video_credits_dal = VideoCreditsDAL(cast(Any, fake_pool))
 
     # Test xAI provider first
     subagent = ImageSubagent(config=mock_config)
@@ -418,7 +429,7 @@ async def test_kling_e2e_provider_switching(
 
     xai_provider = XAIImageProvider("test-xai-key")
     xai_provider.client = mock_xai_client
-    subagent.provider = xai_provider
+    install_video_provider(subagent, "xai", xai_provider)
 
     context_xai = {
         "user_id": str(test_user_id),
@@ -435,7 +446,7 @@ async def test_kling_e2e_provider_switching(
 
     # Verify xAI cost was deducted
     balance_after_xai = await video_credits_dal.get_balance(test_user_id)
-    xai_cost = estimate_cost(5, "pro", "xai")
+    xai_cost = estimate_cost(duration_seconds=5, tier="pro", provider="xai")
     assert balance_after_xai == 2000 - xai_cost
 
     # Now test Kling provider
@@ -462,7 +473,7 @@ async def test_kling_e2e_provider_switching(
 
     kling_provider = FalKlingProvider("test-fal-key")
     kling_provider.client = mock_kling_client
-    subagent.provider = kling_provider
+    install_video_provider(subagent, "fal", kling_provider)
 
     context_kling = {
         "user_id": str(test_user_id),
@@ -481,7 +492,13 @@ async def test_kling_e2e_provider_switching(
 
     # Verify Kling cost was deducted
     final_balance = await video_credits_dal.get_balance(test_user_id)
-    kling_cost = estimate_cost(5, "pro", "fal", "o3-pro", False)
+    kling_cost = estimate_cost(
+        duration_seconds=5,
+        tier="pro",
+        provider="fal",
+        kling_model="o3-pro",
+        audio_enabled=False,
+    )
     assert final_balance == balance_after_xai - kling_cost
 
 
@@ -528,7 +545,7 @@ async def test_kling_e2e_model_and_audio_variations(
     """Test different Kling models and audio settings."""
     # Grant credits
     fake_db_state.balances[test_user_id] = 3000
-    video_credits_dal = VideoCreditsDAL(fake_pool)
+    video_credits_dal = VideoCreditsDAL(cast(Any, fake_pool))
 
     initial_balance = await video_credits_dal.get_balance(test_user_id)
     assert initial_balance == 3000
@@ -559,7 +576,7 @@ async def test_kling_e2e_model_and_audio_variations(
 
     kling_provider = FalKlingProvider("test-fal-key")
     kling_provider.client = mock_client_o3_no_audio
-    subagent.provider = kling_provider
+    install_video_provider(subagent, "fal", kling_provider)
 
     context_o3_no_audio = {
         "user_id": str(test_user_id),
@@ -577,7 +594,13 @@ async def test_kling_e2e_model_and_audio_variations(
     assert result_o3_no_audio.data["video_url"] == "https://cdn.fal.ai/o3-no-audio.mp4"
 
     balance_after_o3_no_audio = await video_credits_dal.get_balance(test_user_id)
-    o3_no_audio_cost = estimate_cost(5, "pro", "fal", "o3-pro", False)
+    o3_no_audio_cost = estimate_cost(
+        duration_seconds=5,
+        tier="pro",
+        provider="fal",
+        kling_model="o3-pro",
+        audio_enabled=False,
+    )
     assert balance_after_o3_no_audio == initial_balance - o3_no_audio_cost
 
     # Test O3 Pro with audio
@@ -603,7 +626,7 @@ async def test_kling_e2e_model_and_audio_variations(
     )
 
     kling_provider.client = mock_client_o3_with_audio
-    subagent.provider = kling_provider
+    install_video_provider(subagent, "fal", kling_provider)
 
     context_o3_with_audio = {
         "user_id": str(test_user_id),
@@ -621,7 +644,13 @@ async def test_kling_e2e_model_and_audio_variations(
     assert result_o3_with_audio.data["video_url"] == "https://cdn.fal.ai/o3-with-audio.mp4"
 
     balance_after_o3_with_audio = await video_credits_dal.get_balance(test_user_id)
-    o3_with_audio_cost = estimate_cost(5, "pro", "fal", "o3-pro", True)
+    o3_with_audio_cost = estimate_cost(
+        duration_seconds=5,
+        tier="pro",
+        provider="fal",
+        kling_model="o3-pro",
+        audio_enabled=True,
+    )
     assert balance_after_o3_with_audio == balance_after_o3_no_audio - o3_with_audio_cost
 
     # Test V3 Pro with audio
@@ -647,7 +676,7 @@ async def test_kling_e2e_model_and_audio_variations(
     )
 
     kling_provider.client = mock_client_v3_with_audio
-    subagent.provider = kling_provider
+    install_video_provider(subagent, "fal", kling_provider)
 
     context_v3_with_audio = {
         "user_id": str(test_user_id),
@@ -665,7 +694,13 @@ async def test_kling_e2e_model_and_audio_variations(
     assert result_v3_with_audio.data["video_url"] == "https://cdn.fal.ai/v3-with-audio.mp4"
 
     final_balance = await video_credits_dal.get_balance(test_user_id)
-    v3_with_audio_cost = estimate_cost(5, "pro", "fal", "v3-pro", True)
+    v3_with_audio_cost = estimate_cost(
+        duration_seconds=5,
+        tier="pro",
+        provider="fal",
+        kling_model="v3-pro",
+        audio_enabled=True,
+    )
     assert final_balance == balance_after_o3_with_audio - v3_with_audio_cost
 
 
@@ -679,7 +714,7 @@ async def test_kling_e2e_byok_tier_success(
 ) -> None:
     """Test that BYOK tier users can generate Kling videos using their own API key."""
     fake_db_state.balances[test_user_id] = 0
-    video_credits_dal = VideoCreditsDAL(fake_pool)
+    video_credits_dal = VideoCreditsDAL(cast(Any, fake_pool))
 
     subagent = ImageSubagent(config=mock_config)
 
@@ -706,7 +741,7 @@ async def test_kling_e2e_byok_tier_success(
 
     kling_provider = FalKlingProvider("test-fal-key")
     kling_provider.client = mock_client
-    subagent.provider = kling_provider
+    install_video_provider(subagent, "fal", kling_provider)
 
     context = {
         "user_id": str(test_user_id),
@@ -737,7 +772,7 @@ async def test_kling_e2e_pro_tier_all_durations(
 ) -> None:
     """Test that Pro tier supports all Kling durations (no tier-based cap)."""
     fake_db_state.balances[test_user_id] = 1000
-    video_credits_dal = VideoCreditsDAL(fake_pool)
+    video_credits_dal = VideoCreditsDAL(cast(Any, fake_pool))
 
     subagent = ImageSubagent(config=mock_config)
 
@@ -764,7 +799,7 @@ async def test_kling_e2e_pro_tier_all_durations(
 
     kling_provider = FalKlingProvider("test-fal-key")
     kling_provider.client = mock_client
-    subagent.provider = kling_provider
+    install_video_provider(subagent, "fal", kling_provider)
 
     context = {
         "user_id": str(test_user_id),
@@ -780,5 +815,11 @@ async def test_kling_e2e_pro_tier_all_durations(
     assert result.success is True
 
     final_balance = await video_credits_dal.get_balance(test_user_id)
-    cost = estimate_cost(10, "pro", "fal", "o3-pro", False)
+    cost = estimate_cost(
+        duration_seconds=10,
+        tier="pro",
+        provider="fal",
+        kling_model="o3-pro",
+        audio_enabled=False,
+    )
     assert final_balance == 1000 - cost

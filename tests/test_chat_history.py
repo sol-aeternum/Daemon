@@ -18,24 +18,58 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.config import get_settings
+from orchestrator.db import AppState, get_app_state
 from orchestrator.main import app
-from orchestrator.db import AppState
 
 
 @pytest_asyncio.fixture
 async def client(monkeypatch):
     """Create an async test client with mock DB."""
+    monkeypatch.setenv("DAEMON_ENVIRONMENT", "development")
     monkeypatch.setenv("DATABASE_URL", "")
     monkeypatch.setenv("REDIS_URL", "")
     monkeypatch.setenv("MOCK_LLM", "true")
     monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
     get_settings.cache_clear()
 
-    async with app.router.lifespan_context(app):
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            yield client
+    settings = get_settings()
+    initial_app_state = AppState(settings=settings)
+
+    async def override_settings():
+        return settings
+
+    async def override_app_state():
+        return app.state.app_state
+
+    async def override_auth():
+        user_id = getattr(
+            app.state,
+            "_test_auth_user_id",
+            uuid.UUID("00000000-0000-0000-0000-000000000001"),
+        )
+        return AuthenticatedDevice(
+            user_id=user_id,
+            device_id=uuid.UUID("00000000-0000-0000-0000-000000000002"),
+            session_id=uuid.UUID("00000000-0000-0000-0000-000000000003"),
+        )
+
+    monkeypatch.setattr(
+        "orchestrator.main.init_app_state",
+        AsyncMock(return_value=initial_app_state),
+    )
+    app.dependency_overrides[get_settings] = override_settings
+    app.dependency_overrides[get_app_state] = override_app_state
+    app.dependency_overrides[require_device_auth] = override_auth
+
+    try:
+        async with app.router.lifespan_context(app):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                yield client
+    finally:
+        app.dependency_overrides.clear()
 
 
 def create_mock_app_state(mock_store: AsyncMock | None = None) -> AppState:
@@ -49,6 +83,10 @@ def create_mock_app_state(mock_store: AsyncMock | None = None) -> AppState:
 def set_app_state(mock_app_state: AppState) -> None:
     """Set the app state on the FastAPI app."""
     app.state.app_state = mock_app_state
+    get_conversation = getattr(mock_app_state.memory_store, "get_conversation", None)
+    conversation = getattr(get_conversation, "return_value", None)
+    if isinstance(conversation, dict) and isinstance(conversation.get("user_id"), uuid.UUID):
+        app.state._test_auth_user_id = conversation["user_id"]
 
 
 @pytest.mark.asyncio

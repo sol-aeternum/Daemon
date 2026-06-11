@@ -19,6 +19,8 @@ from orchestrator.config import get_settings
 if TYPE_CHECKING:
     from orchestrator.memory.store import MemoryStore
 
+DEFAULT_ADVISOR_BUDGET_PER_CONVERSATION = 10
+
 
 @dataclass
 class BudgetCheckResult:
@@ -33,6 +35,7 @@ class BudgetCheckResult:
 async def check_advisor_budget(
     conversation_id: uuid.UUID,
     store: "MemoryStore",
+    budget_limit: int | None = None,
 ) -> BudgetCheckResult:
     """Check if an advisor call is allowed under the current budget.
 
@@ -43,8 +46,17 @@ async def check_advisor_budget(
     Returns:
         BudgetCheckResult with allowed status and diagnostic info.
     """
-    settings = get_settings()
-    budget = settings.advisor_budget_per_conversation
+    if budget_limit is None:
+        settings = get_settings()
+        budget = int(
+            getattr(
+                settings,
+                "advisor_budget_per_conversation",
+                DEFAULT_ADVISOR_BUDGET_PER_CONVERSATION,
+            )
+        )
+    else:
+        budget = budget_limit
 
     current_count = await store.get_advisor_call_count(conversation_id)
 

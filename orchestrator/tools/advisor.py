@@ -386,7 +386,11 @@ class ConsultAdvisorTool(Tool):
 
         memory_store = cast("MemoryStore", self._memory_store)
 
-        budget_check = await check_advisor_budget(conversation_uuid, memory_store)
+        budget_check = await check_advisor_budget(
+            conversation_uuid,
+            memory_store,
+            settings.advisor_budget_per_conversation,
+        )
         if not budget_check.allowed:
             return _base_result(
                 advisor_id=advisor_id,

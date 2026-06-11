@@ -57,11 +57,11 @@ def validate_and_get_pepper(settings: Settings) -> str:
     if not pepper:
         if _development_pepper_cache is None:
             _development_pepper_cache = secrets.token_urlsafe(32)
-            logger.warning(
-                "daemon_auth_pepper not set in development. "
-                "Using process-ephemeral pepper. "
-                "Pending enrollments created with this pepper will become invalid after restart."
-            )
+        logger.warning(
+            "daemon_auth_pepper not set in development. "
+            "Using process-ephemeral pepper. "
+            "Pending enrollments created with this pepper will become invalid after restart."
+        )
         return _development_pepper_cache
 
     return pepper

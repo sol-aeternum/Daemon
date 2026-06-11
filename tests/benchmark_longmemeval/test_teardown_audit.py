@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import socket
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -78,11 +77,9 @@ async def _create_test_pool() -> asyncpg.Pool:
             min_size=1,
             max_size=4,
         )
-    except OSError as exc:
+    except (OSError, asyncpg.PostgresError) as exc:
         parsed = urlparse(resolved)
         if parsed.hostname != "127.0.0.1":
-            raise
-        if not isinstance(exc, socket.gaierror):
             raise
         pytest.skip(f"Benchmark teardown audit could not reach database: {exc}")
 

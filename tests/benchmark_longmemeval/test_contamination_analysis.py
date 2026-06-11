@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import cast
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 RESULTS_DIR = ROOT / "tests" / "benchmark_results"
@@ -43,6 +45,11 @@ def test_historical_fast_summary_preserves_weighted_vs_strict_split() -> None:
 
 
 def test_failed_run_log_questions_reappear_as_clean_rows() -> None:
+    if not FAST_RUN_LOG_PATH.exists():
+        pytest.skip(
+            f"{FAST_RUN_LOG_PATH} is an untracked benchmark artifact; "
+            "this analysis only runs on machines that have the fast-run log."
+        )
     results_by_qid = {str(row["question_id"]): row for row in _load_fast_results()}
     failed_qids = _load_failed_qids()
 

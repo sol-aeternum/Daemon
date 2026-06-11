@@ -148,13 +148,14 @@ async def run_council(
         models_complete: int,
         models_total: int,
     ) -> None:
-        event = {  # noqa: F841
+        event = {
             "stage": stage,
             "current_round": current_round,
             "total_rounds": total_rounds,
             "models_complete": models_complete,
             "models_total": models_total,
         }
+        progress_events.append(event)
         # Emit event immediately instead of buffering
         await emit_progress(
             stage=stage,

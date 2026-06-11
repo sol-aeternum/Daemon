@@ -8,10 +8,14 @@ import sys
 sys.path.insert(0, "/app")
 
 import asyncpg
+import pytest
 from orchestrator.config import get_settings
 from orchestrator.memory.embedding import embed_query
 
 TEST_USER_ID = "12345678-1234-5678-1234-567812345678"
+pytestmark = pytest.mark.skip(
+    reason="diagnostic script requires live Postgres and /tmp/longmemeval_examples.json"
+)
 
 
 def cosine_similarity(a, b):

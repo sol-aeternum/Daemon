@@ -16,8 +16,7 @@ def test_orchestrator_does_not_importlib_load_legacy_backend_image_gen():
         "in orchestrator/routes/ instead."
     )
     assert "backend.image_gen" not in text, (
-        "orchestrator/main.py still references backend.image_gen. "
-        "See issue #21 for rationale."
+        "orchestrator/main.py still references backend.image_gen. See issue #21 for rationale."
     )
 
 

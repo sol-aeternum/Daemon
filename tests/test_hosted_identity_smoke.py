@@ -210,9 +210,10 @@ class SmokeMockConn:
         )
 
     def _handle_nonce_select(self, args):
-        presented_verifier = args[0]
+        challenge_id = args[0]
+        presented_verifier = args[1]
         for row in self._pool.nonce_store:
-            if row["nonce_verifier_hash"] == presented_verifier:
+            if row["id"] == challenge_id and row["nonce_verifier_hash"] == presented_verifier:
                 return _Record(
                     {
                         "id": row["id"],
@@ -226,10 +227,11 @@ class SmokeMockConn:
         return None
 
     def _handle_nonce_consume(self, args):
-        presented_verifier = args[0]
+        challenge_id = args[0]
+        presented_verifier = args[1]
         now = datetime.now(timezone.utc)
         for row in self._pool.nonce_store:
-            if row["nonce_verifier_hash"] != presented_verifier:
+            if row["id"] != challenge_id or row["nonce_verifier_hash"] != presented_verifier:
                 continue
             if row["consumed_at"] is not None:
                 return None
@@ -616,7 +618,7 @@ class TestEmailWeb:
             fake_consume,
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_email_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity_in_transaction",
             fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
@@ -779,7 +781,7 @@ class TestEmailNativeCompletionContract:
             fake_consume,
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_email_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity_in_transaction",
             fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
@@ -841,7 +843,8 @@ class TestEmailNotificationSinkOnFailure:
             fake_consume,
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_email_identity", fail_claim
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity_in_transaction",
+            fail_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fail_issue)
         monkeypatch.setattr(
@@ -906,7 +909,8 @@ class TestEmailNotificationSinkOnFailure:
             fake_consume,
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_email_identity", fake_claim
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity_in_transaction",
+            fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fail_issue)
         monkeypatch.setattr(
@@ -981,7 +985,7 @@ class TestGoogleReplay:
             captured_notifications.append(notification)
 
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_google_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity_in_transaction",
             fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
@@ -1094,7 +1098,7 @@ class TestGoogleReplay:
             return None
 
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_google_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_google_identity_in_transaction",
             fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)
@@ -1176,7 +1180,7 @@ class TestGenericFailureCollapse:
             fake_consume,
         )
         monkeypatch.setattr(
-            "orchestrator.routes.auth_setup.AccountService.claim_email_identity",
+            "orchestrator.routes.auth_setup.AccountService.claim_email_identity_in_transaction",
             fake_claim,
         )
         monkeypatch.setattr("orchestrator.routes.auth_setup.issue_device_session", fake_issue)

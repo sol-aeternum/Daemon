@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, cast
 from types import SimpleNamespace
+from typing import Any, cast
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
@@ -31,6 +31,15 @@ def make_runner(
         score_path=tmp_path / "score.json",
         limit=limit,
         force_retrieval_logging=True,
+    )
+
+
+def fake_harness_settings() -> SimpleNamespace:
+    return SimpleNamespace(
+        database_url="postgresql://daemon:daemon@postgres/daemon",
+        daemon_encryption_key="test-key",
+        embedding_query_model="voyage-4-lite",
+        embedding_dimensions=2048,
     )
 
 
@@ -145,10 +154,7 @@ async def test_ingest_resumes_from_checkpoint(
     mock_pool = AsyncMock()
     monkeypatch.setattr(
         "orchestrator.eval.fact_harness.get_settings",
-        lambda: SimpleNamespace(
-            database_url="postgresql://daemon:daemon@postgres/daemon",
-            daemon_encryption_key="test-key",
-        ),
+        fake_harness_settings,
     )
     monkeypatch.setattr(
         "orchestrator.eval.fact_harness.asyncpg.create_pool",
@@ -242,10 +248,7 @@ async def test_evaluate_resumes_from_checkpoint_and_writes_results(
     mock_pool = AsyncMock()
     monkeypatch.setattr(
         "orchestrator.eval.fact_harness.get_settings",
-        lambda: SimpleNamespace(
-            database_url="postgresql://daemon:daemon@postgres/daemon",
-            daemon_encryption_key="test-key",
-        ),
+        fake_harness_settings,
     )
     monkeypatch.setattr(
         "orchestrator.eval.fact_harness.asyncpg.create_pool",
@@ -319,10 +322,7 @@ async def test_run_reuses_shared_corpus_across_multiple_questions(
     mock_pool = AsyncMock()
     monkeypatch.setattr(
         "orchestrator.eval.fact_harness.get_settings",
-        lambda: SimpleNamespace(
-            database_url="postgresql://daemon:daemon@postgres/daemon",
-            daemon_encryption_key="test-key",
-        ),
+        fake_harness_settings,
     )
     monkeypatch.setattr(
         "orchestrator.eval.fact_harness.asyncpg.create_pool",

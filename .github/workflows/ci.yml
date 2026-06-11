@@ -14,6 +14,11 @@ jobs:
   backend:
     name: Backend gates
     runs-on: ubuntu-latest
+    env:
+      # pyrightconfig.json points basedpyright at .uv-venv (the audit-mandated
+      # project environment). uv must create/use the same directory in CI or
+      # basedpyright exits 3 with "venv .uv-venv subdirectory not found".
+      UV_PROJECT_ENVIRONMENT: .uv-venv
     steps:
       - name: Check out repository
         uses: actions/checkout@v6

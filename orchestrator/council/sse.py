@@ -264,6 +264,14 @@ async def _emit_council_output_events(
 
     # Extract token costs from session metadata
     token_costs = metadata.get("token_costs", {})
+    if not isinstance(token_costs, dict):
+        token_costs = {}
+    total_tokens = token_costs.get("total_tokens", metadata.get("total_tokens", 0))
+    total_cost_usd = token_costs.get(
+        "total_cost_usd",
+        metadata.get("total_cost_usd", metadata.get("total_cost", 0.0)),
+    )
+    models_used = token_costs.get("models_used", metadata.get("models_used", []))
 
     yield sse(
         "council_done",
@@ -271,9 +279,9 @@ async def _emit_council_output_events(
             "council_done",
             {
                 "session_id": session_id,
-                "total_tokens": token_costs.get("total_tokens", 0),
-                "total_cost_usd": token_costs.get("total_cost_usd", 0.0),
-                "models_used": token_costs.get("models_used", []),
+                "total_tokens": total_tokens,
+                "total_cost_usd": total_cost_usd,
+                "models_used": models_used,
                 "per_model": token_costs.get("by_role", {}),
             },
             conversation_id,
@@ -355,55 +363,8 @@ async def stream_council(
 
     # Get final result
     result = await result_task
-
-    result_type = result.get("type")
-
-    if result_type == "error":
-        yield sse(
-            "council_error",
-            make_envelope(
-                "council_error",
-                {"error": result.get("content", "Unknown error")},
-                conversation_id,
-                request_id,
-            ),
-        )
-        return
-
-    if result_type == "interview":
-        config = _config_to_dict(result.get("config"))
-        roster = config.get("roster", {})
-        if not isinstance(roster, dict):
-            roster = {}
-        presets = ["default", "adversarial", "lean"]
-        rounds_options = [1, 2, 3]
-
-        yield sse(
-            "council_interview",
-            make_envelope(
-                "council_interview",
-                {
-                    "roster": _build_interview_roster(roster),
-                    "presets": presets,
-                    "rounds_options": rounds_options,
-                    "audit_default": config.get("audit_enabled", False),
-                },
-                conversation_id,
-                request_id,
-            ),
-        )
-        return
-
-    if result_type == "council_output":
-        output = result.get("output", {})
-        session_id = result.get("session_id", "unknown")
-        async for frame in _emit_council_output_events(
-            output=output,
-            session_id=session_id,
-            conversation_id=conversation_id,
-            request_id=request_id,
-        ):
-            yield frame
+    while progress_queue:
+        yield progress_queue.pop(0)
 
     result_type = result.get("type")
 

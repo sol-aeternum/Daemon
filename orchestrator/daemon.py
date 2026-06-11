@@ -37,6 +37,11 @@ def _lazy_import_trust_signals():
 
 logger = logging.getLogger(__name__)
 
+
+def create_chat_registry(**kwargs: Any) -> Any:
+    return create_default_registry(**kwargs)
+
+
 _RUNTIME_DATETIME_MARKER = "<runtime-datetime-context>"
 _RUNTIME_DATETIME_ZONE = ZoneInfo("Australia/Adelaide")
 
@@ -269,6 +274,7 @@ async def stream_sse_chat(
     final_text_parts: list[str] = []
     persisted_tool_calls: list[dict[str, Any]] = []
     persisted_tool_results: list[dict[str, Any]] = []
+    advisor_traces: dict[str, dict[str, Any]] = {}
     finish_reason: str | None = None
     usage: dict[str, int] | None = None
 
@@ -377,7 +383,7 @@ async def stream_sse_chat(
                 }
             else:
                 model_to_call = actual_model or f"{provider}/{model}"
-                registry = create_default_registry(
+                registry = create_chat_registry(
                     brave_api_key=settings.brave_api_key,
                     memory_store=memory_store,
                     user_id=user_id,
@@ -524,8 +530,61 @@ async def stream_sse_chat(
                                 evt_id=f"evt_tool_result_{uuid.uuid4().hex}",
                             ),
                         )
+                    elif event_type in {
+                        "advisor_start",
+                        "advisor_text_delta",
+                        "advisor_text_done",
+                        "advisor_end",
+                    }:
+                        advisor_payload = {
+                            key: value for key, value in event.items() if key != "type"
+                        }
+                        advisor_id = str(
+                            event.get("advisor_id")
+                            or event.get("trace_key")
+                            or f"advisor_{len(advisor_traces) + 1}"
+                        )
+                        trace = advisor_traces.setdefault(advisor_id, {"events": []})
+                        trace["events"].append({"type": event_type, **advisor_payload})
+                        if event_type == "advisor_text_delta":
+                            trace["text"] = f"{trace.get('text', '')}{event.get('content', '')}"
+                        elif event_type == "advisor_text_done":
+                            trace["final"] = event.get("content")
+                        elif event_type == "advisor_end":
+                            trace["status"] = event.get("status")
+                            trace["tokens_in"] = event.get("tokens_in")
+                            trace["tokens_out"] = event.get("tokens_out")
+                        yield sse(
+                            event_type,
+                            make_envelope(
+                                event_type,
+                                advisor_payload,
+                                evt_id=f"evt_{event_type}_{uuid.uuid4().hex}",
+                            ),
+                        )
                     elif event_type == "error":
                         error_message = str(event.get("error") or "Tool execution failed")
+                        if event.get("event_scope") == "advisor" or event.get("advisor_id"):
+                            advisor_payload = {
+                                key: value for key, value in event.items() if key != "type"
+                            }
+                            advisor_id = str(
+                                event.get("advisor_id")
+                                or event.get("trace_key")
+                                or f"advisor_{len(advisor_traces) + 1}"
+                            )
+                            trace = advisor_traces.setdefault(advisor_id, {"events": []})
+                            trace["events"].append({"type": "advisor_error", **advisor_payload})
+                            trace["status"] = "error"
+                            trace["error"] = error_message
+                            yield sse(
+                                "advisor_error",
+                                make_envelope(
+                                    "advisor_error",
+                                    advisor_payload,
+                                    evt_id=f"evt_advisor_error_{uuid.uuid4().hex}",
+                                ),
+                            )
                         logger.warning(
                             "Tool pipeline reported recoverable error: %s",
                             error_message,
@@ -760,6 +819,7 @@ async def stream_sse_chat(
                         content=content,
                         tool_calls=persisted_tool_calls,
                         tool_results=persisted_tool_results,
+                        advisor_traces=advisor_traces or None,
                         reasoning_text=reasoning_text,
                         reasoning_duration_secs=reasoning_duration_secs,
                         reasoning_model=model_name,
@@ -776,6 +836,7 @@ async def stream_sse_chat(
                         model=model_name,
                         tool_calls=persisted_tool_calls,
                         tool_results=persisted_tool_results,
+                        advisor_traces=advisor_traces or None,
                         reasoning_text=reasoning_text,
                         reasoning_duration_secs=reasoning_duration_secs,
                         reasoning_model=model_name,

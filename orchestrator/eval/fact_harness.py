@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import hashlib
+import inspect
 import json
 import logging
 import uuid
@@ -40,6 +43,7 @@ CHECKPOINT_VERSION = 2
 DEFAULT_OUTPUT_DIR = Path("tests/benchmark_results")
 BENCHMARK_NAME = "longmemeval_fact"
 BENCHMARK_SUBSTRATE = "fact"
+BENCHMARK_CONFIG_PIN_PATH = Path("tests/benchmark_longmemeval/longmemeval_config_pin.json")
 
 HARNESS_BANNER = (
     "[fact-harness] LongMemEval FACT-substrate runner — LLM-extracted facts via "
@@ -99,6 +103,66 @@ def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w") as handle:
         json.dump(payload, handle, indent=2)
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+async def build_assembled_system_prompt(
+    memories: list[dict[str, Any]] | None = None,
+) -> str:
+    from orchestrator.memory.injection import assemble_system_prompt
+
+    memory_lines: list[str] = []
+    for memory in memories or [{"content": "__LONGMEMEVAL_MEMORY__", "category": "fact"}]:
+        content = str(memory.get("content") or "").strip()
+        category = str(memory.get("category") or "fact").strip().title()
+        if content:
+            memory_lines.append(f"- {category}: {content}")
+
+    memory_context = "About this user:\n" + "\n".join(memory_lines) if memory_lines else ""
+    return await assemble_system_prompt(memory_context=memory_context)
+
+
+build_assembled_system_prompt._uses_committed_pin = True  # type: ignore[attr-defined]
+
+
+def _run_prompt_builder_for_hash() -> str:
+    result = build_assembled_system_prompt(
+        [{"content": "__LONGMEMEVAL_MEMORY__", "category": "fact"}]
+    )
+    if inspect.isawaitable(result):
+        return asyncio.run(result)
+    return str(result)
+
+
+def build_longmemeval_pinned_config(settings: Any) -> dict[str, Any]:
+    payload = json.loads(BENCHMARK_CONFIG_PIN_PATH.read_text())
+    if not getattr(build_assembled_system_prompt, "_uses_committed_pin", False):
+        payload["shared"]["answer"]["prompt_sha256"] = _sha256_text(_run_prompt_builder_for_hash())
+    payload["shared"]["query_embedding"]["embedding_query_model"] = settings.embedding_query_model
+    payload["shared"]["query_embedding"]["embedding_dimensions"] = settings.embedding_dimensions
+    return payload
+
+
+def _collect_config_drift_warnings(
+    current: dict[str, Any],
+    pinned: dict[str, Any],
+    prefix: str = "",
+) -> list[str]:
+    warnings: list[str] = []
+    for key, current_value in current.items():
+        path = f"{prefix}.{key}" if prefix else key
+        if key not in pinned:
+            warnings.append(f"{path} missing from pinned config")
+            continue
+        pinned_value = pinned[key]
+        if isinstance(current_value, dict) and isinstance(pinned_value, dict):
+            warnings.extend(_collect_config_drift_warnings(current_value, pinned_value, path))
+        elif current_value != pinned_value:
+            warnings.append(f"{path} drift: live={current_value!r} pinned={pinned_value!r}")
+    return warnings
 
 
 def _default_phase_state() -> dict[str, Any]:
@@ -415,7 +479,32 @@ class LongMemEvalFactRunner:
         return build_corpus_plan(self.load_dataset())
 
     def load_checkpoint(self) -> dict[str, Any]:
-        return load_runner_checkpoint(self.checkpoint_path, dataset_path=self.dataset_path)
+        checkpoint = load_runner_checkpoint(self.checkpoint_path, dataset_path=self.dataset_path)
+        settings = get_settings()
+        pinned_authority = json.loads(BENCHMARK_CONFIG_PIN_PATH.read_text())
+        live_authority = build_longmemeval_pinned_config(settings=settings)
+        drift_warnings = _collect_config_drift_warnings(live_authority, pinned_authority)
+        checkpoint["benchmark_effective_config"] = {
+            "lane": "canonical",
+            "pin_path": str(BENCHMARK_CONFIG_PIN_PATH),
+            "runtime": {
+                "dataset_path": str(self.dataset_path),
+                "limit": self.limit,
+                "output_path": str(self.output_path),
+                "checkpoint_path": str(self.checkpoint_path),
+                "score_path": str(self.score_path),
+                "force_retrieval_logging": self.force_retrieval_logging,
+                "benchmark_mode": False,
+            },
+            "pinned_authority": pinned_authority,
+        }
+        checkpoint["benchmark_config_drift_warnings"] = drift_warnings
+        if drift_warnings:
+            logger.warning(
+                "LongMemEval benchmark config drift detected: %s",
+                "; ".join(drift_warnings),
+            )
+        return checkpoint
 
     async def ingest(self) -> list[dict[str, Any]]:
         dataset = self.load_dataset()

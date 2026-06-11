@@ -1,8 +1,14 @@
 """Integration tests for featured models in the catalog."""
 
+import uuid
+
 import pytest
 import pytest_asyncio
+from fastapi import Request
 from httpx import AsyncClient, ASGITransport
+
+from orchestrator.auth import AuthenticatedDevice, require_device_auth
+from orchestrator.config import get_settings
 
 # Featured models from orchestrator/catalog.py
 FEATURED_MODELS = [
@@ -17,13 +23,33 @@ FEATURED_MODELS = [
 
 
 @pytest_asyncio.fixture
-async def client():
+async def client(monkeypatch):
     """Create async test client."""
     from orchestrator.main import app
 
+    monkeypatch.setenv("DAEMON_ENVIRONMENT", "development")
+    monkeypatch.setenv("MOCK_LLM", "true")
+    monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
+    get_settings.cache_clear()
+
+    async def override_settings():
+        return get_settings()
+
+    async def override_auth(_request: Request):
+        return AuthenticatedDevice(
+            user_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+            device_id=uuid.UUID("00000000-0000-0000-0000-000000000002"),
+            session_id=uuid.UUID("00000000-0000-0000-0000-000000000003"),
+        )
+
+    app.dependency_overrides[get_settings] = override_settings
+    app.dependency_overrides[require_device_auth] = override_auth
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            yield ac
+    finally:
+        app.dependency_overrides.clear()
 
 
 @pytest.mark.asyncio
