@@ -38,14 +38,22 @@ TESTS_DIR = REPO_ROOT / "tests"
 
 
 def _iter_test_files() -> list[Path]:
-    """Yield every ``*.py`` file under ``tests/`` (recursively).
+    """Yield every collected test module under ``tests/`` (recursively).
 
-    ``tests/benchmark`` is included: pytest collects it like any other
-    directory, so its tests are subject to the same rules.
+    Only ``test_*.py`` / ``*_test.py`` files are scanned — pytest's default
+    ``python_files`` discovery patterns — so helper scripts under ``tests/``
+    that happen to define ``test_*`` functions are not policed (they are
+    never collected and create no false coverage). ``tests/benchmark`` is
+    included: pytest collects it like any other directory.
     """
     if not TESTS_DIR.is_dir():
         return []
-    return sorted(path for path in TESTS_DIR.rglob("*.py") if "__pycache__" not in path.parts)
+    return sorted(
+        path
+        for path in TESTS_DIR.rglob("*.py")
+        if "__pycache__" not in path.parts
+        and (path.name.startswith("test_") or path.name.endswith("_test.py"))
+    )
 
 
 def _parseable_test_files() -> tuple[list[Path], list[tuple[Path, SyntaxError]]]:
@@ -94,9 +102,27 @@ def _mark_name_and_reason(d: ast.expr) -> tuple[str | None, bool]:
     if isinstance(d, ast.Attribute):
         return d.attr, False
     if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute):
-        has_reason = any(kw.arg == "reason" for kw in d.keywords)
+        has_reason = False
+        for kw in d.keywords:
+            if kw.arg != "reason":
+                continue
+            if isinstance(kw.value, ast.Constant):
+                # reason="" / reason=None are as undocumented as no reason.
+                value = kw.value.value
+                has_reason = isinstance(value, str) and bool(value.strip())
+            else:
+                # Dynamic expression — assume it produces a real reason.
+                has_reason = True
         return d.func.attr, has_reason
     return None, False
+
+
+def _has_documented_skip_mark(decorators: list[ast.expr]) -> bool:
+    for d in decorators:
+        name, has_reason = _mark_name_and_reason(d)
+        if name in ("skip", "xfail") and has_reason:
+            return True
+    return False
 
 
 def _is_deliberately_parked(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
@@ -105,13 +131,42 @@ def _is_deliberately_parked(func: ast.FunctionDef | ast.AsyncFunctionDef) -> boo
     Such a placeholder is an explicitly documented TODO — the failure
     message of the empty-body check names this as acceptable
     remediation, so the check must not double-report it. Marks without
-    a reason are still violations (of the reason check).
+    a (non-empty) reason are still violations (of the reason check).
     """
-    for d in func.decorator_list:
-        name, has_reason = _mark_name_and_reason(d)
-        if name in ("skip", "xfail") and has_reason:
-            return True
-    return False
+    return _has_documented_skip_mark(func.decorator_list)
+
+
+def _parked_scopes(tree: ast.Module) -> tuple[bool, set[str]]:
+    """Return (module_parked, parked_class_names) for documented skips.
+
+    pytest honors ``pytestmark = pytest.mark.skip(reason=...)`` at module
+    level and ``@pytest.mark.skip(reason=...)`` on ``Test*`` classes; tests
+    inside those scopes are deliberately parked without repeating the
+    decorator on every function, so the empty-body check must exempt them.
+    """
+    module_parked = False
+    parked_classes: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "pytestmark" for t in node.targets
+        ):
+            if _has_documented_skip_mark(_iter_mark_expressions(node.value)):
+                module_parked = True
+        elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+            if _has_documented_skip_mark(node.decorator_list):
+                parked_classes.add(node.name)
+    return module_parked, parked_classes
+
+
+def _functions_inside_classes(tree: ast.Module, class_names: set[str]) -> set[int]:
+    """Line numbers of test functions defined inside the named classes."""
+    members: set[int] = set()
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name in class_names:
+            for inner in ast.walk(node):
+                if isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    members.add(inner.lineno)
+    return members
 
 
 def _iter_mark_expressions(value: ast.expr) -> list[ast.expr]:
@@ -202,8 +257,13 @@ def test_no_test_function_is_pass_only() -> None:
     parseable, unparseable = _parseable_test_files()
     violations: list[tuple[Path, int, str]] = []
     for path in parseable:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        module_parked, parked_classes = _parked_scopes(tree)
+        if module_parked:
+            continue
+        parked_lines = _functions_inside_classes(tree, parked_classes)
         for func in _all_test_functions(path):
-            if _is_deliberately_parked(func):
+            if _is_deliberately_parked(func) or func.lineno in parked_lines:
                 continue
             if not _has_substantive_body(func.body):
                 violations.append((path, func.lineno, func.name))
