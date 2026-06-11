@@ -280,6 +280,7 @@ export async function POST(req: Request) {
             eventType === 'advisor_start' ||
             eventType === 'advisor_text_delta' ||
             eventType === 'advisor_text_done' ||
+            eventType === 'advisor_error' ||
             eventType === 'advisor_end'
           ) {
             const data =
