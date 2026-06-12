@@ -56,6 +56,7 @@ from orchestrator.auth_tokens import (
 )
 from orchestrator.config import get_settings
 from orchestrator.db import get_app_state
+from orchestrator.session_cleanup import lock_session_cleanup
 from orchestrator.setup_token_delivery import delete_setup_token_file
 from orchestrator.services.identity import (
     AccountService,
@@ -1779,6 +1780,8 @@ async def refresh_endpoint(
 
     async with app_state.db_pool.acquire() as conn:
         async with conn.transaction():
+            await lock_session_cleanup(conn)
+
             await conn.execute(
                 """
                 DELETE FROM refresh_rotation_grace
