@@ -278,38 +278,6 @@
                     "endColumn": 19,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportUnreachable",
-                "range": {
-                    "startColumn": 28,
-                    "endColumn": 98,
-                    "lineCount": 13
-                }
-            },
-            {
-                "code": "reportUnreachable",
-                "range": {
-                    "startColumn": 32,
-                    "endColumn": 98,
-                    "lineCount": 8
-                }
-            },
-            {
-                "code": "reportUnreachable",
-                "range": {
-                    "startColumn": 36,
-                    "endColumn": 66,
-                    "lineCount": 5
-                }
-            },
-            {
-                "code": "reportUnreachable",
-                "range": {
-                    "startColumn": 36,
-                    "endColumn": 98,
-                    "lineCount": 1
-                }
             }
         ],
         "./orchestrator/eval/diagnostics.py": [

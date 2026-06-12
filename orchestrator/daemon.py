@@ -347,20 +347,21 @@ async def stream_sse_chat(
             last_reasoning_time: float | None = None
             reasoning_parts: list[str] = []
 
-            if settings.mock_llm:
-                if memory_store and conversation_uuid and user_id:
-                    try:
-                        inserted = await memory_store.insert_message(
-                            conversation_id=conversation_uuid,
-                            user_id=user_id,
-                            role="assistant",
-                            content="",
-                            model=actual_model or model,
-                        )
-                        assistant_message_id = inserted["id"]
-                    except Exception as e:
-                        logger.warning("Failed to insert mock message: %s", e)
+            if memory_store and conversation_uuid and user_id:
+                try:
+                    inserted = await memory_store.insert_message(
+                        conversation_id=conversation_uuid,
+                        user_id=user_id,
+                        role="assistant",
+                        content="",
+                        model=actual_model or model,
+                        status="streaming",
+                    )
+                    assistant_message_id = inserted["id"]
+                except Exception as e:
+                    logger.warning("Failed to insert streaming assistant message: %s", e)
 
+            if settings.mock_llm:
                 mock_response = "(mock) Mock response from Daemon"
                 for token in mock_response:
                     if await is_disconnected():

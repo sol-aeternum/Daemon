@@ -11,6 +11,29 @@
 - **Likely cause**: GitHub rulesets are the active protection mechanism for `main`, not the older branch-protection endpoint. Confidence: 99%.
 - **Suggested action**: Use repository ruleset APIs or GitHub UI ruleset checks when verifying required status checks for this repository.
 
+## 2026-06-12T19:07:56+09:30 — #110 Backend Inventory Gates Hit Sandbox Network And Long Pytest Runtime
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: #110 streaming message persistence verification
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: `scripts/local_ci.sh backend` passed its blocking ruff, ruff-format, BasedPyright, and pytest collection gates, but the non-blocking inventory phase could not complete cleanly in the sandbox. `pip-audit` could not resolve PyPI, and the full pytest inventory run continued for more than two hours after reaching late-suite progress, so the process group was terminated. Process inspection also found stale pytest process groups from earlier worktree verification runs, which were terminated to avoid resource contention.
+- **Evidence**: `pip-audit` ended with `requests.exceptions.ConnectionError: HTTPSConnectionPool(host='pypi.org', port=443): Max retries exceeded with url: /pypi/aiohappyeyeballs/2.6.1/json (Caused by NameResolutionError("HTTPSConnection(host='pypi.org', port=443): Failed to resolve 'pypi.org' ([Errno -2] Name or service not known)"))`; `ps` showed `/tmp/daemon-110` process group `173416` running `uv run pytest -q` for `02:46:05`; after `kill -TERM -173416`, the tool session exited `143`; stale process groups `62941`, `85992`, `117432`, `64922`, and `83846` had been running previous pytest commands for roughly one to two days and were sent `SIGTERM`.
+- **Likely cause**: Network is restricted inside the managed sandbox, stale pytest processes were consuming resources, and the full inventory test suite contains slow or hanging tests unrelated to the focused #110 persistence path. Confidence: 85%.
+- **Suggested action**: Use the escalated PR wrapper for network-backed inventory gates and investigate long-running full-suite pytest inventory separately if hosted CI reproduces it.
+- **Seen again**: 2026-06-12T19:19+09:30 after the #110 advisor-test correction, a direct full `PYTHONPATH=. uv run pytest -q` reached the late-suite progress marker and then stopped producing output for multiple minutes; process inspection found the current process group plus additional stale two-day-old pytest groups, which were terminated.
+
+## 2026-06-12T19:18:31+09:30 — #110 PR Wrapper Hit Frontend Gate Debt And Full /tmp
+- **Severity**: warning
+- **Scope**: project | host
+- **Encountered during**: #110 streaming message persistence PR creation
+- **Category**: build-error | config
+- **Blocked current task**: yes
+- **What happened**: `scripts/pr_create.sh` refused to open the backend-only #110 PR because its all-family local CI run found unrelated frontend blocking failures, and the aggregate pre-commit pass also failed after `/tmp` filled. The same run surfaced an in-scope backend advisor-trace test assumption from #110's early assistant-row insert; that was corrected so advisor traces are asserted on the terminal `update_message` write.
+- **Evidence**: Wrapper summary reported blocking failures `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, `frontend/format-check (exit=1)`, and `aggregate/pre-commit (exit=1)`. Frontend type/build evidence included `./lib/advisorEvents.ts:3:21 Type error: Module '"./events"' has no exported member 'isAdvisorEvent'`; lint reported `41 problems (28 errors, 13 warnings)`; format-check reported `Code style issues found in 124 files`. Aggregate pre-commit failed with `No space left on device (os error 28)` writing `.ruff_cache`, and `df -h /tmp` showed `7.7G 7.7G 0 100% /tmp` before clean temporary issue worktrees were pruned.
+- **Likely cause**: The PR wrapper still runs all gate families for a backend-only branch; current main carries frontend type/lint/format debt, while old temporary issue worktrees consumed the `/tmp` tmpfs. Confidence: 90%.
+- **Suggested action**: Fix the frontend family in its own issue/PR or teach the PR wrapper to run only affected families; periodically prune clean `/tmp` worktrees after issue PRs are merged.
+
 ## 2026-06-05 UTC — Worktree LSP import resolution misses project deps under /tmp review worktree
 - **Severity**: warning
 - **Scope**: tooling
