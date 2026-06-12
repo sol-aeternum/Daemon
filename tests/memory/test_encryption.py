@@ -1,6 +1,7 @@
 """Tests for memory encryption."""
 
-from typing import cast
+import asyncio
+from typing import Any, cast
 
 import pytest
 from cryptography.fernet import Fernet
@@ -8,11 +9,13 @@ from cryptography.fernet import Fernet
 from orchestrator.config import Settings
 from orchestrator.db import AppState
 from orchestrator.memory.encryption import (
+    ENCRYPTION_OPERATIONS_FAILED_TOTAL_KEY,
     ContentEncryption,
     EncryptionInitError,
     EncryptionKeyMissing,
     get_encryption_operations_failed_total,
     reset_encryption_metrics_for_tests,
+    set_shared_encryption_failure_counter,
 )
 
 
@@ -107,6 +110,28 @@ def test_decrypt_raises_on_cipher_failure(encryption, monkeypatch):
     assert get_encryption_operations_failed_total() == 1
 
 
+@pytest.mark.asyncio
+async def test_shared_counter_records_worker_process_failure():
+    class FakeRedis:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def incr(self, key: str) -> object:
+            self.calls.append(key)
+            return len(self.calls)
+
+    fake_redis = FakeRedis()
+    set_shared_encryption_failure_counter(fake_redis)
+
+    with pytest.raises(EncryptionInitError, match="not a valid Fernet key"):
+        ContentEncryption("A" * 50)
+
+    await asyncio.sleep(0)
+
+    assert get_encryption_operations_failed_total() == 1
+    assert fake_redis.calls == [ENCRYPTION_OPERATIONS_FAILED_TOTAL_KEY]
+
+
 def test_no_silent_plaintext_when_key_missing(monkeypatch):
     monkeypatch.delenv("DAEMON_ENCRYPTION_KEY", raising=False)
     with pytest.raises(EncryptionKeyMissing):
@@ -144,4 +169,31 @@ async def test_status_exposes_encryption_failure_metric():
     )
 
     assert result["encryption_operations_failed_total"] == 1
+    assert result["encryption_failure_alert"] is True
+
+
+@pytest.mark.asyncio
+async def test_status_aggregates_shared_worker_failure_metric():
+    from orchestrator.routes.system import get_status
+    from orchestrator.auth import AuthenticatedDevice
+
+    class FakeRedis:
+        async def get(self, key: str) -> bytes:
+            assert key == ENCRYPTION_OPERATIONS_FAILED_TOTAL_KEY
+            return b"2"
+
+    try:
+        ContentEncryption("A" * 50)
+    except EncryptionInitError:
+        pass
+
+    result = await get_status(
+        app_state=AppState(
+            settings=Settings(daemon_environment="development"),
+            redis=cast(Any, FakeRedis()),
+        ),
+        auth=cast(AuthenticatedDevice, object()),
+    )
+
+    assert result["encryption_operations_failed_total"] == 3
     assert result["encryption_failure_alert"] is True

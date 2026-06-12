@@ -1923,6 +1923,17 @@
 - **Suggested action**: Either allow `scripts/pr_create.sh` to accept a local-CI family selector for backend-only PRs, or complete #108 before using the all-family wrapper path.
 - **Seen again**: 2026-06-12 during #24 PR creation. Backend blocking gates and aggregate gates passed inside the wrapper, but `scripts/pr_create.sh` refused to call `gh pr create` because unrelated frontend blocking gates failed: `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`.
 
+## 2026-06-12 23:50 UTC — Temp worktree basedpyright needs backend venv symlink
+- **Severity**: info
+- **Scope**: host
+- **Encountered during**: Issue #60 Codex review follow-up
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: Focused basedpyright could not resolve installed imports in the temporary worktree until `.uv-venv` was symlinked to the root backend environment.
+- **Evidence**: `uv run basedpyright --level error orchestrator/memory/encryption.py orchestrator/routes/system.py orchestrator/worker/worker.py tests/memory/test_encryption.py` exited 3 with `venv .uv-venv subdirectory not found in venv path /tmp/daemon-60` plus missing-import errors for `cryptography.fernet`, `fastapi`, and `pytest`. After `ln -s /home/sol/daemon/.uv-venv .uv-venv`, the same basedpyright command passed with `0 errors, 0 warnings, 0 notes`.
+- **Likely cause**: basedpyright configuration expects a local `.uv-venv` path, while temporary git worktrees do not include the untracked venv directory by default (confidence 95%).
+- **Suggested action**: Document creating a temp-worktree `.uv-venv` symlink before backend type-checks, or make basedpyright consume `UV_PROJECT_ENVIRONMENT` consistently.
+
 ## 2026-06-12 10:56 UTC — Frontend test dependencies unavailable in isolated worktree
 - **Severity**: warning
 - **Scope**: host
@@ -2014,6 +2025,7 @@
 - **Seen again**: 2026-06-12 during #54 session cleanup grace-days verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` and `pip-audit` reported existing non-blocking findings, inventory full pytest printed progress through `[ 91%]` with one `F` marker but no failure summary before the outer timeout exited `124`.
 - **Seen again**: 2026-06-13 during #56 session cleanup / refresh serialization verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `pip-audit` failed DNS resolution for `pypi.org`, full pytest printed the known `tests/test_auth_user_scoping.py` setup errors plus one `F` marker, then reached late-suite progress before the outer timeout exited `124`.
 - **Seen again**: 2026-06-13 during #60 memory encryption fail-closed verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing non-blocking findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest reproduced the known `EEEEE` auth-scoping setup errors plus one `F` marker before stalling near late-suite progress and exiting `124`.
+- **Seen again**: 2026-06-12 during #60 Codex review follow-up. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing non-blocking findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest again showed the known `EEEEE` auth-scoping setup errors plus one `F` marker before the outer timeout exited `124`.
 
 ## 2026-06-12 11:20 UTC — Existing auth user scoping fixture fails development pepper setup
 - **Severity**: warning

@@ -2,18 +2,52 @@ from __future__ import annotations
 
 import logging
 import os
+import asyncio
+from typing import Protocol
 
 from cryptography.fernet import Fernet, InvalidToken
 
 logger = logging.getLogger(__name__)
 
 
+ENCRYPTION_OPERATIONS_FAILED_TOTAL_KEY = "daemon:metrics:encryption_operations_failed_total"
+
+
+class SharedEncryptionFailureCounter(Protocol):
+    async def incr(self, key: str) -> object: ...
+
+
 _encryption_operations_failed_total = 0
+_shared_encryption_failure_counter: SharedEncryptionFailureCounter | None = None
+
+
+async def _record_shared_encryption_failure(
+    counter: SharedEncryptionFailureCounter,
+) -> None:
+    try:
+        await counter.incr(ENCRYPTION_OPERATIONS_FAILED_TOTAL_KEY)
+    except Exception:
+        logger.warning("Failed to record shared encryption failure metric", exc_info=True)
+
+
+def set_shared_encryption_failure_counter(
+    counter: SharedEncryptionFailureCounter | None,
+) -> None:
+    global _shared_encryption_failure_counter
+    _shared_encryption_failure_counter = counter
 
 
 def _record_encryption_failure() -> None:
     global _encryption_operations_failed_total
     _encryption_operations_failed_total += 1
+    if _shared_encryption_failure_counter is None:
+        return
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(_record_shared_encryption_failure(_shared_encryption_failure_counter))
 
 
 def get_encryption_operations_failed_total() -> int:
@@ -23,6 +57,7 @@ def get_encryption_operations_failed_total() -> int:
 def reset_encryption_metrics_for_tests() -> None:
     global _encryption_operations_failed_total
     _encryption_operations_failed_total = 0
+    set_shared_encryption_failure_counter(None)
 
 
 class EncryptionInitError(ValueError):
