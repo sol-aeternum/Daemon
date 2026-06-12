@@ -16,6 +16,7 @@ import {
   getAuthHeader,
   hasValidAccessToken,
   listenForAuthEvents,
+  logoutCurrentSession,
   refreshAccessToken,
   setAccessToken,
   type RefreshResult,
@@ -33,7 +34,7 @@ interface AuthContextValue {
   accessToken: string | null;
   authHeader: string | null;
   refreshAuth: () => Promise<RefreshResult>;
-  logout: () => void;
+  logout: () => Promise<void>;
   setAccessToken: (token: string, expiresAtMs: number) => void;
 }
 
@@ -161,12 +162,19 @@ export function AuthProvider({ children }: AuthProviderProps) {
     return result;
   }, [updateAuthState]);
 
-  const logout = useCallback(() => {
-    clearAuthState();
-    updateAuthState();
-    const target = resolveLandingTarget(mode === 'error' ? 'unknown' : mode);
-    if (typeof window !== 'undefined') {
-      window.location.href = target;
+  const logout = useCallback(async () => {
+    try {
+      const result = await logoutCurrentSession();
+      if (!result.success) {
+        console.warn(result.error || 'Logout request failed');
+      }
+    } finally {
+      clearAuthState();
+      updateAuthState();
+      const target = resolveLandingTarget(mode === 'error' ? 'unknown' : mode);
+      if (typeof window !== 'undefined') {
+        window.location.href = target;
+      }
     }
   }, [updateAuthState, mode]);
 

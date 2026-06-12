@@ -101,6 +101,18 @@ class MockConn:
     async def execute(self, sql, *args):
         if "INSERT INTO sessions" in sql:
             self._pool._captured_inserts.append({"sql": sql, "args": args})
+        if "UPDATE sessions" in sql and "revoked_at" in sql and "WHERE id = $1" in sql:
+            session_id, user_id, device_id = args[:3]
+            for key, sess in self._pool._sessions.items():
+                if (
+                    sess["id"] == session_id
+                    and sess["user_id"] == user_id
+                    and sess["device_id"] == device_id
+                ):
+                    self._pool._sessions[key] = {
+                        **sess,
+                        "revoked_at": datetime.now(timezone.utc),
+                    }
         if "UPDATE devices" in sql and "revoked_at" in sql and args:
             device_id = args[0]
             key = device_id if device_id in self._pool._devices else str(device_id)
@@ -278,6 +290,78 @@ class TestWebRefreshRotatesCookie:
                         if conn._last_refresh_consume_sql is not None
                     )
                     assert "tenant_id" in consume_sql
+        finally:
+            restore_init(original)
+
+
+class TestLogoutCurrentSession:
+    @pytest.mark.asyncio
+    async def test_logout_revokes_current_session_clears_cookie_and_blocks_refresh(
+        self, setup_env, monkeypatch
+    ):
+        user_id = SINGLETON_ID
+        device_id = uuid.uuid4()
+        tenant_id = uuid.uuid4()
+        refresh_token = generate_token()
+        refresh_hash = hash_token(refresh_token)
+        old_session = _make_session(
+            refresh_hash,
+            user_id,
+            device_id,
+            "web",
+            tenant_id=tenant_id,
+        )
+        devices = {str(device_id): {"id": device_id, "user_id": user_id, "revoked_at": None}}
+        mock_pool = MockPool(sessions={refresh_hash: old_session}, devices=devices)
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                access_token = "test-access-token-logout"
+
+                async def mock_verify(pool, token):
+                    if token == access_token:
+                        from orchestrator.auth import AuthenticatedDevice
+
+                        return AuthenticatedDevice(
+                            user_id=user_id,
+                            device_id=device_id,
+                            session_id=old_session["id"],
+                        )
+                    return None
+
+                import orchestrator.auth as auth_module
+
+                original_verify = auth_module._verify_access_token
+                auth_module._verify_access_token = lambda pool, token: mock_verify(pool, token)
+
+                try:
+                    transport = ASGITransport(app=app)
+                    async with AsyncClient(transport=transport, base_url="http://test") as client:
+                        logout_response = await client.post(
+                            "/v1/auth/logout",
+                            headers={"Authorization": f"Bearer {access_token}"},
+                            cookies={"__Host-daemon_refresh": refresh_token},
+                        )
+
+                        assert logout_response.status_code == 204
+                        cookie_header = logout_response.headers.get("set-cookie", "")
+                        assert "__Host-daemon_refresh" in cookie_header
+                        assert "Max-Age=0" in cookie_header or "max-age=0" in cookie_header
+                        assert mock_pool._sessions[refresh_hash]["revoked_at"] is not None
+                        assert mock_pool._devices[str(device_id)]["revoked_at"] is None
+
+                        refresh_response = await client.post(
+                            "/v1/auth/refresh",
+                            cookies={"__Host-daemon_refresh": refresh_token},
+                            headers={
+                                "Origin": "https://app.daemon.ai",
+                                "Sec-Fetch-Site": "same-origin",
+                            },
+                        )
+                        assert refresh_response.status_code == 401
+                        assert len(mock_pool._captured_inserts) == 0
+                finally:
+                    auth_module._verify_access_token = original_verify
         finally:
             restore_init(original)
 
