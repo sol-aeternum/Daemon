@@ -1,5 +1,16 @@
 # TRIAGE.md
 
+## 2026-06-12T07:04:00+09:30 — Main Protection Uses Rulesets Instead Of Classic Branch Protection
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: #112 branch protection verification
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: GitHub's classic branch-protection REST endpoint returned `Branch not protected`, but the repository has an active branch ruleset named `Main Protection` targeting `refs/heads/main`. The ruleset contains the required status checks from #112, and a deliberately-red draft PR was blocked before being closed without merge.
+- **Evidence**: `gh api repos/sol-aeternum/Daemon/branches/main/protection` returned `Branch not protected (HTTP 404)`; `gh api repos/sol-aeternum/Daemon/rulesets/17593157` returned active required checks `Backend gates`, `Frontend gates`, `Feature matrix gate`, and `Pre-commit and secret scanning`; PR #122 reported `mergeStateStatus: BLOCKED` with `Feature matrix gate` failing before it was closed.
+- **Likely cause**: GitHub rulesets are the active protection mechanism for `main`, not the older branch-protection endpoint. Confidence: 99%.
+- **Suggested action**: Use repository ruleset APIs or GitHub UI ruleset checks when verifying required status checks for this repository.
+
 ## 2026-06-05 UTC — Worktree LSP import resolution misses project deps under /tmp review worktree
 - **Severity**: warning
 - **Scope**: tooling
