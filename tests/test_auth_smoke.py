@@ -15,6 +15,7 @@ from orchestrator.auth_pepper import validate_and_get_pepper
 from orchestrator.auth_tokens import generate_setup_token, hash_enrollment_code, hash_token
 from orchestrator.config import get_settings
 from orchestrator.main import app
+from orchestrator.setup_token_delivery import write_setup_token_file
 
 
 SINGLETON_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -474,9 +475,14 @@ def make_mock_init(mock_pool):
                 plaintext = generate_setup_token()
                 state.db_pool._system_state["auth.setup_token_hash"] = hash_token(plaintext)
                 object.__setattr__(state, "_startup_setup_token", plaintext)
-                logger.info(
-                    ">>> Daemon setup required. Open http://<host>:<port>/setup and enter token: %s",
+                token_path = write_setup_token_file(
+                    get_settings().daemon_setup_token_file,
                     plaintext,
+                )
+                logger.info(
+                    ">>> Daemon setup required. Open http://<host>:<port>/setup "
+                    "and enter the setup token from %s",
+                    token_path,
                 )
         except Exception:
             logger.warning("First-boot setup check failed", exc_info=True)
@@ -497,12 +503,13 @@ logger = logging.getLogger(__name__)
 
 
 @pytest_asyncio.fixture
-async def setup_env(monkeypatch):
+async def setup_env(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/testdb")
     monkeypatch.setenv("REDIS_URL", "")
     monkeypatch.setenv("DAEMON_ALLOWED_ORIGINS", "https://app.daemon.ai")
     monkeypatch.setenv("DAEMON_PUBLIC_ORIGIN", "https://app.daemon.ai")
     monkeypatch.setenv("DAEMON_ENVIRONMENT", "development")
+    monkeypatch.setenv("DAEMON_SETUP_TOKEN_FILE", str(tmp_path / "setup-token"))
     monkeypatch.setenv(
         "DAEMON_AUTH_PEPPER",
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -529,6 +536,7 @@ class TestAuthDeviceLifecycleSmoke:
                 assert ">>> Daemon setup required" in caplog.text
                 setup_plaintext = getattr(state, "_startup_setup_token")
                 assert setup_plaintext is not None
+                assert setup_plaintext not in caplog.text
 
                 transport = ASGITransport(app=app)
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -759,7 +767,9 @@ class TestAuthDeviceLifecycleSmoke:
                 async with app.router.lifespan_context(app):
                     state2 = app.state.app_state
                     assert ">>> Daemon setup required" in caplog.text
-                    assert getattr(state2, "_startup_setup_token") is not None
+                    setup_plaintext2 = getattr(state2, "_startup_setup_token")
+                    assert setup_plaintext2 is not None
+                    assert setup_plaintext2 not in caplog.text
             finally:
                 restore_init(original_init2, original_check2)
 

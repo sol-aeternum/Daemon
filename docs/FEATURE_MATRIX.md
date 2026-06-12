@@ -80,7 +80,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Enrollment & Profile Settings (display name, custom instructions) | Cross-client stable | Cross-client stable | Not started | Not started | GET /users/me/settings, PATCH /users/me/settings | Yes |
 | Memory Management Settings | Cross-client stable | Cross-client stable | Not started | Not started | GET /memories, DELETE /memories/{id}, POST /memories/{id}/confirm, DELETE /memories?confirm=true | No |
 | **Auth & Sessions** | — | — | — | — | — | — |
-| First-boot Setup | Backend stable | Backend stable | Backend stable | Backend stable | Setup token: Postgres-shared one-time verifier, advisory lock, zero-active-device condition | Yes |
+| First-boot Setup | Backend stable | Backend stable | Backend stable | Backend stable | Setup token: Postgres-shared one-time verifier, local 0600 operator token file, advisory lock, zero-active-device condition | Yes |
 | Hosted Auth Landing | Cross-client stable | Cross-client stable | Not started | Not started | Hosted auth landing UI routes users to identity sign-in or Advanced self-hosted setup | No |
 | Hosted `/auth` route | Cross-client stable | Cross-client stable | Not started | Not started | `/auth` page wraps `AuthLanding` with mode-aware redirects; runtime mode sourced from `GET /v1/auth/config` | No |
 | Runtime auth config endpoint (`GET /v1/auth/config`) | Cross-client stable | Cross-client stable | Backend stable | Backend stable | Public no-store endpoint exposes `{mode, email, google}` so the frontend can decide `/auth` vs `/setup` without rebuilding | No |

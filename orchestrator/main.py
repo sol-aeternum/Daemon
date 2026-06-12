@@ -39,6 +39,7 @@ from orchestrator.auth_runtime_state import (
     clear_setup_token_hash,
     create_setup_token_if_absent,
     lock_auth_runtime_state,
+    replace_setup_token,
 )
 from orchestrator.council.sse import stream_council, stream_council_interview_response
 from orchestrator.config import (
@@ -65,6 +66,11 @@ from orchestrator.db import (
 from orchestrator.session_cleanup import (
     cleanup_stale_sessions,
     start_session_cleanup_task,
+)
+from orchestrator.setup_token_delivery import (
+    delete_setup_token_file,
+    setup_token_file_exists,
+    write_setup_token_file,
 )
 from orchestrator.routes import (
     conversations,
@@ -208,9 +214,26 @@ async def _sync_repo_skills(db_pool: asyncpg.Pool) -> None:
         logger.warning("Repo skill sync failed", exc_info=True)
 
 
+def _publish_setup_token(settings: Settings, token: str, *, recovery: bool = False) -> None:
+    path = write_setup_token_file(settings.daemon_setup_token_file, token)
+    if recovery:
+        logger.info(
+            ">>> Daemon recovery: all sessions expired. Open http://<host>:<port>/setup "
+            "and enter the setup token from %s",
+            path,
+        )
+        return
+    logger.info(
+        ">>> Daemon setup required. Open http://<host>:<port>/setup "
+        "and enter the setup token from %s",
+        path,
+    )
+
+
 async def _check_first_boot_setup(state: AppState) -> None:
     if state.db_pool is None:
         return
+    settings = state.settings
     try:
         async with state.db_pool.acquire() as conn:
             async with conn.transaction():
@@ -220,11 +243,12 @@ async def _check_first_boot_setup(state: AppState) -> None:
                 )
                 if active_count == 0:
                     plaintext = await create_setup_token_if_absent(conn)
+                    if plaintext is None and not setup_token_file_exists(
+                        settings.daemon_setup_token_file
+                    ):
+                        plaintext = await replace_setup_token(conn)
                     if plaintext is not None:
-                        logger.info(
-                            ">>> Daemon setup required. Open http://<host>:<port>/setup and enter token: %s",
-                            plaintext,
-                        )
+                        _publish_setup_token(settings, plaintext)
                     return
 
                 has_valid_session = await conn.fetchval(
@@ -242,6 +266,7 @@ async def _check_first_boot_setup(state: AppState) -> None:
                 )
                 if has_valid_session:
                     await clear_setup_token_hash(conn)
+                    delete_setup_token_file(settings.daemon_setup_token_file)
                     return
 
                 await conn.execute("UPDATE devices SET revoked_at = NOW() WHERE revoked_at IS NULL")
@@ -251,10 +276,7 @@ async def _check_first_boot_setup(state: AppState) -> None:
                 await clear_setup_token_hash(conn)
                 plaintext = await create_setup_token_if_absent(conn)
                 if plaintext is not None:
-                    logger.info(
-                        ">>> Daemon recovery: all sessions expired. Open http://<host>:<port>/setup and enter token: %s",
-                        plaintext,
-                    )
+                    _publish_setup_token(settings, plaintext, recovery=True)
     except Exception:
         logger.warning("First-boot setup check failed", exc_info=True)
 

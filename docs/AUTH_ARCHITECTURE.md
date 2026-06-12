@@ -16,7 +16,7 @@ The existing singleton user ID `00000000-0000-0000-0000-000000000001` remains th
 First-boot setup is available when `COUNT(*) FROM devices WHERE revoked_at IS NULL` is zero, not when the users table is empty. Revoking all devices and restarting the backend re-enters setup.
 
 ### Decision 4 — Setup token hash is shared runtime state
-The setup token is generated on startup, logged exactly once as plaintext by the worker that creates it, and stored only as a SHA-256 hash in the `system_state` table under `auth.setup_token_hash`. Multiple backend workers share the same verifier and burn the same row after successful setup.
+The setup token is generated on startup, written to the local operator token file with `0600` permissions, and stored only as a SHA-256 hash in the `system_state` table under `auth.setup_token_hash`. Multiple backend workers share the same verifier and burn the same row after successful setup. The plaintext setup token is never written to application logs.
 
 ### Decision 5 — Setup token never goes in URLs
 The setup token is pasted into `/setup` as form/body data only. It must not appear in a URL, query string, Referer header, browser history, bookmark, proxy log, or server access log.
@@ -175,13 +175,13 @@ Diagram: Setup
 Backend startup
   -> count active devices
   -> if count == 0: generate 256-bit setup token
-  -> store SHA-256 token hash in app state only
-  -> log plaintext setup token exactly once
+  -> store SHA-256 token hash in system_state
+  -> write plaintext setup token to local 0600 operator file
 User opens /setup
   -> pastes token into form body (not URL)
   -> Next.js POSTs to FastAPI with CSRF headers
 FastAPI setup transaction
-  -> pg_advisory_xact_lock('daemon:first_boot_setup')
+  -> pg_advisory_xact_lock(hashtext('daemon:auth_runtime_state'))
   -> recheck zero active devices
   -> find-or-create singleton user
   -> create first device + web session
@@ -244,7 +244,7 @@ All devices revoked or expired
 Backend restart
   -> startup sees zero active devices
   -> creates auth.setup_token_hash in system_state if absent
-  -> worker that creates it emits the one-time setup token
+  -> worker that creates it writes the one-time setup token to the local operator file
 Owner opens /setup
   -> enters token in form body
   -> creates a new first active device

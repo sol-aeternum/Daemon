@@ -1,5 +1,27 @@
 # TRIAGE.md
 
+## 2026-06-12T20:11:23+09:30 — #11 Backend Inventory Pytest Timed Out Locally
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Issue #11 setup-token redaction verification
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: `timeout 300s scripts/local_ci.sh backend` passed all blocking backend gates, then timed out during the non-blocking full pytest inventory phase. The inventory run reached late-suite progress and stopped producing output before the timeout killed it; no `/tmp/daemon-11` pytest processes remained afterward.
+- **Evidence**: Blocking local-CI gates passed: `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`. Inventory `pip-audit` failed with `Failed to resolve 'pypi.org' ([Errno -2] Name or service not known)` under sandboxed networking. Inventory pytest printed progress through `[ 91%]` and then the outer command exited `124`.
+- **Likely cause**: Same local sandbox/network and long-running inventory-suite behavior seen on #23; hosted branch-protection CI remains the authoritative full gate. Confidence: 85%.
+- **Suggested action**: Investigate the late-suite pytest inventory stall separately from issue-scoped auth fixes; continue relying on blocking local gates plus hosted protected CI before merge.
+
+## 2026-06-12T20:01:23+09:30 — #11 Worktree Missing `.uv-venv` Symlink Broke BasedPyright
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Issue #11 setup-token redaction verification
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: The first `basedpyright --level error` run in `/tmp/daemon-11` resolved dependencies against a missing worktree-local `.uv-venv` path and reported hundreds of missing imports. Creating `/tmp/daemon-11/.uv-venv -> /home/sol/daemon/.uv-venv` and rerunning the same command produced `0 errors, 0 warnings, 0 notes`.
+- **Evidence**: Initial output began with `venv .uv-venv subdirectory not found in venv path /tmp/daemon-11.` and then missing imports for `fastapi`, `asyncpg`, `httpx`, `pytest`, and related pinned dependencies. Rerun output: `0 errors, 0 warnings, 0 notes`.
+- **Likely cause**: The repository type-checker config expects a `.uv-venv` path relative to the active checkout, but new `/tmp` worktrees do not inherit the root checkout symlink. Confidence: 99%.
+- **Suggested action**: Create the `.uv-venv` symlink immediately after adding future `/tmp` worktrees, or update agent worktree setup docs/scripts to do this automatically.
+
 ## 2026-06-12T07:04:00+09:30 — Main Protection Uses Rulesets Instead Of Classic Branch Protection
 - **Severity**: info
 - **Scope**: tooling
