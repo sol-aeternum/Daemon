@@ -34,6 +34,17 @@
 - **Likely cause**: The PR wrapper still runs all gate families for a backend-only branch; current main carries frontend type/lint/format debt, while old temporary issue worktrees consumed the `/tmp` tmpfs. Confidence: 90%.
 - **Suggested action**: Fix the frontend family in its own issue/PR or teach the PR wrapper to run only affected families; periodically prune clean `/tmp` worktrees after issue PRs are merged.
 
+## 2026-06-12T19:50:29+09:30 — #23 Backend Inventory Pytest Timed Out Locally
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: #23 shared setup token and development pepper verification
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: `scripts/local_ci.sh backend` passed the blocking backend gates (`ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`) before entering non-blocking inventory gates. `pip-audit` failed because sandbox DNS could not resolve PyPI, and the full `pytest -q` inventory run reached late-suite progress then produced no terminal summary before the outer 300-second timeout killed it.
+- **Evidence**: Command was `timeout 300s env UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv UV_CACHE_DIR=/tmp/uv-cache scripts/local_ci.sh backend`; exit code `124`. `pip-audit` ended with `requests.exceptions.ConnectionError: HTTPSConnectionPool(host='pypi.org', port=443): Max retries exceeded ... Failed to resolve 'pypi.org' ([Errno -2] Name or service not known)`. Full pytest printed progress through `[ 91%]` and earlier showed `EEEEE` around `[ 18%]`, but did not produce failure details before timeout. Post-timeout process inspection found no remaining `/tmp/daemon-23` pytest processes.
+- **Likely cause**: The managed sandbox blocks outbound DNS for `pip-audit`, and this host has a recurring late-suite full-pytest inventory stall unrelated to the focused #23 auth path. Confidence: 85%.
+- **Suggested action**: Treat GitHub Actions backend gates as the authoritative full-suite result for PRs while investigating the local late-suite stall separately; continue running focused auth slices and blocking collection locally.
+
 ## 2026-06-05 UTC — Worktree LSP import resolution misses project deps under /tmp review worktree
 - **Severity**: warning
 - **Scope**: tooling

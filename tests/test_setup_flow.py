@@ -27,8 +27,12 @@ class MockConn:
         self._session_insert_args = None
 
     async def fetchval(self, sql, *args):
+        if "FROM system_state" in sql:
+            return self._pool._system_state.get(args[0])
         if "COUNT(*)" in sql and "devices" in sql:
             return self._pool._active_count
+        if "EXISTS" in sql and "SELECT 1" in sql and "sessions" in sql:
+            return self._pool._has_valid_session
         if "SELECT id FROM users" in sql and str(SINGLETON_ID) in str(args):
             return SINGLETON_ID if self._pool._singleton_exists else None
         if "INSERT INTO users" in sql:
@@ -57,6 +61,13 @@ class MockConn:
         return None
 
     async def execute(self, sql, *args):
+        if "INSERT INTO system_state" in sql:
+            key, value = args[:2]
+            self._pool._system_state[key] = value
+            return None
+        if "DELETE FROM system_state" in sql:
+            self._pool._system_state.pop(args[0], None)
+            return None
         if "INSERT INTO sessions" in sql:
             self._session_insert_args = args
         if "pg_advisory_xact_lock" in sql:
@@ -66,6 +77,12 @@ class MockConn:
         return None
 
     async def fetchrow(self, sql, *args):
+        if "INSERT INTO system_state" in sql and "ON CONFLICT" in sql:
+            key, value = args[:2]
+            if key in self._pool._system_state:
+                return None
+            self._pool._system_state[key] = value
+            return {"value": value}
         if (
             "SELECT id, owner_user_id, kind, name FROM tenants" in sql
             and self._pool._tenant_id is not None
@@ -99,6 +116,10 @@ class MockPool:
         self._tenant_id = None
         self._membership_exists = False
         self._connections = []
+        self._system_state = {}
+
+    def set_setup_token(self, plaintext: str) -> None:
+        self._system_state["auth.setup_token_hash"] = hash_token(plaintext)
 
     async def fetchval(self, sql, *args):
         if "COUNT(*)" in sql and "devices" in sql:
@@ -221,9 +242,8 @@ class TestSetupHappyPath:
         original = make_mock_init(mock_pool)
         try:
             async with app.router.lifespan_context(app):
-                state = app.state.app_state
                 plaintext = generate_setup_token()
-                state.setup_token_hash = hash_token(plaintext)
+                mock_pool.set_setup_token(plaintext)
 
                 transport = ASGITransport(app=app)
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -262,6 +282,7 @@ class TestSetupHappyPath:
                     assert mock_pool._device_insert_args is not None
                     assert mock_pool._device_insert_args[1] == mock_pool._tenant_id
                     assert session_insert_args[3] == mock_pool._tenant_id
+                    assert "auth.setup_token_hash" not in mock_pool._system_state
         finally:
             restore_init(original)
 
@@ -273,9 +294,8 @@ class TestSetupHappyPath:
         original = make_mock_init(mock_pool)
         try:
             async with app.router.lifespan_context(app):
-                state = app.state.app_state
                 plaintext = generate_setup_token()
-                state.setup_token_hash = hash_token(plaintext)
+                mock_pool.set_setup_token(plaintext)
 
                 transport = ASGITransport(app=app)
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -312,9 +332,8 @@ class TestSetupWrongToken:
         original = make_mock_init(mock_pool)
         try:
             async with app.router.lifespan_context(app):
-                state = app.state.app_state
                 correct_token = generate_setup_token()
-                state.setup_token_hash = hash_token(correct_token)
+                mock_pool.set_setup_token(correct_token)
 
                 transport = ASGITransport(app=app)
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -328,8 +347,8 @@ class TestSetupWrongToken:
                     )
 
                     assert response.status_code == 401
-                    assert state.setup_token_hash is not None
-                    assert mock_pool._lock_acquired is False
+                    assert "auth.setup_token_hash" in mock_pool._system_state
+                    assert mock_pool._lock_acquired is True
         finally:
             restore_init(original)
 
@@ -341,9 +360,8 @@ class TestSetupAlreadyComplete:
         original = make_mock_init(mock_pool)
         try:
             async with app.router.lifespan_context(app):
-                state = app.state.app_state
                 plaintext = generate_setup_token()
-                state.setup_token_hash = hash_token(plaintext)
+                mock_pool.set_setup_token(plaintext)
 
                 transport = ASGITransport(app=app)
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -369,9 +387,7 @@ class TestSetupNoTokenWhenDeactivated:
         original = make_mock_init(mock_pool)
         try:
             async with app.router.lifespan_context(app):
-                state = app.state.app_state
-                state.setup_token_hash = None
-
+                mock_pool._system_state.pop("auth.setup_token_hash", None)
                 transport = ASGITransport(app=app)
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     response = await client.post(
@@ -396,9 +412,9 @@ class TestSetupCSRFRejection:
         original = make_mock_init(mock_pool)
         try:
             async with app.router.lifespan_context(app):
-                state = app.state.app_state
                 plaintext = generate_setup_token()
-                state.setup_token_hash = hash_token(plaintext)
+                mock_pool.set_setup_token(plaintext)
+                mock_pool._lock_acquired = False
 
                 transport = ASGITransport(app=app)
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -424,9 +440,8 @@ class TestActiveDeviceConditionIgnoresUsersTable:
         original = make_mock_init(mock_pool)
         try:
             async with app.router.lifespan_context(app):
-                state = app.state.app_state
                 plaintext = generate_setup_token()
-                state.setup_token_hash = hash_token(plaintext)
+                mock_pool.set_setup_token(plaintext)
 
                 transport = ASGITransport(app=app)
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -451,9 +466,8 @@ class TestConcurrentSetup:
         original = make_mock_init(mock_pool)
         try:
             async with app.router.lifespan_context(app):
-                state = app.state.app_state
                 plaintext = generate_setup_token()
-                state.setup_token_hash = hash_token(plaintext)
+                mock_pool.set_setup_token(plaintext)
 
                 transport = ASGITransport(app=app)
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -522,10 +536,9 @@ class TestSetupCookiePolicyValidation:
         original = make_mock_init(mock_pool)
         try:
             async with app.router.lifespan_context(app):
-                state = app.state.app_state
                 plaintext = generate_setup_token()
-                state.setup_token_hash = hash_token(plaintext)
-                original_setup_token_hash = state.setup_token_hash
+                mock_pool.set_setup_token(plaintext)
+                original_setup_token_hash = mock_pool._system_state["auth.setup_token_hash"]
 
                 transport = ASGITransport(app=app)
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -542,9 +555,14 @@ class TestSetupCookiePolicyValidation:
                     assert response.status_code == 500, (
                         f"Expected 500 for CookiePolicyError, got {response.status_code}: {response.text}"
                     )
-                    # setup_token_hash must NOT be cleared (validation happened before state mutation)
-                    assert state.setup_token_hash == original_setup_token_hash, (
-                        f"setup_token_hash was cleared! Expected {original_setup_token_hash}, got {state.setup_token_hash}"
+                    # setup token hash must NOT be cleared (validation happened before state mutation)
+                    assert (
+                        mock_pool._system_state["auth.setup_token_hash"]
+                        == original_setup_token_hash
+                    ), (
+                        "setup token hash was cleared! "
+                        f"Expected {original_setup_token_hash}, "
+                        f"got {mock_pool._system_state.get('auth.setup_token_hash')}"
                     )
                     # No device must have been created
                     assert mock_pool._device_created is False, (

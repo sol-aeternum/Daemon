@@ -22,7 +22,7 @@ class AppState:
     redis: ArqRedis | None = field(default=None)
     memory_store: MemoryStore | None = field(default=None)
     video_credits_dal: VideoCreditsDAL | None = field(default=None)
-    # First-boot setup token hash (process-local only, never persisted)
+    # Legacy compatibility only. First-boot setup token hashes live in system_state.
     setup_token_hash: str | None = field(default=None)
 
 

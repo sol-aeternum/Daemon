@@ -26,6 +26,8 @@ class MockConn:
         self._in_transaction = False
 
     async def fetchval(self, sql, *args):
+        if "FROM system_state" in sql:
+            return self._pool._system_state.get(args[0])
         if "COUNT(*)" in sql and "devices" in sql:
             return self._pool._active_count
         if "SELECT NOW()" in sql:
@@ -195,6 +197,12 @@ class MockConn:
         return None
 
     async def fetchrow(self, sql, *args):
+        if "INSERT INTO system_state" in sql and "ON CONFLICT" in sql:
+            key, value = args[:2]
+            if key in self._pool._system_state:
+                return None
+            self._pool._system_state[key] = value
+            return {"value": value}
         if "access_token_hash" in sql and "FROM sessions" in sql:
             token_hash = args[0]
             if token_hash in self._pool._sessions:
@@ -318,6 +326,13 @@ class MockConn:
         return []
 
     async def execute(self, sql, *args):
+        if "INSERT INTO system_state" in sql:
+            key, value = args[:2]
+            self._pool._system_state[key] = value
+            return None
+        if "DELETE FROM system_state" in sql:
+            self._pool._system_state.pop(args[0], None)
+            return None
         if "UPDATE pending_enrollments" in sql and "wrong_attempts_remaining" in sql:
             if "wrong_attempts_remaining = 0" in sql:
                 pending_id = args[0]
@@ -393,16 +408,32 @@ class MockPool:
         self._singleton_exists = False
         self._closed = False
         self._connections = []
+        self._system_state: dict[str, str] = {}
 
     async def fetchval(self, sql, *args):
+        if "FROM system_state" in sql:
+            return self._system_state.get(args[0])
         if "COUNT(*)" in sql and "devices" in sql:
             return self._active_count
         return None
 
     async def fetchrow(self, sql, *args):
+        if "INSERT INTO system_state" in sql and "ON CONFLICT" in sql:
+            key, value = args[:2]
+            if key in self._system_state:
+                return None
+            self._system_state[key] = value
+            return {"value": value}
         return None
 
     async def execute(self, sql, *args):
+        if "INSERT INTO system_state" in sql:
+            key, value = args[:2]
+            self._system_state[key] = value
+            return None
+        if "DELETE FROM system_state" in sql:
+            self._system_state.pop(args[0], None)
+            return None
         return None
 
     @asynccontextmanager
@@ -441,7 +472,7 @@ def make_mock_init(mock_pool):
             )
             if active_count == 0:
                 plaintext = generate_setup_token()
-                state.setup_token_hash = hash_token(plaintext)
+                state.db_pool._system_state["auth.setup_token_hash"] = hash_token(plaintext)
                 object.__setattr__(state, "_startup_setup_token", plaintext)
                 logger.info(
                     ">>> Daemon setup required. Open http://<host>:<port>/setup and enter token: %s",
@@ -498,7 +529,6 @@ class TestAuthDeviceLifecycleSmoke:
                 assert ">>> Daemon setup required" in caplog.text
                 setup_plaintext = getattr(state, "_startup_setup_token")
                 assert setup_plaintext is not None
-                state.setup_token_hash = hash_token(setup_plaintext)
 
                 transport = ASGITransport(app=app)
                 async with AsyncClient(transport=transport, base_url="http://test") as client:

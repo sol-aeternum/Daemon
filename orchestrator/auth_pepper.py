@@ -5,7 +5,8 @@ Architecture decisions followed:
 
 Pepper policy:
   - Production: requires ≥32 random bytes (≥43 base64url chars). Missing/weak = fails startup.
-  - Development: if absent, generates process-ephemeral pepper with warning.
+  - Development: if absent, uses a DB-shared pepper when Postgres is configured;
+    otherwise falls back to a process-ephemeral pepper with warning.
 """
 
 from __future__ import annotations
@@ -13,6 +14,9 @@ from __future__ import annotations
 import logging
 import secrets
 
+import asyncpg
+
+from orchestrator.auth_runtime_state import ensure_development_pepper_in_db
 from orchestrator.config import Settings
 
 
@@ -28,9 +32,8 @@ class PepperValidationError(Exception):
     pass
 
 
-def validate_and_get_pepper(settings: Settings) -> str:
-    global _development_pepper_cache
-
+def validate_pepper_config(settings: Settings) -> None:
+    """Validate pepper config without generating development fallback secrets."""
     environment = settings.daemon_environment.lower().strip()
 
     if environment not in ("production", "development"):
@@ -40,31 +43,64 @@ def validate_and_get_pepper(settings: Settings) -> str:
 
     pepper = settings.daemon_auth_pepper
 
-    if environment == "production":
-        if not pepper:
-            raise PepperValidationError(
-                "daemon_auth_pepper is required in production. "
-                'Generate one with: python -c "import secrets; print(secrets.token_urlsafe(32))"'
-            )
-        if len(pepper) < MIN_PEPPER_CHARS:
-            raise PepperValidationError(
-                f"daemon_auth_pepper is too weak in production. "
-                f"Got {len(pepper)} chars, need at least {MIN_PEPPER_CHARS}. "
-                'Generate one with: python -c "import secrets; print(secrets.token_urlsafe(32))"'
-            )
-        return pepper
+    if environment != "production":
+        return
 
     if not pepper:
-        if _development_pepper_cache is None:
-            _development_pepper_cache = secrets.token_urlsafe(32)
-        logger.warning(
-            "daemon_auth_pepper not set in development. "
-            "Using process-ephemeral pepper. "
-            "Pending enrollments created with this pepper will become invalid after restart."
+        raise PepperValidationError(
+            "daemon_auth_pepper is required in production. "
+            'Generate one with: python -c "import secrets; print(secrets.token_urlsafe(32))"'
         )
+    if len(pepper) < MIN_PEPPER_CHARS:
+        raise PepperValidationError(
+            f"daemon_auth_pepper is too weak in production. "
+            f"Got {len(pepper)} chars, need at least {MIN_PEPPER_CHARS}. "
+            'Generate one with: python -c "import secrets; print(secrets.token_urlsafe(32))"'
+        )
+
+
+def set_development_pepper_cache(pepper: str | None) -> None:
+    global _development_pepper_cache
+    _development_pepper_cache = pepper
+
+
+async def initialize_development_pepper(settings: Settings, db_pool: asyncpg.Pool | None) -> None:
+    """Populate the process cache with the DB-shared development pepper when needed."""
+    environment = settings.daemon_environment.lower().strip()
+
+    if environment != "development" or settings.daemon_auth_pepper:
+        return
+
+    if db_pool is None:
+        return
+
+    pepper = await ensure_development_pepper_in_db(db_pool)
+    set_development_pepper_cache(pepper)
+    logger.warning(
+        "daemon_auth_pepper not set in development. "
+        "Using database-shared development pepper from system_state. "
+        "Set DAEMON_AUTH_PEPPER explicitly for production-like deployments."
+    )
+
+
+def validate_and_get_pepper(settings: Settings) -> str:
+    validate_pepper_config(settings)
+
+    pepper = settings.daemon_auth_pepper
+    if pepper:
+        return pepper
+
+    if settings.daemon_environment.lower().strip() == "development" and _development_pepper_cache:
         return _development_pepper_cache
 
-    return pepper
+    fallback_pepper = secrets.token_urlsafe(32)
+    set_development_pepper_cache(fallback_pepper)
+    logger.warning(
+        "daemon_auth_pepper not set in development. "
+        "Using process-ephemeral pepper because no shared development pepper is initialized. "
+        "Pending enrollments created with this pepper will become invalid after restart."
+    )
+    return fallback_pepper
 
 
 def is_production_environment(settings: Settings) -> bool:
