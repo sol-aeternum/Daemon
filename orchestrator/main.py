@@ -157,6 +157,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             deleted = await cleanup_stale_sessions(
                 state.db_pool,
                 settings.daemon_session_cleanup_grace_days,
+                settings.daemon_session_cleanup_max_delete_fraction,
             )
             if deleted > 0:
                 logger.info("Startup session cleanup deleted %d stale sessions", deleted)
@@ -167,6 +168,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             state.db_pool,
             settings.daemon_session_cleanup_grace_days,
             settings.daemon_session_cleanup_interval_seconds,
+            settings.daemon_session_cleanup_max_delete_fraction,
         )
 
     yield

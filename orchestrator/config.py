@@ -96,7 +96,11 @@ class Settings(BaseSettings):
     daemon_cookie_secure: bool = True
 
     # Session cleanup: grace period in days after expiry/revocation before deletion.
-    daemon_session_cleanup_grace_days: int = 7
+    daemon_session_cleanup_grace_days: int = Field(default=7, ge=1)
+
+    # Session cleanup: abort if one run would delete more than this fraction
+    # of the sessions table once the table is large enough for the guard.
+    daemon_session_cleanup_max_delete_fraction: float = Field(default=0.5, gt=0, le=1)
 
     # Session cleanup: interval in seconds between cleanup task runs.
     daemon_session_cleanup_interval_seconds: int = 86400

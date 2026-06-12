@@ -1,5 +1,38 @@
 # TRIAGE.md
 
+## 2026-06-12T22:34:10+09:30 — #54 PR Wrapper Refused On Existing Local Gate Debt
+- **Severity**: warning
+- **Scope**: project | host
+- **Encountered during**: Issue #54 session cleanup grace-days PR creation
+- **Category**: build-error | test-failure | dependency | security
+- **Blocked current task**: no
+- **What happened**: `scripts/pr_create.sh` ran all local CI families and refused to call `gh pr create` because existing local gate debt failed outside the #54 change surface. The issue-scoped session cleanup tests, changed-file backend lint/type checks, backend blocking gates, and aggregate gates had already passed.
+- **Evidence**: `scripts/pr_create.sh -- --title "fix(auth): harden session cleanup grace safety" ...` reported blocking failures: `backend/basedpyright (exit=3)`, `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`. The backend type-check failure was the known worktree-local `.uv-venv` lookup: `venv .uv-venv subdirectory not found in venv path /tmp/daemon-54.` Full backend inventory reproduced the existing `tests/test_auth_user_scoping.py` fixture errors at `orchestrator/auth_runtime_state.py:97`; frontend type/build still failed on missing advisor event exports, lint still reported 28 errors / 13 warnings, format-check still reported 124 files, and frontend inventory tests still had 19 advisor/tool-call failures.
+- **Likely cause**: The PR wrapper does not inherit the temporary basedpyright symlink workaround and still enforces unrelated frontend baseline debt for a backend-only session-cleanup PR. Confidence: 95%.
+- **Suggested action**: Open #54 directly after the documented wrapper refusal, rely on active hosted branch-protection checks for merge eligibility, and keep wrapper env plus frontend baseline cleanup in dedicated work.
+
+## 2026-06-12T22:29:00+09:30 — #54 Worktree Git Metadata Read-Only In Sandbox
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Issue #54 session cleanup grace-days commit
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: The temporary worktree could edit files but could not stage them because its git index lock lives under the root repository `.git/worktrees` directory, which is read-only to the managed sandbox.
+- **Evidence**: `git add .env.example TRIAGE.md orchestrator/config.py orchestrator/main.py orchestrator/session_cleanup.py tests/test_session_cleanup.py` failed with `fatal: Unable to create '/home/sol/daemon/.git/worktrees/daemon-54/index.lock': Read-only file system`.
+- **Likely cause**: The worktree's common git metadata is outside the writable sandbox roots even though the worktree files are writable. Confidence: 99%.
+- **Suggested action**: Use escalated git commands for staging/committing/pushing temporary worktree branches, or include `.git/worktrees` in writable roots for this workflow.
+
+## 2026-06-12T22:26:12+09:30 — #54 Session Cleanup Test Double Signature Drift
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Issue #54 session cleanup grace-days hardening
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: The first focused session-cleanup test run failed after the production call path gained a `max_delete_fraction` argument but the lifecycle test's monkeypatched cleanup function still accepted only two positional arguments. The mock signature was updated before final verification.
+- **Evidence**: `PYTHONPATH=. uv run pytest -q tests/test_session_cleanup.py` failed with `TypeError: mock_cleanup_stale_sessions() takes 2 positional arguments but 3 were given`; after updating the test double, the same focused file passed with `20 passed, 15 warnings`.
+- **Likely cause**: Manual test double drift after extending the internal cleanup helper signature for the safety threshold. Confidence: 99%.
+- **Suggested action**: Keep monkeypatched async helper signatures aligned with production helper signatures when adding internal parameters.
+
 ## 2026-06-12T21:38:46+09:30 — #27 Frontend Local CI Blocked By Sandboxed npm-ci And Existing Frontend Debt
 - **Severity**: warning
 - **Scope**: host | project
@@ -1832,6 +1865,7 @@
 - **Suggested action**: File a dependency-upgrade/security follow-up that updates the affected packages through the locked dependency workflow; do not hand-edit the lockfile.
 - **Seen again**: 2026-06-12 during #24 PR-wrapper creation. Escalated `scripts/pr_create.sh` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 - **Seen again**: 2026-06-12 during #113 backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
+- **Seen again**: 2026-06-12 during #54 backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 
 ## 2026-06-10 08:47 UTC — Backend inventory gates report existing security and warning debt
 - **Severity**: warning
@@ -1944,6 +1978,7 @@
 - **Likely cause**: Same sandbox network restriction and recurring late-suite local pytest inventory stall seen in previous issue worktrees (confidence 90%).
 - **Suggested action**: Treat hosted protected CI as the authoritative full-suite result while investigating the local late-suite inventory stall separately.
 - **Seen again**: 2026-06-12 during #113 refresh-rotation grace verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory full pytest reached late-suite progress after showing unrelated failures and then the outer timeout exited `124`.
+- **Seen again**: 2026-06-12 during #54 session cleanup grace-days verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` and `pip-audit` reported existing non-blocking findings, inventory full pytest printed progress through `[ 91%]` with one `F` marker but no failure summary before the outer timeout exited `124`.
 
 ## 2026-06-12 11:20 UTC — Existing auth user scoping fixture fails development pepper setup
 - **Severity**: warning

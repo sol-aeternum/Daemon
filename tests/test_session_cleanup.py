@@ -25,38 +25,44 @@ class MockPool:
         self._sessions = sessions or {}
         self._deleted_ids = []
         self._closed = False
+        self._count_sql = None
+        self._delete_sql = None
+
+    def _candidate_ids(self, grace_days):
+        grace_interval = timedelta(days=grace_days)
+        now = datetime.now(timezone.utc)
+        to_delete = []
+        for session_id, session in list(self._sessions.items()):
+            refresh_expires_at = session.get("refresh_expires_at")
+            revoked_at = session.get("revoked_at")
+
+            if refresh_expires_at is not None and revoked_at is not None:
+                if refresh_expires_at < now - grace_interval or revoked_at < now - grace_interval:
+                    to_delete.append(session_id)
+            elif refresh_expires_at is not None:
+                if refresh_expires_at < now - grace_interval:
+                    to_delete.append(session_id)
+            elif revoked_at is not None and revoked_at < now - grace_interval:
+                to_delete.append(session_id)
+        return to_delete
 
     async def fetchval(self, sql, *args):
         if "DELETE FROM sessions" in sql:
-            grace_days = args[0]
-            grace_interval = timedelta(days=grace_days)
-            now = datetime.now(timezone.utc)
-            to_delete = []
-            for session_id, session in list(self._sessions.items()):
-                refresh_expires_at = session.get("refresh_expires_at")
-                revoked_at = session.get("revoked_at")
-
-                if refresh_expires_at is not None and revoked_at is not None:
-                    if (
-                        refresh_expires_at < now - grace_interval
-                        or revoked_at < now - grace_interval
-                    ):
-                        to_delete.append(session_id)
-                elif refresh_expires_at is not None:
-                    if refresh_expires_at < now - grace_interval:
-                        to_delete.append(session_id)
-                elif revoked_at is not None:
-                    if revoked_at < now - grace_interval:
-                        to_delete.append(session_id)
-
+            self._delete_sql = sql
+            to_delete = self._candidate_ids(args[0])
             self._deleted_ids = to_delete
             for session_id in to_delete:
                 del self._sessions[session_id]
-
             return len(to_delete)
         return None
 
     async def fetchrow(self, sql, *args):
+        if "candidate_count" in sql and "total_count" in sql:
+            self._count_sql = sql
+            return {
+                "candidate_count": len(self._candidate_ids(args[0])),
+                "total_count": len(self._sessions),
+            }
         return None
 
     async def execute(self, sql, *args):
@@ -145,14 +151,16 @@ async def setup_env(monkeypatch):
 
 
 class TestCleanupStaleSessions:
-    async def _run_cleanup(self, sessions, grace_days=7):
+    async def _run_cleanup(self, sessions, grace_days=7, max_delete_fraction=1.0):
         from orchestrator.session_cleanup import cleanup_stale_sessions
 
         mock_pool = MockPool(sessions=sessions)
         deleted = await cleanup_stale_sessions(
-            cast(asyncpg.Pool | None, cast(object, mock_pool)), grace_days
+            cast(asyncpg.Pool | None, cast(object, mock_pool)),
+            grace_days,
+            max_delete_fraction,
         )
-        return deleted, mock_pool._deleted_ids
+        return deleted, mock_pool._deleted_ids, mock_pool
 
     def _get_ids_remaining(self, sessions, deleted_ids):
         return {sid for sid in sessions if sessions[sid]["id"] not in deleted_ids}
@@ -166,7 +174,7 @@ class TestCleanupStaleSessions:
         sessions = {
             "s1": _make_session(now + timedelta(days=90)),
         }
-        deleted, deleted_ids = await self._run_cleanup(sessions)
+        deleted, deleted_ids, _ = await self._run_cleanup(sessions)
         assert deleted == 0
         assert len(deleted_ids) == 0
 
@@ -176,7 +184,7 @@ class TestCleanupStaleSessions:
         sessions = {
             "s1": _make_session(now - timedelta(days=5)),
         }
-        deleted, deleted_ids = await self._run_cleanup(sessions, grace_days=7)
+        deleted, deleted_ids, _ = await self._run_cleanup(sessions, grace_days=7)
         assert deleted == 0
         assert len(deleted_ids) == 0
 
@@ -186,7 +194,7 @@ class TestCleanupStaleSessions:
         sessions = {
             "s1": _make_session(now - timedelta(days=10)),
         }
-        deleted, deleted_ids = await self._run_cleanup(sessions, grace_days=7)
+        deleted, deleted_ids, _ = await self._run_cleanup(sessions, grace_days=7)
         assert deleted == 1
         assert "s1" in deleted_ids
 
@@ -196,7 +204,7 @@ class TestCleanupStaleSessions:
         sessions = {
             "s1": _make_session(now + timedelta(days=90), revoked_at=now - timedelta(days=5)),
         }
-        deleted, deleted_ids = await self._run_cleanup(sessions, grace_days=7)
+        deleted, deleted_ids, _ = await self._run_cleanup(sessions, grace_days=7)
         assert deleted == 0
         assert len(deleted_ids) == 0
 
@@ -206,7 +214,7 @@ class TestCleanupStaleSessions:
         sessions = {
             "s1": _make_session(now + timedelta(days=90), revoked_at=now - timedelta(days=10)),
         }
-        deleted, deleted_ids = await self._run_cleanup(sessions, grace_days=7)
+        deleted, deleted_ids, _ = await self._run_cleanup(sessions, grace_days=7)
         assert deleted == 1
         assert "s1" in deleted_ids
 
@@ -219,7 +227,7 @@ class TestCleanupStaleSessions:
                 refresh_consumed_at=now - timedelta(hours=1),
             ),
         }
-        deleted, deleted_ids = await self._run_cleanup(sessions, grace_days=7)
+        deleted, deleted_ids, _ = await self._run_cleanup(sessions, grace_days=7)
         assert deleted == 0
         assert len(deleted_ids) == 0
 
@@ -232,7 +240,7 @@ class TestCleanupStaleSessions:
                 refresh_consumed_at=now - timedelta(hours=1),
             ),
         }
-        deleted, deleted_ids = await self._run_cleanup(sessions, grace_days=7)
+        deleted, deleted_ids, _ = await self._run_cleanup(sessions, grace_days=7)
         assert deleted == 0
         assert len(deleted_ids) == 0
 
@@ -245,7 +253,7 @@ class TestCleanupStaleSessions:
                 refresh_consumed_at=now - timedelta(hours=1),
             ),
         }
-        deleted, deleted_ids = await self._run_cleanup(sessions, grace_days=7)
+        deleted, deleted_ids, _ = await self._run_cleanup(sessions, grace_days=7)
         assert deleted == 1
         assert "s1" in deleted_ids
 
@@ -266,7 +274,7 @@ class TestCleanupStaleSessions:
                 now + timedelta(days=90), refresh_consumed_at=now - timedelta(hours=1)
             ),
         }
-        deleted, deleted_ids = await self._run_cleanup(sessions, grace_days=7)
+        deleted, deleted_ids, _ = await self._run_cleanup(sessions, grace_days=7)
         assert deleted == 2
         assert "s3_stale_expired" in deleted_ids
         assert "s5_stale_revoked" in deleted_ids
@@ -275,6 +283,64 @@ class TestCleanupStaleSessions:
         assert "s2_within_grace_expired" in remaining
         assert "s4_within_grace_revoked" in remaining
         assert "s6_consumed_unexpired" in remaining
+
+    @pytest.mark.asyncio
+    async def test_cleanup_sql_uses_safe_interval_arithmetic(self):
+        now = datetime.now(timezone.utc)
+        sessions = {
+            "s1": _make_session(now - timedelta(days=10)),
+            "s2": _make_session(now + timedelta(days=90)),
+        }
+        deleted, deleted_ids, mock_pool = await self._run_cleanup(sessions, grace_days=7)
+
+        assert deleted == 1
+        assert "s1" in deleted_ids
+        assert mock_pool._count_sql is not None
+        assert mock_pool._delete_sql is not None
+        assert "|| ' days'" not in mock_pool._count_sql
+        assert "|| ' days'" not in mock_pool._delete_sql
+        assert "$1 * INTERVAL '1 day'" in mock_pool._count_sql
+        assert "$1 * INTERVAL '1 day'" in mock_pool._delete_sql
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("grace_days", [0, -1])
+    async def test_invalid_grace_days_rejected_before_delete(self, grace_days):
+        from orchestrator.session_cleanup import cleanup_stale_sessions
+
+        now = datetime.now(timezone.utc)
+        mock_pool = MockPool({"s1": _make_session(now - timedelta(days=10))})
+
+        with pytest.raises(ValueError, match="grace_days"):
+            await cleanup_stale_sessions(
+                cast(asyncpg.Pool | None, cast(object, mock_pool)), grace_days
+            )
+
+        assert mock_pool._deleted_ids == []
+        assert mock_pool._count_sql is None
+        assert mock_pool._delete_sql is None
+
+    @pytest.mark.asyncio
+    async def test_mass_delete_safety_aborts_and_logs(self, caplog):
+        from orchestrator.session_cleanup import cleanup_stale_sessions
+
+        now = datetime.now(timezone.utc)
+        sessions = {
+            **{f"stale_{idx}": _make_session(now - timedelta(days=30)) for idx in range(11)},
+            **{f"active_{idx}": _make_session(now + timedelta(days=90)) for idx in range(9)},
+        }
+        mock_pool = MockPool(sessions)
+
+        with caplog.at_level("CRITICAL"):
+            with pytest.raises(RuntimeError, match="safety limit"):
+                await cleanup_stale_sessions(
+                    cast(asyncpg.Pool | None, cast(object, mock_pool)),
+                    7,
+                    max_delete_fraction=0.5,
+                )
+
+        assert mock_pool._deleted_ids == []
+        assert len(mock_pool._sessions) == 20
+        assert "Session cleanup aborted" in caplog.text
 
     @pytest.mark.asyncio
     async def test_null_db_pool_returns_zero(self):
@@ -394,7 +460,7 @@ class TestCleanupTaskLifecycle:
         try:
             startup_cleanup_called = []
 
-            async def mock_cleanup_stale_sessions(pool, grace_days):
+            async def mock_cleanup_stale_sessions(pool, grace_days, max_delete_fraction=0.5):
                 startup_cleanup_called.append(True)
                 return 0
 
@@ -404,7 +470,12 @@ class TestCleanupTaskLifecycle:
 
             loop_task = None
 
-            async def mock_start_session_cleanup_task(pool, grace_days, interval_seconds):
+            async def mock_start_session_cleanup_task(
+                pool,
+                grace_days,
+                interval_seconds,
+                max_delete_fraction=0.5,
+            ):
                 nonlocal loop_task
                 shutdown_event = asyncio.Event()
 
@@ -429,13 +500,27 @@ class TestCleanupTaskLifecycle:
             restore_init(original)
 
 
+class TestSessionCleanupConfig:
+    @pytest.mark.parametrize("grace_days", ["0", "-1"])
+    def test_invalid_grace_days_rejected_by_settings(self, monkeypatch, grace_days):
+        monkeypatch.setenv("DAEMON_SESSION_CLEANUP_GRACE_DAYS", grace_days)
+        get_settings.cache_clear()
+        try:
+            with pytest.raises(ValueError):
+                get_settings()
+        finally:
+            get_settings.cache_clear()
+
+
 class TestCleanupRetentionPolicy:
     async def _run_cleanup(self, sessions, grace_days=7):
         from orchestrator.session_cleanup import cleanup_stale_sessions
 
         mock_pool = MockPool(sessions=sessions)
         deleted = await cleanup_stale_sessions(
-            cast(asyncpg.Pool | None, cast(object, mock_pool)), grace_days
+            cast(asyncpg.Pool | None, cast(object, mock_pool)),
+            grace_days,
+            max_delete_fraction=1.0,
         )
         return deleted, mock_pool._deleted_ids
 
