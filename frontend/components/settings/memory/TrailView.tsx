@@ -1,9 +1,16 @@
-"use client";
+'use client';
 
-import { useState, useEffect, useCallback } from "react";
-import { TrailItem, useMemories } from "@/hooks/useMemories";
-import { formatRelativeTime } from "@/lib/format";
-import { ChevronDown, ChevronRight, History, Trash2, XCircle, CheckCircle2 } from "lucide-react";
+import { useState, useEffect, useCallback } from 'react';
+import { TrailItem, useMemories } from '@/hooks/useMemories';
+import { formatRelativeTime } from '@/lib/format';
+import {
+  ChevronDown,
+  ChevronRight,
+  History,
+  Trash2,
+  XCircle,
+  CheckCircle2,
+} from 'lucide-react';
 
 interface TrailViewProps {
   memoryId: string;
@@ -11,45 +18,45 @@ interface TrailViewProps {
 
 // Extended TrailItem that might include additional fields from the API
 type TrailNode = TrailItem & {
-  status?: "active" | "superseded" | "rejected" | "deleted";
+  status?: 'active' | 'superseded' | 'rejected' | 'deleted';
   valid_from?: string;
   valid_to?: string | null;
 };
 
 const statusConfig = {
   active: {
-    label: "Current",
+    label: 'Current',
     icon: CheckCircle2,
-    color: "text-status-success",
-    bgColor: "bg-status-success-bg",
-    borderColor: "border-status-success/30",
+    color: 'text-status-success',
+    bgColor: 'bg-status-success-bg',
+    borderColor: 'border-status-success/30',
   },
   superseded: {
-    label: "Superseded",
+    label: 'Superseded',
     icon: History,
-    color: "text-text-muted",
-    bgColor: "bg-bg-tertiary",
-    borderColor: "border-border-primary",
+    color: 'text-text-muted',
+    bgColor: 'bg-bg-tertiary',
+    borderColor: 'border-border-primary',
   },
   rejected: {
-    label: "Rejected",
+    label: 'Rejected',
     icon: XCircle,
-    color: "text-status-error",
-    bgColor: "bg-status-error-bg",
-    borderColor: "border-status-error/30",
+    color: 'text-status-error',
+    bgColor: 'bg-status-error-bg',
+    borderColor: 'border-status-error/30',
   },
   deleted: {
-    label: "Deleted",
+    label: 'Deleted',
     icon: Trash2,
-    color: "text-status-error",
-    bgColor: "bg-status-error-bg",
-    borderColor: "border-status-error/30",
+    color: 'text-status-error',
+    bgColor: 'bg-status-error-bg',
+    borderColor: 'border-status-error/30',
   },
 } as const;
 
 function getStatusConfig(
   status: string | undefined,
-  isLast: boolean
+  isLast: boolean,
 ): (typeof statusConfig)[keyof typeof statusConfig] {
   if (status && status in statusConfig) {
     return statusConfig[status as keyof typeof statusConfig];
@@ -60,7 +67,7 @@ function getStatusConfig(
 
 function truncateContent(content: string, maxLength: number = 120): string {
   if (content.length <= maxLength) return content;
-  return content.slice(0, maxLength).trim() + "...";
+  return content.slice(0, maxLength).trim() + '...';
 }
 
 export function TrailView({ memoryId }: TrailViewProps) {
@@ -79,7 +86,7 @@ export function TrailView({ memoryId }: TrailViewProps) {
       // Cast to TrailNode to handle potential additional fields from API
       setTrail(data as TrailNode[]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load trail");
+      setError(err instanceof Error ? err.message : 'Failed to load trail');
     } finally {
       setLoading(false);
     }
@@ -145,10 +152,10 @@ export function TrailView({ memoryId }: TrailViewProps) {
         <History className="w-4 h-4" />
         <span>
           {isExpanded
-            ? "Hide history"
+            ? 'Hide history'
             : hasHistory
               ? `Show history (${trail.length} versions)`
-              : "Show history"}
+              : 'Show history'}
         </span>
       </button>
 
@@ -167,7 +174,7 @@ export function TrailView({ memoryId }: TrailViewProps) {
                 const config = getStatusConfig(node.status, isLast);
                 const StatusIcon = config.icon;
                 const isTombstone =
-                  node.status === "deleted" || node.status === "rejected";
+                  node.status === 'deleted' || node.status === 'rejected';
 
                 // Determine valid time range display
                 const validFrom = node.changed_at;
@@ -180,7 +187,7 @@ export function TrailView({ memoryId }: TrailViewProps) {
                   <div
                     key={node.id}
                     className={`relative flex items-start gap-4 ${
-                      isLast ? "" : "opacity-70"
+                      isLast ? '' : 'opacity-70'
                     }`}
                   >
                     {/* Status indicator dot */}
@@ -196,16 +203,16 @@ export function TrailView({ memoryId }: TrailViewProps) {
                     <div
                       className={`flex-1 min-w-0 p-3 rounded-lg border ${
                         isLast
-                          ? "bg-bg-secondary border-border-primary"
-                          : "bg-bg-tertiary border-border-primary"
-                      } ${isTombstone ? "border-status-error/20" : ""}`}
+                          ? 'bg-bg-secondary border-border-primary'
+                          : 'bg-bg-tertiary border-border-primary'
+                      } ${isTombstone ? 'border-status-error/20' : ''}`}
                     >
                       {/* Content snippet */}
                       <p
                         className={`text-sm ${
                           isTombstone
-                            ? "text-text-muted line-through"
-                            : "text-text-primary"
+                            ? 'text-text-muted line-through'
+                            : 'text-text-primary'
                         }`}
                       >
                         {truncateContent(node.content)}
@@ -253,8 +260,8 @@ export function TrailView({ memoryId }: TrailViewProps) {
           Current version from {formatRelativeTime(currentVersion.changed_at)}
           {trail.length > 1 && (
             <span className="ml-2">
-              ({trail.length - 1} previous{" "}
-              {trail.length - 1 === 1 ? "version" : "versions"})
+              ({trail.length - 1} previous{' '}
+              {trail.length - 1 === 1 ? 'version' : 'versions'})
             </span>
           )}
         </div>

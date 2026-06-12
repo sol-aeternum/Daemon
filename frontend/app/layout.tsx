@@ -1,28 +1,28 @@
-import type { Metadata, Viewport } from "next";
-import { ThemeProvider } from "@/components/ThemeProvider";
-import { AuthProvider } from "@/components/AuthProvider";
-import "./globals.css";
+import type { Metadata, Viewport } from 'next';
+import { ThemeProvider } from '@/components/ThemeProvider';
+import { AuthProvider } from '@/components/AuthProvider';
+import './globals.css';
 
 export const metadata: Metadata = {
-  title: "Daemon - Multi-Agent Assistant",
-  description: "Personal multi-agent assistant with orchestration power",
-  manifest: "/manifest.json",
+  title: 'Daemon - Multi-Agent Assistant',
+  description: 'Personal multi-agent assistant with orchestration power',
+  manifest: '/manifest.json',
   appleWebApp: {
     capable: true,
-    statusBarStyle: "default",
-    title: "Daemon",
+    statusBarStyle: 'default',
+    title: 'Daemon',
   },
   icons: {
-    apple: "/icons/icon-192x192.png",
-    icon: "/icons/icon-192x192.png",
+    apple: '/icons/icon-192x192.png',
+    icon: '/icons/icon-192x192.png',
   },
 };
 
 export const viewport: Viewport = {
-  width: "device-width",
+  width: 'device-width',
   initialScale: 1,
   maximumScale: 1,
-  viewportFit: "cover",
+  viewportFit: 'cover',
 };
 
 export default function RootLayout({

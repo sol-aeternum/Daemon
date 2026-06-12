@@ -1,8 +1,8 @@
-"use client";
+'use client';
 
-import { Memory } from "@/hooks/useMemories";
-import { formatRelativeTime } from "@/lib/format";
-import { Sparkles, Pencil, Wrench } from "lucide-react";
+import { Memory } from '@/hooks/useMemories';
+import { formatRelativeTime } from '@/lib/format';
+import { Sparkles, Pencil, Wrench } from 'lucide-react';
 
 interface MemoryCardProps {
   memory: Memory;
@@ -15,27 +15,32 @@ const sourceIcons = {
   tool: Wrench,
 } as const;
 
-function getSourceIcon(sourceType: string) {
-  return sourceIcons[sourceType as keyof typeof sourceIcons] || Sparkles;
+function SourceIcon({ sourceType }: { sourceType: string }) {
+  if (sourceType === 'manual') {
+    return <Pencil className="w-3 h-3" />;
+  }
+  if (sourceType === 'tool') {
+    return <Wrench className="w-3 h-3" />;
+  }
+  return <Sparkles className="w-3 h-3" />;
 }
 
 function getConfidenceColor(confidence?: number): string {
-  if (confidence === undefined) return "bg-text-muted";
-  if (confidence >= 0.8) return "bg-status-success";
-  if (confidence >= 0.5) return "bg-status-warning";
-  return "bg-status-error";
+  if (confidence === undefined) return 'bg-text-muted';
+  if (confidence >= 0.8) return 'bg-status-success';
+  if (confidence >= 0.5) return 'bg-status-warning';
+  return 'bg-status-error';
 }
 
 function truncateContent(content: string, maxLines: number = 2): string {
-  const lines = content.split("\n").filter((line) => line.trim());
+  const lines = content.split('\n').filter((line) => line.trim());
   if (lines.length <= maxLines) {
-    return content.length > 120 ? content.slice(0, 120) + "..." : content;
+    return content.length > 120 ? content.slice(0, 120) + '...' : content;
   }
-  return lines.slice(0, maxLines).join(" ").slice(0, 120) + "...";
+  return lines.slice(0, maxLines).join(' ').slice(0, 120) + '...';
 }
 
 export function MemoryCard({ memory, onSelect }: MemoryCardProps) {
-  const SourceIcon = getSourceIcon(memory.source_type);
   const confidence = memory.metadata?.confidence as number | undefined;
   const confidenceColor = getConfidenceColor(confidence);
 
@@ -54,12 +59,12 @@ export function MemoryCard({ memory, onSelect }: MemoryCardProps) {
             className={`w-2 h-2 rounded-full ${confidenceColor} ring-2 ring-opacity-20 ring-current`}
             aria-label={`Confidence: ${
               confidence === undefined
-                ? "unknown"
+                ? 'unknown'
                 : confidence >= 0.8
-                  ? "high"
+                  ? 'high'
                   : confidence >= 0.5
-                    ? "medium"
-                    : "low"
+                    ? 'medium'
+                    : 'low'
             }`}
           />
         </div>
@@ -83,7 +88,7 @@ export function MemoryCard({ memory, onSelect }: MemoryCardProps) {
               className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-bg-tertiary text-text-muted"
               title={`Source: ${memory.source_type}`}
             >
-              <SourceIcon className="w-3 h-3" />
+              <SourceIcon sourceType={memory.source_type} />
             </span>
 
             {/* Timestamp */}

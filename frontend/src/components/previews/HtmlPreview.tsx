@@ -1,7 +1,7 @@
-"use client";
+'use client';
 
-import { useState, useEffect, useRef } from "react";
-import { Loader2, AlertCircle, Code2 } from "lucide-react";
+import { useState, useEffect, useRef } from 'react';
+import { Loader2, AlertCircle, Code2 } from 'lucide-react';
 
 interface HtmlPreviewProps {
   content: string;
@@ -24,14 +24,16 @@ export function HtmlPreview({ content, title }: HtmlPreviewProps) {
 
   // Handle iframe load errors
   const handleIframeError = () => {
-    setError("Failed to load HTML preview");
+    setError('Failed to load HTML preview');
   };
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center gap-3 p-8 bg-[var(--color-bg-tertiary)] rounded-xl border border-[var(--color-border-primary)] max-h-[400px]">
         <Loader2 className="w-5 h-5 animate-spin text-[var(--color-accent-primary)]" />
-        <span className="text-sm text-[var(--color-text-muted)]">Loading HTML...</span>
+        <span className="text-sm text-[var(--color-text-muted)]">
+          Loading HTML...
+        </span>
       </div>
     );
   }
@@ -55,7 +57,7 @@ export function HtmlPreview({ content, title }: HtmlPreviewProps) {
         <div className="flex items-center gap-2">
           <Code2 className="w-4 h-4 text-[var(--color-accent-primary)]" />
           <span className="text-sm font-medium text-[var(--color-text-secondary)]">
-            {title || "HTML Preview"}
+            {title || 'HTML Preview'}
           </span>
         </div>
         <span className="text-xs text-[var(--color-text-muted)] bg-[var(--color-bg-tertiary)] px-2 py-1 rounded">
@@ -69,7 +71,7 @@ export function HtmlPreview({ content, title }: HtmlPreviewProps) {
           ref={iframeRef}
           srcDoc={content}
           sandbox="allow-scripts"
-          title={title || "HTML Preview"}
+          title={title || 'HTML Preview'}
           className="w-full min-h-[300px] bg-white"
           onError={handleIframeError}
         />

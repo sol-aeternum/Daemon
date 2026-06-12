@@ -1,9 +1,19 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useLocalStorage } from '@/hooks/useLocalStorage';
-import { SkeletonLine, SkeletonBlock, SkeletonCircle } from '@/components/ui/Skeleton';
-import { DEFAULT_STT_SETTINGS, DEFAULT_TTS_SETTINGS, type SttSettings, type TtsSettings } from '@/lib/constants';
+import { useClientMounted } from '@/hooks/useClientMounted';
+import {
+  SkeletonLine,
+  SkeletonBlock,
+  SkeletonCircle,
+} from '@/components/ui/Skeleton';
+import {
+  DEFAULT_STT_SETTINGS,
+  DEFAULT_TTS_SETTINGS,
+  type SttSettings,
+  type TtsSettings,
+} from '@/lib/constants';
 import {
   Volume2,
   Mic,
@@ -53,9 +63,11 @@ const STT_LANGUAGES = [
 type SaveStatus = 'idle' | 'loading' | 'success' | 'error';
 
 export default function VoiceTab() {
-  const [mounted, setMounted] = useState(false);
-  const { value: ttsSettings, setValue: setTtsSettings } = useLocalStorage<TtsSettings>('tts_settings', DEFAULT_TTS_SETTINGS);
-  const { value: sttSettings, setValue: setSttSettings } = useLocalStorage<SttSettings>('stt_settings', DEFAULT_STT_SETTINGS);
+  const mounted = useClientMounted();
+  const { value: ttsSettings, setValue: setTtsSettings } =
+    useLocalStorage<TtsSettings>('tts_settings', DEFAULT_TTS_SETTINGS);
+  const { value: sttSettings, setValue: setSttSettings } =
+    useLocalStorage<SttSettings>('stt_settings', DEFAULT_STT_SETTINGS);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [errorMessage, setErrorMessage] = useState('');
 
@@ -84,18 +96,20 @@ export default function VoiceTab() {
   };
 
   // Update TTS settings
-  const updateTtsSetting = <K extends keyof TtsSettings>(key: K, value: TtsSettings[K]) => {
+  const updateTtsSetting = <K extends keyof TtsSettings>(
+    key: K,
+    value: TtsSettings[K],
+  ) => {
     setTtsSettings((prev) => ({ ...prev, [key]: value }));
   };
 
   // Update STT settings
-  const updateSttSetting = <K extends keyof SttSettings>(key: K, value: SttSettings[K]) => {
+  const updateSttSetting = <K extends keyof SttSettings>(
+    key: K,
+    value: SttSettings[K],
+  ) => {
     setSttSettings((prev) => ({ ...prev, [key]: value }));
   };
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
 
   if (!mounted) {
     return (
@@ -122,8 +136,12 @@ export default function VoiceTab() {
           <Volume2 className="w-5 h-5 text-[var(--color-accent-primary)]" />
         </div>
         <div>
-          <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">Voice Settings</h2>
-          <p className="text-sm text-[var(--color-text-muted)]">Configure text-to-speech and speech-to-text preferences</p>
+          <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">
+            Voice Settings
+          </h2>
+          <p className="text-sm text-[var(--color-text-muted)]">
+            Configure text-to-speech and speech-to-text preferences
+          </p>
         </div>
       </div>
 
@@ -132,8 +150,12 @@ export default function VoiceTab() {
         <div className="mb-6 p-4 rounded-lg bg-[var(--color-status-error-bg)] border border-[var(--color-status-error)]/20 flex items-start gap-3 animate-slide-up">
           <AlertCircle className="w-5 h-5 text-[var(--color-status-error)] flex-shrink-0 mt-0.5" />
           <div>
-            <p className="text-sm font-medium text-[var(--color-status-error)]">Save failed</p>
-            <p className="text-sm text-[var(--color-text-secondary)]">{errorMessage}</p>
+            <p className="text-sm font-medium text-[var(--color-status-error)]">
+              Save failed
+            </p>
+            <p className="text-sm text-[var(--color-text-secondary)]">
+              {errorMessage}
+            </p>
           </div>
         </div>
       )}
@@ -142,18 +164,25 @@ export default function VoiceTab() {
       {saveStatus === 'success' && (
         <div className="mb-6 p-4 rounded-lg bg-[var(--color-status-success-bg)] border border-[var(--color-status-success)]/20 flex items-center gap-3 animate-slide-up">
           <CheckCircle2 className="w-5 h-5 text-[var(--color-status-success)] flex-shrink-0" />
-          <p className="text-sm font-medium text-[var(--color-status-success)]">Settings saved successfully</p>
+          <p className="text-sm font-medium text-[var(--color-status-success)]">
+            Settings saved successfully
+          </p>
         </div>
       )}
 
-      <fieldset disabled={saveStatus === 'loading'} className="space-y-8 disabled:opacity-70">
+      <fieldset
+        disabled={saveStatus === 'loading'}
+        className="space-y-8 disabled:opacity-70"
+      >
         {/* ========================================
             TEXT TO SPEECH SECTION
             ======================================== */}
         <section className="space-y-5">
           <div className="flex items-center gap-2">
             <Music className="w-5 h-5 text-[var(--color-accent-primary)]" />
-            <h3 className="text-base font-semibold text-[var(--color-text-primary)]">Text to Speech</h3>
+            <h3 className="text-base font-semibold text-[var(--color-text-primary)]">
+              Text to Speech
+            </h3>
           </div>
 
           <div className="space-y-5 pl-4 border-l-2 border-[var(--color-border-primary)]">
@@ -173,9 +202,13 @@ export default function VoiceTab() {
               </div>
               <button
                 type="button"
-                onClick={() => updateTtsSetting('autoPlay', !ttsSettings.autoPlay)}
+                onClick={() =>
+                  updateTtsSetting('autoPlay', !ttsSettings.autoPlay)
+                }
                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)]/50 ${
-                  ttsSettings.autoPlay ? 'bg-[var(--color-accent-primary)]' : 'bg-[var(--color-bg-tertiary)]'
+                  ttsSettings.autoPlay
+                    ? 'bg-[var(--color-accent-primary)]'
+                    : 'bg-[var(--color-bg-tertiary)]'
                 }`}
               >
                 <span
@@ -202,9 +235,13 @@ export default function VoiceTab() {
               </div>
               <button
                 type="button"
-                onClick={() => updateTtsSetting('enabled', !ttsSettings.enabled)}
+                onClick={() =>
+                  updateTtsSetting('enabled', !ttsSettings.enabled)
+                }
                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)]/50 ${
-                  ttsSettings.enabled ? 'bg-[var(--color-accent-primary)]' : 'bg-[var(--color-bg-tertiary)]'
+                  ttsSettings.enabled
+                    ? 'bg-[var(--color-accent-primary)]'
+                    : 'bg-[var(--color-bg-tertiary)]'
                 }`}
               >
                 <span
@@ -296,7 +333,9 @@ export default function VoiceTab() {
                   max="2.0"
                   step="0.1"
                   value={ttsSettings.speed}
-                  onChange={(e) => updateTtsSetting('speed', parseFloat(e.target.value))}
+                  onChange={(e) =>
+                    updateTtsSetting('speed', parseFloat(e.target.value))
+                  }
                   disabled={!ttsSettings.enabled}
                   className="flex-1 h-2 bg-[var(--color-bg-tertiary)] rounded-lg appearance-none cursor-pointer accent-[var(--color-accent-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
                   style={{
@@ -364,7 +403,9 @@ export default function VoiceTab() {
         <section className="space-y-5">
           <div className="flex items-center gap-2">
             <Mic className="w-5 h-5 text-[var(--color-accent-primary)]" />
-            <h3 className="text-base font-semibold text-[var(--color-text-primary)]">Speech to Text</h3>
+            <h3 className="text-base font-semibold text-[var(--color-text-primary)]">
+              Speech to Text
+            </h3>
           </div>
 
           <div className="space-y-5 pl-4 border-l-2 border-[var(--color-border-primary)]">
@@ -427,14 +468,23 @@ export default function VoiceTab() {
               </div>
               <button
                 type="button"
-                onClick={() => updateSttSetting('enablePartials', !sttSettings.enablePartials)}
+                onClick={() =>
+                  updateSttSetting(
+                    'enablePartials',
+                    !sttSettings.enablePartials,
+                  )
+                }
                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)]/50 ${
-                  sttSettings.enablePartials ? 'bg-[var(--color-accent-primary)]' : 'bg-[var(--color-bg-tertiary)]'
+                  sttSettings.enablePartials
+                    ? 'bg-[var(--color-accent-primary)]'
+                    : 'bg-[var(--color-bg-tertiary)]'
                 }`}
               >
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                    sttSettings.enablePartials ? 'translate-x-6' : 'translate-x-1'
+                    sttSettings.enablePartials
+                      ? 'translate-x-6'
+                      : 'translate-x-1'
                   }`}
                 />
               </button>

@@ -1,17 +1,26 @@
-"use client";
+'use client';
 
-import { Suspense, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
-import { Download, ExternalLink, ImageIcon, Maximize2, Music2, RefreshCw, X } from "lucide-react";
-import { SidebarShell } from "@/components/SidebarShell";
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import Image from 'next/image';
+import { useRouter } from 'next/navigation';
+import {
+  Download,
+  ExternalLink,
+  ImageIcon,
+  Maximize2,
+  Music2,
+  RefreshCw,
+  X,
+} from 'lucide-react';
+import { SidebarShell } from '@/components/SidebarShell';
 import {
   ConversationHistoryProvider,
   useConversationHistoryContext,
-} from "@/components/ConversationHistoryProvider";
-import { useAuthenticatedImageUrl } from "@/hooks/useAuthenticatedImageUrl";
-import { ensureAuthHeader } from "@/lib/auth";
+} from '@/components/ConversationHistoryProvider';
+import { useAuthenticatedImageUrl } from '@/hooks/useAuthenticatedImageUrl';
+import { ensureAuthHeader } from '@/lib/auth';
 
-type ArtifactKind = "image" | "audio";
+type ArtifactKind = 'image' | 'audio';
 
 interface ArtifactItem {
   path: string;
@@ -36,20 +45,27 @@ const extractPaths = (content: string, pattern: RegExp): string[] => {
 
 function ArtifactsView() {
   const router = useRouter();
-  const { conversations, fetchConversationById } = useConversationHistoryContext();
+  const { conversations, fetchConversationById } =
+    useConversationHistoryContext();
   const [artifacts, setArtifacts] = useState<ArtifactItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [lightboxImage, setLightboxImage] = useState<{ url: string; title: string } | null>(null);
+  const [lightboxImage, setLightboxImage] = useState<{
+    url: string;
+    title: string;
+  } | null>(null);
 
   const apiBaseUrl =
     process.env.NEXT_PUBLIC_API_URL ||
-    (process.env.NODE_ENV === "development" ? "http://localhost:8000" : "");
+    (process.env.NODE_ENV === 'development' ? 'http://localhost:8000' : '');
 
-  const collectArtifacts = async () => {
+  const collectArtifacts = useCallback(async () => {
     setIsLoading(true);
 
     const latestConversations = [...conversations]
-      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+      .sort(
+        (a, b) =>
+          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+      )
       .slice(0, 20);
 
     const details = await Promise.all(
@@ -70,14 +86,15 @@ function ArtifactsView() {
       }
 
       for (const message of fullConversation.messages) {
-        const content = typeof message.content === "string" ? message.content : "";
+        const content =
+          typeof message.content === 'string' ? message.content : '';
         const imagePaths = extractPaths(content, IMAGE_PATTERN);
         const audioPaths = extractPaths(content, AUDIO_PATTERN);
 
         for (const path of imagePaths) {
           dedupedArtifacts.set(path, {
             path,
-            kind: "image",
+            kind: 'image',
             conversationId: conversation.id,
             conversationTitle: conversation.title,
             updatedAt: conversation.updatedAt,
@@ -87,7 +104,7 @@ function ArtifactsView() {
         for (const path of audioPaths) {
           dedupedArtifacts.set(path, {
             path,
-            kind: "audio",
+            kind: 'audio',
             conversationId: conversation.id,
             conversationTitle: conversation.title,
             updatedAt: conversation.updatedAt,
@@ -97,20 +114,21 @@ function ArtifactsView() {
     }
 
     const artifactList = [...dedupedArtifacts.values()].sort(
-      (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+      (a, b) =>
+        new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
     );
 
     setArtifacts(artifactList);
     setIsLoading(false);
-  };
+  }, [conversations, fetchConversationById]);
 
   useEffect(() => {
-    collectArtifacts();
-  }, [conversations]);
+    queueMicrotask(() => void collectArtifacts());
+  }, [collectArtifacts]);
 
   const summary = useMemo(() => {
-    const images = artifacts.filter((item) => item.kind === "image").length;
-    const audio = artifacts.filter((item) => item.kind === "audio").length;
+    const images = artifacts.filter((item) => item.kind === 'image').length;
+    const audio = artifacts.filter((item) => item.kind === 'audio').length;
     return { images, audio };
   }, [artifacts]);
 
@@ -123,14 +141,16 @@ function ArtifactsView() {
           onClick={collectArtifacts}
           className="hidden md:inline-flex items-center gap-2 rounded-xl border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-4 py-2.5 text-sm font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
         >
-          <RefreshCw className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
+          <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
           Refresh
         </button>
       }
     >
       <div className="mx-auto w-full max-w-6xl px-4 py-6 md:px-6 md:py-8 space-y-5">
         <div className="rounded-2xl border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] p-5">
-          <h2 className="text-xl font-semibold text-[var(--color-text-primary)]">Generated content library</h2>
+          <h2 className="text-xl font-semibold text-[var(--color-text-primary)]">
+            Generated content library
+          </h2>
           <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
             Review generated images and audio from your recent conversations.
           </p>
@@ -162,7 +182,7 @@ function ArtifactsView() {
                 className="overflow-hidden rounded-2xl border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)]"
               >
                 <div className="aspect-[16/10] w-full bg-[var(--color-bg-tertiary)] flex items-center justify-center overflow-hidden">
-                  {artifact.kind === "image" ? (
+                  {artifact.kind === 'image' ? (
                     <ArtifactImageItem
                       path={artifact.path}
                       mediaUrl={mediaUrl}
@@ -170,7 +190,8 @@ function ArtifactsView() {
                       onOpen={(url) =>
                         setLightboxImage({
                           url,
-                          title: artifact.conversationTitle || "Generated image",
+                          title:
+                            artifact.conversationTitle || 'Generated image',
                         })
                       }
                     />
@@ -181,14 +202,20 @@ function ArtifactsView() {
 
                 <div className="space-y-2 p-4">
                   <div className="inline-flex items-center gap-2 rounded-md bg-[var(--color-bg-tertiary)] px-2 py-1 text-xs text-[var(--color-text-secondary)]">
-                    {artifact.kind === "image" ? <ImageIcon className="h-3.5 w-3.5" /> : <Music2 className="h-3.5 w-3.5" />}
-                    {artifact.kind === "image" ? "Image" : "Audio"}
+                    {artifact.kind === 'image' ? (
+                      <ImageIcon className="h-3.5 w-3.5" />
+                    ) : (
+                      <Music2 className="h-3.5 w-3.5" />
+                    )}
+                    {artifact.kind === 'image' ? 'Image' : 'Audio'}
                   </div>
                   <p className="truncate text-sm font-medium text-[var(--color-text-primary)]">
-                    {artifact.conversationTitle || "Conversation"}
+                    {artifact.conversationTitle || 'Conversation'}
                   </p>
                   <button
-                    onClick={() => router.push(`/?id=${artifact.conversationId}`)}
+                    onClick={() =>
+                      router.push(`/?id=${artifact.conversationId}`)
+                    }
                     className="inline-flex items-center gap-1.5 text-sm text-[var(--color-accent-primary)] hover:underline"
                   >
                     Open conversation
@@ -221,9 +248,13 @@ function ArtifactAudioItem({ path }: { path: string }) {
         Audio artifact
       </div>
       {loading ? (
-        <div className="text-sm text-[var(--color-text-muted)]">Loading audio...</div>
+        <div className="text-sm text-[var(--color-text-muted)]">
+          Loading audio...
+        </div>
       ) : error || !displayUrl ? (
-        <div className="text-sm text-[var(--color-text-muted)]">Failed to load audio</div>
+        <div className="text-sm text-[var(--color-text-muted)]">
+          Failed to load audio
+        </div>
       ) : (
         <audio controls className="w-full" src={displayUrl} />
       )}
@@ -250,16 +281,16 @@ function ArtifactImageItem({
     try {
       const authHeader = await ensureAuthHeader();
       const headers = new Headers();
-      if (authHeader) headers.set("Authorization", authHeader);
+      if (authHeader) headers.set('Authorization', authHeader);
       const response = await fetch(mediaUrl, { headers });
       if (!response.ok) throw new Error(`Download failed: ${response.status}`);
       const blob = await response.blob();
       objectUrl = URL.createObjectURL(blob);
-      const link = document.createElement("a");
+      const link = document.createElement('a');
       link.href = objectUrl;
       link.download = `artifact-image-${Date.now()}.png`;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
       document.body.appendChild(link);
       cleanupAnchor = link;
       link.click();
@@ -295,9 +326,12 @@ function ArtifactImageItem({
 
   return (
     <div className="relative group h-full w-full">
-      <img
+      <Image
         src={resolvedUrl}
         alt={conversationTitle}
+        fill
+        unoptimized
+        sizes="(min-width: 1280px) 33vw, (min-width: 768px) 50vw, 100vw"
         className="h-full w-full object-cover cursor-pointer hover:opacity-95 transition-opacity"
         onClick={() => onOpen(resolvedUrl)}
       />
@@ -335,18 +369,20 @@ function ArtifactLightbox({
   image: { url: string; title: string };
   onClose: () => void;
 }) {
-  const { displayUrl, loading, error } = useAuthenticatedImageUrl(image.url.startsWith("/") ? image.url : image.url);
+  const { displayUrl, loading, error } = useAuthenticatedImageUrl(
+    image.url.startsWith('/') ? image.url : image.url,
+  );
 
   const handleDownload = async () => {
     if (!displayUrl) return;
     let objectUrl: string | null = null;
     let cleanupAnchor: HTMLAnchorElement | null = null;
     try {
-      const link = document.createElement("a");
+      const link = document.createElement('a');
       link.href = displayUrl;
       link.download = `artifact-image-${Date.now()}.png`;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
       document.body.appendChild(link);
       cleanupAnchor = link;
       link.click();
@@ -376,9 +412,12 @@ function ArtifactLightbox({
       ) : error || !displayUrl ? (
         <div className="text-white/70 text-sm">Failed to load image</div>
       ) : (
-        <img
+        <Image
           src={displayUrl}
           alt={image.title}
+          width={1600}
+          height={1000}
+          unoptimized
           className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
           onClick={(event) => event.stopPropagation()}
         />
@@ -404,7 +443,13 @@ function ArtifactLightbox({
 
 export default function ArtifactsPage() {
   return (
-    <Suspense fallback={<div className="flex h-screen items-center justify-center">Loading artifacts...</div>}>
+    <Suspense
+      fallback={
+        <div className="flex h-screen items-center justify-center">
+          Loading artifacts...
+        </div>
+      }
+    >
       <ConversationHistoryProvider>
         <ArtifactsView />
       </ConversationHistoryProvider>

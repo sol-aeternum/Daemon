@@ -3,7 +3,6 @@
 import { useState } from 'react';
 import { ensureAuthHeader } from '@/lib/auth';
 
-
 interface SttSettings {
   language: string;
   enablePartials: boolean;
@@ -21,13 +20,19 @@ interface SettingsPanelProps {
   setSttSettings?: (settings: SttSettings) => void;
 }
 
-export default function SettingsPanel({ sttSettings, setSttSettings }: SettingsPanelProps) {
-  const [ttsSettings, setTtsSettings] = useLocalStorage<TtsSettings>('tts-settings', {
-    voice: 'rachel',
-    model: 'eleven_multilingual_v2',
-    speed: 1.0,
-    format: 'mp3_44100_128',
-  });
+export default function SettingsPanel({
+  sttSettings,
+  setSttSettings,
+}: SettingsPanelProps) {
+  const [ttsSettings, setTtsSettings] = useLocalStorage<TtsSettings>(
+    'tts-settings',
+    {
+      voice: 'rachel',
+      model: 'eleven_multilingual_v2',
+      speed: 1.0,
+      format: 'mp3_44100_128',
+    },
+  );
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || '';
@@ -40,11 +45,13 @@ export default function SettingsPanel({ sttSettings, setSttSettings }: SettingsP
             Speech To Text
           </p>
         </div>
-        
+
         {sttSettings && setSttSettings && (
           <div className="space-y-3 text-xs text-[var(--color-text-secondary)]">
             <div>
-              <label className="block mb-1 text-[var(--color-text-muted)]">Language</label>
+              <label className="block mb-1 text-[var(--color-text-muted)]">
+                Language
+              </label>
               <select
                 className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-2 py-1"
                 value={sttSettings.language}
@@ -81,7 +88,10 @@ export default function SettingsPanel({ sttSettings, setSttSettings }: SettingsP
                   })
                 }
               />
-              <label htmlFor="stt-partials" className="text-[var(--color-text-secondary)]">
+              <label
+                htmlFor="stt-partials"
+                className="text-[var(--color-text-secondary)]"
+              >
                 Show partial results
               </label>
             </div>
@@ -98,11 +108,15 @@ export default function SettingsPanel({ sttSettings, setSttSettings }: SettingsP
 
         <div className="space-y-3 text-xs text-[var(--color-text-secondary)]">
           <div>
-            <label className="block mb-1 text-[var(--color-text-muted)]">Voice</label>
+            <label className="block mb-1 text-[var(--color-text-muted)]">
+              Voice
+            </label>
             <select
               className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-2 py-1"
               value={ttsSettings.voice}
-              onChange={(e) => setTtsSettings({ ...ttsSettings, voice: e.target.value })}
+              onChange={(e) =>
+                setTtsSettings({ ...ttsSettings, voice: e.target.value })
+              }
             >
               <option value="rachel">Rachel</option>
               <option value="sam">Sam</option>
@@ -135,20 +149,30 @@ export default function SettingsPanel({ sttSettings, setSttSettings }: SettingsP
           </div>
 
           <div>
-            <label className="block mb-1 text-[var(--color-text-muted)]">Model</label>
+            <label className="block mb-1 text-[var(--color-text-muted)]">
+              Model
+            </label>
             <select
               className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-2 py-1"
               value={ttsSettings.model}
-              onChange={(e) => setTtsSettings({ ...ttsSettings, model: e.target.value })}
+              onChange={(e) =>
+                setTtsSettings({ ...ttsSettings, model: e.target.value })
+              }
             >
-              <option value="eleven_multilingual_v2">Eleven v2 (Multilingual)</option>
-              <option value="eleven_monolingual_v1">Eleven v1 (English only)</option>
+              <option value="eleven_multilingual_v2">
+                Eleven v2 (Multilingual)
+              </option>
+              <option value="eleven_monolingual_v1">
+                Eleven v1 (English only)
+              </option>
               <option value="eleven_turbo_v2">Turbo v2 (Fast)</option>
             </select>
           </div>
 
           <div>
-            <label className="block mb-1 text-[var(--color-text-muted)]">Speed: {ttsSettings.speed.toFixed(1)}x</label>
+            <label className="block mb-1 text-[var(--color-text-muted)]">
+              Speed: {ttsSettings.speed.toFixed(1)}x
+            </label>
             <input
               type="range"
               min="0.5"
@@ -156,16 +180,25 @@ export default function SettingsPanel({ sttSettings, setSttSettings }: SettingsP
               step="0.1"
               className="w-full accent-[var(--color-accent-primary)]"
               value={ttsSettings.speed}
-              onChange={(e) => setTtsSettings({ ...ttsSettings, speed: parseFloat(e.target.value) })}
+              onChange={(e) =>
+                setTtsSettings({
+                  ...ttsSettings,
+                  speed: parseFloat(e.target.value),
+                })
+              }
             />
           </div>
 
           <div>
-            <label className="block mb-1 text-[var(--color-text-muted)]">Format</label>
+            <label className="block mb-1 text-[var(--color-text-muted)]">
+              Format
+            </label>
             <select
               className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-2 py-1"
               value={ttsSettings.format}
-              onChange={(e) => setTtsSettings({ ...ttsSettings, format: e.target.value })}
+              onChange={(e) =>
+                setTtsSettings({ ...ttsSettings, format: e.target.value })
+              }
             >
               <option value="mp3_44100_128">MP3 128kbps</option>
               <option value="mp3_44100_256">MP3 256kbps</option>
@@ -181,8 +214,10 @@ export default function SettingsPanel({ sttSettings, setSttSettings }: SettingsP
       </div>
 
       <div className="px-4 py-3">
-        <p className="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wide mb-3">Memory</p>
-        
+        <p className="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wide mb-3">
+          Memory
+        </p>
+
         {!showDeleteConfirm ? (
           <button
             onClick={() => setShowDeleteConfirm(true)}
@@ -192,7 +227,9 @@ export default function SettingsPanel({ sttSettings, setSttSettings }: SettingsP
           </button>
         ) : (
           <div className="space-y-2">
-            <p className="text-xs text-[var(--color-status-error)]">Are you sure? This will delete all conversations and memories.</p>
+            <p className="text-xs text-[var(--color-status-error)]">
+              Are you sure? This will delete all conversations and memories.
+            </p>
             <div className="flex gap-2">
               <button
                 onClick={async () => {
@@ -207,8 +244,14 @@ export default function SettingsPanel({ sttSettings, setSttSettings }: SettingsP
                     for (const candidate of candidates) {
                       const headers = new Headers();
                       if (authHeader) headers.set('Authorization', authHeader);
-                      const res = await fetch(candidate, { method: 'DELETE', headers });
-                      if (res.ok) { success = true; break; }
+                      const res = await fetch(candidate, {
+                        method: 'DELETE',
+                        headers,
+                      });
+                      if (res.ok) {
+                        success = true;
+                        break;
+                      }
                     }
                     if (success) window.location.reload();
                   } catch (error) {
@@ -233,7 +276,10 @@ export default function SettingsPanel({ sttSettings, setSttSettings }: SettingsP
   );
 }
 
-function useLocalStorage<T>(key: string, initialValue: T): [T, (value: T) => void] {
+function useLocalStorage<T>(
+  key: string,
+  initialValue: T,
+): [T, (value: T) => void] {
   const [storedValue, setStoredValue] = useState<T>(() => {
     if (typeof window === 'undefined') {
       return initialValue;

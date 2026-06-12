@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { ChatEvent } from '../lib/events';
 
-export type AgentStatus = "pending" | "running" | "completed" | "error";
+export type AgentStatus = 'pending' | 'running' | 'completed' | 'error';
 
 export interface AgentState {
   id: string;
@@ -17,7 +17,7 @@ export function useAgentStatus(events: ChatEvent[]) {
   const agents = useMemo(() => {
     const agentMap: Record<string, AgentState> = {};
 
-    events.forEach(event => {
+    events.forEach((event) => {
       if (event.type === 'agent_spawn') {
         agentMap[event.agent] = {
           id: event.agent,

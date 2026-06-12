@@ -1,9 +1,9 @@
-"use client";
+'use client';
 
-import { Message } from "ai";
-import { useCallback, useEffect, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import { getAuthHeader, refreshIfNeeded } from "@/lib/auth";
+import { Message } from 'ai';
+import { useCallback, useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { getAuthHeader, refreshIfNeeded } from '@/lib/auth';
 
 export interface Conversation {
   id: string;
@@ -36,16 +36,18 @@ interface ApiConversation {
 export function useConversationHistory() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [isLoaded, setIsLoaded] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState('');
   const router = useRouter();
   const searchParams = useSearchParams();
-  const currentId = searchParams.get("id");
+  const currentId = searchParams.get('id');
 
   const apiBaseUrl =
     process.env.NEXT_PUBLIC_API_URL ||
-    (process.env.NODE_ENV === "development" ? "http://localhost:8000" : "");
+    (process.env.NODE_ENV === 'development' ? 'http://localhost:8000' : '');
 
-  const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
+  const getAuthHeaders = useCallback(async (): Promise<
+    Record<string, string>
+  > => {
     const header = getAuthHeader();
     if (header) return { Authorization: header };
     const token = await refreshIfNeeded();
@@ -55,8 +57,10 @@ export function useConversationHistory() {
 
   const apiCandidates = useCallback(
     (path: string) => {
-      const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-      const trimmedBase = apiBaseUrl.endsWith("/") ? apiBaseUrl.slice(0, -1) : apiBaseUrl;
+      const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+      const trimmedBase = apiBaseUrl.endsWith('/')
+        ? apiBaseUrl.slice(0, -1)
+        : apiBaseUrl;
 
       if (!trimmedBase) {
         return [normalizedPath];
@@ -64,7 +68,7 @@ export function useConversationHistory() {
 
       return [`${trimmedBase}${normalizedPath}`, normalizedPath];
     },
-    [apiBaseUrl]
+    [apiBaseUrl],
   );
 
   const apiFetch = useCallback(
@@ -77,14 +81,19 @@ export function useConversationHistory() {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => {
           try {
-            controller.abort(new DOMException("Request timed out", "AbortError"));
+            controller.abort(
+              new DOMException('Request timed out', 'AbortError'),
+            );
           } catch {
             controller.abort();
           }
         }, timeoutMs);
 
         try {
-          const response = await fetch(candidate, { ...init, signal: controller.signal });
+          const response = await fetch(candidate, {
+            ...init,
+            signal: controller.signal,
+          });
           clearTimeout(timeoutId);
 
           if (response.status === 404 && index < candidates.length - 1) {
@@ -104,14 +113,14 @@ export function useConversationHistory() {
       if (lastError instanceof Error) {
         throw lastError;
       }
-      throw new Error("Request failed");
+      throw new Error('Request failed');
     },
-    [apiCandidates]
+    [apiCandidates],
   );
 
   const fetchConversations = useCallback(async () => {
     try {
-      const response = await apiFetch("/conversations?limit=100", {
+      const response = await apiFetch('/conversations?limit=100', {
         headers: await getAuthHeaders(),
       });
       if (!response.ok) {
@@ -120,25 +129,27 @@ export function useConversationHistory() {
       }
       const data = await response.json();
       const conversationsArray: ApiConversation[] = data.conversations || [];
-      
-      const formattedConversations: Conversation[] = conversationsArray.map((conv) => ({
-        id: conv.id,
-        title: conv.title,
-        messages: [], // Messages are fetched individually
-        selectedModel: conv.metadata?.model || "auto",
-        createdAt: conv.created_at,
-        updatedAt: conv.updated_at,
-        messageCount: conv.message_count,
-        lastActivityAt: conv.last_activity_at,
-        pinned: conv.pinned,
-        title_locked: conv.title_locked,
-        status: conv.status,
-        metadata: conv.metadata || {},
-      }));
+
+      const formattedConversations: Conversation[] = conversationsArray.map(
+        (conv) => ({
+          id: conv.id,
+          title: conv.title,
+          messages: [], // Messages are fetched individually
+          selectedModel: conv.metadata?.model || 'auto',
+          createdAt: conv.created_at,
+          updatedAt: conv.updated_at,
+          messageCount: conv.message_count,
+          lastActivityAt: conv.last_activity_at,
+          pinned: conv.pinned,
+          title_locked: conv.title_locked,
+          status: conv.status,
+          metadata: conv.metadata || {},
+        }),
+      );
 
       setConversations(formattedConversations);
     } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
+      if (error instanceof DOMException && error.name === 'AbortError') {
         return;
       }
       setConversations([]);
@@ -156,20 +167,23 @@ export function useConversationHistory() {
 
   const createConversation = useCallback(async () => {
     try {
-      const response = await apiFetch("/conversations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) },
-        body: JSON.stringify({ title: "New conversation" }),
+      const response = await apiFetch('/conversations', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(await getAuthHeaders()),
+        },
+        body: JSON.stringify({ title: 'New conversation' }),
       });
-      
+
       if (!response.ok) return null;
-      
+
       const newConv: ApiConversation = await response.json();
       const formattedConv: Conversation = {
         id: newConv.id,
         title: newConv.title,
         messages: [],
-        selectedModel: "auto",
+        selectedModel: 'auto',
         createdAt: newConv.created_at,
         updatedAt: newConv.updated_at,
         messageCount: newConv.message_count,
@@ -189,42 +203,52 @@ export function useConversationHistory() {
   }, [apiFetch, getAuthHeaders, router]);
 
   const updateConversation = useCallback(
-    async (id: string, updates: Partial<Conversation> & { messages?: Message[] }) => {
+    async (
+      id: string,
+      updates: Partial<Conversation> & { messages?: Message[] },
+    ) => {
       // Optimistic update
       setConversations((prev) =>
-        prev.map((conv) => (conv.id === id ? { ...conv, ...updates } : conv))
+        prev.map((conv) => (conv.id === id ? { ...conv, ...updates } : conv)),
       );
 
       try {
         const payload: any = {};
         if (updates.title !== undefined) payload.title = updates.title;
         if (updates.pinned !== undefined) payload.pinned = updates.pinned;
-        if (updates.title_locked !== undefined) payload.title_locked = updates.title_locked;
+        if (updates.title_locked !== undefined)
+          payload.title_locked = updates.title_locked;
         if (updates.selectedModel !== undefined) {
-            // Update metadata for model selection
-            const currentConv = conversations.find(c => c.id === id);
-            payload.metadata = { ...(currentConv?.metadata || {}), model: updates.selectedModel };
+          // Update metadata for model selection
+          const currentConv = conversations.find((c) => c.id === id);
+          payload.metadata = {
+            ...(currentConv?.metadata || {}),
+            model: updates.selectedModel,
+          };
         }
 
         if (Object.keys(payload).length > 0) {
-            await apiFetch(`/conversations/${id}`, {
-                method: "PATCH",
-                headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) },
-                body: JSON.stringify(payload),
-            });
+          await apiFetch(`/conversations/${id}`, {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(await getAuthHeaders()),
+            },
+            body: JSON.stringify(payload),
+          });
         }
       } catch {
         fetchConversations(); // Revert on error
       }
     },
-    [apiFetch, conversations, fetchConversations, getAuthHeaders]
+    [apiFetch, conversations, fetchConversations, getAuthHeaders],
   );
 
   const setConversationModel = useCallback(
     (id: string, model: string) => {
       updateConversation(id, { selectedModel: model });
     },
-    [updateConversation]
+    [updateConversation],
   );
 
   const deleteConversation = useCallback(
@@ -232,12 +256,12 @@ export function useConversationHistory() {
       // Optimistic update
       setConversations((prev) => prev.filter((conv) => conv.id !== id));
       if (currentId === id) {
-        router.push("/");
+        router.push('/');
       }
 
       try {
         const response = await apiFetch(`/conversations/${id}`, {
-          method: "DELETE",
+          method: 'DELETE',
           headers: await getAuthHeaders(),
         });
 
@@ -252,7 +276,7 @@ export function useConversationHistory() {
         return false;
       }
     },
-    [apiFetch, currentId, router, fetchConversations, getAuthHeaders]
+    [apiFetch, currentId, router, fetchConversations, getAuthHeaders],
   );
 
   const fetchConversationById = useCallback(
@@ -270,7 +294,7 @@ export function useConversationHistory() {
           id: data.id,
           title: data.title,
           messages: data.messages || [],
-          selectedModel: data.metadata?.model || "auto",
+          selectedModel: data.metadata?.model || 'auto',
           createdAt: data.created_at,
           updatedAt: data.updated_at,
           messageCount: data.message_count,
@@ -286,10 +310,11 @@ export function useConversationHistory() {
         return null;
       }
     },
-    [apiFetch, getAuthHeaders]
+    [apiFetch, getAuthHeaders],
   );
 
-  const [currentConversation, setCurrentConversation] = useState<Conversation | null>(null);
+  const [currentConversation, setCurrentConversation] =
+    useState<Conversation | null>(null);
 
   useEffect(() => {
     if (!currentId) {
@@ -311,9 +336,12 @@ export function useConversationHistory() {
     return currentConversation;
   }, [currentConversation]);
 
-  const switchConversation = useCallback((id: string) => {
-    router.push(`/?id=${id}`);
-  }, [router]);
+  const switchConversation = useCallback(
+    (id: string) => {
+      router.push(`/?id=${id}`);
+    },
+    [router],
+  );
 
   return {
     conversations,
@@ -328,6 +356,6 @@ export function useConversationHistory() {
     fetchConversationById,
     searchQuery,
     setSearchQuery,
-    refreshConversations: fetchConversations
+    refreshConversations: fetchConversations,
   };
 }

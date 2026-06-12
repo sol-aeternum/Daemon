@@ -1,25 +1,28 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
+from collections.abc import Awaitable
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response
 
 from orchestrator import db as db_module
+from orchestrator.config import Settings
 from orchestrator.routes import video_credits
 
 
-def _build_app(settings, dal):
+def _build_app(settings: Settings, dal: object) -> FastAPI:
     app = FastAPI()
     app.include_router(video_credits.router)
 
-    async def override_settings():
+    async def override_settings() -> Settings:
         return settings
 
-    async def override_app_state():
-        return SimpleNamespace(video_credits_dal=dal)
+    async def override_app_state() -> db_module.AppState:
+        return cast(db_module.AppState, SimpleNamespace(video_credits_dal=dal))
 
     app.dependency_overrides[video_credits.get_settings] = override_settings
     app.dependency_overrides[db_module.get_app_state] = override_app_state
@@ -28,18 +31,27 @@ def _build_app(settings, dal):
 
 def _settings(
     *, admin_key: str | None = "secret-admin-key", max_grant: int = 100, min_desc: int = 5
-) -> SimpleNamespace:
-    return SimpleNamespace(
-        daemon_admin_api_key=admin_key,
-        daemon_max_grant_amount_per_request=max_grant,
-        daemon_min_grant_description_length=min_desc,
-        daemon_environment="development",
+) -> Settings:
+    return cast(
+        Settings,
+        SimpleNamespace(
+            daemon_admin_api_key=admin_key,
+            daemon_max_grant_amount_per_request=max_grant,
+            daemon_min_grant_description_length=min_desc,
+            daemon_environment="development",
+        ),
     )
 
 
-def _fake_dal(success=True, message="ok", captured=None):
+def _fake_dal(
+    success: bool = True,
+    message: str = "ok",
+    captured: dict[str, str] | None = None,
+) -> object:
     class FakeDAL:
-        async def credit_credits(self, user_id, amount, txn_type, description):
+        async def credit_credits(
+            self, user_id: object, amount: object, txn_type: object, description: str
+        ) -> SimpleNamespace:
             if captured is not None:
                 captured["description"] = description
             return SimpleNamespace(success=success, message=message, transaction_id=uuid.uuid4())
@@ -47,7 +59,9 @@ def _fake_dal(success=True, message="ok", captured=None):
     return FakeDAL()
 
 
-def _post(app, body, token="secret-admin-key"):
+def _post(
+    app: FastAPI, body: dict[str, object], token: str | None = "secret-admin-key"
+) -> Response:
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     return _run_asgi_request(app, "POST", "/video-credits/grant", headers=headers, json=body)
 
@@ -58,12 +72,10 @@ def _run_asgi_request(app: FastAPI, method: str, url: str, **kwargs: Any) -> Res
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             return await client.request(method, url, **kwargs)
 
-    return _asyncio_run(_request())
+    return cast(Response, _asyncio_run(_request()))
 
 
-def _asyncio_run(awaitable: Any) -> Any:
-    import asyncio
-
+def _asyncio_run(awaitable: Awaitable[Any]) -> Any:
     return asyncio.run(awaitable)
 
 
@@ -101,7 +113,7 @@ def test_grant_rejects_short_description():
 
 
 def test_grant_trims_description():
-    captured: dict = {}
+    captured: dict[str, str] = {}
     app = _build_app(_settings(), _fake_dal(success=True, captured=captured))
     r = _post(app, {"user_id": str(uuid.uuid4()), "amount": 10, "description": "   hello   "})
     assert r.status_code == 201
