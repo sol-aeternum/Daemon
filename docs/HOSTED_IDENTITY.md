@@ -184,10 +184,14 @@ self-hosted. Setup, enrollment, and device endpoints remain available for self-h
 recovery flows on the same router.
 
 When hosted auth runs through the Next.js frontend auth proxy, operators may optionally set
-`DAEMON_TRUST_PROXY_FORWARDED_CLIENT_IP=true` so identity rate limits key on the original
-browser IP carried in trusted forwarded headers instead of the proxy/container hop. Leave the
-flag false for direct/self-hosted deployments; the default safe posture is to trust only the
-immediate socket IP and ignore arbitrary forwarded headers.
+`DAEMON_TRUST_PROXY_FORWARDED_CLIENT_IP=true` on the backend so identity rate limits can
+key on the original browser IP carried by the frontend's internal `X-Daemon-Client-IP`
+header instead of the proxy/container hop. The frontend auth proxy only sets that internal
+header from `X-Forwarded-For` / platform client-IP headers when its `DAEMON_TRUSTED_PROXY_IPS`
+allowlist contains the immediate proxy IP from `x-real-ip`; configure the reverse proxy to
+overwrite, not append, client IP headers. Leave both settings unset/false for direct/self-hosted
+deployments; the default safe posture is to trust only the immediate client IP and ignore
+arbitrary forwarded headers.
 
 ## Runtime Config
 

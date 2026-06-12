@@ -1,3 +1,5 @@
+import { isIP } from 'node:net';
+
 import { copyResponseHeaders } from '../../../_lib/cookies';
 
 const API_URLS = [
@@ -9,13 +11,20 @@ const API_URLS = [
 
 type RouteContext = { params: Promise<{ path: string[] }> };
 
-function shouldTrustPlatformClientIpHeaders(): boolean {
-  return process.env.DAEMON_TRUST_PLATFORM_CLIENT_IP_HEADERS === 'true';
+let warnedMissingTrustedProxyConfig = false;
+
+function trustedProxyIps(): Set<string> {
+  return new Set(
+    (process.env.DAEMON_TRUSTED_PROXY_IPS ?? '')
+      .split(',')
+      .map((value) => normalizeClientIp(value))
+      .filter((value): value is string => value !== null),
+  );
 }
 
 function normalizeClientIp(value: string | null): string | null {
   if (!value) return null;
-  const trimmed = value.trim();
+  let trimmed = value.trim().replace(/^"|"$/g, '');
   if (
     !trimmed ||
     trimmed.toLowerCase() === 'unknown' ||
@@ -23,10 +32,81 @@ function normalizeClientIp(value: string | null): string | null {
   ) {
     return null;
   }
-  if (/^[0-9a-fA-F:.]+$/.test(trimmed)) {
-    return trimmed;
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    trimmed = trimmed.slice(1, -1);
+  }
+  if (trimmed.includes(':') && trimmed.includes('.')) {
+    const [host, port] = trimmed.split(':');
+    if (host && port && /^\d+$/.test(port)) {
+      trimmed = host;
+    }
+  }
+  if (isIP(trimmed) !== 0) {
+    return trimmed.toLowerCase();
   }
   return null;
+}
+
+function closestUntrustedForwardedFor(
+  raw: string | null,
+  trustedProxies: Set<string>,
+): string | null {
+  if (!raw) return null;
+  const hops = raw
+    .split(',')
+    .map((value) => normalizeClientIp(value))
+    .filter((value): value is string => value !== null);
+  for (let index = hops.length - 1; index >= 0; index -= 1) {
+    if (!trustedProxies.has(hops[index])) {
+      return hops[index];
+    }
+  }
+  return null;
+}
+
+function platformClientIp(req: Request): string | null {
+  return (
+    normalizeClientIp(req.headers.get('x-vercel-forwarded-for')) ??
+    normalizeClientIp(req.headers.get('cf-connecting-ip'))
+  );
+}
+
+function hasClientIpForwardingHeaders(req: Request): boolean {
+  return (
+    req.headers.has('x-forwarded-for') ||
+    req.headers.has('x-vercel-forwarded-for') ||
+    req.headers.has('cf-connecting-ip') ||
+    req.headers.has('forwarded')
+  );
+}
+
+function warnMissingTrustedProxyConfig(): void {
+  if (warnedMissingTrustedProxyConfig) return;
+  warnedMissingTrustedProxyConfig = true;
+  console.warn(
+    'Ignoring forwarded client-IP headers because DAEMON_TRUSTED_PROXY_IPS is unset. ' +
+      'Configure trusted proxy IPs before using forwarded headers for auth rate limits.',
+  );
+}
+
+function daemonClientIp(req: Request): string | null {
+  const immediateIp = normalizeClientIp(req.headers.get('x-real-ip'));
+  const trustedProxies = trustedProxyIps();
+  if (trustedProxies.size === 0 && hasClientIpForwardingHeaders(req)) {
+    warnMissingTrustedProxyConfig();
+  }
+
+  if (!immediateIp) return null;
+  if (trustedProxies.size === 0 || !trustedProxies.has(immediateIp)) {
+    return immediateIp;
+  }
+
+  return (
+    closestUntrustedForwardedFor(
+      req.headers.get('x-forwarded-for'),
+      trustedProxies,
+    ) ?? platformClientIp(req)
+  );
 }
 
 function buildProxyHeaders(req: Request): Headers {
@@ -53,11 +133,8 @@ function buildProxyHeaders(req: Request): Headers {
   const xForwardedProto = req.headers.get('x-forwarded-proto');
   if (xForwardedProto) headers.set('X-Forwarded-Proto', xForwardedProto);
 
-  const daemonClientIp = shouldTrustPlatformClientIpHeaders()
-    ? (normalizeClientIp(req.headers.get('x-vercel-forwarded-for')) ??
-      normalizeClientIp(req.headers.get('cf-connecting-ip')))
-    : null;
-  if (daemonClientIp) headers.set('X-Daemon-Client-IP', daemonClientIp);
+  const clientIp = daemonClientIp(req);
+  if (clientIp) headers.set('X-Daemon-Client-IP', clientIp);
 
   const authorization = req.headers.get('authorization');
   if (authorization) headers.set('Authorization', authorization);
