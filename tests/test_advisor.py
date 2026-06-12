@@ -1260,11 +1260,16 @@ async def test_advisor_traces_persisted_but_not_in_history_messages(
     get_settings.cache_clear()
 
     captured_insert_calls: list[dict[str, Any]] = []
+    captured_update_calls: list[dict[str, Any]] = []
 
     class TrackingMemoryStore(_FakeMemoryStore):
         async def insert_message(self, **kwargs: Any) -> dict[str, Any]:
             captured_insert_calls.append(kwargs)
             return await super().insert_message(**kwargs)
+
+        async def update_message(self, message_id: Any, **kwargs: Any) -> None:
+            captured_update_calls.append({"message_id": message_id, **kwargs})
+            await super().update_message(message_id, **kwargs)
 
     async def fake_completion_with_tools(**kwargs: Any):
         yield {"type": "content_delta", "content": "With advisor "}
@@ -1362,15 +1367,16 @@ async def test_advisor_traces_persisted_but_not_in_history_messages(
     assert "final" in frame_types
     assert "done" in frame_types
 
-    # Verify advisor traces were passed to insert_message
+    # Verify advisor traces were persisted with the terminal assistant message update.
     assert len(captured_insert_calls) >= 1
-    final_insert = captured_insert_calls[-1]
+    assert len(captured_update_calls) >= 1
+    final_update = captured_update_calls[-1]
 
-    # Advisor traces should be stored WITH the message (advisor_traces parameter passed)
-    assert "advisor_traces" in final_insert, (
-        f"Expected advisor_traces in insert call: {final_insert.keys()}"
+    # Advisor traces should be stored WITH the message (advisor_traces parameter passed).
+    assert "advisor_traces" in final_update, (
+        f"Expected advisor_traces in update call: {final_update.keys()}"
     )
-    advisor_traces = final_insert["advisor_traces"]
+    advisor_traces = final_update["advisor_traces"]
     assert isinstance(advisor_traces, dict), f"Expected dict, got {type(advisor_traces)}"
     assert "advisor_trace_1" in advisor_traces or len(advisor_traces) > 0, (
         f"Expected trace ID in advisor_traces: {advisor_traces}"
@@ -1415,11 +1421,16 @@ async def test_advisor_trace_stored_with_message_not_in_context(client: AsyncCli
     get_settings.cache_clear()
 
     inserted_messages: list[dict[str, Any]] = []
+    updated_messages: list[dict[str, Any]] = []
 
     class CaptureMemoryStore(_FakeMemoryStore):
         async def insert_message(self, **kwargs: Any) -> dict[str, Any]:
             inserted_messages.append(kwargs)
             return await super().insert_message(**kwargs)
+
+        async def update_message(self, message_id: Any, **kwargs: Any) -> None:
+            updated_messages.append({"message_id": message_id, **kwargs})
+            await super().update_message(message_id, **kwargs)
 
     async def fake_completion_with_tools(**kwargs: Any):
         yield {"type": "content_delta", "content": "Answer "}
@@ -1510,9 +1521,10 @@ async def test_advisor_trace_stored_with_message_not_in_context(client: AsyncCli
 
     assert response.status_code == 200
 
-    # Find the final insert_message call (assistant message with advisor traces)
+    # Find the final assistant message update with advisor traces.
     assert len(inserted_messages) >= 1
-    final_call = inserted_messages[-1]
+    assert len(updated_messages) >= 1
+    final_call = updated_messages[-1]
 
     # content field should NOT contain advisor trace text
     content = final_call.get("content", "")
