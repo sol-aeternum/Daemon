@@ -74,7 +74,7 @@ The `/chat` endpoint streams Server-Sent Events with typed frames:
 
 ## Database Schema
 
-PostgreSQL 16 with pgvector extension. 32 migrations in the `migrations/` directory.
+PostgreSQL 16 with pgvector extension. 33 migrations in the `migrations/` directory.
 
 ### Core Tables
 - **`users`**: Settings and profile data.
@@ -87,7 +87,7 @@ PostgreSQL 16 with pgvector extension. 32 migrations in the `migrations/` direct
 - **`dream_log`**: Logs for background consolidation and dreaming jobs.
 - **`skill_projections`**: Mapping of skills to conversation context.
 
-Latest migration: `032_hosted_identity_claim.sql`.
+Latest migration: `033_auth_runtime_state.sql`.
 
 ---
 

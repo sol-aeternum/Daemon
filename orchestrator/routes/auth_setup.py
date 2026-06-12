@@ -40,6 +40,11 @@ from orchestrator.auth_cookies import (
 )
 from orchestrator.auth_csrf import check_csrf_origin
 from orchestrator.auth_pepper import validate_and_get_pepper
+from orchestrator.auth_runtime_state import (
+    clear_setup_token_hash,
+    get_setup_token_hash,
+    lock_auth_runtime_state,
+)
 from orchestrator.auth_tokens import (
     generate_enrollment_code,
     generate_token,
@@ -1146,15 +1151,6 @@ async def setup_endpoint(
             detail=f"CSRF/origin check failed: {csrf_result.reason}",
         )
 
-    if app_state.setup_token_hash is None:
-        raise HTTPException(
-            status_code=409,
-            detail="setup_already_complete",
-        )
-
-    if not verify_token(body.setup_token, app_state.setup_token_hash):
-        raise HTTPException(status_code=401, detail="Invalid setup token")
-
     try:
         cookie_config = make_refresh_cookie_config(
             cookie_secure=settings.daemon_cookie_secure,
@@ -1165,13 +1161,23 @@ async def setup_endpoint(
 
     async with app_state.db_pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('daemon:first_boot_setup'))")
+            await lock_auth_runtime_state(conn)
+
+            setup_token_hash = await get_setup_token_hash(conn)
+            if setup_token_hash is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="setup_already_complete",
+                )
+
+            if not verify_token(body.setup_token, setup_token_hash):
+                raise HTTPException(status_code=401, detail="Invalid setup token")
 
             active_count = await conn.fetchval(
                 "SELECT COUNT(*) FROM devices WHERE revoked_at IS NULL"
             )
             if active_count > 0:
-                app_state.setup_token_hash = None
+                await clear_setup_token_hash(conn)
                 raise HTTPException(
                     status_code=409,
                     detail="setup_already_complete",
@@ -1185,8 +1191,7 @@ async def setup_endpoint(
                 tenant_id,
                 settings.daemon_private_refresh_ttl_days,
             )
-
-    app_state.setup_token_hash = None
+            await clear_setup_token_hash(conn)
 
     refresh_max_age = int(timedelta(days=settings.daemon_private_refresh_ttl_days).total_seconds())
     cookie_headers = build_refresh_cookie(

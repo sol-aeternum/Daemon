@@ -30,7 +30,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
-from orchestrator.auth_pepper import PepperValidationError, validate_and_get_pepper
+from orchestrator.auth_pepper import (
+    PepperValidationError,
+    initialize_development_pepper,
+    validate_pepper_config,
+)
+from orchestrator.auth_runtime_state import (
+    clear_setup_token_hash,
+    create_setup_token_if_absent,
+    lock_auth_runtime_state,
+)
 from orchestrator.council.sse import stream_council, stream_council_interview_response
 from orchestrator.config import (
     HostedIdentityConfigError,
@@ -106,7 +115,7 @@ def _validate_startup_config(settings: Settings) -> None:
     first (authentication substrate), then hosted identity (deployment
     posture). Either failure aborts startup before any AppState work.
     """
-    validate_and_get_pepper(settings)
+    validate_pepper_config(settings)
     settings.validate_deployment_mode()
     settings.validate_hosted_identity_config()
 
@@ -133,6 +142,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     cleanup_shutdown_event = None
 
     if state.db_pool is not None:
+        await initialize_development_pepper(settings, state.db_pool)
         asyncio.create_task(_backfill_skill_projections(state.db_pool))
         asyncio.create_task(_sync_repo_skills(state.db_pool))
         await _check_first_boot_setup(state)
@@ -202,48 +212,49 @@ async def _check_first_boot_setup(state: AppState) -> None:
     if state.db_pool is None:
         return
     try:
-        active_count = await state.db_pool.fetchval(
-            "SELECT COUNT(*) FROM devices WHERE revoked_at IS NULL"
-        )
-        if active_count == 0:
-            from orchestrator.auth_tokens import generate_setup_token, hash_token
-
-            plaintext = generate_setup_token()
-            state.setup_token_hash = hash_token(plaintext)
-            logger.info(
-                ">>> Daemon setup required. Open http://<host>:<port>/setup and enter token: %s",
-                plaintext,
-            )
-        else:
-            has_valid_session = await state.db_pool.fetchval(
-                """
-                SELECT EXISTS (
-                    SELECT 1
-                    FROM sessions s
-                    JOIN devices d ON d.id = s.device_id
-                    WHERE d.revoked_at IS NULL
-                      AND s.refresh_consumed_at IS NULL
-                      AND s.refresh_expires_at > NOW()
-                      AND s.revoked_at IS NULL
+        async with state.db_pool.acquire() as conn:
+            async with conn.transaction():
+                await lock_auth_runtime_state(conn)
+                active_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM devices WHERE revoked_at IS NULL"
                 )
-                """
-            )
-            if not has_valid_session:
-                async with state.db_pool.acquire() as conn:
-                    await conn.execute(
-                        "UPDATE devices SET revoked_at = NOW() WHERE revoked_at IS NULL"
-                    )
-                    await conn.execute(
-                        "UPDATE sessions SET revoked_at = NOW() WHERE revoked_at IS NULL"
-                    )
-                from orchestrator.auth_tokens import generate_setup_token, hash_token
+                if active_count == 0:
+                    plaintext = await create_setup_token_if_absent(conn)
+                    if plaintext is not None:
+                        logger.info(
+                            ">>> Daemon setup required. Open http://<host>:<port>/setup and enter token: %s",
+                            plaintext,
+                        )
+                    return
 
-                plaintext = generate_setup_token()
-                state.setup_token_hash = hash_token(plaintext)
-                logger.info(
-                    ">>> Daemon recovery: all sessions expired. Open http://<host>:<port>/setup and enter token: %s",
-                    plaintext,
+                has_valid_session = await conn.fetchval(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM sessions s
+                        JOIN devices d ON d.id = s.device_id
+                        WHERE d.revoked_at IS NULL
+                          AND s.refresh_consumed_at IS NULL
+                          AND s.refresh_expires_at > NOW()
+                          AND s.revoked_at IS NULL
+                    )
+                    """
                 )
+                if has_valid_session:
+                    await clear_setup_token_hash(conn)
+                    return
+
+                await conn.execute("UPDATE devices SET revoked_at = NOW() WHERE revoked_at IS NULL")
+                await conn.execute(
+                    "UPDATE sessions SET revoked_at = NOW() WHERE revoked_at IS NULL"
+                )
+                await clear_setup_token_hash(conn)
+                plaintext = await create_setup_token_if_absent(conn)
+                if plaintext is not None:
+                    logger.info(
+                        ">>> Daemon recovery: all sessions expired. Open http://<host>:<port>/setup and enter token: %s",
+                        plaintext,
+                    )
     except Exception:
         logger.warning("First-boot setup check failed", exc_info=True)
 

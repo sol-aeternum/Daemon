@@ -20,6 +20,7 @@ from orchestrator.auth_pepper import (
     PepperValidationError,
     is_development_environment,
     is_production_environment,
+    set_development_pepper_cache,
     validate_and_get_pepper,
 )
 from orchestrator.config import Settings
@@ -289,6 +290,7 @@ class TestPepperValidation:
         assert result == pepper
 
     def test_development_missing_pepper_generates_ephemeral(self, caplog):
+        set_development_pepper_cache(None)
         settings = Settings(
             daemon_environment="development",
             daemon_auth_pepper=None,

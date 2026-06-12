@@ -56,6 +56,8 @@ On a fresh Daemon installation with no active devices, the backend logs a one-ti
 
 Open the URL in your browser. You will see a setup form — **paste the token from the logs into the form field**. Do not pass it as a URL parameter or query string.
 
+In multi-worker deployments, the setup token verifier is stored in Postgres-backed shared runtime state. Only the worker that creates a new setup token logs the plaintext token; every worker accepts that same token.
+
 ### Why Token-in-URL Is Unsafe
 
 Passing the setup token via URL exposes it to multiple leakage vectors:
@@ -69,7 +71,7 @@ Daemon's form-based flow avoids all of these: the token is transmitted in a POST
 
 ### Server Log Sensitivity
 
-The one-time setup token **is written to server logs at startup**. Treat your logs as sensitive: anyone with access to server log output can see the token needed to complete first-boot setup. After setup is completed successfully, the token is burned and cannot be reused.
+The one-time setup token **is written to server logs at startup**. Treat your logs as sensitive: anyone with access to server log output can see the token needed to complete first-boot setup. After setup is completed successfully, the shared token verifier is burned and cannot be reused by any worker.
 
 ---
 
@@ -126,7 +128,7 @@ When the server restarts with **zero active devices**, it will log a new one-tim
 >>> Daemon setup required. Open http://<host>:<port>/setup and enter token: <plaintext>
 ```
 
-Because the in-memory setup token is invalidated on each restart, a new token is generated. Complete first-boot setup again from any browser to create a fresh device and regain access.
+Because the setup token verifier is shared through Postgres, multiple backend workers accept the same recovery token. Complete first-boot setup again from any browser to create a fresh device and regain access.
 
 This means recovery requires server restart access — a self-hosted deployment's physical or container restart resets the setup flow when no devices are active.
 
@@ -136,18 +138,18 @@ This means recovery requires server restart access — a self-hosted deployment'
 
 During development with `DAEMON_ENVIRONMENT=development`:
 
-- `DAEMON_AUTH_PEPPER` is optional. If absent, Daemon generates a per-process random pepper and logs a warning. **All pending enrollments created with a development ephemeral pepper are invalidated after every server restart.** Enrollments must be re-initiated after each restart.
+- `DAEMON_AUTH_PEPPER` is optional. If absent and Postgres is configured, Daemon stores a development-only shared pepper in Postgres runtime state so pending enrollments work across backend workers. If no DB is available, Daemon generates a process-ephemeral pepper and logs a warning; pending enrollments created with that fallback are invalidated after restart.
 - Insecure cookies (`Secure=false`) are allowed with `DAEMON_COOKIE_SECURE=false`. In that mode, Daemon uses the development-only `daemon_refresh` cookie name instead of `__Host-daemon_refresh`, because browsers require `Secure` for `__Host-` cookies. Do not use these settings in production.
 - CORS is relaxed for localhost origins.
 
 ### `DAEMON_AUTH_PEPPER` Requirements
 
-`DAEMON_AUTH_PEPPER` is a shared secret used to derive enrollment code verifiers. It is never stored in the database.
+`DAEMON_AUTH_PEPPER` is a shared secret used to derive enrollment code verifiers. Production pepper values are never stored in the database; only the development fallback pepper is stored in Postgres runtime state when the env var is absent.
 
 | Environment     | Requirement                                                                                                                    |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | **Production**  | Must be set. Must be at least **32 random bytes** / **43 base64url characters**. Missing or weak values cause startup to fail. |
-| **Development** | If absent, a per-process random pepper is generated with a warning. All pre-restart pending enrollments are invalidated.       |
+| **Development** | If absent, a Postgres-backed shared development pepper is used when possible. Without DB, a per-process random pepper is generated with a warning and pre-restart pending enrollments are invalidated. |
 
 Generate a strong pepper for production:
 
@@ -234,8 +236,8 @@ Daemon rejects requests that mix cookie-based and body-based refresh in the same
 | First boot      | Advanced self-hosted/recovery path; form-based one-time token from server logs, never in URL   |
 | Adding devices  | Hosted identity sign-in or enrollment QR/manual code; web cookie or native JSON-body token     |
 | Revoking        | Immediate session/token invalidation; current-device revoke clears cookie                      |
-| Recovery        | Zero active devices + restart → new setup token logged                                         |
-| Pepper          | Production requires ≥32 bytes / 43 base64url chars; missing/weak fails startup                 |
+| Recovery        | Zero active devices + restart → shared setup token logged by the worker that creates it        |
+| Pepper          | Production requires ≥32 bytes / 43 base64url chars; dev fallback is DB-shared when possible    |
 | Browser auth    | Access token in JS memory; refresh in HttpOnly `__Host-` cookie                                |
 | Native auth     | Access + refresh returned in JSON; refresh must use platform secure storage                    |
 | Out of scope    | GitHub sign-in and provider-token API auth                                                     |

@@ -15,14 +15,14 @@ The existing singleton user ID `00000000-0000-0000-0000-000000000001` remains th
 ### Decision 3 — First boot is zero-active-device based
 First-boot setup is available when `COUNT(*) FROM devices WHERE revoked_at IS NULL` is zero, not when the users table is empty. Revoking all devices and restarting the backend re-enters setup.
 
-### Decision 4 — Setup token hash is app-state only
-The setup token is generated on startup, logged exactly once as plaintext, and stored only as a SHA-256 hash in FastAPI app state. It is never persisted in the database, so restart invalidates the token and exposes the single-backend-instance limitation.
+### Decision 4 — Setup token hash is shared runtime state
+The setup token is generated on startup, logged exactly once as plaintext by the worker that creates it, and stored only as a SHA-256 hash in the `system_state` table under `auth.setup_token_hash`. Multiple backend workers share the same verifier and burn the same row after successful setup.
 
 ### Decision 5 — Setup token never goes in URLs
 The setup token is pasted into `/setup` as form/body data only. It must not appear in a URL, query string, Referer header, browser history, bookmark, proxy log, or server access log.
 
 ### Decision 6 — Setup is transaction-locked
-Successful setup uses `pg_advisory_xact_lock(hashtext('daemon:first_boot_setup'))`, rechecks zero active devices inside the transaction, creates the first device/session, and deactivates setup.
+Successful setup uses the shared auth-runtime advisory lock (`pg_advisory_xact_lock(hashtext('daemon:auth_runtime_state'))`), rechecks zero active devices inside the transaction, creates the first device/session, and deactivates setup.
 
 ### Decision 7 — Tokens are 256-bit opaque values
 Setup, access, and refresh tokens are opaque CSPRNG values generated with `secrets.token_urlsafe(32)`, yielding 256 bits of entropy and about 43 base64url characters.
@@ -34,7 +34,7 @@ Access and refresh tokens are stored only as deterministic SHA-256 hashes. Plain
 Enrollment codes are low-entropy codes and are stored only as HMAC-SHA256 verifiers keyed by `DAEMON_AUTH_PEPPER`. `pending_enrollments` stores no plaintext code and no raw `code_hash` lookup path.
 
 ### Decision 10 — `DAEMON_AUTH_PEPPER` is mandatory in production
-Production startup fails if `DAEMON_AUTH_PEPPER` is missing or weak; it must be at least 32 random bytes / 43 base64url characters. Development may generate a per-process pepper with a warning, invalidating pending enrollments after restart.
+Production startup fails if `DAEMON_AUTH_PEPPER` is missing or weak; it must be at least 32 random bytes / 43 base64url characters. Development uses `DAEMON_AUTH_PEPPER` when set; if absent and Postgres is configured, Daemon stores a development-only shared pepper in `system_state` under `auth.development_pepper` so pending enrollment verifiers remain valid across backend workers. If no DB is available, development falls back to a process-ephemeral pepper with a warning.
 
 ### Decision 11 — Access-token TTL is 30 minutes
 Access tokens expire after 30 minutes and are accepted only as `Authorization: Bearer <device_access_token>` on protected routes.
@@ -243,7 +243,8 @@ All devices revoked or expired
   -> active device count becomes zero
 Backend restart
   -> startup sees zero active devices
-  -> emits a new one-time setup token
+  -> creates auth.setup_token_hash in system_state if absent
+  -> worker that creates it emits the one-time setup token
 Owner opens /setup
   -> enters token in form body
   -> creates a new first active device
