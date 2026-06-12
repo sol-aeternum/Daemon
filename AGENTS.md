@@ -120,6 +120,8 @@ Local gate runner and PR wrapper live in `scripts/`:
 
 - `scripts/local_ci.sh [backend|frontend|aggregate] [--list]` — runs the gate families above. Blocking gates (ruff check, ruff format, basedpyright, frontend type/lint/format, feature matrix, pre-commit) fail the script; inventory gates (CI `continue-on-error`) are reported but do not block.
 - `scripts/pr_create.sh --dry-run -- <gh pr create args>` — refuses to invoke `gh pr create` until `scripts/local_ci.sh` exits 0. `--dry-run` shows the plan without running gates or contacting GitHub. `scripts/pr_create.sh -- <args>` is the recommended replacement for `gh pr create`.
+- `main` is protected by the GitHub `Main Protection` ruleset. Required checks are `Backend gates`, `Frontend gates`, `Feature matrix gate`, and `Pre-commit and secret scanning`.
+- Do not merge around failed required checks. If a required check is stale, missing, or misconfigured, fix the workflow/ruleset or record the blocker before merging.
 
 ## Recent Fixes (as of Feb 2026)
 - ✅ Memory extraction now writes `status="active"` — pipeline is fully operational
