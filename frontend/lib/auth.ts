@@ -10,6 +10,11 @@ export interface RefreshResult {
   error?: string;
 }
 
+export interface LogoutResult {
+  success: boolean;
+  error?: string;
+}
+
 interface BackendAuthDevice {
   id: string;
   display_name?: string | null;
@@ -391,6 +396,43 @@ export async function ensureAuthHeader(): Promise<string | null> {
   if (header) return header;
   await refreshIfNeeded();
   return getAuthHeader();
+}
+
+export async function logoutCurrentSession(): Promise<LogoutResult> {
+  try {
+    const authHeader = await ensureAuthHeader();
+    if (!authHeader) {
+      return { success: false, error: 'No active session' };
+    }
+
+    const response = await _fetchAuthProxy('/logout', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { Authorization: authHeader },
+    });
+
+    if (response.status === 204) {
+      return { success: true };
+    }
+
+    if (response.status === 401) {
+      return { success: false, error: 'Session expired' };
+    }
+
+    const errorData = await response.json().catch(() => ({}));
+    return {
+      success: false,
+      error:
+        (errorData as { error?: string; detail?: string }).error ||
+        (errorData as { error?: string; detail?: string }).detail ||
+        `Logout failed: ${response.status}`,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Logout failed',
+    };
+  }
 }
 
 export async function startEmailSignIn(email: string): Promise<{

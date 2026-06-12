@@ -1854,6 +1854,49 @@ async def refresh_endpoint(
 # ---------------------------------------------------------------------------
 
 
+@router.post(
+    "/logout",
+    status_code=204,
+    responses={204: {"description": "Current session revoked"}},
+)
+async def logout_endpoint(
+    request: Request,
+    response: Response,
+    auth: AuthenticatedDevice = Depends(require_device_auth),
+) -> None:
+    """Revoke the authenticated session and clear the web refresh cookie."""
+    app_state = get_app_state(request)
+    if app_state.db_pool is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    async with app_state.db_pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                """
+                UPDATE sessions
+                SET revoked_at = NOW()
+                WHERE id = $1
+                  AND user_id = $2
+                  AND device_id = $3
+                  AND revoked_at IS NULL
+                """,
+                auth.session_id,
+                auth.user_id,
+                auth.device_id,
+            )
+
+    settings = get_settings()
+    cookie_config = make_refresh_cookie_config(
+        cookie_secure=settings.daemon_cookie_secure,
+        environment=settings.daemon_environment,
+    )
+    cookie_headers = clear_refresh_cookie(cookie_config)
+    for header_name, header_value in cookie_headers.items():
+        response.headers[header_name] = header_value
+
+    return None
+
+
 class DeviceResponse(BaseModel):
     id: str
     display_name: str

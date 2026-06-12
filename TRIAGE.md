@@ -1801,3 +1801,80 @@
 - **Evidence**: Wrapper summary: `blocking failures: 3` with `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`. Type-check evidence included missing advisor event exports from `frontend/lib/events`; lint reported 55 errors / 13 warnings; format-check reported style drift in 274 frontend files and generated `.next_broken` artifacts.
 - **Likely cause**: The wrapper enforces all families even though the issue sequence calls for affected-family local CI and explicitly notes frontend Wave 0 breakage for #108 (confidence 98%).
 - **Suggested action**: Either allow `scripts/pr_create.sh` to accept a local-CI family selector for backend-only PRs, or complete #108 before using the all-family wrapper path.
+
+## 2026-06-12 10:56 UTC — Frontend test dependencies unavailable in isolated worktree
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Issue #26 logout session revocation
+- **Category**: dependency
+- **Blocked current task**: no
+- **What happened**: The issue worktree did not have `frontend/node_modules`, so the focused Vitest command could not find the test binary until the worktree reused the already-installed root dependency tree.
+- **Evidence**: `npm run test:run -- auth.test.ts auth-provider.test.tsx` initially failed with `sh: line 1: vitest: command not found`; after adding an untracked `frontend/node_modules -> /home/sol/daemon/frontend/node_modules` symlink, the same command passed with `53 passed`.
+- **Likely cause**: Git worktrees do not share untracked dependency directories by default, and `npm ci` was not rerun in the temporary worktree (confidence 95%).
+- **Suggested action**: Either install frontend dependencies per worktree with `npm ci` or document the local symlink approach for agent worktrees.
+
+## 2026-06-12 10:56 UTC — Frontend type-check still reports advisor event contract debt
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #26 logout session revocation
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: Full frontend type-check failed on existing advisor event and tool-call event typing errors outside the logout files. The new logout files no longer appear in the type-check output after focused test typing fixes.
+- **Evidence**: `npm run type-check` exited 2 after `next typegen && tsc --noEmit`; representative errors include `__tests__/advisor-events.test.ts(4,3): error TS2305: Module '"../lib/events"' has no exported member 'isAdvisorEndEvent'`, `lib/advisorEvents.ts(3,21): error TS2305: Module '"./events"' has no exported member 'isAdvisorEvent'`, and `__tests__/tool-call-log.test.ts(15,9): error TS2353: Object literal may only specify known properties, and 'tool_call_id' does not exist`.
+- **Likely cause**: Advisor/tool-call tests and helpers expect SSE event union members and metadata fields that are not present in `frontend/lib/events.ts` on this branch (confidence 90%).
+- **Suggested action**: Resolve the advisor event contract in the dedicated frontend Wave 0/event-schema follow-up; do not broaden issue #26 beyond logout.
+
+## 2026-06-12 10:56 UTC — Frontend lint and format gates have broad pre-existing debt
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #26 logout session revocation
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: Full frontend lint and Prettier checks failed across unrelated pages/components. Changed-file ESLint and Prettier checks for the logout files passed.
+- **Evidence**: `npm run lint` exited 1 with 41 problems, including `app/artifacts/page.tsx:108:5 react-hooks/set-state-in-effect`, `app/studio/components/ImageLightbox.tsx:19:42 react-hooks/rules-of-hooks`, and `components/TextToSpeechButton.tsx:39:25 react-hooks/rules-of-hooks`. `npm run format:check` reported `Code style issues found in 125 files`. `npm exec eslint -- __tests__/auth.test.ts __tests__/auth-provider.test.tsx __tests__/auth-page.test.tsx components/AuthProvider.tsx lib/auth.ts --max-warnings 0` passed, and `npm exec prettier -- --check ...` passed for those same files.
+- **Likely cause**: Existing frontend React Compiler lint and formatting debt predates the logout change (confidence 95%).
+- **Suggested action**: Fix frontend lint/format debt in dedicated PRs or establish an explicit baseline; keep issue #26 scoped to logout behavior.
+
+## 2026-06-12 10:56 UTC — Auth frontend tests emit existing act/navigation warnings
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Issue #26 logout session revocation
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: Focused auth frontend tests pass, but stderr still contains existing React `act(...)` warnings and a jsdom navigation-not-implemented warning.
+- **Evidence**: `npm run test:run -- auth.test.ts auth-provider.test.tsx` passed with `53 passed`; stderr included `An update to AuthProvider inside a test was not wrapped in act(...)` and `Error: Not implemented: navigation (except hash changes)` from `attemptPageLoadRefresh`.
+- **Likely cause**: Existing tests assert redirect side effects around asynchronous provider updates and read-only jsdom `window.location` behavior (confidence 85%).
+- **Suggested action**: Wrap provider-triggered updates in Testing Library `act` and isolate redirect assertions from jsdom's real navigation implementation in a frontend test cleanup.
+
+## 2026-06-12 10:56 UTC — Temporary logout test insertion produced syntax error before correction
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Issue #26 logout session revocation
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: While adding the logout backend regression test, a new test class was inserted before an existing `finally` block, making the file temporarily unparseable. The structure was corrected before final verification.
+- **Evidence**: The focused pytest run reported `SyntaxError: expected 'except' or 'finally' block` in `tests/test_refresh_flow.py`; after restoring the missing `finally: restore_init(original)`, `pytest -q tests/test_refresh_flow.py::TestLogoutCurrentSession::test_logout_revokes_current_session_clears_cookie_and_blocks_refresh` passed.
+- **Likely cause**: Manual patch placement split an existing `try`/`finally` test block (confidence 99%).
+- **Suggested action**: Prefer inspecting surrounding control-flow boundaries before inserting new test classes in large test modules.
+
+## 2026-06-12 11:04 UTC — Issue #26 local CI wrappers hit existing environment and frontend debt
+- **Severity**: warning
+- **Scope**: project | host
+- **Encountered during**: Issue #26 logout session revocation
+- **Category**: build-error | dependency | test-failure
+- **Blocked current task**: no
+- **What happened**: Backend and aggregate local CI passed their blocking gates when rerun with `UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv UV_CACHE_DIR=/tmp/uv-cache`; backend then timed out during the non-blocking full pytest inventory phase. Frontend local CI could install dependencies outside the sandbox, but blocking type-check, lint, and format gates still failed on unrelated advisor event and repo-wide frontend debt.
+- **Evidence**: Backend wrapper passed `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; `timeout 420s scripts/local_ci.sh backend` exited 124 during inventory `PYTHONPATH=. uv run pytest -q` after progress reached `[ 91%]`. Aggregate wrapper passed `feature-matrix` and `pre-commit`. Escalated `scripts/local_ci.sh frontend` passed `npm-ci`, then failed blocking gates `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`.
+- **Likely cause**: Same local backend full-suite stall and frontend baseline debt already seen in previous issue runs; issue #26 only touches logout behavior and focused logout/auth tests pass (confidence 90%).
+- **Suggested action**: Keep #26 scoped to logout and rely on branch-protection CI for full hosted verification while tracking frontend advisor/lint/format cleanup separately.
+
+## 2026-06-12 11:04 UTC — Frontend npm audit inventory increased to 27 vulnerabilities
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #26 logout session revocation
+- **Category**: security
+- **Blocked current task**: no
+- **What happened**: The frontend local CI inventory audit reported 27 vulnerabilities, including one critical Vitest advisory. Earlier triage recorded 26 frontend npm audit vulnerabilities, so this count has changed and is logged again.
+- **Evidence**: `npm --prefix frontend run audit:ci` reported `27 vulnerabilities (4 low, 8 moderate, 14 high, 1 critical)`. Representative advisories included `vitest <3.2.6` critical `GHSA-5xrq-8626-4rwp`, `next 9.3.4-canary.0 - 16.3.0-canary.5` high advisories, and vulnerable `@ai-sdk/provider-utils`.
+- **Likely cause**: New upstream advisories now apply to the locked frontend dependency graph; some suggested fixes require breaking upgrades such as AI SDK, Next, or next-pwa (confidence 95%).
+- **Suggested action**: Handle through the locked dependency remediation process in a dedicated security/dependency PR; do not hand-edit lockfiles in issue #26.

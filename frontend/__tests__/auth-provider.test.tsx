@@ -68,10 +68,14 @@ vi.mock('../lib/auth-config', () => ({
 const mockRefresh = vi.hoisted(() => vi.fn(async () => false));
 const mockClearAuthState = vi.hoisted(() => vi.fn());
 const mockClearLocalAuthState = vi.hoisted(() => vi.fn());
+const mockLogoutCurrentSession = vi.hoisted(() =>
+  vi.fn(async () => ({ success: true })),
+);
 
 vi.mock('../lib/auth', () => ({
   attemptPageLoadRefresh: mockRefresh,
   refreshAccessToken: vi.fn(async () => ({ success: false })),
+  logoutCurrentSession: mockLogoutCurrentSession,
   clearAuthState: mockClearAuthState,
   clearLocalAuthState: mockClearLocalAuthState,
   getAccessToken: vi.fn(() => null),
@@ -94,6 +98,7 @@ afterEach(() => {
   mockRefresh.mockClear();
   mockClearAuthState.mockClear();
   mockClearLocalAuthState.mockClear();
+  mockLogoutCurrentSession.mockClear();
   delete (window as { location?: unknown }).location;
 });
 
@@ -255,7 +260,7 @@ describe('AuthProvider mode-aware redirects', () => {
     expect(hrefSetter).not.toHaveBeenCalled();
   });
 
-  it('logout() in hosted mode navigates to /auth', async () => {
+  it('logout() in hosted mode revokes the backend session before navigating to /auth', async () => {
     const { hrefSetter } = setupHrefSpy();
     mockRefresh.mockResolvedValue(true);
     renderProvider();
@@ -266,7 +271,7 @@ describe('AuthProvider mode-aware redirects', () => {
       google: { enabled: false, clientId: '' },
     });
 
-    let captured: { logout: () => void } | null = null;
+    let captured: { logout: () => Promise<void> } | null = null;
     const Probe = (): null => {
       const auth = useAuth();
       useEffect(() => {
@@ -282,7 +287,8 @@ describe('AuthProvider mode-aware redirects', () => {
     await waitFor(() => {
       expect(captured).not.toBeNull();
     });
-    captured!.logout();
+    await captured!.logout();
+    expect(mockLogoutCurrentSession).toHaveBeenCalled();
     expect(mockClearAuthState).toHaveBeenCalled();
     expect(hrefSetter).toHaveBeenCalledWith('/auth');
   });
@@ -298,7 +304,7 @@ describe('AuthProvider mode-aware redirects', () => {
       google: { enabled: false, clientId: '' },
     });
 
-    let captured: { logout: () => void } | null = null;
+    let captured: { logout: () => Promise<void> } | null = null;
     const Probe = (): null => {
       const auth = useAuth();
       useEffect(() => {
@@ -314,7 +320,56 @@ describe('AuthProvider mode-aware redirects', () => {
     await waitFor(() => {
       expect(captured).not.toBeNull();
     });
-    captured!.logout();
+    await captured!.logout();
+    expect(mockLogoutCurrentSession).toHaveBeenCalled();
     expect(hrefSetter).toHaveBeenCalledWith('/setup');
+  });
+
+  it('logout() waits for backend revoke before clearing state and redirecting', async () => {
+    const { hrefSetter } = setupHrefSpy();
+    let resolveLogout: (value: { success: boolean }) => void = () => {};
+    mockLogoutCurrentSession.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveLogout = resolve;
+      }),
+    );
+    mockRefresh.mockResolvedValue(true);
+    renderProvider();
+    await flush();
+    resolveConfig({
+      mode: 'hosted',
+      email: { enabled: true },
+      google: { enabled: false, clientId: '' },
+    });
+
+    let captured: { logout: () => Promise<void> } | null = null;
+    const Probe = (): null => {
+      const auth = useAuth();
+      useEffect(() => {
+        captured = { logout: auth.logout };
+      }, [auth]);
+      return null;
+    };
+    render(
+      <AuthProvider>
+        <Probe />
+      </AuthProvider>,
+    );
+    await waitFor(() => {
+      expect(captured).not.toBeNull();
+    });
+
+    const logoutPromise = captured!.logout();
+    await Promise.resolve();
+
+    expect(mockLogoutCurrentSession).toHaveBeenCalled();
+    expect(mockClearAuthState).not.toHaveBeenCalled();
+    expect(hrefSetter).not.toHaveBeenCalled();
+
+    resolveLogout({ success: true });
+    await logoutPromise;
+
+    expect(mockClearAuthState).toHaveBeenCalled();
+    expect(hrefSetter).toHaveBeenCalledWith('/auth');
   });
 });

@@ -929,6 +929,76 @@ describe('refreshAccessToken', () => {
   });
 });
 
+describe('logoutCurrentSession', () => {
+  beforeEach(() => {
+    mockNavigator.value = { locks: undefined };
+    mockLocalStorage.value = {};
+    mockBroadcastChannel.value = null;
+    vi.resetModules();
+  });
+
+  it('posts to logout with the current access token and credentials', async () => {
+    const mockFetch = vi.fn(() =>
+      Promise.resolve(new Response(null, { status: 204 })),
+    );
+    globalThis.fetch = mockFetch;
+
+    const { logoutCurrentSession, setAccessToken } =
+      await import('../lib/auth');
+    setAccessToken('active-access', Date.now() + 60_000);
+
+    const result = await logoutCurrentSession();
+
+    expect(result).toEqual({ success: true });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const call = mockFetch.mock.calls[0];
+    expect(call).toBeDefined();
+    const [url, init] = call as unknown as [string, RequestInit];
+    expect(url).toBe('/api/v1/auth/logout');
+    expect(init.method).toBe('POST');
+    expect(init.credentials).toBe('include');
+    const headers = init.headers as Headers;
+    expect(headers.get('Authorization')).toBe('Bearer active-access');
+  });
+
+  it('returns failure without throwing when refresh cannot recover an auth header', async () => {
+    const mockFetch = vi.fn(() =>
+      Promise.resolve(new Response(null, { status: 401 })),
+    );
+    globalThis.fetch = mockFetch;
+
+    const { logoutCurrentSession } = await import('../lib/auth');
+    const result = await logoutCurrentSession();
+
+    expect(result).toEqual({ success: false, error: 'No active session' });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const call = mockFetch.mock.calls[0];
+    expect(call).toBeDefined();
+    const [url] = call as unknown as [string, RequestInit];
+    expect(url).toBe('/api/v1/auth/refresh');
+  });
+
+  it('surfaces backend logout failures to the caller', async () => {
+    const mockFetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ detail: 'logout unavailable' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    );
+    globalThis.fetch = mockFetch;
+
+    const { logoutCurrentSession, setAccessToken } =
+      await import('../lib/auth');
+    setAccessToken('active-access', Date.now() + 60_000);
+
+    const result = await logoutCurrentSession();
+
+    expect(result).toEqual({ success: false, error: 'logout unavailable' });
+  });
+});
+
 describe('BroadcastChannel secret-free invariant', () => {
   beforeEach(() => {
     mockNavigator.value = { locks: undefined };
