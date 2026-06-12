@@ -26,7 +26,7 @@ memories.content          → encrypted
 extraction_log.input_snippet → encrypted
 ```
 
-If `DAEMON_ENCRYPTION_KEY` is not set, content falls back to plaintext (logged as a warning on startup).
+If `DAEMON_ENCRYPTION_KEY` is missing or invalid when memory storage is initialized, startup fails closed instead of writing plaintext. Encryption init, encrypt, and decrypt failures increment the `encryption_operations_failed_total` status metric and raise to the caller.
 
 ### Tables
 
