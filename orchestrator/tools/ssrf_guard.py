@@ -105,6 +105,10 @@ def _resolve_and_check(host: str, port: int) -> None:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
         raise SsrfViolation(f"DNS resolution failed for {host!r}: {exc}") from exc
+    except UnicodeError as exc:
+        # IDNA encoding rejects URL-valid but DNS-invalid names (e.g. a
+        # 64-char label) with UnicodeError, not gaierror. Fail closed.
+        raise SsrfViolation(f"hostname {host!r} is not a valid DNS name: {exc}") from exc
     if not infos:
         raise SsrfViolation(f"DNS resolution returned no results for {host!r}")
     for _family, _stype, _proto, _canon, sockaddr in infos:
@@ -199,9 +203,18 @@ _real_getaddrinfo: Any = None
 def _guarded_getaddrinfo(host, *args, **kwargs):  # type: ignore[no-untyped-def]
     real = _real_getaddrinfo
     assert real is not None
-    if isinstance(host, str):
+    # httpx/anyio passes the connect-time hostname as IDNA-encoded bytes, not
+    # str — both forms MUST be validated or the rebinding guard is a no-op
+    # for ordinary hostnames.
+    lookup = host
+    if isinstance(lookup, (bytes, bytearray)):
         try:
-            literal = ipaddress.ip_address(host)
+            lookup = lookup.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise SsrfViolation(f"undecodable hostname {host!r}") from exc
+    if isinstance(lookup, str):
+        try:
+            literal = ipaddress.ip_address(lookup)
         except ValueError:
             literal = None
         if literal is not None and is_disallowed_ip(literal):

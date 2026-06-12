@@ -209,6 +209,13 @@ class TestValidateUrlIpChecks:
 
         assert is_disallowed_ip(ipaddress.ip_address("2607:f8b0::1")) is False
 
+    def test_dns_invalid_label_fails_closed(self) -> None:
+        # A 64-char label is URL-valid but IDNA-invalid; getaddrinfo raises
+        # UnicodeError, which must surface as SsrfViolation, not escape (P2).
+        label = "a" * 64
+        with pytest.raises(SsrfViolation, match="not a valid DNS name"):
+            validate_url(f"https://{label}.com/")
+
     def test_loopback_hostname_rejected(self) -> None:
         with pytest.raises(SsrfViolation):
             validate_url("https://localhost/")
@@ -366,6 +373,20 @@ class TestSocketGuard:
                 socket.getaddrinfo("evil.example", 443, type=socket.SOCK_STREAM)
 
         assert socket.getaddrinfo is original
+
+    def test_bytes_hostname_rebinding_rejected(self) -> None:
+        # httpx/anyio passes IDNA-encoded bytes hostnames at connect time;
+        # the guard must validate them, not silently delegate (P1).
+        def rebind_getaddrinfo(host, *args, **kwargs):  # type: ignore[no-untyped-def]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]
+
+        with patch("socket.getaddrinfo", side_effect=rebind_getaddrinfo):
+            with socket_guard(), pytest.raises(SsrfViolation, match="rebind"):
+                socket.getaddrinfo(b"evil.example", 443, type=socket.SOCK_STREAM)
+
+    def test_bytes_literal_loopback_rejected(self) -> None:
+        with socket_guard(), pytest.raises(SsrfViolation, match="literal IP"):
+            socket.getaddrinfo(b"127.0.0.1", 443, type=socket.SOCK_STREAM)
 
     def test_overlapping_guards_stay_guarded(self) -> None:
         # Two overlapping requests share one installation; the inner exit must

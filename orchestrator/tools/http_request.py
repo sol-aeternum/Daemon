@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 from urllib.parse import urlparse
@@ -72,7 +73,12 @@ class HttpRequestTool(Tool):
             except ValueError as exc:
                 return json.dumps({"error": f"SSRF blocked: malformed URL: {exc}"})
             check_egress_allowlist(hostname)
-            validate_url(url)
+            # Preflight validation resolves DNS synchronously; run it in a
+            # worker thread with a bounded timeout so a slow resolver cannot
+            # stall the event loop (and every concurrent chat/SSE stream).
+            await asyncio.wait_for(asyncio.to_thread(validate_url, url), timeout=10.0)
+        except TimeoutError:
+            return json.dumps({"error": "SSRF blocked: DNS resolution timed out"})
         except SsrfViolation as exc:
             return json.dumps({"error": f"SSRF blocked: {exc}"})
 
