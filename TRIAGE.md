@@ -1,5 +1,16 @@
 # TRIAGE.md
 
+## 2026-06-12T21:20:00+09:30 — #24 Migration Metadata Needed Doc Freshness Update
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Issue #24 device-creation audit migration verification
+- **Category**: config
+- **Blocked current task**: yes
+- **What happened**: Adding `migrations/034_device_creation_audit.sql` caused the aggregate pre-commit doc-freshness hook to fail until the structured migration metadata in `docs/TECHNICAL_SPECS.md` and `docs/PROJECT_CONTEXT.md` was updated.
+- **Evidence**: `scripts/local_ci.sh aggregate` failed `doc-freshness` with `MIGRATION_COUNT expected='34' observed='33'` and `MIGRATION_LATEST expected='034_device_creation_audit.sql' observed='033_auth_runtime_state.sql'` for both docs.
+- **Likely cause**: The migration count/latest fields are intentionally gated structured facts and must be updated with every new migration. Confidence: 99%.
+- **Suggested action**: Keep migration metadata docs in the same PR as schema migrations.
+
 ## 2026-06-12T20:11:23+09:30 — #11 Backend Inventory Pytest Timed Out Locally
 - **Severity**: warning
 - **Scope**: host
@@ -10,6 +21,7 @@
 - **Evidence**: Blocking local-CI gates passed: `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`. Inventory `pip-audit` failed with `Failed to resolve 'pypi.org' ([Errno -2] Name or service not known)` under sandboxed networking. Inventory pytest printed progress through `[ 91%]` and then the outer command exited `124`.
 - **Likely cause**: Same local sandbox/network and long-running inventory-suite behavior seen on #23; hosted branch-protection CI remains the authoritative full gate. Confidence: 85%.
 - **Suggested action**: Investigate the late-suite pytest inventory stall separately from issue-scoped auth fixes; continue relying on blocking local gates plus hosted protected CI before merge.
+- **Seen again**: 2026-06-12T21:08+09:30 during #24 device-creation limit verification, and again after adding the `034_device_creation_audit.sql` migration. `timeout 300s env UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv UV_CACHE_DIR=/tmp/uv-cache scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` exited 1 with existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full inventory pytest printed progress through `[ 91%]` before the outer timeout exited `124`. Process inspection after both runs found no remaining `/tmp/daemon-24` pytest/local-CI processes.
 
 ## 2026-06-12T20:01:23+09:30 — #11 Worktree Missing `.uv-venv` Symlink Broke BasedPyright
 - **Severity**: warning
@@ -55,6 +67,7 @@
 - **Evidence**: Wrapper summary reported blocking failures `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, `frontend/format-check (exit=1)`, and `aggregate/pre-commit (exit=1)`. Frontend type/build evidence included `./lib/advisorEvents.ts:3:21 Type error: Module '"./events"' has no exported member 'isAdvisorEvent'`; lint reported `41 problems (28 errors, 13 warnings)`; format-check reported `Code style issues found in 124 files`. Aggregate pre-commit failed with `No space left on device (os error 28)` writing `.ruff_cache`, and `df -h /tmp` showed `7.7G 7.7G 0 100% /tmp` before clean temporary issue worktrees were pruned.
 - **Likely cause**: The PR wrapper still runs all gate families for a backend-only branch; current main carries frontend type/lint/format debt, while old temporary issue worktrees consumed the `/tmp` tmpfs. Confidence: 90%.
 - **Suggested action**: Fix the frontend family in its own issue/PR or teach the PR wrapper to run only affected families; periodically prune clean `/tmp` worktrees after issue PRs are merged.
+- **Seen again**: 2026-06-12 during #24 setup. Adding the `/tmp/daemon-24` worktree initially hit the same full-`/tmp` condition from old temporary worktrees; pruning clean merged issue worktrees freed space and allowed #24 work to proceed.
 
 ## 2026-06-12T19:50:29+09:30 — #23 Backend Inventory Pytest Timed Out Locally
 - **Severity**: warning
@@ -162,6 +175,7 @@
 - **Seen again**: 2026-05-28 during PR #4 review-fix QA when `npm run build` in `frontend/` failed at the same `./lib/advisorEvents.ts:3:21` missing `isAdvisorEvent` export after successful webpack compilation.
 - **Seen again**: 2026-05-31 during PR #4 newest review-comment fix verification when `npx tsc --noEmit --project tsconfig.json --pretty false` failed only in the known advisor/tool-call event debt files: `__tests__/advisor-events.test.ts`, `__tests__/tool-call-log.test.ts`, and `lib/advisorEvents.ts`; changed files had clean LSP diagnostics and targeted auth tests passed.
 - **Seen again**: 2026-06-07 during the final six-comment hosted-identity fix batch when `npm run build` in `frontend/` compiled the touched auth proxy route successfully, then failed in the pre-existing advisor path at `./lib/advisorEvents.ts:3:21` with `Module '"./events"' has no exported member 'isAdvisorEvent'`.
+- **Seen again**: 2026-06-12 during #24 PR-wrapper creation. Frontend inventory/build still failed on `./lib/advisorEvents.ts:3:21`, and `npm run test:run` still showed 19 advisor/tool-call failures around missing `isAdvisorEvent` / advisor event guards.
 
 ## 2026-06-07 UTC — Frontend type-check expects missing .next cache-life type artifact
 - **Severity**: warning
@@ -414,6 +428,7 @@
 - **Likely cause**: Existing tests were written against older `httpx` behavior and have not yet been updated to set cookies on the client/session instead of passing them per request (confidence 96%).
 - **Suggested action**: Update affected auth tests to use client-level cookie state before `httpx` removes per-request cookie support.
 - **Seen again**: 2026-05-29 during generated-audio protection verification when `PYTHONPATH=. uv run pytest tests/test_route_auth_hardening.py -q` passed but emitted the same httpx per-request cookies deprecation warnings in `TestCookieOnlyAuthRejected`.
+- **Seen again**: 2026-06-12 during #24 focused enrollment verification when `PYTHONPATH=. uv run pytest -q tests/test_enrollment_flow.py` passed (19 tests) but emitted the same per-request cookie deprecation warning in `test_native_enroll_complete_returns_body_refresh_and_rejects_mixed_mode`.
 
 ## 2026-04-16 03:40 — Extraction Benchmark Dedup Supersession Still Leaves Corolla Facts Active
 - **Severity**: warning
@@ -682,6 +697,7 @@
 - **Seen again**: 2026-06-05 during hosted-identity Task 11 email-route verification when `PYTHONPATH=. uv run pytest tests/test_identity_email_routes.py tests/test_identity_email_challenge.py tests/test_identity_session_issuance.py tests/test_identity_account_service.py -q` passed (140 passed) but still emitted 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14 from `litellm_core_utils/logging_utils.py:273`.
 - **Seen again**: 2026-06-05 during hosted-identity Task 11 corrective verification when the same focused command passed again (`142 passed`) after the `daemon_email_enabled` route-gating fix, but still emitted the same 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 - **Seen again**: 2026-06-08 during PR #20 benchmark replay follow-up verification when `PYTHONPATH=. DAEMON_ENVIRONMENT=development uv run pytest -q tests/memory/test_encryption.py tests/test_longmemeval_runner.py tests/test_benchmark_extraction.py` passed (38 passed) but still emitted the same 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
+- **Seen again**: 2026-06-12 during #24 focused enrollment verification when `PYTHONPATH=. uv run pytest -q tests/test_enrollment_flow.py` passed (19 tests) but emitted the same 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 
 ## 2026-04-10 12:30 — BasedPyright Warning Debt In Dreaming-Touched Python Modules
 - **Severity**: warning
@@ -1779,6 +1795,7 @@
 - **Evidence**: Sandboxed `scripts/local_ci.sh backend` printed `Failed to resolve 'pypi.org' ([Errno -2] Name or service not known)`. Escalated `scripts/pr_create.sh` printed `Found 43 known vulnerabilities in 14 packages`, including `aiohttp 3.13.3`, `cryptography 46.0.5`, `litellm 1.81.1`, `starlette 0.50.0`, and `urllib3 2.6.3`.
 - **Likely cause**: The dependency lock contains packages with known advisories, and `pip-audit` is intentionally configured as inventory / continue-on-error for legacy debt (confidence 95%).
 - **Suggested action**: File a dependency-upgrade/security follow-up that updates the affected packages through the locked dependency workflow; do not hand-edit the lockfile.
+- **Seen again**: 2026-06-12 during #24 PR-wrapper creation. Escalated `scripts/pr_create.sh` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 
 ## 2026-06-10 08:47 UTC — Backend inventory gates report existing security and warning debt
 - **Severity**: warning
@@ -1801,6 +1818,7 @@
 - **Evidence**: Wrapper summary: `blocking failures: 3` with `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`. Type-check evidence included missing advisor event exports from `frontend/lib/events`; lint reported 55 errors / 13 warnings; format-check reported style drift in 274 frontend files and generated `.next_broken` artifacts.
 - **Likely cause**: The wrapper enforces all families even though the issue sequence calls for affected-family local CI and explicitly notes frontend Wave 0 breakage for #108 (confidence 98%).
 - **Suggested action**: Either allow `scripts/pr_create.sh` to accept a local-CI family selector for backend-only PRs, or complete #108 before using the all-family wrapper path.
+- **Seen again**: 2026-06-12 during #24 PR creation. Backend blocking gates and aggregate gates passed inside the wrapper, but `scripts/pr_create.sh` refused to call `gh pr create` because unrelated frontend blocking gates failed: `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`.
 
 ## 2026-06-12 10:56 UTC — Frontend test dependencies unavailable in isolated worktree
 - **Severity**: warning
@@ -1900,6 +1918,7 @@
 - **Evidence**: `PYTHONPATH=. uv run pytest -q tests/test_chat_history.py tests/test_auth_user_scoping.py::test_chat_persistence_ignores_payload_user_id` ended with `TypeError: 'coroutine' object does not support the asynchronous context manager protocol (missed __aexit__ method)` at `orchestrator/auth_runtime_state.py:97` in `ensure_development_pepper_in_db`; the same command showed `8 passed` for `tests/test_chat_history.py` before the fixture error.
 - **Likely cause**: `tests/test_auth_user_scoping.py` builds `app_state.db_pool` as a plain `AsyncMock`, but the post-setup-token runtime now expects `db_pool.acquire()` to be usable in `async with` (confidence 95%).
 - **Suggested action**: Update that fixture to use the existing mock async context manager pattern from setup/auth runtime tests in a dedicated cleanup.
+- **Seen again**: 2026-06-12 during #24 PR-wrapper backend inventory. Full inventory pytest completed and surfaced the same `TypeError: 'coroutine' object does not support the asynchronous context manager protocol` in `tests/test_auth_user_scoping.py` setup; #24 focused enrollment tests were unaffected.
 
 ## 2026-06-12 11:20 UTC — Chat history tests still emit existing AsyncMock warning debt
 - **Severity**: info

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -28,9 +30,12 @@ class MockConn:
         self._pending_insert_args = None
         self._pending_update_args = None
         self._update_wrong_attempts = None
+        self._audit_insert_args = None
 
     async def fetchval(self, sql, *args):
         q = " ".join(sql.split())
+        if "COUNT(*)" in q and "devices" in q and "created_at >=" in q:
+            return self._pool._recent_device_creations_count
         if "COUNT(*)" in q and "devices" in q:
             return self._pool._active_count
         if "SELECT id FROM users" in q and str(SINGLETON_ID) in str(args):
@@ -114,6 +119,10 @@ class MockConn:
                 self._update_wrong_attempts.append(args)
             else:
                 self._pending_update_args = args
+        if "INSERT INTO identity_audit_log" in q:
+            self._audit_insert_args = args
+            self._pool._audit_insert_args = args
+            self._pool._audit_rows.append(args)
         return None
 
     async def fetchrow(self, sql, *args):
@@ -167,11 +176,19 @@ class MockConn:
 
 
 class MockPool:
-    def __init__(self, active_device_count=1, singleton_user_exists=True):
+    def __init__(
+        self,
+        active_device_count=1,
+        singleton_user_exists=True,
+        recent_device_creations_count=0,
+    ):
         self._active_count = active_device_count
+        self._recent_device_creations_count = recent_device_creations_count
         self._singleton_exists = singleton_user_exists
         self._closed = False
         self._device_created = False
+        self._audit_insert_args = None
+        self._audit_rows = []
         self._connections = []
         self._pending_enrollments = {}
         self._devices = {}
@@ -190,6 +207,8 @@ class MockPool:
         ]
 
     async def fetchval(self, sql, *args):
+        if "COUNT(*)" in sql and "devices" in sql and "created_at >=" in sql:
+            return self._recent_device_creations_count
         if "COUNT(*)" in sql and "devices" in sql:
             return self._active_count
         if "SELECT NOW()" in sql:
@@ -290,7 +309,8 @@ class TestEnrollStartRequiresAuth:
 
 class TestEnrollHappyPath:
     @pytest.mark.asyncio
-    async def test_enroll_start_complete(self, setup_env, monkeypatch):
+    async def test_enroll_start_complete(self, setup_env, monkeypatch, caplog):
+        caplog.set_level(logging.INFO, logger="orchestrator.routes.auth_setup")
         mock_pool = MockPool(active_device_count=1)
         original = make_mock_init(mock_pool)
         try:
@@ -377,6 +397,20 @@ class TestEnrollHappyPath:
                     assert "HttpOnly" in cookie_header
 
                     assert mock_pool._device_created is True
+                    assert "device_creation_audit provider=enrollment" in caplog.text
+                    assert complete_data["access_token"] not in caplog.text
+                    assert mock_pool._audit_insert_args is not None
+                    audit_metadata = json.loads(mock_pool._audit_insert_args[3])
+                    assert mock_pool._audit_insert_args[0] == SINGLETON_ID
+                    assert (
+                        mock_pool._audit_insert_args[1]
+                        == mock_pool._tenant_by_user_id[SINGLETON_ID]
+                    )
+                    assert mock_pool._audit_insert_args[2] == "enrollment"
+                    assert audit_metadata["client_kind"] == "web"
+                    assert audit_metadata["device_id"]
+                    assert audit_metadata["user_agent_hash"] is not None
+                    assert mock_pool._audit_insert_args[4] is not None
 
                     conn = mock_pool._connections[-1]
                     assert conn._device_insert_args is not None
@@ -472,6 +506,137 @@ class TestEnrollHappyPath:
                     assert conn._session_insert_args[3] == created_tenant_id
 
                 auth_module._verify_access_token = original_verify
+        finally:
+            restore_init(original)
+
+    @pytest.mark.asyncio
+    async def test_enroll_complete_rate_limits_sixth_device_creation_per_hour(
+        self, setup_env, monkeypatch
+    ):
+        mock_pool = MockPool(active_device_count=1, recent_device_creations_count=5)
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                state = app.state.app_state
+                settings = get_settings()
+                pepper = validate_and_get_pepper(settings)
+
+                pending_id = uuid.uuid4()
+                code = "1234-5678"
+                state.db_pool._pending_enrollments[pending_id] = {
+                    "id": pending_id,
+                    "user_id": SINGLETON_ID,
+                    "created_by_device_id": uuid.uuid4(),
+                    "code_verifier_hash": hash_enrollment_code(code, pepper),
+                    "wrong_attempts_remaining": 3,
+                    "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
+                    "consumed_at": None,
+                }
+
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    response = await client.post(
+                        "/v1/auth/enroll/complete",
+                        json={
+                            "pending_id": str(pending_id),
+                            "code": code,
+                            "client_kind": "native",
+                        },
+                    )
+
+                assert response.status_code == 429, response.text
+                assert response.json()["detail"] == "device_creation_rate_limited"
+                assert mock_pool._device_created is False
+        finally:
+            restore_init(original)
+
+    @pytest.mark.asyncio
+    async def test_enroll_complete_rejects_user_at_active_device_cap(self, setup_env, monkeypatch):
+        mock_pool = MockPool(active_device_count=20, recent_device_creations_count=0)
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                state = app.state.app_state
+                settings = get_settings()
+                pepper = validate_and_get_pepper(settings)
+
+                pending_id = uuid.uuid4()
+                code = "1234-5678"
+                state.db_pool._pending_enrollments[pending_id] = {
+                    "id": pending_id,
+                    "user_id": SINGLETON_ID,
+                    "created_by_device_id": uuid.uuid4(),
+                    "code_verifier_hash": hash_enrollment_code(code, pepper),
+                    "wrong_attempts_remaining": 3,
+                    "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
+                    "consumed_at": None,
+                }
+
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    response = await client.post(
+                        "/v1/auth/enroll/complete",
+                        json={
+                            "pending_id": str(pending_id),
+                            "code": code,
+                            "client_kind": "native",
+                        },
+                    )
+
+                assert response.status_code == 429, response.text
+                assert (
+                    response.json()["detail"]
+                    == "Maximum device limit reached. Revoke unused devices at /settings/devices."
+                )
+                assert mock_pool._device_created is False
+        finally:
+            restore_init(original)
+
+    @pytest.mark.asyncio
+    async def test_enroll_complete_enforces_device_create_ip_limit(self, setup_env, monkeypatch):
+        import orchestrator.routes.auth_setup as auth_setup_module
+
+        endpoints: list[str] = []
+
+        async def fake_enforce_rate_limit(**kwargs):
+            endpoints.append(kwargs["endpoint"])
+
+        monkeypatch.setattr(auth_setup_module, "enforce_rate_limit", fake_enforce_rate_limit)
+
+        mock_pool = MockPool(active_device_count=1, recent_device_creations_count=0)
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                state = app.state.app_state
+                settings = get_settings()
+                pepper = validate_and_get_pepper(settings)
+
+                pending_id = uuid.uuid4()
+                code = "1234-5678"
+                state.db_pool._pending_enrollments[pending_id] = {
+                    "id": pending_id,
+                    "user_id": SINGLETON_ID,
+                    "created_by_device_id": uuid.uuid4(),
+                    "code_verifier_hash": hash_enrollment_code(code, pepper),
+                    "wrong_attempts_remaining": 3,
+                    "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
+                    "consumed_at": None,
+                }
+
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    response = await client.post(
+                        "/v1/auth/enroll/complete",
+                        json={
+                            "pending_id": str(pending_id),
+                            "code": code,
+                            "client_kind": "native",
+                        },
+                    )
+
+                assert response.status_code == 200, response.text
+                assert endpoints == ["auth:enroll:complete", "auth:device:create"]
+                assert mock_pool._device_created is True
         finally:
             restore_init(original)
 
