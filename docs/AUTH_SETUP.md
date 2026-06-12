@@ -48,15 +48,15 @@ deployments; the default safe posture is to trust only the immediate socket IP.
 
 First-boot setup is primarily the self-hosted and recovery path. In hosted deployments, keep this behind **Advanced self-hosted setup** instead of presenting it as the default login path.
 
-On a fresh Daemon installation with no active devices, the backend logs a one-time setup token at startup:
+On a fresh Daemon installation with no active devices, the backend writes a one-time setup token to the local operator token file at startup. The default path is `.daemon/setup-token`; override it with `DAEMON_SETUP_TOKEN_FILE` if your deployment needs a different writable secret handoff path.
 
 ```
->>> Daemon setup required. Open http://<host>:<port>/setup and enter token: <plaintext>
+>>> Daemon setup required. Open http://<host>:<port>/setup and enter the setup token from .daemon/setup-token
 ```
 
-Open the URL in your browser. You will see a setup form — **paste the token from the logs into the form field**. Do not pass it as a URL parameter or query string.
+The token file is written with `0600` permissions for the backend process user. Read that file locally, open the URL in your browser, and paste the token into the setup form field. Do not pass it as a URL parameter or query string.
 
-In multi-worker deployments, the setup token verifier is stored in Postgres-backed shared runtime state. Only the worker that creates a new setup token logs the plaintext token; every worker accepts that same token.
+In multi-worker deployments, the setup token verifier is stored in Postgres-backed shared runtime state. Only the worker that creates or rotates a setup token writes the plaintext token file; every worker accepts that same token. If Daemon finds an existing setup-token verifier but no token file, it rotates the verifier and writes a fresh file so any token leaked by older logs stops working on the next startup.
 
 ### Why Token-in-URL Is Unsafe
 
@@ -67,11 +67,11 @@ Passing the setup token via URL exposes it to multiple leakage vectors:
 - **Server access logs**: Most web servers log the full request URL — the token would be written to disk in plaintext.
 - **Bookmarks**: If you bookmark the setup URL, the token is permanently stored in the bookmark.
 
-Daemon's form-based flow avoids all of these: the token is transmitted in a POST body, never appears in a URL, and is logged by the backend only once at startup.
+Daemon's form-based flow avoids all of these: the token is transmitted in a POST body, never appears in a URL, and is not written to application logs.
 
-### Server Log Sensitivity
+### Setup Token File Sensitivity
 
-The one-time setup token **is written to server logs at startup**. Treat your logs as sensitive: anyone with access to server log output can see the token needed to complete first-boot setup. After setup is completed successfully, the shared token verifier is burned and cannot be reused by any worker.
+The one-time setup token is written only to the local token file. Treat that file as sensitive: anyone who can read it before setup completes can enroll the first device. After setup is completed successfully, the shared token verifier is burned and the local token file is removed.
 
 ---
 
@@ -122,13 +122,13 @@ Revocation is permanent. To regain access, the device must complete hosted ident
 
 If all devices are revoked (or lost) and no enrolled browser can reach the Devices panel, recovery is possible because the setup condition is tied to **active device count**, not to whether setup has ever run.
 
-When the server restarts with **zero active devices**, it will log a new one-time setup token:
+When the server restarts with **zero active devices**, it will write a new one-time setup token:
 
 ```
->>> Daemon setup required. Open http://<host>:<port>/setup and enter token: <plaintext>
+>>> Daemon setup required. Open http://<host>:<port>/setup and enter the setup token from .daemon/setup-token
 ```
 
-Because the setup token verifier is shared through Postgres, multiple backend workers accept the same recovery token. Complete first-boot setup again from any browser to create a fresh device and regain access.
+Because the setup token verifier is shared through Postgres, multiple backend workers accept the same recovery token. Read the token from the local token file and complete first-boot setup again from any browser to create a fresh device and regain access.
 
 This means recovery requires server restart access — a self-hosted deployment's physical or container restart resets the setup flow when no devices are active.
 
@@ -233,10 +233,10 @@ Daemon rejects requests that mix cookie-based and body-based refresh in the same
 | --------------- | ---------------------------------------------------------------------------------------------- |
 | Hosted identity | Google/email prove identity only; Daemon-issued device/session tokens are the API auth surface |
 | Google sign-in  | Server nonce challenge + manual GIS callback; no `login_uri` auto-post flow                    |
-| First boot      | Advanced self-hosted/recovery path; form-based one-time token from server logs, never in URL   |
+| First boot      | Advanced self-hosted/recovery path; form-based one-time token from local 0600 file, never in URL |
 | Adding devices  | Hosted identity sign-in or enrollment QR/manual code; web cookie or native JSON-body token     |
 | Revoking        | Immediate session/token invalidation; current-device revoke clears cookie                      |
-| Recovery        | Zero active devices + restart → shared setup token logged by the worker that creates it        |
+| Recovery        | Zero active devices + restart -> shared setup token written to the local operator file          |
 | Pepper          | Production requires ≥32 bytes / 43 base64url chars; dev fallback is DB-shared when possible    |
 | Browser auth    | Access token in JS memory; refresh in HttpOnly `__Host-` cookie                                |
 | Native auth     | Access + refresh returned in JSON; refresh must use platform secure storage                    |

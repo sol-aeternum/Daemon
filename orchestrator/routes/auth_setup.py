@@ -2,7 +2,7 @@
 
 Architecture decisions followed:
   - Decision 3: First boot is zero-active-device based
-  - Decision 4: Setup token hash is app-state only
+  - Decision 4: Setup token hash is shared runtime state
   - Decision 6: Setup is transaction-locked
   - Decision 7: Tokens are 256-bit opaque values
   - Decision 8: Token storage uses SHA-256 hashes
@@ -55,6 +55,7 @@ from orchestrator.auth_tokens import (
 )
 from orchestrator.config import get_settings
 from orchestrator.db import get_app_state
+from orchestrator.setup_token_delivery import delete_setup_token_file
 from orchestrator.services.identity import (
     AccountService,
     DeviceNotification,
@@ -1178,6 +1179,7 @@ async def setup_endpoint(
             )
             if active_count > 0:
                 await clear_setup_token_hash(conn)
+                delete_setup_token_file(settings.daemon_setup_token_file)
                 raise HTTPException(
                     status_code=409,
                     detail="setup_already_complete",
@@ -1192,6 +1194,7 @@ async def setup_endpoint(
                 settings.daemon_private_refresh_ttl_days,
             )
             await clear_setup_token_hash(conn)
+            delete_setup_token_file(settings.daemon_setup_token_file)
 
     refresh_max_age = int(timedelta(days=settings.daemon_private_refresh_ttl_days).total_seconds())
     cookie_headers = build_refresh_cookie(

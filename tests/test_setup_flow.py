@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import re
+import stat
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -12,9 +15,10 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from orchestrator.auth_tokens import generate_setup_token, hash_token
+from orchestrator.auth_tokens import generate_setup_token, hash_token, verify_token
 from orchestrator.main import app
 from orchestrator.config import get_settings
+from orchestrator.setup_token_delivery import write_setup_token_file
 
 
 SINGLETON_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -173,12 +177,13 @@ def restore_init(original):
 
 
 @pytest_asyncio.fixture
-async def setup_env(monkeypatch):
+async def setup_env(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/testdb")
     monkeypatch.setenv("REDIS_URL", "")
     monkeypatch.setenv("DAEMON_ALLOWED_ORIGINS", "https://app.daemon.ai")
     monkeypatch.setenv("DAEMON_PUBLIC_ORIGIN", "https://app.daemon.ai")
     monkeypatch.setenv("DAEMON_ENVIRONMENT", "development")
+    monkeypatch.setenv("DAEMON_SETUP_TOKEN_FILE", str(tmp_path / "setup-token"))
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
@@ -186,7 +191,7 @@ async def setup_env(monkeypatch):
 
 class TestStartupNoDeviceLogsToken:
     @pytest.mark.asyncio
-    async def test_startup_logs_setup_token_when_no_active_devices(
+    async def test_startup_writes_setup_token_file_without_logging_plaintext(
         self, setup_env, monkeypatch, caplog
     ):
         mock_pool = MockPool(active_device_count=0)
@@ -196,7 +201,38 @@ class TestStartupNoDeviceLogsToken:
             caplog.clear()
             async with app.router.lifespan_context(app):
                 pass
+            token_file = get_settings().daemon_setup_token_file
+            token = open(token_file, encoding="utf-8").read().strip()
             assert ">>> Daemon setup required" in caplog.text
+            assert token not in caplog.text
+            assert re.fullmatch(r"[A-Za-z0-9_-]{43}", token)
+            assert stat.S_IMODE(os.stat(token_file).st_mode) == 0o600
+            assert verify_token(token, mock_pool._system_state["auth.setup_token_hash"])
+            assert not re.search(r"token: [A-Za-z0-9_-]{43}", caplog.text)
+            assert not re.search(r"\b[A-Za-z0-9_-]{43}\b", caplog.text)
+        finally:
+            restore_init(original)
+
+    @pytest.mark.asyncio
+    async def test_startup_rotates_existing_hash_when_token_file_missing(
+        self, setup_env, monkeypatch, caplog
+    ):
+        old_token = generate_setup_token()
+        mock_pool = MockPool(active_device_count=0)
+        mock_pool.set_setup_token(old_token)
+        original = make_mock_init(mock_pool)
+        try:
+            caplog.set_level(logging.INFO)
+            caplog.clear()
+            async with app.router.lifespan_context(app):
+                pass
+            token_file = get_settings().daemon_setup_token_file
+            new_token = open(token_file, encoding="utf-8").read().strip()
+            assert new_token != old_token
+            assert new_token not in caplog.text
+            assert verify_token(new_token, mock_pool._system_state["auth.setup_token_hash"])
+            assert not verify_token(old_token, mock_pool._system_state["auth.setup_token_hash"])
+            assert not re.search(r"\b[A-Za-z0-9_-]{43}\b", caplog.text)
         finally:
             restore_init(original)
 
@@ -244,6 +280,10 @@ class TestSetupHappyPath:
             async with app.router.lifespan_context(app):
                 plaintext = generate_setup_token()
                 mock_pool.set_setup_token(plaintext)
+                token_file = write_setup_token_file(
+                    get_settings().daemon_setup_token_file,
+                    plaintext,
+                )
 
                 transport = ASGITransport(app=app)
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -283,6 +323,7 @@ class TestSetupHappyPath:
                     assert mock_pool._device_insert_args[1] == mock_pool._tenant_id
                     assert session_insert_args[3] == mock_pool._tenant_id
                     assert "auth.setup_token_hash" not in mock_pool._system_state
+                    assert not token_file.exists()
         finally:
             restore_init(original)
 
@@ -520,7 +561,9 @@ class TestSetupCookiePolicyValidation:
     """
 
     @pytest.mark.asyncio
-    async def test_production_insecure_cookie_rejected_before_state_mutation(self, monkeypatch):
+    async def test_production_insecure_cookie_rejected_before_state_mutation(
+        self, monkeypatch, tmp_path
+    ):
         """CookiePolicyError raised before device/session creation and before setup_token_hash cleared."""
         # Use production + insecure cookie to trigger CookiePolicyError
         monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/testdb")
@@ -530,6 +573,7 @@ class TestSetupCookiePolicyValidation:
         monkeypatch.setenv("DAEMON_ENVIRONMENT", "production")
         monkeypatch.setenv("DAEMON_COOKIE_SECURE", "false")
         monkeypatch.setenv("DAEMON_AUTH_PEPPER", "test-pepper-for-all-tests-12345678901234567890")
+        monkeypatch.setenv("DAEMON_SETUP_TOKEN_FILE", str(tmp_path / "setup-token"))
         get_settings.cache_clear()
 
         mock_pool = MockPool(active_device_count=0, singleton_user_exists=False)

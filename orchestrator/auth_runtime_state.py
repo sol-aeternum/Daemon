@@ -78,6 +78,12 @@ async def create_setup_token_if_absent(conn: Any) -> str | None:
     return plaintext
 
 
+async def replace_setup_token(conn: Any) -> str:
+    plaintext = generate_setup_token()
+    await set_runtime_value(conn, SETUP_TOKEN_HASH_KEY, hash_token(plaintext))
+    return plaintext
+
+
 async def get_setup_token_hash(conn: Any) -> str | None:
     return await get_runtime_value(conn, SETUP_TOKEN_HASH_KEY)
 

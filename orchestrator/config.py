@@ -101,6 +101,9 @@ class Settings(BaseSettings):
     # Session cleanup: interval in seconds between cleanup task runs.
     daemon_session_cleanup_interval_seconds: int = 86400
 
+    # Local operator handoff for the one-time first-boot setup token.
+    daemon_setup_token_file: str = ".daemon/setup-token"
+
     # Default provider to use when none specified in request
     default_provider: str = "openrouter"
 
