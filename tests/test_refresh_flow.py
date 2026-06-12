@@ -24,12 +24,16 @@ class MockConn:
         self._pool = pool
         self._in_transaction = False
         self._last_refresh_consume_sql = None
+        self._session_cleanup_lock_held = False
 
     async def fetchval(self, sql, *args):
         if "SELECT NOW()" in sql:
             return datetime.now(timezone.utc)
         if "COUNT(*)" in sql and "devices" in sql:
             return self._pool._active_count
+        if "DELETE FROM sessions" in sql:
+            self._pool._events.append("cleanup-delete")
+            return 0
         if "INSERT INTO sessions" in sql:
             self._pool._captured_inserts.append({"sql": sql, "args": args})
             session_id = uuid.uuid4()
@@ -91,6 +95,11 @@ class MockConn:
             }
         if "UPDATE sessions" in sql and "RETURNING" in sql:
             self._last_refresh_consume_sql = sql
+            self._pool._events.append("consume")
+            assert self._session_cleanup_lock_held, (
+                "refresh rotation must acquire the session cleanup advisory lock "
+                "before consuming a refresh token"
+            )
             assert "tenant_id" in sql
             token_hash = args[0]
             if token_hash in self._pool._sessions:
@@ -141,6 +150,10 @@ class MockConn:
         return None
 
     async def execute(self, sql, *args):
+        if "pg_advisory_xact_lock" in sql:
+            self._session_cleanup_lock_held = True
+            self._pool._events.append("lock")
+            return None
         if "DELETE FROM refresh_rotation_grace" in sql and "grace_expires_at <= NOW()" in sql:
             now = datetime.now(timezone.utc)
             self._pool._refresh_rotation_grace = {
@@ -202,6 +215,7 @@ class MockConn:
         try:
             yield self
         finally:
+            self._session_cleanup_lock_held = False
             self._in_transaction = False
 
 
@@ -214,6 +228,7 @@ class MockPool:
         self._connections = []
         self._captured_inserts = []
         self._refresh_rotation_grace = {}
+        self._events = []
 
     async def fetchval(self, sql, *args):
         if "COUNT(*)" in sql and "devices" in sql:
@@ -359,6 +374,8 @@ class TestWebRefreshRotatesCookie:
                         if conn._last_refresh_consume_sql is not None
                     )
                     assert "tenant_id" in consume_sql
+                    consume_index = mock_pool._events.index("consume")
+                    assert "lock" in mock_pool._events[:consume_index]
         finally:
             restore_init(original)
 

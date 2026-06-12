@@ -27,6 +27,8 @@ class MockPool:
         self._closed = False
         self._count_sql = None
         self._delete_sql = None
+        self._events = []
+        self._lock_held = False
 
     def _candidate_ids(self, grace_days):
         grace_interval = timedelta(days=grace_days)
@@ -49,6 +51,8 @@ class MockPool:
     async def fetchval(self, sql, *args):
         if "DELETE FROM sessions" in sql:
             self._delete_sql = sql
+            self._events.append("delete")
+            assert self._lock_held, "cleanup DELETE must run under session advisory lock"
             to_delete = self._candidate_ids(args[0])
             self._deleted_ids = to_delete
             for session_id in to_delete:
@@ -81,6 +85,8 @@ class MockConn:
         self._pool = pool
 
     async def fetchval(self, sql, *args):
+        if "DELETE FROM sessions" in sql:
+            return await self._pool.fetchval(sql, *args)
         if "SELECT NOW()" in sql:
             return datetime.now(timezone.utc)
         if "COUNT(*)" in sql and "devices" in sql:
@@ -88,10 +94,68 @@ class MockConn:
         return None
 
     async def fetchrow(self, sql, *args):
-        return None
+        return await self._pool.fetchrow(sql, *args)
 
     async def execute(self, sql, *args):
+        if "pg_advisory_xact_lock" in sql:
+            self._pool._events.append("lock")
+            self._pool._lock_held = True
         return None
+
+    @asynccontextmanager
+    async def transaction(self):
+        try:
+            yield self
+        finally:
+            self._pool._lock_held = False
+
+
+class SerializingPool:
+    def __init__(self):
+        self._lock = asyncio.Lock()
+        self._refresh_active = 0
+        self._deleted_mid_refresh = 0
+        self._cleanup_count = 0
+
+    @asynccontextmanager
+    async def acquire(self):
+        conn = SerializingConn(self)
+        yield conn
+
+
+class SerializingConn:
+    def __init__(self, pool):
+        self._pool = pool
+        self._lock_acquired = False
+
+    async def execute(self, sql, *args):
+        if "pg_advisory_xact_lock" in sql:
+            await self._pool._lock.acquire()
+            self._lock_acquired = True
+        return None
+
+    async def fetchval(self, sql, *args):
+        if "DELETE FROM sessions" in sql:
+            self._pool._cleanup_count += 1
+            if self._pool._refresh_active:
+                self._pool._deleted_mid_refresh += 1
+                return 1
+            return 0
+        return None
+
+    async def fetchrow(self, sql, *args):
+        if "candidate_count" in sql and "total_count" in sql:
+            return {"candidate_count": 0, "total_count": 0}
+        return None
+
+    @asynccontextmanager
+    async def transaction(self):
+        try:
+            yield self
+        finally:
+            if self._lock_acquired:
+                self._lock_acquired = False
+                self._pool._lock.release()
 
 
 def _make_session(
@@ -349,6 +413,49 @@ class TestCleanupStaleSessions:
         deleted = await cleanup_stale_sessions(cast(asyncpg.Pool | None, None), 7)
         assert deleted == 0
 
+    @pytest.mark.asyncio
+    async def test_cleanup_acquires_advisory_lock_before_delete(self):
+        from orchestrator.session_cleanup import cleanup_stale_sessions
+
+        now = datetime.now(timezone.utc)
+        mock_pool = MockPool({"s1": _make_session(now - timedelta(days=10))})
+
+        deleted = await cleanup_stale_sessions(
+            cast(asyncpg.Pool | None, cast(object, mock_pool)),
+            7,
+        )
+
+        assert deleted == 1
+        assert mock_pool._events == ["lock", "delete"]
+
+    @pytest.mark.asyncio
+    async def test_concurrent_refreshes_and_cleanup_are_serialized(self):
+        from orchestrator.session_cleanup import cleanup_stale_sessions, lock_session_cleanup
+
+        serializing_pool = SerializingPool()
+
+        async def simulated_refresh():
+            async with serializing_pool.acquire() as conn:
+                async with conn.transaction():
+                    await lock_session_cleanup(cast(asyncpg.Connection, cast(object, conn)))
+                    serializing_pool._refresh_active += 1
+                    await asyncio.sleep(0)
+                    serializing_pool._refresh_active -= 1
+
+        async def simulated_cleanup():
+            await cleanup_stale_sessions(
+                cast(asyncpg.Pool | None, cast(object, serializing_pool)),
+                7,
+            )
+
+        refresh_tasks = [asyncio.create_task(simulated_refresh()) for _ in range(100)]
+        cleanup_task = asyncio.create_task(simulated_cleanup())
+
+        await asyncio.gather(*refresh_tasks, cleanup_task)
+
+        assert serializing_pool._cleanup_count == 1
+        assert serializing_pool._deleted_mid_refresh == 0
+
 
 class TestRealCleanupLoopInterruptible:
     """Tests for real cleanup loop behavior using the actual _session_cleanup_loop.
@@ -370,7 +477,7 @@ class TestRealCleanupLoopInterruptible:
 
         cleanup_run_times = []
 
-        async def mock_cleanup(db_pool, grace_days):
+        async def mock_cleanup(db_pool, grace_days, max_delete_fraction=0.5):
             cleanup_run_times.append(datetime.now(timezone.utc))
             return 0
 
@@ -411,7 +518,7 @@ class TestRealCleanupLoopInterruptible:
         interval_seconds = 3600
         shutdown_delay = 0.1
 
-        async def mock_cleanup(db_pool, grace_days):
+        async def mock_cleanup(db_pool, grace_days, max_delete_fraction=0.5):
             return 0
 
         import orchestrator.session_cleanup as sc

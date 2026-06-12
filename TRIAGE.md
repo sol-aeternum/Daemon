@@ -33,6 +33,28 @@
 - **Likely cause**: Manual test double drift after extending the internal cleanup helper signature for the safety threshold. Confidence: 99%.
 - **Suggested action**: Keep monkeypatched async helper signatures aligned with production helper signatures when adding internal parameters.
 
+## 2026-06-13T08:34:50+09:30 — #56 PR Wrapper Refused On Existing Frontend Blocking Gates
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #56 session cleanup / refresh serialization PR creation
+- **Category**: build-error | test-failure | dependency
+- **Blocked current task**: no
+- **What happened**: `scripts/pr_create.sh` ran all local CI families and refused to call `gh pr create` because existing frontend blocking gates failed outside the backend-only #56 change surface. Backend blocking gates and aggregate gates passed inside the wrapper run.
+- **Evidence**: `scripts/pr_create.sh -- --title "fix(auth): serialize session cleanup with refresh rotation" ...` reported blocking failures: `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`. Backend `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect` passed. Frontend type/build still failed on missing advisor event exports from `frontend/lib/events.ts`; frontend inventory tests still had 19 advisor/tool-call failures; backend inventory reproduced existing `tests/test_auth_user_scoping.py` setup errors and the existing Google route rate-limit inventory failure.
+- **Likely cause**: Main still carries unrelated frontend advisor-event type/build debt and repo-wide frontend lint/format debt; #56 only changes backend session cleanup and refresh rotation serialization. Confidence: 95%.
+- **Suggested action**: Open #56 directly after the documented wrapper refusal, rely on hosted branch-protection checks plus Codex review before any merge, and keep frontend baseline cleanup in dedicated work.
+
+## 2026-06-13T08:18:12+09:30 — #56 Changed-File Type Check Caught Narrow Lock Typing
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Issue #56 session cleanup / refresh serialization
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: The first changed-file basedpyright run failed after adding the advisory-lock helper because it accepted only `asyncpg.Connection`, while `asyncpg.Pool.acquire()` is typed as a pool connection proxy. The new concurrency test also mixed `Task[None]` and `Task[int]` in one `asyncio.gather` call.
+- **Evidence**: `uv run basedpyright --level error orchestrator/session_cleanup.py orchestrator/routes/auth_setup.py tests/test_session_cleanup.py tests/test_refresh_flow.py` reported `Argument of type "PoolConnectionProxy | Unknown" cannot be assigned to parameter "conn" of type "Connection"` and `Task[int] is not assignable to parameter ... _FutureLike[None]`. After widening the helper to `Any` and wrapping cleanup in a `Task[None]`, the same command reported `0 errors, 0 warnings, 0 notes`.
+- **Likely cause**: Asyncpg's pool proxy type differs from the concrete connection type at static-analysis time; the fake concurrency cleanup returned the production integer count while the refresh tasks returned `None`. Confidence: 99%.
+- **Suggested action**: Keep transaction helper signatures compatible with asyncpg pool proxies, matching the existing `auth_runtime_state.lock_auth_runtime_state(conn: Any)` pattern.
+
 ## 2026-06-12T21:38:46+09:30 — #27 Frontend Local CI Blocked By Sandboxed npm-ci And Existing Frontend Debt
 - **Severity**: warning
 - **Scope**: host | project
@@ -1979,6 +2001,7 @@
 - **Suggested action**: Treat hosted protected CI as the authoritative full-suite result while investigating the local late-suite inventory stall separately.
 - **Seen again**: 2026-06-12 during #113 refresh-rotation grace verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory full pytest reached late-suite progress after showing unrelated failures and then the outer timeout exited `124`.
 - **Seen again**: 2026-06-12 during #54 session cleanup grace-days verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` and `pip-audit` reported existing non-blocking findings, inventory full pytest printed progress through `[ 91%]` with one `F` marker but no failure summary before the outer timeout exited `124`.
+- **Seen again**: 2026-06-13 during #56 session cleanup / refresh serialization verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `pip-audit` failed DNS resolution for `pypi.org`, full pytest printed the known `tests/test_auth_user_scoping.py` setup errors plus one `F` marker, then reached late-suite progress before the outer timeout exited `124`.
 
 ## 2026-06-12 11:20 UTC — Existing auth user scoping fixture fails development pepper setup
 - **Severity**: warning
@@ -1991,6 +2014,7 @@
 - **Likely cause**: `tests/test_auth_user_scoping.py` builds `app_state.db_pool` as a plain `AsyncMock`, but the post-setup-token runtime now expects `db_pool.acquire()` to be usable in `async with` (confidence 95%).
 - **Suggested action**: Update that fixture to use the existing mock async context manager pattern from setup/auth runtime tests in a dedicated cleanup.
 - **Seen again**: 2026-06-12 during #24 PR-wrapper backend inventory. Full inventory pytest completed and surfaced the same `TypeError: 'coroutine' object does not support the asynchronous context manager protocol` in `tests/test_auth_user_scoping.py` setup; #24 focused enrollment tests were unaffected.
+- **Seen again**: 2026-06-13 during #56 backend local CI inventory. Full pytest again surfaced the same `TypeError: 'coroutine' object does not support the asynchronous context manager protocol (missed __aexit__ method)` at `orchestrator/auth_runtime_state.py:97` in `tests/test_auth_user_scoping.py` setup; #56 focused session cleanup / refresh tests were unaffected.
 
 ## 2026-06-12 11:20 UTC — Chat history tests still emit existing AsyncMock warning debt
 - **Severity**: info
