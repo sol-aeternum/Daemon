@@ -1,5 +1,16 @@
 # TRIAGE.md
 
+## 2026-06-12T21:38:46+09:30 — #27 Frontend Local CI Blocked By Sandboxed npm-ci And Existing Frontend Debt
+- **Severity**: warning
+- **Scope**: host | project
+- **Encountered during**: Issue #27 auth proxy forwarded-IP verification
+- **Category**: dependency | build-error | test-failure
+- **Blocked current task**: no
+- **What happened**: `scripts/local_ci.sh frontend` could not complete cleanly in the sandbox. The inventory `npm ci` step failed while trying to execute esbuild's install check, which left `node_modules` unusable for subsequent local-CI steps; after restoring dependencies with escalated `npm ci`, focused auth-proxy tests and changed-file lint/type/format checks passed, while full frontend type/lint still reported existing advisor-event and React hook debt outside #27.
+- **Evidence**: `npm ci --prefix frontend --no-audit --no-fund --prefer-offline` failed with `spawnSync /tmp/daemon-27/frontend/node_modules/esbuild/bin/esbuild EPERM`; subsequent local-CI blocking commands failed as `next: command not found`, `eslint: command not found`, and `prettier: command not found`. Direct full `npm --prefix frontend run type-check` still reports pre-existing `lib/advisorEvents.ts` / `__tests__/advisor-events.test.ts` errors, and `npm --prefix frontend run lint` still reports 28 errors / 13 warnings in unrelated React/UI files. Direct full `npm --prefix frontend run test:run` includes `__tests__/auth-proxy-route.test.ts` passing (8 tests) but still fails 19 existing advisor/tool-call tests across `__tests__/advisor-events.test.ts`, `__tests__/chat-route-advisor-events.test.ts`, and `__tests__/tool-call-log.test.ts`.
+- **Likely cause**: The managed sandbox blocks executing esbuild's postinstall binary during `npm ci`; the full frontend type/lint failures are existing project debt and not caused by the changed auth proxy files. Confidence: 90%.
+- **Suggested action**: Run frontend dependency installation outside the sandbox for local worktrees, and fix advisor-event/hook lint debt in dedicated frontend cleanup issues.
+
 ## 2026-06-12T21:20:00+09:30 — #24 Migration Metadata Needed Doc Freshness Update
 - **Severity**: info
 - **Scope**: project

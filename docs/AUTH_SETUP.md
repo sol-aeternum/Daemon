@@ -39,8 +39,11 @@ contract.
 
 If you proxy hosted auth endpoints through the Next.js frontend and want hosted-identity rate
 limits to key on the real browser IP instead of the proxy/container hop, enable
-`DAEMON_TRUST_PROXY_FORWARDED_CLIENT_IP=true`. Leave it false for direct/self-hosted
-deployments; the default safe posture is to trust only the immediate socket IP.
+`DAEMON_TRUST_PROXY_FORWARDED_CLIENT_IP=true` on the backend and set the frontend
+`DAEMON_TRUSTED_PROXY_IPS` allowlist to the immediate proxy IPs that may supply
+`X-Forwarded-For` / platform client-IP headers. Leave both unset/false for
+direct/self-hosted deployments; the default safe posture is to trust only the immediate
+client IP and ignore arbitrary forwarded headers.
 
 ---
 
