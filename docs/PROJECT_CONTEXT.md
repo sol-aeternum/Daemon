@@ -68,7 +68,7 @@ Daemon uses a tier-based model configuration system. Specific model assignments 
 - **Tools**: `web_search`, `http_request`, `calculate`, `get_time`, `notifications`, `reminders`, `memory_read`, `memory_write`.
 
 ### Phase 2: Memory System ✅
-- **Storage**: PostgreSQL + pgvector with 34 migrations applied (latest: `034_device_creation_audit.sql`).
+- **Storage**: PostgreSQL + pgvector with 35 migrations applied (latest: `035_refresh_rotation_grace.sql`).
 - **Pipeline**: Extraction (GPT-4o-mini) → Embedding (Voyage 4) → Dedup → Retrieval (Hybrid).
 - **Encryption**: Fernet for messages and memories.
 - **Background Jobs**: Extraction, summary, consolidation, dreaming.
@@ -135,4 +135,4 @@ For detailed architecture, see [MEMORY_LAYER.md](../MEMORY_LAYER.md).
 - **Local Pipeline**: Blocked on hardware (RTX 5090); cloud pipeline runs independently.
 - **Linter Scope**: `check_doc_freshness.py` gates high-confidence structured facts only.
 - **Model Assignments**: Tier-to-model mappings are env-var configurable in `config.py`.
-- **Migrations**: 34 migrations applied.
+- **Migrations**: 35 migrations applied.

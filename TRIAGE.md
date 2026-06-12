@@ -21,6 +21,7 @@
 - **Evidence**: `gh api repos/sol-aeternum/Daemon/rulesets` returned `{"enforcement":"active","name":"Main Protection","target":"branch"}`. `scripts/pr_create.sh -- --title "Auth proxy trusts spoofed forwarded-IP headers" ...` refused with blocking failures: `backend/basedpyright (exit=3)`, `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`. The wrapper's backend env created `.venv` and `basedpyright` printed `venv .uv-venv subdirectory not found in venv path /tmp/daemon-27.` Full backend pytest also reproduced existing `tests/test_auth_user_scoping.py` fixture errors: `TypeError: 'coroutine' object does not support the asynchronous context manager protocol (missed __aexit__ method)` at `orchestrator/auth_runtime_state.py:97`. Full frontend test inventory passed `__tests__/auth-proxy-route.test.ts` but failed the existing advisor/tool-call tests, and `npm audit`/`pip-audit` reported existing dependency advisories.
 - **Likely cause**: The PR wrapper does not inherit the audited temp-worktree backend env overrides, and main already carries frontend advisor/lint/format debt plus auth-scoping fixture debt. Confidence: 95%.
 - **Suggested action**: Open #27 directly after the wrapper refusal, rely on active hosted branch-protection checks for merge eligibility, and keep the local wrapper/env and baseline gate debt in dedicated cleanup work.
+- **Seen again**: 2026-06-12 during #113 changed-file type checking when `UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv uv run basedpyright --level error orchestrator/routes/auth_setup.py tests/test_refresh_flow.py` still used `pyrightconfig.json`'s worktree-local `.uv-venv` lookup and exited 3 with `venv .uv-venv subdirectory not found in venv path /tmp/daemon-113.`
 
 ## 2026-06-12T21:20:00+09:30 — #24 Migration Metadata Needed Doc Freshness Update
 - **Severity**: info
@@ -451,6 +452,7 @@
 - **Suggested action**: Update affected auth tests to use client-level cookie state before `httpx` removes per-request cookie support.
 - **Seen again**: 2026-05-29 during generated-audio protection verification when `PYTHONPATH=. uv run pytest tests/test_route_auth_hardening.py -q` passed but emitted the same httpx per-request cookies deprecation warnings in `TestCookieOnlyAuthRejected`.
 - **Seen again**: 2026-06-12 during #24 focused enrollment verification when `PYTHONPATH=. uv run pytest -q tests/test_enrollment_flow.py` passed (19 tests) but emitted the same per-request cookie deprecation warning in `test_native_enroll_complete_returns_body_refresh_and_rejects_mixed_mode`.
+- **Seen again**: 2026-06-12 during #113 focused refresh verification when `PYTHONPATH=. uv run pytest -q tests/test_refresh_flow.py` passed (28 tests) but emitted 20 `httpx` per-request cookie deprecation warnings from refresh-route tests.
 
 ## 2026-04-16 03:40 — Extraction Benchmark Dedup Supersession Still Leaves Corolla Facts Active
 - **Severity**: warning
@@ -1818,6 +1820,7 @@
 - **Likely cause**: The dependency lock contains packages with known advisories, and `pip-audit` is intentionally configured as inventory / continue-on-error for legacy debt (confidence 95%).
 - **Suggested action**: File a dependency-upgrade/security follow-up that updates the affected packages through the locked dependency workflow; do not hand-edit the lockfile.
 - **Seen again**: 2026-06-12 during #24 PR-wrapper creation. Escalated `scripts/pr_create.sh` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
+- **Seen again**: 2026-06-12 during #113 backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 
 ## 2026-06-10 08:47 UTC — Backend inventory gates report existing security and warning debt
 - **Severity**: warning
@@ -1929,6 +1932,7 @@
 - **Evidence**: `UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv UV_CACHE_DIR=/tmp/uv-cache timeout 420s scripts/local_ci.sh backend` passed `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; `pip-audit` reported `Failed to resolve 'pypi.org' ([Errno -2] Name or service not known)` and inventory `PYTHONPATH=. uv run pytest -q` reached `[ 91%]` before the outer timeout exited 124. `timeout 180s scripts/local_ci.sh aggregate` passed `feature-matrix` and `pre-commit`.
 - **Likely cause**: Same sandbox network restriction and recurring late-suite local pytest inventory stall seen in previous issue worktrees (confidence 90%).
 - **Suggested action**: Treat hosted protected CI as the authoritative full-suite result while investigating the local late-suite inventory stall separately.
+- **Seen again**: 2026-06-12 during #113 refresh-rotation grace verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory full pytest reached late-suite progress after showing unrelated failures and then the outer timeout exited `124`.
 
 ## 2026-06-12 11:20 UTC — Existing auth user scoping fixture fails development pepper setup
 - **Severity**: warning
