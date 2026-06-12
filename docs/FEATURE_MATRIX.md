@@ -117,3 +117,4 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | **PWA / Offline** | — | — | — | — | — | — |
 | PWA Service Worker + Offline Indicator | Platform-specific permanent | Platform-specific permanent | Not started | Not started | Browser service worker (no backend) | No |
 | Mobile-Responsive Navigation (hamburger + sidebar) | Cross-client stable | Cross-client stable | Not started | Not started | Purely frontend responsive navigation | No |
+| Branch Protection Red Check Probe | Definitely invalid | Not started | Not started | Not started | Temporary #112 verification row; close without merge | No |
