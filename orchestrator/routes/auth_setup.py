@@ -113,6 +113,7 @@ router = APIRouter(prefix="/v1/auth", tags=["auth"])
 SINGLETON_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 ACCESS_TOKEN_TTL_MINUTES = 30
 REFRESH_TOKEN_TTL_DAYS = 90
+REFRESH_ROTATION_GRACE_SECONDS = 30
 ENROLLMENT_TTL_MINUTES = 10
 ENROLLMENT_WRONG_ATTEMPTS_INITIAL = 3
 EMAIL_START_TIMING_FLOOR_SECONDS = 0.25
@@ -1700,7 +1701,8 @@ async def refresh_endpoint(
 
     Atomic consume pattern:
     - UPDATE ... WHERE refresh_token_hash=$hash AND refresh_consumed_at IS NULL ... RETURNING
-    - On zero rows: second lookup by hash distinguishes bad/expired/revoked (401) vs consumed (revoke device).
+    - On zero rows: second lookup by hash distinguishes bad/expired/revoked (401) vs consumed.
+    - Immediate consumed predecessor replay within 30s returns the same successor pair if unused.
     - Consumed reuse: revoke device + all sessions, clear cookie, log sanitized warning (device_id only).
     """
     limiter = get_rate_limiter(request)
@@ -1777,6 +1779,13 @@ async def refresh_endpoint(
 
     async with app_state.db_pool.acquire() as conn:
         async with conn.transaction():
+            await conn.execute(
+                """
+                DELETE FROM refresh_rotation_grace
+                WHERE grace_expires_at <= NOW()
+                """
+            )
+
             # Pre-check: query client_kind BEFORE consuming, so mismatch returns 400
             # without burning an otherwise valid refresh token.  Only valid sessions
             # on active devices are candidates; revoked-device tokens fall through to
@@ -1840,40 +1849,77 @@ async def refresh_endpoint(
 
                 if existing_row["refresh_consumed_at"] is not None:
                     device_id_to_revoke: uuid.UUID = existing_row["device_id"]
-                    logger.warning(
-                        "Refresh token reuse detected for device_id=%s",
-                        device_id_to_revoke,
-                    )
-                    await conn.execute(
+                    grace_row = await conn.fetchrow(
                         """
-                        UPDATE devices SET revoked_at = NOW()
-                        WHERE id = $1 AND revoked_at IS NULL
+                        SELECT
+                            g.successor_session_id,
+                            g.access_token,
+                            g.refresh_token,
+                            s.client_kind,
+                            s.device_persistence,
+                            s.refresh_expires_at
+                        FROM refresh_rotation_grace g
+                        JOIN sessions s ON s.id = g.successor_session_id
+                        JOIN devices d ON d.id = s.device_id
+                        WHERE g.predecessor_session_id = $1
+                          AND g.grace_expires_at > NOW()
+                          AND s.refresh_consumed_at IS NULL
+                          AND s.refresh_expires_at > NOW()
+                          AND s.revoked_at IS NULL
+                          AND d.revoked_at IS NULL
                         """,
-                        device_id_to_revoke,
+                        existing_row["id"],
                     )
-                    await conn.execute(
-                        """
-                        UPDATE sessions SET revoked_at = NOW()
-                        WHERE device_id = $1 AND revoked_at IS NULL
-                        """,
-                        device_id_to_revoke,
-                    )
-                    if is_web:
-                        cookie_config = make_refresh_cookie_config(
-                            cookie_secure=settings.daemon_cookie_secure,
-                            environment=settings.daemon_environment,
-                        )
-                        cookie_headers = clear_refresh_cookie(cookie_config)
-                        exc_to_raise = HTTPException(
-                            status_code=401,
-                            detail="Invalid or expired refresh token",
-                            headers=cookie_headers,
+
+                    if grace_row is not None and (
+                        (is_web and grace_row["client_kind"] == "web")
+                        or (not is_web and grace_row["client_kind"] == "native")
+                    ):
+                        access_token = grace_row["access_token"]
+                        refresh_token = grace_row["refresh_token"]
+                        stored_persistence = grace_row["device_persistence"]
+                        if stored_persistence not in ("private", "temporary"):
+                            stored_persistence = "private"
+                        cookie_max_age, _ = _compute_refresh_ttl_seconds(
+                            device_persistence=stored_persistence,
+                            private_refresh_ttl_days=settings.daemon_private_refresh_ttl_days,
+                            temporary_refresh_ttl_seconds=settings.daemon_temporary_refresh_ttl_seconds,
                         )
                     else:
-                        exc_to_raise = HTTPException(
-                            status_code=401,
-                            detail="Invalid or expired refresh token",
+                        logger.warning(
+                            "Refresh token reuse detected for device_id=%s",
+                            device_id_to_revoke,
                         )
+                        await conn.execute(
+                            """
+                            UPDATE devices SET revoked_at = NOW()
+                            WHERE id = $1 AND revoked_at IS NULL
+                            """,
+                            device_id_to_revoke,
+                        )
+                        await conn.execute(
+                            """
+                            UPDATE sessions SET revoked_at = NOW()
+                            WHERE device_id = $1 AND revoked_at IS NULL
+                            """,
+                            device_id_to_revoke,
+                        )
+                        if is_web:
+                            cookie_config = make_refresh_cookie_config(
+                                cookie_secure=settings.daemon_cookie_secure,
+                                environment=settings.daemon_environment,
+                            )
+                            cookie_headers = clear_refresh_cookie(cookie_config)
+                            exc_to_raise = HTTPException(
+                                status_code=401,
+                                detail="Invalid or expired refresh token",
+                                headers=cookie_headers,
+                            )
+                        else:
+                            exc_to_raise = HTTPException(
+                                status_code=401,
+                                detail="Invalid or expired refresh token",
+                            )
                 elif existing_row is None:
                     raise HTTPException(
                         status_code=401,
@@ -1923,6 +1969,14 @@ async def refresh_endpoint(
 
                 await conn.execute(
                     """
+                    DELETE FROM refresh_rotation_grace
+                    WHERE successor_session_id = $1
+                    """,
+                    consumed_row["id"],
+                )
+
+                successor_session_id = await conn.fetchval(
+                    """
                     INSERT INTO sessions (
                         user_id, device_id, client_kind, device_persistence, tenant_id,
                         access_token_hash, access_expires_at,
@@ -1930,6 +1984,7 @@ async def refresh_endpoint(
                         created_at
                     )
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    RETURNING id
                     """,
                     consumed_row["user_id"],
                     consumed_row["device_id"],
@@ -1941,6 +1996,28 @@ async def refresh_endpoint(
                     hash_token(refresh_token),
                     refresh_expires,
                     now,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO refresh_rotation_grace (
+                        predecessor_session_id,
+                        successor_session_id,
+                        access_token,
+                        refresh_token,
+                        grace_expires_at
+                    )
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (predecessor_session_id) DO UPDATE
+                    SET successor_session_id = EXCLUDED.successor_session_id,
+                        access_token = EXCLUDED.access_token,
+                        refresh_token = EXCLUDED.refresh_token,
+                        grace_expires_at = EXCLUDED.grace_expires_at
+                    """,
+                    consumed_row["id"],
+                    successor_session_id,
+                    access_token,
+                    refresh_token,
+                    now + timedelta(seconds=REFRESH_ROTATION_GRACE_SECONDS),
                 )
 
     if exc_to_raise:

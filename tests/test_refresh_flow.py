@@ -30,6 +30,25 @@ class MockConn:
             return datetime.now(timezone.utc)
         if "COUNT(*)" in sql and "devices" in sql:
             return self._pool._active_count
+        if "INSERT INTO sessions" in sql:
+            self._pool._captured_inserts.append({"sql": sql, "args": args})
+            session_id = uuid.uuid4()
+            session = {
+                "id": session_id,
+                "user_id": args[0],
+                "device_id": args[1],
+                "client_kind": args[2],
+                "device_persistence": args[3],
+                "tenant_id": args[4],
+                "access_token_hash": args[5],
+                "access_expires_at": args[6],
+                "refresh_token_hash": args[7],
+                "refresh_expires_at": args[8],
+                "refresh_consumed_at": None,
+                "revoked_at": None,
+            }
+            self._pool._sessions[args[7]] = session
+            return session_id
         return None
 
     def _is_session_valid(self, row):
@@ -47,6 +66,29 @@ class MockConn:
         return True
 
     async def fetchrow(self, sql, *args):
+        if "FROM refresh_rotation_grace" in sql:
+            predecessor_session_id = args[0]
+            grace_row = self._pool._refresh_rotation_grace.get(predecessor_session_id)
+            if grace_row is None:
+                return None
+            if grace_row["grace_expires_at"] <= datetime.now(timezone.utc):
+                return None
+            successor = next(
+                (
+                    session
+                    for session in self._pool._sessions.values()
+                    if session["id"] == grace_row["successor_session_id"]
+                ),
+                None,
+            )
+            if successor is None or not self._is_session_valid(successor):
+                return None
+            return {
+                **grace_row,
+                "client_kind": successor["client_kind"],
+                "device_persistence": successor["device_persistence"],
+                "refresh_expires_at": successor["refresh_expires_at"],
+            }
         if "UPDATE sessions" in sql and "RETURNING" in sql:
             self._last_refresh_consume_sql = sql
             assert "tenant_id" in sql
@@ -99,6 +141,32 @@ class MockConn:
         return None
 
     async def execute(self, sql, *args):
+        if "DELETE FROM refresh_rotation_grace" in sql and "grace_expires_at <= NOW()" in sql:
+            now = datetime.now(timezone.utc)
+            self._pool._refresh_rotation_grace = {
+                key: row
+                for key, row in self._pool._refresh_rotation_grace.items()
+                if row["grace_expires_at"] > now
+            }
+            return None
+        if "DELETE FROM refresh_rotation_grace" in sql and "successor_session_id = $1" in sql:
+            successor_session_id = args[0]
+            self._pool._refresh_rotation_grace = {
+                key: row
+                for key, row in self._pool._refresh_rotation_grace.items()
+                if row["successor_session_id"] != successor_session_id
+            }
+            return None
+        if "INSERT INTO refresh_rotation_grace" in sql:
+            predecessor_session_id, successor_session_id, access_token, refresh_token = args[:4]
+            self._pool._refresh_rotation_grace[predecessor_session_id] = {
+                "predecessor_session_id": predecessor_session_id,
+                "successor_session_id": successor_session_id,
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "grace_expires_at": args[4],
+            }
+            return None
         if "INSERT INTO sessions" in sql:
             self._pool._captured_inserts.append({"sql": sql, "args": args})
         if "UPDATE sessions" in sql and "revoked_at" in sql and "WHERE id = $1" in sql:
@@ -145,6 +213,7 @@ class MockPool:
         self._closed = False
         self._connections = []
         self._captured_inserts = []
+        self._refresh_rotation_grace = {}
 
     async def fetchval(self, sql, *args):
         if "COUNT(*)" in sql and "devices" in sql:
@@ -484,6 +553,115 @@ class TestConsumedRefreshReuse:
             restore_init(original)
 
 
+class TestRefreshRotationGrace:
+    @pytest.mark.asyncio
+    async def test_duplicate_native_refresh_within_grace_returns_same_successor(
+        self, setup_env, monkeypatch
+    ):
+        user_id = SINGLETON_ID
+        device_id = uuid.uuid4()
+        refresh_token = generate_token()
+        refresh_hash = hash_token(refresh_token)
+        old_session = _make_session(refresh_hash, user_id, device_id, "native")
+        devices = {str(device_id): {"id": device_id, "user_id": user_id, "revoked_at": None}}
+        mock_pool = MockPool(sessions={refresh_hash: old_session}, devices=devices)
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    first = await client.post(
+                        "/v1/auth/refresh",
+                        json={"refresh_token": refresh_token},
+                    )
+                    second = await client.post(
+                        "/v1/auth/refresh",
+                        json={"refresh_token": refresh_token},
+                    )
+
+                    assert first.status_code == 200, first.text
+                    assert second.status_code == 200, second.text
+                    assert second.json()["access_token"] == first.json()["access_token"]
+                    assert second.json()["refresh_token"] == first.json()["refresh_token"]
+                    assert len(mock_pool._captured_inserts) == 1
+                    assert mock_pool._devices[str(device_id)]["revoked_at"] is None
+        finally:
+            restore_init(original)
+
+    @pytest.mark.asyncio
+    async def test_consumed_predecessor_after_successor_use_revokes_device(
+        self, setup_env, monkeypatch
+    ):
+        user_id = SINGLETON_ID
+        device_id = uuid.uuid4()
+        refresh_token = generate_token()
+        refresh_hash = hash_token(refresh_token)
+        old_session = _make_session(refresh_hash, user_id, device_id, "native")
+        devices = {str(device_id): {"id": device_id, "user_id": user_id, "revoked_at": None}}
+        mock_pool = MockPool(sessions={refresh_hash: old_session}, devices=devices)
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    first = await client.post(
+                        "/v1/auth/refresh",
+                        json={"refresh_token": refresh_token},
+                    )
+                    assert first.status_code == 200, first.text
+                    successor_refresh = first.json()["refresh_token"]
+
+                    successor = await client.post(
+                        "/v1/auth/refresh",
+                        json={"refresh_token": successor_refresh},
+                    )
+                    assert successor.status_code == 200, successor.text
+
+                    predecessor_reuse = await client.post(
+                        "/v1/auth/refresh",
+                        json={"refresh_token": refresh_token},
+                    )
+                    assert predecessor_reuse.status_code == 401, predecessor_reuse.text
+                    assert mock_pool._devices[str(device_id)]["revoked_at"] is not None
+        finally:
+            restore_init(original)
+
+    @pytest.mark.asyncio
+    async def test_consumed_predecessor_after_grace_window_revokes_device(
+        self, setup_env, monkeypatch
+    ):
+        user_id = SINGLETON_ID
+        device_id = uuid.uuid4()
+        refresh_token = generate_token()
+        refresh_hash = hash_token(refresh_token)
+        old_session = _make_session(refresh_hash, user_id, device_id, "native")
+        devices = {str(device_id): {"id": device_id, "user_id": user_id, "revoked_at": None}}
+        mock_pool = MockPool(sessions={refresh_hash: old_session}, devices=devices)
+        original = make_mock_init(mock_pool)
+        try:
+            async with app.router.lifespan_context(app):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    first = await client.post(
+                        "/v1/auth/refresh",
+                        json={"refresh_token": refresh_token},
+                    )
+                    assert first.status_code == 200, first.text
+
+                    mock_pool._refresh_rotation_grace[old_session["id"]]["grace_expires_at"] = (
+                        datetime.now(timezone.utc) - timedelta(seconds=1)
+                    )
+
+                    predecessor_reuse = await client.post(
+                        "/v1/auth/refresh",
+                        json={"refresh_token": refresh_token},
+                    )
+                    assert predecessor_reuse.status_code == 401, predecessor_reuse.text
+                    assert mock_pool._devices[str(device_id)]["revoked_at"] is not None
+        finally:
+            restore_init(original)
+
+
 class TestNativeRefresh:
     @pytest.mark.asyncio
     async def test_native_refresh_returns_body_token_and_rejects_mixed_mode(
@@ -545,7 +723,7 @@ class TestNativeRefresh:
 
 class TestConcurrentRefresh:
     @pytest.mark.asyncio
-    async def test_concurrent_refresh_one_success(self, setup_env, monkeypatch):
+    async def test_immediate_duplicate_refresh_replays_successor(self, setup_env, monkeypatch):
         user_id = SINGLETON_ID
         device_id = uuid.uuid4()
         refresh_token = generate_token()
@@ -575,8 +753,11 @@ class TestConcurrentRefresh:
                         },
                     )
 
-                    statuses = sorted([results.status_code, results2.status_code])
-                    assert statuses == [200, 401]
+                    assert results.status_code == 200, results.text
+                    assert results2.status_code == 200, results2.text
+                    assert results.json()["access_token"] == results2.json()["access_token"]
+                    assert len(mock_pool._captured_inserts) == 1
+                    assert mock_pool._devices[str(device_id)]["revoked_at"] is None
         finally:
             restore_init(original)
 
