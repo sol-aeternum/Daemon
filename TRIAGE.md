@@ -23,6 +23,17 @@
 - **Suggested action**: Open #27 directly after the wrapper refusal, rely on active hosted branch-protection checks for merge eligibility, and keep the local wrapper/env and baseline gate debt in dedicated cleanup work.
 - **Seen again**: 2026-06-12 during #113 changed-file type checking when `UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv uv run basedpyright --level error orchestrator/routes/auth_setup.py tests/test_refresh_flow.py` still used `pyrightconfig.json`'s worktree-local `.uv-venv` lookup and exited 3 with `venv .uv-venv subdirectory not found in venv path /tmp/daemon-113.`
 
+## 2026-06-12T22:09:07+09:30 — #113 PR Wrapper Refused On Existing Frontend Blocking Gates
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #113 refresh rotation grace PR creation
+- **Category**: build-error | test-failure | dependency
+- **Blocked current task**: no
+- **What happened**: `scripts/pr_create.sh` ran all local CI families and refused to call `gh pr create` because existing frontend blocking gates failed outside the backend-only #113 change surface. Backend blocking gates and aggregate gates passed in the wrapper run.
+- **Evidence**: `timeout 360s scripts/pr_create.sh -- --title "fix(auth): tolerate lost rotation response within grace window" ...` reported `blocking failures: 3`: `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`. Backend `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect` passed. Aggregate `feature-matrix` and `pre-commit` passed. Frontend inventory also reproduced the existing 19 advisor/tool-call test failures and Next build failed on `Module '"./events"' has no exported member 'isAdvisorEvent'`.
+- **Likely cause**: Main still carries the frontend advisor-event type/build debt and repo-wide lint/format debt already tracked by earlier Wave 0 entries; #113 changes only backend refresh rotation and migration docs. Confidence: 95%.
+- **Suggested action**: Open #113 directly after the documented wrapper refusal and rely on active hosted branch-protection checks for merge eligibility; fix the frontend baseline in the existing Wave 0/#108/#111 work.
+
 ## 2026-06-12T21:20:00+09:30 — #24 Migration Metadata Needed Doc Freshness Update
 - **Severity**: info
 - **Scope**: project
