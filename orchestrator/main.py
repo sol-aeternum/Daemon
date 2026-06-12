@@ -1688,23 +1688,21 @@ async def chat(
     # Create or get conversation if persistence is available
     if store and user_id:
         try:
-            # Try to parse conversation_id as UUID
-            try:
-                conv_uuid = uuid.UUID(conversation_id.replace("conv_", ""))
+            if payload.conversation_id:
+                try:
+                    conv_uuid = uuid.UUID(conversation_id.replace("conv_", ""))
+                except ValueError as exc:
+                    raise HTTPException(status_code=404, detail="Conversation not found") from exc
+
                 existing = await store.get_conversation(conv_uuid)
-                if existing and existing.get("user_id") == user_id:
-                    conversation_uuid = conv_uuid
-                    conversation_exists = True
-                else:
-                    # Create new conversation
-                    title = user_message[:50] + "..." if len(user_message) > 50 else user_message
-                    conv = await store.create_conversation(
-                        user_id=user_id, pipeline=decision.pipeline, title=title
-                    )
-                    conversation_uuid = conv["id"]
-                    conversation_id = f"conv_{conversation_uuid}"
-            except ValueError:
-                # Invalid UUID format, create new
+                if not existing:
+                    raise HTTPException(status_code=404, detail="Conversation not found")
+                if existing.get("user_id") != user_id:
+                    raise HTTPException(status_code=403, detail="Conversation forbidden")
+
+                conversation_uuid = conv_uuid
+                conversation_exists = True
+            else:
                 title = user_message[:50] + "..." if len(user_message) > 50 else user_message
                 conv = await store.create_conversation(
                     user_id=user_id, pipeline=decision.pipeline, title=title
@@ -1734,6 +1732,8 @@ async def chat(
                         )
                     except Exception as enqueue_error:
                         logger.warning("Failed to enqueue title generation: %s", enqueue_error)
+        except HTTPException:
+            raise
         except Exception as e:
             logger.warning(
                 "Conversation persistence failed, continuing without persistence: %s", e
