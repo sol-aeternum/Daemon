@@ -1878,3 +1878,36 @@
 - **Evidence**: `npm --prefix frontend run audit:ci` reported `27 vulnerabilities (4 low, 8 moderate, 14 high, 1 critical)`. Representative advisories included `vitest <3.2.6` critical `GHSA-5xrq-8626-4rwp`, `next 9.3.4-canary.0 - 16.3.0-canary.5` high advisories, and vulnerable `@ai-sdk/provider-utils`.
 - **Likely cause**: New upstream advisories now apply to the locked frontend dependency graph; some suggested fixes require breaking upgrades such as AI SDK, Next, or next-pwa (confidence 95%).
 - **Suggested action**: Handle through the locked dependency remediation process in a dedicated security/dependency PR; do not hand-edit lockfiles in issue #26.
+
+## 2026-06-12 11:20 UTC — Issue #42 backend local CI timed out in inventory pytest
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Issue #42 conversation ownership verification
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: Backend local CI passed all blocking gates, then timed out in the non-blocking full pytest inventory phase after late-suite progress. Aggregate local CI passed.
+- **Evidence**: `UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv UV_CACHE_DIR=/tmp/uv-cache timeout 420s scripts/local_ci.sh backend` passed `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; `pip-audit` reported `Failed to resolve 'pypi.org' ([Errno -2] Name or service not known)` and inventory `PYTHONPATH=. uv run pytest -q` reached `[ 91%]` before the outer timeout exited 124. `timeout 180s scripts/local_ci.sh aggregate` passed `feature-matrix` and `pre-commit`.
+- **Likely cause**: Same sandbox network restriction and recurring late-suite local pytest inventory stall seen in previous issue worktrees (confidence 90%).
+- **Suggested action**: Treat hosted protected CI as the authoritative full-suite result while investigating the local late-suite inventory stall separately.
+
+## 2026-06-12 11:20 UTC — Existing auth user scoping fixture fails development pepper setup
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #42 conversation ownership verification
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: A neighboring auth scoping test fixture failed during FastAPI lifespan setup because its mocked `db_pool.acquire()` does not implement the async context manager protocol required by development pepper initialization. The focused #42 chat-history suite passed.
+- **Evidence**: `PYTHONPATH=. uv run pytest -q tests/test_chat_history.py tests/test_auth_user_scoping.py::test_chat_persistence_ignores_payload_user_id` ended with `TypeError: 'coroutine' object does not support the asynchronous context manager protocol (missed __aexit__ method)` at `orchestrator/auth_runtime_state.py:97` in `ensure_development_pepper_in_db`; the same command showed `8 passed` for `tests/test_chat_history.py` before the fixture error.
+- **Likely cause**: `tests/test_auth_user_scoping.py` builds `app_state.db_pool` as a plain `AsyncMock`, but the post-setup-token runtime now expects `db_pool.acquire()` to be usable in `async with` (confidence 95%).
+- **Suggested action**: Update that fixture to use the existing mock async context manager pattern from setup/auth runtime tests in a dedicated cleanup.
+
+## 2026-06-12 11:20 UTC — Chat history tests still emit existing AsyncMock warning debt
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Issue #42 conversation ownership verification
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: The focused chat-history suite passes but emits existing unawaited `AsyncMock` runtime warnings from preference formatting paths.
+- **Evidence**: `PYTHONPATH=. uv run pytest -q tests/test_chat_history.py` passed with `8 passed, 33 warnings`; representative warnings include `RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited` from `orchestrator/memory/injection.py:134`, `orchestrator/memory/injection.py:136`, and `orchestrator/main.py:1804`.
+- **Likely cause**: The test file's generic `AsyncMock` store exposes async mock attributes for user-settings reads that are consumed as dict-like values by preference formatting (confidence 85%).
+- **Suggested action**: Normalize chat-history mock stores with explicit `get_user_settings = AsyncMock(return_value={})` in a separate warning cleanup if warning-free focused runs become required.

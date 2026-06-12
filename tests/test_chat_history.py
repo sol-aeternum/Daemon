@@ -298,7 +298,6 @@ async def test_chat_uses_frontend_messages_when_no_db_history(client, monkeypatc
         response = await client.post(
             "/chat",
             json={
-                "conversation_id": f"conv_{conversation_id.hex}",
                 "message": "What's my name?",
                 "messages": [
                     {"role": "user", "content": "My name is Bob"},
@@ -356,7 +355,6 @@ async def test_chat_empty_messages_with_new_conversation(client, monkeypatch) ->
         response = await client.post(
             "/chat",
             json={
-                "conversation_id": f"conv_{conversation_id.hex}",
                 "message": "Hello",
                 "messages": [],
             },
@@ -497,3 +495,123 @@ async def test_chat_multiple_turns_roundtrip(client, monkeypatch) -> None:
         if call.kwargs.get("exclude_status") == ["streaming"]
     ]
     assert len(calls_with_exclude) > 0
+
+
+@pytest.mark.asyncio
+async def test_chat_with_missing_conversation_id_returns_404_without_creating(
+    client, monkeypatch
+) -> None:
+    conversation_id = uuid.uuid4()
+    caller_user_id = uuid.uuid4()
+
+    mock_store = AsyncMock()
+    mock_store.get_conversation = AsyncMock(return_value=None)
+    mock_store.create_conversation = AsyncMock()
+    mock_store.insert_message = AsyncMock()
+
+    mock_app_state = create_mock_app_state(mock_store)
+    app.state.app_state = mock_app_state
+    app.state._test_auth_user_id = caller_user_id
+
+    response = await client.post(
+        "/chat",
+        json={
+            "conversation_id": f"conv_{conversation_id.hex}",
+            "message": "Hello",
+            "messages": [],
+        },
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Conversation not found"
+    mock_store.get_conversation.assert_awaited_once_with(conversation_id)
+    mock_store.create_conversation.assert_not_awaited()
+    mock_store.insert_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_chat_with_foreign_conversation_id_returns_403_without_creating(
+    client, monkeypatch
+) -> None:
+    conversation_id = uuid.uuid4()
+    caller_user_id = uuid.uuid4()
+    owner_user_id = uuid.uuid4()
+
+    mock_store = AsyncMock()
+    mock_store.get_conversation = AsyncMock(
+        return_value={
+            "id": conversation_id,
+            "user_id": owner_user_id,
+            "pipeline": "cloud",
+            "title": "Foreign conversation",
+        }
+    )
+    mock_store.create_conversation = AsyncMock()
+    mock_store.insert_message = AsyncMock()
+
+    mock_app_state = create_mock_app_state(mock_store)
+    app.state.app_state = mock_app_state
+    app.state._test_auth_user_id = caller_user_id
+
+    response = await client.post(
+        "/chat",
+        json={
+            "conversation_id": f"conv_{conversation_id.hex}",
+            "message": "Hello",
+            "messages": [],
+        },
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Conversation forbidden"
+    mock_store.get_conversation.assert_awaited_once_with(conversation_id)
+    mock_store.create_conversation.assert_not_awaited()
+    mock_store.insert_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_chat_with_owned_conversation_id_continues_without_creating(
+    client, monkeypatch
+) -> None:
+    conversation_id = uuid.uuid4()
+    caller_user_id = uuid.uuid4()
+
+    async def mock_stream_sse_chat(**_kwargs):
+        yield 'event: token\ndata: {"type": "token", "data": {"delta": "OK"}}\n\n'
+        yield 'event: final\ndata: {"type": "final", "data": {}}\n\n'
+        yield 'event: done\ndata: {"type": "done", "data": {"ok": true}}\n\n'
+
+    mock_store = AsyncMock()
+    mock_store.get_conversation = AsyncMock(
+        return_value={
+            "id": conversation_id,
+            "user_id": caller_user_id,
+            "pipeline": "cloud",
+            "title": "Owned conversation",
+        }
+    )
+    mock_store.get_recent_messages = AsyncMock(return_value=[])
+    mock_store.create_conversation = AsyncMock()
+    mock_store.insert_message = AsyncMock(return_value={"id": uuid.uuid4()})
+
+    mock_app_state = create_mock_app_state(mock_store)
+    app.state.app_state = mock_app_state
+    app.state._test_auth_user_id = caller_user_id
+
+    with patch("orchestrator.main.stream_sse_chat", mock_stream_sse_chat):
+        response = await client.post(
+            "/chat",
+            json={
+                "conversation_id": f"conv_{conversation_id.hex}",
+                "message": "Hello",
+                "messages": [],
+            },
+            headers={"Content-Type": "application/json"},
+        )
+
+    assert response.status_code == 200
+    mock_store.get_conversation.assert_any_await(conversation_id)
+    mock_store.create_conversation.assert_not_awaited()
+    mock_store.insert_message.assert_awaited_once()
