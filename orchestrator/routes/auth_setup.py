@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import logging
 import time
 import uuid
@@ -128,6 +129,11 @@ RATE_LIMIT_ENROLL_COMPLETE_PER_IP_PER_HOUR: RateLimitPolicy = RateLimitPolicy(
 RATE_LIMIT_REFRESH_PER_IP_PER_HOUR: RateLimitPolicy = RateLimitPolicy(
     limit=120, window_seconds=3600
 )
+RATE_LIMIT_DEVICE_CREATE_PER_IP_PER_MINUTE: RateLimitPolicy = RateLimitPolicy(
+    limit=100, window_seconds=60
+)
+RATE_LIMIT_DEVICE_CREATE_PER_USER_PER_HOUR = 5
+MAX_ACTIVE_DEVICES_PER_USER = 20
 
 # Google sign-in rate-limit policies (TODO 13). Hard-coded per the
 # TODO 7 "do not add env vars" guardrail; may be promoted to
@@ -632,6 +638,18 @@ async def email_complete_endpoint(
                 settings=settings,
             ),
         )
+        await enforce_rate_limit(
+            request=request,
+            limiter=limiter,
+            endpoint="auth:device:create",
+            policies=[
+                (
+                    "ip",
+                    client_ip_for_key(request),
+                    RATE_LIMIT_DEVICE_CREATE_PER_IP_PER_MINUTE,
+                )
+            ],
+        )
 
         challenge_service = EmailChallengeService(
             cast(SupportsEmailChallengeQueries, conn), settings
@@ -665,6 +683,7 @@ async def email_complete_endpoint(
             except (InviteOnlyRejection, SignupDisabled):
                 raise _email_complete_failure()
 
+            await _enforce_device_creation_limits(conn, claim_result.user.id)
             issued_session = await issue_device_session(
                 cast(SupportsSessionIssuanceQueries, conn),
                 IssueSessionRequest(
@@ -677,6 +696,16 @@ async def email_complete_endpoint(
                     private_refresh_ttl_days=settings.daemon_private_refresh_ttl_days,
                     temporary_refresh_ttl_seconds=settings.daemon_temporary_refresh_ttl_seconds,
                 ),
+            )
+            await _record_device_creation_audit(
+                conn=conn,
+                request=request,
+                pepper=pepper,
+                user_id=claim_result.user.id,
+                tenant_id=claim_result.tenant.id,
+                provider="email",
+                device_id=issued_session.device_id,
+                client_kind=body.client_kind,
             )
 
         # Best-effort new-device email notification (TODO 14). The
@@ -840,6 +869,77 @@ def _google_device_name_for_client_kind(client_kind: str) -> str:
     return "Web Google Sign-In Device" if client_kind == "web" else "Native Google Sign-In Device"
 
 
+async def _enforce_device_creation_limits(conn, user_id: uuid.UUID) -> None:
+    active_count = await conn.fetchval(
+        """
+        SELECT COUNT(*)
+        FROM devices
+        WHERE user_id = $1
+          AND revoked_at IS NULL
+        """,
+        user_id,
+    )
+    if int(active_count or 0) >= MAX_ACTIVE_DEVICES_PER_USER:
+        raise HTTPException(
+            status_code=429,
+            detail="Maximum device limit reached. Revoke unused devices at /settings/devices.",
+        )
+
+    recent_count = await conn.fetchval(
+        """
+        SELECT COUNT(*)
+        FROM devices
+        WHERE user_id = $1
+          AND created_at >= NOW() - INTERVAL '1 hour'
+        """,
+        user_id,
+    )
+    if int(recent_count or 0) >= RATE_LIMIT_DEVICE_CREATE_PER_USER_PER_HOUR:
+        raise HTTPException(status_code=429, detail="device_creation_rate_limited")
+
+
+async def _record_device_creation_audit(
+    *,
+    conn,
+    request: Request,
+    pepper: str,
+    user_id: uuid.UUID,
+    tenant_id: uuid.UUID | None,
+    provider: str,
+    device_id: uuid.UUID,
+    client_kind: str,
+) -> None:
+    user_agent = request.headers.get("User-Agent")
+    ip_hash = hash_ip_for_storage(client_ip_for_key(request), pepper)
+    metadata = {
+        "client_kind": client_kind,
+        "device_id": str(device_id),
+        "user_agent_hash": hash_user_agent_for_storage(user_agent, pepper) if user_agent else None,
+    }
+    await conn.execute(
+        """
+        INSERT INTO identity_audit_log (
+            user_id, tenant_id, event_type, provider, metadata, ip_hash
+        )
+        VALUES ($1, $2, 'device_created', $3, $4::jsonb, $5)
+        """,
+        user_id,
+        tenant_id,
+        provider,
+        json.dumps(metadata, sort_keys=True),
+        ip_hash,
+    )
+    logger.info(
+        "device_creation_audit provider=%s device_id=%s client_kind=%s source_ip_hash=%s "
+        "user_agent_hash=%s",
+        provider,
+        device_id,
+        client_kind,
+        ip_hash,
+        metadata["user_agent_hash"],
+    )
+
+
 @router.post("/google/start", response_model=GoogleStartResponse, status_code=202)
 async def google_start_endpoint(request: Request) -> GoogleStartResponse:
     settings = get_settings()
@@ -971,6 +1071,18 @@ async def google_complete_endpoint(
             endpoint="auth:google:complete",
             policies=_google_complete_rate_limit_policies(request),
         )
+        await enforce_rate_limit(
+            request=request,
+            limiter=limiter,
+            endpoint="auth:device:create",
+            policies=[
+                (
+                    "ip",
+                    client_ip_for_key(request),
+                    RATE_LIMIT_DEVICE_CREATE_PER_IP_PER_MINUTE,
+                )
+            ],
+        )
 
         verifier_service = GoogleVerifierService(
             cast(SupportsGoogleNonceQueries, conn),
@@ -1025,6 +1137,7 @@ async def google_complete_endpoint(
             ):
                 raise _google_complete_failure()
 
+            await _enforce_device_creation_limits(conn, claim_result.user.id)
             issued_session = await issue_device_session(
                 cast(SupportsSessionIssuanceQueries, conn),
                 IssueSessionRequest(
@@ -1037,6 +1150,16 @@ async def google_complete_endpoint(
                     private_refresh_ttl_days=settings.daemon_private_refresh_ttl_days,
                     temporary_refresh_ttl_seconds=settings.daemon_temporary_refresh_ttl_seconds,
                 ),
+            )
+            await _record_device_creation_audit(
+                conn=conn,
+                request=request,
+                pepper=pepper,
+                user_id=claim_result.user.id,
+                tenant_id=claim_result.tenant.id,
+                provider="google",
+                device_id=issued_session.device_id,
+                client_kind=body.client_kind,
             )
 
         # Best-effort new-device email notification (TODO 14). The
@@ -1305,6 +1428,18 @@ async def enroll_complete_endpoint(
             ),
         ],
     )
+    await enforce_rate_limit(
+        request=request,
+        limiter=limiter,
+        endpoint="auth:device:create",
+        policies=[
+            (
+                "ip",
+                client_ip_for_key(request),
+                RATE_LIMIT_DEVICE_CREATE_PER_IP_PER_MINUTE,
+            )
+        ],
+    )
 
     app_state = get_app_state(request)
     if app_state.db_pool is None:
@@ -1464,6 +1599,7 @@ async def enroll_complete_endpoint(
                 if tenant_row is None:
                     tenant_row, _ = await account_service.ensure_personal_tenant(user_id)
                     await account_service.ensure_owner_membership(tenant_row.id, user_id)
+                await _enforce_device_creation_limits(conn, user_id)
                 device_id = await conn.fetchval(
                     """
                     INSERT INTO devices (user_id, tenant_id, display_name, platform)
@@ -1511,6 +1647,16 @@ async def enroll_complete_endpoint(
                     """,
                     now,
                     pending_row["id"],
+                )
+                await _record_device_creation_audit(
+                    conn=conn,
+                    request=request,
+                    pepper=pepper,
+                    user_id=user_id,
+                    tenant_id=tenant_row.id,
+                    provider="enrollment",
+                    device_id=device_id,
+                    client_kind=body.client_kind,
                 )
 
     if exc_to_raise:
