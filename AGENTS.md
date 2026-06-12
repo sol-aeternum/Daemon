@@ -144,6 +144,48 @@ Local gate runner and PR wrapper live in `scripts/`:
 - **Don't hand-edit lockfiles or `pip install` ad hoc.** Dependency changes go through the package manager (and need approval, per Rules of Engagement).
 - **Don't regenerate or reflow config/doc files.** Edits to `pyproject.toml`, `package.json`, `tsconfig.json`, `*.yml`, READMEs, and `AGENTS.md` are surgical — change the relevant lines only.
 
+## Review guidelines
+
+### Mandatory review completion signal
+
+When reviewing a pull request, Codex must always leave a top-level GitHub PR review comment, even if no issues are found.
+
+If findings are found:
+
+* Leave inline comments where appropriate.
+* Also leave a top-level summary comment with:
+
+  * Review status: `Findings`
+  * Number of findings
+  * Highest severity
+  * Areas reviewed
+  * Any tests or checks inspected
+
+If no findings are found:
+
+* Do not invent issues.
+* Still leave a top-level comment using this exact structure:
+
+```markdown
+## Codex PR Review
+
+Review status: No findings
+
+I reviewed this pull request and found no blocking or high-priority issues.
+
+Scope reviewed:
+- Correctness/regression risk
+- Security/auth/data-handling risk
+- Test coverage impact
+- Documentation/config impact
+- Obvious maintainability risks
+
+Notes:
+- No merge action taken.
+- Human final review is still required.
+```
+Codex must not treat "no findings" as permission to remain silent. A visible review comment is required so downstream reviewers and agents can confirm that the PR was actually pre-reviewed.
+
 # Diagnostic Triage Protocol
 
 ## Mandatory: TRIAGE.md Maintenance
