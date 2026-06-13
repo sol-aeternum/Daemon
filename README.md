@@ -93,10 +93,14 @@ Note: The top-level `backend/` directory contains only a Dockerfile for Docker b
 # Local development (backend only, postgres/redis must be running)
 uv run uvicorn orchestrator.main:app --reload --host 0.0.0.0 --port 8000
 
-# Docker (full stack)
+# Docker (full stack, production server commands)
 cp .env.example .env    # Configure providers
 docker compose up --build
 ```
+
+The Docker compose stack starts uvicorn without `--reload` and serves the
+frontend with `next start`. Use host-local commands such as `npm run dev` only
+for development sessions.
 
 Verify: `curl http://localhost:8000/health`
 

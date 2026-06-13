@@ -5,13 +5,14 @@ import hashlib
 import json
 import logging
 import os
+import sys
 import time
 import uuid
 
 import asyncpg
 import httpx
 import litellm
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -118,7 +119,21 @@ from orchestrator.tools.completion import completion_with_tools
 logger = logging.getLogger(__name__)
 
 
-def _validate_startup_config(settings: Settings) -> None:
+class UnsafeProductionServerConfigError(RuntimeError):
+    """Raised when the process is launched with dev-only server flags in production."""
+
+
+def _validate_production_server_args(settings: Settings, argv: Sequence[str] | None = None) -> None:
+    if settings.daemon_environment.lower() != "production":
+        return
+    args = sys.argv if argv is None else argv
+    if any(arg == "--reload" or arg.startswith("--reload=") for arg in args):
+        raise UnsafeProductionServerConfigError(
+            "uvicorn --reload is not allowed when DAEMON_ENVIRONMENT=production"
+        )
+
+
+def _validate_startup_config(settings: Settings, argv: Sequence[str] | None = None) -> None:
     """Run all fail-closed startup-time config validations.
 
     Centralized so the FastAPI lifespan hook stays compact and the
@@ -127,6 +142,7 @@ def _validate_startup_config(settings: Settings) -> None:
     first (authentication substrate), then hosted identity (deployment
     posture). Either failure aborts startup before any AppState work.
     """
+    _validate_production_server_args(settings, argv)
     validate_pepper_config(settings)
     settings.validate_deployment_mode()
     settings.validate_hosted_identity_config()
@@ -141,6 +157,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     try:
         _validate_startup_config(settings)
+    except UnsafeProductionServerConfigError as exc:
+        logger.critical("Unsafe production server configuration: %s", exc)
+        raise
     except PepperValidationError as exc:
         logger.critical("Production pepper validation failed: %s", exc)
         raise
