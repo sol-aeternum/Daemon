@@ -147,11 +147,20 @@ class Settings(BaseSettings):
 
     # Request and stream settings
     request_timeout_s: float = 90.0
-    stream_ping_interval_s: float = 15.0
+    stream_ping_interval_s: float = Field(default=15.0, ge=0)
+    daemon_sse_keepalive_interval_s: float | None = Field(default=None, ge=0)
     chat_history_limit: int = 50
 
     # Development fallback: stream a canned response without calling any provider.
     mock_llm: bool = False
+
+    @property
+    def sse_keepalive_interval_s(self) -> float:
+        return (
+            self.daemon_sse_keepalive_interval_s
+            if self.daemon_sse_keepalive_interval_s is not None
+            else self.stream_ping_interval_s
+        )
 
     # ===== TIER-BASED MODEL CONFIGURATION =====
     # Model tier to use by default (free, starter, pro, max, byok)

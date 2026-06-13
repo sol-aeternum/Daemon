@@ -3,12 +3,13 @@ from __future__ import annotations
 # pyright: reportMissingImports=false
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 import json
 import logging
 import uuid
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 from orchestrator.config import ProviderConfig, Settings
@@ -37,6 +38,8 @@ def _lazy_import_trust_signals():
 
 logger = logging.getLogger(__name__)
 
+SSE_KEEPALIVE_FRAME = ": keepalive\n\n"
+
 
 def create_chat_registry(**kwargs: Any) -> Any:
     return create_default_registry(**kwargs)
@@ -64,6 +67,41 @@ _spawn_session_by_conversation: dict[str, str] = {}
 def sse(event_type: str, payload: dict[str, Any]) -> str:
     data = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
     return f"event: {event_type}\ndata: {data}\n\n"
+
+
+async def stream_with_keepalives(
+    frames: AsyncIterator[str],
+    ping_interval_s: float,
+) -> AsyncIterator[str]:
+    if ping_interval_s <= 0:
+        async for frame in frames:
+            yield frame
+        return
+
+    iterator = frames.__aiter__()
+    pending = asyncio.ensure_future(anext(iterator))
+    try:
+        while True:
+            done, _ = await asyncio.wait({pending}, timeout=ping_interval_s)
+            if pending not in done:
+                yield SSE_KEEPALIVE_FRAME
+                continue
+
+            try:
+                frame = pending.result()
+            except StopAsyncIteration:
+                break
+
+            yield frame
+            pending = asyncio.ensure_future(anext(iterator))
+    finally:
+        if not pending.done():
+            pending.cancel()
+            with suppress(asyncio.CancelledError):
+                await pending
+        aclose = getattr(iterator, "aclose", None)
+        if callable(aclose):
+            await cast(Callable[[], Awaitable[None]], aclose)()
 
 
 def build_openai_messages(

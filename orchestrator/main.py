@@ -59,6 +59,7 @@ from orchestrator.daemon import (
     now_rfc3339,
     sse,
     stream_sse_chat,
+    stream_with_keepalives,
 )
 from orchestrator.db import (
     AppState,
@@ -926,7 +927,10 @@ async def test_tools(
             yield f"data: {json.dumps(event)}\n\n"
         yield "data: [DONE]\n\n"
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream_with_keepalives(generate(), settings.sse_keepalive_interval_s),
+        media_type="text/event-stream",
+    )
 
 
 @app.get("/providers")
@@ -1163,7 +1167,7 @@ async def openai_chat_completions(
                     user_message=last_message,
                     conversation_id=conversation_id,
                     request_id=request_id,
-                    ping_interval_s=settings.stream_ping_interval_s,
+                    ping_interval_s=settings.sse_keepalive_interval_s,
                     is_disconnected=is_disconnected,
                     actual_model=actual_model,
                 ):
@@ -1232,7 +1236,7 @@ async def openai_chat_completions(
                 yield "data: [DONE]\n\n"
 
         return StreamingResponse(
-            generator(),
+            stream_with_keepalives(generator(), settings.sse_keepalive_interval_s),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -1257,7 +1261,7 @@ async def openai_chat_completions(
                 user_message=last_message,
                 conversation_id=conversation_id,
                 request_id=request_id,
-                ping_interval_s=settings.stream_ping_interval_s,
+                ping_interval_s=settings.sse_keepalive_interval_s,
                 is_disconnected=is_disconnected,
                 actual_model=actual_model,
             ):
@@ -2049,7 +2053,7 @@ async def chat(
                 history_messages=history_messages,
                 conversation_id=conversation_id,
                 request_id=request_id,
-                ping_interval_s=settings.stream_ping_interval_s,
+                ping_interval_s=settings.sse_keepalive_interval_s,
                 is_disconnected=is_disconnected,
                 actual_model=actual_model,
                 reported_model=selected_model,
@@ -2122,7 +2126,7 @@ async def chat(
             )
 
     return StreamingResponse(
-        generator(),
+        stream_with_keepalives(generator(), settings.sse_keepalive_interval_s),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
