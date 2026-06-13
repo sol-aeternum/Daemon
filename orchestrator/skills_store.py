@@ -30,7 +30,8 @@ class SkillDetail(SkillSummary):
 
 
 SKILLS_DIR = Path(__file__).resolve().parent.parent / "data" / "skills"
-_SAFE_ID_PATTERN = re.compile(r"[^a-z0-9_-]+")
+_WHITESPACE_PATTERN = re.compile(r"\s+")
+_SAFE_ID_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 _MAX_SKILLS_FOR_PROMPT = 8
 _MAX_CHARS_PER_SKILL = 2000
 
@@ -47,17 +48,32 @@ def ensure_skills_dir() -> None:
 
 
 def normalize_skill_id(name: str) -> str:
-    candidate = name.strip().lower().replace(" ", "-")
-    candidate = _SAFE_ID_PATTERN.sub("-", candidate).strip("-_")
-    candidate = candidate[:64]
+    candidate = _WHITESPACE_PATTERN.sub("-", name.strip().lower()).strip("-_")
+    if not candidate:
+        raise ValueError("Skill name must include at least one alphanumeric character")
+    if not _SAFE_ID_PATTERN.fullmatch(candidate):
+        raise ValueError(
+            "Skill id must contain only lowercase letters, numbers, underscores, or hyphens"
+        )
+    candidate = candidate[:64].rstrip("-_")
     if not candidate:
         raise ValueError("Skill name must include at least one alphanumeric character")
     return candidate
 
 
+def _assert_within_skills_dir(path: Path) -> Path:
+    skills_dir = SKILLS_DIR.resolve()
+    resolved_path = path.resolve(strict=False)
+    try:
+        resolved_path.relative_to(skills_dir)
+    except ValueError as exc:
+        raise ValueError("Resolved skill path escapes the skills directory") from exc
+    return resolved_path
+
+
 def _skill_path(skill_id: str) -> Path:
     safe_skill_id = normalize_skill_id(skill_id)
-    return SKILLS_DIR / f"{safe_skill_id}.md"
+    return _assert_within_skills_dir(SKILLS_DIR / f"{safe_skill_id}.md")
 
 
 def _format_timestamp(path: Path) -> str:

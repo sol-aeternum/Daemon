@@ -1,5 +1,16 @@
 # TRIAGE.md
 
+## 2026-06-14T01:40:23+09:30 — #43 Focused Test Selector Used Stale Node IDs
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Issue #43 skills path traversal verification
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: A focused pytest command used stale `tests/test_skill_api_contracts.py` class names, so pytest exited before running tests. The command was corrected to the current class names and the focused regression set passed.
+- **Evidence**: `PYTHONPATH=. uv run pytest -q tests/test_skills_store_path_safety.py tests/test_skill_manage.py::TestSkillManageToolCreate::test_create_skill_success tests/test_skill_api_contracts.py::TestSkillsCreateContract::test_create_skill tests/test_skill_api_contracts.py::TestSkillsUploadContract::test_upload_skill_with_frontmatter` exited 4 with `ERROR: not found: /tmp/daemon-43/tests/test_skill_api_contracts.py::TestSkillsCreateContract::test_create_skill`. The corrected command using `TestSkillsCreateUpdateContract` and `TestSkillsUploadCompatibility` passed with `14 passed`.
+- **Likely cause**: Manual selector drift after reading only part of the large API contract file (confidence 99%).
+- **Suggested action**: Use `rg` to confirm class/node names before composing focused pytest selectors in large test files.
+
 ## 2026-06-12T22:34:10+09:30 — #54 PR Wrapper Refused On Existing Local Gate Debt
 - **Severity**: warning
 - **Scope**: project | host
@@ -1888,6 +1899,7 @@
 - **Seen again**: 2026-06-12 during #24 PR-wrapper creation. Escalated `scripts/pr_create.sh` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 - **Seen again**: 2026-06-12 during #113 backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 - **Seen again**: 2026-06-12 during #54 backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
+- **Seen again**: 2026-06-14 during #43 backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking. The run also warned that `/home/sol/.cache/pip` is not writable, so pip disabled its cache.
 
 ## 2026-06-10 08:47 UTC — Backend inventory gates report existing security and warning debt
 - **Severity**: warning
@@ -2002,6 +2014,7 @@
 - **Seen again**: 2026-06-12 during #113 refresh-rotation grace verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory full pytest reached late-suite progress after showing unrelated failures and then the outer timeout exited `124`.
 - **Seen again**: 2026-06-12 during #54 session cleanup grace-days verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` and `pip-audit` reported existing non-blocking findings, inventory full pytest printed progress through `[ 91%]` with one `F` marker but no failure summary before the outer timeout exited `124`.
 - **Seen again**: 2026-06-13 during #56 session cleanup / refresh serialization verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `pip-audit` failed DNS resolution for `pypi.org`, full pytest printed the known `tests/test_auth_user_scoping.py` setup errors plus one `F` marker, then reached late-suite progress before the outer timeout exited `124`.
+- **Seen again**: 2026-06-14 during #43 skills path traversal verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` reported existing dependency vulnerabilities, and full pytest printed known auth-scoping setup errors plus a late-suite `F` marker before reaching `[ 90%]` and exiting `124`.
 
 ## 2026-06-12 11:20 UTC — Existing auth user scoping fixture fails development pepper setup
 - **Severity**: warning
