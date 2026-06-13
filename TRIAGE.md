@@ -1,5 +1,16 @@
 # TRIAGE.md
 
+## 2026-06-14T01:05:23+09:30 — #47 PR Wrapper Timed Out In Backend Inventory
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Issue #47 council duplicate-output regression PR creation
+- **Category**: tooling | test-failure
+- **Blocked current task**: no
+- **What happened**: The PR wrapper passed backend blocking gates and then timed out in the non-blocking backend inventory full pytest pass before invoking `gh pr create`.
+- **Evidence**: `UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv UV_CACHE_DIR=/tmp/uv-cache timeout 420s scripts/pr_create.sh -- --title "test(council): guard single output emission" ...` exited `124`; wrapper output showed `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect` passed, then inventory pytest reached `[ 91%]` after known auth-scoping setup errors and a late-suite `F` marker.
+- **Likely cause**: Same local backend inventory pytest stall already tracked for temporary worktrees (confidence 90%).
+- **Suggested action**: Keep using focused tests plus hosted protected CI for merge readiness while investigating the local late-suite inventory stall separately.
+
 ## 2026-06-14T00:48:40+09:30 — #47 Duplicate Council Output Handler Not Reproducible On Current Main
 - **Severity**: info
 - **Scope**: project
