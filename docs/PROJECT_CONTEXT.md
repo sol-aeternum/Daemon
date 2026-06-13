@@ -69,7 +69,8 @@ Daemon uses a tier-based model configuration system. Specific model assignments 
 
 ### Phase 2: Memory System ✅
 - **Storage**: PostgreSQL + pgvector with 37 migrations applied (latest: `036_skill_consolidation_pending_status.sql`).
-- **Pipeline**: Extraction (GPT-4o-mini) → Embedding (Voyage 4) → Dedup → Retrieval (Hybrid).
+- **Storage**: PostgreSQL + pgvector with 36 migrations applied (latest: `036_memory_content_hash.sql`).
+- **Storage**: PostgreSQL + pgvector with 36 migrations applied (latest: `036_worker_job_failures.sql`).- **Pipeline**: Extraction (GPT-4o-mini) → Embedding (Voyage 4) → Dedup → Retrieval (Hybrid).
 - **Encryption**: Fernet for messages and memories.
 - **Background Jobs**: Extraction, summary, consolidation, dreaming.
 
@@ -92,7 +93,7 @@ Daemon uses a tier-based model configuration system. Specific model assignments 
 ### Docker Compose Services (7 services)
 1. `migrate`: One-shot migration runner.
 2. `backend`: FastAPI app (port 8000).
-3. `worker`: arq background job processor.
+3. `worker`: arq background job processor with durable `job_failures` audit rows.
 4. `frontend`: Next.js 16 (port 3000).
 5. `postgres`: pgvector/pg16 (port 5432).
 6. `redis`: Redis 7 Alpine (port 6379).

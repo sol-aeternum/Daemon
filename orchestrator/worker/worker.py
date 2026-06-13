@@ -9,7 +9,7 @@ from typing import Any, cast
 import asyncpg
 from arq.connections import RedisSettings
 from arq.cron import cron
-from arq.worker import Worker, func
+from arq.worker import func
 
 from orchestrator.config import get_settings
 from orchestrator.auth_pepper import initialize_development_pepper
@@ -20,6 +20,7 @@ from orchestrator.memory.encryption import (
 )
 from orchestrator.memory.store import MemoryStore
 
+from orchestrator.worker.audit import AuditedWorker
 from orchestrator.worker.jobs import (
     cleanup_generated_files,
     cleanup_generated_images,
@@ -166,7 +167,7 @@ cron_jobs.extend(
 )
 logger.info("Memory and generated artifact cleanup scheduled: daily at 03:00-03:30 UTC")
 
-worker = Worker(
+worker = AuditedWorker(
     functions=[
         func(extract_memories, max_tries=_worker_settings.retry_attempts),
         func(generate_title, max_tries=_worker_settings.retry_attempts),

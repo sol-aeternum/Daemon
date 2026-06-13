@@ -88,7 +88,8 @@ PostgreSQL 16 with pgvector extension. 37 migrations in the `migrations/` direct
 - **`skill_projections`**: Mapping of skills to conversation context.
 
 Latest migration: `036_skill_consolidation_pending_status.sql`.
-
+Latest migration: `036_memory_content_hash.sql`.
+Latest migration: `036_worker_job_failures.sql`.
 ---
 
 ## Memory Pipeline
@@ -142,6 +143,7 @@ Hybrid search combining:
 ### Key Environment Variables
 - `OPENROUTER_API_KEY`, `VOYAGE_API_KEY`, `XAI_API_KEY`, `FAL_KEY`, `BRAVE_API_KEY`, `ELEVENLABS_API_KEY`.
 - `DATABASE_URL`, `REDIS_URL`, `DAEMON_ENCRYPTION_KEY`.
+- `DAEMON_WORKER_FAILURE_ALERT_EMAIL` enables best-effort email alerts for critical worker failures.
 - **EMBEDDING_DOCUMENT_MODEL**: voyage-4-large
 - **EMBEDDING_QUERY_MODEL**: voyage-4-lite
 - **EMBEDDING_DIMENSIONS**: 1024
