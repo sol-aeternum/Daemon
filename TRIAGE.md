@@ -1,5 +1,16 @@
 # TRIAGE.md
 
+## 2026-06-13T23:58:00+09:30 — #50 PR Wrapper Timed Out In Backend Inventory
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Issue #50 migration advisory-lock serialization
+- **Category**: tooling | test-failure
+- **Blocked current task**: no
+- **What happened**: The PR wrapper passed the backend blocking gates and then timed out in the non-blocking backend inventory full pytest pass before invoking `gh pr create`.
+- **Evidence**: `UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv UV_CACHE_DIR=/tmp/uv-cache timeout 420s scripts/pr_create.sh -- --title "fix(migrations): serialize runner with advisory lock" ...` exited `124` after `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect` passed; inventory pytest printed progress through `[ 90%]` after the known late-suite `F` marker.
+- **Likely cause**: Same local late-suite inventory stall already tracked for backend local CI in temporary worktrees (confidence 90%).
+- **Suggested action**: Keep using focused tests plus hosted protected CI for merge readiness while separately investigating the late-suite inventory stall.
+
 ## 2026-06-12T22:34:10+09:30 — #54 PR Wrapper Refused On Existing Local Gate Debt
 - **Severity**: warning
 - **Scope**: project | host

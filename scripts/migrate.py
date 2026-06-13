@@ -107,4 +107,8 @@ async def run_migrations():
 
 
 if __name__ == "__main__":
-    asyncio.run(run_migrations())
+    try:
+        asyncio.run(run_migrations())
+    except MigrationLockError as exc:
+        print(f"❌ {exc}")
+        sys.exit(1)
