@@ -72,6 +72,28 @@
 - **Likely cause**: Existing Google auth route/test fixture behavior is recording the same private web IP event twice, independent of the advisor event typing and frontend bridge changes (confidence 85%).
 - **Suggested action**: Investigate Google complete route rate-limit/IP recording idempotency in a dedicated auth issue; do not broaden #108.
 
+## 2026-06-13T11:10:50+09:30 — #61 Backfill Duplicate Test Mock Drift During Review Fix
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Issue #61 memory dedup TOCTOU review-comment fix verification
+- **Category**: test-failure
+- **Blocked current task**: yes
+- **What happened**: The first focused test run after changing duplicate legacy backfill behavior failed because the existing duplicate-backfill test mocked every `execute()` call to raise `UniqueViolationError`, including the new cleanup update.
+- **Evidence**: `PYTHONPATH=. uv run pytest -q tests/test_store.py tests/test_auth_runtime_state.py tests/test_memories.py::test_confirm_memory tests/test_memories.py::test_confirm_memory_content_conflict_returns_409` failed in `tests/test_store.py::test_backfill_memory_content_hashes_skips_legacy_duplicates` with `asyncpg.exceptions.UniqueViolationError: duplicate memory content_hash`; after updating the mock side effect to allow the cleanup update, the same command passed with `24 passed, 31 warnings`.
+- **Likely cause**: Test double expected the old skip-only behavior and did not model the new second SQL statement that closes duplicate current legacy rows. Confidence: 99%.
+- **Suggested action**: Keep duplicate-backfill tests modeling both the failed hash update and the cleanup update when changing legacy cleanup behavior.
+
+## 2026-06-13T11:19:00+09:30 — #61 Backend Local CI Inventory Timed Out After Review Fix
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Issue #61 memory dedup TOCTOU review-comment fix verification
+- **Category**: test-failure | dependency | security
+- **Blocked current task**: no
+- **What happened**: Backend local CI passed all blocking backend gates after the review fix, then reproduced existing non-blocking inventory debt and timed out in full pytest's quiet tail.
+- **Evidence**: `UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv UV_CACHE_DIR=/tmp/uv-cache timeout 420s scripts/local_ci.sh backend` passed `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing findings, `pip-audit` failed with `Failed to resolve 'pypi.org' ([Errno -2] Name or service not known)`, and full pytest reached late progress after existing `EEEEE`/`F` markers before the outer timeout exited `124`.
+- **Likely cause**: Same sandbox network restriction and recurring local full-suite inventory stall already observed on earlier issue branches. Confidence: 90%.
+- **Suggested action**: Treat hosted protected CI as authoritative for full-suite completion while keeping this PR scoped to the #61 review fixes.
+
 ## 2026-06-12T22:34:10+09:30 — #54 PR Wrapper Refused On Existing Local Gate Debt
 - **Severity**: warning
 - **Scope**: project | host

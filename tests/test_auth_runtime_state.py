@@ -18,6 +18,7 @@ from orchestrator.auth_runtime_state import (
 from orchestrator.auth_tokens import verify_token
 from orchestrator.config import Settings
 from orchestrator.main import lifespan
+from orchestrator.worker.worker import on_startup
 
 
 class RuntimeStateConn:
@@ -110,3 +111,9 @@ def test_lifespan_initializes_development_pepper_before_memory_hash_backfill() -
     assert source.index("initialize_development_pepper") < source.index(
         "backfill_memory_content_hashes"
     )
+
+
+def test_worker_startup_initializes_development_pepper_before_memory_store() -> None:
+    source = inspect.getsource(on_startup)
+
+    assert source.index("initialize_development_pepper") < source.index("MemoryStore")

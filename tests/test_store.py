@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
@@ -274,11 +275,108 @@ async def test_backfill_memory_content_hashes_skips_legacy_duplicates(
     mock_db_pool.fetch.return_value = [
         MockRecord(id=uuid.uuid4(), content="encrypted legacy content")
     ]
-    mock_db_pool.execute.side_effect = asyncpg.UniqueViolationError("duplicate memory content_hash")
+    mock_db_pool.execute.side_effect = [
+        asyncpg.UniqueViolationError("duplicate memory content_hash"),
+        "UPDATE 1",
+    ]
 
     backfilled = await memory_store.backfill_memory_content_hashes()
 
     assert backfilled == 0
+
+
+@pytest.mark.asyncio
+async def test_backfill_memory_content_hashes_closes_legacy_duplicates(
+    memory_store: MemoryStore,
+    mock_db_pool,
+    monkeypatch,
+) -> None:
+    _patch_memory_hash_settings(monkeypatch)
+    duplicate_id = uuid.uuid4()
+    mock_db_pool.fetch.return_value = [
+        MockRecord(id=duplicate_id, content="encrypted legacy duplicate")
+    ]
+    mock_db_pool.execute.side_effect = [
+        asyncpg.UniqueViolationError("duplicate memory content_hash"),
+        "UPDATE 1",
+    ]
+
+    backfilled = await memory_store.backfill_memory_content_hashes()
+
+    assert backfilled == 0
+    assert mock_db_pool.execute.await_count == 2
+    close_sql = mock_db_pool.execute.await_args_list[1].args[0]
+    assert "SET valid_to = NOW()" in close_sql
+    assert "content_hash IS NULL" in close_sql
+    assert mock_db_pool.execute.await_args_list[1].args[1] == duplicate_id
+
+
+class SupersedeConflictConn:
+    def __init__(self, duplicate_row: MockRecord) -> None:
+        self.duplicate_row = duplicate_row
+        self.closed_memory_id: uuid.UUID | None = None
+
+    @asynccontextmanager
+    async def transaction(self):
+        yield self
+
+    async def fetchrow(self, sql: str, *args):
+        if "INSERT INTO memories" in sql:
+            raise asyncpg.UniqueViolationError("duplicate memory content_hash")
+        if "content_hash = $2" in sql:
+            return self.duplicate_row
+        return None
+
+    async def execute(self, sql: str, *args):
+        if "SET valid_to = NOW()" in sql:
+            self.closed_memory_id = args[0]
+            return "UPDATE 1"
+        return "UPDATE 0"
+
+
+class SupersedeConflictPool:
+    def __init__(self, conn: SupersedeConflictConn) -> None:
+        self.conn = conn
+
+    @asynccontextmanager
+    async def acquire(self):
+        yield self.conn
+
+
+@pytest.mark.asyncio
+async def test_supersede_memory_recovers_existing_row_on_content_hash_conflict(
+    monkeypatch,
+) -> None:
+    _patch_memory_hash_settings(monkeypatch)
+    old_memory_id = uuid.uuid4()
+    duplicate_id = uuid.uuid4()
+    duplicate_row = MockRecord(
+        id=duplicate_id,
+        user_id=uuid.uuid4(),
+        content="duplicate replacement",
+        category="fact",
+        source_type="extracted",
+        status="active",
+        valid_to=None,
+        created_at=datetime.now(),
+    )
+    conn = SupersedeConflictConn(duplicate_row)
+    encryption = MagicMock(spec=ContentEncryption)
+    encryption.encrypt = MagicMock(side_effect=lambda value: value)
+    encryption.decrypt = MagicMock(side_effect=lambda value: value)
+    store = MemoryStore(cast(asyncpg.Pool, SupersedeConflictPool(conn)), encryption)
+
+    result = await store.supersede_memory(
+        old_memory_id=old_memory_id,
+        new_content="duplicate replacement",
+        new_category="fact",
+        new_source_type="extracted",
+        user_id=duplicate_row["user_id"],
+        embedding=[0.1] * 1024,
+    )
+
+    assert result["id"] == duplicate_id
+    assert conn.closed_memory_id == old_memory_id
 
 
 @pytest.mark.asyncio

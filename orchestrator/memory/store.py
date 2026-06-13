@@ -131,9 +131,20 @@ class MemoryStore:
                 )
             except asyncpg.UniqueViolationError:
                 logger.warning(
-                    "Skipping duplicate legacy memory content_hash backfill for memory %s",
+                    "Closing duplicate legacy memory after content_hash backfill conflict for memory %s",
                     row["id"],
                     exc_info=True,
+                )
+                await self._pool.execute(
+                    """
+                    UPDATE memories
+                    SET valid_to = NOW(),
+                        updated_at = NOW()
+                    WHERE id = $1
+                      AND content_hash IS NULL
+                      AND valid_to IS NULL
+                    """,
+                    row["id"],
                 )
                 continue
             if result == "UPDATE 1":
@@ -876,17 +887,46 @@ class MemoryStore:
                         raise RuntimeError("supersede_memory: insert returned no row")
                     return row
 
+                async def _get_active_duplicate() -> asyncpg.Record | None:
+                    return await conn.fetchrow(
+                        """
+                        SELECT *
+                        FROM memories
+                        WHERE user_id = $1
+                          AND content_hash = $2
+                          AND local_only = FALSE
+                          AND status = 'active'
+                          AND valid_to IS NULL
+                        ORDER BY created_at ASC
+                        LIMIT 1
+                        """,
+                        user_id,
+                        content_hash,
+                    )
+
                 try:
-                    new_row = await _insert(source_conversation_id)
-                except asyncpg.ForeignKeyViolationError as error:
-                    if source_conversation_id is None:
+                    try:
+                        new_row = await _insert(source_conversation_id)
+                    except asyncpg.ForeignKeyViolationError as error:
+                        if source_conversation_id is None:
+                            raise
+                        logger.warning(
+                            "supersede_memory: source_conversation_id %s missing; retrying without source conversation reference (%s)",
+                            source_conversation_id,
+                            error,
+                        )
+                        new_row = await _insert(None)
+                except asyncpg.UniqueViolationError:
+                    duplicate_row = await _get_active_duplicate()
+                    if duplicate_row is None:
                         raise
                     logger.warning(
-                        "supersede_memory: source_conversation_id %s missing; retrying without source conversation reference (%s)",
-                        source_conversation_id,
-                        error,
+                        "supersede_memory: recovered existing active memory after content_hash conflict",
+                        exc_info=True,
                     )
-                    new_row = await _insert(None)
+                    if duplicate_row["id"] == old_memory_id:
+                        return self._memory_row_to_dict(duplicate_row)
+                    new_row = duplicate_row
 
                 update_result = await conn.execute(
                     """
