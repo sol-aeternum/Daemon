@@ -1,5 +1,27 @@
 # TRIAGE.md
 
+## 2026-06-14T02:21:52+09:30 — #64/#65 Temp Worktree Failed Because /tmp Was Full
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Issue #64/#65 compose production command setup
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: The first attempt to create `/tmp/daemon-64-65` failed during checkout because `/tmp` was full. Retrying under the repository-owned `.worktrees/` directory succeeded.
+- **Evidence**: `git worktree add -b fix/high/compose-prod-commands /tmp/daemon-64-65 origin/main` emitted many `error: unable to write file ...` messages and ended with `fatal: Could not reset index file to revision 'HEAD'.`; `df -h /tmp` reported `7.7G Used 7.6G Avail 77M Use% 100%`.
+- **Likely cause**: Existing temp worktrees and generated artifacts exhausted the tmpfs backing `/tmp` (confidence 95%).
+- **Suggested action**: Clean obsolete temp worktrees/artifacts after PRs are merged or switch routine worktree creation to a larger workspace-owned directory.
+
+## 2026-06-14T02:27:04+09:30 — #64/#65 Compose Test YAML Helper Needed Narrower Type
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Issue #64/#65 focused verification
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: The first changed-file BasedPyright run rejected the static compose tests because the YAML helper returned `dict[str, object]`, so service entries could not be indexed safely.
+- **Evidence**: `uv run basedpyright --level error orchestrator/main.py tests/test_production_compose_commands.py` reported `__getitem__ method not defined on type "object"` at `tests/test_production_compose_commands.py:26` and `:34`, plus a `not in` operator error at `:35`. The helper was narrowed with `cast(dict[str, dict[str, Any]], ...)`.
+- **Likely cause**: PyYAML returns untyped data and the test helper annotation was too broad for service-level indexing (confidence 99%).
+- **Suggested action**: Cast parsed YAML at the boundary in static config tests.
+
 ## 2026-06-12T22:34:10+09:30 — #54 PR Wrapper Refused On Existing Local Gate Debt
 - **Severity**: warning
 - **Scope**: project | host
@@ -664,6 +686,7 @@
   - `time="2026-04-08T20:33:09+09:30" level=warning msg="The \"FAL_KEY\" variable is not set. Defaulting to a blank string."`
 - **Seen again**: 2026-04-12 during Task 6 baseline runtime inspection when `docker compose ps` emitted the same `The "FAL_KEY" variable is not set. Defaulting to a blank string.` warning while the benchmark-related services were otherwise healthy.
 - **Seen again**: 2026-04-16 during autonomous-skill-creation F3 runtime QA when both `docker compose ps` and `docker compose logs backend` emitted the same `The "FAL_KEY" variable is not set. Defaulting to a blank string.` warning while the core stack remained up.
+- **Seen again**: 2026-06-14 during #64/#65 compose validation when `docker compose config --quiet` exited 0 but emitted unset-variable warnings for local secrets including `OPENROUTER_API_KEY`, `VOYAGE_API_KEY`, `DAEMON_ENCRYPTION_KEY`, `DAEMON_AUTH_PEPPER`, and `FAL_KEY`.
 - **Likely cause**: Docker Compose references `FAL_KEY` for Kling/fal.ai video configuration, but the local `.env` for this stack does not define it (confidence 95%).
 - **Suggested action**: Decide whether `FAL_KEY` should be required only for Studio/video flows; if optional, suppress or scope the compose warning. If required for this environment, add it to the active env file.
 
@@ -2002,6 +2025,7 @@
 - **Seen again**: 2026-06-12 during #113 refresh-rotation grace verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory full pytest reached late-suite progress after showing unrelated failures and then the outer timeout exited `124`.
 - **Seen again**: 2026-06-12 during #54 session cleanup grace-days verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` and `pip-audit` reported existing non-blocking findings, inventory full pytest printed progress through `[ 91%]` with one `F` marker but no failure summary before the outer timeout exited `124`.
 - **Seen again**: 2026-06-13 during #56 session cleanup / refresh serialization verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `pip-audit` failed DNS resolution for `pypi.org`, full pytest printed the known `tests/test_auth_user_scoping.py` setup errors plus one `F` marker, then reached late-suite progress before the outer timeout exited `124`.
+- **Seen again**: 2026-06-14 during #64/#65 compose production command verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing findings, inventory `pip-audit` reported `Found 43 known vulnerabilities in 14 packages`, and inventory full pytest printed the known `tests/test_auth_user_scoping.py` setup errors plus one `F` marker before the outer timeout exited `124`.
 
 ## 2026-06-12 11:20 UTC — Existing auth user scoping fixture fails development pepper setup
 - **Severity**: warning

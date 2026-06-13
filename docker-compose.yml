@@ -67,7 +67,7 @@ services:
       - DAEMON_HOSTED_IDENTITY_REQUIRE_REDIS=${DAEMON_HOSTED_IDENTITY_REQUIRE_REDIS:-true}
     volumes:
       - .:/app
-    command: uvicorn orchestrator.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn orchestrator.main:app --host 0.0.0.0 --port 8000
     depends_on:
       postgres:
         condition: service_healthy
@@ -153,11 +153,7 @@ services:
       # DAEMON_EMAIL_ENABLED so hosted UI does not render the email form when
       # the provider is disabled.
       - NEXT_PUBLIC_EMAIL_ENABLED=${NEXT_PUBLIC_EMAIL_ENABLED:-true}
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-      - /app/.next
-    command: npm run dev
+    command: npm run start
     depends_on:
       - backend
     networks:
