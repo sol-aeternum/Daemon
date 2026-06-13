@@ -139,6 +139,16 @@
 - **Likely cause**: basedpyright auto-ratchets the committed baseline when diagnostics disappear in touched files. Confidence: 90%.
 - **Suggested action**: Commit intentional baseline reductions with the issue PR when touched code removes a grandfathered diagnostic, so CI lock mode remains green.
 - **Seen again**: 2026-06-13 during #138 hosted CI. Backend gates failed at `uv run basedpyright --level error` with `baselined errors changed but the baseline file cannot be updated when --baselinemode=lock (went down by 1)`. Rerunning `uv run basedpyright --level error --baselinemode=auto ...` updated `.basedpyright/baseline.json` to 369 errors and normal lock-mode focused basedpyright then passed.
+## 2026-06-13T22:52:37+09:30 — #53 Root Pull Blocked By User Worktree Changes
+- **Severity**: info
+- **Scope**: host
+- **Encountered during**: Issue #53 audit-before-delete setup
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: The required root `git checkout main && git pull` flow could fetch `origin/main`, but the merge step refused to update because the shared root checkout contains user WIP in `AGENTS.md`. Work continued from a clean temporary worktree based on `origin/main` without touching the user changes.
+- **Evidence**: `git pull` reported `error: Your local changes to the following files would be overwritten by merge: AGENTS.md` and `Aborting`.
+- **Likely cause**: The shared root checkout has unrelated user edits while sequential issue work uses temporary branches. Confidence: 99%.
+- **Suggested action**: Keep issue work in `/tmp` worktrees until the root WIP is resolved or stashed by its owner.
 
 ## 2026-06-12T22:34:10+09:30 — #54 PR Wrapper Refused On Existing Local Gate Debt
 - **Severity**: warning
@@ -265,6 +275,7 @@
 - **Likely cause**: The repository type-checker config expects a `.uv-venv` path relative to the active checkout, but new `/tmp` worktrees do not inherit the root checkout symlink. Confidence: 99%.
 - **Suggested action**: Create the `.uv-venv` symlink immediately after adding future `/tmp` worktrees, or update agent worktree setup docs/scripts to do this automatically.
 - **Seen again**: 2026-06-13 during #61 review-comment fixes. The first changed-file `basedpyright --level error` run in `/tmp/daemon-61` exited 3 with `venv .uv-venv subdirectory not found in venv path /tmp/daemon-61` and unresolved imports for `asyncpg`, `fastapi`, `pytest`, and `httpx`; creating `/tmp/daemon-61/.uv-venv -> /home/sol/daemon/.uv-venv` made the same changed-file command report `0 errors, 0 warnings, 0 notes`.
+- **Seen again**: 2026-06-13 during #53 audit-before-delete backend local CI rerun after adding the admin route. Without `/tmp/daemon-53/.uv-venv`, `scripts/local_ci.sh backend` reported `venv .uv-venv subdirectory not found in venv path /tmp/daemon-53` and missing imports during the blocking basedpyright step; recreating the symlink made the same blocking backend gates pass.
 
 ## 2026-06-12T07:04:00+09:30 — Main Protection Uses Rulesets Instead Of Classic Branch Protection
 - **Severity**: info
@@ -1944,6 +1955,7 @@
 - **Evidence**: Command output: `updated ./.basedpyright/baseline.json with 520 errors (went down by 51)`. `git diff --stat` showed `.basedpyright/baseline.json | 405 -----------------------------------------`.
 - **Likely cause**: basedpyright refreshes the configured baseline opportunistically when invoked, and the original PR deleted a file that still had baseline entries (90% confidence).
 - **Suggested action**: Decide separately whether baseline cleanup belongs in the original deletion PR; this follow-up reverted the unrelated baseline mutation.
+- **Seen again**: 2026-06-13 during #53 audit-before-delete type checking. `UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv UV_CACHE_DIR=/tmp/uv-cache uv run basedpyright --level error ...` printed `updated ./.basedpyright/baseline.json with 369 errors (went down by 1)` even with a temp baseline copy; the unrelated `.basedpyright/baseline.json` mutation was reverted before commit.
 
 ## 2026-06-08 UTC — Backend Ruff format gate reports pre-existing formatting debt
 - **Severity**: warning
@@ -2186,6 +2198,7 @@
 - **Seen again**: 2026-06-14 during #47 council duplicate-output regression verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed the known auth-scoping setup errors plus a late-suite `F` marker before reaching `[ 91%]` and exiting `124`.
 - **Seen again**: 2026-06-14 during #45 council read-only tool registry verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed known auth-scoping setup errors plus a late-suite `F` marker before reaching `[ 90%]` and exiting `124`.
 - **Seen again**: 2026-06-13 during #61 memory dedup TOCTOU verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing non-blocking findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest again showed the known `EEEEE` auth-scoping setup errors plus one `F` marker before the outer timeout exited `124`.
+- **Seen again**: 2026-06-13 during #53 audit-before-delete verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed early errors plus one failure before reaching late-suite progress and exiting `124` at the outer timeout.
 
 ## 2026-06-12 11:20 UTC — Existing auth user scoping fixture fails development pepper setup
 - **Severity**: warning

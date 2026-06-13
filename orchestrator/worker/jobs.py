@@ -1316,23 +1316,40 @@ async def _apply_delete_action(
     store: MemoryStore,
     user_id: uuid.UUID,
 ) -> dict[str, Any]:
+    run_id = uuid.uuid4()
     try:
-        from orchestrator.skills_store import delete_skill
-
-        delete_skill(skill_id)
-        await store.delete_skill_projection(skill_id)
-        await store.log_consolidation_nudge_action(
+        audit_id = await store.log_consolidation_nudge_action(
             user_id=user_id,
-            run_id=uuid.uuid4(),
+            run_id=run_id,
             action_type="delete",
             skill_id=skill_id,
             target_skill_id=None,
             reason="model-driven delete",
             similarity=None,
+            status="pending",
+        )
+    except Exception as e:
+        return {"deleted": False, "reason": f"audit log failed before delete: {e}"}
+
+    try:
+        from orchestrator.skills_store import delete_skill
+
+        delete_skill(skill_id)
+        await store.delete_skill_projection(skill_id)
+        await store.update_consolidation_nudge_action_status(
+            audit_id,
             status="applied",
         )
         return {"deleted": True, "reason": "ok"}
     except Exception as e:
+        try:
+            await store.update_consolidation_nudge_action_status(
+                audit_id,
+                status="failed",
+                reason=f"delete failed: {e}",
+            )
+        except Exception:
+            logger.warning("Failed to mark consolidation delete audit row failed", exc_info=True)
         return {"deleted": False, "reason": str(e)}
 
 

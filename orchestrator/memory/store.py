@@ -1648,13 +1648,14 @@ class MemoryStore:
         skill_description: str | None = None,
         skill_use_count: int | None = None,
         skill_last_used_at: Any = None,
-    ) -> None:
-        await self._pool.execute(
+    ) -> uuid.UUID:
+        row = await self._pool.fetchrow(
             """
             INSERT INTO skill_consolidation_log
                 (user_id, run_id, action_type, skill_id, target_skill_id, reason,
                  similarity, status, skill_name, skill_description, skill_use_count, skill_last_used_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            RETURNING id
             """,
             user_id,
             run_id,
@@ -1669,6 +1670,57 @@ class MemoryStore:
             skill_use_count,
             skill_last_used_at,
         )
+        return cast(uuid.UUID, row["id"])
+
+    async def update_consolidation_nudge_action_status(
+        self,
+        action_id: uuid.UUID,
+        *,
+        status: str,
+        reason: str | None = None,
+    ) -> None:
+        await self._pool.execute(
+            """
+            UPDATE skill_consolidation_log
+            SET status = $2,
+                reason = COALESCE($3, reason)
+            WHERE id = $1
+            """,
+            action_id,
+            status,
+            reason,
+        )
+
+    async def list_consolidation_nudge_actions(
+        self,
+        *,
+        user_id: uuid.UUID | None = None,
+        action_type: str | None = None,
+        status: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        rows = await self._pool.fetch(
+            """
+            SELECT *
+            FROM skill_consolidation_log
+            WHERE ($1::uuid IS NULL OR user_id = $1)
+              AND ($2::text IS NULL OR action_type = $2)
+              AND ($3::text IS NULL OR status = $3)
+              AND ($4::timestamptz IS NULL OR run_at >= $4)
+              AND ($5::timestamptz IS NULL OR run_at < $5)
+            ORDER BY run_at DESC
+            LIMIT $6
+            """,
+            user_id,
+            action_type,
+            status,
+            since,
+            until,
+            limit,
+        )
+        return [dict(row) for row in rows]
 
     # ------------------------------------------------------------------
     # Extraction log

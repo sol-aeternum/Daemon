@@ -87,7 +87,11 @@ PostgreSQL 16 with pgvector extension. 36 migrations in the `migrations/` direct
 - **`dream_log`**: Logs for background consolidation and dreaming jobs.
 - **`skill_projections`**: Mapping of skills to conversation context.
 
+<<<<<<< HEAD
 Latest migration: `036_memory_content_hash.sql`.
+=======
+Latest migration: `036_skill_consolidation_pending_status.sql`.
+>>>>>>> f893638a (fix(worker): audit destructive skill deletes before applying)
 
 ---
 
