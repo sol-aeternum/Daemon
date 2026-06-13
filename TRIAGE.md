@@ -1,5 +1,16 @@
 # TRIAGE.md
 
+## 2026-06-14T02:24:40+09:30 — #64/#65 PR Wrapper Refused On Existing Frontend Gate Debt
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #64/#65 compose production command PR creation
+- **Category**: build-error | test-failure
+- **Blocked current task**: no
+- **What happened**: `scripts/pr_create.sh` ran all local CI families and refused to call `gh pr create` because unrelated frontend blocking gates remain red. The wrapper's frontend build inventory also regenerated service-worker artifacts in the worktree.
+- **Evidence**: `scripts/pr_create.sh -- --title "fix(compose): use production server commands" --body-file /tmp/pr64_65_body.md --base main --head fix/high/compose-prod-commands` reported blocking failures `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`. Build output included `./lib/advisorEvents.ts:3:21 Type error: Module '"./events"' has no exported member 'isAdvisorEvent'.`; test inventory reported `19 failed | 193 passed`.
+- **Likely cause**: Existing advisor-event frontend contract drift and formatting debt unrelated to compose/Docker production server commands (confidence 95%).
+- **Suggested action**: Keep #64/#65 scoped to production command hardening; address frontend advisor event exports/tests and generated service-worker churn in the dedicated frontend cleanup issue.
+
 ## 2026-06-14T02:21:52+09:30 — #64/#65 Temp Worktree Failed Because /tmp Was Full
 - **Severity**: warning
 - **Scope**: host
