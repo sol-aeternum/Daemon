@@ -1,5 +1,16 @@
 # TRIAGE.md
 
+## 2026-06-13T10:10:00+09:30 — #63 PR Wrapper Refused On Local Cache And Frontend Sandbox Debt
+- **Severity**: warning
+- **Scope**: host | project
+- **Encountered during**: Issue #63 embedding fallback PR creation
+- **Category**: build-error | dependency | tooling
+- **Blocked current task**: no
+- **What happened**: `scripts/pr_create.sh` refused to call `gh pr create` after running all local CI families. Focused #63 tests, changed-file backend gates, backend blocking gates, and aggregate gates had already passed when run directly with the shared uv cache workaround.
+- **Evidence**: `timeout 600s scripts/pr_create.sh -- --title "fix(memory): add embedding provider fallback" ...` reported blocking failures: backend `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect` all exited 2 with `Failed to initialize cache at /home/sol/.cache/uv ... Read-only file system`; aggregate `pre-commit` failed for the same uv cache reason. Frontend `npm ci` failed with `spawnSync /tmp/daemon-63/frontend/node_modules/esbuild/bin/esbuild EPERM`, after which `type-check`, `lint`, and `format-check` failed with `next: command not found`, `eslint: command not found`, and `prettier: command not found`.
+- **Likely cause**: The PR wrapper invocation did not inherit `UV_CACHE_DIR=/tmp/uv-cache`, and the managed sandbox blocks esbuild's postinstall validation in fresh `/tmp` frontend installs. Confidence: 95%.
+- **Suggested action**: Teach `scripts/pr_create.sh` or the local-CI environment to set writable uv/npm caches for temporary worktrees, and continue relying on direct affected-family local gates plus hosted protected checks until the wrapper environment is fixed.
+
 ## 2026-06-12T22:34:10+09:30 — #54 PR Wrapper Refused On Existing Local Gate Debt
 - **Severity**: warning
 - **Scope**: project | host
@@ -111,6 +122,7 @@
 - **Likely cause**: Same local sandbox/network and long-running inventory-suite behavior seen on #23; hosted branch-protection CI remains the authoritative full gate. Confidence: 85%.
 - **Suggested action**: Investigate the late-suite pytest inventory stall separately from issue-scoped auth fixes; continue relying on blocking local gates plus hosted protected CI before merge.
 - **Seen again**: 2026-06-12T21:08+09:30 during #24 device-creation limit verification, and again after adding the `034_device_creation_audit.sql` migration. `timeout 300s env UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv UV_CACHE_DIR=/tmp/uv-cache scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` exited 1 with existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full inventory pytest printed progress through `[ 91%]` before the outer timeout exited `124`. Process inspection after both runs found no remaining `/tmp/daemon-24` pytest/local-CI processes.
+- **Seen again**: 2026-06-13 during #63 embedding fallback verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing findings, `pip-audit` failed with `Failed to resolve 'pypi.org' ([Errno -2] Name or service not known)`, and full inventory pytest entered the same quiet tail before the outer timeout exited `124`.
 
 ## 2026-06-12T20:01:23+09:30 — #11 Worktree Missing `.uv-venv` Symlink Broke BasedPyright
 - **Severity**: warning

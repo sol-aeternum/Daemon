@@ -97,7 +97,7 @@ Daemon uses a multi-stage pipeline for durable fact management. See [MEMORY_LAYE
 
 ### Extraction & Dedup
 - **Extraction**: GPT-4o-mini extracts facts from conversation turns.
-- **Embeddings**: `voyage-4-large` (1024d) for documents, `voyage-4-lite` (1024d) for queries.
+- **Embeddings**: `voyage-4-large` (1024d) for documents, `voyage-4-lite` (1024d) for queries, with OpenAI `text-embedding-3-small` as the default fallback using the configured 1024d output.
 - **Dedup Thresholds**:
   - Merge: ≥ 0.90
   - Supersede (generic): ≥ 0.82
@@ -145,6 +145,8 @@ Hybrid search combining:
 - **EMBEDDING_DOCUMENT_MODEL**: voyage-4-large
 - **EMBEDDING_QUERY_MODEL**: voyage-4-lite
 - **EMBEDDING_DIMENSIONS**: 1024
+- **EMBEDDING_FALLBACK_PROVIDERS**: openai
+- **EMBEDDING_OPENAI_FALLBACK_MODEL**: text-embedding-3-small
 
 ---
 

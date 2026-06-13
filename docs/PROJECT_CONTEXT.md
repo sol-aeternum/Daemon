@@ -102,7 +102,7 @@ Daemon uses a tier-based model configuration system. Specific model assignments 
 
 For detailed architecture, see [MEMORY_LAYER.md](../MEMORY_LAYER.md).
 
-- **Embeddings**: `voyage-4-large` (1024d) for documents, `voyage-4-lite` (1024d) for queries.
+- **Embeddings**: `voyage-4-large` (1024d) for documents, `voyage-4-lite` (1024d) for queries, with OpenAI `text-embedding-3-small` fallback constrained to the configured embedding dimension.
 - **Dedup Thresholds**:
   - Merge: ≥ 0.90
   - Supersede (generic): ≥ 0.82
