@@ -83,6 +83,12 @@ def test_worker_jobs_do_not_access_memory_store_private_pool() -> None:
     assert "._pool" not in source
 
 
+def test_generated_file_cleanup_uses_repo_root_artifact_directory() -> None:
+    source = Path("orchestrator/worker/jobs.py").read_text()
+
+    assert 'parent.parent.parent / "data" / "generated_files"' in source
+
+
 @pytest.mark.asyncio
 async def test_list_users_with_eligible_l1_memories_uses_store_pool() -> None:
     user_id = uuid.uuid4()

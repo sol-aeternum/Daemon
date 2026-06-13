@@ -395,7 +395,7 @@ async def cleanup_generated_files(ctx: WorkerContext) -> dict[str, int]:
     from orchestrator.config import get_settings
 
     settings = get_settings()  # noqa: F841
-    generated_files_dir = Path(__file__).resolve().parent.parent / "data" / "generated_files"
+    generated_files_dir = Path(__file__).resolve().parent.parent.parent / "data" / "generated_files"
 
     if not generated_files_dir.exists():
         return {"scanned": 0, "deleted": 0}

@@ -115,6 +115,7 @@
 - **Evidence**: `timeout 420s scripts/local_ci.sh backend` passed `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed with `NameResolutionError: Failed to resolve 'pypi.org'`, and full pytest printed existing `EEEEE`/`F` markers before the command exited `124`.
 - **Likely cause**: Existing repo-wide inventory debt plus sandboxed DNS/network behavior, not the issue-scoped worker GC changes. Confidence: 95%.
 - **Suggested action**: Keep relying on blocking backend gates plus focused issue tests for backend-only PRs until the repo-wide inventory suite and network-dependent SCA gate are separated or made deterministic.
+- **Seen again**: 2026-06-13 during #138 review-comment follow-up verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest reached 90% with existing `EEEEE`/`F` markers before the outer timeout exited `124`.
 
 ## 2026-06-13T14:22:34+09:30 — #48/#52 Temp Worktree Basedpyright Venv Lookup
 - **Severity**: info
@@ -133,10 +134,11 @@
 - **Encountered during**: Issue #48/#52 memory garbage-collection cron and store encapsulation verification
 - **Category**: config
 - **Blocked current task**: no
-- **What happened**: The changed-file basedpyright run passed but rewrote `.basedpyright/baseline.json`, removing one existing diagnostic from `tests/test_skill_consolidation.py` because the issue fix touched that test. The baseline file was restored so this PR does not carry unrelated baseline churn.
+- **What happened**: The changed-file basedpyright run passed but rewrote `.basedpyright/baseline.json`, removing one existing diagnostic from `tests/test_skill_consolidation.py` because the issue fix touched that test. The baseline file was initially restored to avoid unrelated churn, but hosted CI runs basedpyright with baseline lock mode and failed because the committed baseline was no longer current.
 - **Evidence**: `uv run basedpyright --level error ...` printed `updated ./.basedpyright/baseline.json with 369 errors (went down by 1)` and `0 errors, 0 warnings, 0 notes`; the resulting baseline diff removed one `reportUnusedVariable` entry.
 - **Likely cause**: basedpyright auto-ratchets the committed baseline when diagnostics disappear in touched files. Confidence: 90%.
-- **Suggested action**: Decide whether local verification should disable baseline writes or whether intentional baseline ratchets should be committed in their own maintenance PRs.
+- **Suggested action**: Commit intentional baseline reductions with the issue PR when touched code removes a grandfathered diagnostic, so CI lock mode remains green.
+- **Seen again**: 2026-06-13 during #138 hosted CI. Backend gates failed at `uv run basedpyright --level error` with `baselined errors changed but the baseline file cannot be updated when --baselinemode=lock (went down by 1)`. Rerunning `uv run basedpyright --level error --baselinemode=auto ...` updated `.basedpyright/baseline.json` to 369 errors and normal lock-mode focused basedpyright then passed.
 
 ## 2026-06-12T22:34:10+09:30 — #54 PR Wrapper Refused On Existing Local Gate Debt
 - **Severity**: warning
@@ -931,6 +933,7 @@
 - **Seen again**: 2026-06-08 during PR #20 benchmark replay follow-up verification when `PYTHONPATH=. DAEMON_ENVIRONMENT=development uv run pytest -q tests/memory/test_encryption.py tests/test_longmemeval_runner.py tests/test_benchmark_extraction.py` passed (38 passed) but still emitted the same 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 - **Seen again**: 2026-06-12 during #24 focused enrollment verification when `PYTHONPATH=. uv run pytest -q tests/test_enrollment_flow.py` passed (19 tests) but emitted the same 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 - **Seen again**: 2026-06-13 during #48/#52 worker GC verification when `PYTHONPATH=. uv run pytest -q tests/test_worker_gc.py tests/test_skill_consolidation.py` passed with `29 passed, 34 warnings`, including the same LiteLLM/arq `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
+- **Seen again**: 2026-06-13 during #138 review-comment follow-up verification when `PYTHONPATH=. uv run pytest -q tests/test_worker_gc.py tests/test_skill_consolidation.py` passed with `30 passed, 34 warnings`, including the same LiteLLM/arq `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 
 ## 2026-04-10 12:30 — BasedPyright Warning Debt In Dreaming-Touched Python Modules
 - **Severity**: warning
