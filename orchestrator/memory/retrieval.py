@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from orchestrator.config import get_settings
-from orchestrator.memory.embedding import embed_query
+from orchestrator.memory.embedding import embed_query_with_metadata
 from orchestrator.memory.entities import (
     _normalize_lookup_key,
     extract_candidates_baseline,
@@ -368,6 +368,8 @@ async def retrieve_memories_for_text(
     retrieval_triggered_by: str | None = None,
     allowed_source_conversation_ids: list[uuid.UUID] | None = None,
     include_dream_observations: bool = False,
+    storage_embedding_model: str | None = None,
+    query_embedding_model: str | None = None,
 ) -> list[dict[str, object]]:
     """Canonical text-query retrieval contract.
 
@@ -381,13 +383,21 @@ async def retrieve_memories_for_text(
     normalized_slot = _normalize_memory_slot(memory_slot)
     effective_embedding = query_embedding
     embedding_model_used: str | None = None
+    effective_storage_embedding_model = storage_embedding_model
 
     ranked: list[dict[str, object]] = []
     if normalized_query:
         if effective_embedding is None:
-            effective_embedding = await embed_query(normalized_query)
-        settings = get_settings()
-        embedding_model_used = settings.embedding_query_model
+            embedding_result = await embed_query_with_metadata(normalized_query)
+            effective_embedding = embedding_result.embedding
+            embedding_model_used = embedding_result.model
+            effective_storage_embedding_model = embedding_result.storage_model
+        else:
+            settings = get_settings()
+            embedding_model_used = query_embedding_model or settings.embedding_query_model
+            effective_storage_embedding_model = (
+                effective_storage_embedding_model or settings.embedding_document_model
+            )
         ranked = await retrieve_memories(
             store=store,
             query_embedding=effective_embedding,
@@ -403,6 +413,8 @@ async def retrieve_memories_for_text(
             retrieval_context="prompt_injection" if retrieval_triggered_by is None else None,
             allowed_source_conversation_ids=allowed_source_conversation_ids,
             include_dream_observations=include_dream_observations,
+            embedding_model=effective_storage_embedding_model,
+            query_embedding_model=embedding_model_used,
         )
 
     l0_included = False
@@ -566,6 +578,8 @@ async def retrieve_memories(
     retrieval_context: str | None = None,
     allowed_source_conversation_ids: list[uuid.UUID] | None = None,
     include_dream_observations: bool = False,
+    embedding_model: str | None = None,
+    query_embedding_model: str | None = None,
 ) -> list[dict[str, object]]:
     if not query_embedding:
         return []
@@ -617,6 +631,7 @@ async def retrieve_memories(
             memory_slot=normalized_slot,
             include_dream_observations=include_dream_observations,
             source_conversation_ids=allowed_source_conversation_ids,
+            embedding_model=embedding_model,
         ),
     )
 
@@ -771,7 +786,7 @@ async def retrieve_memories(
     if _is_retrieval_logging_enabled(log_retrieval):
         latency_ms = int((time.monotonic() - start_time) * 1000)
         settings = get_settings()
-        embedding_model = settings.embedding_query_model
+        logged_embedding_model = query_embedding_model or settings.embedding_query_model
         candidate_scores: dict[str, object] = {}
         for c in scored:
             mid = c.get("id")
@@ -796,7 +811,7 @@ async def retrieve_memories(
                 await store.log_retrieval(
                     user_id=effective_user_id,
                     query_text=normalized_query or "",
-                    query_embedding_model=embedding_model,
+                    query_embedding_model=logged_embedding_model,
                     query_embedding=query_embedding,
                     candidate_memory_ids=[uuid.UUID(k) for k in candidate_scores],
                     candidate_scores=candidate_scores,

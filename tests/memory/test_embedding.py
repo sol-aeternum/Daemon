@@ -6,7 +6,9 @@ import pytest
 from orchestrator.memory.embedding import (
     EmbeddingRequestError,
     embed_documents,
+    embed_documents_with_metadata,
     embed_query,
+    embed_query_with_metadata,
     get_configured_embedding_providers,
     get_embedding_failures_total,
     get_embedding_provider_used_counts,
@@ -137,6 +139,47 @@ async def test_voyage_failure_falls_back_to_openai(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_openai_fallback_preserves_model_identity(monkeypatch):
+    fallback_embedding = [0.7] * 1024
+    openai_response = {
+        "data": [{"index": 0, "embedding": fallback_embedding}],
+        "usage": {"prompt_tokens": 14},
+    }
+    mock_settings = SimpleNamespace(
+        embedding_document_model="voyage-4-large",
+        embedding_query_model="voyage-4-lite",
+        embedding_dimensions=1024,
+        embedding_fallback_providers="openai",
+        embedding_openai_fallback_model="text-embedding-3-small",
+        openai_api_key="openai-key",
+    )
+
+    monkeypatch.setattr("orchestrator.memory.embedding.MAX_RETRIES", 1)
+    monkeypatch.setattr("orchestrator.memory.embedding.get_settings", lambda: mock_settings)
+    monkeypatch.setattr("orchestrator.memory.embedding._get_voyage_api_key", lambda: "voyage-key")
+
+    with patch(
+        "orchestrator.memory.embedding._post_embeddings",
+        new_callable=AsyncMock,
+        side_effect=EmbeddingRequestError("voyage down"),
+    ):
+        with patch(
+            "orchestrator.memory.embedding._post_openai_embeddings",
+            new_callable=AsyncMock,
+            return_value=openai_response,
+        ):
+            document_result = await embed_documents_with_metadata(["fallback document"])
+            query_result = await embed_query_with_metadata("fallback query")
+
+    assert document_result.embeddings == [fallback_embedding]
+    assert document_result.provider == "openai"
+    assert document_result.storage_model == "openai:text-embedding-3-small"
+    assert query_result.embedding == fallback_embedding
+    assert query_result.provider == "openai"
+    assert query_result.storage_model == "openai:text-embedding-3-small"
+
+
+@pytest.mark.asyncio
 async def test_voyage_circuit_breaker_skips_primary_after_recent_failures(monkeypatch):
     fallback_embedding = [0.8] * 1024
     openai_response = {
@@ -207,6 +250,44 @@ async def test_openai_fallback_enforces_configured_dimension(monkeypatch):
         ):
             with pytest.raises(EmbeddingRequestError, match="dimension mismatch"):
                 await embed_documents(["memory document"])
+
+
+@pytest.mark.asyncio
+async def test_openai_fallback_truncates_inputs_to_provider_limit(monkeypatch):
+    fallback_embedding = [0.5] * 1024
+    openai_response = {
+        "data": [{"index": 0, "embedding": fallback_embedding}],
+        "usage": {"prompt_tokens": 8000},
+    }
+    mock_settings = SimpleNamespace(
+        embedding_document_model="voyage-4-large",
+        embedding_query_model="voyage-4-lite",
+        embedding_dimensions=1024,
+        embedding_fallback_providers="openai",
+        embedding_openai_fallback_model="text-embedding-3-small",
+        openai_api_key="openai-key",
+    )
+
+    monkeypatch.setattr("orchestrator.memory.embedding.MAX_RETRIES", 1)
+    monkeypatch.setattr("orchestrator.memory.embedding.get_settings", lambda: mock_settings)
+    monkeypatch.setattr("orchestrator.memory.embedding._get_voyage_api_key", lambda: "voyage-key")
+
+    with patch(
+        "orchestrator.memory.embedding._post_embeddings",
+        new_callable=AsyncMock,
+        side_effect=EmbeddingRequestError("voyage down"),
+    ):
+        with patch(
+            "orchestrator.memory.embedding._post_openai_embeddings",
+            new_callable=AsyncMock,
+            return_value=openai_response,
+        ) as openai_post:
+            result = await embed_documents_with_metadata(["x" * 80_000])
+
+    assert result.embeddings == [fallback_embedding]
+    assert openai_post.await_args is not None
+    sent_text = openai_post.await_args.kwargs["texts"][0]
+    assert len(sent_text) == 32_000
 
 
 @pytest.mark.asyncio

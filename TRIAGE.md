@@ -1,5 +1,16 @@
 # TRIAGE.md
 
+## 2026-06-13T10:57:29+09:30 — #63 Alignment Script Type Regression Fixed During Review Pass
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Issue #63 embedding fallback review-comment fix verification
+- **Category**: build-error
+- **Blocked current task**: yes
+- **What happened**: The first backend local-CI rerun after adding embedding metadata failed the blocking `basedpyright` gate because `scripts/test_embedding_alignment.py` still indexed the private `_embed_texts(...)` return value as a list.
+- **Evidence**: `scripts/local_ci.sh backend` reported `/tmp/daemon-63/scripts/test_embedding_alignment.py:156:26`, `:167:27`, and `:178:28` with `error: "__getitem__" method not defined on type "EmbeddingBatchResult" (reportIndexIssue)`.
+- **Likely cause**: The review fix changed `_embed_texts(...)` to return `EmbeddingBatchResult`, but this manual diagnostic script had not been included in the first changed-file type-check slice. Confidence: 99%.
+- **Suggested action**: Keep `scripts/test_embedding_alignment.py` in the changed-file type-check set for embedding API refactors.
+
 ## 2026-06-13T10:10:00+09:30 — #63 PR Wrapper Refused On Local Cache And Frontend Sandbox Debt
 - **Severity**: warning
 - **Scope**: host | project
@@ -10,6 +21,8 @@
 - **Evidence**: `timeout 600s scripts/pr_create.sh -- --title "fix(memory): add embedding provider fallback" ...` reported blocking failures: backend `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect` all exited 2 with `Failed to initialize cache at /home/sol/.cache/uv ... Read-only file system`; aggregate `pre-commit` failed for the same uv cache reason. Frontend `npm ci` failed with `spawnSync /tmp/daemon-63/frontend/node_modules/esbuild/bin/esbuild EPERM`, after which `type-check`, `lint`, and `format-check` failed with `next: command not found`, `eslint: command not found`, and `prettier: command not found`.
 - **Likely cause**: The PR wrapper invocation did not inherit `UV_CACHE_DIR=/tmp/uv-cache`, and the managed sandbox blocks esbuild's postinstall validation in fresh `/tmp` frontend installs. Confidence: 95%.
 - **Suggested action**: Teach `scripts/pr_create.sh` or the local-CI environment to set writable uv/npm caches for temporary worktrees, and continue relying on direct affected-family local gates plus hosted protected checks until the wrapper environment is fixed.
+- **Seen again**: 2026-06-13 during #63 review-comment verification. After an issue-scoped type regression in `scripts/test_embedding_alignment.py`, `timeout 420s scripts/local_ci.sh backend` entered the same non-blocking inventory tail and exited `124`; inventory `bandit` reported existing findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed existing failure markers before quiet tail progress.
+- **Seen again**: 2026-06-13 after fixing `scripts/test_embedding_alignment.py`. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest again reached the quiet inventory tail before the outer timeout exited `124`.
 
 ## 2026-06-12T22:34:10+09:30 — #54 PR Wrapper Refused On Existing Local Gate Debt
 - **Severity**: warning
@@ -1114,6 +1127,7 @@
 - **Likely cause**: The contradiction-path tests exercise the trust-signal hook with mocked collaborators in a way that surfaces an await/AsyncMock mismatch inside or below `apply_explicit_negative_signal` (confidence 80%).
 - **Suggested action**: If later work touches dedup/trust-signal behavior, reproduce this warning directly and determine whether the bug is in the production hook or only in the test/mock setup.
 - **Seen again**: 2026-04-16 during autonomous-skill-creation Task 13 when `PYTHONPATH=. pytest tests/test_benchmark_extraction.py tests/test_memory_promote.py tests/test_memory_migrations.py tests/test_memories.py tests/test_retrieval.py tests/test_hybrid_search.py tests/test_l0_injection.py tests/test_store.py tests/test_chat_history.py tests/test_extraction.py tests/test_dedup_bitemporal.py tests/test_dedup_slot_fallback.py -q` passed with 130 tests but `tests/test_dedup_bitemporal.py` again emitted `orchestrator/memory/dedup.py:515: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited`.
+- **Seen again**: 2026-06-13 during #63 review-comment verification. `PYTHONPATH=. uv run pytest -q tests/memory/test_embedding.py tests/test_embeddings.py tests/test_retrieval_log.py tests/memory/test_temporal_filter.py tests/test_contradiction.py tests/test_dedup_bitemporal.py tests/test_dedup_slot_fallback.py tests/memory/test_dedup_thresholds.py tests/test_dreaming.py tests/test_memories.py` passed with `124 passed, 37 warnings`, including the same `RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited` from `orchestrator/memory/dedup.py:588`.
 
 ## 2026-04-15 13:40 — Chat history regression tests emit unawaited AsyncMock warnings in settings/memory injection path
 - **Severity**: warning

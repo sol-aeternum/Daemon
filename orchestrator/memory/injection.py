@@ -5,7 +5,7 @@ import uuid
 from typing import Any, cast
 
 from orchestrator.guardrails import strip_reasoning_fields_from_message
-from orchestrator.memory.embedding import embed_query
+from orchestrator.memory.embedding import embed_query_with_metadata
 from orchestrator.memory.retrieval import retrieve_memories_for_text
 from orchestrator.memory.store import MemoryStore
 
@@ -206,14 +206,19 @@ async def build_memory_context(
 
     if query_text:
         try:
-            query_embedding = await asyncio.wait_for(embed_query(query_text), timeout=8.0)
+            query_result = await asyncio.wait_for(
+                embed_query_with_metadata(query_text),
+                timeout=8.0,
+            )
             retrieved = await retrieve_memories_for_text(
                 store=store,
                 query_text=query_text,
                 user_id=user_id,
-                query_embedding=query_embedding,
+                query_embedding=query_result.embedding,
                 limit=MAX_MEMORY_ITEMS,
                 include_local=include_local,
+                storage_embedding_model=query_result.storage_model,
+                query_embedding_model=query_result.model,
             )
 
             # Record retrieved memory IDs for trust signal tracking

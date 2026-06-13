@@ -11,9 +11,8 @@ from orchestrator.auth import (
     require_admin_or_device_auth,
     require_device_auth,
 )
-from orchestrator.config import get_settings
 from orchestrator.db import get_app_state, AppState
-from orchestrator.memory.embedding import embed_documents
+from orchestrator.memory.embedding import embed_documents_with_metadata
 
 router = APIRouter(prefix="/memories", tags=["memories"])
 
@@ -145,8 +144,6 @@ async def reembed_memories(
     updated = 0
     skipped_empty = 0
 
-    document_model = get_settings().embedding_document_model
-
     for idx in range(0, len(memories), batch_size):
         batch = memories[idx : idx + batch_size]
         valid_batch: list[dict[str, Any]] = []
@@ -162,13 +159,13 @@ async def reembed_memories(
         if not valid_texts:
             continue
 
-        embeddings = await embed_documents(valid_texts)
+        embedding_result = await embed_documents_with_metadata(valid_texts)
 
-        for mem, embedding in zip(valid_batch, embeddings):
+        for mem, embedding in zip(valid_batch, embedding_result.embeddings):
             await store.update_memory_embedding(
                 mem["id"],
                 embedding,
-                embedding_model=document_model,
+                embedding_model=embedding_result.storage_model,
             )
             updated += 1
 

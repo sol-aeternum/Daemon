@@ -244,7 +244,7 @@ L0 memories bypass embedding-based retrieval entirely. They are always prepended
 
 Retry logic: 3 attempts with exponential backoff (1s → 2s → 4s). Counters `_retry_count` and `_last_retry_at` are exposed via `/status` as `embedding_retry_activations` and `embedding_last_retry_at`.
 
-Fallback logic: Voyage remains primary. If Voyage fails, the embedding layer tries configured fallback providers (default: OpenAI). After 5 Voyage failures within 60 seconds, a circuit breaker skips Voyage and goes directly to fallback until the failure window clears. `/status` exposes `embedding_failures_total` and `embedding_provider_used` counters.
+Fallback logic: Voyage remains primary. If Voyage fails, the embedding layer tries configured fallback providers (default: OpenAI). After 5 Voyage failures within 60 seconds, a circuit breaker skips Voyage and goes directly to fallback until the failure window clears. OpenAI fallback vectors are stored with an `openai:<model>` embedding identity and vector search filters by that identity so Voyage and OpenAI vector spaces are not mixed. OpenAI fallback inputs are truncated to the provider's per-input limit before request. `/status` exposes `embedding_failures_total` and `embedding_provider_used` counters.
 
 ---
 

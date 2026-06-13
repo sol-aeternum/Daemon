@@ -26,6 +26,7 @@ from orchestrator.config import get_settings
 from orchestrator.main import app
 from orchestrator.db import AppState
 from orchestrator.auth import AuthenticatedDevice
+from orchestrator.memory.embedding import EmbeddingBatchResult
 from orchestrator.routes import memories as memories_router
 
 
@@ -100,6 +101,15 @@ def create_mock_app_state(mock_store: AsyncMock | None = None) -> AppState:
 def set_app_state(mock_app_state: AppState) -> None:
     """Set the app state on the FastAPI app."""
     app.state.app_state = mock_app_state
+
+
+def create_embedding_result(vectors: list[list[float]]) -> EmbeddingBatchResult:
+    return EmbeddingBatchResult(
+        embeddings=vectors,
+        provider="voyage",
+        model="voyage-4-large",
+        storage_model="voyage-4-large",
+    )
 
 
 def create_mock_memory(memory_id: uuid.UUID | None = None, **overrides) -> dict[str, Any]:
@@ -409,9 +419,9 @@ async def test_reembed_memories_returns_detailed_counts(auth_client, monkeypatch
     vector_a = [0.1] * 1024
     vector_c = [0.2] * 1024
     with patch(
-        "orchestrator.routes.memories.embed_documents",
+        "orchestrator.routes.memories.embed_documents_with_metadata",
         new_callable=AsyncMock,
-        return_value=[vector_a, vector_c],
+        return_value=create_embedding_result([vector_a, vector_c]),
     ):
         response = await auth_client.post(
             "/memories/reembed",
@@ -445,9 +455,9 @@ async def test_reembed_memories_with_memory_ids_tracks_missing_ids(
 
     vector = [0.3] * 1024
     with patch(
-        "orchestrator.routes.memories.embed_documents",
+        "orchestrator.routes.memories.embed_documents_with_metadata",
         new_callable=AsyncMock,
-        return_value=[vector],
+        return_value=create_embedding_result([vector]),
     ):
         response = await auth_client.post(
             "/memories/reembed",

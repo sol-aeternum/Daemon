@@ -12,7 +12,7 @@ import asyncpg
 
 from orchestrator.config import get_settings
 from orchestrator.memory.encryption import ContentEncryption
-from orchestrator.memory.embedding import embed_query
+from orchestrator.memory.embedding import embed_query_with_metadata
 
 
 def is_explicit_memory(memory: dict[str, Any]) -> bool:
@@ -851,6 +851,7 @@ class MemoryStore:
         memory_slot: str | None = None,
         include_dream_observations: bool = False,
         source_conversation_ids: list[uuid.UUID] | None = None,
+        embedding_model: str | None = None,
     ) -> list[dict[str, Any]]:
         embedding_str = _format_vector(query_embedding)
         conversation_filter = [str(value) for value in source_conversation_ids or []] or None
@@ -869,6 +870,7 @@ class MemoryStore:
                   AND ($9::bool OR source_type != 'dream')
                   AND ($10::uuid[] IS NULL OR source_conversation_id = ANY($10::uuid[]))
                   AND embedding IS NOT NULL
+                  AND ($11::text IS NULL OR embedding_model = $11)
                   AND category = $6
                   AND ($8::text IS NULL OR memory_slot = $8)
                   AND 1 - (embedding <=> $2::vector) >= $3
@@ -885,6 +887,7 @@ class MemoryStore:
                 memory_slot,
                 include_dream_observations,
                 conversation_filter,
+                embedding_model,
             )
         else:
             rows = await self._pool.fetch(
@@ -900,6 +903,7 @@ class MemoryStore:
                   AND ($8::bool OR source_type != 'dream')
                   AND ($9::uuid[] IS NULL OR source_conversation_id = ANY($9::uuid[]))
                   AND embedding IS NOT NULL
+                  AND ($10::text IS NULL OR embedding_model = $10)
                   AND ($7::text IS NULL OR memory_slot = $7)
                   AND 1 - (embedding <=> $2::vector) >= $3
                 ORDER BY embedding <=> $2::vector
@@ -914,6 +918,7 @@ class MemoryStore:
                 memory_slot,
                 include_dream_observations,
                 conversation_filter,
+                embedding_model,
             )
 
         results = []
@@ -1038,11 +1043,11 @@ class MemoryStore:
             List of memory dicts filtered by source_type
         """
         # Embed the text query
-        embedding = await embed_query(text)
+        embedding_result = await embed_query_with_metadata(text)
         # Call search_memories with the same params
         results = await self.search_memories(
             user_id,
-            embedding,
+            embedding_result.embedding,
             limit=limit,
             min_similarity=min_similarity,
             category=category,
@@ -1050,6 +1055,7 @@ class MemoryStore:
             include_historical=include_historical,
             memory_slot=memory_slot,
             include_dream_observations=include_dream_observations,
+            embedding_model=embedding_result.storage_model,
         )
         # Filter by source_types if provided
         if source_types:

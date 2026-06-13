@@ -10,7 +10,7 @@ import asyncpg
 import litellm
 
 from orchestrator.config import get_settings
-from orchestrator.memory.embedding import embed_documents
+from orchestrator.memory.embedding import embed_documents_with_metadata
 from orchestrator.memory.store import MemoryStore
 
 logger = logging.getLogger(__name__)
@@ -357,7 +357,9 @@ async def deduplicate_facts(
         if current_like_slot and fact_slot_family:
             current_slot_families.add(fact_slot_family)
         embedding_input = _embedding_text(fact.content, fact_slot)
-        embedding = (await embed_documents([embedding_input]))[0]
+        embedding_result = await embed_documents_with_metadata([embedding_input])
+        embedding = embedding_result.embeddings[0]
+        document_model = embedding_result.storage_model
 
         min_similarity = (
             _get_supersede_same_slot_threshold() if fact_slot_family else _get_supersede_threshold()
@@ -371,6 +373,7 @@ async def deduplicate_facts(
             min_similarity=min_similarity,
             include_historical=True,
             memory_slot=None,
+            embedding_model=document_model,
         )
         best_match: dict[str, Any] | None = None
         supersede_threshold = _get_supersede_threshold()
@@ -411,7 +414,7 @@ async def deduplicate_facts(
                 category=fact.category,
                 source_type=source_type,
                 embedding=embedding,
-                embedding_model=_document_model(),
+                embedding_model=document_model,
                 source_conversation_id=conversation_id,
                 confidence=fact.confidence,
                 status=status,
@@ -479,7 +482,7 @@ async def deduplicate_facts(
                         category=fact.category,
                         source_type=source_type,
                         embedding=embedding,
-                        embedding_model=_document_model(),
+                        embedding_model=document_model,
                         source_conversation_id=conversation_id,
                         confidence=fact.confidence,
                         status=status,
@@ -526,7 +529,7 @@ async def deduplicate_facts(
                         category=fact.category,
                         source_type=source_type,
                         embedding=embedding,
-                        embedding_model=_document_model(),
+                        embedding_model=document_model,
                         source_conversation_id=conversation_id,
                         confidence=fact.confidence,
                         status=status,
@@ -551,7 +554,7 @@ async def deduplicate_facts(
                         "new_source_type": source_type,
                         "user_id": user_id,
                         "embedding": embedding,
-                        "embedding_model": _document_model(),
+                        "embedding_model": document_model,
                         "source_conversation_id": conversation_id,
                         "confidence": fact.confidence,
                         "new_status": status,
@@ -614,7 +617,7 @@ async def deduplicate_facts(
                     category=fact.category,
                     source_type=source_type,
                     embedding=embedding,
-                    embedding_model=_document_model(),
+                    embedding_model=document_model,
                     source_conversation_id=conversation_id,
                     confidence=fact.confidence,
                     status=status,
@@ -713,14 +716,15 @@ async def dedup_and_store(
     else:
         # Fallback - create directly
         embedding_input = _embedding_text(content, slot)
-        embedding = (await embed_documents([embedding_input]))[0]
+        embedding_result = await embed_documents_with_metadata([embedding_input])
+        embedding = embedding_result.embeddings[0]
         memory = await store.insert_memory(
             user_id=user_id,
             content=content,
             category=category,
             source_type=source_type,
             embedding=embedding,
-            embedding_model=_document_model(),
+            embedding_model=embedding_result.storage_model,
             source_conversation_id=conversation_id,
             status=status,
             memory_slot=slot,

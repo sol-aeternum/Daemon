@@ -153,7 +153,7 @@ async def run_alignment_test():
             input_type="query",
             max_tokens=1_000_000,
         )
-        query_vec_lite = query_embedding_lite[0]
+        query_vec_lite = query_embedding_lite.embeddings[0]
         print(f"  Query embedding dimension: {len(query_vec_lite)}")
 
         # 2. Embed memory text with voyage-4-lite (same model baseline)
@@ -164,7 +164,7 @@ async def run_alignment_test():
             input_type="document",
             max_tokens=120_000,
         )
-        memory_vec_lite = memory_embedding_lite[0]
+        memory_vec_lite = memory_embedding_lite.embeddings[0]
         print(f"  Memory embedding dimension: {len(memory_vec_lite)}")
 
         # 3. Embed memory text with voyage-4-large (document model)
@@ -175,7 +175,7 @@ async def run_alignment_test():
             input_type="document",
             max_tokens=120_000,
         )
-        memory_vec_large = memory_embedding_large[0]
+        memory_vec_large = memory_embedding_large.embeddings[0]
         print(f"  Memory embedding dimension: {len(memory_vec_large)}")
 
         # Calculate similarities

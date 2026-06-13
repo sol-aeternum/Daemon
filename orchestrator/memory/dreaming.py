@@ -14,7 +14,7 @@ import asyncpg
 import litellm
 
 from orchestrator.config import get_settings
-from orchestrator.memory.embedding import embed_documents
+from orchestrator.memory.embedding import embed_documents_with_metadata
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
 
@@ -382,9 +382,11 @@ async def run_dreaming(
                     continue
 
                 observation_texts = [str(observation["content"]) for observation in observations]
-                embeddings = await embed_documents(observation_texts)
+                embedding_result = await embed_documents_with_metadata(observation_texts)
 
-                for observation_payload, embedding in zip(observations, embeddings):
+                for observation_payload, embedding in zip(
+                    observations, embedding_result.embeddings
+                ):
                     observation_text = str(observation_payload["content"])
                     source_memory_ids = [
                         uuid.UUID(source_memory_id)
@@ -396,7 +398,7 @@ async def run_dreaming(
                         category="observation",
                         source_type="dream",
                         embedding=embedding,
-                        embedding_model=settings.embedding_document_model,
+                        embedding_model=embedding_result.storage_model,
                         confidence=float(observation_payload["confidence"]),
                         memory_slot=f"{family}.observation",
                     )

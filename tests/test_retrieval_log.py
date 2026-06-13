@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from orchestrator.memory.embedding import EmbeddingVectorResult
 from orchestrator.memory.retrieval import retrieve_memories, retrieve_memories_for_text
 from orchestrator.memory.store import MemoryStore
 
@@ -25,6 +26,15 @@ def mock_store() -> MemoryStore:
 
 async def _allow_background_tasks() -> None:
     await asyncio.sleep(0)
+
+
+def _embedding_result(storage_model: str = "voyage-4-large") -> EmbeddingVectorResult:
+    return EmbeddingVectorResult(
+        embedding=[0.1],
+        provider="voyage",
+        model="voyage-4-lite",
+        storage_model=storage_model,
+    )
 
 
 @pytest.mark.asyncio
@@ -315,7 +325,10 @@ async def test_retrieve_memories_for_text_logs_with_l0_inclusion(mock_store):
         }
     ]
 
-    with patch("orchestrator.memory.retrieval.embed_query", new=AsyncMock(return_value=[0.1])):
+    with patch(
+        "orchestrator.memory.retrieval.embed_query_with_metadata",
+        new=AsyncMock(return_value=_embedding_result()),
+    ):
         result = await retrieve_memories_for_text(
             mock_store,
             "test query",
@@ -349,7 +362,10 @@ async def test_retrieve_memories_for_text_passes_triggered_by_to_inner_call(mock
         }
     ]
 
-    with patch("orchestrator.memory.retrieval.embed_query", new=AsyncMock(return_value=[0.1])):
+    with patch(
+        "orchestrator.memory.retrieval.embed_query_with_metadata",
+        new=AsyncMock(return_value=_embedding_result()),
+    ):
         await retrieve_memories_for_text(
             mock_store,
             "test query",
@@ -362,6 +378,25 @@ async def test_retrieve_memories_for_text_passes_triggered_by_to_inner_call(mock
     mock_store.log_retrieval.assert_called_once()
     call_kwargs = mock_store.log_retrieval.call_args.kwargs
     assert call_kwargs["retrieval_triggered_by"] == "memory_reflect"
+
+
+@pytest.mark.asyncio
+async def test_retrieve_memories_for_text_filters_vector_model(mock_store):
+    user_id = uuid.uuid4()
+
+    with patch(
+        "orchestrator.memory.retrieval.embed_query_with_metadata",
+        new=AsyncMock(return_value=_embedding_result("openai:text-embedding-3-small")),
+    ):
+        await retrieve_memories_for_text(
+            mock_store,
+            "test query",
+            user_id=user_id,
+        )
+
+    assert mock_store.search_memories.call_args.kwargs["embedding_model"] == (
+        "openai:text-embedding-3-small"
+    )
 
 
 @pytest.mark.asyncio
