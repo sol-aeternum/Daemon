@@ -908,13 +908,11 @@ async def stream_sse_chat(
 
                 if queue is not None:
                     try:
-                        import time
-
                         await queue.enqueue_job(
                             "extract_memories",
                             str(user_id),
                             str(conversation_uuid),
-                            _job_id=f"extract:{conversation_uuid}:{int(time.time())}",
+                            _job_id=f"extract:{conversation_uuid}",
                             _defer_by=timedelta(seconds=30),
                         )
                     except Exception as extract_error:
