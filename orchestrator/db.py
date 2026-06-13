@@ -50,12 +50,6 @@ async def init_app_state(settings: Settings) -> AppState:
     if state.db_pool is not None:
         encryption = ContentEncryption(settings.daemon_encryption_key)
         state.memory_store = MemoryStore(state.db_pool, encryption)
-        try:
-            backfilled = await state.memory_store.backfill_memory_content_hashes()
-            if backfilled:
-                logger.info("Backfilled content_hash for %s active memories", backfilled)
-        except Exception:
-            logger.warning("Failed to backfill memory content hashes", exc_info=True)
         state.video_credits_dal = VideoCreditsDAL(state.db_pool)
 
     if settings.redis_url:

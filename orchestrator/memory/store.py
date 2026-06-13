@@ -103,13 +103,12 @@ class MemoryStore:
         return self._memory_row_to_dict(row)
 
     async def backfill_memory_content_hashes(self) -> int:
-        """Populate content_hash for legacy active memories that predate the column."""
+        """Populate content_hash for legacy current memories that predate the column."""
         rows = await self._pool.fetch(
             """
             SELECT id, content
             FROM memories
             WHERE content_hash IS NULL
-              AND status = 'active'
               AND valid_to IS NULL
             ORDER BY created_at ASC
             """
@@ -740,6 +739,35 @@ class MemoryStore:
         memory_id: uuid.UUID,
         status: str,
     ) -> bool:
+        if status == "active":
+            row = await self._pool.fetchrow(
+                "SELECT content, content_hash FROM memories WHERE id = $1",
+                memory_id,
+            )
+            if row is None:
+                return False
+            content_hash = row["content_hash"]
+            if content_hash is None:
+                content_hash = compute_memory_content_hash(self._enc.decrypt(row["content"]))
+            try:
+                result = await self._pool.execute(
+                    """
+                    UPDATE memories
+                    SET status = $2,
+                        content_hash = $3,
+                        updated_at = NOW()
+                    WHERE id = $1
+                    """,
+                    memory_id,
+                    status,
+                    content_hash,
+                )
+            except asyncpg.UniqueViolationError as exc:
+                raise MemoryContentConflictError(
+                    "Memory content duplicates an existing active memory"
+                ) from exc
+            return result == "UPDATE 1"
+
         result = await self._pool.execute(
             """
             UPDATE memories

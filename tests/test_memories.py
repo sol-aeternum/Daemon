@@ -379,6 +379,31 @@ async def test_confirm_memory(auth_client, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_confirm_memory_content_conflict_returns_409(auth_client, monkeypatch) -> None:
+    """Test that confirming a duplicate legacy memory returns a controlled conflict."""
+    memory_id = uuid.uuid4()
+    mock_store = AsyncMock()
+    mock_memory = create_mock_memory(memory_id=memory_id)
+    mock_store.get_memory = AsyncMock(return_value=mock_memory)
+    mock_store.confirm_memory = AsyncMock(
+        side_effect=MemoryContentConflictError(
+            "Memory content duplicates an existing active memory"
+        )
+    )
+
+    mock_app_state = create_mock_app_state(mock_store)
+    set_app_state(mock_app_state)
+
+    response = await auth_client.post(
+        f"/memories/{memory_id}/confirm",
+        json={"status": "confirmed"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Memory content duplicates an existing active memory"
+
+
+@pytest.mark.asyncio
 async def test_get_memory_trail_not_implemented(auth_client, monkeypatch) -> None:
     """Test that GET /memories/{id}/trail returns 404 (not implemented)."""
     memory_id = uuid.uuid4()

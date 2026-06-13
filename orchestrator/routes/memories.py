@@ -302,7 +302,13 @@ async def confirm_memory(
     if not existing or existing.get("user_id") != auth.user_id:
         raise HTTPException(status_code=404, detail="Memory not found")
     confirmed = data.status == "confirmed"
-    await store.confirm_memory(memory_id, confirmed=confirmed)
+    try:
+        await store.confirm_memory(memory_id, confirmed=confirmed)
+    except MemoryContentConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Memory content duplicates an existing active memory",
+        ) from exc
     return {"status": data.status}
 
 

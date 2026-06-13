@@ -248,6 +248,23 @@ async def test_backfill_memory_content_hashes_updates_active_null_hashes(
 
 
 @pytest.mark.asyncio
+async def test_backfill_memory_content_hashes_includes_non_active_current_rows(
+    memory_store: MemoryStore,
+    mock_db_pool,
+    monkeypatch,
+) -> None:
+    _patch_memory_hash_settings(monkeypatch)
+    mock_db_pool.fetch.return_value = []
+
+    await memory_store.backfill_memory_content_hashes()
+
+    query = mock_db_pool.fetch.await_args.args[0]
+    assert "content_hash IS NULL" in query
+    assert "valid_to IS NULL" in query
+    assert "status = 'active'" not in query
+
+
+@pytest.mark.asyncio
 async def test_backfill_memory_content_hashes_skips_legacy_duplicates(
     memory_store: MemoryStore,
     mock_db_pool,
@@ -262,6 +279,45 @@ async def test_backfill_memory_content_hashes_skips_legacy_duplicates(
     backfilled = await memory_store.backfill_memory_content_hashes()
 
     assert backfilled == 0
+
+
+@pytest.mark.asyncio
+async def test_update_memory_status_active_hashes_legacy_row(
+    memory_store: MemoryStore,
+    mock_db_pool,
+    monkeypatch,
+) -> None:
+    _patch_memory_hash_settings(monkeypatch)
+    memory_id = uuid.uuid4()
+    mock_db_pool.fetchrow.return_value = MockRecord(
+        content="encrypted legacy content",
+        content_hash=None,
+    )
+    mock_db_pool.execute.return_value = "UPDATE 1"
+
+    updated = await memory_store.update_memory_status(memory_id, "active")
+
+    assert updated is True
+    expected_hash = compute_memory_content_hash("encrypted legacy content")
+    mock_db_pool.execute.assert_awaited_once()
+    assert mock_db_pool.execute.await_args.args[1:] == (memory_id, "active", expected_hash)
+
+
+@pytest.mark.asyncio
+async def test_update_memory_status_active_conflict_raises_controlled_error(
+    memory_store: MemoryStore,
+    mock_db_pool,
+    monkeypatch,
+) -> None:
+    _patch_memory_hash_settings(monkeypatch)
+    mock_db_pool.fetchrow.return_value = MockRecord(
+        content="encrypted duplicate content",
+        content_hash=None,
+    )
+    mock_db_pool.execute.side_effect = asyncpg.UniqueViolationError("duplicate memory content_hash")
+
+    with pytest.raises(MemoryContentConflictError):
+        await memory_store.update_memory_status(uuid.uuid4(), "active")
 
 
 @pytest.mark.asyncio
