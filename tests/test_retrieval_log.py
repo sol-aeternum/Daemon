@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from orchestrator.memory.embedding import EmbeddingVectorResult
+from orchestrator.memory.embedding import EmbeddingVector, EmbeddingVectorResult
 from orchestrator.memory.retrieval import retrieve_memories, retrieve_memories_for_text
 from orchestrator.memory.store import MemoryStore
 
@@ -326,8 +326,8 @@ async def test_retrieve_memories_for_text_logs_with_l0_inclusion(mock_store):
     ]
 
     with patch(
-        "orchestrator.memory.retrieval.embed_query_with_metadata",
-        new=AsyncMock(return_value=_embedding_result()),
+        "orchestrator.memory.retrieval.embed_query_for_configured_storage_models",
+        new=AsyncMock(return_value=[_embedding_result()]),
     ):
         result = await retrieve_memories_for_text(
             mock_store,
@@ -363,8 +363,8 @@ async def test_retrieve_memories_for_text_passes_triggered_by_to_inner_call(mock
     ]
 
     with patch(
-        "orchestrator.memory.retrieval.embed_query_with_metadata",
-        new=AsyncMock(return_value=_embedding_result()),
+        "orchestrator.memory.retrieval.embed_query_for_configured_storage_models",
+        new=AsyncMock(return_value=[_embedding_result()]),
     ):
         await retrieve_memories_for_text(
             mock_store,
@@ -385,14 +385,90 @@ async def test_retrieve_memories_for_text_filters_vector_model(mock_store):
     user_id = uuid.uuid4()
 
     with patch(
-        "orchestrator.memory.retrieval.embed_query_with_metadata",
-        new=AsyncMock(return_value=_embedding_result("openai:text-embedding-3-small")),
+        "orchestrator.memory.retrieval.embed_query_for_configured_storage_models",
+        new=AsyncMock(return_value=[_embedding_result("openai:text-embedding-3-small")]),
     ):
         await retrieve_memories_for_text(
             mock_store,
             "test query",
             user_id=user_id,
         )
+
+    assert mock_store.search_memories.call_args.kwargs["embedding_model"] == (
+        "openai:text-embedding-3-small"
+    )
+
+
+@pytest.mark.asyncio
+async def test_retrieve_memories_for_text_queries_fallback_storage_spaces(mock_store):
+    user_id = uuid.uuid4()
+    voyage_id = uuid.uuid4()
+    openai_id = uuid.uuid4()
+    mock_store.search_memories.side_effect = [
+        [
+            {
+                "id": voyage_id,
+                "content": "voyage memory",
+                "similarity": 0.8,
+                "confidence": 0.9,
+                "access_count": 0,
+                "category": "fact",
+                "source_type": "extracted",
+            }
+        ],
+        [
+            {
+                "id": openai_id,
+                "content": "openai memory",
+                "similarity": 0.82,
+                "confidence": 0.9,
+                "access_count": 0,
+                "category": "fact",
+                "source_type": "extracted",
+            }
+        ],
+    ]
+
+    with patch(
+        "orchestrator.memory.retrieval.embed_query_for_configured_storage_models",
+        new=AsyncMock(
+            return_value=[
+                _embedding_result("voyage-4-large"),
+                _embedding_result("openai:text-embedding-3-small"),
+            ]
+        ),
+    ):
+        result = await retrieve_memories_for_text(
+            mock_store,
+            "test query",
+            user_id=user_id,
+        )
+
+    assert {memory["id"] for memory in result} == {voyage_id, openai_id}
+    assert [
+        call.kwargs["embedding_model"] for call in mock_store.search_memories.await_args_list
+    ] == [
+        "voyage-4-large",
+        "openai:text-embedding-3-small",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_retrieve_memories_for_text_infers_storage_model_from_embedding_vector(mock_store):
+    user_id = uuid.uuid4()
+    embedding = EmbeddingVector(
+        [0.2],
+        provider="openai",
+        model="openai:text-embedding-3-small",
+        storage_model="openai:text-embedding-3-small",
+    )
+
+    await retrieve_memories_for_text(
+        mock_store,
+        "test query",
+        user_id=user_id,
+        query_embedding=embedding,
+    )
 
     assert mock_store.search_memories.call_args.kwargs["embedding_model"] == (
         "openai:text-embedding-3-small"

@@ -8,6 +8,7 @@ from orchestrator.memory.embedding import (
     embed_documents,
     embed_documents_with_metadata,
     embed_query,
+    embed_query_for_configured_storage_models,
     embed_query_with_metadata,
     get_configured_embedding_providers,
     get_embedding_failures_total,
@@ -136,6 +137,7 @@ async def test_voyage_failure_falls_back_to_openai(monkeypatch):
     assert openai_post.await_args.kwargs["output_dimension"] == 1024
     assert get_embedding_provider_used_counts()["openai"] == 1
     assert get_embedding_failures_total() == 1
+    assert getattr(result, "storage_model") == "openai:text-embedding-3-small"
 
 
 @pytest.mark.asyncio
@@ -177,6 +179,50 @@ async def test_openai_fallback_preserves_model_identity(monkeypatch):
     assert query_result.embedding == fallback_embedding
     assert query_result.provider == "openai"
     assert query_result.storage_model == "openai:text-embedding-3-small"
+
+
+@pytest.mark.asyncio
+async def test_embed_query_for_configured_storage_models_includes_openai_space(monkeypatch):
+    voyage_embedding = [0.4] * 1024
+    openai_embedding = [0.6] * 1024
+    voyage_response = {
+        "data": [{"index": 0, "embedding": voyage_embedding}],
+        "usage": {"total_tokens": 8},
+    }
+    openai_response = {
+        "data": [{"index": 0, "embedding": openai_embedding}],
+        "usage": {"prompt_tokens": 8},
+    }
+    mock_settings = SimpleNamespace(
+        embedding_document_model="voyage-4-large",
+        embedding_query_model="voyage-4-lite",
+        embedding_dimensions=1024,
+        embedding_fallback_providers="openai",
+        embedding_openai_fallback_model="text-embedding-3-small",
+        openai_api_key="openai-key",
+    )
+
+    monkeypatch.setattr("orchestrator.memory.embedding.get_settings", lambda: mock_settings)
+    monkeypatch.setattr("orchestrator.memory.embedding._get_voyage_api_key", lambda: "voyage-key")
+
+    with patch(
+        "orchestrator.memory.embedding._post_embeddings",
+        new_callable=AsyncMock,
+        return_value=voyage_response,
+    ):
+        with patch(
+            "orchestrator.memory.embedding._post_openai_embeddings",
+            new_callable=AsyncMock,
+            return_value=openai_response,
+        ):
+            results = await embed_query_for_configured_storage_models("recall this")
+
+    assert [result.storage_model for result in results] == [
+        "voyage-4-large",
+        "openai:text-embedding-3-small",
+    ]
+    assert results[0].embedding == voyage_embedding
+    assert results[1].embedding == openai_embedding
 
 
 @pytest.mark.asyncio

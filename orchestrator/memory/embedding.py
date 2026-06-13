@@ -59,6 +59,21 @@ class EmbeddingVectorResult:
     storage_model: str
 
 
+class EmbeddingVector(list[float]):
+    def __init__(
+        self,
+        values: list[float],
+        *,
+        provider: str,
+        model: str,
+        storage_model: str,
+    ) -> None:
+        super().__init__(values)
+        self.provider = provider
+        self.model = model
+        self.storage_model = storage_model
+
+
 @lru_cache(maxsize=1)
 def _get_voyage_api_key() -> str:
     settings = get_settings()
@@ -459,6 +474,68 @@ async def _embed_texts(
     )
 
 
+async def _embed_texts_with_openai(
+    texts: list[str],
+    *,
+    input_type: str,
+) -> EmbeddingBatchResult:
+    valid_texts = [t for t in texts if t and t.strip()]
+    settings = get_settings()
+    fallback_model = getattr(
+        settings,
+        "embedding_openai_fallback_model",
+        "text-embedding-3-small",
+    )
+    storage_model = _openai_model_identity(fallback_model)
+    if not valid_texts:
+        return EmbeddingBatchResult(
+            embeddings=[],
+            provider="openai",
+            model=storage_model,
+            storage_model=storage_model,
+        )
+
+    output_dimension = settings.embedding_dimensions
+    openai_texts = [
+        _truncate_text_to_token_limit(text, OPENAI_MAX_TOKENS_PER_INPUT) for text in valid_texts
+    ]
+    openai_chunks = _chunk_texts(openai_texts, max_tokens=OPENAI_MAX_TOKENS_PER_INPUT)
+    all_embeddings: list[list[float]] = []
+    total_tokens = 0
+    try:
+        for chunk in openai_chunks:
+            embeddings, chunk_tokens = await _embed_with_openai_retry(
+                chunk,
+                model=fallback_model,
+                output_dimension=output_dimension,
+            )
+            all_embeddings.extend(embeddings)
+            total_tokens += chunk_tokens
+    except Exception:
+        _record_provider_failure("openai")
+        raise
+
+    _record_provider_used("openai")
+    logger.info(
+        "Embeddings generated",
+        extra={
+            "embedding_model": storage_model,
+            "input_type": input_type,
+            "texts": len(valid_texts),
+            "chunks": len(openai_chunks),
+            "providers": {"openai": 1},
+            "output_dimension": output_dimension,
+            "total_tokens": total_tokens,
+        },
+    )
+    return EmbeddingBatchResult(
+        embeddings=all_embeddings,
+        provider="openai",
+        model=storage_model,
+        storage_model=storage_model,
+    )
+
+
 async def embed_documents_with_metadata(texts: list[str]) -> EmbeddingBatchResult:
     settings = get_settings()
     return await _embed_texts(
@@ -483,11 +560,56 @@ async def embed_query_with_metadata(text: str) -> EmbeddingVectorResult:
         settings.embedding_document_model if result.provider == "voyage" else result.storage_model
     )
     return EmbeddingVectorResult(
-        embedding=result.embeddings[0],
+        embedding=EmbeddingVector(
+            result.embeddings[0],
+            provider=result.provider,
+            model=result.model,
+            storage_model=storage_model,
+        ),
         provider=result.provider,
         model=result.model,
         storage_model=storage_model,
     )
+
+
+async def embed_query_for_configured_storage_models(text: str) -> list[EmbeddingVectorResult]:
+    settings = get_settings()
+    results = [await embed_query_with_metadata(text)]
+
+    fallback_model = getattr(
+        settings,
+        "embedding_openai_fallback_model",
+        "text-embedding-3-small",
+    )
+    openai_storage_model = _openai_model_identity(fallback_model)
+    if (
+        "openai" not in get_configured_embedding_providers()
+        or results[0].storage_model == openai_storage_model
+    ):
+        return results
+
+    try:
+        openai_result = await _embed_texts_with_openai([text], input_type="query")
+    except Exception:
+        logger.warning("OpenAI fallback query embedding unavailable", exc_info=True)
+        return results
+
+    if not openai_result.embeddings:
+        return results
+    results.append(
+        EmbeddingVectorResult(
+            embedding=EmbeddingVector(
+                openai_result.embeddings[0],
+                provider="openai",
+                model=openai_result.model,
+                storage_model=openai_result.storage_model,
+            ),
+            provider="openai",
+            model=openai_result.model,
+            storage_model=openai_result.storage_model,
+        )
+    )
+    return results
 
 
 async def embed_documents(texts: list[str]) -> list[list[float]]:

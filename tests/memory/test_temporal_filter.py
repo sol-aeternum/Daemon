@@ -224,14 +224,16 @@ async def test_retrieve_memories_for_text_threads_reference_time() -> None:
     with (
         patch("orchestrator.memory.retrieval.retrieve_memories", new=fake_retrieve),
         patch(
-            "orchestrator.memory.retrieval.embed_query_with_metadata",
+            "orchestrator.memory.retrieval.embed_query_for_configured_storage_models",
             new=AsyncMock(
-                return_value=EmbeddingVectorResult(
-                    embedding=[0.1] * 8,
-                    provider="voyage",
-                    model="voyage-4-lite",
-                    storage_model="voyage-4-large",
-                )
+                return_value=[
+                    EmbeddingVectorResult(
+                        embedding=[0.1] * 8,
+                        provider="voyage",
+                        model="voyage-4-lite",
+                        storage_model="voyage-4-large",
+                    )
+                ]
             ),
         ),
     ):

@@ -10,7 +10,10 @@ from dataclasses import dataclass
 from typing import cast
 
 from orchestrator.config import get_settings
-from orchestrator.memory.embedding import embed_query_with_metadata
+from orchestrator.memory.embedding import (
+    EmbeddingVectorResult,
+    embed_query_for_configured_storage_models,
+)
 from orchestrator.memory.entities import (
     _normalize_lookup_key,
     extract_candidates_baseline,
@@ -182,6 +185,11 @@ def _as_float(value: object, default: float) -> float:
 
 def _normalize_query_text(query_text: str | None) -> str:
     return " ".join(str(query_text or "").split())
+
+
+def _embedding_metadata_value(query_embedding: list[float], name: str) -> str | None:
+    value = getattr(query_embedding, name, None)
+    return value if isinstance(value, str) and value.strip() else None
 
 
 def _normalize_memory_slot(memory_slot: str | None) -> str | None:
@@ -388,34 +396,70 @@ async def retrieve_memories_for_text(
     ranked: list[dict[str, object]] = []
     if normalized_query:
         if effective_embedding is None:
-            embedding_result = await embed_query_with_metadata(normalized_query)
+            embedding_results = await embed_query_for_configured_storage_models(normalized_query)
+        else:
+            settings = get_settings()
+            inferred_query_model = _embedding_metadata_value(effective_embedding, "model")
+            inferred_storage_model = _embedding_metadata_value(effective_embedding, "storage_model")
+            embedding_model_used = (
+                query_embedding_model or inferred_query_model or settings.embedding_query_model
+            )
+            effective_storage_embedding_model = (
+                effective_storage_embedding_model
+                or inferred_storage_model
+                or settings.embedding_document_model
+            )
+            embedding_results = [
+                EmbeddingVectorResult(
+                    embedding=effective_embedding,
+                    provider=_embedding_metadata_value(effective_embedding, "provider")
+                    or "unknown",
+                    model=embedding_model_used,
+                    storage_model=effective_storage_embedding_model,
+                )
+            ]
+
+        combined_ranked: dict[uuid.UUID, dict[str, object]] = {}
+        for index, embedding_result in enumerate(embedding_results):
             effective_embedding = embedding_result.embedding
             embedding_model_used = embedding_result.model
             effective_storage_embedding_model = embedding_result.storage_model
-        else:
-            settings = get_settings()
-            embedding_model_used = query_embedding_model or settings.embedding_query_model
-            effective_storage_embedding_model = (
-                effective_storage_embedding_model or settings.embedding_document_model
+            partial_ranked = await retrieve_memories(
+                store=store,
+                query_embedding=effective_embedding,
+                query_text=query_text,  # Use original query for entity extraction
+                user_id=user_id,
+                limit=limit,
+                include_local=include_local,
+                include_historical=include_historical,
+                query_reference_time=query_reference_time,
+                memory_slot=normalized_slot,
+                log_retrieval=(
+                    _is_retrieval_logging_enabled(log_retrieval) and not include_l0 and index == 0
+                ),
+                retrieval_triggered_by=retrieval_triggered_by,
+                retrieval_context="prompt_injection" if retrieval_triggered_by is None else None,
+                allowed_source_conversation_ids=allowed_source_conversation_ids,
+                include_dream_observations=include_dream_observations,
+                embedding_model=effective_storage_embedding_model,
+                query_embedding_model=embedding_model_used,
             )
-        ranked = await retrieve_memories(
-            store=store,
-            query_embedding=effective_embedding,
-            query_text=query_text,  # Use original query for entity extraction
-            user_id=user_id,
-            limit=limit,
-            include_local=include_local,
-            include_historical=include_historical,
-            query_reference_time=query_reference_time,
-            memory_slot=normalized_slot,
-            log_retrieval=_is_retrieval_logging_enabled(log_retrieval) and not include_l0,
-            retrieval_triggered_by=retrieval_triggered_by,
-            retrieval_context="prompt_injection" if retrieval_triggered_by is None else None,
-            allowed_source_conversation_ids=allowed_source_conversation_ids,
-            include_dream_observations=include_dream_observations,
-            embedding_model=effective_storage_embedding_model,
-            query_embedding_model=embedding_model_used,
-        )
+            for memory in partial_ranked:
+                memory_id = memory.get("id")
+                if not isinstance(memory_id, uuid.UUID):
+                    continue
+                existing = combined_ranked.get(memory_id)
+                if existing is None or _as_float(memory.get("final_score"), 0.0) > _as_float(
+                    existing.get("final_score"), 0.0
+                ):
+                    combined_ranked[memory_id] = memory
+        ranked = sorted(
+            combined_ranked.values(),
+            key=lambda item: (
+                -_as_float(item.get("final_score"), 0.0),
+                str(item.get("id")),
+            ),
+        )[:limit]
 
     l0_included = False
     if include_l0:

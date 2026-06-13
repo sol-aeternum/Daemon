@@ -35,6 +35,14 @@ def _document_model() -> str:
     return get_settings().embedding_document_model
 
 
+def _is_fallback_storage_model(model: str) -> bool:
+    return model.startswith("openai:")
+
+
+def _normalize_lexical_content(value: object) -> str:
+    return " ".join(str(value or "").strip().casefold().split())
+
+
 def _embedding_text(content: str, slot: str | None) -> str:
     normalized_content = content.strip()
     if isinstance(slot, str) and slot.strip():
@@ -375,6 +383,38 @@ async def deduplicate_facts(
             memory_slot=None,
             embedding_model=document_model,
         )
+        if _is_fallback_storage_model(document_model):
+            lexical_candidates = await store.search_memories_bm25(
+                user_id=user_id,
+                query=fact.content,
+                limit=50,
+                include_historical=True,
+                memory_slot=None,
+            )
+            seen_ids = {candidate.get("id") for candidate in similar}
+            normalized_fact_content = _normalize_lexical_content(fact.content)
+            for candidate in lexical_candidates:
+                candidate_id = candidate.get("id")
+                if candidate_id in seen_ids:
+                    continue
+                candidate_slot = candidate.get("memory_slot")
+                lexical_similarity = 0.0
+                if _normalize_lexical_content(candidate.get("content")) == normalized_fact_content:
+                    lexical_similarity = _get_merge_threshold()
+                elif fact_slot is not None and candidate_slot == fact_slot:
+                    lexical_similarity = _get_supersede_same_slot_threshold()
+                elif fact_slot_family and _slot_family(candidate_slot) == fact_slot_family:
+                    lexical_similarity = _get_supersede_same_slot_threshold()
+
+                if lexical_similarity <= 0:
+                    continue
+                candidate_with_similarity = dict(candidate)
+                candidate_with_similarity["similarity"] = max(
+                    float(candidate_with_similarity.get("similarity") or 0.0),
+                    lexical_similarity,
+                )
+                similar.append(candidate_with_similarity)
+                seen_ids.add(candidate_id)
         best_match: dict[str, Any] | None = None
         supersede_threshold = _get_supersede_threshold()
 
