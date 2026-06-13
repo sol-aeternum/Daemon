@@ -202,3 +202,11 @@ async def test_extraction_enqueue_uses_stable_conversation_debounce_key() -> Non
     }
     assert all(attempt["defer_by"] == timedelta(seconds=30) for attempt in extraction_attempts)
     assert queue.accepted_job_ids == {f"extract:{conversation_uuid}"}
+
+
+def test_extract_memories_worker_registration_does_not_retain_result_key() -> None:
+    from orchestrator.worker.worker import worker
+
+    extract_function = worker.functions["extract_memories"]
+
+    assert extract_function.keep_result_s == 0
