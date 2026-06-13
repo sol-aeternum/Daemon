@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import uuid
+import asyncio
 from datetime import datetime
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
+import asyncpg
 import pytest
 import pytest_asyncio
 
+from orchestrator.config import Settings
 from orchestrator.memory.encryption import ContentEncryption
-from orchestrator.memory.store import MemoryStore
+from orchestrator.memory.store import MemoryStore, compute_memory_content_hash
 
 
 class MockRecord:
@@ -37,6 +41,9 @@ class MockRecord:
         return self._data.items()
 
 
+HASH_TEST_PEPPER = "test-pepper-for-memory-content-hash-12345678901234567890"
+
+
 @pytest_asyncio.fixture
 async def mock_db_pool():
     """Create a mock asyncpg pool for testing."""
@@ -57,6 +64,115 @@ async def mock_encryption():
 async def memory_store(mock_db_pool, mock_encryption):
     """Create a MemoryStore instance with mocked dependencies."""
     return MemoryStore(db_pool=mock_db_pool, encryption=mock_encryption)
+
+
+def _patch_memory_hash_settings(monkeypatch) -> None:
+    settings = Settings(
+        daemon_environment="development",
+        daemon_auth_pepper=HASH_TEST_PEPPER,
+    )
+    monkeypatch.setattr("orchestrator.memory.store.get_settings", lambda: settings)
+
+
+def test_compute_memory_content_hash_is_keyed_and_normalized(monkeypatch) -> None:
+    _patch_memory_hash_settings(monkeypatch)
+
+    first = compute_memory_content_hash("User drives a blue car")
+    second = compute_memory_content_hash("  User   drives a blue car  ")
+
+    assert first == second
+    assert len(first) == 64
+    assert first != compute_memory_content_hash("User drives a red car")
+
+
+class UniqueMemoryPool:
+    def __init__(self) -> None:
+        self._rows_by_hash: dict[str, MockRecord] = {}
+        self._lock = asyncio.Lock()
+        self.insert_attempts = 0
+
+    async def fetchrow(self, sql: str, *args):
+        if "INSERT INTO memories" in sql:
+            content_hash = args[2]
+            async with self._lock:
+                self.insert_attempts += 1
+                existing = self._rows_by_hash.get(content_hash)
+                if existing is not None:
+                    raise asyncpg.UniqueViolationError("duplicate memory content_hash")
+                row = MockRecord(
+                    id=uuid.uuid4(),
+                    user_id=args[0],
+                    content=args[1],
+                    content_hash=content_hash,
+                    category=args[5],
+                    source_type=args[6],
+                    status=args[10],
+                    valid_to=None,
+                    created_at=datetime.now(),
+                )
+                self._rows_by_hash[content_hash] = row
+                return row
+
+        if "content_hash = $2" in sql:
+            return self._rows_by_hash.get(args[1])
+
+        return None
+
+
+@pytest.mark.asyncio
+async def test_insert_memory_recovers_existing_row_on_content_hash_conflict(monkeypatch) -> None:
+    _patch_memory_hash_settings(monkeypatch)
+    pool = UniqueMemoryPool()
+    encryption = MagicMock(spec=ContentEncryption)
+    encryption.encrypt = MagicMock(side_effect=lambda value: value)
+    encryption.decrypt = MagicMock(side_effect=lambda value: value)
+    store = MemoryStore(cast(asyncpg.Pool, pool), encryption)
+    user_id = uuid.uuid4()
+
+    first = await store.insert_memory(
+        user_id=user_id,
+        content="User drives a blue car",
+        category="fact",
+        source_type="extracted",
+        embedding=[0.1] * 1024,
+    )
+    second = await store.insert_memory(
+        user_id=user_id,
+        content="User drives a blue car",
+        category="fact",
+        source_type="extracted",
+        embedding=[0.1] * 1024,
+    )
+
+    assert first["id"] == second["id"]
+    assert len(pool._rows_by_hash) == 1
+    assert pool.insert_attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_concurrent_same_content_inserts_create_one_memory(monkeypatch) -> None:
+    _patch_memory_hash_settings(monkeypatch)
+    pool = UniqueMemoryPool()
+    encryption = MagicMock(spec=ContentEncryption)
+    encryption.encrypt = MagicMock(side_effect=lambda value: value)
+    encryption.decrypt = MagicMock(side_effect=lambda value: value)
+    store = MemoryStore(cast(asyncpg.Pool, pool), encryption)
+    user_id = uuid.uuid4()
+
+    async def insert_one() -> uuid.UUID:
+        row = await store.insert_memory(
+            user_id=user_id,
+            content="User drives a blue car",
+            category="fact",
+            source_type="extracted",
+            embedding=[0.1] * 1024,
+        )
+        return row["id"]
+
+    inserted_ids = await asyncio.gather(*(insert_one() for _ in range(100)))
+
+    assert len(set(inserted_ids)) == 1
+    assert len(pool._rows_by_hash) == 1
 
 
 @pytest.mark.asyncio
