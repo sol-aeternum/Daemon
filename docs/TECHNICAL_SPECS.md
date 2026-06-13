@@ -97,7 +97,7 @@ Daemon uses a multi-stage pipeline for durable fact management. See [MEMORY_LAYE
 
 ### Extraction & Dedup
 - **Extraction**: GPT-4o-mini extracts facts from conversation turns.
-- **Embeddings**: `voyage-4-large` (1024d) for documents, `voyage-4-lite` (1024d) for queries, with OpenAI `text-embedding-3-small` as the default fallback using the configured 1024d output. Fallback vectors keep an `openai:<model>` storage identity; retrieval queries configured storage identities with matching vectors, and dedup uses lexical/slot fallback during outage writes to avoid cross-provider vector comparisons.
+- **Embeddings**: `voyage-4-large` (1024d) for documents, `voyage-4-lite` (1024d) for queries, with optional OpenAI `text-embedding-3-small` fallback using the configured 1024d output when `EMBEDDING_FALLBACK_PROVIDERS=openai` is set. Fallback vectors keep an `openai:<model>` storage identity; retrieval queries configured fallback identities with matching vectors only for users that already have memories in that storage space, and dedup uses lexical/slot fallback during outage writes to avoid cross-provider vector comparisons.
 - **Dedup Thresholds**:
   - Merge: ≥ 0.90
   - Supersede (generic): ≥ 0.82
@@ -145,7 +145,7 @@ Hybrid search combining:
 - **EMBEDDING_DOCUMENT_MODEL**: voyage-4-large
 - **EMBEDDING_QUERY_MODEL**: voyage-4-lite
 - **EMBEDDING_DIMENSIONS**: 1024
-- **EMBEDDING_FALLBACK_PROVIDERS**: openai
+- **EMBEDDING_FALLBACK_PROVIDERS**: unset by default; set to `openai` to opt in to OpenAI fallback
 - **EMBEDDING_OPENAI_FALLBACK_MODEL**: text-embedding-3-small
 
 ---

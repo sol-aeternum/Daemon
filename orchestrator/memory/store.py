@@ -1020,6 +1020,71 @@ class MemoryStore:
             results.append(d)
         return results
 
+    async def has_memories_with_embedding_model(
+        self,
+        user_id: uuid.UUID,
+        embedding_model: str,
+        *,
+        include_local: bool = False,
+        include_historical: bool = False,
+    ) -> bool:
+        return bool(
+            await self._pool.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM memories
+                    WHERE user_id = $1
+                      AND embedding_model = $2
+                      AND status != 'deleted'
+                      AND tier != 'l0'
+                      AND ($3::bool OR valid_to IS NULL)
+                      AND ($4::bool OR local_only = FALSE)
+                )
+                """,
+                user_id,
+                embedding_model,
+                include_historical,
+                include_local,
+            )
+        )
+
+    async def list_memories_by_slot_family(
+        self,
+        user_id: uuid.UUID,
+        slot_family: str,
+        *,
+        include_local: bool = False,
+        include_historical: bool = False,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        rows = await self._pool.fetch(
+            """
+            SELECT *
+            FROM memories
+            WHERE user_id = $1
+              AND status != 'deleted'
+              AND tier != 'l0'
+              AND ($3::bool OR valid_to IS NULL)
+              AND ($4::bool OR local_only = FALSE)
+              AND memory_slot IS NOT NULL
+              AND split_part(lower(memory_slot), '.', 1) = $2
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT $5
+            """,
+            user_id,
+            slot_family.lower(),
+            include_historical,
+            include_local,
+            limit,
+        )
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["content"] = self._enc.decrypt(d["content"])
+            results.append(d)
+        return results
+
     async def search_memories_by_source(
         self,
         user_id: uuid.UUID,

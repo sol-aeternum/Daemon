@@ -21,6 +21,7 @@ def mock_store() -> MemoryStore:
     store.log_retrieval = AsyncMock(return_value={})
     store.get_l0_memories = AsyncMock(return_value=[])
     store.bulk_touch_memories = AsyncMock()
+    store.has_memories_with_embedding_model = AsyncMock(return_value=False)
     return store  # type: ignore[return-value]
 
 
@@ -400,10 +401,45 @@ async def test_retrieve_memories_for_text_filters_vector_model(mock_store):
 
 
 @pytest.mark.asyncio
+async def test_retrieve_memories_for_text_skips_fallback_space_without_stored_rows(mock_store):
+    user_id = uuid.uuid4()
+    embed = AsyncMock(return_value=[_embedding_result("voyage-4-large")])
+
+    with (
+        patch(
+            "orchestrator.memory.retrieval.get_configured_embedding_fallback_storage_models",
+            return_value=("openai:text-embedding-3-small",),
+        ),
+        patch(
+            "orchestrator.memory.retrieval.embed_query_for_configured_storage_models",
+            new=embed,
+        ),
+    ):
+        await retrieve_memories_for_text(
+            mock_store,
+            "test query",
+            user_id=user_id,
+        )
+
+    mock_store.has_memories_with_embedding_model.assert_awaited_once_with(
+        user_id,
+        "openai:text-embedding-3-small",
+        include_local=False,
+        include_historical=False,
+    )
+    embed_args = embed.await_args
+    assert embed_args is not None
+    assert embed_args.kwargs["fallback_storage_models"] == set()
+    assert mock_store.search_memories.await_count == 1
+    assert mock_store.search_memories.await_args.kwargs["embedding_model"] == "voyage-4-large"
+
+
+@pytest.mark.asyncio
 async def test_retrieve_memories_for_text_queries_fallback_storage_spaces(mock_store):
     user_id = uuid.uuid4()
     voyage_id = uuid.uuid4()
     openai_id = uuid.uuid4()
+    mock_store.has_memories_with_embedding_model.return_value = True
     mock_store.search_memories.side_effect = [
         [
             {
@@ -429,13 +465,20 @@ async def test_retrieve_memories_for_text_queries_fallback_storage_spaces(mock_s
         ],
     ]
 
-    with patch(
-        "orchestrator.memory.retrieval.embed_query_for_configured_storage_models",
-        new=AsyncMock(
-            return_value=[
-                _embedding_result("voyage-4-large"),
-                _embedding_result("openai:text-embedding-3-small"),
-            ]
+    embed = AsyncMock(
+        return_value=[
+            _embedding_result("voyage-4-large"),
+            _embedding_result("openai:text-embedding-3-small"),
+        ]
+    )
+    with (
+        patch(
+            "orchestrator.memory.retrieval.get_configured_embedding_fallback_storage_models",
+            return_value=("openai:text-embedding-3-small",),
+        ),
+        patch(
+            "orchestrator.memory.retrieval.embed_query_for_configured_storage_models",
+            new=embed,
         ),
     ):
         result = await retrieve_memories_for_text(
@@ -444,6 +487,9 @@ async def test_retrieve_memories_for_text_queries_fallback_storage_spaces(mock_s
             user_id=user_id,
         )
 
+    embed_args = embed.await_args
+    assert embed_args is not None
+    assert embed_args.kwargs["fallback_storage_models"] == {"openai:text-embedding-3-small"}
     assert {memory["id"] for memory in result} == {voyage_id, openai_id}
     assert [
         call.kwargs["embedding_model"] for call in mock_store.search_memories.await_args_list
@@ -451,6 +497,65 @@ async def test_retrieve_memories_for_text_queries_fallback_storage_spaces(mock_s
         "voyage-4-large",
         "openai:text-embedding-3-small",
     ]
+
+
+@pytest.mark.asyncio
+async def test_retrieve_memories_for_text_logs_combined_fallback_results(mock_store):
+    user_id = uuid.uuid4()
+    voyage_id = uuid.uuid4()
+    openai_id = uuid.uuid4()
+    mock_store.has_memories_with_embedding_model.return_value = True
+    mock_store.search_memories.side_effect = [
+        [
+            {
+                "id": voyage_id,
+                "content": "voyage memory",
+                "similarity": 0.8,
+                "confidence": 0.9,
+                "access_count": 0,
+                "category": "fact",
+                "source_type": "extracted",
+            }
+        ],
+        [
+            {
+                "id": openai_id,
+                "content": "openai memory",
+                "similarity": 0.82,
+                "confidence": 0.9,
+                "access_count": 0,
+                "category": "fact",
+                "source_type": "extracted",
+            }
+        ],
+    ]
+
+    with (
+        patch(
+            "orchestrator.memory.retrieval.get_configured_embedding_fallback_storage_models",
+            return_value=("openai:text-embedding-3-small",),
+        ),
+        patch(
+            "orchestrator.memory.retrieval.embed_query_for_configured_storage_models",
+            new=AsyncMock(
+                return_value=[
+                    _embedding_result("voyage-4-large"),
+                    _embedding_result("openai:text-embedding-3-small"),
+                ]
+            ),
+        ),
+    ):
+        await retrieve_memories_for_text(
+            mock_store,
+            "test query",
+            user_id=user_id,
+            log_retrieval=True,
+        )
+    await _allow_background_tasks()
+
+    mock_store.log_retrieval.assert_called_once()
+    candidate_scores = mock_store.log_retrieval.await_args.kwargs["candidate_scores"]
+    assert set(candidate_scores) == {str(voyage_id), str(openai_id)}
 
 
 @pytest.mark.asyncio
@@ -490,6 +595,7 @@ async def test_retrieve_memories_for_text_queries_fallback_spaces_with_precomput
             }
         ],
     ]
+    mock_store.has_memories_with_embedding_model.return_value = True
     embed = AsyncMock(
         return_value=[
             _embedding_result("voyage-4-large"),
@@ -497,9 +603,15 @@ async def test_retrieve_memories_for_text_queries_fallback_spaces_with_precomput
         ]
     )
 
-    with patch(
-        "orchestrator.memory.retrieval.embed_query_for_configured_storage_models",
-        new=embed,
+    with (
+        patch(
+            "orchestrator.memory.retrieval.get_configured_embedding_fallback_storage_models",
+            return_value=("openai:text-embedding-3-small",),
+        ),
+        patch(
+            "orchestrator.memory.retrieval.embed_query_for_configured_storage_models",
+            new=embed,
+        ),
     ):
         result = await retrieve_memories_for_text(
             mock_store,
@@ -512,6 +624,7 @@ async def test_retrieve_memories_for_text_queries_fallback_spaces_with_precomput
     assert embed.await_args is not None
     primary_result = embed.await_args.kwargs["primary_result"]
     assert primary_result.embedding is primary_embedding
+    assert embed.await_args.kwargs["fallback_storage_models"] == {"openai:text-embedding-3-small"}
     assert [
         call.kwargs["embedding_model"] for call in mock_store.search_memories.await_args_list
     ] == [

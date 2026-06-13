@@ -271,7 +271,7 @@ class Settings(BaseSettings):
     embedding_document_model: str = "voyage-4-large"
     embedding_query_model: str = "voyage-4-lite"
     embedding_dimensions: int = 1024
-    embedding_fallback_providers: str = "openai"
+    embedding_fallback_providers: str = ""
     embedding_openai_fallback_model: str = "text-embedding-3-small"
 
     # ===== DEDUP THRESHOLDS =====

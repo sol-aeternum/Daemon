@@ -297,6 +297,48 @@ async def test_dedup_primary_embedding_checks_lexical_fallback_memories() -> Non
 
 
 @pytest.mark.asyncio
+async def test_dedup_fallback_embedding_checks_same_slot_outside_bm25() -> None:
+    store = AsyncMock()
+    existing_id = uuid.uuid4()
+    store.search_memories.return_value = []
+    store.search_memories_bm25.return_value = []
+    store.list_memories_by_slot_family.return_value = [
+        {
+            "id": existing_id,
+            "content": "User drives a Tesla Model 3",
+            "memory_slot": "vehicle.current",
+            "valid_to": None,
+        }
+    ]
+    store.supersede_memory.return_value = {
+        "id": uuid.uuid4(),
+        "content": "User drives a Subaru Outback",
+        "memory_slot": "vehicle.current",
+        "valid_to": None,
+    }
+
+    with patch(
+        "orchestrator.memory.dedup.embed_documents_with_metadata", new_callable=AsyncMock
+    ) as embed:
+        embed.return_value = _embedding_result(
+            [0.9, 0.8],
+            storage_model="openai:text-embedding-3-small",
+        )
+        result = await deduplicate_facts(
+            store,
+            uuid.uuid4(),
+            [_new_fact("User drives a Subaru Outback", "vehicle.current")],
+            conversation_id=uuid.uuid4(),
+        )
+
+    assert len(result.superseded) == 1
+    store.list_memories_by_slot_family.assert_awaited_once()
+    store.supersede_memory.assert_awaited_once()
+    assert store.supersede_memory.await_args.kwargs["old_memory_id"] == existing_id
+    store.insert_memory.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_memory_write_slot_passthrough_to_dedup() -> None:
     store = AsyncMock()
     with patch(

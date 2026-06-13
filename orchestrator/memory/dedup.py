@@ -4,7 +4,8 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import logging
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, cast
 
 import asyncpg
 import litellm
@@ -322,6 +323,30 @@ async def _close_active_family_memories(
         await store.close_memory(memory_id)
 
 
+async def _find_slot_family_candidates(
+    store: MemoryStore,
+    user_id: uuid.UUID,
+    slot_family: str,
+) -> list[dict[str, Any]]:
+    finder = getattr(store, "list_memories_by_slot_family", None)
+    if not callable(finder):
+        return []
+    typed_finder = cast(Callable[..., Awaitable[list[dict[str, Any]]]], finder)
+
+    try:
+        candidates = await typed_finder(
+            user_id,
+            slot_family,
+            include_historical=True,
+            limit=50,
+        )
+    except Exception:
+        logger.exception("Failed to fetch same-slot dedup candidates")
+        return []
+
+    return candidates if isinstance(candidates, list) else []
+
+
 async def _close_current_related_candidates(
     store: MemoryStore,
     similar: list[dict[str, Any]],
@@ -425,6 +450,32 @@ async def deduplicate_facts(
                 )
                 similar.append(candidate_with_similarity)
                 seen_ids.add(candidate_id)
+            if fact_slot_family:
+                slot_family_candidates = await _find_slot_family_candidates(
+                    store,
+                    user_id,
+                    fact_slot_family,
+                )
+                for candidate in slot_family_candidates:
+                    candidate_id = candidate.get("id")
+                    if candidate_id in seen_ids:
+                        continue
+                    candidate_slot = candidate.get("memory_slot")
+                    lexical_similarity = 0.0
+                    if fact_slot is not None and candidate_slot == fact_slot:
+                        lexical_similarity = _get_supersede_same_slot_threshold()
+                    elif _slot_family(candidate_slot) == fact_slot_family:
+                        lexical_similarity = _get_supersede_same_slot_threshold()
+
+                    if lexical_similarity <= 0:
+                        continue
+                    candidate_with_similarity = dict(candidate)
+                    candidate_with_similarity["similarity"] = max(
+                        float(candidate_with_similarity.get("similarity") or 0.0),
+                        lexical_similarity,
+                    )
+                    similar.append(candidate_with_similarity)
+                    seen_ids.add(candidate_id)
         best_match: dict[str, Any] | None = None
         supersede_threshold = _get_supersede_threshold()
 

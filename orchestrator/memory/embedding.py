@@ -94,13 +94,26 @@ def _get_openai_api_key() -> str:
 
 def get_configured_embedding_providers() -> tuple[str, ...]:
     settings = get_settings()
-    fallback_raw = getattr(settings, "embedding_fallback_providers", "openai")
+    fallback_raw = getattr(settings, "embedding_fallback_providers", "")
     fallbacks = [
         provider.strip().lower() for provider in str(fallback_raw).split(",") if provider.strip()
     ]
     providers: list[str] = ["voyage"]
     providers.extend(provider for provider in fallbacks if provider not in providers)
     return tuple(providers)
+
+
+def get_configured_embedding_fallback_storage_models() -> tuple[str, ...]:
+    settings = get_settings()
+    models: list[str] = []
+    if "openai" in get_configured_embedding_providers():
+        fallback_model = getattr(
+            settings,
+            "embedding_openai_fallback_model",
+            "text-embedding-3-small",
+        )
+        models.append(_openai_model_identity(fallback_model))
+    return tuple(models)
 
 
 def get_embedding_provider_used_counts() -> dict[str, int]:
@@ -576,6 +589,7 @@ async def embed_query_for_configured_storage_models(
     text: str,
     *,
     primary_result: EmbeddingVectorResult | None = None,
+    fallback_storage_models: set[str] | None = None,
 ) -> list[EmbeddingVectorResult]:
     settings = get_settings()
     results = [primary_result or await embed_query_with_metadata(text)]
@@ -589,6 +603,10 @@ async def embed_query_for_configured_storage_models(
     if (
         "openai" not in get_configured_embedding_providers()
         or results[0].storage_model == openai_storage_model
+        or (
+            fallback_storage_models is not None
+            and openai_storage_model not in fallback_storage_models
+        )
     ):
         return results
 

@@ -6,12 +6,14 @@ import logging
 import re
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import cast
 
 from orchestrator.config import get_settings
 from orchestrator.memory.embedding import (
     EmbeddingVectorResult,
+    get_configured_embedding_fallback_storage_models,
     embed_query_for_configured_storage_models,
 )
 from orchestrator.memory.entities import (
@@ -157,6 +159,42 @@ def _is_retrieval_logging_enabled(explicit_flag: bool) -> bool:
         return settings.retrieval_logging_enabled or settings.retrieval_logging_debug
     except Exception:
         return False
+
+
+async def _available_fallback_storage_models(
+    store: MemoryStore,
+    user_id: uuid.UUID,
+    *,
+    include_local: bool,
+    include_historical: bool,
+) -> set[str]:
+    checker = getattr(store, "has_memories_with_embedding_model", None)
+    if not callable(checker):
+        return set()
+    typed_checker = cast(
+        Callable[..., Awaitable[bool]],
+        checker,
+    )
+
+    present: set[str] = set()
+    for storage_model in get_configured_embedding_fallback_storage_models():
+        try:
+            has_model = await typed_checker(
+                user_id,
+                storage_model,
+                include_local=include_local,
+                include_historical=include_historical,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to check fallback embedding storage model presence",
+                extra={"embedding_model": storage_model},
+                exc_info=True,
+            )
+            continue
+        if has_model is True:
+            present.add(storage_model)
+    return present
 
 
 # Empirical hybrid-search calibration:
@@ -397,8 +435,17 @@ async def retrieve_memories_for_text(
 
     ranked: list[dict[str, object]] = []
     if normalized_query:
+        fallback_storage_models = await _available_fallback_storage_models(
+            store,
+            user_id,
+            include_local=include_local,
+            include_historical=include_historical,
+        )
         if effective_embedding is None:
-            embedding_results = await embed_query_for_configured_storage_models(normalized_query)
+            embedding_results = await embed_query_for_configured_storage_models(
+                normalized_query,
+                fallback_storage_models=fallback_storage_models,
+            )
         else:
             settings = get_settings()
             inferred_query_model = _embedding_metadata_value(effective_embedding, "model")
@@ -420,6 +467,7 @@ async def retrieve_memories_for_text(
             embedding_results = await embed_query_for_configured_storage_models(
                 normalized_query,
                 primary_result=primary_result,
+                fallback_storage_models=fallback_storage_models,
             )
 
         combined_ranked: dict[uuid.UUID, dict[str, object]] = {}
@@ -440,9 +488,7 @@ async def retrieve_memories_for_text(
                 include_historical=include_historical,
                 query_reference_time=query_reference_time,
                 memory_slot=normalized_slot,
-                log_retrieval=(
-                    _is_retrieval_logging_enabled(log_retrieval) and not include_l0 and index == 0
-                ),
+                log_retrieval=False,
                 retrieval_triggered_by=retrieval_triggered_by,
                 retrieval_context="prompt_injection" if retrieval_triggered_by is None else None,
                 allowed_source_conversation_ids=allowed_source_conversation_ids,
@@ -468,6 +514,55 @@ async def retrieve_memories_for_text(
         )[:limit]
 
     l0_included = False
+    if (
+        not include_l0
+        and _is_retrieval_logging_enabled(log_retrieval)
+        and normalized_query
+        and l0_log_embedding is not None
+    ):
+        end_time = time.monotonic()
+        latency_ms = int((end_time - start_time) * 1000)
+        combined_candidate_scores: dict[str, object] = {}
+        for c in ranked:
+            mid = c.get("id")
+            if isinstance(mid, uuid.UUID):
+                combined_candidate_scores[str(mid)] = {
+                    "vector_sim": _as_float(c.get("vector_sim"), 0.0),
+                    "bm25_normalized": _as_float(c.get("bm25_normalized"), 0.0),
+                    "recency_boost": _as_float(c.get("recency_boost"), 0.0),
+                    "source_boost": _as_float(c.get("source_boost"), 0.0),
+                    "access_boost": _as_float(c.get("access_boost"), 0.0),
+                    "confidence": _as_float(c.get("confidence"), 1.0),
+                    "trust": _as_float(c.get("trust_score"), 0.5),
+                    "final_score": _as_float(c.get("final_score"), 0.0),
+                }
+        combined_selected_ids: list[uuid.UUID] = [
+            cast(uuid.UUID, m.get("id")) for m in ranked if isinstance(m.get("id"), uuid.UUID)
+        ]
+
+        async def _persist_combined_log() -> None:
+            try:
+                await store.log_retrieval(
+                    user_id=user_id,
+                    query_text=normalized_query or "",
+                    query_embedding_model=l0_log_embedding_model
+                    or get_settings().embedding_query_model,
+                    query_embedding=l0_log_embedding,
+                    candidate_memory_ids=[uuid.UUID(k) for k in combined_candidate_scores],
+                    candidate_scores=combined_candidate_scores,
+                    selected_memory_ids=combined_selected_ids,
+                    l0_included=False,
+                    latency_ms=latency_ms,
+                    retrieval_context="prompt_injection"
+                    if retrieval_triggered_by is None
+                    else None,
+                    retrieval_triggered_by=retrieval_triggered_by,
+                )
+            except Exception:
+                logger.exception("Failed to persist text retrieval log")
+
+        _ = asyncio.create_task(_persist_combined_log())
+
     if include_l0:
         l0_memories = cast(list[dict[str, object]], await store.get_l0_memories(user_id))
         combined = _prepend_l0_memories(l0_memories, ranked)

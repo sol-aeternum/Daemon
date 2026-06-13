@@ -240,11 +240,11 @@ L0 memories bypass embedding-based retrieval entirely. They are always prepended
 |---|---|---|---|
 | Document (memory writes) | `voyage-4-large` | `input_type="document"` | 1024 |
 | Query (retrieval) | `voyage-4-lite` | `input_type="query"` | 1024 |
-| Fallback | `text-embedding-3-small` via OpenAI | OpenAI embeddings API | configured `EMBEDDING_DIMENSIONS` (default 1024) |
+| Optional fallback | `text-embedding-3-small` via OpenAI | OpenAI embeddings API | configured `EMBEDDING_DIMENSIONS` (default 1024) |
 
 Retry logic: 3 attempts with exponential backoff (1s → 2s → 4s). Counters `_retry_count` and `_last_retry_at` are exposed via `/status` as `embedding_retry_activations` and `embedding_last_retry_at`.
 
-Fallback logic: Voyage remains primary. If Voyage fails, the embedding layer tries configured fallback providers (default: OpenAI). After 5 Voyage failures within 60 seconds, a circuit breaker skips Voyage and goes directly to fallback until the failure window clears. OpenAI fallback vectors are stored with an `openai:<model>` embedding identity and vector search filters by that identity so Voyage and OpenAI vector spaces are not mixed. Retrieval embeds queries for configured storage identities so OpenAI-backed memories remain searchable after Voyage recovers, and dedup falls back to lexical/slot matching when an outage write uses the OpenAI vector space. OpenAI fallback inputs are truncated to the provider's per-input limit before request. `/status` exposes `embedding_failures_total` and `embedding_provider_used` counters.
+Fallback logic: Voyage remains primary. If `EMBEDDING_FALLBACK_PROVIDERS=openai` is explicitly configured and Voyage fails, the embedding layer tries OpenAI. After 5 Voyage failures within 60 seconds, a circuit breaker skips Voyage and goes directly to configured fallback until the failure window clears. OpenAI fallback vectors are stored with an `openai:<model>` embedding identity and vector search filters by that identity so Voyage and OpenAI vector spaces are not mixed. Retrieval embeds queries for configured fallback storage identities only when a user already has memories in that storage space, and dedup falls back to lexical/slot matching when an outage write uses the OpenAI vector space. OpenAI fallback inputs are truncated to the provider's per-input limit before request. `/status` exposes `embedding_failures_total` and `embedding_provider_used` counters.
 
 ---
 
