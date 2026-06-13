@@ -139,6 +139,16 @@
 - **Likely cause**: basedpyright auto-ratchets the committed baseline when diagnostics disappear in touched files. Confidence: 90%.
 - **Suggested action**: Commit intentional baseline reductions with the issue PR when touched code removes a grandfathered diagnostic, so CI lock mode remains green.
 - **Seen again**: 2026-06-13 during #138 hosted CI. Backend gates failed at `uv run basedpyright --level error` with `baselined errors changed but the baseline file cannot be updated when --baselinemode=lock (went down by 1)`. Rerunning `uv run basedpyright --level error --baselinemode=auto ...` updated `.basedpyright/baseline.json` to 369 errors and normal lock-mode focused basedpyright then passed.
+## 2026-06-14T00:10:44+09:30 — Council Regression Tests Emit datetime.utcnow Deprecation Warnings
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Issue #46 council progress queue serialization
+- **Category**: deprecation
+- **Blocked current task**: no
+- **What happened**: Focused council regression tests passed but emitted Python 3.14 deprecation warnings for generated/test code paths that still use `datetime.datetime.utcnow()`.
+- **Evidence**: `PYTHONPATH=. uv run pytest -q tests/council/test_progressive_sse.py tests/council/test_integration.py::TestCouncilRegressionFixes` passed with `12 passed, 22 warnings`; warnings included `<string>:12: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version`.
+- **Likely cause**: Existing council test doubles or generated model snippets still construct UTC timestamps with naive `datetime.utcnow()` (confidence 80%).
+- **Suggested action**: Replace those test/helper timestamp constructions with timezone-aware `datetime.now(datetime.UTC)` in a warning-cleanup PR.
 
 ## 2026-06-13T23:24:00+09:30 — #53 PR Wrapper Refused On Host Cache And Frontend Install Failures
 - **Severity**: warning
@@ -162,7 +172,49 @@
 - **Likely cause**: The shared root checkout has unrelated user edits while sequential issue work uses temporary branches. Confidence: 99%.
 - **Suggested action**: Keep issue work in `/tmp` worktrees until the root WIP is resolved or stashed by its owner.
 
-## 2026-06-12T22:34:10+09:30 — #54 PR Wrapper Refused On Existing Local Gate Debt
+## 2026-06-14T00:08:59+09:30 — #46 Frontend Full Gates Blocked By Existing Advisor And Format Debt
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #46 council progress queue serialization
+- **Category**: build-error
+- **Blocked current task**: no
+- **What happened**: Focused frontend council event tests passed after installing dependencies, but full frontend type-check and the scripted format check remain blocked by unrelated existing frontend debt outside the #46 council progress change.
+- **Evidence**: `npm run type-check` failed with existing advisor event errors such as `Module '"../lib/events"' has no exported member 'isAdvisorEvent'` and many `advisor_start` / `advisor_text_delta` type errors. `npm run format:check -- lib/events.ts` still invoked `prettier --check . lib/events.ts` and reported `Code style issues found in 124 files`.
+- **Likely cause**: Wave-0 advisor event type drift and repo-wide frontend Prettier debt are not merged on `origin/main`; the format script always checks `.` regardless of the extra file argument (confidence 95%).
+- **Suggested action**: Keep #46 scoped to council progress serialization; rely on focused frontend council event coverage for the optional progress `sequence` type and track advisor/format cleanup in the existing Wave-0/frontend gate work.
+
+## 2026-06-14T00:07:48+09:30 — Frontend npm audit inventory increased to 28 vulnerabilities
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #46 council progress queue serialization
+- **Category**: security | dependency
+- **Blocked current task**: no
+- **What happened**: Locked frontend dependency installation succeeded, but npm reported 28 vulnerabilities and multiple deprecated packages. Earlier triage recorded 27 frontend npm audit vulnerabilities, so the count changed and is logged again.
+- **Evidence**: Escalated `npm ci` in `/tmp/daemon-46/frontend` reported `28 vulnerabilities (4 low, 8 moderate, 15 high, 1 critical)` plus deprecation warnings for packages including `@types/dompurify`, `inflight`, `rimraf@2`, `rollup-plugin-terser`, `glob@7`, Workbox packages, and `source-map@0.8.0-beta.0`.
+- **Likely cause**: New upstream advisories now apply to the locked frontend dependency graph; remediation likely requires dedicated dependency updates rather than a council SSE PR (confidence 95%).
+- **Suggested action**: Handle via the locked dependency remediation process in a dedicated security/dependency PR; do not hand-edit lockfiles in #46.
+
+## 2026-06-14T00:06:49+09:30 — #46 Frontend Checks Missing Worktree Dependencies
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Issue #46 council progress queue serialization
+- **Category**: dependency
+- **Blocked current task**: no
+- **What happened**: The first frontend type-check and focused council event test attempts in the fresh `/tmp/daemon-46` worktree could not start because frontend dependencies were not installed there.
+- **Evidence**: `npm run type-check` failed with `sh: line 1: next: command not found`; `npm run test:run -- council-events.test.ts` failed with `sh: line 1: vitest: command not found`.
+- **Likely cause**: Temporary worktrees do not share the root checkout's `frontend/node_modules` directory (confidence 99%).
+- **Suggested action**: Run `npm ci` in frontend worktrees before frontend gate commands, or provide a safe shared dependency-cache workflow for temporary worktrees.
+
+## 2026-06-14T00:04:51+09:30 — #46 Progress Stress Test Initially Ignored Final Fallback Progress
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Issue #46 council progress queue serialization
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: The first focused #46 stress test expected exactly 1000 `council_progress` frames from the mocked producer, but the existing final output path also emits a fallback completion progress frame when output metadata has no stored progress events.
+- **Evidence**: `PYTHONPATH=. uv run pytest -q tests/council/test_progressive_sse.py::test_stream_council_emits_concurrent_progress_once_in_sequence tests/council/test_progressive_sse.py::test_progress_queue_drain_exits_after_producer_cancellation` failed with `AssertionError: assert 1001 == 1000`.
+- **Likely cause**: Test expectation omitted the existing `_emit_council_output_events` fallback progress frame, not a newly introduced duplicate producer event (confidence 95%).
+- **Suggested action**: Keep tests filtering producer-stage events when asserting producer delivery, and separately assert monotonic sequence over all progress frames.## 2026-06-12T22:34:10+09:30 — #54 PR Wrapper Refused On Existing Local Gate Debt
 - **Severity**: warning
 - **Scope**: project | host
 - **Encountered during**: Issue #54 session cleanup grace-days PR creation
@@ -289,7 +341,7 @@
 - **Seen again**: 2026-06-13 during #61 review-comment fixes. The first changed-file `basedpyright --level error` run in `/tmp/daemon-61` exited 3 with `venv .uv-venv subdirectory not found in venv path /tmp/daemon-61` and unresolved imports for `asyncpg`, `fastapi`, `pytest`, and `httpx`; creating `/tmp/daemon-61/.uv-venv -> /home/sol/daemon/.uv-venv` made the same changed-file command report `0 errors, 0 warnings, 0 notes`.
 - **Seen again**: 2026-06-13 during #53 audit-before-delete backend local CI rerun after adding the admin route. Without `/tmp/daemon-53/.uv-venv`, `scripts/local_ci.sh backend` reported `venv .uv-venv subdirectory not found in venv path /tmp/daemon-53` and missing imports during the blocking basedpyright step; recreating the symlink made the same blocking backend gates pass.
 
-## 2026-06-12T07:04:00+09:30 — Main Protection Uses Rulesets Instead Of Classic Branch Protection
+- **Seen again**: 2026-06-14 during #46 council progress queue verification. Changed-file `basedpyright --level error orchestrator/council/sse.py tests/council/test_progressive_sse.py` exited `3` with `venv .uv-venv subdirectory not found in venv path /tmp/daemon-46` and missing imports for `pytest`, `pytest_asyncio`, and `httpx`; creating `/tmp/daemon-46/.uv-venv -> /home/sol/daemon/.uv-venv` restored dependency resolution.## 2026-06-12T07:04:00+09:30 — Main Protection Uses Rulesets Instead Of Classic Branch Protection
 - **Severity**: info
 - **Scope**: tooling
 - **Encountered during**: #112 branch protection verification
@@ -2212,7 +2264,7 @@
 - **Seen again**: 2026-06-13 during #61 memory dedup TOCTOU verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing non-blocking findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest again showed the known `EEEEE` auth-scoping setup errors plus one `F` marker before the outer timeout exited `124`.
 - **Seen again**: 2026-06-13 during #53 audit-before-delete verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed early errors plus one failure before reaching late-suite progress and exiting `124` at the outer timeout.
 
-## 2026-06-12 11:20 UTC — Existing auth user scoping fixture fails development pepper setup
+- **Seen again**: 2026-06-14 during #46 council progress queue verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed the known auth-scoping setup errors plus late-suite `F` markers before reaching `[ 90%]` and exiting `124`.## 2026-06-12 11:20 UTC — Existing auth user scoping fixture fails development pepper setup
 - **Severity**: warning
 - **Scope**: project
 - **Encountered during**: Issue #42 conversation ownership verification
