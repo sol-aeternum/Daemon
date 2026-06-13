@@ -139,6 +139,16 @@
 - **Likely cause**: basedpyright auto-ratchets the committed baseline when diagnostics disappear in touched files. Confidence: 90%.
 - **Suggested action**: Commit intentional baseline reductions with the issue PR when touched code removes a grandfathered diagnostic, so CI lock mode remains green.
 - **Seen again**: 2026-06-13 during #138 hosted CI. Backend gates failed at `uv run basedpyright --level error` with `baselined errors changed but the baseline file cannot be updated when --baselinemode=lock (went down by 1)`. Rerunning `uv run basedpyright --level error --baselinemode=auto ...` updated `.basedpyright/baseline.json` to 369 errors and normal lock-mode focused basedpyright then passed.
+## 2026-06-14T00:45:05+09:30 — #46 PR Wrapper Body Quoting Triggered Shell Command Substitution
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: Issue #46 council progress queue PR creation
+- **Category**: tooling | config
+- **Blocked current task**: no
+- **What happened**: The first `scripts/pr_create.sh` invocation passed a Markdown PR body inside a double-quoted shell argument. Backticks in the body were evaluated by the shell before the wrapper ran, producing spurious command attempts and a temporary `.basedpyright/baseline.json` ratchet diff.
+- **Evidence**: The shell printed errors such as `/usr/bin/bash: line 1: stream_council: command not found`, `/usr/bin/bash: line 1: asyncio.Queue: command not found`, and `npm error Missing script: "test:run"` before the wrapper output. The wrapper then exited `124` in backend inventory. Worktree audit showed `.basedpyright/baseline.json | 66 deletions`, which was restored to match `HEAD` before continuing.
+- **Likely cause**: Unsafe shell quoting for a multi-line Markdown body containing backticks; command substitution occurred before `scripts/pr_create.sh` received the arguments (confidence 99%).
+- **Suggested action**: Use the GitHub connector or a safely quoted body file for PR creation when PR bodies contain Markdown code spans; avoid embedding backticks inside double-quoted shell arguments.
 ## 2026-06-14T00:10:44+09:30 — Council Regression Tests Emit datetime.utcnow Deprecation Warnings
 - **Severity**: info
 - **Scope**: project
