@@ -94,6 +94,50 @@
 - **Likely cause**: Same sandbox network restriction and recurring local full-suite inventory stall already observed on earlier issue branches. Confidence: 90%.
 - **Suggested action**: Treat hosted protected CI as authoritative for full-suite completion while keeping this PR scoped to the #61 review fixes.
 
+## 2026-06-13T14:22:34+09:30 — #48/#52 PR Wrapper Timed Out In Backend Inventory
+- **Severity**: warning
+- **Scope**: project | host
+- **Encountered during**: Issue #48/#52 memory garbage-collection cron PR creation
+- **Category**: test-failure | dependency | security
+- **Blocked current task**: no
+- **What happened**: `scripts/pr_create.sh` did not reach `gh pr create` because its all-family local-CI preflight spent the outer timeout in backend inventory. The issue-scoped tests and direct aggregate/backend blocking gates had already passed.
+- **Evidence**: `timeout 600s scripts/pr_create.sh -- --title "fix(worker): schedule memory garbage collection" ...` exited `124`; inside the wrapper, backend `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect` passed, then inventory `bandit` reported existing findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed existing `EEEEE`/`F` markers before the outer timeout.
+- **Likely cause**: The wrapper runs repo-wide inventory gates that are already known to be non-blocking and slow/flaky in this sandbox, before calling `gh pr create`. Confidence: 95%.
+- **Suggested action**: Keep `scripts/pr_create.sh` for environments where the full local inventory can complete, but allow direct PR creation after documented wrapper timeout plus successful affected-family blocking gates.
+
+## 2026-06-13T14:22:34+09:30 — #48/#52 Backend Local CI Inventory Tail Timeout
+- **Severity**: warning
+- **Scope**: project | host
+- **Encountered during**: Issue #48/#52 memory garbage-collection cron and store encapsulation verification
+- **Category**: test-failure | dependency | security
+- **Blocked current task**: no
+- **What happened**: `scripts/local_ci.sh backend` passed all blocking backend gates, then entered the non-blocking inventory section and exited via the outer timeout. This matches prior backend-only PR behavior: Bandit reports existing findings, `pip-audit` cannot resolve PyPI in the sandbox, and full pytest inventory shows existing failure markers before the quiet tail.
+- **Evidence**: `timeout 420s scripts/local_ci.sh backend` passed `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed with `NameResolutionError: Failed to resolve 'pypi.org'`, and full pytest printed existing `EEEEE`/`F` markers before the command exited `124`.
+- **Likely cause**: Existing repo-wide inventory debt plus sandboxed DNS/network behavior, not the issue-scoped worker GC changes. Confidence: 95%.
+- **Suggested action**: Keep relying on blocking backend gates plus focused issue tests for backend-only PRs until the repo-wide inventory suite and network-dependent SCA gate are separated or made deterministic.
+
+## 2026-06-13T14:22:34+09:30 — #48/#52 Temp Worktree Basedpyright Venv Lookup
+- **Severity**: info
+- **Scope**: host
+- **Encountered during**: Issue #48/#52 memory garbage-collection cron and store encapsulation verification
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: The first changed-file basedpyright run in `/tmp/daemon-48-52` failed because basedpyright looked for a local `.uv-venv` under the temporary worktree, even though the shared project environment lives at `/home/sol/daemon/.uv-venv`.
+- **Evidence**: `uv run basedpyright --level error ...` reported `venv .uv-venv subdirectory not found in venv path /tmp/daemon-48-52` and missing `pytest` imports. Creating a local `.uv-venv` symlink to `/home/sol/daemon/.uv-venv` restored the expected temp-worktree environment.
+- **Likely cause**: basedpyright resolves the configured venv path relative to the current worktree. Confidence: 99%.
+- **Suggested action**: Document or automate the `.uv-venv` symlink setup for temporary worktrees that reuse the shared locked uv environment.
+
+## 2026-06-13T14:22:34+09:30 — #48/#52 Basedpyright Rewrites Baseline On Touched Test Debt Reduction
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Issue #48/#52 memory garbage-collection cron and store encapsulation verification
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: The changed-file basedpyright run passed but rewrote `.basedpyright/baseline.json`, removing one existing diagnostic from `tests/test_skill_consolidation.py` because the issue fix touched that test. The baseline file was restored so this PR does not carry unrelated baseline churn.
+- **Evidence**: `uv run basedpyright --level error ...` printed `updated ./.basedpyright/baseline.json with 369 errors (went down by 1)` and `0 errors, 0 warnings, 0 notes`; the resulting baseline diff removed one `reportUnusedVariable` entry.
+- **Likely cause**: basedpyright auto-ratchets the committed baseline when diagnostics disappear in touched files. Confidence: 90%.
+- **Suggested action**: Decide whether local verification should disable baseline writes or whether intentional baseline ratchets should be committed in their own maintenance PRs.
+
 ## 2026-06-12T22:34:10+09:30 — #54 PR Wrapper Refused On Existing Local Gate Debt
 - **Severity**: warning
 - **Scope**: project | host
@@ -886,6 +930,7 @@
 - **Seen again**: 2026-06-05 during hosted-identity Task 11 corrective verification when the same focused command passed again (`142 passed`) after the `daemon_email_enabled` route-gating fix, but still emitted the same 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 - **Seen again**: 2026-06-08 during PR #20 benchmark replay follow-up verification when `PYTHONPATH=. DAEMON_ENVIRONMENT=development uv run pytest -q tests/memory/test_encryption.py tests/test_longmemeval_runner.py tests/test_benchmark_extraction.py` passed (38 passed) but still emitted the same 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 - **Seen again**: 2026-06-12 during #24 focused enrollment verification when `PYTHONPATH=. uv run pytest -q tests/test_enrollment_flow.py` passed (19 tests) but emitted the same 15 LiteLLM `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
+- **Seen again**: 2026-06-13 during #48/#52 worker GC verification when `PYTHONPATH=. uv run pytest -q tests/test_worker_gc.py tests/test_skill_consolidation.py` passed with `29 passed, 34 warnings`, including the same LiteLLM/arq `asyncio.iscoroutinefunction` deprecation warnings on Python 3.14.
 
 ## 2026-04-10 12:30 — BasedPyright Warning Debt In Dreaming-Touched Python Modules
 - **Severity**: warning

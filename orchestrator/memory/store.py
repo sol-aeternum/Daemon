@@ -304,6 +304,32 @@ class MemoryStore:
         )
         return result == "DELETE 1"
 
+    async def run_garbage_collect(self) -> dict[str, int]:
+        """Physically delete expired non-active memory rows."""
+        scanned = await self._pool.fetchval(
+            """
+            SELECT COUNT(*)
+            FROM memories
+            WHERE (status = 'inactive' AND updated_at < NOW() - INTERVAL '90 days')
+               OR (status = 'rejected' AND updated_at < NOW() - INTERVAL '30 days')
+               OR (status = 'pending' AND updated_at < NOW() - INTERVAL '30 days')
+               OR (status = 'deleted' AND updated_at < NOW() - INTERVAL '30 days')
+            """
+        )
+
+        result = await self._pool.execute(
+            """
+            DELETE FROM memories
+            WHERE (status = 'inactive' AND updated_at < NOW() - INTERVAL '90 days')
+               OR (status = 'rejected' AND updated_at < NOW() - INTERVAL '30 days')
+               OR (status = 'pending' AND updated_at < NOW() - INTERVAL '30 days')
+               OR (status = 'deleted' AND updated_at < NOW() - INTERVAL '30 days')
+            """
+        )
+
+        deleted = int(result.split()[-1]) if result else 0
+        return {"scanned": int(scanned or 0), "deleted": deleted}
+
     # ------------------------------------------------------------------
     # Message operations
     # ------------------------------------------------------------------
@@ -1479,6 +1505,24 @@ class MemoryStore:
                 }
             )
         return results
+
+    async def list_users_with_eligible_l1_memories(self) -> list[uuid.UUID]:
+        rows = await self._pool.fetch(
+            """
+            SELECT DISTINCT user_id
+            FROM memories
+            WHERE status = 'active'
+              AND tier = 'l1'
+              AND embedding IS NOT NULL
+            """
+        )
+        return [row["user_id"] for row in rows]
+
+    async def delete_skill_projection(self, skill_id: str) -> bool:
+        from orchestrator.skills_projection import SkillProjectionStore
+
+        projection_store = SkillProjectionStore(self._pool)
+        return await projection_store.delete_projection(skill_id)
 
     async def get_recent_memories_for_user(
         self, user_id: uuid.UUID, limit: int = 20

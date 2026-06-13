@@ -145,6 +145,27 @@ if _worker_settings.consolidation_nudge_enabled:
         _worker_settings.consolidation_nudge_conversation_interval,
     )
 
+cron_jobs.extend(
+    [
+        cron(
+            garbage_collect,
+            hour=3,
+            minute=0,
+        ),
+        cron(
+            cleanup_generated_files,
+            hour=3,
+            minute=15,
+        ),
+        cron(
+            cleanup_generated_images,
+            hour=3,
+            minute=30,
+        ),
+    ]
+)
+logger.info("Memory and generated artifact cleanup scheduled: daily at 03:00-03:30 UTC")
+
 worker = Worker(
     functions=[
         func(extract_memories, max_tries=_worker_settings.retry_attempts),

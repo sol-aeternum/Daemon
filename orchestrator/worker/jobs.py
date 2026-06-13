@@ -387,30 +387,7 @@ async def garbage_collect(ctx: WorkerContext) -> dict[str, int]:
     if not isinstance(store_obj, MemoryStore):
         return {"scanned": 0, "deleted": 0}
 
-    async with store_obj._pool.acquire() as conn:
-        scanned = await conn.fetchval(
-            """
-            SELECT COUNT(*)
-            FROM memories
-            WHERE (status = 'inactive' AND updated_at < NOW() - INTERVAL '90 days')
-               OR (status = 'rejected' AND updated_at < NOW() - INTERVAL '30 days')
-               OR (status = 'pending' AND updated_at < NOW() - INTERVAL '30 days')
-               OR (status = 'deleted' AND updated_at < NOW() - INTERVAL '30 days')
-            """
-        )
-
-        result = await conn.execute(
-            """
-            DELETE FROM memories
-            WHERE (status = 'inactive' AND updated_at < NOW() - INTERVAL '90 days')
-               OR (status = 'rejected' AND updated_at < NOW() - INTERVAL '30 days')
-               OR (status = 'pending' AND updated_at < NOW() - INTERVAL '30 days')
-               OR (status = 'deleted' AND updated_at < NOW() - INTERVAL '30 days')
-            """
-        )
-
-    deleted = int(result.split()[-1]) if result else 0
-    return {"scanned": int(scanned or 0), "deleted": deleted}
+    return await store_obj.run_garbage_collect()
 
 
 async def cleanup_generated_files(ctx: WorkerContext) -> dict[str, int]:
@@ -679,16 +656,7 @@ async def consolidate_memories(
             results["error_count"] = 1
     else:
         # Periodic job - find all users with eligible L1 memories
-        rows = await store._pool.fetch(
-            """
-            SELECT DISTINCT user_id
-            FROM memories
-            WHERE status = 'active'
-              AND tier = 'l1'
-              AND embedding IS NOT NULL
-            """
-        )
-        user_ids = [row["user_id"] for row in rows]
+        user_ids = await store.list_users_with_eligible_l1_memories()
         logger.info(f"Found {len(user_ids)} users with eligible memories for consolidation")
 
     # Process each user
@@ -1350,12 +1318,9 @@ async def _apply_delete_action(
 ) -> dict[str, Any]:
     try:
         from orchestrator.skills_store import delete_skill
-        from orchestrator.skills_projection import SkillProjectionStore
 
         delete_skill(skill_id)
-        if store._pool:
-            projection_store = SkillProjectionStore(store._pool)
-            await projection_store.delete_projection(skill_id)
+        await store.delete_skill_projection(skill_id)
         await store.log_consolidation_nudge_action(
             user_id=user_id,
             run_id=uuid.uuid4(),
