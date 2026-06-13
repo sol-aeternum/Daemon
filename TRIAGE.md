@@ -2002,6 +2002,17 @@
 - **Likely cause**: basedpyright configuration expects a local `.uv-venv` path, while temporary git worktrees do not include the untracked venv directory by default (confidence 95%).
 - **Suggested action**: Document creating a temp-worktree `.uv-venv` symlink before backend type-checks, or make basedpyright consume `UV_PROJECT_ENVIRONMENT` consistently.
 
+## 2026-06-13 00:11 UTC — PR wrapper exhausted temp-worktree disk while creating fresh environments
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Issue #61 PR creation
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: `scripts/pr_create.sh` refused to create the PR because its all-family local CI run attempted to create a fresh `.venv` and install frontend dependencies in the temporary worktree, exhausting `/tmp`. The already-run affected-family gates for #61 had passed their blocking checks with the shared root `.uv-venv`.
+- **Evidence**: The wrapper printed `No space left on device (os error 28)` while installing `basedpyright` and `pip-audit` into `/tmp/daemon-61/.venv`, then repeated `npm warn tar TAR_ENTRY_ERROR ENOSPC: no space left on device, write` during `npm ci`. It later refused with blocking failures for backend ruff/format/basedpyright/pytest-collect and aggregate pre-commit because `uv run` could not finish dependency installation. After removing `/tmp/daemon-61/.venv` and `/tmp/daemon-61/frontend/node_modules`, `df -h /tmp` still showed only `174M` available.
+- **Likely cause**: The wrapper does not inherit the shared `UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv` setup used for temp worktree gates and creates duplicate dependency trees under `/tmp`, which has limited capacity (confidence 95%).
+- **Suggested action**: Make `scripts/pr_create.sh` preserve caller-provided `UV_PROJECT_ENVIRONMENT` and support affected-family PR creation, or keep temp worktrees outside `/tmp` when all-family dependency installation is required.
+
 ## 2026-06-12 10:56 UTC — Frontend test dependencies unavailable in isolated worktree
 - **Severity**: warning
 - **Scope**: host
