@@ -182,6 +182,40 @@ async def test_openai_fallback_preserves_model_identity(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_legacy_embed_documents_rejects_fallback_vectors(monkeypatch):
+    fallback_embedding = [0.7] * 1024
+    openai_response = {
+        "data": [{"index": 0, "embedding": fallback_embedding}],
+        "usage": {"prompt_tokens": 14},
+    }
+    mock_settings = SimpleNamespace(
+        embedding_document_model="voyage-4-large",
+        embedding_query_model="voyage-4-lite",
+        embedding_dimensions=1024,
+        embedding_fallback_providers="openai",
+        embedding_openai_fallback_model="text-embedding-3-small",
+        openai_api_key="openai-key",
+    )
+
+    monkeypatch.setattr("orchestrator.memory.embedding.MAX_RETRIES", 1)
+    monkeypatch.setattr("orchestrator.memory.embedding.get_settings", lambda: mock_settings)
+    monkeypatch.setattr("orchestrator.memory.embedding._get_voyage_api_key", lambda: "voyage-key")
+
+    with patch(
+        "orchestrator.memory.embedding._post_embeddings",
+        new_callable=AsyncMock,
+        side_effect=EmbeddingRequestError("voyage down"),
+    ):
+        with patch(
+            "orchestrator.memory.embedding._post_openai_embeddings",
+            new_callable=AsyncMock,
+            return_value=openai_response,
+        ):
+            with pytest.raises(EmbeddingRequestError, match="metadata"):
+                await embed_documents(["legacy untagged document"])
+
+
+@pytest.mark.asyncio
 async def test_embed_query_for_configured_storage_models_includes_openai_space(monkeypatch):
     voyage_embedding = [0.4] * 1024
     openai_embedding = [0.6] * 1024

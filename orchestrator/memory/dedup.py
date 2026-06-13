@@ -10,7 +10,10 @@ import asyncpg
 import litellm
 
 from orchestrator.config import get_settings
-from orchestrator.memory.embedding import embed_documents_with_metadata
+from orchestrator.memory.embedding import (
+    embed_documents_with_metadata,
+    get_configured_embedding_providers,
+)
 from orchestrator.memory.store import MemoryStore
 
 logger = logging.getLogger(__name__)
@@ -37,6 +40,10 @@ def _document_model() -> str:
 
 def _is_fallback_storage_model(model: str) -> bool:
     return model.startswith("openai:")
+
+
+def _has_configured_fallback_storage_spaces() -> bool:
+    return "openai" in get_configured_embedding_providers()
 
 
 def _normalize_lexical_content(value: object) -> str:
@@ -383,13 +390,16 @@ async def deduplicate_facts(
             memory_slot=None,
             embedding_model=document_model,
         )
-        if _is_fallback_storage_model(document_model):
-            lexical_candidates = await store.search_memories_bm25(
+        if _is_fallback_storage_model(document_model) or _has_configured_fallback_storage_spaces():
+            raw_lexical_candidates = await store.search_memories_bm25(
                 user_id=user_id,
                 query=fact.content,
                 limit=50,
                 include_historical=True,
                 memory_slot=None,
+            )
+            lexical_candidates = (
+                raw_lexical_candidates if isinstance(raw_lexical_candidates, list) else []
             )
             seen_ids = {candidate.get("id") for candidate in similar}
             normalized_fact_content = _normalize_lexical_content(fact.content)

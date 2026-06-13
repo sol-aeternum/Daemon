@@ -10,6 +10,7 @@ import pytest
 import pytest_asyncio
 
 from orchestrator.memory.encryption import ContentEncryption
+from orchestrator.memory.embedding import EmbeddingVector
 from orchestrator.memory.store import MemoryStore
 
 
@@ -57,6 +58,28 @@ async def mock_encryption():
 async def memory_store(mock_db_pool, mock_encryption):
     """Create a MemoryStore instance with mocked dependencies."""
     return MemoryStore(db_pool=mock_db_pool, encryption=mock_encryption)
+
+
+@pytest.mark.asyncio
+async def test_search_memories_infers_embedding_model_from_vector_metadata(
+    memory_store: MemoryStore,
+    mock_db_pool: AsyncMock,
+) -> None:
+    mock_db_pool.fetch.return_value = []
+    query_embedding = EmbeddingVector(
+        [0.1, 0.2],
+        provider="openai",
+        model="openai:text-embedding-3-small",
+        storage_model="openai:text-embedding-3-small",
+    )
+
+    await memory_store.search_memories(
+        user_id=uuid.uuid4(),
+        query_embedding=query_embedding,
+    )
+
+    mock_db_pool.fetch.assert_called_once()
+    assert mock_db_pool.fetch.call_args.args[10] == "openai:text-embedding-3-small"
 
 
 @pytest.mark.asyncio

@@ -853,6 +853,13 @@ class MemoryStore:
         source_conversation_ids: list[uuid.UUID] | None = None,
         embedding_model: str | None = None,
     ) -> list[dict[str, Any]]:
+        storage_model_metadata = getattr(query_embedding, "storage_model", None)
+        inferred_embedding_model = (
+            storage_model_metadata if isinstance(storage_model_metadata, str) else None
+        )
+        effective_embedding_model = (
+            embedding_model if embedding_model is not None else inferred_embedding_model
+        )
         embedding_str = _format_vector(query_embedding)
         conversation_filter = [str(value) for value in source_conversation_ids or []] or None
 
@@ -887,7 +894,7 @@ class MemoryStore:
                 memory_slot,
                 include_dream_observations,
                 conversation_filter,
-                embedding_model,
+                effective_embedding_model,
             )
         else:
             rows = await self._pool.fetch(
@@ -918,7 +925,7 @@ class MemoryStore:
                 memory_slot,
                 include_dream_observations,
                 conversation_filter,
-                embedding_model,
+                effective_embedding_model,
             )
 
         results = []

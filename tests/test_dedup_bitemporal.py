@@ -259,6 +259,44 @@ async def test_dedup_fallback_embedding_uses_lexical_existing_memory() -> None:
 
 
 @pytest.mark.asyncio
+async def test_dedup_primary_embedding_checks_lexical_fallback_memories() -> None:
+    store = AsyncMock()
+    existing_id = uuid.uuid4()
+    store.search_memories.return_value = []
+    store.search_memories_bm25.return_value = [
+        {
+            "id": existing_id,
+            "content": "User has shellfish allergy",
+            "memory_slot": "allergy.shellfish",
+            "valid_to": None,
+            "embedding_model": "openai:text-embedding-3-small",
+        }
+    ]
+
+    with patch(
+        "orchestrator.memory.dedup.embed_documents_with_metadata", new_callable=AsyncMock
+    ) as embed:
+        embed.return_value = _embedding_result(
+            [0.9, 0.8],
+            storage_model="voyage-4-large",
+        )
+        with patch(
+            "orchestrator.memory.dedup.get_configured_embedding_providers",
+            return_value=("voyage", "openai"),
+        ):
+            result = await deduplicate_facts(
+                store,
+                uuid.uuid4(),
+                [_new_fact("User has shellfish allergy", "allergy.shellfish")],
+                conversation_id=uuid.uuid4(),
+            )
+
+    assert len(result.merged) == 1
+    store.touch_memory.assert_awaited_once_with(existing_id)
+    store.insert_memory.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_memory_write_slot_passthrough_to_dedup() -> None:
     store = AsyncMock()
     with patch(
