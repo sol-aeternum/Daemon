@@ -68,11 +68,8 @@ Daemon uses a tier-based model configuration system. Specific model assignments 
 - **Tools**: `web_search`, `http_request`, `calculate`, `get_time`, `notifications`, `reminders`, `memory_read`, `memory_write`.
 
 ### Phase 2: Memory System ✅
-<<<<<<< HEAD
 - **Storage**: PostgreSQL + pgvector with 36 migrations applied (latest: `036_memory_content_hash.sql`).
-=======
-- **Storage**: PostgreSQL + pgvector with 36 migrations applied (latest: `036_skill_consolidation_pending_status.sql`).
->>>>>>> f893638a (fix(worker): audit destructive skill deletes before applying)
+- **Storage**: PostgreSQL + pgvector with 36 migrations applied (latest: `036_memory_content_hash.sql`).
 - **Pipeline**: Extraction (GPT-4o-mini) → Embedding (Voyage 4) → Dedup → Retrieval (Hybrid).
 - **Encryption**: Fernet for messages and memories.
 - **Background Jobs**: Extraction, summary, consolidation, dreaming.

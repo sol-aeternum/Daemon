@@ -139,6 +139,18 @@
 - **Likely cause**: basedpyright auto-ratchets the committed baseline when diagnostics disappear in touched files. Confidence: 90%.
 - **Suggested action**: Commit intentional baseline reductions with the issue PR when touched code removes a grandfathered diagnostic, so CI lock mode remains green.
 - **Seen again**: 2026-06-13 during #138 hosted CI. Backend gates failed at `uv run basedpyright --level error` with `baselined errors changed but the baseline file cannot be updated when --baselinemode=lock (went down by 1)`. Rerunning `uv run basedpyright --level error --baselinemode=auto ...` updated `.basedpyright/baseline.json` to 369 errors and normal lock-mode focused basedpyright then passed.
+=======
+## 2026-06-13T23:24:00+09:30 — #53 PR Wrapper Refused On Host Cache And Frontend Install Failures
+- **Severity**: warning
+- **Scope**: host | project
+- **Encountered during**: Issue #53 audit-before-delete PR creation
+- **Category**: tooling | dependency | build-error
+- **Blocked current task**: no
+- **What happened**: `scripts/pr_create.sh` refused to call `gh pr create` after running all local CI families. The wrapper did not inherit the issue-specific `UV_CACHE_DIR=/tmp/uv-cache` override, so backend and aggregate `uv run` commands failed on the read-only host uv cache; frontend `npm ci` then ran in the low-space `/tmp` worktree, emitted repeated `ENOSPC` writes, failed esbuild's install check with `EPERM`, and left frontend blocking tools unavailable.
+- **Evidence**: `scripts/pr_create.sh -- --title "fix(worker): audit destructive skill deletes before applying" ...` reported blocking failures `backend/ruff-check`, `backend/ruff-format`, `backend/basedpyright`, `backend/pytest-collect`, `frontend/type-check`, `frontend/lint`, `frontend/format-check`, and `aggregate/pre-commit`. Backend/aggregate failures included `Failed to initialize cache at /home/sol/.cache/uv ... Read-only file system`; frontend install emitted `npm warn tar TAR_ENTRY_ERROR ENOSPC: no space left on device, write` and `spawnSync /tmp/daemon-53/frontend/node_modules/esbuild/bin/esbuild EPERM`; `/tmp` was 92% full with 694M available afterward.
+- **Likely cause**: The PR wrapper runs every family in the sandbox without the issue-specific uv cache override, and `npm ci` in a temporary worktree is sensitive to remaining `/tmp` space plus sandboxed binary execution. Confidence: 95%.
+- **Suggested action**: Teach the PR wrapper to honor audited environment overrides and/or run only affected families; prune old `/tmp` worktrees before all-family frontend installs.
+
 ## 2026-06-13T22:52:37+09:30 — #53 Root Pull Blocked By User Worktree Changes
 - **Severity**: info
 - **Scope**: host

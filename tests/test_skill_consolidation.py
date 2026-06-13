@@ -563,7 +563,6 @@ class TestApplyDeleteAction:
         ]
         assert "FROM skill_consolidation_log" in pool.query
         assert pool.args == (user_id, "delete", "failed", since, until, 50)
->>>>>>> f893638a (fix(worker): audit destructive skill deletes before applying)
 
 
 class TestModelDrivenConsolidationFlow:
