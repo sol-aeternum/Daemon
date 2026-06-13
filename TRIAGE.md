@@ -183,6 +183,7 @@
 - **Likely cause**: Same local sandbox/network and long-running inventory-suite behavior seen on #23; hosted branch-protection CI remains the authoritative full gate. Confidence: 85%.
 - **Suggested action**: Investigate the late-suite pytest inventory stall separately from issue-scoped auth fixes; continue relying on blocking local gates plus hosted protected CI before merge.
 - **Seen again**: 2026-06-12T21:08+09:30 during #24 device-creation limit verification, and again after adding the `034_device_creation_audit.sql` migration. `timeout 300s env UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv UV_CACHE_DIR=/tmp/uv-cache scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` exited 1 with existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full inventory pytest printed progress through `[ 91%]` before the outer timeout exited `124`. Process inspection after both runs found no remaining `/tmp/daemon-24` pytest/local-CI processes.
+- **Seen again**: 2026-06-13 during #61 review-comment fixes. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing findings, `pip-audit` failed with `Failed to resolve 'pypi.org' ([Errno -2] Name or service not known)`, and full inventory pytest reproduced existing `EEEEE`/`F` progress markers before the outer timeout exited `124`.
 
 ## 2026-06-12T20:01:23+09:30 — #11 Worktree Missing `.uv-venv` Symlink Broke BasedPyright
 - **Severity**: warning
@@ -194,6 +195,7 @@
 - **Evidence**: Initial output began with `venv .uv-venv subdirectory not found in venv path /tmp/daemon-11.` and then missing imports for `fastapi`, `asyncpg`, `httpx`, `pytest`, and related pinned dependencies. Rerun output: `0 errors, 0 warnings, 0 notes`.
 - **Likely cause**: The repository type-checker config expects a `.uv-venv` path relative to the active checkout, but new `/tmp` worktrees do not inherit the root checkout symlink. Confidence: 99%.
 - **Suggested action**: Create the `.uv-venv` symlink immediately after adding future `/tmp` worktrees, or update agent worktree setup docs/scripts to do this automatically.
+- **Seen again**: 2026-06-13 during #61 review-comment fixes. The first changed-file `basedpyright --level error` run in `/tmp/daemon-61` exited 3 with `venv .uv-venv subdirectory not found in venv path /tmp/daemon-61` and unresolved imports for `asyncpg`, `fastapi`, `pytest`, and `httpx`; creating `/tmp/daemon-61/.uv-venv -> /home/sol/daemon/.uv-venv` made the same changed-file command report `0 errors, 0 warnings, 0 notes`.
 
 ## 2026-06-12T07:04:00+09:30 — Main Protection Uses Rulesets Instead Of Classic Branch Protection
 - **Severity**: info

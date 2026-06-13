@@ -44,6 +44,10 @@ def compute_memory_content_hash(content: str) -> str:
     ).hexdigest()
 
 
+class MemoryContentConflictError(Exception):
+    """Raised when an active memory edit duplicates another active memory."""
+
+
 class MemoryStore:
     """Central data-access layer for the Daemon memory system.
 
@@ -76,6 +80,7 @@ class MemoryStore:
         self,
         user_id: uuid.UUID,
         content_hash: str,
+        local_only: bool,
     ) -> dict[str, Any] | None:
         row = await self._pool.fetchrow(
             """
@@ -83,6 +88,7 @@ class MemoryStore:
             FROM memories
             WHERE user_id = $1
               AND content_hash = $2
+              AND local_only = $3
               AND status = 'active'
               AND valid_to IS NULL
             ORDER BY created_at ASC
@@ -90,10 +96,50 @@ class MemoryStore:
             """,
             user_id,
             content_hash,
+            local_only,
         )
         if row is None:
             return None
         return self._memory_row_to_dict(row)
+
+    async def backfill_memory_content_hashes(self) -> int:
+        """Populate content_hash for legacy active memories that predate the column."""
+        rows = await self._pool.fetch(
+            """
+            SELECT id, content
+            FROM memories
+            WHERE content_hash IS NULL
+              AND status = 'active'
+              AND valid_to IS NULL
+            ORDER BY created_at ASC
+            """
+        )
+        backfilled = 0
+        for row in rows:
+            content = self._enc.decrypt(row["content"])
+            content_hash = compute_memory_content_hash(content)
+            try:
+                result = await self._pool.execute(
+                    """
+                    UPDATE memories
+                    SET content_hash = $2,
+                        updated_at = NOW()
+                    WHERE id = $1
+                      AND content_hash IS NULL
+                    """,
+                    row["id"],
+                    content_hash,
+                )
+            except asyncpg.UniqueViolationError:
+                logger.warning(
+                    "Skipping duplicate legacy memory content_hash backfill for memory %s",
+                    row["id"],
+                    exc_info=True,
+                )
+                continue
+            if result == "UPDATE 1":
+                backfilled += 1
+        return backfilled
 
     # ------------------------------------------------------------------
     # Conversation operations
@@ -528,7 +574,11 @@ class MemoryStore:
                 )
                 row = await _insert(None)
         except asyncpg.UniqueViolationError:
-            existing = await self._get_active_memory_by_content_hash(user_id, content_hash)
+            existing = await self._get_active_memory_by_content_hash(
+                user_id,
+                content_hash,
+                local_only,
+            )
             if existing is not None:
                 return existing
             raise
@@ -619,25 +669,30 @@ class MemoryStore:
         encrypted_content = self._enc.encrypt(content)
         content_hash = compute_memory_content_hash(content)
         embedding_str = _format_vector(embedding) if embedding else None
-        row = await self._pool.fetchrow(
-            """
-            UPDATE memories
-            SET content    = $2,
-                embedding  = COALESCE($3::vector, embedding),
-                confidence = COALESCE($4, confidence),
-                content_tsv = to_tsvector('english', $5),
-                content_hash = $6,
-                updated_at = NOW()
-            WHERE id = $1
-            RETURNING *
-            """,
-            memory_id,
-            encrypted_content,
-            embedding_str,
-            confidence,
-            content,
-            content_hash,
-        )
+        try:
+            row = await self._pool.fetchrow(
+                """
+                UPDATE memories
+                SET content    = $2,
+                    embedding  = COALESCE($3::vector, embedding),
+                    confidence = COALESCE($4, confidence),
+                    content_tsv = to_tsvector('english', $5),
+                    content_hash = $6,
+                    updated_at = NOW()
+                WHERE id = $1
+                RETURNING *
+                """,
+                memory_id,
+                encrypted_content,
+                embedding_str,
+                confidence,
+                content,
+                content_hash,
+            )
+        except asyncpg.UniqueViolationError as exc:
+            raise MemoryContentConflictError(
+                "Memory content duplicates an existing active memory"
+            ) from exc
         if not row:
             return None
         return self._memory_row_to_dict(row)

@@ -27,6 +27,7 @@ from orchestrator.main import app
 from orchestrator.db import AppState
 from orchestrator.auth import AuthenticatedDevice
 from orchestrator.routes import memories as memories_router
+from orchestrator.memory.store import MemoryContentConflictError
 
 
 @pytest_asyncio.fixture
@@ -307,6 +308,31 @@ async def test_update_memory(auth_client, monkeypatch) -> None:
     data = response.json()
     assert data["status"] == "updated"
     mock_store.update_memory.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_update_memory_content_conflict_returns_409(auth_client, monkeypatch) -> None:
+    """Test that duplicate memory edits return a controlled conflict."""
+    memory_id = uuid.uuid4()
+    mock_store = AsyncMock()
+    mock_memory = create_mock_memory(memory_id=memory_id)
+    mock_store.get_memory = AsyncMock(return_value=mock_memory)
+    mock_store.update_memory = AsyncMock(
+        side_effect=MemoryContentConflictError(
+            "Memory content duplicates an existing active memory"
+        )
+    )
+
+    mock_app_state = create_mock_app_state(mock_store)
+    set_app_state(mock_app_state)
+
+    response = await auth_client.patch(
+        f"/memories/{memory_id}",
+        json={"content": "Updated content"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Memory content duplicates an existing active memory"
 
 
 @pytest.mark.asyncio

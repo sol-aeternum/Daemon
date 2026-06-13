@@ -3,12 +3,14 @@
 -- The content column is Fernet ciphertext, so equal plaintext memories do not
 -- have equal database values. The application computes content_hash as
 -- HMAC-SHA256(normalized_plaintext, DAEMON_AUTH_PEPPER) before encryption.
+-- Legacy rows are backfilled by MemoryStore on startup because SQL cannot
+-- decrypt existing Fernet ciphertext to compute this value.
 
 ALTER TABLE memories
     ADD COLUMN IF NOT EXISTS content_hash TEXT;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_active_content_hash_unique
-    ON memories(user_id, content_hash)
+    ON memories(user_id, content_hash, local_only)
     WHERE content_hash IS NOT NULL
       AND status = 'active'
       AND valid_to IS NULL;

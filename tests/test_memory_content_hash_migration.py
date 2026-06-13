@@ -8,6 +8,7 @@ def test_memory_content_hash_migration_adds_partial_unique_index() -> None:
 
     assert "ADD COLUMN IF NOT EXISTS content_hash TEXT" in sql
     assert "CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_active_content_hash_unique" in sql
-    assert "ON memories(user_id, content_hash)" in sql
+    assert "ON memories(user_id, content_hash, local_only)" in sql
     assert "status = 'active'" in sql
     assert "valid_to IS NULL" in sql
+    assert "Legacy rows are backfilled by MemoryStore on startup" in sql

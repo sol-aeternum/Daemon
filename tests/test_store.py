@@ -14,7 +14,11 @@ import pytest_asyncio
 
 from orchestrator.config import Settings
 from orchestrator.memory.encryption import ContentEncryption
-from orchestrator.memory.store import MemoryStore, compute_memory_content_hash
+from orchestrator.memory.store import (
+    MemoryContentConflictError,
+    MemoryStore,
+    compute_memory_content_hash,
+)
 
 
 class MockRecord:
@@ -87,16 +91,18 @@ def test_compute_memory_content_hash_is_keyed_and_normalized(monkeypatch) -> Non
 
 class UniqueMemoryPool:
     def __init__(self) -> None:
-        self._rows_by_hash: dict[str, MockRecord] = {}
+        self._rows_by_hash: dict[tuple[str, bool], MockRecord] = {}
         self._lock = asyncio.Lock()
         self.insert_attempts = 0
 
     async def fetchrow(self, sql: str, *args):
         if "INSERT INTO memories" in sql:
             content_hash = args[2]
+            local_only = bool(args[8])
+            key = (content_hash, local_only)
             async with self._lock:
                 self.insert_attempts += 1
-                existing = self._rows_by_hash.get(content_hash)
+                existing = self._rows_by_hash.get(key)
                 if existing is not None:
                     raise asyncpg.UniqueViolationError("duplicate memory content_hash")
                 row = MockRecord(
@@ -106,15 +112,16 @@ class UniqueMemoryPool:
                     content_hash=content_hash,
                     category=args[5],
                     source_type=args[6],
+                    local_only=local_only,
                     status=args[10],
                     valid_to=None,
                     created_at=datetime.now(),
                 )
-                self._rows_by_hash[content_hash] = row
+                self._rows_by_hash[key] = row
                 return row
 
         if "content_hash = $2" in sql:
-            return self._rows_by_hash.get(args[1])
+            return self._rows_by_hash.get((args[1], bool(args[2])))
 
         return None
 
@@ -173,6 +180,88 @@ async def test_concurrent_same_content_inserts_create_one_memory(monkeypatch) ->
 
     assert len(set(inserted_ids)) == 1
     assert len(pool._rows_by_hash) == 1
+
+
+@pytest.mark.asyncio
+async def test_same_content_local_and_global_memories_do_not_conflict(monkeypatch) -> None:
+    _patch_memory_hash_settings(monkeypatch)
+    pool = UniqueMemoryPool()
+    encryption = MagicMock(spec=ContentEncryption)
+    encryption.encrypt = MagicMock(side_effect=lambda value: value)
+    encryption.decrypt = MagicMock(side_effect=lambda value: value)
+    store = MemoryStore(cast(asyncpg.Pool, pool), encryption)
+    user_id = uuid.uuid4()
+
+    global_memory = await store.insert_memory(
+        user_id=user_id,
+        content="User drives a blue car",
+        category="fact",
+        source_type="extracted",
+        embedding=[0.1] * 1024,
+        local_only=False,
+    )
+    local_memory = await store.insert_memory(
+        user_id=user_id,
+        content="User drives a blue car",
+        category="fact",
+        source_type="extracted",
+        embedding=[0.1] * 1024,
+        local_only=True,
+    )
+
+    assert global_memory["id"] != local_memory["id"]
+    assert len(pool._rows_by_hash) == 2
+
+
+@pytest.mark.asyncio
+async def test_update_memory_content_conflict_raises_controlled_error(
+    memory_store: MemoryStore,
+    mock_db_pool,
+    monkeypatch,
+) -> None:
+    _patch_memory_hash_settings(monkeypatch)
+    mock_db_pool.fetchrow.side_effect = asyncpg.UniqueViolationError(
+        "duplicate memory content_hash"
+    )
+
+    with pytest.raises(MemoryContentConflictError):
+        await memory_store.update_memory_content(uuid.uuid4(), "Duplicate content")
+
+
+@pytest.mark.asyncio
+async def test_backfill_memory_content_hashes_updates_active_null_hashes(
+    memory_store: MemoryStore,
+    mock_db_pool,
+    monkeypatch,
+) -> None:
+    _patch_memory_hash_settings(monkeypatch)
+    memory_id = uuid.uuid4()
+    mock_db_pool.fetch.return_value = [MockRecord(id=memory_id, content="encrypted legacy content")]
+    mock_db_pool.execute.return_value = "UPDATE 1"
+
+    backfilled = await memory_store.backfill_memory_content_hashes()
+
+    assert backfilled == 1
+    expected_hash = compute_memory_content_hash("encrypted legacy content")
+    mock_db_pool.execute.assert_awaited_once()
+    assert mock_db_pool.execute.await_args.args[1:] == (memory_id, expected_hash)
+
+
+@pytest.mark.asyncio
+async def test_backfill_memory_content_hashes_skips_legacy_duplicates(
+    memory_store: MemoryStore,
+    mock_db_pool,
+    monkeypatch,
+) -> None:
+    _patch_memory_hash_settings(monkeypatch)
+    mock_db_pool.fetch.return_value = [
+        MockRecord(id=uuid.uuid4(), content="encrypted legacy content")
+    ]
+    mock_db_pool.execute.side_effect = asyncpg.UniqueViolationError("duplicate memory content_hash")
+
+    backfilled = await memory_store.backfill_memory_content_hashes()
+
+    assert backfilled == 0
 
 
 @pytest.mark.asyncio
