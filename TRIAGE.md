@@ -1,5 +1,16 @@
 # TRIAGE.md
 
+## 2026-06-14T00:05:00+09:30 — #55 PR Wrapper Timed Out In Backend Inventory
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Issue #55 consolidation interval validation PR creation
+- **Category**: tooling | test-failure
+- **Blocked current task**: no
+- **What happened**: `scripts/pr_create.sh` was attempted with the audited uv environment and a temporary `.uv-venv` symlink. Backend blocking gates passed inside the wrapper, but the wrapper timed out during the non-blocking full backend pytest inventory before it could reach `gh pr create`.
+- **Evidence**: `UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv UV_CACHE_DIR=/tmp/uv-cache timeout 420s scripts/pr_create.sh -- ...` exited `124` after backend `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect` passed. Inventory `pip-audit` failed DNS resolution for `pypi.org`, and full pytest reached late-suite progress after the known auth-scoping setup errors plus one `F` marker.
+- **Likely cause**: Same recurring local full-pytest inventory stall tracked for backend-only issue worktrees; the PR wrapper runs the inventory phase before PR creation. Confidence: 90%.
+- **Suggested action**: Let the PR wrapper skip non-blocking inventory before `gh pr create`, or rely on hosted protected checks after local blocking gates pass.
+
 ## 2026-06-12T22:34:10+09:30 — #54 PR Wrapper Refused On Existing Local Gate Debt
 - **Severity**: warning
 - **Scope**: project | host
