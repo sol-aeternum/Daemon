@@ -454,6 +454,73 @@ async def test_retrieve_memories_for_text_queries_fallback_storage_spaces(mock_s
 
 
 @pytest.mark.asyncio
+async def test_retrieve_memories_for_text_queries_fallback_spaces_with_precomputed_embedding(
+    mock_store,
+):
+    user_id = uuid.uuid4()
+    voyage_id = uuid.uuid4()
+    openai_id = uuid.uuid4()
+    primary_embedding = EmbeddingVector(
+        [0.2],
+        provider="voyage",
+        model="voyage-4-lite",
+        storage_model="voyage-4-large",
+    )
+    mock_store.search_memories.side_effect = [
+        [
+            {
+                "id": voyage_id,
+                "content": "voyage memory",
+                "similarity": 0.8,
+                "confidence": 0.9,
+                "access_count": 0,
+                "category": "fact",
+                "source_type": "extracted",
+            }
+        ],
+        [
+            {
+                "id": openai_id,
+                "content": "openai memory",
+                "similarity": 0.82,
+                "confidence": 0.9,
+                "access_count": 0,
+                "category": "fact",
+                "source_type": "extracted",
+            }
+        ],
+    ]
+    embed = AsyncMock(
+        return_value=[
+            _embedding_result("voyage-4-large"),
+            _embedding_result("openai:text-embedding-3-small"),
+        ]
+    )
+
+    with patch(
+        "orchestrator.memory.retrieval.embed_query_for_configured_storage_models",
+        new=embed,
+    ):
+        result = await retrieve_memories_for_text(
+            mock_store,
+            "test query",
+            user_id=user_id,
+            query_embedding=primary_embedding,
+        )
+
+    assert {memory["id"] for memory in result} == {voyage_id, openai_id}
+    assert embed.await_args is not None
+    primary_result = embed.await_args.kwargs["primary_result"]
+    assert primary_result.embedding is primary_embedding
+    assert [
+        call.kwargs["embedding_model"] for call in mock_store.search_memories.await_args_list
+    ] == [
+        "voyage-4-large",
+        "openai:text-embedding-3-small",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_retrieve_memories_for_text_infers_storage_model_from_embedding_vector(mock_store):
     user_id = uuid.uuid4()
     embedding = EmbeddingVector(
@@ -473,6 +540,76 @@ async def test_retrieve_memories_for_text_infers_storage_model_from_embedding_ve
     assert mock_store.search_memories.call_args.kwargs["embedding_model"] == (
         "openai:text-embedding-3-small"
     )
+
+
+@pytest.mark.asyncio
+async def test_retrieve_memories_for_text_l0_log_uses_primary_embedding(mock_store):
+    user_id = uuid.uuid4()
+    voyage_id = uuid.uuid4()
+    openai_id = uuid.uuid4()
+    primary_embedding = EmbeddingVector(
+        [0.2],
+        provider="voyage",
+        model="voyage-4-lite",
+        storage_model="voyage-4-large",
+    )
+    mock_store.search_memories.side_effect = [
+        [
+            {
+                "id": voyage_id,
+                "content": "voyage memory",
+                "similarity": 0.8,
+                "confidence": 0.9,
+                "access_count": 0,
+                "category": "fact",
+                "source_type": "extracted",
+            }
+        ],
+        [
+            {
+                "id": openai_id,
+                "content": "openai memory",
+                "similarity": 0.82,
+                "confidence": 0.9,
+                "access_count": 0,
+                "category": "fact",
+                "source_type": "extracted",
+            }
+        ],
+    ]
+
+    with patch(
+        "orchestrator.memory.retrieval.embed_query_for_configured_storage_models",
+        new=AsyncMock(
+            return_value=[
+                EmbeddingVectorResult(
+                    embedding=primary_embedding,
+                    provider="voyage",
+                    model="voyage-4-lite",
+                    storage_model="voyage-4-large",
+                ),
+                EmbeddingVectorResult(
+                    embedding=[0.9],
+                    provider="openai",
+                    model="openai:text-embedding-3-small",
+                    storage_model="openai:text-embedding-3-small",
+                ),
+            ]
+        ),
+    ):
+        await retrieve_memories_for_text(
+            mock_store,
+            "test query",
+            user_id=user_id,
+            query_embedding=primary_embedding,
+            include_l0=True,
+            log_retrieval=True,
+        )
+    await _allow_background_tasks()
+
+    call_kwargs = mock_store.log_retrieval.call_args.kwargs
+    assert call_kwargs["query_embedding"] is primary_embedding
+    assert call_kwargs["query_embedding_model"] == "voyage-4-lite"
 
 
 @pytest.mark.asyncio

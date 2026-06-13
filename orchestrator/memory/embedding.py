@@ -572,9 +572,13 @@ async def embed_query_with_metadata(text: str) -> EmbeddingVectorResult:
     )
 
 
-async def embed_query_for_configured_storage_models(text: str) -> list[EmbeddingVectorResult]:
+async def embed_query_for_configured_storage_models(
+    text: str,
+    *,
+    primary_result: EmbeddingVectorResult | None = None,
+) -> list[EmbeddingVectorResult]:
     settings = get_settings()
-    results = [await embed_query_with_metadata(text)]
+    results = [primary_result or await embed_query_with_metadata(text)]
 
     fallback_model = getattr(
         settings,
@@ -624,7 +628,14 @@ async def embed_documents(texts: list[str]) -> list[list[float]]:
 
 
 async def embed_query(text: str) -> list[float]:
-    return (await embed_query_with_metadata(text)).embedding
+    result = await embed_query_with_metadata(text)
+    primary_storage_model = get_settings().embedding_document_model
+    if result.storage_model != primary_storage_model:
+        raise EmbeddingRequestError(
+            "Legacy embed_query cannot return fallback vectors without storage model metadata; "
+            "use embed_query_with_metadata for provider fallback support"
+        )
+    return result.embedding
 
 
 async def embed_text(text: str, model: str = DEFAULT_MODEL) -> list[float]:

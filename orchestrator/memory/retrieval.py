@@ -392,6 +392,8 @@ async def retrieve_memories_for_text(
     effective_embedding = query_embedding
     embedding_model_used: str | None = None
     effective_storage_embedding_model = storage_embedding_model
+    l0_log_embedding: list[float] | None = None
+    l0_log_embedding_model: str | None = None
 
     ranked: list[dict[str, object]] = []
     if normalized_query:
@@ -409,21 +411,25 @@ async def retrieve_memories_for_text(
                 or inferred_storage_model
                 or settings.embedding_document_model
             )
-            embedding_results = [
-                EmbeddingVectorResult(
-                    embedding=effective_embedding,
-                    provider=_embedding_metadata_value(effective_embedding, "provider")
-                    or "unknown",
-                    model=embedding_model_used,
-                    storage_model=effective_storage_embedding_model,
-                )
-            ]
+            primary_result = EmbeddingVectorResult(
+                embedding=effective_embedding,
+                provider=_embedding_metadata_value(effective_embedding, "provider") or "unknown",
+                model=embedding_model_used,
+                storage_model=effective_storage_embedding_model,
+            )
+            embedding_results = await embed_query_for_configured_storage_models(
+                normalized_query,
+                primary_result=primary_result,
+            )
 
         combined_ranked: dict[uuid.UUID, dict[str, object]] = {}
         for index, embedding_result in enumerate(embedding_results):
             effective_embedding = embedding_result.embedding
             embedding_model_used = embedding_result.model
             effective_storage_embedding_model = embedding_result.storage_model
+            if index == 0:
+                l0_log_embedding = embedding_result.embedding
+                l0_log_embedding_model = embedding_result.model
             partial_ranked = await retrieve_memories(
                 store=store,
                 query_embedding=effective_embedding,
@@ -470,7 +476,7 @@ async def retrieve_memories_for_text(
         if (
             _is_retrieval_logging_enabled(log_retrieval)
             and normalized_query
-            and effective_embedding is not None
+            and l0_log_embedding is not None
         ):
             end_time = time.monotonic()
             latency_ms = int((end_time - start_time) * 1000)
@@ -497,9 +503,9 @@ async def retrieve_memories_for_text(
                     await store.log_retrieval(
                         user_id=user_id,
                         query_text=normalized_query or "",
-                        query_embedding_model=embedding_model_used
+                        query_embedding_model=l0_log_embedding_model
                         or get_settings().embedding_query_model,
-                        query_embedding=effective_embedding,
+                        query_embedding=l0_log_embedding,
                         candidate_memory_ids=[uuid.UUID(k) for k in candidate_scores],
                         candidate_scores=candidate_scores,
                         selected_memory_ids=selected_ids,

@@ -127,9 +127,9 @@ async def test_voyage_failure_falls_back_to_openai(monkeypatch):
             new_callable=AsyncMock,
             return_value=openai_response,
         ) as openai_post:
-            result = await embed_query("fallback query")
+            result = await embed_query_with_metadata("fallback query")
 
-    assert result == fallback_embedding
+    assert result.embedding == fallback_embedding
     assert voyage_post.await_count == 1
     assert openai_post.await_count == 1
     assert openai_post.await_args is not None
@@ -137,7 +137,7 @@ async def test_voyage_failure_falls_back_to_openai(monkeypatch):
     assert openai_post.await_args.kwargs["output_dimension"] == 1024
     assert get_embedding_provider_used_counts()["openai"] == 1
     assert get_embedding_failures_total() == 1
-    assert getattr(result, "storage_model") == "openai:text-embedding-3-small"
+    assert result.storage_model == "openai:text-embedding-3-small"
 
 
 @pytest.mark.asyncio
@@ -216,6 +216,40 @@ async def test_legacy_embed_documents_rejects_fallback_vectors(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_legacy_embed_query_rejects_fallback_vectors(monkeypatch):
+    fallback_embedding = [0.7] * 1024
+    openai_response = {
+        "data": [{"index": 0, "embedding": fallback_embedding}],
+        "usage": {"prompt_tokens": 14},
+    }
+    mock_settings = SimpleNamespace(
+        embedding_document_model="voyage-4-large",
+        embedding_query_model="voyage-4-lite",
+        embedding_dimensions=1024,
+        embedding_fallback_providers="openai",
+        embedding_openai_fallback_model="text-embedding-3-small",
+        openai_api_key="openai-key",
+    )
+
+    monkeypatch.setattr("orchestrator.memory.embedding.MAX_RETRIES", 1)
+    monkeypatch.setattr("orchestrator.memory.embedding.get_settings", lambda: mock_settings)
+    monkeypatch.setattr("orchestrator.memory.embedding._get_voyage_api_key", lambda: "voyage-key")
+
+    with patch(
+        "orchestrator.memory.embedding._post_embeddings",
+        new_callable=AsyncMock,
+        side_effect=EmbeddingRequestError("voyage down"),
+    ):
+        with patch(
+            "orchestrator.memory.embedding._post_openai_embeddings",
+            new_callable=AsyncMock,
+            return_value=openai_response,
+        ):
+            with pytest.raises(EmbeddingRequestError, match="metadata"):
+                await embed_query("legacy untagged query")
+
+
+@pytest.mark.asyncio
 async def test_embed_query_for_configured_storage_models_includes_openai_space(monkeypatch):
     voyage_embedding = [0.4] * 1024
     openai_embedding = [0.6] * 1024
@@ -290,10 +324,14 @@ async def test_voyage_circuit_breaker_skips_primary_after_recent_failures(monkey
             return_value=openai_response,
         ) as openai_post:
             for _ in range(5):
-                assert await embed_query("fallback query") == fallback_embedding
+                assert (
+                    await embed_query_with_metadata("fallback query")
+                ).embedding == fallback_embedding
 
             voyage_post.reset_mock()
-            assert await embed_query("fallback query") == fallback_embedding
+            assert (
+                await embed_query_with_metadata("fallback query")
+            ).embedding == fallback_embedding
 
     voyage_post.assert_not_awaited()
     assert openai_post.await_count == 6
@@ -406,7 +444,7 @@ async def test_status_exposes_embedding_provider_metrics():
                         new_callable=AsyncMock,
                         return_value=openai_response,
                     ):
-                        await embed_query("fallback query")
+                        await embed_query_with_metadata("fallback query")
 
     result = await get_status(
         app_state=AppState(settings=Settings(daemon_environment="development")),
