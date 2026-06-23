@@ -1,5 +1,16 @@
 # TRIAGE.md
 
+## 2026-06-23 23:52 UTC — #57/#58 backend inventory reproduced Google route duplicate-IP failure
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #57/#58 security headers and CORS hardening PR creation
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: The PR wrapper's full backend inventory pytest completed and reported one unrelated Google auth route failure. The focused #57/#58 security header and CORS regression tests passed.
+- **Evidence**: `tests/test_identity_google_routes.py::TestGoogleCompleteRoute::test_web_private_returns_access_only_and_refresh_cookie` failed because the test expected `["ip"]` but received `["ip", "ip"]`; the same wrapper run reported `1974 passed, 5 skipped, 100 warnings`.
+- **Likely cause**: Existing Google auth route/test fixture behavior is recording the same private web IP event twice, independent of the response header and CORS middleware changes (confidence 85%).
+- **Suggested action**: Investigate Google complete route rate-limit/IP recording idempotency in a dedicated auth issue; do not broaden #57/#58.
+
 ## 2026-06-24T09:16:07+09:30 — #57/#58 attempted read of pending-branch SSE test
 - **Severity**: info
 - **Scope**: tooling
@@ -1935,6 +1946,7 @@
 - **Likely cause**: The wrapper enforces all families even though the issue sequence calls for affected-family local CI and explicitly notes frontend Wave 0 breakage for #108 (confidence 98%).
 - **Suggested action**: Either allow `scripts/pr_create.sh` to accept a local-CI family selector for backend-only PRs, or complete #108 before using the all-family wrapper path.
 - **Seen again**: 2026-06-12 during #24 PR creation. Backend blocking gates and aggregate gates passed inside the wrapper, but `scripts/pr_create.sh` refused to call `gh pr create` because unrelated frontend blocking gates failed: `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`.
+- **Seen again**: 2026-06-23 during #57/#58 PR creation. Backend blocking gates and aggregate gates passed inside the wrapper, but `scripts/pr_create.sh` refused to call `gh pr create` because unrelated frontend blocking gates failed: `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`.
 
 ## 2026-06-12 10:56 UTC — Frontend test dependencies unavailable in isolated worktree
 - **Severity**: warning
@@ -2043,6 +2055,7 @@
 - **Suggested action**: Update that fixture to use the existing mock async context manager pattern from setup/auth runtime tests in a dedicated cleanup.
 - **Seen again**: 2026-06-12 during #24 PR-wrapper backend inventory. Full inventory pytest completed and surfaced the same `TypeError: 'coroutine' object does not support the asynchronous context manager protocol` in `tests/test_auth_user_scoping.py` setup; #24 focused enrollment tests were unaffected.
 - **Seen again**: 2026-06-13 during #56 backend local CI inventory. Full pytest again surfaced the same `TypeError: 'coroutine' object does not support the asynchronous context manager protocol (missed __aexit__ method)` at `orchestrator/auth_runtime_state.py:97` in `tests/test_auth_user_scoping.py` setup; #56 focused session cleanup / refresh tests were unaffected.
+- **Seen again**: 2026-06-23 during #57/#58 PR-wrapper backend inventory. Full inventory pytest completed with 5 setup errors in `tests/test_auth_user_scoping.py`, all rooted in `TypeError: 'coroutine' object does not support the asynchronous context manager protocol` at `orchestrator/auth_runtime_state.py:97`; #57/#58 focused security header and CORS tests were unaffected.
 
 ## 2026-06-12 11:20 UTC — Chat history tests still emit existing AsyncMock warning debt
 - **Severity**: info
