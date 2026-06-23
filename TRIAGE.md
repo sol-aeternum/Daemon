@@ -1,5 +1,27 @@
 # TRIAGE.md
 
+## 2026-06-24T09:16:07+09:30 — #57/#58 attempted read of pending-branch SSE test
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Issue #57/#58 security headers and CORS hardening
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: While looking for a local SSE test pattern, `sed` targeted `tests/test_sse_keepalive.py`, but that file exists only on the pending #44 PR branch and is not present on current `origin/main`.
+- **Evidence**: `sed -n '1,220p' tests/test_sse_keepalive.py` returned `sed: can't read tests/test_sse_keepalive.py: No such file or directory`.
+- **Likely cause**: The #44 SSE keepalive PR is open but unmerged, so its regression test is unavailable in fresh worktrees based on `origin/main` (confidence 99%).
+- **Suggested action**: Keep cross-issue test references anchored to files already merged to `origin/main`, or explicitly note when borrowing patterns from pending branches.
+
+## 2026-06-24T09:16:07+09:30 — #57/#58 npm exec attempted registry lookup for installed tools
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: Issue #57/#58 security headers and CORS hardening
+- **Category**: dependency
+- **Blocked current task**: no
+- **What happened**: Targeted `npm exec` checks tried to contact the npm registry for `eslint` and `prettier` instead of using local binaries, then failed DNS resolution in the sandbox. Installing dependencies with locked `npm ci` and running local binaries from `frontend/node_modules/.bin` allowed targeted checks to proceed.
+- **Evidence**: `npm --prefix frontend exec eslint -- middleware.ts --max-warnings 0` and `npm --prefix frontend exec prettier -- --check middleware.ts` both failed with `request to https://registry.npmjs.org/... failed, reason: getaddrinfo EAI_AGAIN registry.npmjs.org`.
+- **Likely cause**: `npm exec` attempted package resolution because the worktree initially lacked a complete local `node_modules/.bin`; sandbox DNS blocked registry lookup (confidence 90%).
+- **Suggested action**: Prefer `npm ci` followed by explicit local binaries for targeted frontend checks in isolated worktrees.
+
 ## 2026-06-12T22:34:10+09:30 — #54 PR Wrapper Refused On Existing Local Gate Debt
 - **Severity**: warning
 - **Scope**: project | host
@@ -65,6 +87,7 @@
 - **Evidence**: `npm ci --prefix frontend --no-audit --no-fund --prefer-offline` failed with `spawnSync /tmp/daemon-27/frontend/node_modules/esbuild/bin/esbuild EPERM`; subsequent local-CI blocking commands failed as `next: command not found`, `eslint: command not found`, and `prettier: command not found`. Direct full `npm --prefix frontend run type-check` still reports pre-existing `lib/advisorEvents.ts` / `__tests__/advisor-events.test.ts` errors, and `npm --prefix frontend run lint` still reports 28 errors / 13 warnings in unrelated React/UI files. Direct full `npm --prefix frontend run test:run` includes `__tests__/auth-proxy-route.test.ts` passing (8 tests) but still fails 19 existing advisor/tool-call tests across `__tests__/advisor-events.test.ts`, `__tests__/chat-route-advisor-events.test.ts`, and `__tests__/tool-call-log.test.ts`.
 - **Likely cause**: The managed sandbox blocks executing esbuild's postinstall binary during `npm ci`; the full frontend type/lint failures are existing project debt and not caused by the changed auth proxy files. Confidence: 90%.
 - **Suggested action**: Run frontend dependency installation outside the sandbox for local worktrees, and fix advisor-event/hook lint debt in dedicated frontend cleanup issues.
+- **Seen again**: 2026-06-24 during #57/#58 frontend local CI. Sandboxed `scripts/local_ci.sh frontend` failed `npm ci` with `spawnSync /home/sol/daemon/.worktrees/daemon-57-58/frontend/node_modules/esbuild/bin/esbuild EPERM`, leaving `next`, `eslint`, `prettier`, and `vitest` unavailable until the frontend family was rerun with escalation.
 
 ## 2026-06-12T21:45:22+09:30 — #27 PR Wrapper Refused On Existing Local Gate Debt
 - **Severity**: warning
@@ -1888,6 +1911,7 @@
 - **Seen again**: 2026-06-12 during #24 PR-wrapper creation. Escalated `scripts/pr_create.sh` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 - **Seen again**: 2026-06-12 during #113 backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 - **Seen again**: 2026-06-12 during #54 backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
+- **Seen again with changed count**: 2026-06-24 during #57/#58 backend local CI. `scripts/local_ci.sh backend` reached PyPI and reported `Found 69 known vulnerabilities in 16 packages`; this remained inventory/non-blocking.
 
 ## 2026-06-10 08:47 UTC — Backend inventory gates report existing security and warning debt
 - **Severity**: warning
@@ -1933,6 +1957,7 @@
 - **Evidence**: `npm run type-check` exited 2 after `next typegen && tsc --noEmit`; representative errors include `__tests__/advisor-events.test.ts(4,3): error TS2305: Module '"../lib/events"' has no exported member 'isAdvisorEndEvent'`, `lib/advisorEvents.ts(3,21): error TS2305: Module '"./events"' has no exported member 'isAdvisorEvent'`, and `__tests__/tool-call-log.test.ts(15,9): error TS2353: Object literal may only specify known properties, and 'tool_call_id' does not exist`.
 - **Likely cause**: Advisor/tool-call tests and helpers expect SSE event union members and metadata fields that are not present in `frontend/lib/events.ts` on this branch (confidence 90%).
 - **Suggested action**: Resolve the advisor event contract in the dedicated frontend Wave 0/event-schema follow-up; do not broaden issue #26 beyond logout.
+- **Seen again**: 2026-06-24 during #57/#58 frontend local CI. `npm --prefix frontend run type-check` failed on missing advisor event exports and advisor event union members, including `Module '"../lib/events"' has no exported member 'isAdvisorEvent'`; `npm --prefix frontend run build` failed on `lib/advisorEvents.ts:3:21 Module '"./events"' has no exported member 'isAdvisorEvent'`.
 
 ## 2026-06-12 10:56 UTC — Frontend lint and format gates have broad pre-existing debt
 - **Severity**: warning
@@ -1944,6 +1969,7 @@
 - **Evidence**: `npm run lint` exited 1 with 41 problems, including `app/artifacts/page.tsx:108:5 react-hooks/set-state-in-effect`, `app/studio/components/ImageLightbox.tsx:19:42 react-hooks/rules-of-hooks`, and `components/TextToSpeechButton.tsx:39:25 react-hooks/rules-of-hooks`. `npm run format:check` reported `Code style issues found in 125 files`. `npm exec eslint -- __tests__/auth.test.ts __tests__/auth-provider.test.tsx __tests__/auth-page.test.tsx components/AuthProvider.tsx lib/auth.ts --max-warnings 0` passed, and `npm exec prettier -- --check ...` passed for those same files.
 - **Likely cause**: Existing frontend React Compiler lint and formatting debt predates the logout change (confidence 95%).
 - **Suggested action**: Fix frontend lint/format debt in dedicated PRs or establish an explicit baseline; keep issue #26 scoped to logout behavior.
+- **Seen again**: 2026-06-24 during #57/#58 frontend local CI. `npm --prefix frontend run lint` reported `41 problems (28 errors, 13 warnings)` and `npm --prefix frontend run format:check` reported style drift in 124 files; targeted eslint/prettier for `frontend/proxy.ts` passed.
 
 ## 2026-06-12 10:56 UTC — Auth frontend tests emit existing act/navigation warnings
 - **Severity**: info
@@ -1988,6 +2014,7 @@
 - **Evidence**: `npm --prefix frontend run audit:ci` reported `27 vulnerabilities (4 low, 8 moderate, 14 high, 1 critical)`. Representative advisories included `vitest <3.2.6` critical `GHSA-5xrq-8626-4rwp`, `next 9.3.4-canary.0 - 16.3.0-canary.5` high advisories, and vulnerable `@ai-sdk/provider-utils`.
 - **Likely cause**: New upstream advisories now apply to the locked frontend dependency graph; some suggested fixes require breaking upgrades such as AI SDK, Next, or next-pwa (confidence 95%).
 - **Suggested action**: Handle through the locked dependency remediation process in a dedicated security/dependency PR; do not hand-edit lockfiles in issue #26.
+- **Seen again with changed count**: 2026-06-24 during #57/#58 frontend local CI. `npm --prefix frontend run audit:ci` reported `30 vulnerabilities (6 low, 8 moderate, 15 high, 1 critical)`; this remained inventory/non-blocking.
 
 ## 2026-06-12 11:20 UTC — Issue #42 backend local CI timed out in inventory pytest
 - **Severity**: warning
@@ -2002,6 +2029,7 @@
 - **Seen again**: 2026-06-12 during #113 refresh-rotation grace verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory full pytest reached late-suite progress after showing unrelated failures and then the outer timeout exited `124`.
 - **Seen again**: 2026-06-12 during #54 session cleanup grace-days verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` and `pip-audit` reported existing non-blocking findings, inventory full pytest printed progress through `[ 91%]` with one `F` marker but no failure summary before the outer timeout exited `124`.
 - **Seen again**: 2026-06-13 during #56 session cleanup / refresh serialization verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `pip-audit` failed DNS resolution for `pypi.org`, full pytest printed the known `tests/test_auth_user_scoping.py` setup errors plus one `F` marker, then reached late-suite progress before the outer timeout exited `124`.
+- **Seen again**: 2026-06-24 during #57/#58 backend local CI. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` and `pip-audit` reported existing non-blocking findings, full pytest printed unrelated `E`/`F` markers and reached late-suite progress before the outer timeout exited `124`.
 
 ## 2026-06-12 11:20 UTC — Existing auth user scoping fixture fails development pepper setup
 - **Severity**: warning
