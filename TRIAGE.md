@@ -1890,6 +1890,7 @@
 - **Seen again**: 2026-06-12 during #113 backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 - **Seen again**: 2026-06-12 during #54 backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 - **Seen again**: 2026-06-14 during #59/#82 compose hardening backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
+- **Seen again with changed count**: 2026-06-24 during #59/#82 PR-wrapper local CI. `scripts/pr_create.sh` reached PyPI and reported `Found 69 known vulnerabilities in 16 packages`; this remained inventory/non-blocking.
 
 ## 2026-06-10 08:47 UTC — Backend inventory gates report existing security and warning debt
 - **Severity**: warning
@@ -1913,6 +1914,7 @@
 - **Likely cause**: The wrapper enforces all families even though the issue sequence calls for affected-family local CI and explicitly notes frontend Wave 0 breakage for #108 (confidence 98%).
 - **Suggested action**: Either allow `scripts/pr_create.sh` to accept a local-CI family selector for backend-only PRs, or complete #108 before using the all-family wrapper path.
 - **Seen again**: 2026-06-12 during #24 PR creation. Backend blocking gates and aggregate gates passed inside the wrapper, but `scripts/pr_create.sh` refused to call `gh pr create` because unrelated frontend blocking gates failed: `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`.
+- **Seen again**: 2026-06-24 during #59/#82 PR creation. Backend blocking gates and aggregate gates passed inside the wrapper, but `scripts/pr_create.sh` refused to call `gh pr create` because unrelated frontend blocking gates failed: `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`.
 
 ## 2026-06-12 10:56 UTC — Frontend test dependencies unavailable in isolated worktree
 - **Severity**: warning
@@ -1935,6 +1937,7 @@
 - **Evidence**: `npm run type-check` exited 2 after `next typegen && tsc --noEmit`; representative errors include `__tests__/advisor-events.test.ts(4,3): error TS2305: Module '"../lib/events"' has no exported member 'isAdvisorEndEvent'`, `lib/advisorEvents.ts(3,21): error TS2305: Module '"./events"' has no exported member 'isAdvisorEvent'`, and `__tests__/tool-call-log.test.ts(15,9): error TS2353: Object literal may only specify known properties, and 'tool_call_id' does not exist`.
 - **Likely cause**: Advisor/tool-call tests and helpers expect SSE event union members and metadata fields that are not present in `frontend/lib/events.ts` on this branch (confidence 90%).
 - **Suggested action**: Resolve the advisor event contract in the dedicated frontend Wave 0/event-schema follow-up; do not broaden issue #26 beyond logout.
+- **Seen again**: 2026-06-24 during #59/#82 PR-wrapper local CI. `npm --prefix frontend run build` failed in TypeScript with `lib/advisorEvents.ts:3:21 Type error: Module '"./events"' has no exported member 'isAdvisorEvent'`; `npm run test:run` also reported 19 existing advisor/tool-call failures.
 
 ## 2026-06-12 10:56 UTC — Frontend lint and format gates have broad pre-existing debt
 - **Severity**: warning
@@ -1946,6 +1949,7 @@
 - **Evidence**: `npm run lint` exited 1 with 41 problems, including `app/artifacts/page.tsx:108:5 react-hooks/set-state-in-effect`, `app/studio/components/ImageLightbox.tsx:19:42 react-hooks/rules-of-hooks`, and `components/TextToSpeechButton.tsx:39:25 react-hooks/rules-of-hooks`. `npm run format:check` reported `Code style issues found in 125 files`. `npm exec eslint -- __tests__/auth.test.ts __tests__/auth-provider.test.tsx __tests__/auth-page.test.tsx components/AuthProvider.tsx lib/auth.ts --max-warnings 0` passed, and `npm exec prettier -- --check ...` passed for those same files.
 - **Likely cause**: Existing frontend React Compiler lint and formatting debt predates the logout change (confidence 95%).
 - **Suggested action**: Fix frontend lint/format debt in dedicated PRs or establish an explicit baseline; keep issue #26 scoped to logout behavior.
+- **Seen again**: 2026-06-24 during #59/#82 PR-wrapper local CI. `npm --prefix frontend run lint` reported `41 problems (28 errors, 13 warnings)` and `npm --prefix frontend run format:check` reported style drift in 124 files.
 
 ## 2026-06-12 10:56 UTC — Auth frontend tests emit existing act/navigation warnings
 - **Severity**: info
@@ -1990,6 +1994,7 @@
 - **Evidence**: `npm --prefix frontend run audit:ci` reported `27 vulnerabilities (4 low, 8 moderate, 14 high, 1 critical)`. Representative advisories included `vitest <3.2.6` critical `GHSA-5xrq-8626-4rwp`, `next 9.3.4-canary.0 - 16.3.0-canary.5` high advisories, and vulnerable `@ai-sdk/provider-utils`.
 - **Likely cause**: New upstream advisories now apply to the locked frontend dependency graph; some suggested fixes require breaking upgrades such as AI SDK, Next, or next-pwa (confidence 95%).
 - **Suggested action**: Handle through the locked dependency remediation process in a dedicated security/dependency PR; do not hand-edit lockfiles in issue #26.
+- **Seen again with changed count**: 2026-06-24 during #59/#82 PR-wrapper local CI. `npm --prefix frontend run audit:ci` reported `30 vulnerabilities (6 low, 8 moderate, 15 high, 1 critical)`; this remained inventory/non-blocking.
 
 ## 2026-06-12 11:20 UTC — Issue #42 backend local CI timed out in inventory pytest
 - **Severity**: warning
