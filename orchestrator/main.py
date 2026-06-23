@@ -113,10 +113,33 @@ from orchestrator.models import (
 )
 from orchestrator.prompts import DAEMON_SYSTEM_PROMPT
 from orchestrator.router import route_message
+from orchestrator.security_headers import SecurityHeadersMiddleware
 from orchestrator.tools.builtin import create_default_registry
 from orchestrator.tools.completion import completion_with_tools
 
 logger = logging.getLogger(__name__)
+
+CORS_ALLOW_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
+CORS_ALLOW_HEADERS = (
+    "Authorization",
+    "Content-Type",
+    "X-Daemon-Client-IP",
+    "X-CSRF-Token",
+)
+
+
+def warn_on_unsafe_cors_wildcards(
+    *,
+    allow_credentials: bool,
+    allow_methods: Sequence[str],
+    allow_headers: Sequence[str],
+) -> None:
+    if not allow_credentials:
+        return
+    if "*" in allow_methods or "*" in allow_headers:
+        logger.warning(
+            "Unsafe CORS configuration: wildcard methods or headers with credentials enabled"
+        )
 
 
 class UnsafeProductionServerConfigError(RuntimeError):
@@ -329,13 +352,19 @@ app = FastAPI(title="daemon-orchestrator", lifespan=lifespan)
 # CORS deny-by-default: use daemon_allowed_origins, filter empty strings.
 # An empty list means no cross-origin requests are allowed.
 _cors_allowed = [o.strip() for o in get_settings().daemon_allowed_origins.split(",") if o.strip()]
+warn_on_unsafe_cors_wildcards(
+    allow_credentials=True,
+    allow_methods=CORS_ALLOW_METHODS,
+    allow_headers=CORS_ALLOW_HEADERS,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_allowed,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=list(CORS_ALLOW_METHODS),
+    allow_headers=list(CORS_ALLOW_HEADERS),
 )
+app.add_middleware(SecurityHeadersMiddleware)
 
 # TrustedHostMiddleware: enforce an allowlist on the inbound Host header.
 # Without this, a Host-header injection (Host: attacker.com) can be used
