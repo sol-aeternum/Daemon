@@ -664,6 +664,7 @@
   - `time="2026-04-08T20:33:09+09:30" level=warning msg="The \"FAL_KEY\" variable is not set. Defaulting to a blank string."`
 - **Seen again**: 2026-04-12 during Task 6 baseline runtime inspection when `docker compose ps` emitted the same `The "FAL_KEY" variable is not set. Defaulting to a blank string.` warning while the benchmark-related services were otherwise healthy.
 - **Seen again**: 2026-04-16 during autonomous-skill-creation F3 runtime QA when both `docker compose ps` and `docker compose logs backend` emitted the same `The "FAL_KEY" variable is not set. Defaulting to a blank string.` warning while the core stack remained up.
+- **Seen again**: 2026-06-14 during #59/#82 compose validation when `POSTGRES_PASSWORD=unique-local-secret-2026 docker compose config --quiet` exited 0 but emitted unset-variable warnings for local provider/admin secrets including `OPENROUTER_API_KEY`, `VOYAGE_API_KEY`, `DAEMON_ENCRYPTION_KEY`, `DAEMON_AUTH_PEPPER`, and `FAL_KEY`.
 - **Likely cause**: Docker Compose references `FAL_KEY` for Kling/fal.ai video configuration, but the local `.env` for this stack does not define it (confidence 95%).
 - **Suggested action**: Decide whether `FAL_KEY` should be required only for Studio/video flows; if optional, suppress or scope the compose warning. If required for this environment, add it to the active env file.
 
@@ -1888,6 +1889,7 @@
 - **Seen again**: 2026-06-12 during #24 PR-wrapper creation. Escalated `scripts/pr_create.sh` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 - **Seen again**: 2026-06-12 during #113 backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 - **Seen again**: 2026-06-12 during #54 backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
+- **Seen again**: 2026-06-14 during #59/#82 compose hardening backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 
 ## 2026-06-10 08:47 UTC — Backend inventory gates report existing security and warning debt
 - **Severity**: warning
@@ -2002,6 +2004,7 @@
 - **Seen again**: 2026-06-12 during #113 refresh-rotation grace verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory full pytest reached late-suite progress after showing unrelated failures and then the outer timeout exited `124`.
 - **Seen again**: 2026-06-12 during #54 session cleanup grace-days verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` and `pip-audit` reported existing non-blocking findings, inventory full pytest printed progress through `[ 91%]` with one `F` marker but no failure summary before the outer timeout exited `124`.
 - **Seen again**: 2026-06-13 during #56 session cleanup / refresh serialization verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `pip-audit` failed DNS resolution for `pypi.org`, full pytest printed the known `tests/test_auth_user_scoping.py` setup errors plus one `F` marker, then reached late-suite progress before the outer timeout exited `124`.
+- **Seen again**: 2026-06-14 during #59/#82 compose hardening verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` and `pip-audit` reported existing non-blocking findings, full pytest printed unrelated `E`/`F` markers and reached `[ 90%]` before the outer timeout exited `124`.
 
 ## 2026-06-12 11:20 UTC — Existing auth user scoping fixture fails development pepper setup
 - **Severity**: warning

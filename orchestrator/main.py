@@ -7,6 +7,7 @@ import logging
 import os
 import time
 import uuid
+from urllib.parse import unquote, urlparse
 
 import asyncpg
 import httpx
@@ -111,6 +112,42 @@ from orchestrator.tools.completion import completion_with_tools
 
 logger = logging.getLogger(__name__)
 
+KNOWN_DEFAULT_POSTGRES_PASSWORDS = frozenset(
+    {
+        "postgres",
+        "password",
+        "changeme",
+        "change-me",
+        "daemon",
+        "admin",
+    }
+)
+
+
+class UnsafeDatabaseCredentialError(RuntimeError):
+    """Raised when production starts with known-default database credentials."""
+
+
+def _database_password_from_url(database_url: str | None) -> str | None:
+    if not database_url:
+        return None
+    parsed = urlparse(database_url)
+    if parsed.password is None:
+        return None
+    return unquote(parsed.password)
+
+
+def _validate_database_credentials(settings: Settings) -> None:
+    if settings.daemon_environment.lower() != "production":
+        return
+    password = os.getenv("POSTGRES_PASSWORD") or _database_password_from_url(settings.database_url)
+    if password is None:
+        return
+    if password.strip().lower() in KNOWN_DEFAULT_POSTGRES_PASSWORDS:
+        raise UnsafeDatabaseCredentialError(
+            "POSTGRES_PASSWORD or DATABASE_URL uses a known default database password"
+        )
+
 
 def _validate_startup_config(settings: Settings) -> None:
     """Run all fail-closed startup-time config validations.
@@ -121,6 +158,7 @@ def _validate_startup_config(settings: Settings) -> None:
     first (authentication substrate), then hosted identity (deployment
     posture). Either failure aborts startup before any AppState work.
     """
+    _validate_database_credentials(settings)
     validate_pepper_config(settings)
     settings.validate_deployment_mode()
     settings.validate_hosted_identity_config()
@@ -132,6 +170,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     try:
         _validate_startup_config(settings)
+    except UnsafeDatabaseCredentialError as exc:
+        logger.critical("Unsafe database credential configuration: %s", exc)
+        raise
     except PepperValidationError as exc:
         logger.critical("Production pepper validation failed: %s", exc)
         raise

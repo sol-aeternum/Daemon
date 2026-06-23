@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     environment:
-      - DATABASE_URL=${DATABASE_URL:-postgresql://daemon:daemon@postgres:5432/daemon}
+      - DATABASE_URL=${DATABASE_URL:-postgresql://daemon:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/daemon}
     volumes:
       - .:/app
     command: python scripts/migrate.py
@@ -30,7 +30,7 @@ services:
       - XAI_API_KEY=${XAI_API_KEY}
       - FAL_KEY=${FAL_KEY}
       - MOCK_LLM=${MOCK_LLM:-false}
-      - DATABASE_URL=${DATABASE_URL:-postgresql://daemon:daemon@postgres:5432/daemon}
+      - DATABASE_URL=${DATABASE_URL:-postgresql://daemon:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/daemon}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - DAEMON_ENCRYPTION_KEY=${DAEMON_ENCRYPTION_KEY}
       - DAEMON_ENVIRONMENT=${DAEMON_ENVIRONMENT:-development}
@@ -89,7 +89,7 @@ services:
       - XAI_API_KEY=${XAI_API_KEY}
       - FAL_KEY=${FAL_KEY}
       - MOCK_LLM=${MOCK_LLM:-false}
-      - DATABASE_URL=${DATABASE_URL:-postgresql://daemon:daemon@postgres:5432/daemon}
+      - DATABASE_URL=${DATABASE_URL:-postgresql://daemon:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/daemon}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - DAEMON_ENCRYPTION_KEY=${DAEMON_ENCRYPTION_KEY}
       - DAEMON_ENVIRONMENT=${DAEMON_ENVIRONMENT:-development}
@@ -167,12 +167,12 @@ services:
     image: pgvector/pgvector:pg16
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-daemon}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-daemon}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       - POSTGRES_DB=${POSTGRES_DB:-daemon}
     volumes:
       - daemon_postgres16_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-daemon}"]
       interval: 5s
@@ -186,7 +186,7 @@ services:
     volumes:
       - redis_data:/data
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

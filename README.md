@@ -95,8 +95,13 @@ uv run uvicorn orchestrator.main:app --reload --host 0.0.0.0 --port 8000
 
 # Docker (full stack)
 cp .env.example .env    # Configure providers
+# Edit .env and set a unique POSTGRES_PASSWORD before first startup.
 docker compose up --build
 ```
+
+Docker compose binds PostgreSQL and Redis to `127.0.0.1` only. Containers use
+the private compose network; external database access should be an explicit
+operator override, not the committed default.
 
 Verify: `curl http://localhost:8000/health`
 
