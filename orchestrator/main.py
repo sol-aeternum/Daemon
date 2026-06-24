@@ -63,6 +63,7 @@ from orchestrator.db import (
     get_app_state,
     init_app_state,
 )
+from orchestrator.memory.encryption import ContentEncryption, EncryptionInitError
 from orchestrator.session_cleanup import (
     cleanup_stale_sessions,
     start_session_cleanup_task,
@@ -124,6 +125,8 @@ def _validate_startup_config(settings: Settings) -> None:
     validate_pepper_config(settings)
     settings.validate_deployment_mode()
     settings.validate_hosted_identity_config()
+    if settings.daemon_encryption_key is not None:
+        ContentEncryption(settings.daemon_encryption_key)
 
 
 @asynccontextmanager
@@ -137,6 +140,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         raise
     except HostedIdentityConfigError as exc:
         logger.critical("Hosted identity config validation failed: %s", exc)
+        raise
+    except EncryptionInitError as exc:
+        logger.critical("Encryption config validation failed: %s", exc)
         raise
 
     state = await init_app_state(settings)

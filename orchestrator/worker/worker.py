@@ -12,7 +12,11 @@ from arq.cron import cron
 from arq.worker import Worker, func
 
 from orchestrator.config import get_settings
-from orchestrator.memory.encryption import ContentEncryption
+from orchestrator.memory.encryption import (
+    ContentEncryption,
+    SharedEncryptionFailureCounter,
+    set_shared_encryption_failure_counter,
+)
 from orchestrator.memory.store import MemoryStore
 
 from orchestrator.worker.jobs import (
@@ -63,6 +67,12 @@ def _build_consolidation_cron_job(interval: int) -> Any:
 async def on_startup(ctx: WorkerContext) -> None:
     app_settings = get_settings()
     ctx["settings"] = app_settings
+    shared_counter = ctx.get("redis")
+    set_shared_encryption_failure_counter(
+        cast(SharedEncryptionFailureCounter, shared_counter)
+        if hasattr(shared_counter, "incr")
+        else None
+    )
     ctx["encryption"] = ContentEncryption(app_settings.daemon_encryption_key)
     ctx["store"] = None
 
@@ -80,6 +90,7 @@ async def on_startup(ctx: WorkerContext) -> None:
 
 
 async def on_shutdown(ctx: WorkerContext) -> None:
+    set_shared_encryption_failure_counter(None)
     db_pool = cast(asyncpg.Pool | None, ctx.get("db_pool"))
     if db_pool is not None:
         await db_pool.close()

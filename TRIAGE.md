@@ -1,5 +1,15 @@
 # TRIAGE.md
 
+## 2026-06-13T09:09:00+09:30 — #60 PR Wrapper Refused On Existing Frontend Blocking Gates
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #60 memory encryption fail-closed PR creation
+- **Category**: build-error | test-failure | dependency | security
+- **Blocked current task**: no
+- **What happened**: `scripts/pr_create.sh` ran all local CI families and refused to call `gh pr create` because existing frontend blocking gates failed outside the backend-only #60 change surface. Backend blocking gates and aggregate gates passed inside the wrapper run, but inventory gates surfaced existing backend test failures and current dependency advisories.
+- **Evidence**: `scripts/pr_create.sh -- --title "fix(memory): fail closed on encryption failures" ...` reported blocking failures: `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`. Backend `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect` passed. Frontend build still failed on `Module '"./events"' has no exported member 'isAdvisorEvent'`; frontend tests still had 19 advisor/tool-call failures. Backend full pytest completed with the known `tests/test_auth_user_scoping.py` fixture errors plus additional existing failure markers, and `pip-audit` reported 43 known vulnerabilities in 14 backend packages including `aiohttp`, `cryptography`, `litellm`, `starlette`, and `urllib3`.
+- **Likely cause**: Main still carries unrelated frontend advisor-event type/build debt and dependency-audit inventory debt; #60 only changes backend memory encryption and status metrics. Confidence: 95%.
+- **Suggested action**: Open #60 directly after the documented wrapper refusal, rely on hosted branch-protection checks plus Codex review before any merge, and handle frontend baseline plus dependency advisories in dedicated issues/PRs.
 ## 2026-06-14T00:05:00+09:30 — #55 PR Wrapper Timed Out In Backend Inventory
 - **Severity**: warning
 - **Scope**: host
@@ -1981,6 +1991,17 @@
 - **Seen again**: 2026-06-14 during #45 PR creation. Backend blocking gates and aggregate gates passed inside the wrapper, but `scripts/pr_create.sh` refused to call `gh pr create` because unrelated frontend blocking gates failed: `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`.
 - **Seen again**: 2026-06-23 during #108 PR creation. Backend blocking gates, frontend `type-check`, frontend `test-run`, frontend `build`, and aggregate gates passed inside the wrapper, but `scripts/pr_create.sh` refused to call `gh pr create` because unrelated frontend blocking gates failed: `frontend/lint (exit=1)` and `frontend/format-check (exit=1)`.
 
+## 2026-06-12 23:50 UTC — Temp worktree basedpyright needs backend venv symlink
+- **Severity**: info
+- **Scope**: host
+- **Encountered during**: Issue #60 Codex review follow-up
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: Focused basedpyright could not resolve installed imports in the temporary worktree until `.uv-venv` was symlinked to the root backend environment.
+- **Evidence**: `uv run basedpyright --level error orchestrator/memory/encryption.py orchestrator/routes/system.py orchestrator/worker/worker.py tests/memory/test_encryption.py` exited 3 with `venv .uv-venv subdirectory not found in venv path /tmp/daemon-60` plus missing-import errors for `cryptography.fernet`, `fastapi`, and `pytest`. After `ln -s /home/sol/daemon/.uv-venv .uv-venv`, the same basedpyright command passed with `0 errors, 0 warnings, 0 notes`.
+- **Likely cause**: basedpyright configuration expects a local `.uv-venv` path, while temporary git worktrees do not include the untracked venv directory by default (confidence 95%).
+- **Suggested action**: Document creating a temp-worktree `.uv-venv` symlink before backend type-checks, or make basedpyright consume `UV_PROJECT_ENVIRONMENT` consistently.
+
 ## 2026-06-12 10:56 UTC — Frontend test dependencies unavailable in isolated worktree
 - **Severity**: warning
 - **Scope**: host
@@ -2074,6 +2095,8 @@
 - **Seen again**: 2026-06-12 during #113 refresh-rotation grace verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory full pytest reached late-suite progress after showing unrelated failures and then the outer timeout exited `124`.
 - **Seen again**: 2026-06-12 during #54 session cleanup grace-days verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` and `pip-audit` reported existing non-blocking findings, inventory full pytest printed progress through `[ 91%]` with one `F` marker but no failure summary before the outer timeout exited `124`.
 - **Seen again**: 2026-06-13 during #56 session cleanup / refresh serialization verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `pip-audit` failed DNS resolution for `pypi.org`, full pytest printed the known `tests/test_auth_user_scoping.py` setup errors plus one `F` marker, then reached late-suite progress before the outer timeout exited `124`.
+- **Seen again**: 2026-06-13 during #60 memory encryption fail-closed verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing non-blocking findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest reproduced the known `EEEEE` auth-scoping setup errors plus one `F` marker before stalling near late-suite progress and exiting `124`.
+- **Seen again**: 2026-06-12 during #60 Codex review follow-up. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing non-blocking findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest again showed the known `EEEEE` auth-scoping setup errors plus one `F` marker before the outer timeout exited `124`.
 - **Seen again**: 2026-06-13 during #55 consolidation interval validation. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed the known auth-scoping setup errors plus one `F` marker before reaching late-suite progress and exiting `124`.
 - **Seen again**: 2026-06-14 during #50 migration advisory-lock verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed the known auth-scoping setup errors plus one `F` marker before reaching late-suite progress and exiting `124`.
 - **Seen again**: 2026-06-14 during #47 council duplicate-output regression verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed the known auth-scoping setup errors plus a late-suite `F` marker before reaching `[ 91%]` and exiting `124`.
