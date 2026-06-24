@@ -1,5 +1,26 @@
 # TRIAGE.md
 
+## 2026-06-14T01:05:23+09:30 — #47 PR Wrapper Timed Out In Backend Inventory
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Issue #47 council duplicate-output regression PR creation
+- **Category**: tooling | test-failure
+- **Blocked current task**: no
+- **What happened**: The PR wrapper passed backend blocking gates and then timed out in the non-blocking backend inventory full pytest pass before invoking `gh pr create`.
+- **Evidence**: `UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv UV_CACHE_DIR=/tmp/uv-cache timeout 420s scripts/pr_create.sh -- --title "test(council): guard single output emission" ...` exited `124`; wrapper output showed `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect` passed, then inventory pytest reached `[ 91%]` after known auth-scoping setup errors and a late-suite `F` marker.
+- **Likely cause**: Same local backend inventory pytest stall already tracked for temporary worktrees (confidence 90%).
+- **Suggested action**: Keep using focused tests plus hosted protected CI for merge readiness while investigating the local late-suite inventory stall separately.
+
+## 2026-06-14T00:48:40+09:30 — #47 Duplicate Council Output Handler Not Reproducible On Current Main
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Issue #47 council duplicate output verification
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: The issue body describes two `stream_council` `result_type == "council_output"` branches in `orchestrator/council/sse.py`, but current `origin/main` has only one `stream_council` output branch. The other output branch is in `stream_council_interview_response`, which handles a separate config-response path.
+- **Evidence**: `rg -n "council_output|_emit_council_output_events|stream_council" orchestrator/council/sse.py tests/council -S` showed `stream_council` output handling at `orchestrator/council/sse.py:407` and interview-response output handling at `orchestrator/council/sse.py:511`, not two output handlers in one council invocation.
+- **Likely cause**: The issue evidence is stale relative to current `origin/main`, or the duplicate was removed by earlier council SSE work without a dedicated regression test (confidence 90%).
+- **Suggested action**: Keep the #47 PR as regression coverage asserting `stream_council` invokes `_emit_council_output_events` exactly once per council output result.
 ## 2026-06-14T01:26:26+09:30 — #45 PR Wrapper Refused On Existing Local Gate Debt
 - **Severity**: warning
 - **Scope**: project
@@ -2033,6 +2054,7 @@
 - **Seen again**: 2026-06-12 during #113 refresh-rotation grace verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory full pytest reached late-suite progress after showing unrelated failures and then the outer timeout exited `124`.
 - **Seen again**: 2026-06-12 during #54 session cleanup grace-days verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` and `pip-audit` reported existing non-blocking findings, inventory full pytest printed progress through `[ 91%]` with one `F` marker but no failure summary before the outer timeout exited `124`.
 - **Seen again**: 2026-06-13 during #56 session cleanup / refresh serialization verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `pip-audit` failed DNS resolution for `pypi.org`, full pytest printed the known `tests/test_auth_user_scoping.py` setup errors plus one `F` marker, then reached late-suite progress before the outer timeout exited `124`.
+- **Seen again**: 2026-06-14 during #47 council duplicate-output regression verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed the known auth-scoping setup errors plus a late-suite `F` marker before reaching `[ 91%]` and exiting `124`.
 - **Seen again**: 2026-06-14 during #45 council read-only tool registry verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed known auth-scoping setup errors plus a late-suite `F` marker before reaching `[ 90%]` and exiting `124`.
 
 ## 2026-06-12 11:20 UTC — Existing auth user scoping fixture fails development pepper setup
