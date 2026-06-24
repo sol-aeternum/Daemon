@@ -228,6 +228,7 @@
 - **Likely cause**: Current Vitest/jsdom/Node runtime exposes a localStorage-related experimental warning unless Node is launched with `--localstorage-file`, even when tests provide their own localStorage mock (confidence 80%).
 - **Suggested action**: If the warning becomes noisy, configure the frontend test runner with an explicit localStorage file or suppress the Node experimental warning for this test environment.
 - **Seen again**: 2026-06-05 during the PR #7 current-head follow-up fix pass when the targeted Vitest command for `__tests__/auth.test.ts`, `__tests__/auth-landing.test.tsx`, and `__tests__/deployment.test.ts` passed but still printed the same `ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.`
+- **Seen again**: 2026-06-23 during #108 frontend local CI. `scripts/local_ci.sh frontend` passed `test-run` but Vitest again printed `(node:518839) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.`
 
 ## 2026-05-29 UTC — Studio Kling provider value is not accepted or forwarded by backend video paths
 - **Severity**: warning
@@ -1503,6 +1504,7 @@
 - **Blocked current task**: no
 - **What happened**: Running the frontend build as part of local CI parity modified generated `frontend/public/sw.js`, which is outside Task 7's allowed file set. The generated file was restored immediately.
 - **Evidence**: `git status --short -- frontend/public/sw.js` showed `M frontend/public/sw.js` after `cd frontend && npm run build`; `git checkout -- frontend/public/sw.js` was run and subsequent `git diff -- frontend/public/sw.js` was empty.
+- **Seen again**: 2026-06-23 during #108 frontend build verification. `npm run build` modified `frontend/public/sw.js` and deleted `frontend/public/workbox-00a24876.js`; both are generated PWA artifacts and were left unstaged.
 
 ## 2026-05-28T20:04:00Z — pycache permission denied during syntax verification
 - **Severity**: warning
@@ -1944,6 +1946,7 @@
 - **Evidence**: `npm run lint` exited 1 with 41 problems, including `app/artifacts/page.tsx:108:5 react-hooks/set-state-in-effect`, `app/studio/components/ImageLightbox.tsx:19:42 react-hooks/rules-of-hooks`, and `components/TextToSpeechButton.tsx:39:25 react-hooks/rules-of-hooks`. `npm run format:check` reported `Code style issues found in 125 files`. `npm exec eslint -- __tests__/auth.test.ts __tests__/auth-provider.test.tsx __tests__/auth-page.test.tsx components/AuthProvider.tsx lib/auth.ts --max-warnings 0` passed, and `npm exec prettier -- --check ...` passed for those same files.
 - **Likely cause**: Existing frontend React Compiler lint and formatting debt predates the logout change (confidence 95%).
 - **Suggested action**: Fix frontend lint/format debt in dedicated PRs or establish an explicit baseline; keep issue #26 scoped to logout behavior.
+- **Seen again**: 2026-06-23 during #108 frontend local CI. `scripts/local_ci.sh frontend` passed `type-check`, `test-run`, and `build`, while blocking `frontend/lint` failed with `38 problems (27 errors, 11 warnings)` and blocking `frontend/format-check` reported style drift in `121 files`; changed-file ESLint/Prettier checks for #108 files passed.
 
 ## 2026-06-12 10:56 UTC — Auth frontend tests emit existing act/navigation warnings
 - **Severity**: info
@@ -1955,6 +1958,7 @@
 - **Evidence**: `npm run test:run -- auth.test.ts auth-provider.test.tsx` passed with `53 passed`; stderr included `An update to AuthProvider inside a test was not wrapped in act(...)` and `Error: Not implemented: navigation (except hash changes)` from `attemptPageLoadRefresh`.
 - **Likely cause**: Existing tests assert redirect side effects around asynchronous provider updates and read-only jsdom `window.location` behavior (confidence 85%).
 - **Suggested action**: Wrap provider-triggered updates in Testing Library `act` and isolate redirect assertions from jsdom's real navigation implementation in a frontend test cleanup.
+- **Seen again**: 2026-06-23 during #108 frontend full Vitest verification. `npm run test:run` passed with `16 passed` test files and `212 passed` tests, but stderr again included repeated `AuthProvider` `act(...)` warnings plus the jsdom `Not implemented: navigation (except hash changes)` warning in `attemptPageLoadRefresh`.
 
 ## 2026-06-12 10:56 UTC — Temporary logout test insertion produced syntax error before correction
 - **Severity**: info
@@ -1988,6 +1992,7 @@
 - **Evidence**: `npm --prefix frontend run audit:ci` reported `27 vulnerabilities (4 low, 8 moderate, 14 high, 1 critical)`. Representative advisories included `vitest <3.2.6` critical `GHSA-5xrq-8626-4rwp`, `next 9.3.4-canary.0 - 16.3.0-canary.5` high advisories, and vulnerable `@ai-sdk/provider-utils`.
 - **Likely cause**: New upstream advisories now apply to the locked frontend dependency graph; some suggested fixes require breaking upgrades such as AI SDK, Next, or next-pwa (confidence 95%).
 - **Suggested action**: Handle through the locked dependency remediation process in a dedicated security/dependency PR; do not hand-edit lockfiles in issue #26.
+- **Seen again with changed count**: 2026-06-23 during #108 frontend dependency installation. `npm ci` reported `30 vulnerabilities (6 low, 8 moderate, 15 high, 1 critical)`; install succeeded and dependency remediation remains out of scope for #108.
 
 ## 2026-06-12 11:20 UTC — Issue #42 backend local CI timed out in inventory pytest
 - **Severity**: warning
