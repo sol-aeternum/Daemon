@@ -1,12 +1,12 @@
-"use client";
+'use client';
 
-import { useCallback } from "react";
-import { useStudio } from "../StudioProvider";
-import { ensureAuthHeader } from "@/lib/auth";
+import { useCallback } from 'react';
+import { useStudio } from '../StudioProvider';
+import { ensureAuthHeader } from '@/lib/auth';
 
 interface GenerationPayload {
   model_id: string;
-  status: "queued" | "generating" | "complete" | "error";
+  status: 'queued' | 'generating' | 'complete' | 'error';
   error?: string;
   result?: {
     model_id: string;
@@ -21,15 +21,15 @@ interface GenerationPayload {
 
 function parseSseFrames(chunk: string): Array<{ event: string; data: string }> {
   return chunk
-    .split("\n\n")
+    .split('\n\n')
     .map((frame) => frame.trim())
     .filter(Boolean)
     .map((frame) => {
       const eventMatch = frame.match(/^event:\s*(.+)$/m);
       const dataMatch = frame.match(/^data:\s*(.+)$/m);
       return {
-        event: eventMatch ? eventMatch[1].trim() : "message",
-        data: dataMatch ? dataMatch[1].trim() : "{}",
+        event: eventMatch ? eventMatch[1].trim() : 'message',
+        data: dataMatch ? dataMatch[1].trim() : '{}',
       };
     });
 }
@@ -41,7 +41,7 @@ async function urlToBase64(url: string): Promise<string> {
   }
   const buffer = await response.arrayBuffer();
   const bytes = new Uint8Array(buffer);
-  let binary = "";
+  let binary = '';
   for (let i = 0; i < bytes.byteLength; i += 1) {
     binary += String.fromCharCode(bytes[i]);
   }
@@ -68,7 +68,9 @@ export function useImageGeneration() {
     const batchTimestamp = new Date().toISOString();
     const batchPrefix = `${Date.now()}`;
 
-    const modelById = new Map(availableModels.map((model) => [model.id, model]));
+    const modelById = new Map(
+      availableModels.map((model) => [model.id, model]),
+    );
     for (const modelId of selectedModels) {
       upsertGeneration({
         id: `${batchPrefix}:${modelId}`,
@@ -77,7 +79,7 @@ export function useImageGeneration() {
         prompt,
         aspectRatio,
         resolution,
-        status: "queued",
+        status: 'queued',
         createdAt: batchTimestamp,
       });
     }
@@ -99,8 +101,10 @@ export function useImageGeneration() {
       };
 
       if (referenceImage) {
-        if (referenceImage.id.startsWith("url:")) {
-          requestPayload.reference_image_b64 = await urlToBase64(referenceImage.url);
+        if (referenceImage.id.startsWith('url:')) {
+          requestPayload.reference_image_b64 = await urlToBase64(
+            referenceImage.url,
+          );
         } else {
           requestPayload.reference_id = referenceImage.id;
         }
@@ -108,10 +112,10 @@ export function useImageGeneration() {
 
       const authHeader = await ensureAuthHeader();
       const hdrs = new Headers();
-      hdrs.set("Content-Type", "application/json");
-      if (authHeader) hdrs.set("Authorization", authHeader);
-      const response = await fetch("/api/images/generate", {
-        method: "POST",
+      hdrs.set('Content-Type', 'application/json');
+      if (authHeader) hdrs.set('Authorization', authHeader);
+      const response = await fetch('/api/images/generate', {
+        method: 'POST',
         headers: hdrs,
         body: JSON.stringify(requestPayload),
       });
@@ -122,7 +126,7 @@ export function useImageGeneration() {
 
       const decoder = new TextDecoder();
       const reader = response.body.getReader();
-      let buffer = "";
+      let buffer = '';
 
       while (true) {
         const { done, value } = await reader.read();
@@ -131,28 +135,28 @@ export function useImageGeneration() {
         }
 
         buffer += decoder.decode(value, { stream: true });
-        const frameChunks = buffer.split("\n\n");
-        buffer = frameChunks.pop() || "";
+        const frameChunks = buffer.split('\n\n');
+        buffer = frameChunks.pop() || '';
 
         for (const chunk of frameChunks) {
           const frames = parseSseFrames(chunk);
           for (const frame of frames) {
-            if (frame.event === "done") {
+            if (frame.event === 'done') {
               continue;
             }
-            if (frame.event === "error") {
+            if (frame.event === 'error') {
               const fallbackMessage = (() => {
                 try {
                   const parsed = JSON.parse(frame.data) as { error?: string };
-                  return parsed.error || "Unknown generation error";
+                  return parsed.error || 'Unknown generation error';
                 } catch {
-                  return "Unknown generation error";
+                  return 'Unknown generation error';
                 }
               })();
               for (const modelId of selectedModels) {
                 upsertGeneration({
                   id: `${batchPrefix}:${modelId}`,
-                  status: "error",
+                  status: 'error',
                   error: fallbackMessage,
                 });
               }
@@ -167,20 +171,20 @@ export function useImageGeneration() {
             }
 
             const itemId = `${batchPrefix}:${payload.model_id}`;
-            if (payload.status === "complete" && payload.result) {
+            if (payload.status === 'complete' && payload.result) {
               upsertGeneration({
                 id: itemId,
-                status: "complete",
+                status: 'complete',
                 imageId: payload.result.image_id,
                 imageUrl: payload.result.image_url,
                 generationTimeMs: payload.result.generation_time_ms,
                 costEstimate: payload.result.cost_estimate,
               });
-            } else if (payload.status === "error") {
+            } else if (payload.status === 'error') {
               upsertGeneration({
                 id: itemId,
-                status: "error",
-                error: payload.error || "Model generation failed",
+                status: 'error',
+                error: payload.error || 'Model generation failed',
               });
             } else {
               upsertGeneration({ id: itemId, status: payload.status });

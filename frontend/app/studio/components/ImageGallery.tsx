@@ -1,18 +1,21 @@
-"use client";
+'use client';
 
-import { useMemo, useState } from "react";
-import { ImageCard } from "./ImageCard";
-import { ImageLightbox } from "./ImageLightbox";
-import { VideoCard } from "./VideoCard";
-import { useStudio } from "../StudioProvider";
-import type { StudioGeneration } from "../types";
+import { useMemo, useState } from 'react';
+import { ImageCard } from './ImageCard';
+import { ImageLightbox } from './ImageLightbox';
+import { VideoCard } from './VideoCard';
+import { useStudio } from '../StudioProvider';
+import type { StudioGeneration } from '../types';
 
 export function ImageGallery() {
   const { generations, setReferenceImage } = useStudio();
-  const [lightboxItem, setLightboxItem] = useState<StudioGeneration | null>(null);
+  const [lightboxItem, setLightboxItem] = useState<StudioGeneration | null>(
+    null,
+  );
 
   const sorted = useMemo(
-    () => [...generations].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    () =>
+      [...generations].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     [generations],
   );
 
@@ -34,8 +37,8 @@ export function ImageGallery() {
   return (
     <>
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {sorted.map((generation) => (
-          generation.mediaType === "video" || generation.videoUrl ? (
+        {sorted.map((generation) =>
+          generation.mediaType === 'video' || generation.videoUrl ? (
             <VideoCard key={generation.id} generation={generation} />
           ) : (
             <ImageCard
@@ -44,8 +47,8 @@ export function ImageGallery() {
               onOpen={setLightboxItem}
               onUseAsReference={handleUseAsReference}
             />
-          )
-        ))}
+          ),
+        )}
       </section>
 
       {lightboxItem && (

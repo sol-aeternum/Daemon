@@ -8,8 +8,7 @@ const withPWA = require('next-pwa')({
     // Same-origin API routes: NetworkOnly — never cache authenticated responses.
     {
       urlPattern: ({ url }) =>
-        url.origin === self.location.origin &&
-        url.pathname.startsWith('/api/'),
+        url.origin === self.location.origin && url.pathname.startsWith('/api/'),
       handler: 'NetworkOnly',
       options: {
         cacheName: 'api-no-cache',
@@ -55,7 +54,10 @@ const withPWA = require('next-pwa')({
     // The predicate explicitly excludes same-origin /api/*.
     {
       urlPattern: ({ url }) =>
-        !(url.origin === self.location.origin && url.pathname.startsWith('/api/')),
+        !(
+          url.origin === self.location.origin &&
+          url.pathname.startsWith('/api/')
+        ),
       handler: 'NetworkFirst',
       options: {
         cacheName: 'others',

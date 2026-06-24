@@ -24,7 +24,14 @@ describe('Council Event Type Guards', () => {
     });
 
     it('should return false for other council events', () => {
-      const event: ChatEvent = { type: 'council_progress', stage: 'interview', current_round: 1, total_rounds: 3, models_complete: 0, models_total: 3 };
+      const event: ChatEvent = {
+        type: 'council_progress',
+        stage: 'interview',
+        current_round: 1,
+        total_rounds: 3,
+        models_complete: 0,
+        models_total: 3,
+      };
       expect(isCouncilInterviewEvent(event)).toBe(false);
     });
 
@@ -48,7 +55,13 @@ describe('Council Event Type Guards', () => {
     });
 
     it('should return false for other council events', () => {
-      const event: ChatEvent = { type: 'council_done', session_id: 'abc', total_tokens: 1000, total_cost_usd: 0.05, models_used: ['gpt-4'] };
+      const event: ChatEvent = {
+        type: 'council_done',
+        session_id: 'abc',
+        total_tokens: 1000,
+        total_cost_usd: 0.05,
+        models_used: ['gpt-4'],
+      };
       expect(isCouncilProgressEvent(event)).toBe(false);
     });
 
@@ -70,7 +83,10 @@ describe('Council Event Type Guards', () => {
     });
 
     it('should return false for other council events', () => {
-      const event: ChatEvent = { type: 'council_error', error: 'Something went wrong' };
+      const event: ChatEvent = {
+        type: 'council_error',
+        error: 'Something went wrong',
+      };
       expect(isCouncilOutputEvent(event)).toBe(false);
     });
 
@@ -104,46 +120,86 @@ describe('Council Event Type Guards', () => {
     });
 
     it('should return false for non-council events', () => {
-      const event: ChatEvent = { type: 'tool_call', name: 'search', arguments: {} };
+      const event: ChatEvent = {
+        type: 'tool_call',
+        name: 'search',
+        arguments: {},
+      };
       expect(isCouncilDoneEvent(event)).toBe(false);
     });
   });
 
   describe('isCouncilErrorEvent', () => {
     it('should return true for valid council_error event', () => {
-      const event: ChatEvent = { type: 'council_error', error: 'Connection timeout' };
+      const event: ChatEvent = {
+        type: 'council_error',
+        error: 'Connection timeout',
+      };
       expect(isCouncilErrorEvent(event)).toBe(true);
     });
 
     it('should return false for other council events', () => {
-      const event: ChatEvent = { type: 'council_output', section: 'test', content: 'test', metadata: {} };
+      const event: ChatEvent = {
+        type: 'council_output',
+        section: 'test',
+        content: 'test',
+        metadata: {},
+      };
       expect(isCouncilErrorEvent(event)).toBe(false);
     });
 
     it('should return false for non-council events', () => {
-      const event: ChatEvent = { type: 'agent_complete', agent: 'research', result: 'done' };
+      const event: ChatEvent = {
+        type: 'agent_complete',
+        agent: 'research',
+        result: 'done',
+      };
       expect(isCouncilErrorEvent(event)).toBe(false);
     });
   });
 
   describe('isCouncilEvent (combined guard)', () => {
     it('should return true for council_interview', () => {
-      const event: ChatEvent = { type: 'council_interview', roster: {}, presets: [], rounds_options: [], audit_default: false };
+      const event: ChatEvent = {
+        type: 'council_interview',
+        roster: {},
+        presets: [],
+        rounds_options: [],
+        audit_default: false,
+      };
       expect(isCouncilEvent(event)).toBe(true);
     });
 
     it('should return true for council_progress', () => {
-      const event: ChatEvent = { type: 'council_progress', stage: 'test', current_round: 1, total_rounds: 1, models_complete: 0, models_total: 1 };
+      const event: ChatEvent = {
+        type: 'council_progress',
+        stage: 'test',
+        current_round: 1,
+        total_rounds: 1,
+        models_complete: 0,
+        models_total: 1,
+      };
       expect(isCouncilEvent(event)).toBe(true);
     });
 
     it('should return true for council_output', () => {
-      const event: ChatEvent = { type: 'council_output', section: 'test', content: 'test', metadata: {} };
+      const event: ChatEvent = {
+        type: 'council_output',
+        section: 'test',
+        content: 'test',
+        metadata: {},
+      };
       expect(isCouncilEvent(event)).toBe(true);
     });
 
     it('should return true for council_done', () => {
-      const event: ChatEvent = { type: 'council_done', session_id: 'x', total_tokens: 0, total_cost_usd: 0, models_used: [] };
+      const event: ChatEvent = {
+        type: 'council_done',
+        session_id: 'x',
+        total_tokens: 0,
+        total_cost_usd: 0,
+        models_used: [],
+      };
       expect(isCouncilEvent(event)).toBe(true);
     });
 
@@ -163,13 +219,42 @@ describe('Council Event Type Guards', () => {
       { type: 'text', content: 'hello' },
       { type: 'thinking', content: 'thinking...' },
       { type: 'routing', model: 'gpt-4', tier: 'auto' },
-      { type: 'agent_spawn', agent: 'research', agentType: 'explore', task: 'search' },
-      { type: 'agent_status', agent: 'research', status: 'running', progress: 50 },
+      {
+        type: 'agent_spawn',
+        agent: 'research',
+        agentType: 'explore',
+        task: 'search',
+      },
+      {
+        type: 'agent_status',
+        agent: 'research',
+        status: 'running',
+        progress: 50,
+      },
       { type: 'agent_complete', agent: 'research', result: 'done' },
-      { type: 'image_ready', url: 'http://example.com/img.png', prompt: 'a cat' },
-      { type: 'video_generating', request_id: 'req-123', estimated_seconds: 30 },
-      { type: 'video_complete', request_id: 'req-123', url: 'http://example.com/vid.mp4', duration: 10, resolution: '1080p' },
-      { type: 'video_failed', request_id: 'req-123', error: 'failed', refunded: true },
+      {
+        type: 'image_ready',
+        url: 'http://example.com/img.png',
+        prompt: 'a cat',
+      },
+      {
+        type: 'video_generating',
+        request_id: 'req-123',
+        estimated_seconds: 30,
+      },
+      {
+        type: 'video_complete',
+        request_id: 'req-123',
+        url: 'http://example.com/vid.mp4',
+        duration: 10,
+        resolution: '1080p',
+      },
+      {
+        type: 'video_failed',
+        request_id: 'req-123',
+        error: 'failed',
+        refunded: true,
+      },
       { type: 'tool_call', name: 'search', arguments: { query: 'test' } },
       { type: 'tool_result', name: 'search', result: { data: [] } },
       { type: 'pipeline_switch', pipeline: 'cloud' },
@@ -177,31 +262,31 @@ describe('Council Event Type Guards', () => {
     ];
 
     it('should reject all non-council events for isCouncilInterviewEvent', () => {
-      nonCouncilEvents.forEach(event => {
+      nonCouncilEvents.forEach((event) => {
         expect(isCouncilInterviewEvent(event)).toBe(false);
       });
     });
 
     it('should reject all non-council events for isCouncilProgressEvent', () => {
-      nonCouncilEvents.forEach(event => {
+      nonCouncilEvents.forEach((event) => {
         expect(isCouncilProgressEvent(event)).toBe(false);
       });
     });
 
     it('should reject all non-council events for isCouncilOutputEvent', () => {
-      nonCouncilEvents.forEach(event => {
+      nonCouncilEvents.forEach((event) => {
         expect(isCouncilOutputEvent(event)).toBe(false);
       });
     });
 
     it('should reject all non-council events for isCouncilDoneEvent', () => {
-      nonCouncilEvents.forEach(event => {
+      nonCouncilEvents.forEach((event) => {
         expect(isCouncilDoneEvent(event)).toBe(false);
       });
     });
 
     it('should reject all non-council events for isCouncilErrorEvent', () => {
-      nonCouncilEvents.forEach(event => {
+      nonCouncilEvents.forEach((event) => {
         expect(isCouncilErrorEvent(event)).toBe(false);
       });
     });
@@ -266,13 +351,37 @@ describe('Council Event Type Guards', () => {
   describe('isChatEvent validation', () => {
     it('should accept valid council events', () => {
       const events: ChatEvent[] = [
-        { type: 'council_interview', roster: {}, presets: [], rounds_options: [], audit_default: false },
-        { type: 'council_progress', stage: 'test', current_round: 1, total_rounds: 1, models_complete: 0, models_total: 1 },
-        { type: 'council_output', section: 'test', content: 'test', metadata: {} },
-        { type: 'council_done', session_id: 'x', total_tokens: 0, total_cost_usd: 0, models_used: [] },
+        {
+          type: 'council_interview',
+          roster: {},
+          presets: [],
+          rounds_options: [],
+          audit_default: false,
+        },
+        {
+          type: 'council_progress',
+          stage: 'test',
+          current_round: 1,
+          total_rounds: 1,
+          models_complete: 0,
+          models_total: 1,
+        },
+        {
+          type: 'council_output',
+          section: 'test',
+          content: 'test',
+          metadata: {},
+        },
+        {
+          type: 'council_done',
+          session_id: 'x',
+          total_tokens: 0,
+          total_cost_usd: 0,
+          models_used: [],
+        },
         { type: 'council_error', error: 'test' },
       ];
-      events.forEach(event => {
+      events.forEach((event) => {
         expect(isChatEvent(event)).toBe(true);
       });
     });

@@ -10,25 +10,25 @@ export function AgentStatusList({ agents }: AgentStatusListProps) {
   const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
 
   const handleDismiss = (id: string) => {
-    setDismissedIds(prev => {
+    setDismissedIds((prev) => {
       const next = new Set(prev);
       next.add(id);
       return next;
     });
   };
 
-  const activeAgents = agents.filter(agent => !dismissedIds.has(agent.id));
+  const activeAgents = agents.filter((agent) => !dismissedIds.has(agent.id));
 
   if (activeAgents.length === 0) return null;
 
   return (
     <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end max-h-[80vh] w-full max-w-xs pointer-events-none">
       <div className="pointer-events-auto overflow-y-auto w-full pr-2 space-y-4">
-        {activeAgents.map(agent => (
-          <AgentStatusCard 
-            key={agent.id} 
-            agent={agent} 
-            onDismiss={handleDismiss} 
+        {activeAgents.map((agent) => (
+          <AgentStatusCard
+            key={agent.id}
+            agent={agent}
+            onDismiss={handleDismiss}
           />
         ))}
       </div>

@@ -1,81 +1,84 @@
 const API_URLS = [
   process.env.DAEMON_INTERNAL_API_URL,
   process.env.NEXT_PUBLIC_API_URL,
-  "http://backend:8000",
-  "http://localhost:8000",
+  'http://backend:8000',
+  'http://localhost:8000',
 ].filter((url): url is string => Boolean(url));
 
 function buildProxyHeaders(req: Request): Headers {
   const headers = new Headers();
-  headers.set("Content-Type", "application/json");
+  headers.set('Content-Type', 'application/json');
 
-  const authHeader = req.headers.get("authorization");
+  const authHeader = req.headers.get('authorization');
   if (authHeader) {
-    headers.set("Authorization", authHeader);
+    headers.set('Authorization', authHeader);
   }
 
-  const cookie = req.headers.get("cookie");
-  if (cookie) headers.set("Cookie", cookie);
+  const cookie = req.headers.get('cookie');
+  if (cookie) headers.set('Cookie', cookie);
 
-  const origin = req.headers.get("origin");
-  if (origin) headers.set("Origin", origin);
+  const origin = req.headers.get('origin');
+  if (origin) headers.set('Origin', origin);
 
-  const referer = req.headers.get("referer");
-  if (referer) headers.set("Referer", referer);
+  const referer = req.headers.get('referer');
+  if (referer) headers.set('Referer', referer);
 
-  const secFetchSite = req.headers.get("sec-fetch-site");
-  if (secFetchSite) headers.set("Sec-Fetch-Site", secFetchSite);
+  const secFetchSite = req.headers.get('sec-fetch-site');
+  if (secFetchSite) headers.set('Sec-Fetch-Site', secFetchSite);
 
-  const host = req.headers.get("host");
-  if (host) headers.set("Host", host);
+  const host = req.headers.get('host');
+  if (host) headers.set('Host', host);
 
-  const xForwardedHost = req.headers.get("x-forwarded-host");
-  if (xForwardedHost) headers.set("X-Forwarded-Host", xForwardedHost);
+  const xForwardedHost = req.headers.get('x-forwarded-host');
+  if (xForwardedHost) headers.set('X-Forwarded-Host', xForwardedHost);
 
-  const xForwardedProto = req.headers.get("x-forwarded-proto");
-  if (xForwardedProto) headers.set("X-Forwarded-Proto", xForwardedProto);
+  const xForwardedProto = req.headers.get('x-forwarded-proto');
+  if (xForwardedProto) headers.set('X-Forwarded-Proto', xForwardedProto);
 
   return headers;
 }
 
 function extractTextContent(content: unknown): string {
-  if (typeof content === "string") {
+  if (typeof content === 'string') {
     return content;
   }
   if (Array.isArray(content)) {
     return content
       .map((part) => {
         if (
-          part
-          && typeof part === "object"
-          && "type" in part
-          && (part as { type?: unknown }).type === "text"
-          && "text" in part
-          && typeof (part as { text?: unknown }).text === "string"
+          part &&
+          typeof part === 'object' &&
+          'type' in part &&
+          (part as { type?: unknown }).type === 'text' &&
+          'text' in part &&
+          typeof (part as { text?: unknown }).text === 'string'
         ) {
           return (part as { text: string }).text;
         }
-        return "";
+        return '';
       })
       .filter(Boolean)
-      .join("\n")
+      .join('\n')
       .trim();
   }
-  return "";
+  return '';
 }
 
 export async function POST(req: Request) {
-  const { messages, id, model, attachments, metadata, provider } = await req.json();
+  const { messages, id, model, attachments, metadata, provider } =
+    await req.json();
 
-  const { createDataStreamResponse } = await import("ai");
-  const { formatDataStreamPart } = await import("@ai-sdk/ui-utils");
+  const { createDataStreamResponse } = await import('ai');
+  const { formatDataStreamPart } = await import('@ai-sdk/ui-utils');
 
   const normalizedMessages = (messages || []).map((m: any) => ({
     role: m.role,
     content: m.content,
   }));
 
-  const lastUserMessage = [...normalizedMessages].reverse().find((m) => m.role === "user");
+  const lastUserMessage = [...normalizedMessages]
+    .reverse()
+    .find((m) => m.role === 'user');
   const lastUserText = extractTextContent(lastUserMessage?.content);
 
   const proxyHeaders = buildProxyHeaders(req);
@@ -86,17 +89,17 @@ export async function POST(req: Request) {
   for (const apiUrl of API_URLS) {
     try {
       backendRes = await fetch(`${apiUrl}/chat`, {
-        method: "POST",
+        method: 'POST',
         headers: proxyHeaders,
-        credentials: "include",
+        credentials: 'include',
         body: JSON.stringify({
           message: lastUserText,
           conversation_id: id || null,
           messages: normalizedMessages,
-          model: model || "auto",
+          model: model || 'auto',
           provider: provider || null,
           attachments: Array.isArray(attachments) ? attachments : [],
-          metadata: metadata && typeof metadata === "object" ? metadata : null,
+          metadata: metadata && typeof metadata === 'object' ? metadata : null,
         }),
       });
       break;
@@ -108,8 +111,8 @@ export async function POST(req: Request) {
   const responseHeaders = new Headers();
   if (backendRes) {
     backendRes.headers.forEach((value, key) => {
-      if (key.toLowerCase() === "set-cookie") {
-        responseHeaders.append("Set-Cookie", value);
+      if (key.toLowerCase() === 'set-cookie') {
+        responseHeaders.append('Set-Cookie', value);
       }
     });
   }
@@ -120,8 +123,8 @@ export async function POST(req: Request) {
       if (!backendRes) {
         dataStream.write(
           formatDataStreamPart(
-            "text",
-            `Backend error (network): ${lastError?.message || "unknown error"}.`,
+            'text',
+            `Backend error (network): ${lastError?.message || 'unknown error'}.`,
           ),
         );
         return;
@@ -130,7 +133,7 @@ export async function POST(req: Request) {
       if (!backendRes.ok || !backendRes.body) {
         dataStream.write(
           formatDataStreamPart(
-            "text",
+            'text',
             `Backend error (${backendRes.status}): unable to stream response.`,
           ),
         );
@@ -139,13 +142,13 @@ export async function POST(req: Request) {
 
       const reader = backendRes.body.getReader();
       const decoder = new TextDecoder();
-      let buffer = "";
+      let buffer = '';
       let sawToken = false;
 
       const ensureAssistantMessageStarted = () => {
         if (!sawToken) {
           sawToken = true;
-          dataStream.write(formatDataStreamPart("text", "."));
+          dataStream.write(formatDataStreamPart('text', '.'));
         }
       };
 
@@ -155,20 +158,20 @@ export async function POST(req: Request) {
         buffer += decoder.decode(value, { stream: true });
 
         while (true) {
-          const sepIdx = buffer.indexOf("\n\n");
+          const sepIdx = buffer.indexOf('\n\n');
           if (sepIdx === -1) break;
 
           const frame = buffer.slice(0, sepIdx);
           buffer = buffer.slice(sepIdx + 2);
 
-          const lines = frame.split("\n");
-          let eventType = "message";
-          let dataText = "";
+          const lines = frame.split('\n');
+          let eventType = 'message';
+          let dataText = '';
 
           for (const line of lines) {
-            if (line.startsWith("event:")) {
+            if (line.startsWith('event:')) {
               eventType = line.slice(6).trim();
-            } else if (line.startsWith("data:")) {
+            } else if (line.startsWith('data:')) {
               dataText += line.slice(5).trim();
             }
           }
@@ -182,194 +185,207 @@ export async function POST(req: Request) {
             continue;
           }
 
-          if (eventType === "token") {
-            const delta = payload?.data?.text ?? payload?.data?.delta ?? payload?.text ?? payload?.delta;
-            if (typeof delta === "string" && delta.length > 0) {
+          if (eventType === 'token') {
+            const delta =
+              payload?.data?.text ??
+              payload?.data?.delta ??
+              payload?.text ??
+              payload?.delta;
+            if (typeof delta === 'string' && delta.length > 0) {
               sawToken = true;
-              dataStream.write(formatDataStreamPart("text", delta));
+              dataStream.write(formatDataStreamPart('text', delta));
             }
-          } else if (eventType === "thinking") {
+          } else if (eventType === 'thinking') {
             const content = payload?.data?.content ?? payload?.content;
-            if (typeof content === "string" && content.length > 0) {
+            if (typeof content === 'string' && content.length > 0) {
               dataStream.write(
-                formatDataStreamPart("data", [
+                formatDataStreamPart('data', [
                   {
-                    type: "thinking",
+                    type: 'thinking',
                     content: content,
                     id: payload?.id ?? payload?.data?.id,
-                    request_id: payload?.request_id ?? payload?.data?.request_id,
+                    request_id:
+                      payload?.request_id ?? payload?.data?.request_id,
                   },
                 ]),
               );
             }
-          } else if (eventType === "routing") {
+          } else if (eventType === 'routing') {
             const modelId = payload?.data?.model;
-            if (typeof modelId === "string" && modelId.length > 0) {
+            if (typeof modelId === 'string' && modelId.length > 0) {
               dataStream.write(
-                formatDataStreamPart("data", [
+                formatDataStreamPart('data', [
                   {
-                    type: "routing",
+                    type: 'routing',
                     model: modelId,
                     tier: payload?.data?.tier,
                     reason: payload?.data?.reason,
                     id: payload?.id ?? payload?.data?.id,
-                    request_id: payload?.request_id ?? payload?.data?.request_id,
+                    request_id:
+                      payload?.request_id ?? payload?.data?.request_id,
                   },
                 ]),
               );
             }
-          } else if (eventType === "conversation") {
-            const conversationId = payload?.data?.conversation_id || payload?.conversation_id;
+          } else if (eventType === 'conversation') {
+            const conversationId =
+              payload?.data?.conversation_id || payload?.conversation_id;
             if (conversationId) {
               dataStream.write(
-                formatDataStreamPart("data", [
+                formatDataStreamPart('data', [
                   {
-                    type: "conversation",
+                    type: 'conversation',
                     conversation_id: conversationId,
                   },
                 ]),
               );
             }
-          } else if (eventType === "tool_call") {
+          } else if (eventType === 'tool_call') {
             dataStream.write(
-              formatDataStreamPart("data", [
+              formatDataStreamPart('data', [
                 {
-                  type: "tool_call",
-                  name: payload?.data?.name || "",
+                  type: 'tool_call',
+                  name: payload?.data?.name || '',
                   arguments: payload?.data?.arguments || {},
                   id: payload?.id ?? payload?.data?.id,
                   request_id: payload?.request_id ?? payload?.data?.request_id,
                 },
               ]),
             );
-          } else if (eventType === "tool_result") {
+          } else if (eventType === 'tool_result') {
             dataStream.write(
-              formatDataStreamPart("data", [
+              formatDataStreamPart('data', [
                 {
-                  type: "tool_result",
-                  name: payload?.data?.name || "",
-                  result: payload?.data?.result || "",
+                  type: 'tool_result',
+                  name: payload?.data?.name || '',
+                  result: payload?.data?.result || '',
                   id: payload?.id ?? payload?.data?.id,
                   request_id: payload?.request_id ?? payload?.data?.request_id,
                 },
               ]),
             );
-          } else if (eventType === "video_generating") {
+          } else if (eventType === 'video_generating') {
             const requestId = payload?.data?.request_id ?? payload?.request_id;
-            const estimatedSeconds = payload?.data?.estimated_seconds ?? payload?.estimated_seconds;
+            const estimatedSeconds =
+              payload?.data?.estimated_seconds ?? payload?.estimated_seconds;
             if (requestId) {
               dataStream.write(
-                formatDataStreamPart("data", [
+                formatDataStreamPart('data', [
                   {
-                    type: "video_generating",
+                    type: 'video_generating',
                     request_id: requestId,
-                    estimated_seconds: typeof estimatedSeconds === "number" ? estimatedSeconds : 0,
+                    estimated_seconds:
+                      typeof estimatedSeconds === 'number'
+                        ? estimatedSeconds
+                        : 0,
                     id: payload?.id ?? payload?.data?.id,
                   },
                 ]),
               );
             }
-          } else if (eventType === "video_complete") {
+          } else if (eventType === 'video_complete') {
             const requestId = payload?.data?.request_id ?? payload?.request_id;
             const url = payload?.data?.url ?? payload?.url;
             if (requestId && url) {
               dataStream.write(
-                formatDataStreamPart("data", [
+                formatDataStreamPart('data', [
                   {
-                    type: "video_complete",
+                    type: 'video_complete',
                     request_id: requestId,
                     url: url,
                     duration: payload?.data?.duration ?? payload?.duration,
-                    resolution: payload?.data?.resolution ?? payload?.resolution,
+                    resolution:
+                      payload?.data?.resolution ?? payload?.resolution,
                     id: payload?.id ?? payload?.data?.id,
                   },
                 ]),
               );
             }
-          } else if (eventType === "video_failed") {
+          } else if (eventType === 'video_failed') {
             const requestId = payload?.data?.request_id ?? payload?.request_id;
             const error = payload?.data?.error ?? payload?.error;
             if (requestId) {
               dataStream.write(
-                formatDataStreamPart("data", [
+                formatDataStreamPart('data', [
                   {
-                    type: "video_failed",
+                    type: 'video_failed',
                     request_id: requestId,
-                    error: error || "Video generation failed",
-                    refunded: payload?.data?.refunded ?? payload?.refunded ?? false,
+                    error: error || 'Video generation failed',
+                    refunded:
+                      payload?.data?.refunded ?? payload?.refunded ?? false,
                     id: payload?.id ?? payload?.data?.id,
                   },
                 ]),
               );
             }
-          } else if (eventType === "council_interview") {
+          } else if (eventType === 'council_interview') {
             ensureAssistantMessageStarted();
             dataStream.write(
-              formatDataStreamPart("data", [
+              formatDataStreamPart('data', [
                 {
-                  type: "council_interview",
+                  type: 'council_interview',
                   ...payload?.data,
                   id: payload?.id ?? payload?.data?.id,
                   request_id: payload?.request_id ?? payload?.data?.request_id,
                 },
               ]),
             );
-          } else if (eventType === "council_progress") {
+          } else if (eventType === 'council_progress') {
             ensureAssistantMessageStarted();
             dataStream.write(
-              formatDataStreamPart("data", [
+              formatDataStreamPart('data', [
                 {
-                  type: "council_progress",
+                  type: 'council_progress',
                   ...payload?.data,
                   id: payload?.id ?? payload?.data?.id,
                   request_id: payload?.request_id ?? payload?.data?.request_id,
                 },
               ]),
             );
-          } else if (eventType === "council_output") {
+          } else if (eventType === 'council_output') {
             ensureAssistantMessageStarted();
             dataStream.write(
-              formatDataStreamPart("data", [
+              formatDataStreamPart('data', [
                 {
-                  type: "council_output",
+                  type: 'council_output',
                   ...payload?.data,
                   id: payload?.id ?? payload?.data?.id,
                   request_id: payload?.request_id ?? payload?.data?.request_id,
                 },
               ]),
             );
-          } else if (eventType === "council_done") {
+          } else if (eventType === 'council_done') {
             ensureAssistantMessageStarted();
             dataStream.write(
-              formatDataStreamPart("data", [
+              formatDataStreamPart('data', [
                 {
-                  type: "council_done",
+                  type: 'council_done',
                   ...payload?.data,
                   id: payload?.id ?? payload?.data?.id,
                   request_id: payload?.request_id ?? payload?.data?.request_id,
                 },
               ]),
             );
-          } else if (eventType === "council_error") {
+          } else if (eventType === 'council_error') {
             ensureAssistantMessageStarted();
             dataStream.write(
-              formatDataStreamPart("data", [
+              formatDataStreamPart('data', [
                 {
-                  type: "council_error",
+                  type: 'council_error',
                   ...payload?.data,
                   id: payload?.id ?? payload?.data?.id,
                   request_id: payload?.request_id ?? payload?.data?.request_id,
                 },
               ]),
             );
-          } else if (eventType === "final" && !sawToken) {
+          } else if (eventType === 'final' && !sawToken) {
             const content =
-              payload?.data?.text
-              ?? payload?.data?.message?.content
-              ?? payload?.text
-              ?? payload?.message?.content;
-            if (typeof content === "string" && content.length > 0) {
-              dataStream.write(formatDataStreamPart("text", content));
+              payload?.data?.text ??
+              payload?.data?.message?.content ??
+              payload?.text ??
+              payload?.message?.content;
+            if (typeof content === 'string' && content.length > 0) {
+              dataStream.write(formatDataStreamPart('text', content));
             }
           }
         }

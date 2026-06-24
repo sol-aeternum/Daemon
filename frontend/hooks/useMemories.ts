@@ -1,7 +1,7 @@
-"use client";
+'use client';
 
-import { useCallback, useEffect, useState } from "react";
-import { ensureAuthHeader } from "@/lib/auth";
+import { useCallback, useEffect, useState } from 'react';
+import { ensureAuthHeader } from '@/lib/auth';
 
 export interface Memory {
   id: string;
@@ -44,9 +44,11 @@ export function useMemories() {
 
   const apiBaseUrl =
     process.env.NEXT_PUBLIC_API_URL ||
-    (process.env.NODE_ENV === "development" ? "http://localhost:8000" : "");
+    (process.env.NODE_ENV === 'development' ? 'http://localhost:8000' : '');
 
-  const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
+  const getAuthHeaders = useCallback(async (): Promise<
+    Record<string, string>
+  > => {
     const header = await ensureAuthHeader();
     if (!header) return {};
     return { Authorization: header };
@@ -54,8 +56,10 @@ export function useMemories() {
 
   const apiCandidates = useCallback(
     (path: string) => {
-      const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-      const trimmedBase = apiBaseUrl.endsWith("/") ? apiBaseUrl.slice(0, -1) : apiBaseUrl;
+      const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+      const trimmedBase = apiBaseUrl.endsWith('/')
+        ? apiBaseUrl.slice(0, -1)
+        : apiBaseUrl;
 
       if (!trimmedBase) {
         return [normalizedPath];
@@ -63,7 +67,7 @@ export function useMemories() {
 
       return [`${trimmedBase}${normalizedPath}`, normalizedPath];
     },
-    [apiBaseUrl]
+    [apiBaseUrl],
   );
 
   const apiFetch = useCallback(
@@ -76,14 +80,19 @@ export function useMemories() {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => {
           try {
-            controller.abort(new DOMException("Request timed out", "AbortError"));
+            controller.abort(
+              new DOMException('Request timed out', 'AbortError'),
+            );
           } catch {
             controller.abort();
           }
         }, timeoutMs);
 
         try {
-          const response = await fetch(candidate, { ...init, signal: controller.signal });
+          const response = await fetch(candidate, {
+            ...init,
+            signal: controller.signal,
+          });
           clearTimeout(timeoutId);
 
           if (response.status === 404 && index < candidates.length - 1) {
@@ -103,9 +112,9 @@ export function useMemories() {
       if (lastError instanceof Error) {
         throw lastError;
       }
-      throw new Error("Request failed");
+      throw new Error('Request failed');
     },
-    [apiCandidates]
+    [apiCandidates],
   );
 
   const fetchMemories = useCallback(
@@ -115,15 +124,16 @@ export function useMemories() {
 
       try {
         const queryParams = new URLSearchParams();
-        if (params.category) queryParams.set("category", params.category);
-        if (params.source_type) queryParams.set("source_type", params.source_type);
-        if (params.status) queryParams.set("status", params.status);
-        if (params.search) queryParams.set("search", params.search);
-        if (params.limit) queryParams.set("limit", params.limit.toString());
-        if (params.offset) queryParams.set("offset", params.offset.toString());
+        if (params.category) queryParams.set('category', params.category);
+        if (params.source_type)
+          queryParams.set('source_type', params.source_type);
+        if (params.status) queryParams.set('status', params.status);
+        if (params.search) queryParams.set('search', params.search);
+        if (params.limit) queryParams.set('limit', params.limit.toString());
+        if (params.offset) queryParams.set('offset', params.offset.toString());
 
         const queryString = queryParams.toString();
-        const url = `/memories${queryString ? `?${queryString}` : ""}`;
+        const url = `/memories${queryString ? `?${queryString}` : ''}`;
 
         const response = await apiFetch(url, {
           headers: await getAuthHeaders(),
@@ -133,8 +143,9 @@ export function useMemories() {
           throw new Error(`Failed to fetch memories: ${response.status}`);
         }
 
-        const data: { memories: Memory[]; total: number } = await response.json();
-        
+        const data: { memories: Memory[]; total: number } =
+          await response.json();
+
         if (params.offset && params.offset > 0) {
           // Append for pagination
           setMemories((prev) => [...prev, ...data.memories]);
@@ -142,19 +153,22 @@ export function useMemories() {
           // Replace for initial fetch
           setMemories(data.memories);
         }
-        
+
         setTotal(data.total);
-        setHasMore(data.memories.length > 0 && data.memories.length >= (params.limit || 20));
+        setHasMore(
+          data.memories.length > 0 &&
+            data.memories.length >= (params.limit || 20),
+        );
       } catch (err) {
-        if (err instanceof DOMException && err.name === "AbortError") {
+        if (err instanceof DOMException && err.name === 'AbortError') {
           return;
         }
-        setError(err instanceof Error ? err.message : "Unknown error");
+        setError(err instanceof Error ? err.message : 'Unknown error');
       } finally {
         setLoading(false);
       }
     },
-    [apiFetch, getAuthHeaders]
+    [apiFetch, getAuthHeaders],
   );
 
   const loadMore = useCallback(
@@ -166,7 +180,7 @@ export function useMemories() {
       };
       await fetchMemories(currentParams);
     },
-    [fetchMemories, memories.length]
+    [fetchMemories, memories.length],
   );
 
   const deleteMemory = useCallback(
@@ -178,14 +192,14 @@ export function useMemories() {
 
       try {
         const response = await apiFetch(`/memories/${id}`, {
-          method: "DELETE",
+          method: 'DELETE',
           headers: await getAuthHeaders(),
         });
 
         if (!response.ok) {
           // Revert on error
           setMemories(previousMemories);
-          setError("Failed to delete memory");
+          setError('Failed to delete memory');
           return false;
         }
 
@@ -193,54 +207,63 @@ export function useMemories() {
       } catch {
         // Revert on error
         setMemories(previousMemories);
-        setError("Failed to delete memory");
+        setError('Failed to delete memory');
         return false;
       }
     },
-    [apiFetch, getAuthHeaders, memories]
+    [apiFetch, getAuthHeaders, memories],
   );
 
   const correctMemory = useCallback(
-    async (id: string, content: string, category?: string): Promise<Memory | null> => {
+    async (
+      id: string,
+      content: string,
+      category?: string,
+    ): Promise<Memory | null> => {
       const previousMemories = memories;
-      
+
       // Optimistic update
       setMemories((prev) =>
         prev.map((mem) =>
-          mem.id === id ? { ...mem, content, category: category || mem.category } : mem
-        )
+          mem.id === id
+            ? { ...mem, content, category: category || mem.category }
+            : mem,
+        ),
       );
 
       try {
         const response = await apiFetch(`/memories/${id}/correct`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) },
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(await getAuthHeaders()),
+          },
           body: JSON.stringify({ content, category }),
         });
 
         if (!response.ok) {
           // Revert on error
           setMemories(previousMemories);
-          setError("Failed to correct memory");
+          setError('Failed to correct memory');
           return null;
         }
 
         const correctedMemory: Memory = await response.json();
-        
+
         // Replace with corrected version
         setMemories((prev) =>
-          prev.map((mem) => (mem.id === id ? correctedMemory : mem))
+          prev.map((mem) => (mem.id === id ? correctedMemory : mem)),
         );
 
         return correctedMemory;
       } catch {
         // Revert on error
         setMemories(previousMemories);
-        setError("Failed to correct memory");
+        setError('Failed to correct memory');
         return null;
       }
     },
-    [apiFetch, getAuthHeaders, memories]
+    [apiFetch, getAuthHeaders, memories],
   );
 
   const fetchTrail = useCallback(
@@ -257,14 +280,14 @@ export function useMemories() {
         const trail: TrailItem[] = await response.json();
         return trail;
       } catch (err) {
-        if (err instanceof DOMException && err.name === "AbortError") {
+        if (err instanceof DOMException && err.name === 'AbortError') {
           return [];
         }
-        setError(err instanceof Error ? err.message : "Failed to fetch trail");
+        setError(err instanceof Error ? err.message : 'Failed to fetch trail');
         return [];
       }
     },
-    [apiFetch, getAuthHeaders]
+    [apiFetch, getAuthHeaders],
   );
 
   // Initial fetch and polling every 30 seconds
