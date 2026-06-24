@@ -1830,6 +1830,7 @@
 - **Evidence**: `UV_PROJECT_ENVIRONMENT=.uv-venv uv sync --locked` failed with `error: failed to create directory '/home/sol/.cache/uv': Permission denied (os error 13)`.
 - **Likely cause**: The managed workspace sandbox allows writes to `/home/sol/daemon` and `/tmp`, but not to the host-level uv cache directory (confidence 98%).
 - **Suggested action**: Use `UV_CACHE_DIR=/tmp/uv-cache` for sandboxed backend gate commands, or configure a project-local uv cache for agent runs.
+- **Seen again**: 2026-06-24 during #111 green-blocking-gates verification. `UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv uv run ruff format --check .` and `uv run basedpyright --level error` failed with `error: Failed to initialize cache at /home/sol/.cache/uv` / `Read-only file system (os error 30)`. Rerunning with `UV_CACHE_DIR=/home/sol/daemon/.worktrees/daemon-111/.uv-cache` passed.
 
 ## 2026-06-10 05:22 UTC — Full pytest run produced no terminal result after early failures
 - **Severity**: warning
@@ -1933,6 +1934,7 @@
 - **Evidence**: `npm run type-check` exited 2 after `next typegen && tsc --noEmit`; representative errors include `__tests__/advisor-events.test.ts(4,3): error TS2305: Module '"../lib/events"' has no exported member 'isAdvisorEndEvent'`, `lib/advisorEvents.ts(3,21): error TS2305: Module '"./events"' has no exported member 'isAdvisorEvent'`, and `__tests__/tool-call-log.test.ts(15,9): error TS2353: Object literal may only specify known properties, and 'tool_call_id' does not exist`.
 - **Likely cause**: Advisor/tool-call tests and helpers expect SSE event union members and metadata fields that are not present in `frontend/lib/events.ts` on this branch (confidence 90%).
 - **Suggested action**: Resolve the advisor event contract in the dedicated frontend Wave 0/event-schema follow-up; do not broaden issue #26 beyond logout.
+- **Seen again**: 2026-06-24 during #111 green-blocking-gates verification on a main-based branch while #108 was open in PR #152. `npm run type-check` exited 2 with the same missing advisor exports and metadata-field errors; representative output included `__tests__/advisor-events.test.ts(4,3): error TS2305: Module '"../lib/events"' has no exported member 'isAdvisorEndEvent'` and `lib/advisorEvents.ts(5,3): error TS2305: Module '"./events"' has no exported member 'isAdvisorEvent'`. The #111-local `app/page.tsx` type error exposed in the first run was fixed before recording this recurrence.
 
 ## 2026-06-12 10:56 UTC — Frontend lint and format gates have broad pre-existing debt
 - **Severity**: warning
@@ -1944,6 +1946,7 @@
 - **Evidence**: `npm run lint` exited 1 with 41 problems, including `app/artifacts/page.tsx:108:5 react-hooks/set-state-in-effect`, `app/studio/components/ImageLightbox.tsx:19:42 react-hooks/rules-of-hooks`, and `components/TextToSpeechButton.tsx:39:25 react-hooks/rules-of-hooks`. `npm run format:check` reported `Code style issues found in 125 files`. `npm exec eslint -- __tests__/auth.test.ts __tests__/auth-provider.test.tsx __tests__/auth-page.test.tsx components/AuthProvider.tsx lib/auth.ts --max-warnings 0` passed, and `npm exec prettier -- --check ...` passed for those same files.
 - **Likely cause**: Existing frontend React Compiler lint and formatting debt predates the logout change (confidence 95%).
 - **Suggested action**: Fix frontend lint/format debt in dedicated PRs or establish an explicit baseline; keep issue #26 scoped to logout behavior.
+- **Seen again / remediation in progress**: 2026-06-24 during #111 green-blocking-gates verification. Initial `npm run lint` reproduced `41 problems (28 errors, 13 warnings)` and `npm run format:check` reported 124 unformatted files; #111 lint and Prettier changes now make both `npm run lint` and serial `npm run format:check` pass in `/home/sol/daemon/.worktrees/daemon-111/frontend`.
 
 ## 2026-06-12 10:56 UTC — Auth frontend tests emit existing act/navigation warnings
 - **Severity**: info
@@ -1955,6 +1958,29 @@
 - **Evidence**: `npm run test:run -- auth.test.ts auth-provider.test.tsx` passed with `53 passed`; stderr included `An update to AuthProvider inside a test was not wrapped in act(...)` and `Error: Not implemented: navigation (except hash changes)` from `attemptPageLoadRefresh`.
 - **Likely cause**: Existing tests assert redirect side effects around asynchronous provider updates and read-only jsdom `window.location` behavior (confidence 85%).
 - **Suggested action**: Wrap provider-triggered updates in Testing Library `act` and isolate redirect assertions from jsdom's real navigation implementation in a frontend test cleanup.
+- **Seen again**: 2026-06-24 during #111 frontend inventory tests. `npm run test:run` still emitted `An update to AuthProvider inside a test was not wrapped in act(...)` and `Error: Not implemented: navigation (except hash changes)` while the run failed for the separate advisor-event debt.
+
+## 2026-06-24 00:29 UTC — #111 worktree hit full /tmp sandbox mount failure
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Issue #111 green-blocking-gates verification
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: The sandbox runtime could not register its `/tmp/.git` mount target because `/tmp` was full. Removing the clean temporary `/tmp/daemon-141` worktree freed about 975 MiB and allowed commands to resume.
+- **Evidence**: `df -h /tmp` showed `tmpfs 7.7G 7.7G 0 100% /tmp`; failed commands printed `failed to register synthetic bubblewrap mount target /tmp/.git: No space left on device (os error 28)`. `du -sh /tmp/*` showed large temporary worktrees including `/tmp/daemon-45` at 2.5G, `/tmp/daemon-43` and `/tmp/daemon-44` at 1.9G each, and `/tmp/daemon-141` at 975M. After `git worktree remove /tmp/daemon-141`, `/tmp` had 975M available.
+- **Likely cause**: Old temporary issue worktrees and frontend dependency trees consumed the tmpfs, matching prior full-`/tmp` recurrences (confidence 95%).
+- **Suggested action**: Prefer `.worktrees/` under the repo for new issue work and prune clean `/tmp` worktrees after their PRs no longer need local state.
+
+## 2026-06-24 00:29 UTC — #111 invalid frontend format command
+- **Severity**: info
+- **Scope**: tooling
+- **Encountered during**: Issue #111 green-blocking-gates verification
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: I attempted `npm run format -- --write .`, but the frontend package only defines `format:check`, not `format`. The actual formatting pass used the pinned local Prettier binary instead.
+- **Evidence**: `npm run format -- --write .` exited 1 with `npm error Missing script: "format"` and `Log files were not written due to an error writing to the directory: /home/sol/.npm/_logs`. `./node_modules/.bin/prettier --write .` then completed successfully.
+- **Likely cause**: Operator command mismatch with the package scripts (confidence 100%).
+- **Suggested action**: Use `./node_modules/.bin/prettier --write <paths>` for write passes unless a `format` package script is added intentionally.
 
 ## 2026-06-12 10:56 UTC — Temporary logout test insertion produced syntax error before correction
 - **Severity**: info
@@ -1988,6 +2014,7 @@
 - **Evidence**: `npm --prefix frontend run audit:ci` reported `27 vulnerabilities (4 low, 8 moderate, 14 high, 1 critical)`. Representative advisories included `vitest <3.2.6` critical `GHSA-5xrq-8626-4rwp`, `next 9.3.4-canary.0 - 16.3.0-canary.5` high advisories, and vulnerable `@ai-sdk/provider-utils`.
 - **Likely cause**: New upstream advisories now apply to the locked frontend dependency graph; some suggested fixes require breaking upgrades such as AI SDK, Next, or next-pwa (confidence 95%).
 - **Suggested action**: Handle through the locked dependency remediation process in a dedicated security/dependency PR; do not hand-edit lockfiles in issue #26.
+- **Seen again / changed count**: 2026-06-24 during #111 setup. `npm ci` in `/home/sol/daemon/.worktrees/daemon-111/frontend` completed but reported `30 vulnerabilities (6 low, 8 moderate, 15 high, 1 critical)` plus install-script approval warnings for `esbuild`, `sharp`, and `unrs-resolver`.
 
 ## 2026-06-12 11:20 UTC — Issue #42 backend local CI timed out in inventory pytest
 - **Severity**: warning

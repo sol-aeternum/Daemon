@@ -1,9 +1,13 @@
-"use client";
+'use client';
 
-import { Download, Image as ImageIcon, Loader2 } from "lucide-react";
-import type { StudioGeneration } from "../types";
-import { useAuthenticatedImageUrl, isProtectedPath } from "@/hooks/useAuthenticatedImageUrl";
-import { ensureAuthHeader } from "@/lib/auth";
+import { Download, Image as ImageIcon, Loader2 } from 'lucide-react';
+import Image from 'next/image';
+import type { StudioGeneration } from '../types';
+import {
+  useAuthenticatedImageUrl,
+  isProtectedPath,
+} from '@/hooks/useAuthenticatedImageUrl';
+import { ensureAuthHeader } from '@/lib/auth';
 
 interface ImageCardProps {
   generation: StudioGeneration;
@@ -11,33 +15,45 @@ interface ImageCardProps {
   onUseAsReference: (generation: StudioGeneration) => void;
 }
 
-export function ImageCard({ generation, onOpen, onUseAsReference }: ImageCardProps) {
-  const isLoading = generation.status === "queued" || generation.status === "generating";
-  const isError = generation.status === "error";
-  const { displayUrl, loading: imageLoading, error: imageError } = useAuthenticatedImageUrl(generation.imageUrl);
+export function ImageCard({
+  generation,
+  onOpen,
+  onUseAsReference,
+}: ImageCardProps) {
+  const isLoading =
+    generation.status === 'queued' || generation.status === 'generating';
+  const isError = generation.status === 'error';
+  const {
+    displayUrl,
+    loading: imageLoading,
+    error: imageError,
+  } = useAuthenticatedImageUrl(generation.imageUrl);
 
   const handleDownload = async () => {
     if (!generation.imageUrl) return;
     let objectUrl: string | null = null;
     let cleanupAnchor: HTMLAnchorElement | null = null;
     try {
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-      const fullUrl = generation.imageUrl.startsWith("/") ? `${apiBaseUrl}${generation.imageUrl}` : generation.imageUrl;
+      const apiBaseUrl =
+        process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      const fullUrl = generation.imageUrl.startsWith('/')
+        ? `${apiBaseUrl}${generation.imageUrl}`
+        : generation.imageUrl;
       const isProtected = isProtectedPath(generation.imageUrl);
       const headers: HeadersInit = {};
       if (isProtected) {
         const authHeader = await ensureAuthHeader();
-        if (authHeader) headers["Authorization"] = authHeader;
+        if (authHeader) headers['Authorization'] = authHeader;
       }
       const response = await fetch(fullUrl, { headers });
       if (!response.ok) throw new Error(`Download failed: ${response.status}`);
       const blob = await response.blob();
       objectUrl = URL.createObjectURL(blob);
-      const link = document.createElement("a");
+      const link = document.createElement('a');
       link.href = objectUrl;
       link.download = `${generation.modelId}-${generation.id}.png`;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
       document.body.appendChild(link);
       cleanupAnchor = link;
       link.click();
@@ -58,18 +74,27 @@ export function ImageCard({ generation, onOpen, onUseAsReference }: ImageCardPro
               <Loader2 className="h-6 w-6 animate-spin" />
             </div>
           ) : imageError ? (
-            <div className="flex h-full items-center justify-center text-[var(--color-text-muted)] text-sm">Failed to load</div>
+            <div className="flex h-full items-center justify-center text-[var(--color-text-muted)] text-sm">
+              Failed to load
+            </div>
           ) : displayUrl ? (
-            <img
+            <Image
               src={displayUrl}
               alt={generation.prompt}
-              className="h-full w-full object-cover cursor-pointer"
+              width={512}
+              height={512}
+              unoptimized
+              className="h-full w-full cursor-pointer object-cover"
               onClick={() => onOpen(generation)}
             />
           ) : null
         ) : (
           <div className="flex h-full items-center justify-center text-[var(--color-text-muted)]">
-            {isLoading ? <Loader2 className="h-6 w-6 animate-spin" /> : <ImageIcon className="h-6 w-6" />}
+            {isLoading ? (
+              <Loader2 className="h-6 w-6 animate-spin" />
+            ) : (
+              <ImageIcon className="h-6 w-6" />
+            )}
           </div>
         )}
       </div>
@@ -80,13 +105,24 @@ export function ImageCard({ generation, onOpen, onUseAsReference }: ImageCardPro
         </p>
         <div className="flex items-center justify-between text-[var(--color-text-muted)]">
           <span>{generation.status}</span>
-          <span>{generation.generationTimeMs ? `${generation.generationTimeMs}ms` : "-"}</span>
+          <span>
+            {generation.generationTimeMs
+              ? `${generation.generationTimeMs}ms`
+              : '-'}
+          </span>
         </div>
         <div className="text-[var(--color-text-muted)]">
-          Cost: {typeof generation.costEstimate === "number" ? `$${generation.costEstimate.toFixed(4)}` : "-"}
+          Cost:{' '}
+          {typeof generation.costEstimate === 'number'
+            ? `$${generation.costEstimate.toFixed(4)}`
+            : '-'}
         </div>
 
-        {isError && <p className="text-red-400">{generation.error || "Generation failed"}</p>}
+        {isError && (
+          <p className="text-red-400">
+            {generation.error || 'Generation failed'}
+          </p>
+        )}
 
         {generation.imageUrl && (
           <div className="flex gap-2">
