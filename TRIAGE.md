@@ -1,5 +1,15 @@
 # TRIAGE.md
 
+## 2026-06-14T01:26:26+09:30 — #45 PR Wrapper Refused On Existing Local Gate Debt
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #45 council read-only tool registry PR creation
+- **Category**: build-error | test-failure | dependency | security
+- **Blocked current task**: no
+- **What happened**: `scripts/pr_create.sh` ran all local CI families and refused to call `gh pr create` because unrelated frontend blocking gates failed outside the backend-only #45 change surface. Backend and aggregate blocking gates passed; backend inventory completed and surfaced existing auth-scoping fixture errors plus additional unrelated entity/Google route failures.
+- **Evidence**: Wrapper summary reported blocking failures `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`. Backend blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect` passed. Backend inventory `PYTHONPATH=. uv run pytest -q` reported `3 failed, 1967 passed, 5 skipped, 100 warnings, 5 errors`: the known `tests/test_auth_user_scoping.py` async context-manager setup errors, `tests/test_entity_integration.py` `EncryptionKeyMissing` failures, and `tests/test_identity_google_routes.py` expected `["ip"]` but got `["ip", "ip"]`. Frontend type/build still failed on missing advisor event exports from `frontend/lib/events.ts`, and frontend inventory tests still had 19 advisor/tool-call failures.
+- **Likely cause**: The wrapper enforces all families for a backend-only PR while main carries unrelated frontend advisor-event/lint/format debt and backend inventory test debt. Confidence: 95%.
+- **Suggested action**: Open #45 directly after the documented wrapper refusal, rely on hosted branch-protection checks plus Codex review before any merge, and handle frontend advisor-event and backend inventory failures in dedicated cleanup issues.
 ## 2026-06-23 23:52 UTC — #108 backend inventory reproduced Google route duplicate-IP failure
 - **Severity**: warning
 - **Scope**: project
@@ -1901,6 +1911,7 @@
 - **Seen again**: 2026-06-12 during #24 PR-wrapper creation. Escalated `scripts/pr_create.sh` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 - **Seen again**: 2026-06-12 during #113 backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 - **Seen again**: 2026-06-12 during #54 backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
+- **Seen again**: 2026-06-14 during #45 PR-wrapper creation. Escalated `scripts/pr_create.sh` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 - **Seen again with changed count**: 2026-06-23 during #108 PR-wrapper backend inventory. `scripts/pr_create.sh` reached PyPI and reported `Found 69 known vulnerabilities in 16 packages`; this remained inventory/non-blocking.
 
 ## 2026-06-10 08:47 UTC — Backend inventory gates report existing security and warning debt
@@ -1926,6 +1937,7 @@
 - **Likely cause**: The wrapper enforces all families even though the issue sequence calls for affected-family local CI and explicitly notes frontend Wave 0 breakage for #108 (confidence 98%).
 - **Suggested action**: Either allow `scripts/pr_create.sh` to accept a local-CI family selector for backend-only PRs, or complete #108 before using the all-family wrapper path.
 - **Seen again**: 2026-06-12 during #24 PR creation. Backend blocking gates and aggregate gates passed inside the wrapper, but `scripts/pr_create.sh` refused to call `gh pr create` because unrelated frontend blocking gates failed: `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`.
+- **Seen again**: 2026-06-14 during #45 PR creation. Backend blocking gates and aggregate gates passed inside the wrapper, but `scripts/pr_create.sh` refused to call `gh pr create` because unrelated frontend blocking gates failed: `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`.
 - **Seen again**: 2026-06-23 during #108 PR creation. Backend blocking gates, frontend `type-check`, frontend `test-run`, frontend `build`, and aggregate gates passed inside the wrapper, but `scripts/pr_create.sh` refused to call `gh pr create` because unrelated frontend blocking gates failed: `frontend/lint (exit=1)` and `frontend/format-check (exit=1)`.
 
 ## 2026-06-12 10:56 UTC — Frontend test dependencies unavailable in isolated worktree
@@ -2021,6 +2033,7 @@
 - **Seen again**: 2026-06-12 during #113 refresh-rotation grace verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory full pytest reached late-suite progress after showing unrelated failures and then the outer timeout exited `124`.
 - **Seen again**: 2026-06-12 during #54 session cleanup grace-days verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` and `pip-audit` reported existing non-blocking findings, inventory full pytest printed progress through `[ 91%]` with one `F` marker but no failure summary before the outer timeout exited `124`.
 - **Seen again**: 2026-06-13 during #56 session cleanup / refresh serialization verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `pip-audit` failed DNS resolution for `pypi.org`, full pytest printed the known `tests/test_auth_user_scoping.py` setup errors plus one `F` marker, then reached late-suite progress before the outer timeout exited `124`.
+- **Seen again**: 2026-06-14 during #45 council read-only tool registry verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed known auth-scoping setup errors plus a late-suite `F` marker before reaching `[ 90%]` and exiting `124`.
 
 ## 2026-06-12 11:20 UTC — Existing auth user scoping fixture fails development pepper setup
 - **Severity**: warning
@@ -2034,6 +2047,7 @@
 - **Suggested action**: Update that fixture to use the existing mock async context manager pattern from setup/auth runtime tests in a dedicated cleanup.
 - **Seen again**: 2026-06-12 during #24 PR-wrapper backend inventory. Full inventory pytest completed and surfaced the same `TypeError: 'coroutine' object does not support the asynchronous context manager protocol` in `tests/test_auth_user_scoping.py` setup; #24 focused enrollment tests were unaffected.
 - **Seen again**: 2026-06-13 during #56 backend local CI inventory. Full pytest again surfaced the same `TypeError: 'coroutine' object does not support the asynchronous context manager protocol (missed __aexit__ method)` at `orchestrator/auth_runtime_state.py:97` in `tests/test_auth_user_scoping.py` setup; #56 focused session cleanup / refresh tests were unaffected.
+- **Seen again**: 2026-06-14 during #45 PR-wrapper backend inventory. Full pytest again surfaced the same `TypeError: 'coroutine' object does not support the asynchronous context manager protocol (missed __aexit__ method)` at `orchestrator/auth_runtime_state.py:97` in `tests/test_auth_user_scoping.py` setup; #45 focused council tool-registry tests were unaffected.
 - **Seen again**: 2026-06-23 during #108 PR-wrapper backend inventory. Full pytest again surfaced 5 setup errors in `tests/test_auth_user_scoping.py`, all rooted in `TypeError: 'coroutine' object does not support the asynchronous context manager protocol` at `orchestrator/auth_runtime_state.py:97`; #108 frontend advisor tests were unaffected.
 
 ## 2026-06-12 11:20 UTC — Chat history tests still emit existing AsyncMock warning debt
