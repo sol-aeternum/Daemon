@@ -1,5 +1,16 @@
 # TRIAGE.md
 
+## 2026-06-23 23:52 UTC — #108 backend inventory reproduced Google route duplicate-IP failure
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #108 advisor event type PR creation
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: The PR wrapper's full backend inventory pytest completed and reported one unrelated Google auth route failure. The #108 frontend-focused type-check, advisor tests, full Vitest suite, and production build passed.
+- **Evidence**: `tests/test_identity_google_routes.py::TestGoogleCompleteRoute::test_web_private_returns_access_only_and_refresh_cookie` failed because the test expected `["ip"]` but received `["ip", "ip"]`; the wrapper backend inventory summary reported `1 failed, 1967 passed, 5 skipped, 100 warnings, 5 errors`.
+- **Likely cause**: Existing Google auth route/test fixture behavior is recording the same private web IP event twice, independent of the advisor event typing and frontend bridge changes (confidence 85%).
+- **Suggested action**: Investigate Google complete route rate-limit/IP recording idempotency in a dedicated auth issue; do not broaden #108.
+
 ## 2026-06-12T22:34:10+09:30 — #54 PR Wrapper Refused On Existing Local Gate Debt
 - **Severity**: warning
 - **Scope**: project | host
@@ -1890,6 +1901,7 @@
 - **Seen again**: 2026-06-12 during #24 PR-wrapper creation. Escalated `scripts/pr_create.sh` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 - **Seen again**: 2026-06-12 during #113 backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 - **Seen again**: 2026-06-12 during #54 backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
+- **Seen again with changed count**: 2026-06-23 during #108 PR-wrapper backend inventory. `scripts/pr_create.sh` reached PyPI and reported `Found 69 known vulnerabilities in 16 packages`; this remained inventory/non-blocking.
 
 ## 2026-06-10 08:47 UTC — Backend inventory gates report existing security and warning debt
 - **Severity**: warning
@@ -1901,6 +1913,7 @@
 - **Evidence**: Local CI summary: `blocking failures: 0`, `Inventory reports (non-blocking): backend/bandit (exit=1), backend/pip-audit (exit=1)`, `PASS All blocking gates passed`. Full pytest output: `1838 passed, 4 skipped, 95 warnings`.
 - **Likely cause**: The repository intentionally treats Bandit and pip-audit as inventory for legacy debt, and the test suite still has warning debt from third-party deprecations plus some mock shape mismatches (confidence 90%).
 - **Suggested action**: Track Bandit findings and pytest warnings in dedicated cleanup issues; keep them non-blocking until the inventory baseline is actively ratcheted.
+- **Seen again**: 2026-06-23 during #108 PR-wrapper backend inventory. Backend blocking gates passed, while inventory reported `bandit (exit=1)`, `pip-audit (exit=1)`, and full `pytest (exit=1)` with known auth-scoping setup errors plus the Google route duplicate-IP failure.
 
 ## 2026-06-10 08:47 UTC — PR wrapper blocked by unrelated frontend gates
 - **Severity**: warning
@@ -1913,6 +1926,7 @@
 - **Likely cause**: The wrapper enforces all families even though the issue sequence calls for affected-family local CI and explicitly notes frontend Wave 0 breakage for #108 (confidence 98%).
 - **Suggested action**: Either allow `scripts/pr_create.sh` to accept a local-CI family selector for backend-only PRs, or complete #108 before using the all-family wrapper path.
 - **Seen again**: 2026-06-12 during #24 PR creation. Backend blocking gates and aggregate gates passed inside the wrapper, but `scripts/pr_create.sh` refused to call `gh pr create` because unrelated frontend blocking gates failed: `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`.
+- **Seen again**: 2026-06-23 during #108 PR creation. Backend blocking gates, frontend `type-check`, frontend `test-run`, frontend `build`, and aggregate gates passed inside the wrapper, but `scripts/pr_create.sh` refused to call `gh pr create` because unrelated frontend blocking gates failed: `frontend/lint (exit=1)` and `frontend/format-check (exit=1)`.
 
 ## 2026-06-12 10:56 UTC — Frontend test dependencies unavailable in isolated worktree
 - **Severity**: warning
@@ -2020,6 +2034,7 @@
 - **Suggested action**: Update that fixture to use the existing mock async context manager pattern from setup/auth runtime tests in a dedicated cleanup.
 - **Seen again**: 2026-06-12 during #24 PR-wrapper backend inventory. Full inventory pytest completed and surfaced the same `TypeError: 'coroutine' object does not support the asynchronous context manager protocol` in `tests/test_auth_user_scoping.py` setup; #24 focused enrollment tests were unaffected.
 - **Seen again**: 2026-06-13 during #56 backend local CI inventory. Full pytest again surfaced the same `TypeError: 'coroutine' object does not support the asynchronous context manager protocol (missed __aexit__ method)` at `orchestrator/auth_runtime_state.py:97` in `tests/test_auth_user_scoping.py` setup; #56 focused session cleanup / refresh tests were unaffected.
+- **Seen again**: 2026-06-23 during #108 PR-wrapper backend inventory. Full pytest again surfaced 5 setup errors in `tests/test_auth_user_scoping.py`, all rooted in `TypeError: 'coroutine' object does not support the asynchronous context manager protocol` at `orchestrator/auth_runtime_state.py:97`; #108 frontend advisor tests were unaffected.
 
 ## 2026-06-12 11:20 UTC — Chat history tests still emit existing AsyncMock warning debt
 - **Severity**: info
