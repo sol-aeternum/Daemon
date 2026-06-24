@@ -51,8 +51,7 @@ jobs:
         continue-on-error: true
         run: uv run pip-audit
 
-      - name: Pytest inventory
-        continue-on-error: true
+      - name: Pytest
         run: PYTHONPATH=. uv run pytest -q
 
   frontend:
@@ -75,28 +74,23 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Type check inventory
-        continue-on-error: true
+      - name: Type check
         run: npm run type-check
 
-      - name: ESLint inventory
-        continue-on-error: true
+      - name: ESLint
         run: npm run lint
 
-      - name: Prettier check inventory
-        continue-on-error: true
+      - name: Prettier check
         run: npm run format:check
 
       - name: Frontend dependency audit inventory
         continue-on-error: true
         run: npm run audit:ci
 
-      - name: Vitest inventory
-        continue-on-error: true
+      - name: Vitest
         run: npm run test:run
 
-      - name: Build inventory
-        continue-on-error: true
+      - name: Build
         run: npm run build
 
   feature-matrix:

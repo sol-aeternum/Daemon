@@ -62,14 +62,14 @@ backend|basedpyright|blocking|uv run basedpyright --level error
 backend|pytest-collect|blocking|PYTHONPATH=. uv run pytest --collect-only -q
 backend|bandit|inventory|uv run bandit -r orchestrator providers scripts tests
 backend|pip-audit|inventory|uv run pip-audit
-backend|pytest|inventory|PYTHONPATH=. uv run pytest -q
+backend|pytest|blocking|PYTHONPATH=. uv run pytest -q
 frontend|npm-ci|inventory|npm ci --prefix frontend --no-audit --no-fund --prefer-offline
 frontend|type-check|blocking|npm --prefix frontend run type-check
 frontend|lint|blocking|npm --prefix frontend run lint
 frontend|format-check|blocking|npm --prefix frontend run format:check
 frontend|audit-ci|inventory|npm --prefix frontend run audit:ci
-frontend|test-run|inventory|npm --prefix frontend run test:run
-frontend|build|inventory|npm --prefix frontend run build
+frontend|test-run|blocking|npm --prefix frontend run test:run
+frontend|build|blocking|npm --prefix frontend run build
 aggregate|feature-matrix|blocking|python scripts/lint_feature_matrix.py
 aggregate|pre-commit|blocking|uv run pre-commit run --all-files
 EOF

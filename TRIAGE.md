@@ -1,5 +1,16 @@
 # TRIAGE.md
 
+## 2026-06-24T10:24:13+09:30 — #68 Local CI Verification Hit Existing Worktree And Auth Test Debt
+- **Severity**: warning
+- **Scope**: project | tooling
+- **Encountered during**: Issue #68 CI test gating
+- **Category**: build-error | test-failure | other
+- **Blocked current task**: no
+- **What happened**: Initial verification included one invalid Ruff invocation against YAML/shell files, then the first backend local-CI run hit the recurring worktree `.uv-venv` lookup problem and existing full-suite auth test failures. After adding a worktree-local `.uv-venv` symlink, `basedpyright`, repo-wide Ruff lint/format, and the focused #68 regression test passed.
+- **Evidence**: `uv run ruff check .github/workflows/ci.yml scripts/local_ci.sh tests/test_ci_workflow_gating.py` exited 1 with YAML/shell `invalid-syntax` diagnostics because Ruff only checks Python. `scripts/local_ci.sh backend` initially printed `venv .uv-venv subdirectory not found in venv path /home/sol/daemon/.worktrees/daemon-68` and then full pytest showed the known `tests/test_auth_user_scoping.py` setup errors plus `tests/test_identity_google_routes.py::TestGoogleCompleteRoute::test_web_private_returns_access_only_and_refresh_cookie` expecting `['ip']` but receiving `['ip', 'ip']`; the run then became silent after late-suite progress. Follow-up commands with the symlink reported `0 errors, 0 warnings, 0 notes`, `All checks passed!`, and `314 files already formatted`.
+- **Likely cause**: Operator error for the invalid Ruff target; the basedpyright issue is the known worktree-local venv requirement; the auth test failures/stall are pre-existing main-suite debt not caused by the CI workflow edit (confidence 95%).
+- **Suggested action**: Keep #68 scoped to CI gating and use focused workflow tests plus hosted branch protection for final validation; separately fix the auth scoping fixture and Google rate-limit expectation before relying on full local backend pytest as a blocking gate.
+
 ## 2026-06-12T22:34:10+09:30 — #54 PR Wrapper Refused On Existing Local Gate Debt
 - **Severity**: warning
 - **Scope**: project | host
