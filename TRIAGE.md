@@ -1,5 +1,15 @@
 # TRIAGE.md
 
+## 2026-06-14T00:05:00+09:30 — #55 PR Wrapper Timed Out In Backend Inventory
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Issue #55 consolidation interval validation PR creation
+- **Category**: tooling | test-failure
+- **Blocked current task**: no
+- **What happened**: `scripts/pr_create.sh` was attempted with the audited uv environment and a temporary `.uv-venv` symlink. Backend blocking gates passed inside the wrapper, but the wrapper timed out during the non-blocking full backend pytest inventory before it could reach `gh pr create`.
+- **Evidence**: `UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv UV_CACHE_DIR=/tmp/uv-cache timeout 420s scripts/pr_create.sh -- ...` exited `124` after backend `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect` passed. Inventory `pip-audit` failed DNS resolution for `pypi.org`, and full pytest reached late-suite progress after the known auth-scoping setup errors plus one `F` marker.
+- **Likely cause**: Same recurring local full-pytest inventory stall tracked for backend-only issue worktrees; the PR wrapper runs the inventory phase before PR creation. Confidence: 90%.
+- **Suggested action**: Let the PR wrapper skip non-blocking inventory before `gh pr create`, or rely on hosted protected checks after local blocking gates pass.
 ## 2026-06-13T23:58:00+09:30 — #50 PR Wrapper Timed Out In Backend Inventory
 - **Severity**: warning
 - **Scope**: host
@@ -2064,6 +2074,7 @@
 - **Seen again**: 2026-06-12 during #113 refresh-rotation grace verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory full pytest reached late-suite progress after showing unrelated failures and then the outer timeout exited `124`.
 - **Seen again**: 2026-06-12 during #54 session cleanup grace-days verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` and `pip-audit` reported existing non-blocking findings, inventory full pytest printed progress through `[ 91%]` with one `F` marker but no failure summary before the outer timeout exited `124`.
 - **Seen again**: 2026-06-13 during #56 session cleanup / refresh serialization verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `pip-audit` failed DNS resolution for `pypi.org`, full pytest printed the known `tests/test_auth_user_scoping.py` setup errors plus one `F` marker, then reached late-suite progress before the outer timeout exited `124`.
+- **Seen again**: 2026-06-13 during #55 consolidation interval validation. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed the known auth-scoping setup errors plus one `F` marker before reaching late-suite progress and exiting `124`.
 - **Seen again**: 2026-06-14 during #50 migration advisory-lock verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed the known auth-scoping setup errors plus one `F` marker before reaching late-suite progress and exiting `124`.
 - **Seen again**: 2026-06-14 during #47 council duplicate-output regression verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed the known auth-scoping setup errors plus a late-suite `F` marker before reaching `[ 91%]` and exiting `124`.
 - **Seen again**: 2026-06-14 during #45 council read-only tool registry verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed known auth-scoping setup errors plus a late-suite `F` marker before reaching `[ 90%]` and exiting `124`.
