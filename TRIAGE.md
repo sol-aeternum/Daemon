@@ -21,6 +21,16 @@
 - **Evidence**: `rg -n "council_output|_emit_council_output_events|stream_council" orchestrator/council/sse.py tests/council -S` showed `stream_council` output handling at `orchestrator/council/sse.py:407` and interview-response output handling at `orchestrator/council/sse.py:511`, not two output handlers in one council invocation.
 - **Likely cause**: The issue evidence is stale relative to current `origin/main`, or the duplicate was removed by earlier council SSE work without a dedicated regression test (confidence 90%).
 - **Suggested action**: Keep the #47 PR as regression coverage asserting `stream_council` invokes `_emit_council_output_events` exactly once per council output result.
+## 2026-06-23 23:52 UTC — #108 backend inventory reproduced Google route duplicate-IP failure
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #108 advisor event type PR creation
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: The PR wrapper's full backend inventory pytest completed and reported one unrelated Google auth route failure. The #108 frontend-focused type-check, advisor tests, full Vitest suite, and production build passed.
+- **Evidence**: `tests/test_identity_google_routes.py::TestGoogleCompleteRoute::test_web_private_returns_access_only_and_refresh_cookie` failed because the test expected `["ip"]` but received `["ip", "ip"]`; the wrapper backend inventory summary reported `1 failed, 1967 passed, 5 skipped, 100 warnings, 5 errors`.
+- **Likely cause**: Existing Google auth route/test fixture behavior is recording the same private web IP event twice, independent of the advisor event typing and frontend bridge changes (confidence 85%).
+- **Suggested action**: Investigate Google complete route rate-limit/IP recording idempotency in a dedicated auth issue; do not broaden #108.
 
 ## 2026-06-12T22:34:10+09:30 — #54 PR Wrapper Refused On Existing Local Gate Debt
 - **Severity**: warning
@@ -250,6 +260,7 @@
 - **Likely cause**: Current Vitest/jsdom/Node runtime exposes a localStorage-related experimental warning unless Node is launched with `--localstorage-file`, even when tests provide their own localStorage mock (confidence 80%).
 - **Suggested action**: If the warning becomes noisy, configure the frontend test runner with an explicit localStorage file or suppress the Node experimental warning for this test environment.
 - **Seen again**: 2026-06-05 during the PR #7 current-head follow-up fix pass when the targeted Vitest command for `__tests__/auth.test.ts`, `__tests__/auth-landing.test.tsx`, and `__tests__/deployment.test.ts` passed but still printed the same `ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.`
+- **Seen again**: 2026-06-23 during #108 frontend local CI. `scripts/local_ci.sh frontend` passed `test-run` but Vitest again printed `(node:518839) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.`
 
 ## 2026-05-29 UTC — Studio Kling provider value is not accepted or forwarded by backend video paths
 - **Severity**: warning
@@ -1525,6 +1536,7 @@
 - **Blocked current task**: no
 - **What happened**: Running the frontend build as part of local CI parity modified generated `frontend/public/sw.js`, which is outside Task 7's allowed file set. The generated file was restored immediately.
 - **Evidence**: `git status --short -- frontend/public/sw.js` showed `M frontend/public/sw.js` after `cd frontend && npm run build`; `git checkout -- frontend/public/sw.js` was run and subsequent `git diff -- frontend/public/sw.js` was empty.
+- **Seen again**: 2026-06-23 during #108 frontend build verification. `npm run build` modified `frontend/public/sw.js` and deleted `frontend/public/workbox-00a24876.js`; both are generated PWA artifacts and were left unstaged.
 
 ## 2026-05-28T20:04:00Z — pycache permission denied during syntax verification
 - **Severity**: warning
@@ -1910,6 +1922,7 @@
 - **Seen again**: 2026-06-12 during #24 PR-wrapper creation. Escalated `scripts/pr_create.sh` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 - **Seen again**: 2026-06-12 during #113 backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 - **Seen again**: 2026-06-12 during #54 backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
+- **Seen again with changed count**: 2026-06-23 during #108 PR-wrapper backend inventory. `scripts/pr_create.sh` reached PyPI and reported `Found 69 known vulnerabilities in 16 packages`; this remained inventory/non-blocking.
 
 ## 2026-06-10 08:47 UTC — Backend inventory gates report existing security and warning debt
 - **Severity**: warning
@@ -1921,6 +1934,7 @@
 - **Evidence**: Local CI summary: `blocking failures: 0`, `Inventory reports (non-blocking): backend/bandit (exit=1), backend/pip-audit (exit=1)`, `PASS All blocking gates passed`. Full pytest output: `1838 passed, 4 skipped, 95 warnings`.
 - **Likely cause**: The repository intentionally treats Bandit and pip-audit as inventory for legacy debt, and the test suite still has warning debt from third-party deprecations plus some mock shape mismatches (confidence 90%).
 - **Suggested action**: Track Bandit findings and pytest warnings in dedicated cleanup issues; keep them non-blocking until the inventory baseline is actively ratcheted.
+- **Seen again**: 2026-06-23 during #108 PR-wrapper backend inventory. Backend blocking gates passed, while inventory reported `bandit (exit=1)`, `pip-audit (exit=1)`, and full `pytest (exit=1)` with known auth-scoping setup errors plus the Google route duplicate-IP failure.
 
 ## 2026-06-10 08:47 UTC — PR wrapper blocked by unrelated frontend gates
 - **Severity**: warning
@@ -1933,6 +1947,7 @@
 - **Likely cause**: The wrapper enforces all families even though the issue sequence calls for affected-family local CI and explicitly notes frontend Wave 0 breakage for #108 (confidence 98%).
 - **Suggested action**: Either allow `scripts/pr_create.sh` to accept a local-CI family selector for backend-only PRs, or complete #108 before using the all-family wrapper path.
 - **Seen again**: 2026-06-12 during #24 PR creation. Backend blocking gates and aggregate gates passed inside the wrapper, but `scripts/pr_create.sh` refused to call `gh pr create` because unrelated frontend blocking gates failed: `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`.
+- **Seen again**: 2026-06-23 during #108 PR creation. Backend blocking gates, frontend `type-check`, frontend `test-run`, frontend `build`, and aggregate gates passed inside the wrapper, but `scripts/pr_create.sh` refused to call `gh pr create` because unrelated frontend blocking gates failed: `frontend/lint (exit=1)` and `frontend/format-check (exit=1)`.
 
 ## 2026-06-12 10:56 UTC — Frontend test dependencies unavailable in isolated worktree
 - **Severity**: warning
@@ -1966,6 +1981,7 @@
 - **Evidence**: `npm run lint` exited 1 with 41 problems, including `app/artifacts/page.tsx:108:5 react-hooks/set-state-in-effect`, `app/studio/components/ImageLightbox.tsx:19:42 react-hooks/rules-of-hooks`, and `components/TextToSpeechButton.tsx:39:25 react-hooks/rules-of-hooks`. `npm run format:check` reported `Code style issues found in 125 files`. `npm exec eslint -- __tests__/auth.test.ts __tests__/auth-provider.test.tsx __tests__/auth-page.test.tsx components/AuthProvider.tsx lib/auth.ts --max-warnings 0` passed, and `npm exec prettier -- --check ...` passed for those same files.
 - **Likely cause**: Existing frontend React Compiler lint and formatting debt predates the logout change (confidence 95%).
 - **Suggested action**: Fix frontend lint/format debt in dedicated PRs or establish an explicit baseline; keep issue #26 scoped to logout behavior.
+- **Seen again**: 2026-06-23 during #108 frontend local CI. `scripts/local_ci.sh frontend` passed `type-check`, `test-run`, and `build`, while blocking `frontend/lint` failed with `38 problems (27 errors, 11 warnings)` and blocking `frontend/format-check` reported style drift in `121 files`; changed-file ESLint/Prettier checks for #108 files passed.
 
 ## 2026-06-12 10:56 UTC — Auth frontend tests emit existing act/navigation warnings
 - **Severity**: info
@@ -1977,6 +1993,7 @@
 - **Evidence**: `npm run test:run -- auth.test.ts auth-provider.test.tsx` passed with `53 passed`; stderr included `An update to AuthProvider inside a test was not wrapped in act(...)` and `Error: Not implemented: navigation (except hash changes)` from `attemptPageLoadRefresh`.
 - **Likely cause**: Existing tests assert redirect side effects around asynchronous provider updates and read-only jsdom `window.location` behavior (confidence 85%).
 - **Suggested action**: Wrap provider-triggered updates in Testing Library `act` and isolate redirect assertions from jsdom's real navigation implementation in a frontend test cleanup.
+- **Seen again**: 2026-06-23 during #108 frontend full Vitest verification. `npm run test:run` passed with `16 passed` test files and `212 passed` tests, but stderr again included repeated `AuthProvider` `act(...)` warnings plus the jsdom `Not implemented: navigation (except hash changes)` warning in `attemptPageLoadRefresh`.
 
 ## 2026-06-12 10:56 UTC — Temporary logout test insertion produced syntax error before correction
 - **Severity**: info
@@ -2010,6 +2027,7 @@
 - **Evidence**: `npm --prefix frontend run audit:ci` reported `27 vulnerabilities (4 low, 8 moderate, 14 high, 1 critical)`. Representative advisories included `vitest <3.2.6` critical `GHSA-5xrq-8626-4rwp`, `next 9.3.4-canary.0 - 16.3.0-canary.5` high advisories, and vulnerable `@ai-sdk/provider-utils`.
 - **Likely cause**: New upstream advisories now apply to the locked frontend dependency graph; some suggested fixes require breaking upgrades such as AI SDK, Next, or next-pwa (confidence 95%).
 - **Suggested action**: Handle through the locked dependency remediation process in a dedicated security/dependency PR; do not hand-edit lockfiles in issue #26.
+- **Seen again with changed count**: 2026-06-23 during #108 frontend dependency installation. `npm ci` reported `30 vulnerabilities (6 low, 8 moderate, 15 high, 1 critical)`; install succeeded and dependency remediation remains out of scope for #108.
 
 ## 2026-06-12 11:20 UTC — Issue #42 backend local CI timed out in inventory pytest
 - **Severity**: warning
@@ -2038,6 +2056,7 @@
 - **Suggested action**: Update that fixture to use the existing mock async context manager pattern from setup/auth runtime tests in a dedicated cleanup.
 - **Seen again**: 2026-06-12 during #24 PR-wrapper backend inventory. Full inventory pytest completed and surfaced the same `TypeError: 'coroutine' object does not support the asynchronous context manager protocol` in `tests/test_auth_user_scoping.py` setup; #24 focused enrollment tests were unaffected.
 - **Seen again**: 2026-06-13 during #56 backend local CI inventory. Full pytest again surfaced the same `TypeError: 'coroutine' object does not support the asynchronous context manager protocol (missed __aexit__ method)` at `orchestrator/auth_runtime_state.py:97` in `tests/test_auth_user_scoping.py` setup; #56 focused session cleanup / refresh tests were unaffected.
+- **Seen again**: 2026-06-23 during #108 PR-wrapper backend inventory. Full pytest again surfaced 5 setup errors in `tests/test_auth_user_scoping.py`, all rooted in `TypeError: 'coroutine' object does not support the asynchronous context manager protocol` at `orchestrator/auth_runtime_state.py:97`; #108 frontend advisor tests were unaffected.
 
 ## 2026-06-12 11:20 UTC — Chat history tests still emit existing AsyncMock warning debt
 - **Severity**: info
