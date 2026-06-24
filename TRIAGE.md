@@ -10,6 +10,67 @@
 - **Evidence**: `scripts/pr_create.sh -- --title "fix(memory): fail closed on encryption failures" ...` reported blocking failures: `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`. Backend `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect` passed. Frontend build still failed on `Module '"./events"' has no exported member 'isAdvisorEvent'`; frontend tests still had 19 advisor/tool-call failures. Backend full pytest completed with the known `tests/test_auth_user_scoping.py` fixture errors plus additional existing failure markers, and `pip-audit` reported 43 known vulnerabilities in 14 backend packages including `aiohttp`, `cryptography`, `litellm`, `starlette`, and `urllib3`.
 - **Likely cause**: Main still carries unrelated frontend advisor-event type/build debt and dependency-audit inventory debt; #60 only changes backend memory encryption and status metrics. Confidence: 95%.
 - **Suggested action**: Open #60 directly after the documented wrapper refusal, rely on hosted branch-protection checks plus Codex review before any merge, and handle frontend baseline plus dependency advisories in dedicated issues/PRs.
+## 2026-06-14T00:05:00+09:30 — #55 PR Wrapper Timed Out In Backend Inventory
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Issue #55 consolidation interval validation PR creation
+- **Category**: tooling | test-failure
+- **Blocked current task**: no
+- **What happened**: `scripts/pr_create.sh` was attempted with the audited uv environment and a temporary `.uv-venv` symlink. Backend blocking gates passed inside the wrapper, but the wrapper timed out during the non-blocking full backend pytest inventory before it could reach `gh pr create`.
+- **Evidence**: `UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv UV_CACHE_DIR=/tmp/uv-cache timeout 420s scripts/pr_create.sh -- ...` exited `124` after backend `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect` passed. Inventory `pip-audit` failed DNS resolution for `pypi.org`, and full pytest reached late-suite progress after the known auth-scoping setup errors plus one `F` marker.
+- **Likely cause**: Same recurring local full-pytest inventory stall tracked for backend-only issue worktrees; the PR wrapper runs the inventory phase before PR creation. Confidence: 90%.
+- **Suggested action**: Let the PR wrapper skip non-blocking inventory before `gh pr create`, or rely on hosted protected checks after local blocking gates pass.
+## 2026-06-13T23:58:00+09:30 — #50 PR Wrapper Timed Out In Backend Inventory
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Issue #50 migration advisory-lock serialization
+- **Category**: tooling | test-failure
+- **Blocked current task**: no
+- **What happened**: The PR wrapper passed the backend blocking gates and then timed out in the non-blocking backend inventory full pytest pass before invoking `gh pr create`.
+- **Evidence**: `UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv UV_CACHE_DIR=/tmp/uv-cache timeout 420s scripts/pr_create.sh -- --title "fix(migrations): serialize runner with advisory lock" ...` exited `124` after `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect` passed; inventory pytest printed progress through `[ 90%]` after the known late-suite `F` marker.
+- **Likely cause**: Same local late-suite inventory stall already tracked for backend local CI in temporary worktrees (confidence 90%).
+- **Suggested action**: Keep using focused tests plus hosted protected CI for merge readiness while separately investigating the late-suite inventory stall.
+## 2026-06-14T01:05:23+09:30 — #47 PR Wrapper Timed Out In Backend Inventory
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Issue #47 council duplicate-output regression PR creation
+- **Category**: tooling | test-failure
+- **Blocked current task**: no
+- **What happened**: The PR wrapper passed backend blocking gates and then timed out in the non-blocking backend inventory full pytest pass before invoking `gh pr create`.
+- **Evidence**: `UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv UV_CACHE_DIR=/tmp/uv-cache timeout 420s scripts/pr_create.sh -- --title "test(council): guard single output emission" ...` exited `124`; wrapper output showed `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect` passed, then inventory pytest reached `[ 91%]` after known auth-scoping setup errors and a late-suite `F` marker.
+- **Likely cause**: Same local backend inventory pytest stall already tracked for temporary worktrees (confidence 90%).
+- **Suggested action**: Keep using focused tests plus hosted protected CI for merge readiness while investigating the local late-suite inventory stall separately.
+
+## 2026-06-14T00:48:40+09:30 — #47 Duplicate Council Output Handler Not Reproducible On Current Main
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Issue #47 council duplicate output verification
+- **Category**: other
+- **Blocked current task**: no
+- **What happened**: The issue body describes two `stream_council` `result_type == "council_output"` branches in `orchestrator/council/sse.py`, but current `origin/main` has only one `stream_council` output branch. The other output branch is in `stream_council_interview_response`, which handles a separate config-response path.
+- **Evidence**: `rg -n "council_output|_emit_council_output_events|stream_council" orchestrator/council/sse.py tests/council -S` showed `stream_council` output handling at `orchestrator/council/sse.py:407` and interview-response output handling at `orchestrator/council/sse.py:511`, not two output handlers in one council invocation.
+- **Likely cause**: The issue evidence is stale relative to current `origin/main`, or the duplicate was removed by earlier council SSE work without a dedicated regression test (confidence 90%).
+- **Suggested action**: Keep the #47 PR as regression coverage asserting `stream_council` invokes `_emit_council_output_events` exactly once per council output result.
+## 2026-06-14T01:26:26+09:30 — #45 PR Wrapper Refused On Existing Local Gate Debt
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #45 council read-only tool registry PR creation
+- **Category**: build-error | test-failure | dependency | security
+- **Blocked current task**: no
+- **What happened**: `scripts/pr_create.sh` ran all local CI families and refused to call `gh pr create` because unrelated frontend blocking gates failed outside the backend-only #45 change surface. Backend and aggregate blocking gates passed; backend inventory completed and surfaced existing auth-scoping fixture errors plus additional unrelated entity/Google route failures.
+- **Evidence**: Wrapper summary reported blocking failures `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`. Backend blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect` passed. Backend inventory `PYTHONPATH=. uv run pytest -q` reported `3 failed, 1967 passed, 5 skipped, 100 warnings, 5 errors`: the known `tests/test_auth_user_scoping.py` async context-manager setup errors, `tests/test_entity_integration.py` `EncryptionKeyMissing` failures, and `tests/test_identity_google_routes.py` expected `["ip"]` but got `["ip", "ip"]`. Frontend type/build still failed on missing advisor event exports from `frontend/lib/events.ts`, and frontend inventory tests still had 19 advisor/tool-call failures.
+- **Likely cause**: The wrapper enforces all families for a backend-only PR while main carries unrelated frontend advisor-event/lint/format debt and backend inventory test debt. Confidence: 95%.
+- **Suggested action**: Open #45 directly after the documented wrapper refusal, rely on hosted branch-protection checks plus Codex review before any merge, and handle frontend advisor-event and backend inventory failures in dedicated cleanup issues.
+## 2026-06-23 23:52 UTC — #108 backend inventory reproduced Google route duplicate-IP failure
+- **Severity**: warning
+- **Scope**: project
+- **Encountered during**: Issue #108 advisor event type PR creation
+- **Category**: test-failure
+- **Blocked current task**: no
+- **What happened**: The PR wrapper's full backend inventory pytest completed and reported one unrelated Google auth route failure. The #108 frontend-focused type-check, advisor tests, full Vitest suite, and production build passed.
+- **Evidence**: `tests/test_identity_google_routes.py::TestGoogleCompleteRoute::test_web_private_returns_access_only_and_refresh_cookie` failed because the test expected `["ip"]` but received `["ip", "ip"]`; the wrapper backend inventory summary reported `1 failed, 1967 passed, 5 skipped, 100 warnings, 5 errors`.
+- **Likely cause**: Existing Google auth route/test fixture behavior is recording the same private web IP event twice, independent of the advisor event typing and frontend bridge changes (confidence 85%).
+- **Suggested action**: Investigate Google complete route rate-limit/IP recording idempotency in a dedicated auth issue; do not broaden #108.
 
 ## 2026-06-12T22:34:10+09:30 — #54 PR Wrapper Refused On Existing Local Gate Debt
 - **Severity**: warning
@@ -239,6 +300,7 @@
 - **Likely cause**: Current Vitest/jsdom/Node runtime exposes a localStorage-related experimental warning unless Node is launched with `--localstorage-file`, even when tests provide their own localStorage mock (confidence 80%).
 - **Suggested action**: If the warning becomes noisy, configure the frontend test runner with an explicit localStorage file or suppress the Node experimental warning for this test environment.
 - **Seen again**: 2026-06-05 during the PR #7 current-head follow-up fix pass when the targeted Vitest command for `__tests__/auth.test.ts`, `__tests__/auth-landing.test.tsx`, and `__tests__/deployment.test.ts` passed but still printed the same `ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.`
+- **Seen again**: 2026-06-23 during #108 frontend local CI. `scripts/local_ci.sh frontend` passed `test-run` but Vitest again printed `(node:518839) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.`
 
 ## 2026-05-29 UTC — Studio Kling provider value is not accepted or forwarded by backend video paths
 - **Severity**: warning
@@ -1514,6 +1576,7 @@
 - **Blocked current task**: no
 - **What happened**: Running the frontend build as part of local CI parity modified generated `frontend/public/sw.js`, which is outside Task 7's allowed file set. The generated file was restored immediately.
 - **Evidence**: `git status --short -- frontend/public/sw.js` showed `M frontend/public/sw.js` after `cd frontend && npm run build`; `git checkout -- frontend/public/sw.js` was run and subsequent `git diff -- frontend/public/sw.js` was empty.
+- **Seen again**: 2026-06-23 during #108 frontend build verification. `npm run build` modified `frontend/public/sw.js` and deleted `frontend/public/workbox-00a24876.js`; both are generated PWA artifacts and were left unstaged.
 
 ## 2026-05-28T20:04:00Z — pycache permission denied during syntax verification
 - **Severity**: warning
@@ -1899,6 +1962,8 @@
 - **Seen again**: 2026-06-12 during #24 PR-wrapper creation. Escalated `scripts/pr_create.sh` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 - **Seen again**: 2026-06-12 during #113 backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 - **Seen again**: 2026-06-12 during #54 backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
+- **Seen again**: 2026-06-14 during #45 PR-wrapper creation. Escalated `scripts/pr_create.sh` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
+- **Seen again with changed count**: 2026-06-23 during #108 PR-wrapper backend inventory. `scripts/pr_create.sh` reached PyPI and reported `Found 69 known vulnerabilities in 16 packages`; this remained inventory/non-blocking.
 
 ## 2026-06-10 08:47 UTC — Backend inventory gates report existing security and warning debt
 - **Severity**: warning
@@ -1910,6 +1975,7 @@
 - **Evidence**: Local CI summary: `blocking failures: 0`, `Inventory reports (non-blocking): backend/bandit (exit=1), backend/pip-audit (exit=1)`, `PASS All blocking gates passed`. Full pytest output: `1838 passed, 4 skipped, 95 warnings`.
 - **Likely cause**: The repository intentionally treats Bandit and pip-audit as inventory for legacy debt, and the test suite still has warning debt from third-party deprecations plus some mock shape mismatches (confidence 90%).
 - **Suggested action**: Track Bandit findings and pytest warnings in dedicated cleanup issues; keep them non-blocking until the inventory baseline is actively ratcheted.
+- **Seen again**: 2026-06-23 during #108 PR-wrapper backend inventory. Backend blocking gates passed, while inventory reported `bandit (exit=1)`, `pip-audit (exit=1)`, and full `pytest (exit=1)` with known auth-scoping setup errors plus the Google route duplicate-IP failure.
 
 ## 2026-06-10 08:47 UTC — PR wrapper blocked by unrelated frontend gates
 - **Severity**: warning
@@ -1922,6 +1988,8 @@
 - **Likely cause**: The wrapper enforces all families even though the issue sequence calls for affected-family local CI and explicitly notes frontend Wave 0 breakage for #108 (confidence 98%).
 - **Suggested action**: Either allow `scripts/pr_create.sh` to accept a local-CI family selector for backend-only PRs, or complete #108 before using the all-family wrapper path.
 - **Seen again**: 2026-06-12 during #24 PR creation. Backend blocking gates and aggregate gates passed inside the wrapper, but `scripts/pr_create.sh` refused to call `gh pr create` because unrelated frontend blocking gates failed: `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`.
+- **Seen again**: 2026-06-14 during #45 PR creation. Backend blocking gates and aggregate gates passed inside the wrapper, but `scripts/pr_create.sh` refused to call `gh pr create` because unrelated frontend blocking gates failed: `frontend/type-check (exit=2)`, `frontend/lint (exit=1)`, and `frontend/format-check (exit=1)`.
+- **Seen again**: 2026-06-23 during #108 PR creation. Backend blocking gates, frontend `type-check`, frontend `test-run`, frontend `build`, and aggregate gates passed inside the wrapper, but `scripts/pr_create.sh` refused to call `gh pr create` because unrelated frontend blocking gates failed: `frontend/lint (exit=1)` and `frontend/format-check (exit=1)`.
 
 ## 2026-06-12 23:50 UTC — Temp worktree basedpyright needs backend venv symlink
 - **Severity**: info
@@ -1966,6 +2034,7 @@
 - **Evidence**: `npm run lint` exited 1 with 41 problems, including `app/artifacts/page.tsx:108:5 react-hooks/set-state-in-effect`, `app/studio/components/ImageLightbox.tsx:19:42 react-hooks/rules-of-hooks`, and `components/TextToSpeechButton.tsx:39:25 react-hooks/rules-of-hooks`. `npm run format:check` reported `Code style issues found in 125 files`. `npm exec eslint -- __tests__/auth.test.ts __tests__/auth-provider.test.tsx __tests__/auth-page.test.tsx components/AuthProvider.tsx lib/auth.ts --max-warnings 0` passed, and `npm exec prettier -- --check ...` passed for those same files.
 - **Likely cause**: Existing frontend React Compiler lint and formatting debt predates the logout change (confidence 95%).
 - **Suggested action**: Fix frontend lint/format debt in dedicated PRs or establish an explicit baseline; keep issue #26 scoped to logout behavior.
+- **Seen again**: 2026-06-23 during #108 frontend local CI. `scripts/local_ci.sh frontend` passed `type-check`, `test-run`, and `build`, while blocking `frontend/lint` failed with `38 problems (27 errors, 11 warnings)` and blocking `frontend/format-check` reported style drift in `121 files`; changed-file ESLint/Prettier checks for #108 files passed.
 
 ## 2026-06-12 10:56 UTC — Auth frontend tests emit existing act/navigation warnings
 - **Severity**: info
@@ -1977,6 +2046,7 @@
 - **Evidence**: `npm run test:run -- auth.test.ts auth-provider.test.tsx` passed with `53 passed`; stderr included `An update to AuthProvider inside a test was not wrapped in act(...)` and `Error: Not implemented: navigation (except hash changes)` from `attemptPageLoadRefresh`.
 - **Likely cause**: Existing tests assert redirect side effects around asynchronous provider updates and read-only jsdom `window.location` behavior (confidence 85%).
 - **Suggested action**: Wrap provider-triggered updates in Testing Library `act` and isolate redirect assertions from jsdom's real navigation implementation in a frontend test cleanup.
+- **Seen again**: 2026-06-23 during #108 frontend full Vitest verification. `npm run test:run` passed with `16 passed` test files and `212 passed` tests, but stderr again included repeated `AuthProvider` `act(...)` warnings plus the jsdom `Not implemented: navigation (except hash changes)` warning in `attemptPageLoadRefresh`.
 
 ## 2026-06-12 10:56 UTC — Temporary logout test insertion produced syntax error before correction
 - **Severity**: info
@@ -2010,6 +2080,7 @@
 - **Evidence**: `npm --prefix frontend run audit:ci` reported `27 vulnerabilities (4 low, 8 moderate, 14 high, 1 critical)`. Representative advisories included `vitest <3.2.6` critical `GHSA-5xrq-8626-4rwp`, `next 9.3.4-canary.0 - 16.3.0-canary.5` high advisories, and vulnerable `@ai-sdk/provider-utils`.
 - **Likely cause**: New upstream advisories now apply to the locked frontend dependency graph; some suggested fixes require breaking upgrades such as AI SDK, Next, or next-pwa (confidence 95%).
 - **Suggested action**: Handle through the locked dependency remediation process in a dedicated security/dependency PR; do not hand-edit lockfiles in issue #26.
+- **Seen again with changed count**: 2026-06-23 during #108 frontend dependency installation. `npm ci` reported `30 vulnerabilities (6 low, 8 moderate, 15 high, 1 critical)`; install succeeded and dependency remediation remains out of scope for #108.
 
 ## 2026-06-12 11:20 UTC — Issue #42 backend local CI timed out in inventory pytest
 - **Severity**: warning
@@ -2026,6 +2097,10 @@
 - **Seen again**: 2026-06-13 during #56 session cleanup / refresh serialization verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `pip-audit` failed DNS resolution for `pypi.org`, full pytest printed the known `tests/test_auth_user_scoping.py` setup errors plus one `F` marker, then reached late-suite progress before the outer timeout exited `124`.
 - **Seen again**: 2026-06-13 during #60 memory encryption fail-closed verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing non-blocking findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest reproduced the known `EEEEE` auth-scoping setup errors plus one `F` marker before stalling near late-suite progress and exiting `124`.
 - **Seen again**: 2026-06-12 during #60 Codex review follow-up. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing non-blocking findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest again showed the known `EEEEE` auth-scoping setup errors plus one `F` marker before the outer timeout exited `124`.
+- **Seen again**: 2026-06-13 during #55 consolidation interval validation. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed the known auth-scoping setup errors plus one `F` marker before reaching late-suite progress and exiting `124`.
+- **Seen again**: 2026-06-14 during #50 migration advisory-lock verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed the known auth-scoping setup errors plus one `F` marker before reaching late-suite progress and exiting `124`.
+- **Seen again**: 2026-06-14 during #47 council duplicate-output regression verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed the known auth-scoping setup errors plus a late-suite `F` marker before reaching `[ 91%]` and exiting `124`.
+- **Seen again**: 2026-06-14 during #45 council read-only tool registry verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed known auth-scoping setup errors plus a late-suite `F` marker before reaching `[ 90%]` and exiting `124`.
 
 ## 2026-06-12 11:20 UTC — Existing auth user scoping fixture fails development pepper setup
 - **Severity**: warning
@@ -2039,6 +2114,8 @@
 - **Suggested action**: Update that fixture to use the existing mock async context manager pattern from setup/auth runtime tests in a dedicated cleanup.
 - **Seen again**: 2026-06-12 during #24 PR-wrapper backend inventory. Full inventory pytest completed and surfaced the same `TypeError: 'coroutine' object does not support the asynchronous context manager protocol` in `tests/test_auth_user_scoping.py` setup; #24 focused enrollment tests were unaffected.
 - **Seen again**: 2026-06-13 during #56 backend local CI inventory. Full pytest again surfaced the same `TypeError: 'coroutine' object does not support the asynchronous context manager protocol (missed __aexit__ method)` at `orchestrator/auth_runtime_state.py:97` in `tests/test_auth_user_scoping.py` setup; #56 focused session cleanup / refresh tests were unaffected.
+- **Seen again**: 2026-06-14 during #45 PR-wrapper backend inventory. Full pytest again surfaced the same `TypeError: 'coroutine' object does not support the asynchronous context manager protocol (missed __aexit__ method)` at `orchestrator/auth_runtime_state.py:97` in `tests/test_auth_user_scoping.py` setup; #45 focused council tool-registry tests were unaffected.
+- **Seen again**: 2026-06-23 during #108 PR-wrapper backend inventory. Full pytest again surfaced 5 setup errors in `tests/test_auth_user_scoping.py`, all rooted in `TypeError: 'coroutine' object does not support the asynchronous context manager protocol` at `orchestrator/auth_runtime_state.py:97`; #108 frontend advisor tests were unaffected.
 
 ## 2026-06-12 11:20 UTC — Chat history tests still emit existing AsyncMock warning debt
 - **Severity**: info

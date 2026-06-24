@@ -28,7 +28,7 @@ const mockFetchAuthConfig = vi.fn(() =>
   Promise.resolve({ status: 'resolved' as const, config: runtimeConfig }),
 );
 const mockGetCachedAuthConfig = vi.fn(() => undefined);
-const mockSubscribeAuthConfig = vi.fn(() => () => {});
+const mockSubscribeAuthConfig = vi.fn((_cb: unknown) => () => {});
 vi.mock('../lib/auth-config', () => ({
   fetchAuthConfig: () => mockFetchAuthConfig(),
   getCachedAuthConfig: () => mockGetCachedAuthConfig(),

@@ -41,6 +41,29 @@ logger = logging.getLogger(__name__)
 WorkerContext = dict[str, object]
 
 
+def _unsupported_consolidation_interval_error(interval: int) -> ValueError:
+    return ValueError(f"consolidation_interval_days must be one of 1, 7; got {interval}")
+
+
+def _build_consolidation_cron_job(interval: int) -> Any:
+    if interval == 1:
+        # Daily at 2 AM UTC
+        return cron(
+            consolidate_memories,
+            hour=2,
+            minute=0,
+        )
+    if interval == 7:
+        # Weekly at 2 AM UTC on Sundays
+        return cron(
+            consolidate_memories,
+            hour=2,
+            minute=0,
+            weekday=6,  # Sunday (arq: 0=Monday, 6=Sunday)
+        )
+    raise _unsupported_consolidation_interval_error(interval)
+
+
 async def on_startup(ctx: WorkerContext) -> None:
     app_settings = get_settings()
     ctx["settings"] = app_settings
@@ -85,43 +108,15 @@ except RuntimeError:
 cron_jobs: list[Any] = []
 if _worker_settings.consolidation_enabled:
     interval = _worker_settings.consolidation_interval_days
+    cron_jobs.append(_build_consolidation_cron_job(interval))
     if interval == 1:
-        # Daily at 2 AM UTC
-        cron_jobs.append(
-            cron(
-                consolidate_memories,
-                hour=2,
-                minute=0,
-            )
-        )
         logger.info(f"Memory consolidation scheduled: daily at 2 AM UTC (interval={interval} days)")
     elif interval == 7:
-        # Weekly at 2 AM UTC on Sundays
-        cron_jobs.append(
-            cron(
-                consolidate_memories,
-                hour=2,
-                minute=0,
-                weekday=6,  # Sunday (arq: 0=Monday, 6=Sunday)
-            )
-        )
         logger.info(
             f"Memory consolidation scheduled: weekly on Sunday at 2 AM UTC (interval={interval} days)"
         )
     else:
-        # For other values, use daily with a warning
-        cron_jobs.append(
-            cron(
-                consolidate_memories,
-                hour=2,
-                minute=0,
-            )
-        )
-        logger.warning(
-            f"Memory consolidation scheduled: daily at 2 AM UTC (interval={interval} days). "
-            f"Note: Only 1 (daily) and 7 (weekly) are explicitly supported. "
-            f"Using daily as best-effort fallback."
-        )
+        raise _unsupported_consolidation_interval_error(interval)
 
 if _worker_settings.dreaming_enabled:
     cron_jobs.append(

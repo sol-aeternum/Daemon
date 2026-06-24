@@ -319,7 +319,10 @@ class Settings(BaseSettings):
 
     # ===== MEMORY CONSOLIDATION =====
     consolidation_enabled: bool = True
-    consolidation_interval_days: int = 7
+    consolidation_interval_days: int = Field(
+        default=7,
+        description="Supported memory consolidation intervals: 1 (daily) or 7 (weekly).",
+    )
 
     # ===== SKILL CONSOLIDATION NUDGE =====
     consolidation_nudge_enabled: bool = True
