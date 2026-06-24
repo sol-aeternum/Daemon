@@ -1,5 +1,16 @@
 # TRIAGE.md
 
+## 2026-06-24T10:13:11+09:30 — #111 PR Wrapper Refused On Remaining #108 Type Gate
+- **Severity**: warning
+- **Scope**: project | tooling
+- **Encountered during**: Issue #111 green-blocking-gates PR creation
+- **Category**: build-error | test-failure | dependency | security
+- **Blocked current task**: no
+- **What happened**: `scripts/pr_create.sh` ran all local CI families and refused to call `gh pr create` because `frontend/type-check` still fails on the separate #108 advisor-event contract gap. The same wrapper invocation also ran backend inventory through a worktree-local `.venv` on Python 3.14 because I launched it without the required `UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv` override; direct #111 backend blocking gates were already verified with the prescribed `.uv-venv`.
+- **Evidence**: Wrapper summary reported `blocking failures: 1` with `frontend/type-check (exit=1)`. Representative error: `./lib/advisorEvents.ts:5:3 Type error: Module '"./events"' has no exported member 'isAdvisorEvent'.` Backend wrapper inventory also showed `.venv/lib/python3.14/...` paths and reproduced existing `tests/test_auth_user_scoping.py` fixture errors plus `tests/test_identity_google_routes.py::TestGoogleCompleteRoute::test_web_private_returns_access_only_and_refresh_cookie` expecting one `ip` rate-limit policy but seeing two.
+- **Likely cause**: #108/PR #152 has not merged into `main`, so advisor event types still break frontend type/test/build on main-based #111. The wrapper environment mismatch is operator/tooling drift from the project-specific `.uv-venv` requirement (confidence 95%).
+- **Suggested action**: Open #111 directly after the documented wrapper refusal, wait for #108 to merge before expecting full frontend type/test/build green on main, and always invoke PR-wrapper/local-CI commands for backend worktrees with `UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv`.
+
 ## 2026-06-12T22:34:10+09:30 — #54 PR Wrapper Refused On Existing Local Gate Debt
 - **Severity**: warning
 - **Scope**: project | host
@@ -1889,6 +1900,7 @@
 - **Seen again**: 2026-06-12 during #24 PR-wrapper creation. Escalated `scripts/pr_create.sh` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 - **Seen again**: 2026-06-12 during #113 backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
 - **Seen again**: 2026-06-12 during #54 backend local CI. `scripts/local_ci.sh backend` reached PyPI and again reported `Found 43 known vulnerabilities in 14 packages`; this remained inventory/non-blocking.
+- **Seen again / changed count**: 2026-06-24 during #111 PR-wrapper creation. Escalated `scripts/pr_create.sh` reached PyPI and reported `Found 69 known vulnerabilities in 16 packages`; this remained inventory/non-blocking and was not remediated in the frontend lint/format gate PR.
 
 ## 2026-06-10 08:47 UTC — Backend inventory gates report existing security and warning debt
 - **Severity**: warning
