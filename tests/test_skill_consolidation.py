@@ -388,6 +388,7 @@ class TestApplyDeleteAction:
 
         class FakeMemoryStore(MemoryStore):
             def __init__(self) -> None:
+                self._pool = MagicMock()
                 self.deleted_projection: str | None = None
 
             async def log_consolidation_nudge_action(self, **kwargs) -> uuid.UUID:
