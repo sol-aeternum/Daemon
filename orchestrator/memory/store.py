@@ -905,26 +905,25 @@ class MemoryStore:
                     )
 
                 try:
-                    try:
-                        new_row = await _insert(source_conversation_id)
-                    except asyncpg.ForeignKeyViolationError as error:
-                        if source_conversation_id is None:
-                            raise
-                        logger.warning(
-                            "supersede_memory: source_conversation_id %s missing; retrying without source conversation reference (%s)",
-                            source_conversation_id,
-                            error,
-                        )
-                        new_row = await _insert(None)
-                except asyncpg.UniqueViolationError:
-                    # PostgreSQL marks the outer transaction as failed after a
-                    # constraint violation, so the recovery lookup must run in
-                    # a fresh transaction. The savepoint below scopes the
-                    # constraint error and rolls it back without poisoning
-                    # the connection; the recovery query then runs against
-                    # the un-failed outer transaction state.
                     async with conn.transaction():
-                        duplicate_row = await _get_active_duplicate()
+                        try:
+                            new_row = await _insert(source_conversation_id)
+                        except asyncpg.ForeignKeyViolationError as error:
+                            if source_conversation_id is None:
+                                raise
+                            logger.warning(
+                                "supersede_memory: source_conversation_id %s missing; retrying without source conversation reference (%s)",
+                                source_conversation_id,
+                                error,
+                            )
+                            new_row = await _insert(None)
+                except asyncpg.UniqueViolationError:
+                    # PostgreSQL aborts the inner transaction on the unique
+                    # violation, but the savepoint above scopes the rollback
+                    # so the outer transaction stays usable. The recovery
+                    # lookup and update below run against the still-alive
+                    # outer transaction.
+                    duplicate_row = await _get_active_duplicate()
                     if duplicate_row is None:
                         raise
                     logger.warning(
