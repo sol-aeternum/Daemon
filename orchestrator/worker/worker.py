@@ -12,6 +12,7 @@ from arq.cron import cron
 from arq.worker import Worker, func
 
 from orchestrator.config import get_settings
+from orchestrator.auth_pepper import initialize_development_pepper
 from orchestrator.memory.encryption import (
     ContentEncryption,
     SharedEncryptionFailureCounter,
@@ -80,12 +81,14 @@ async def on_startup(ctx: WorkerContext) -> None:
         logger.info("DATABASE_URL not configured; worker memory jobs degraded")
         return
 
-    ctx["db_pool"] = await asyncpg.create_pool(
+    db_pool = await asyncpg.create_pool(
         dsn=app_settings.database_url,
         min_size=2,
         max_size=10,
     )
-    ctx["store"] = MemoryStore(ctx["db_pool"], ctx["encryption"])
+    ctx["db_pool"] = db_pool
+    await initialize_development_pepper(app_settings, db_pool)
+    ctx["store"] = MemoryStore(db_pool, ctx["encryption"])
     logger.info("Worker DB pool created")
 
 

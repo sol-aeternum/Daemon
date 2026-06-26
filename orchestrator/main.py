@@ -163,6 +163,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     if state.db_pool is not None:
         await initialize_development_pepper(settings, state.db_pool)
+        if state.memory_store is not None:
+            try:
+                backfilled = await state.memory_store.backfill_memory_content_hashes()
+                if backfilled:
+                    logger.info("Backfilled content_hash for %s current memories", backfilled)
+            except Exception:
+                logger.warning("Failed to backfill memory content hashes", exc_info=True)
         asyncio.create_task(_backfill_skill_projections(state.db_pool))
         asyncio.create_task(_sync_repo_skills(state.db_pool))
         await _check_first_boot_setup(state)

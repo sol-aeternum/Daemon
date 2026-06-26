@@ -74,6 +74,7 @@ created_at TIMESTAMPTZ DEFAULT NOW()
 id UUID PRIMARY KEY
 user_id UUID REFERENCES users(id)
 content TEXT NOT NULL  -- Fernet-encrypted
+content_hash TEXT  -- HMAC-SHA256(normalized plaintext, DAEMON_AUTH_PEPPER)
 embedding VECTOR(1024)  -- plaintext; Voyage 4-large document vectors
 category TEXT CHECK (category IN ('fact', 'preference', 'project', 'summary', 'correction'))
 source_type TEXT CHECK (source_type IN ('conversation', 'manual', 'import', 'extracted', 'user_created'))

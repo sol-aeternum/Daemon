@@ -72,6 +72,28 @@
 - **Likely cause**: Existing Google auth route/test fixture behavior is recording the same private web IP event twice, independent of the advisor event typing and frontend bridge changes (confidence 85%).
 - **Suggested action**: Investigate Google complete route rate-limit/IP recording idempotency in a dedicated auth issue; do not broaden #108.
 
+## 2026-06-13T11:10:50+09:30 — #61 Backfill Duplicate Test Mock Drift During Review Fix
+- **Severity**: info
+- **Scope**: project
+- **Encountered during**: Issue #61 memory dedup TOCTOU review-comment fix verification
+- **Category**: test-failure
+- **Blocked current task**: yes
+- **What happened**: The first focused test run after changing duplicate legacy backfill behavior failed because the existing duplicate-backfill test mocked every `execute()` call to raise `UniqueViolationError`, including the new cleanup update.
+- **Evidence**: `PYTHONPATH=. uv run pytest -q tests/test_store.py tests/test_auth_runtime_state.py tests/test_memories.py::test_confirm_memory tests/test_memories.py::test_confirm_memory_content_conflict_returns_409` failed in `tests/test_store.py::test_backfill_memory_content_hashes_skips_legacy_duplicates` with `asyncpg.exceptions.UniqueViolationError: duplicate memory content_hash`; after updating the mock side effect to allow the cleanup update, the same command passed with `24 passed, 31 warnings`.
+- **Likely cause**: Test double expected the old skip-only behavior and did not model the new second SQL statement that closes duplicate current legacy rows. Confidence: 99%.
+- **Suggested action**: Keep duplicate-backfill tests modeling both the failed hash update and the cleanup update when changing legacy cleanup behavior.
+
+## 2026-06-13T11:19:00+09:30 — #61 Backend Local CI Inventory Timed Out After Review Fix
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Issue #61 memory dedup TOCTOU review-comment fix verification
+- **Category**: test-failure | dependency | security
+- **Blocked current task**: no
+- **What happened**: Backend local CI passed all blocking backend gates after the review fix, then reproduced existing non-blocking inventory debt and timed out in full pytest's quiet tail.
+- **Evidence**: `UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv UV_CACHE_DIR=/tmp/uv-cache timeout 420s scripts/local_ci.sh backend` passed `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing findings, `pip-audit` failed with `Failed to resolve 'pypi.org' ([Errno -2] Name or service not known)`, and full pytest reached late progress after existing `EEEEE`/`F` markers before the outer timeout exited `124`.
+- **Likely cause**: Same sandbox network restriction and recurring local full-suite inventory stall already observed on earlier issue branches. Confidence: 90%.
+- **Suggested action**: Treat hosted protected CI as authoritative for full-suite completion while keeping this PR scoped to the #61 review fixes.
+
 ## 2026-06-12T22:34:10+09:30 — #54 PR Wrapper Refused On Existing Local Gate Debt
 - **Severity**: warning
 - **Scope**: project | host
@@ -183,6 +205,8 @@
 - **Likely cause**: Same local sandbox/network and long-running inventory-suite behavior seen on #23; hosted branch-protection CI remains the authoritative full gate. Confidence: 85%.
 - **Suggested action**: Investigate the late-suite pytest inventory stall separately from issue-scoped auth fixes; continue relying on blocking local gates plus hosted protected CI before merge.
 - **Seen again**: 2026-06-12T21:08+09:30 during #24 device-creation limit verification, and again after adding the `034_device_creation_audit.sql` migration. `timeout 300s env UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv UV_CACHE_DIR=/tmp/uv-cache scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` exited 1 with existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full inventory pytest printed progress through `[ 91%]` before the outer timeout exited `124`. Process inspection after both runs found no remaining `/tmp/daemon-24` pytest/local-CI processes.
+- **Seen again**: 2026-06-13 during #61 review-comment fixes. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing findings, `pip-audit` failed with `Failed to resolve 'pypi.org' ([Errno -2] Name or service not known)`, and full inventory pytest reproduced existing `EEEEE`/`F` progress markers before the outer timeout exited `124`.
+- **Seen again**: 2026-06-13 during the second #61 review-comment fix pass. `timeout 420s scripts/local_ci.sh backend` again passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` and `pip-audit` reproduced the same local findings, and full inventory pytest reached late-suite progress before the outer timeout exited `124`.
 
 ## 2026-06-12T20:01:23+09:30 — #11 Worktree Missing `.uv-venv` Symlink Broke BasedPyright
 - **Severity**: warning
@@ -194,6 +218,7 @@
 - **Evidence**: Initial output began with `venv .uv-venv subdirectory not found in venv path /tmp/daemon-11.` and then missing imports for `fastapi`, `asyncpg`, `httpx`, `pytest`, and related pinned dependencies. Rerun output: `0 errors, 0 warnings, 0 notes`.
 - **Likely cause**: The repository type-checker config expects a `.uv-venv` path relative to the active checkout, but new `/tmp` worktrees do not inherit the root checkout symlink. Confidence: 99%.
 - **Suggested action**: Create the `.uv-venv` symlink immediately after adding future `/tmp` worktrees, or update agent worktree setup docs/scripts to do this automatically.
+- **Seen again**: 2026-06-13 during #61 review-comment fixes. The first changed-file `basedpyright --level error` run in `/tmp/daemon-61` exited 3 with `venv .uv-venv subdirectory not found in venv path /tmp/daemon-61` and unresolved imports for `asyncpg`, `fastapi`, `pytest`, and `httpx`; creating `/tmp/daemon-61/.uv-venv -> /home/sol/daemon/.uv-venv` made the same changed-file command report `0 errors, 0 warnings, 0 notes`.
 
 ## 2026-06-12T07:04:00+09:30 — Main Protection Uses Rulesets Instead Of Classic Branch Protection
 - **Severity**: info
@@ -2002,6 +2027,17 @@
 - **Likely cause**: basedpyright configuration expects a local `.uv-venv` path, while temporary git worktrees do not include the untracked venv directory by default (confidence 95%).
 - **Suggested action**: Document creating a temp-worktree `.uv-venv` symlink before backend type-checks, or make basedpyright consume `UV_PROJECT_ENVIRONMENT` consistently.
 
+## 2026-06-13 00:11 UTC — PR wrapper exhausted temp-worktree disk while creating fresh environments
+- **Severity**: warning
+- **Scope**: host
+- **Encountered during**: Issue #61 PR creation
+- **Category**: tooling
+- **Blocked current task**: no
+- **What happened**: `scripts/pr_create.sh` refused to create the PR because its all-family local CI run attempted to create a fresh `.venv` and install frontend dependencies in the temporary worktree, exhausting `/tmp`. The already-run affected-family gates for #61 had passed their blocking checks with the shared root `.uv-venv`.
+- **Evidence**: The wrapper printed `No space left on device (os error 28)` while installing `basedpyright` and `pip-audit` into `/tmp/daemon-61/.venv`, then repeated `npm warn tar TAR_ENTRY_ERROR ENOSPC: no space left on device, write` during `npm ci`. It later refused with blocking failures for backend ruff/format/basedpyright/pytest-collect and aggregate pre-commit because `uv run` could not finish dependency installation. After removing `/tmp/daemon-61/.venv` and `/tmp/daemon-61/frontend/node_modules`, `df -h /tmp` still showed only `174M` available.
+- **Likely cause**: The wrapper does not inherit the shared `UV_PROJECT_ENVIRONMENT=/home/sol/daemon/.uv-venv` setup used for temp worktree gates and creates duplicate dependency trees under `/tmp`, which has limited capacity (confidence 95%).
+- **Suggested action**: Make `scripts/pr_create.sh` preserve caller-provided `UV_PROJECT_ENVIRONMENT` and support affected-family PR creation, or keep temp worktrees outside `/tmp` when all-family dependency installation is required.
+
 ## 2026-06-12 10:56 UTC — Frontend test dependencies unavailable in isolated worktree
 - **Severity**: warning
 - **Scope**: host
@@ -2101,6 +2137,7 @@
 - **Seen again**: 2026-06-14 during #50 migration advisory-lock verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed the known auth-scoping setup errors plus one `F` marker before reaching late-suite progress and exiting `124`.
 - **Seen again**: 2026-06-14 during #47 council duplicate-output regression verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed the known auth-scoping setup errors plus a late-suite `F` marker before reaching `[ 91%]` and exiting `124`.
 - **Seen again**: 2026-06-14 during #45 council read-only tool registry verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed known auth-scoping setup errors plus a late-suite `F` marker before reaching `[ 90%]` and exiting `124`.
+- **Seen again**: 2026-06-13 during #61 memory dedup TOCTOU verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing non-blocking findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest again showed the known `EEEEE` auth-scoping setup errors plus one `F` marker before the outer timeout exited `124`.
 
 ## 2026-06-12 11:20 UTC — Existing auth user scoping fixture fails development pepper setup
 - **Severity**: warning

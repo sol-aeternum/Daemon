@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+import hashlib
+import hmac
 from datetime import datetime
 from typing import Any, cast
 
 import asyncpg
 
+from orchestrator.auth_pepper import validate_and_get_pepper
 from orchestrator.config import get_settings
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.embedding import embed_query
@@ -25,6 +28,24 @@ logger = logging.getLogger(__name__)
 
 def _default_embedding_model() -> str:
     return get_settings().embedding_document_model
+
+
+def _normalize_memory_content_for_hash(content: str) -> str:
+    return " ".join(content.strip().split())
+
+
+def compute_memory_content_hash(content: str) -> str:
+    pepper = validate_and_get_pepper(get_settings())
+    normalized = _normalize_memory_content_for_hash(content)
+    return hmac.new(
+        pepper.encode("utf-8"),
+        normalized.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+class MemoryContentConflictError(Exception):
+    """Raised when an active memory edit duplicates another active memory."""
 
 
 class MemoryStore:
@@ -49,6 +70,86 @@ class MemoryStore:
         except Exception:
             logger.warning("Failed to decrypt advisor_traces", exc_info=True)
             return None
+
+    def _memory_row_to_dict(self, row: Any) -> dict[str, Any]:
+        result = cast(dict[str, Any], dict(row))
+        result["content"] = self._enc.decrypt(result["content"])
+        return result
+
+    async def _get_active_memory_by_content_hash(
+        self,
+        user_id: uuid.UUID,
+        content_hash: str,
+        local_only: bool,
+    ) -> dict[str, Any] | None:
+        row = await self._pool.fetchrow(
+            """
+            SELECT *
+            FROM memories
+            WHERE user_id = $1
+              AND content_hash = $2
+              AND local_only = $3
+              AND status = 'active'
+              AND valid_to IS NULL
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            user_id,
+            content_hash,
+            local_only,
+        )
+        if row is None:
+            return None
+        return self._memory_row_to_dict(row)
+
+    async def backfill_memory_content_hashes(self) -> int:
+        """Populate content_hash for legacy current memories that predate the column."""
+        rows = await self._pool.fetch(
+            """
+            SELECT id, content
+            FROM memories
+            WHERE content_hash IS NULL
+              AND valid_to IS NULL
+            ORDER BY created_at ASC
+            """
+        )
+        backfilled = 0
+        for row in rows:
+            content = self._enc.decrypt(row["content"])
+            content_hash = compute_memory_content_hash(content)
+            try:
+                result = await self._pool.execute(
+                    """
+                    UPDATE memories
+                    SET content_hash = $2,
+                        updated_at = NOW()
+                    WHERE id = $1
+                      AND content_hash IS NULL
+                    """,
+                    row["id"],
+                    content_hash,
+                )
+            except asyncpg.UniqueViolationError:
+                logger.warning(
+                    "Closing duplicate legacy memory after content_hash backfill conflict for memory %s",
+                    row["id"],
+                    exc_info=True,
+                )
+                await self._pool.execute(
+                    """
+                    UPDATE memories
+                    SET valid_to = NOW(),
+                        updated_at = NOW()
+                    WHERE id = $1
+                      AND content_hash IS NULL
+                      AND valid_to IS NULL
+                    """,
+                    row["id"],
+                )
+                continue
+            if result == "UPDATE 1":
+                backfilled += 1
+        return backfilled
 
     # ------------------------------------------------------------------
     # Conversation operations
@@ -436,6 +537,7 @@ class MemoryStore:
         memory_slot: str | None = None,
     ) -> dict[str, Any]:
         encrypted_content = self._enc.encrypt(content)
+        content_hash = compute_memory_content_hash(content)
         embedding_str = _format_vector(embedding) if embedding else None
         effective_embedding_model = embedding_model or _default_embedding_model()
 
@@ -445,13 +547,15 @@ class MemoryStore:
             row = await self._pool.fetchrow(
                 """
                 INSERT INTO memories
-                    (user_id, content, content_tsv, embedding, embedding_model, category, source_type,
-                     source_conversation_id, local_only, confidence, status, memory_slot)
-                VALUES ($1, $2, to_tsvector('english', $12), $3::vector, $4, $5, $6, $7, $8, $9, $10, $11)
+                    (user_id, content, content_hash, content_tsv, embedding, embedding_model,
+                     category, source_type, source_conversation_id, local_only, confidence,
+                     status, memory_slot)
+                VALUES ($1, $2, $3, to_tsvector('english', $13), $4::vector, $5, $6, $7, $8, $9, $10, $11, $12)
                 RETURNING *
                 """,
                 user_id,
                 encrypted_content,
+                content_hash,
                 embedding_str,
                 effective_embedding_model,
                 category,
@@ -468,19 +572,27 @@ class MemoryStore:
             return row
 
         try:
-            row = await _insert(source_conversation_id)
-        except asyncpg.ForeignKeyViolationError as error:
-            if source_conversation_id is None:
-                raise
-            logger.warning(
-                "insert_memory: source_conversation_id %s missing; retrying without source conversation reference (%s)",
-                source_conversation_id,
-                error,
+            try:
+                row = await _insert(source_conversation_id)
+            except asyncpg.ForeignKeyViolationError as error:
+                if source_conversation_id is None:
+                    raise
+                logger.warning(
+                    "insert_memory: source_conversation_id %s missing; retrying without source conversation reference (%s)",
+                    source_conversation_id,
+                    error,
+                )
+                row = await _insert(None)
+        except asyncpg.UniqueViolationError:
+            existing = await self._get_active_memory_by_content_hash(
+                user_id,
+                content_hash,
+                local_only,
             )
-            row = await _insert(None)
-        result = dict(row)  # type: ignore[arg-type]
-        result["content"] = self._enc.decrypt(result["content"])
-        return result
+            if existing is not None:
+                return existing
+            raise
+        return self._memory_row_to_dict(row)
 
     async def get_memory(self, memory_id: uuid.UUID) -> dict[str, Any] | None:
         row = await self._pool.fetchrow(
@@ -565,29 +677,35 @@ class MemoryStore:
         confidence: float | None = None,
     ) -> dict[str, Any] | None:
         encrypted_content = self._enc.encrypt(content)
+        content_hash = compute_memory_content_hash(content)
         embedding_str = _format_vector(embedding) if embedding else None
-        row = await self._pool.fetchrow(
-            """
-            UPDATE memories
-            SET content    = $2,
-                embedding  = COALESCE($3::vector, embedding),
-                confidence = COALESCE($4, confidence),
-                content_tsv = to_tsvector('english', $5),
-                updated_at = NOW()
-            WHERE id = $1
-            RETURNING *
-            """,
-            memory_id,
-            encrypted_content,
-            embedding_str,
-            confidence,
-            content,
-        )
+        try:
+            row = await self._pool.fetchrow(
+                """
+                UPDATE memories
+                SET content    = $2,
+                    embedding  = COALESCE($3::vector, embedding),
+                    confidence = COALESCE($4, confidence),
+                    content_tsv = to_tsvector('english', $5),
+                    content_hash = $6,
+                    updated_at = NOW()
+                WHERE id = $1
+                RETURNING *
+                """,
+                memory_id,
+                encrypted_content,
+                embedding_str,
+                confidence,
+                content,
+                content_hash,
+            )
+        except asyncpg.UniqueViolationError as exc:
+            raise MemoryContentConflictError(
+                "Memory content duplicates an existing active memory"
+            ) from exc
         if not row:
             return None
-        result = dict(row)
-        result["content"] = self._enc.decrypt(result["content"])
-        return result
+        return self._memory_row_to_dict(row)
 
     async def update_memory_embedding(
         self,
@@ -632,6 +750,35 @@ class MemoryStore:
         memory_id: uuid.UUID,
         status: str,
     ) -> bool:
+        if status == "active":
+            row = await self._pool.fetchrow(
+                "SELECT content, content_hash FROM memories WHERE id = $1",
+                memory_id,
+            )
+            if row is None:
+                return False
+            content_hash = row["content_hash"]
+            if content_hash is None:
+                content_hash = compute_memory_content_hash(self._enc.decrypt(row["content"]))
+            try:
+                result = await self._pool.execute(
+                    """
+                    UPDATE memories
+                    SET status = $2,
+                        content_hash = $3,
+                        updated_at = NOW()
+                    WHERE id = $1
+                    """,
+                    memory_id,
+                    status,
+                    content_hash,
+                )
+            except asyncpg.UniqueViolationError as exc:
+                raise MemoryContentConflictError(
+                    "Memory content duplicates an existing active memory"
+                ) from exc
+            return result == "UPDATE 1"
+
         result = await self._pool.execute(
             """
             UPDATE memories
@@ -702,6 +849,7 @@ class MemoryStore:
     ) -> dict[str, Any]:
         """Create a new memory and mark the old one as superseded (transaction)."""
         encrypted_content = self._enc.encrypt(new_content)
+        content_hash = compute_memory_content_hash(new_content)
         embedding_str = _format_vector(embedding) if embedding else None
         effective_embedding_model = embedding_model or _default_embedding_model()
         metadata_json = json.dumps(metadata) if metadata is not None else None
@@ -715,13 +863,15 @@ class MemoryStore:
                     row = await conn.fetchrow(
                         """
                         INSERT INTO memories
-                            (user_id, content, embedding, embedding_model, category, source_type,
-                             source_conversation_id, confidence, status, memory_slot, metadata, content_tsv)
-                        VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11, to_tsvector('english', $12))
+                            (user_id, content, content_hash, embedding, embedding_model, category,
+                             source_type, source_conversation_id, confidence, status, memory_slot,
+                             metadata, content_tsv)
+                        VALUES ($1, $2, $3, $4::vector, $5, $6, $7, $8, $9, $10, $11, $12, to_tsvector('english', $13))
                         RETURNING *
                         """,
                         user_id,
                         encrypted_content,
+                        content_hash,
                         embedding_str,
                         effective_embedding_model,
                         new_category,
@@ -737,17 +887,52 @@ class MemoryStore:
                         raise RuntimeError("supersede_memory: insert returned no row")
                     return row
 
+                async def _get_active_duplicate() -> asyncpg.Record | None:
+                    return await conn.fetchrow(
+                        """
+                        SELECT *
+                        FROM memories
+                        WHERE user_id = $1
+                          AND content_hash = $2
+                          AND local_only = FALSE
+                          AND status = 'active'
+                          AND valid_to IS NULL
+                        ORDER BY created_at ASC
+                        LIMIT 1
+                        """,
+                        user_id,
+                        content_hash,
+                    )
+
                 try:
-                    new_row = await _insert(source_conversation_id)
-                except asyncpg.ForeignKeyViolationError as error:
-                    if source_conversation_id is None:
+                    async with conn.transaction():
+                        try:
+                            new_row = await _insert(source_conversation_id)
+                        except asyncpg.ForeignKeyViolationError as error:
+                            if source_conversation_id is None:
+                                raise
+                            logger.warning(
+                                "supersede_memory: source_conversation_id %s missing; retrying without source conversation reference (%s)",
+                                source_conversation_id,
+                                error,
+                            )
+                            new_row = await _insert(None)
+                except asyncpg.UniqueViolationError:
+                    # PostgreSQL aborts the inner transaction on the unique
+                    # violation, but the savepoint above scopes the rollback
+                    # so the outer transaction stays usable. The recovery
+                    # lookup and update below run against the still-alive
+                    # outer transaction.
+                    duplicate_row = await _get_active_duplicate()
+                    if duplicate_row is None:
                         raise
                     logger.warning(
-                        "supersede_memory: source_conversation_id %s missing; retrying without source conversation reference (%s)",
-                        source_conversation_id,
-                        error,
+                        "supersede_memory: recovered existing active memory after content_hash conflict",
+                        exc_info=True,
                     )
-                    new_row = await _insert(None)
+                    if duplicate_row["id"] == old_memory_id:
+                        return self._memory_row_to_dict(duplicate_row)
+                    new_row = duplicate_row
 
                 update_result = await conn.execute(
                     """
@@ -764,9 +949,7 @@ class MemoryStore:
                 if update_result != "UPDATE 1":
                     raise RuntimeError("Supersede failed to close source memory in active state")
 
-        result = cast(dict[str, Any], dict(new_row))
-        result["content"] = self._enc.decrypt(result["content"])
-        return result
+        return self._memory_row_to_dict(new_row)
 
     async def touch_memory(self, memory_id: uuid.UUID) -> None:
         await self._pool.execute(
@@ -1953,30 +2136,36 @@ class MemoryStore:
 
         inserted = 0
         for mem in memories:
-            encrypted_content = self._enc.encrypt(mem["content"])
+            content = mem["content"]
+            encrypted_content = self._enc.encrypt(content)
+            content_hash = compute_memory_content_hash(content)
             embedding_str = _format_vector(mem["embedding"]) if mem.get("embedding") else None
             embedding_model = mem.get("embedding_model") or _default_embedding_model()
             status = mem.get("status", "active")
             memory_slot = mem.get("memory_slot")
-            await self._pool.execute(
-                """
-                INSERT INTO memories
-                    (user_id, content, embedding, embedding_model, category, source_type,
-                     local_only, confidence, status, memory_slot)
-                VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10)
-                """,
-                user_id,
-                encrypted_content,
-                embedding_str,
-                embedding_model,
-                mem.get("category", "fact"),
-                mem.get("source_type", "import"),
-                mem.get("local_only", False),
-                mem.get("confidence", 1.0),
-                status,
-                memory_slot,
-            )
-            inserted += 1
+            try:
+                await self._pool.execute(
+                    """
+                    INSERT INTO memories
+                        (user_id, content, content_hash, embedding, embedding_model,
+                         category, source_type, local_only, confidence, status, memory_slot)
+                    VALUES ($1, $2, $3, $4::vector, $5, $6, $7, $8, $9, $10, $11)
+                    """,
+                    user_id,
+                    encrypted_content,
+                    content_hash,
+                    embedding_str,
+                    embedding_model,
+                    mem.get("category", "fact"),
+                    mem.get("source_type", "import"),
+                    mem.get("local_only", False),
+                    mem.get("confidence", 1.0),
+                    status,
+                    memory_slot,
+                )
+                inserted += 1
+            except asyncpg.UniqueViolationError:
+                continue
         return inserted
 
     async def count_memories(
