@@ -27,6 +27,9 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from starlette.datastructures import MutableHeaders
+from starlette.types import Receive, Scope, Send
 from fastapi.responses import FileResponse, StreamingResponse
 
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
@@ -43,6 +46,7 @@ from orchestrator.auth_runtime_state import (
 )
 from orchestrator.council.sse import stream_council, stream_council_interview_response
 from orchestrator.config import (
+    HostSecurityConfigError,
     HostedIdentityConfigError,
     ProviderConfig,
     Settings,
@@ -127,6 +131,7 @@ def _validate_startup_config(settings: Settings) -> None:
     settings.validate_hosted_identity_config()
     if settings.daemon_encryption_key is not None:
         ContentEncryption(settings.daemon_encryption_key)
+    settings.validate_host_security_config()
 
 
 @asynccontextmanager
@@ -143,6 +148,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         raise
     except EncryptionInitError as exc:
         logger.critical("Encryption config validation failed: %s", exc)
+        raise
+    except HostSecurityConfigError as exc:
+        logger.critical("Host security config validation failed: %s", exc)
         raise
 
     state = await init_app_state(settings)
@@ -301,6 +309,61 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# TrustedHostMiddleware: enforce an allowlist on the inbound Host header.
+# Without this, a Host-header injection (Host: attacker.com) can be used
+# to generate absolute URLs in error responses that point to attacker-
+# controlled domains, confuse reverse proxies, or bypass domain-based
+# authentication. The allowlist is read from DAEMON_ALLOWED_HOSTS via
+# the Settings class. In production an empty allowlist is rejected at
+# startup; in development it falls back to ["*"] for the dev experience.
+# NOTE for operators: requests proxied by the Next frontend reach the
+# backend with Host values like "backend:8000" or "localhost:8000".
+# Starlette strips the port before matching, so DAEMON_ALLOWED_HOSTS must
+# include the BARE internal hostnames (e.g. "backend", "localhost");
+# resolve_allowed_hosts() also drops any :port suffix it finds.
+
+
+class CaseInsensitiveTrustedHostMiddleware(TrustedHostMiddleware):
+    """Starlette matches Host case-sensitively; hostnames are not.
+
+    Lowercase the inbound Host header before matching (and for downstream
+    consumers — DNS hostnames are case-insensitive by RFC 4343) so
+    ``Host: APP.DAEMON.AI`` matches an ``app.daemon.ai`` allowlist entry.
+    Allowlist entries are already lowercased by ``resolve_allowed_hosts``.
+    """
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if not self.allow_any and scope["type"] in ("http", "websocket"):
+            headers = MutableHeaders(scope=scope)
+            host = headers.get("host", "")
+            lowered = host.lower()
+            if lowered != host:
+                headers["host"] = lowered
+        await super().__call__(scope, receive, send)
+
+
+# Import-time resolution must not raise: production-startup tests exercise
+# other fail-closed paths in _validate_startup_config and must be able to
+# import this module first. A misconfigured allowlist falls back to ["*"]
+# here, but the app still refuses to START because the lifespan validation
+# chain re-raises HostSecurityConfigError (fail-closed, just later).
+try:
+    _allowed_hosts = get_settings().resolve_allowed_hosts()
+except HostSecurityConfigError as _host_exc:
+    logger.critical(
+        "Host security config invalid; startup will abort in lifespan: %s",
+        _host_exc,
+    )
+    _allowed_hosts = ["*"]
+if _allowed_hosts == ["*"]:
+    logger.warning(
+        "TrustedHostMiddleware is configured with allowed_hosts=['*']; "
+        "the backend will accept any Host header. This is the default in "
+        "development but is unsafe in production. Set DAEMON_ALLOWED_HOSTS "
+        "to a comma-separated allowlist (e.g. 'app.daemon.ai,*.daemon.ai')."
+    )
+app.add_middleware(CaseInsensitiveTrustedHostMiddleware, allowed_hosts=_allowed_hosts)
 
 
 DEFAULT_BILLING_USER_ID = "00000000-0000-0000-0000-000000000001"
