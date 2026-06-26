@@ -384,21 +384,21 @@ class TestApplyDeleteAction:
 
         class FakeMemoryStore(MemoryStore):
             def __init__(self) -> None:
-                self._pool = MagicMock()
+                self.deleted_projection: str | None = None
 
             async def log_consolidation_nudge_action(self, **kwargs) -> None:
                 self.logged_action = kwargs
 
+            async def delete_skill_projection(self, skill_id: str) -> bool:
+                self.deleted_projection = skill_id
+                return True
+
         with patch("orchestrator.skills_store.delete_skill") as mock_delete:
-            with patch("orchestrator.skills_projection.SkillProjectionStore") as mock_proj:
-                mock_proj_instance = MagicMock()
-                mock_proj.return_value = mock_proj_instance
+            store = FakeMemoryStore()
+            result = await _apply_delete_action("skill-to-delete", store, user_id)  # noqa: F841
 
-                store = FakeMemoryStore()
-                result = await _apply_delete_action("skill-to-delete", store, user_id)  # noqa: F841
-
-                mock_delete.assert_called_once_with("skill-to-delete")
-                mock_proj_instance.delete_projection.assert_called_once_with("skill-to-delete")
+            mock_delete.assert_called_once_with("skill-to-delete")
+            assert store.deleted_projection == "skill-to-delete"
 
 
 class TestModelDrivenConsolidationFlow:
