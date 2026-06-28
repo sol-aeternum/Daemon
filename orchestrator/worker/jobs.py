@@ -1154,7 +1154,12 @@ async def _process_user_consolidation_nudge(
 
         elif action_type == "delete":
             if skill_id in autonomous_skill_ids:
-                delete_result = await _apply_delete_action(skill_id, store, user_id)
+                delete_result = await _apply_delete_action(
+                    skill_id,
+                    store,
+                    user_id,
+                    reason=action.get("reason", "model-driven delete"),
+                )
                 audit_id: uuid.UUID | None = delete_result.get("audit_id")
                 if delete_result["deleted"]:
                     actions.append(
@@ -1162,7 +1167,8 @@ async def _process_user_consolidation_nudge(
                             action_type="delete",
                             skill_id=skill_id,
                             target_skill_id=None,
-                            reason=action.get("reason", "model-driven delete"),
+                            reason=delete_result.get("reason")
+                            or action.get("reason", "model-driven delete"),
                             similarity=None,
                             status="applied",
                             audit_id=audit_id,
@@ -1212,10 +1218,12 @@ async def _process_user_consolidation_nudge(
                 break
         existing_audit_id = action.get("audit_id")
         if existing_audit_id is not None:
-            await store.update_consolidation_nudge_action_status(
-                existing_audit_id,
-                status=action["status"],
-            )
+            # _apply_delete_action pre-wrote the pending audit row and has
+            # already finalized its status (applied on success, failed with
+            # reason on failure). Re-touching the row here would either
+            # duplicate the work or overwrite the `failed` status with the
+            # outer loop's `skipped`. Skip persistence; the action is kept
+            # in the returned list for caller visibility.
             continue
         await store.log_consolidation_nudge_action(
             user_id=user_id,
@@ -1326,6 +1334,8 @@ async def _apply_delete_action(
     skill_id: str,
     store: MemoryStore,
     user_id: uuid.UUID,
+    *,
+    reason: str = "model-driven delete",
 ) -> dict[str, Any]:
     run_id = uuid.uuid4()
     try:
@@ -1335,7 +1345,7 @@ async def _apply_delete_action(
             action_type="delete",
             skill_id=skill_id,
             target_skill_id=None,
-            reason="model-driven delete",
+            reason=reason,
             similarity=None,
             status="pending",
         )
