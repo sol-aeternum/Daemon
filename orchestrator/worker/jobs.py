@@ -238,7 +238,7 @@ async def extract_memories(
         return {"status": "skipped", "reason": "no_messages"}
 
     last_message_observed_at = max(
-        (msg["created_at"] for msg in messages if msg.get("created_at")),
+        (msg["created_at"] for msg in filtered_raw_messages if msg.get("created_at")),
         default=None,
     )
 
