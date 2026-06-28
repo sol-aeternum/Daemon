@@ -12,6 +12,7 @@ from arq.cron import cron
 from arq.worker import Worker, func
 
 from orchestrator.config import get_settings
+from orchestrator.main import validate_database_credentials_for_worker
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
 
@@ -42,6 +43,8 @@ async def on_startup(ctx: WorkerContext) -> None:
     ctx["settings"] = app_settings
     ctx["encryption"] = ContentEncryption(app_settings.daemon_encryption_key)
     ctx["store"] = None
+
+    validate_database_credentials_for_worker(app_settings)
 
     if not app_settings.database_url:
         logger.info("DATABASE_URL not configured; worker memory jobs degraded")

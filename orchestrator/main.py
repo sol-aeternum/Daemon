@@ -7,7 +7,7 @@ import logging
 import os
 import time
 import uuid
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import asyncpg
 import httpx
@@ -129,24 +129,47 @@ class UnsafeDatabaseCredentialError(RuntimeError):
 
 
 def _database_password_from_url(database_url: str | None) -> str | None:
+    """Extract the password component from a DATABASE_URL.
+
+    asyncpg accepts credentials either in the userinfo (``postgresql://user:pass@host``)
+    or as ``?password=...`` query options, so we read both and return the first hit.
+    """
     if not database_url:
         return None
     parsed = urlparse(database_url)
-    if parsed.password is None:
-        return None
-    return unquote(parsed.password)
+    if parsed.password is not None:
+        return unquote(parsed.password)
+    query_password = parse_qs(parsed.query).get("password", [None])[0]
+    if query_password is not None:
+        return unquote(query_password)
+    return None
 
 
 def _validate_database_credentials(settings: Settings) -> None:
-    if settings.daemon_environment.lower() != "production":
+    if settings.daemon_environment.strip().lower() != "production":
         return
-    password = os.getenv("POSTGRES_PASSWORD") or _database_password_from_url(settings.database_url)
-    if password is None:
-        return
-    if password.strip().lower() in KNOWN_DEFAULT_POSTGRES_PASSWORDS:
-        raise UnsafeDatabaseCredentialError(
-            "POSTGRES_PASSWORD or DATABASE_URL uses a known default database password"
-        )
+    # Always inspect BOTH POSTGRES_PASSWORD and DATABASE_URL so a safe-looking
+    # env var cannot mask an unsafe URL.
+    password_candidates: list[tuple[str, str | None]] = [
+        ("POSTGRES_PASSWORD", os.getenv("POSTGRES_PASSWORD")),
+        ("DATABASE_URL", _database_password_from_url(settings.database_url)),
+    ]
+    for source, password in password_candidates:
+        if password is None:
+            continue
+        if password.strip().lower() in KNOWN_DEFAULT_POSTGRES_PASSWORDS:
+            raise UnsafeDatabaseCredentialError(f"{source} uses a known default database password")
+
+
+def validate_database_credentials_for_worker(settings: Settings) -> None:
+    """Same fail-closed check, callable from the worker entrypoint.
+
+    The arq worker process does not run the FastAPI lifespan, so it must invoke
+    this validation explicitly before opening a database connection. Mirrors
+    ``_validate_database_credentials`` so production workers also reject the
+    known default database credentials.
+    """
+    _validate_database_credentials(settings)
 
 
 def _validate_startup_config(settings: Settings) -> None:
