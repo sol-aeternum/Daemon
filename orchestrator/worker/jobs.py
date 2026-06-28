@@ -237,11 +237,17 @@ async def extract_memories(
     if not text:
         return {"status": "skipped", "reason": "no_messages"}
 
+    last_message_observed_at = max(
+        (msg["created_at"] for msg in messages if msg.get("created_at")),
+        default=None,
+    )
+
     extraction_success, new_memories = await process_extraction(
         store=store_obj,
         user_id=_as_uuid(user_id),
         conversation_id=_as_uuid(conversation_id),
         text=text,
+        last_message_observed_at=last_message_observed_at,
     )
 
     if extraction_success and new_memories:

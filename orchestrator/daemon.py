@@ -907,12 +907,21 @@ async def stream_sse_chat(
                     logger.debug(f"Trust signal application skipped: {trust_error}")
 
                 if queue is not None:
+                    extract_job_id = f"extract:{conversation_uuid}"
+                    try:
+                        # arq records failed results under Worker-level keep_result_s
+                        # (default 3600s); clearing any stale result key here lets
+                        # future enqueues proceed once the worker has had a chance
+                        # to mark the failure permanently logged.
+                        await queue.delete(f"arq:result:{extract_job_id}")
+                    except Exception as clear_error:
+                        logger.debug("Could not clear stale extract result key: %s", clear_error)
                     try:
                         await queue.enqueue_job(
                             "extract_memories",
                             str(user_id),
                             str(conversation_uuid),
-                            _job_id=f"extract:{conversation_uuid}",
+                            _job_id=extract_job_id,
                             _defer_by=timedelta(seconds=30),
                         )
                     except Exception as extract_error:

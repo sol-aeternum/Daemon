@@ -1735,14 +1735,16 @@ class MemoryStore:
         extracted_facts: list[Any] | None = None,
         dedup_results: dict[str, Any] | None = None,
         model_used: str | None = None,
+        last_message_observed_at: datetime | None = None,
     ) -> dict[str, Any]:
         encrypted_snippet = self._enc.encrypt(input_snippet)
         row = await self._pool.fetchrow(
             """
             INSERT INTO memory_extraction_log
                 (conversation_id, user_id, input_snippet,
-                 extracted_facts, dedup_results, model_used)
-            VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6)
+                 extracted_facts, dedup_results, model_used,
+                 last_message_observed_at)
+            VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)
             RETURNING *
             """,
             conversation_id,
@@ -1751,6 +1753,7 @@ class MemoryStore:
             json.dumps(extracted_facts or []),
             json.dumps(dedup_results or {}),
             model_used,
+            last_message_observed_at,
         )
         result = dict(row)  # type: ignore[arg-type]
         result["input_snippet"] = self._enc.decrypt(result["input_snippet"])
@@ -1760,16 +1763,22 @@ class MemoryStore:
         self,
         conversation_id: uuid.UUID,
     ) -> datetime | None:
-        """Get the timestamp of the last extraction for a conversation."""
+        """Get the watermark for the next extraction.
+
+        Prefers last_message_observed_at over created_at so that a turn
+        which arrived while the previous extraction was in flight is not
+        skipped by the `created_at > last_extraction_time` filter.
+        """
         row = await self._pool.fetchrow(
             """
-            SELECT created_at FROM memory_extraction_log 
-            WHERE conversation_id = $1 
-            ORDER BY created_at DESC LIMIT 1
+            SELECT COALESCE(last_message_observed_at, created_at) AS watermark
+            FROM memory_extraction_log
+            WHERE conversation_id = $1
+            ORDER BY COALESCE(last_message_observed_at, created_at) DESC LIMIT 1
             """,
             conversation_id,
         )
-        return row["created_at"] if row else None
+        return row["watermark"] if row else None
 
     # ------------------------------------------------------------------
     # Retrieval log operations
