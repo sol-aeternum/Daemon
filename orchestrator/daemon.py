@@ -907,18 +907,49 @@ async def stream_sse_chat(
                     logger.debug(f"Trust signal application skipped: {trust_error}")
 
                 if queue is not None:
+                    extract_job_id = f"extract:{conversation_uuid}"
                     try:
-                        import time
-
-                        await queue.enqueue_job(
+                        # arq records failed results under Worker-level keep_result_s
+                        # (default 3600s); clearing any stale result key here lets
+                        # future enqueues proceed once the worker has had a chance
+                        # to mark the failure permanently logged.
+                        await queue.delete(f"arq:result:{extract_job_id}")
+                    except Exception as clear_error:
+                        logger.debug("Could not clear stale extract result key: %s", clear_error)
+                    try:
+                        enqueued = await queue.enqueue_job(
                             "extract_memories",
                             str(user_id),
                             str(conversation_uuid),
-                            _job_id=f"extract:{conversation_uuid}:{int(time.time())}",
+                            _job_id=extract_job_id,
                             _defer_by=timedelta(seconds=30),
                         )
                     except Exception as extract_error:
                         logger.warning("Failed to enqueue memory extraction: %s", extract_error)
+                    else:
+                        if enqueued is None:
+                            # Another extract job is already pending or running for
+                            # this conversation; arq silently dropped the enqueue. The
+                            # watermark (last_message_observed_at) will only advance
+                            # to messages the in-flight run actually saw, so we need
+                            # a follow-up that runs after it finishes to pick up any
+                            # turns that arrived during the run. Use a deterministic
+                            # follow-up _job_id so rapid-fire duplicate enqueues while
+                            # the original is still in-flight collapse into one
+                            # trailing extraction instead of one per duplicate turn.
+                            follow_up_id = f"{extract_job_id}:followup"
+                            try:
+                                await queue.enqueue_job(
+                                    "extract_memories",
+                                    str(user_id),
+                                    str(conversation_uuid),
+                                    _job_id=follow_up_id,
+                                    _defer_by=timedelta(seconds=60),
+                                )
+                            except Exception as follow_up_error:
+                                logger.debug(
+                                    "Could not schedule extract follow-up: %s", follow_up_error
+                                )
 
                 tool_call_count = len(persisted_tool_calls)
                 if queue is not None and assistant_message_id is not None and tool_call_count >= 5:

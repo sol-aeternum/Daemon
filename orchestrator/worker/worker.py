@@ -180,7 +180,7 @@ logger.info("Memory and generated artifact cleanup scheduled: daily at 03:00-03:
 
 worker = AuditedWorker(
     functions=[
-        func(extract_memories, max_tries=_worker_settings.retry_attempts),
+        func(extract_memories, max_tries=_worker_settings.retry_attempts, keep_result=0),
         func(generate_title, max_tries=_worker_settings.retry_attempts),
         func(generate_conversation_title_job, max_tries=_worker_settings.retry_attempts),
         func(generate_summary_job, max_tries=_worker_settings.retry_attempts),
