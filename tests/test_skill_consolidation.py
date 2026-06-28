@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -356,7 +356,7 @@ class TestApplyMergeAction:
     async def test_merge_deletes_absorbed_skill(self) -> None:
         user_id = uuid.uuid4()
 
-        class FakeMemoryStore(MemoryStore):
+        class FakeMemoryStore:
             def __init__(self) -> None:
                 self._pool = MagicMock()
 
@@ -370,7 +370,9 @@ class TestApplyMergeAction:
                 self.absorbed_skill_ids = absorbed_skill_ids
 
         store = FakeMemoryStore()
-        result = await _apply_merge_action("skill-keep", "skill-absorb", store, user_id)
+        result = await _apply_merge_action(
+            "skill-keep", "skill-absorb", cast(MemoryStore, store), user_id
+        )
 
         assert result["merged"] is True
         assert store.kept_skill_id == "skill-keep"
@@ -379,26 +381,190 @@ class TestApplyMergeAction:
 
 class TestApplyDeleteAction:
     @pytest.mark.asyncio
-    async def test_delete_removes_skill(self) -> None:
+    async def test_delete_writes_pending_audit_before_destructive_actions(self) -> None:
         user_id = uuid.uuid4()
+        audit_id = uuid.uuid4()
+        events: list[tuple[str, str]] = []
 
         class FakeMemoryStore(MemoryStore):
             def __init__(self) -> None:
+                self._pool = MagicMock()
                 self.deleted_projection: str | None = None
 
-            async def log_consolidation_nudge_action(self, **kwargs) -> None:
+            async def log_consolidation_nudge_action(self, **kwargs) -> uuid.UUID:
+                events.append(("audit", kwargs["status"]))
                 self.logged_action = kwargs
+                return audit_id
+
+            async def update_consolidation_nudge_action_status(
+                self,
+                action_id: uuid.UUID,
+                *,
+                status: str,
+                reason: str | None = None,
+            ) -> None:
+                events.append(("audit_update", status))
+                self.updated_action = {"action_id": action_id, "status": status, "reason": reason}
+
+        class FakeProjectionStore:
+            def __init__(self, pool: object) -> None:
+                self.pool = pool
+
+            async def delete_projection(self, skill_id: str) -> bool:
+                events.append(("projection_delete", skill_id))
+                return True
+
+        def fake_delete_skill(skill_id: str) -> None:
+            events.append(("skill_delete", skill_id))
+
+        with patch("orchestrator.skills_store.delete_skill", side_effect=fake_delete_skill):
+            with patch("orchestrator.skills_projection.SkillProjectionStore") as mock_proj:
+                mock_proj.return_value = FakeProjectionStore(object())
+
+                store = FakeMemoryStore()
+                result = await _apply_delete_action(
+                    "skill-to-delete", cast(MemoryStore, store), user_id
+                )
+
+                assert result["deleted"] is True
+                assert result["reason"] == "ok"
+                assert result["audit_id"] == audit_id
+                assert events == [
+                    ("audit", "pending"),
+                    ("skill_delete", "skill-to-delete"),
+                    ("projection_delete", "skill-to-delete"),
+                    ("audit_update", "applied"),
+                ]
+                assert store.logged_action["status"] == "pending"
+                assert store.updated_action == {
+                    "action_id": audit_id,
+                    "status": "applied",
+                    "reason": None,
+                }
+
+    @pytest.mark.asyncio
+    async def test_delete_does_not_run_when_pending_audit_insert_fails(self) -> None:
+        user_id = uuid.uuid4()
+
+        class FakeMemoryStore:
+            def __init__(self) -> None:
+                self._pool = MagicMock()
+
+            async def log_consolidation_nudge_action(self, **kwargs) -> uuid.UUID:
+                raise RuntimeError("audit insert failed")
 
             async def delete_skill_projection(self, skill_id: str) -> bool:
                 self.deleted_projection = skill_id
                 return True
 
         with patch("orchestrator.skills_store.delete_skill") as mock_delete:
-            store = FakeMemoryStore()
-            result = await _apply_delete_action("skill-to-delete", store, user_id)  # noqa: F841
+            with patch("orchestrator.skills_projection.SkillProjectionStore") as mock_proj:
+                result = await _apply_delete_action(
+                    "skill-to-delete", cast(MemoryStore, FakeMemoryStore()), user_id
+                )
 
-            mock_delete.assert_called_once_with("skill-to-delete")
-            assert store.deleted_projection == "skill-to-delete"
+        assert result["deleted"] is False
+        assert result["reason"] == "audit log failed before delete: audit insert failed"
+        mock_delete.assert_not_called()
+        mock_proj.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_marks_pending_audit_failed_when_projection_delete_fails(self) -> None:
+        user_id = uuid.uuid4()
+        audit_id = uuid.uuid4()
+
+        class FakeMemoryStore:
+            def __init__(self) -> None:
+                self._pool = MagicMock()
+                self.status_updates: list[dict[str, object]] = []
+
+            async def log_consolidation_nudge_action(self, **kwargs) -> uuid.UUID:
+                self.logged_action = kwargs
+                return audit_id
+
+            async def update_consolidation_nudge_action_status(
+                self,
+                action_id: uuid.UUID,
+                *,
+                status: str,
+                reason: str | None = None,
+            ) -> None:
+                self.status_updates.append(
+                    {"action_id": action_id, "status": status, "reason": reason}
+                )
+
+        class FailingProjectionStore:
+            def __init__(self, pool: object) -> None:
+                self.pool = pool
+
+            async def delete_projection(self, skill_id: str) -> bool:
+                raise RuntimeError(f"projection unavailable for {skill_id}")
+
+        with patch("orchestrator.skills_store.delete_skill") as mock_delete:
+            with patch(
+                "orchestrator.skills_projection.SkillProjectionStore",
+                return_value=FailingProjectionStore(object()),
+            ):
+                store = FakeMemoryStore()
+                result = await _apply_delete_action(
+                    "skill-to-delete", cast(MemoryStore, store), user_id
+                )
+
+        assert result["deleted"] is False
+        assert result["reason"] == "projection unavailable for skill-to-delete"
+        assert result["audit_id"] == audit_id
+        mock_delete.assert_called_once_with("skill-to-delete")
+        assert store.logged_action["status"] == "pending"
+        assert store.status_updates == [
+            {
+                "action_id": audit_id,
+                "status": "failed",
+                "reason": "delete failed: projection unavailable for skill-to-delete",
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_consolidation_log_query_filters_destructive_deletes(self) -> None:
+        user_id = uuid.uuid4()
+        row_id = uuid.uuid4()
+
+        class FakePool:
+            async def fetch(self, query: str, *args: object) -> list[dict[str, object]]:
+                self.query = query
+                self.args = args
+                return [
+                    {
+                        "id": row_id,
+                        "user_id": user_id,
+                        "action_type": "delete",
+                        "status": "failed",
+                    }
+                ]
+
+        pool = FakePool()
+        store = MemoryStore(cast(Any, pool), cast(Any, MagicMock()))
+        since = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        until = datetime(2026, 2, 1, tzinfo=timezone.utc)
+
+        rows = await store.list_consolidation_nudge_actions(
+            user_id=user_id,
+            action_type="delete",
+            status="failed",
+            since=since,
+            until=until,
+            limit=50,
+        )
+
+        assert rows == [
+            {
+                "id": row_id,
+                "user_id": user_id,
+                "action_type": "delete",
+                "status": "failed",
+            }
+        ]
+        assert "FROM skill_consolidation_log" in pool.query
+        assert pool.args == (user_id, "delete", "failed", since, until, 50)
 
 
 class TestModelDrivenConsolidationFlow:
