@@ -90,6 +90,7 @@ PostgreSQL 16 with pgvector extension. 37 migrations in the `migrations/` direct
 Latest migration: `036_skill_consolidation_pending_status.sql`.
 Latest migration: `036_memory_content_hash.sql`.
 Latest migration: `036_worker_job_failures.sql`.
+Latest migration: `037_worker_job_failures.sql`.
 ---
 
 ## Memory Pipeline

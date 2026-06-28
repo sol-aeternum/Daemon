@@ -81,8 +81,11 @@ async def test_worker_failure_audit_persists_failed_job() -> None:
     assert args[1] == "job-1"
     assert args[2] == "extract_memories"
     assert args[3] == "arq:queue"
-    assert json.loads(str(args[4])) == ["user-1"]
-    assert json.loads(str(args[5])) == {}
+    args_signature = json.loads(str(args[4]))
+    assert "signature" in args_signature
+    assert len(args_signature["signature"]) == 64
+    kwargs_signature = json.loads(str(args[5]))
+    assert "signature" in kwargs_signature
     assert args[6] == "RuntimeError"
     assert args[7] == "encryption failed"
     assert args[9] == 3
@@ -167,9 +170,8 @@ def test_worker_failure_audit_caps_large_argument_strings() -> None:
 
     assert failure is not None
     args_json = json.loads(failure.args_json)
-    assert args_json[0]["truncated"] is True
-    assert args_json[0]["length"] == 600
-    assert len(args_json[0]["preview"]) == 512
+    assert "signature" in args_json
+    assert len(args_json["signature"]) == 64
 
 
 def test_worker_uses_audited_worker_for_failure_persistence() -> None:
@@ -177,7 +179,7 @@ def test_worker_uses_audited_worker_for_failure_persistence() -> None:
 
 
 def test_job_failures_migration_defines_durable_audit_table() -> None:
-    migration = Path("migrations/036_worker_job_failures.sql").read_text(encoding="utf-8")
+    migration = Path("migrations/037_worker_job_failures.sql").read_text(encoding="utf-8")
 
     assert "CREATE TABLE IF NOT EXISTS job_failures" in migration
     assert "args_json       JSONB" in migration

@@ -71,7 +71,8 @@ Daemon uses a tier-based model configuration system. Specific model assignments 
 - **Storage**: PostgreSQL + pgvector with 37 migrations applied (latest: `036_skill_consolidation_pending_status.sql`).
 - **Storage**: PostgreSQL + pgvector with 36 migrations applied (latest: `036_memory_content_hash.sql`).
 - **Storage**: PostgreSQL + pgvector with 36 migrations applied (latest: `036_worker_job_failures.sql`).- **Pipeline**: Extraction (GPT-4o-mini) → Embedding (Voyage 4) → Dedup → Retrieval (Hybrid).
-- **Encryption**: Fernet for messages and memories.
+- **Storage**: PostgreSQL + pgvector with 37 migrations applied (latest: `037_worker_job_failures.sql`).
+- **Pipeline**: Extraction (GPT-4o-mini) → Embedding (Voyage 4) → Dedup → Retrieval (Hybrid).- **Encryption**: Fernet for messages and memories.
 - **Background Jobs**: Extraction, summary, consolidation, dreaming.
 
 ### Video Generation + Credits ✅

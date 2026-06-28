@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import traceback
 import uuid
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 from arq.jobs import JobResult, deserialize_result
 from arq.worker import Worker
@@ -26,13 +27,16 @@ CRITICAL_WORKER_JOBS = frozenset(
     {
         "extract_memories",
         "consolidate_memories",
+        "cron:consolidate_memories",
         "resolve_entities_job",
         "run_dreaming_job",
         "run_scheduled_dreaming_job",
+        "generate_summary_job",
     }
 )
 
 _MAX_ARGUMENT_STRING_LENGTH = 512
+_AUDIT_TIMEOUT_S = 5.0
 
 
 class JobFailurePool(Protocol):
@@ -74,25 +78,66 @@ def _redact_large_values(value: object) -> object:
     return value
 
 
+def _args_signature(value: object) -> str:
+    """Stable SHA256 over redacted args; used in place of plaintext so user
+    chat content (e.g. generate_title's first-message arg) is never persisted
+    unencrypted in job_failures.args_json.
+    """
+    canonical = json.dumps(
+        _redact_large_values(value), ensure_ascii=True, sort_keys=True, default=str
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _result_status_error(result: Any) -> tuple[str, str] | None:
+    """Treat dict results with status='error' as failures for the critical-job
+    allowlist so jobs that report failure via return-value rather than raising
+    (run_dreaming_job, resolve_entities_job) still trigger the alert path."""
+    if not isinstance(result, dict):
+        return None
+    status = result.get("status")
+    if not isinstance(status, str) or status != "error":
+        return None
+    reason = result.get("reason") or result.get("error") or "unknown"
+    return "ErrorStatusResult", str(reason)[:_MAX_ARGUMENT_STRING_LENGTH]
+
+
 def worker_job_failure_from_result(job_result: JobResult) -> WorkerJobFailure | None:
     if job_result.success:
-        return None
+        # Even on success-tagged results, a status='error' return value is a
+        # semantic failure for the critical-job allowlist. Capture it as a
+        # failure without raising.
+        status_error = _result_status_error(job_result.result)
+        if status_error is None:
+            return None
+        error_type, error_message = status_error
+        result = job_result.result
+    else:
+        result = job_result.result
+        error_type = type(result).__name__
+        error_message = (str(result) or repr(result))[:_MAX_ARGUMENT_STRING_LENGTH]
 
-    result = job_result.result
-    error_type = type(result).__name__
-    error_message = str(result) or repr(result)
     traceback_text: str | None = None
     if isinstance(result, BaseException):
-        traceback_text = "".join(
-            traceback.format_exception(type(result), result, result.__traceback__)
-        )
+        # arq pickle round-trip discards __traceback__; if we have it, capture.
+        tb = result.__traceback__
+        if tb is not None:
+            traceback_text = "".join(traceback.format_exception(type(result), result, tb))
 
     return WorkerJobFailure(
         job_id=job_result.job_id or "<unknown>",
         job_name=job_result.function,
         queue_name=job_result.queue_name,
-        args_json=_safe_json(job_result.args),
-        kwargs_json=_safe_json(job_result.kwargs),
+        args_json=json.dumps(
+            {"signature": _args_signature(job_result.args)},
+            ensure_ascii=True,
+            sort_keys=True,
+        ),
+        kwargs_json=json.dumps(
+            {"signature": _args_signature(job_result.kwargs)},
+            ensure_ascii=True,
+            sort_keys=True,
+        ),
         error_type=error_type,
         error_message=error_message,
         traceback_text=traceback_text,
@@ -223,8 +268,10 @@ class AuditedWorker(Worker):
         incr_score: int | None,
         keep_in_progress: float | None,
     ) -> None:
-        if finish:
-            await audit_worker_job_result(cast(WorkerContext, self.ctx), result_data)
+        # Finalize Redis state FIRST so a slow audit/alert path cannot keep
+        # the worker slot tied up or block retry/cleanup. Audit work runs
+        # afterwards under a short timeout so a hang in mail/DB cannot wedge
+        # the worker indefinitely.
         await super().finish_job(
             job_id,
             finish,
@@ -234,7 +281,26 @@ class AuditedWorker(Worker):
             incr_score,
             keep_in_progress,
         )
+        if finish:
+            await _run_audit_with_timeout(cast(WorkerContext, self.ctx), result_data)
 
     async def finish_failed_job(self, job_id: str, result_data: bytes | None) -> None:
-        await audit_worker_job_result(cast(WorkerContext, self.ctx), result_data)
         await super().finish_failed_job(job_id, result_data)
+        await _run_audit_with_timeout(cast(WorkerContext, self.ctx), result_data)
+
+
+async def _run_audit_with_timeout(ctx: WorkerContext, result_data: bytes | None) -> None:
+    import asyncio
+
+    try:
+        await asyncio.wait_for(
+            audit_worker_job_result(ctx, result_data),
+            timeout=_AUDIT_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "worker_job_failure audit timed out after %.1fs",
+            _AUDIT_TIMEOUT_S,
+        )
+    except Exception:
+        logger.warning("worker_job_failure audit raised", exc_info=True)
