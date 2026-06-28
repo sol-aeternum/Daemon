@@ -193,7 +193,9 @@ async def test_extraction_enqueue_uses_stable_conversation_debounce_key() -> Non
     extraction_attempts = [
         attempt
         for attempt in queue.attempts
-        if attempt["args"] and attempt["args"][0] == "extract_memories"
+        if attempt["args"]
+        and attempt["args"][0] == "extract_memories"
+        and attempt.get("job_id") == f"extract:{conversation_uuid}"
     ]
 
     assert len(extraction_attempts) == 5
@@ -201,7 +203,20 @@ async def test_extraction_enqueue_uses_stable_conversation_debounce_key() -> Non
         f"extract:{conversation_uuid}"
     }
     assert all(attempt["defer_by"] == timedelta(seconds=30) for attempt in extraction_attempts)
-    assert queue.accepted_job_ids == {f"extract:{conversation_uuid}"}
+    # The first duplicate enqueue schedules a follow-up extraction so turns
+    # that arrive during an in-flight run are not lost; subsequent duplicates
+    # collapse into the same deterministic follow-up _job_id and arq drops them.
+    assert queue.accepted_job_ids == {
+        f"extract:{conversation_uuid}",
+        f"extract:{conversation_uuid}:followup",
+    }
+    followup_attempts = [
+        attempt
+        for attempt in queue.attempts
+        if attempt.get("job_id") == f"extract:{conversation_uuid}:followup"
+    ]
+    assert len(followup_attempts) == 4
+    assert all(attempt["defer_by"] == timedelta(seconds=60) for attempt in followup_attempts)
 
 
 def test_extract_memories_worker_registration_does_not_retain_result_key() -> None:
