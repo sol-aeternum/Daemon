@@ -109,6 +109,10 @@ except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
 # Build cron jobs based on settings
+# All cron jobs register keep_result=3600 so the AuditedWorker can capture
+# raised failures via the standard finish_job result_data path. arq's
+# cron() default of keep_result=0 drops the result_data before the audit
+# path sees it, making critical-job failures invisible.
 cron_jobs: list[Any] = []
 if _worker_settings.consolidation_enabled:
     interval = _worker_settings.consolidation_interval_days
@@ -127,6 +131,7 @@ if _worker_settings.dreaming_enabled:
         cron(
             run_scheduled_dreaming_job,
             minute=0,
+            keep_result=3600,
         )
     )
     logger.info(
@@ -139,6 +144,7 @@ if _worker_settings.consolidation_nudge_enabled:
         cron(
             run_consolidation_nudge_job,
             minute=0,
+            keep_result=3600,
         )
     )
     logger.info(
@@ -152,16 +158,19 @@ cron_jobs.extend(
             garbage_collect,
             hour=3,
             minute=0,
+            keep_result=3600,
         ),
         cron(
             cleanup_generated_files,
             hour=3,
             minute=15,
+            keep_result=3600,
         ),
         cron(
             cleanup_generated_images,
             hour=3,
             minute=30,
+            keep_result=3600,
         ),
     ]
 )

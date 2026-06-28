@@ -92,13 +92,24 @@ def _args_signature(value: object) -> str:
 def _result_status_error(result: Any) -> tuple[str, str] | None:
     """Treat dict results with status='error' as failures for the critical-job
     allowlist so jobs that report failure via return-value rather than raising
-    (run_dreaming_job, resolve_entities_job) still trigger the alert path."""
+    (run_dreaming_job, resolve_entities_job) still trigger the alert path.
+    Also treat a non-zero error_count as a semantic failure."""
     if not isinstance(result, dict):
         return None
     status = result.get("status")
-    if not isinstance(status, str) or status != "error":
+    error_count = result.get("error_count") or 0
+    if not (isinstance(status, str) and status == "error") and not (
+        isinstance(error_count, int) and error_count > 0
+    ):
         return None
-    reason = result.get("reason") or result.get("error") or "unknown"
+    reason = (
+        result.get("reason")
+        or result.get("error")
+        or result.get("errors")
+        or "unknown"
+    )
+    if isinstance(reason, list):
+        reason = "; ".join(str(item) for item in reason)
     return "ErrorStatusResult", str(reason)[:_MAX_ARGUMENT_STRING_LENGTH]
 
 
@@ -214,6 +225,25 @@ async def alert_critical_worker_job_failure(ctx: WorkerContext, failure: WorkerJ
     if not recipient:
         return
 
+    sender = get_mail_sender(settings_obj)
+    # Fail-closed surface when mail is not actually delivered: console mode
+    # only logs and disabled mode silently drops, so an operator expecting
+    # SMTP delivery would otherwise miss a critical-job outage.
+    if getattr(sender, "sink_kind", None) == "disabled":
+        logger.warning(
+            "worker_job_failure alert skipped: daemon_mail_sender_mode=disabled job=%s id=%s",
+            failure.job_name,
+            failure.job_id,
+        )
+        return
+    if getattr(sender, "sink_kind", None) == "console":
+        logger.warning(
+            "worker_job_failure alert will only log to console (daemon_mail_sender_mode=console) "
+            "job=%s id=%s",
+            failure.job_name,
+            failure.job_id,
+        )
+
     message = MailMessage(
         to_address=recipient,
         subject=f"Daemon worker job failed: {failure.job_name}",
@@ -226,7 +256,6 @@ async def alert_critical_worker_job_failure(ctx: WorkerContext, failure: WorkerJ
             f"Error: {failure.error_type}: {failure.error_message}\n"
         ),
     )
-    sender = get_mail_sender(settings_obj)
     await sender.send(message)
 
 
@@ -244,15 +273,41 @@ async def audit_worker_job_result(ctx: WorkerContext, result_data: bytes | None)
     if failure is None:
         return
 
+    # Persist and alert are independent: a slow / failing insert must not
+    # suppress the critical-job alert, and a slow / failing SMTP send must
+    # not block the durable audit row.
+    await _persist_failure_with_timeout(ctx, failure)
+    await _alert_failure_with_timeout(ctx, failure)
+
+
+async def _persist_failure_with_timeout(ctx: WorkerContext, failure: WorkerJobFailure) -> None:
     try:
         await persist_worker_job_failure(ctx, failure)
     except Exception:
         logger.warning("worker_job_failure audit failed", exc_info=True)
 
+
+async def _alert_failure_with_timeout(ctx: WorkerContext, failure: WorkerJobFailure) -> None:
+    import asyncio
+
     try:
-        await alert_critical_worker_job_failure(ctx, failure)
+        await asyncio.wait_for(
+            alert_critical_worker_job_failure(ctx, failure),
+            timeout=_AUDIT_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "worker_job_failure alert timed out after %.1fs job=%s id=%s",
+            _AUDIT_TIMEOUT_S,
+            failure.job_name,
+            failure.job_id,
+        )
     except (MailSenderConfigError, MailSenderError) as exc:
-        logger.warning("worker_job_failure alert failed: err=%s", type(exc).__name__)
+        logger.warning(
+            "worker_job_failure alert skipped (mail sender unavailable): err=%s job=%s",
+            type(exc).__name__,
+            failure.job_name,
+        )
     except Exception:
         logger.warning("worker_job_failure alert failed", exc_info=True)
 
