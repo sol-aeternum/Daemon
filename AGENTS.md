@@ -4,22 +4,21 @@
 Personal multi-agent AI assistant. FastAPI backend orchestrates LLM calls via OpenRouter, spawning subagents (@research, @image, @audio, @code, @reader). Next.js 16 frontend with Vercel AI SDK. PostgreSQL + pgvector for memory. Redis + arq for background jobs.
 
 ## Before You Touch Anything
-1. Read `docs/CURRENT_ISSUES.md` — know what's broken before changing things
-2. Read `docs/FEATURE_MATRIX.md` (implemented/planned status) and `docs/PROJECT_CONTEXT.md` (regenerated context)
-3. If the task touches memory: read `MEMORY_LAYER.md` and `docs/TECHNICAL_SPECS.md`
-4. Read `docs/SOURCES_OF_TRUTH.md` — documentation authority map
-5. Check recent commits and code comments for context on current state
+1. Read `docs/FEATURE_MATRIX.md` (implemented/planned status) and `docs/PROJECT_CONTEXT.md` (regenerated context)
+2. If the task touches memory: read `MEMORY_LAYER.md` and `docs/TECHNICAL_SPECS.md`
+3. Read `docs/SOURCES_OF_TRUTH.md` — documentation authority map
+4. Check recent commits and code comments for context on current state
 
 ## Rules of Engagement
 - **Ask before making design decisions.** If a task has multiple valid approaches, present options with tradeoffs. Do not pick one autonomously.
 - **Clarify ambiguity, don't assume.** If the spec is unclear, ask. Wrong assumptions cost more than a question.
 - **No silent architecture changes.** Changing data models, API contracts, SSE event types, or tier config requires explicit approval.
-- **Update docs with code.** If you fix a bug in CURRENT_ISSUES.md or complete a ROADMAP.md item, update the doc in the same change.
+- **Update docs with code.** If you fix a bug tracked by a GitHub issue, close it (or comment the resolution) in the same change; if you complete a ROADMAP.md item, update the doc.
 - **Don't add dependencies without asking.** Especially frontend — bundle size matters for PWA.
 - **Done means the gates pass.** No task is complete until it satisfies the Definition of Done below.
 
 ## Quality Gates (Definition of Done)
-No task is complete until it passes the project's automated gates. Run them before claiming done. Existing debt may be recorded as blocker inventory in `TRIAGE.md` or dedicated baseline files (e.g., `.basedpyright/baseline.json`); do not weaken or remove gates.
+No task is complete until it passes the project's automated gates. Run them before claiming done. Existing debt may be recorded as blocker inventory in dedicated baseline files (e.g., `.basedpyright/baseline.json`) or a pinned tracking issue; do not weaken or remove gates.
 
 ### Backend Gates
 - **Lint**: `uv run ruff check .`
@@ -186,63 +185,41 @@ Notes:
 ```
 Codex must not treat "no findings" as permission to remain silent. A visible review comment is required so downstream reviewers and agents can confirm that the PR was actually pre-reviewed.
 
-# Diagnostic Triage Protocol
+## Anomaly Reporting Protocol
 
-## Mandatory: TRIAGE.md Maintenance
+During task execution, log any error, warning, failure, or unexpected behavior — especially items outside your current task scope. Do NOT maintain a shared in-repo log file. Route by scope and severity.
 
-During ALL task execution, maintain a `TRIAGE.md` file in the project root. Log any error, warning, failure, unexpected behavior, or anomaly encountered — **especially** items outside your current task scope.
+### Routing
+- scope: project | upstream AND severity: critical | warning → file a GitHub issue
+- scope: host | tooling → append to `.triage.local.md` (gitignored, never committed)
+- severity: info → do not record
 
-### What to log
-- Build errors/warnings (even if you can work around them)
-- Pre-existing bugs you stumble upon
-- Test failures unrelated to your changes
-- Deprecation warnings, version incompatibilities
-- Configuration issues outside your task scope
-- Anything you'd mentally dismiss as "not my problem"
+When in doubt about severity, it is info — drop it. The old "if it was worth noting, log it" rule is what bloated the prior log; the gate above is deliberate.
 
-### Entry format
-```markdown
-## [TIMESTAMP] — [SHORT TITLE]
-- **Severity**: critical | warning | info
-- **Scope**: project | host | upstream | tooling
-- **Encountered during**: [current TODO/task]
-- **Category**: build-error | runtime-error | deprecation | config | test-failure | dependency | security | other
-- **Blocked current task**: yes | no
-- **What happened**: [1-3 sentences]
-- **Evidence**: [exact error output, file:line refs]
-- **Likely cause**: [assessment with confidence %]
-- **Suggested action**: [what to investigate]
-```
+### Filing issues
+Accumulate qualifying anomalies during execution; reconcile against GitHub in one batch at task completion:
+1. Search: `gh issue list --label triage --search "<keywords>" --state open`
+2. Match → `gh issue comment <n> --body "[agent] <new evidence>"`
+3. No match → `gh issue create --title "[triage][<category>] <title>" --label triage --label agent-filed --label severity:<critical|warning> --label scope:<project|upstream> --body "<template>"`
 
-### Scope definitions
-- **project**: Fixable by changing project code/config/tests
-- **host**: Environment/OS/container/permissions issue — not a code fix
-- **upstream**: Third-party dependency issue — track, don't fix
-- **tooling**: Agent/LSP/MCP/dev infrastructure — config fix, not code fix
+File only. Do not assign, prioritize, close, or fix triaged items unless they block the current task. Review is out-of-band.
 
-### Rules
-1. Log BEFORE marking any TODO complete
-2. Include actual error messages — don't paraphrase
-3. Do NOT fix triaged items unless they block your current task
-4. "Pre-existing / not my fault / probably fine" = triage trigger, not dismissal
-5. If it was worth noting in your thinking, it's worth logging in TRIAGE.md
-6. Check TRIAGE_SUPPRESS below — skip suppressed patterns unless behavior has CHANGED
-7. Check for existing entries before logging — append "seen again" to duplicates
+### Issue body template
+- Severity: critical | warning
+- Scope: project | upstream
+- Category: build-error | runtime-error | deprecation | config | test-failure | dependency | security | other
+- Encountered during: <task / issue #>
+- Blocked current task: yes | no
+- What happened: <1–3 sentences>
+- Evidence: <exact output, file:line>
+- Likely cause: <assessment + confidence %>
+- Suggested action: <what to investigate>
 
-### On task completion, always report
-```
-Triage: {N} issues ({critical} critical, {warning} warning, {info} info)
-Scope: {project} project | {host} host | {upstream} upstream | {tooling} tooling
-See TRIAGE.md — items requiring attention: [list critical/warning titles]
-```
-If zero issues: "Triage: clean — no anomalies encountered."
+### .triage.local.md (host / tooling only)
+Same fields, appended freeform. Ephemeral, gitignored, not reviewed unless you choose to.
 
-<!-- TRIAGE_SUPPRESS: Known issues — do not re-log unless behavior has CHANGED -->
-<!-- Add patterns here after running triage review -->
-<!-- Example: -->
-<!-- - __pycache__ PermissionError in container (host ownership mismatch) -->
-<!-- - LiteLLM asyncio.iscoroutinefunction DeprecationWarning on Python 3.14+ -->
-<!-- END TRIAGE_SUPPRESS -->
+### Completion report
+`Anomalies: {N} filed/updated ({critical} crit, {warning} warn) — issues [#…]; {M} host/tooling → local. "Clean" if none.`
 
 ## Feature Matrix
 
