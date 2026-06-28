@@ -75,7 +75,7 @@
 
 | Question | Resolution | Source |
 |----------|------------|--------|
-| Memory Promotion Strategy | **RESOLVED**: Extraction pipeline now writes `status="active"`. | `truth_set.md` (Task 2 conflict note), `docs/CURRENT_ISSUES.md` |
+| Memory Promotion Strategy | **RESOLVED**: Extraction pipeline now writes `status="active"`. | `truth_set.md` (Task 2 conflict note) |
 | Model Identity | **RESOLVED**: Abstracted as "Daemon". Underlying models are implementation details managed by the tier system. | `orchestrator/prompts.py`, `orchestrator/config.py` |
 | Project name | Daemon | Phase 1 |
 | Frontend choice | Next.js 16 + Vercel AI SDK | Phase 1 |

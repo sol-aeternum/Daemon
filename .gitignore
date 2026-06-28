@@ -72,6 +72,9 @@ yarn-error.log*
 # Agent runtime outputs
 agent-output/
 
+# Local triage log (host/tooling anomalies — never committed)
+.triage.local.md
+
 # Next.js PWA build artifacts
 frontend/public/workbox-*.js
 

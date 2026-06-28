@@ -6,17 +6,13 @@ This document defines the canonical hierarchy, precedence, and governance rules 
 
 Daemon uses a tiered hierarchy to resolve contradictions. When two sources disagree, the higher-tier source (lower number) always wins.
 
-**Precedence: T0 > T1 > T3 > T2**
+**Precedence: T0 > T1 > T2**
 
 | Tier | Label | Description | Examples |
 |------|-------|-------------|----------|
 | **T0** | **Code & Config** | The ultimate truth. If the code does X, any doc saying Y is stale. | `orchestrator/config.py`, `migrations/*.sql`, `docker-compose.yml`, `orchestrator/routes/*.py` |
 | **T1** | **Curated Gated Specs** | High-fidelity technical specifications that are manually maintained but strictly gated against T0 drift. | `MEMORY_LAYER.md`, `docs/FEATURE_MATRIX.md`, `docs/TECHNICAL_SPECS.md` |
-| **T3** | **Operational Rollups** | Curated summaries of live operational data. They derive from raw logs but provide a higher-level view. | `docs/CURRENT_ISSUES.md` |
 | **T2** | **Narrative Status Docs** | Low-fidelity status updates and roadmaps. These are the most likely to drift and should be treated as secondary to T1. | `docs/ROADMAP.md` |
-
-### The Role of CURRENT_ISSUES.md
-`docs/CURRENT_ISSUES.md` is classified as a **T3 Operational Rollup**. It is the curated interface for understanding active system anomalies. Its primary input is the raw `TRIAGE.md` log, but it is not a narrative document (T2) or a static spec (T1).
 
 ---
 
@@ -35,9 +31,7 @@ Every markdown file in the repository is classified under this hierarchy to dete
 | `docs/AUTH_SETUP.md` | T1 | Engineering | gated | `orchestrator/routes/auth_setup.py`, `orchestrator/auth_cookies.py`, `orchestrator/auth_csrf.py` |
 | `docs/OPEN_QUESTIONS.md` | T1 | Engineering | gated | Decision log / `truth_set.md` |
 | `docs/MEMORY_UPGRADE_ROADMAP.md` | T1 | Engineering | gated | `MEMORY_LAYER.md`, Wave plans |
-| `docs/CURRENT_ISSUES.md` | T3 | Engineering | operational-rollup | `TRIAGE.md` |
 | `docs/ROADMAP.md` | T2 | Product | pointer | `.sisyphus/plans/`, `docs/MEMORY_UPGRADE_ROADMAP.md` |
-| `TRIAGE.md` | N/A | Engineering | raw-log | Diagnostic capture |
 | `frontend/PWA_CHECKLIST.md` | N/A | Engineering | raw-log | Build environment report |
 | `README.md` | N/A | Engineering | ungated-reference | Project overview |
 | `QUICKSTART.md` | N/A | Engineering | ungated-reference | Setup instructions |
@@ -81,7 +75,6 @@ The linter gates **high-confidence structured facts only** (e.g., version number
 
 ### Staleness Budget and Freshness
 - **Gated Docs (T1)**: Must be 100% aligned with T0 at every commit.
-- **Operational Rollups (T3)**: Should reflect the current state of raw logs within a 24-hour window.
 - **Narrative Docs (T2)**: Should be reviewed for drift during every major wave or milestone.
 
 ### Conflict Resolution
