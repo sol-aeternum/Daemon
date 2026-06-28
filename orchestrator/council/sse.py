@@ -1,7 +1,8 @@
 """Council SSE event emitter - wraps council engine with SSE streaming."""
 
-from dataclasses import is_dataclass
 import asyncio
+from contextlib import suppress
+from dataclasses import is_dataclass
 import json
 from typing import Any, AsyncGenerator
 
@@ -136,6 +137,7 @@ async def _emit_council_output_events(
     session_id: str,
     conversation_id: str,
     request_id: str,
+    progress_sequence_start: int = 1,
 ) -> AsyncGenerator[str, None]:
     normalized_output = _normalize_output(output)
     metadata = normalized_output.get("metadata", {})
@@ -144,7 +146,10 @@ async def _emit_council_output_events(
 
     progress_events = metadata.get("progress_events", [])
     if isinstance(progress_events, list) and progress_events:
-        for progress_event in progress_events:
+        for sequence, progress_event in enumerate(
+            progress_events,
+            start=progress_sequence_start,
+        ):
             if not isinstance(progress_event, dict):
                 continue
             yield sse(
@@ -157,6 +162,7 @@ async def _emit_council_output_events(
                         "total_rounds": int(progress_event.get("total_rounds", 0) or 0),
                         "models_complete": int(progress_event.get("models_complete", 0) or 0),
                         "models_total": int(progress_event.get("models_total", 0) or 0),
+                        "sequence": sequence,
                     },
                     conversation_id,
                     request_id,
@@ -190,6 +196,7 @@ async def _emit_council_output_events(
                     "total_rounds": total_rounds,
                     "models_complete": models_complete,
                     "models_total": models_total,
+                    "sequence": progress_sequence_start,
                 },
                 conversation_id,
                 request_id,
@@ -309,6 +316,29 @@ def make_envelope(
     }
 
 
+async def _drain_progress_queue(
+    progress_queue: asyncio.Queue[str],
+    producer_task: asyncio.Task[Any],
+) -> AsyncGenerator[str, None]:
+    while not producer_task.done() or not progress_queue.empty():
+        get_task = asyncio.create_task(progress_queue.get())
+        done, _ = await asyncio.wait(
+            {producer_task, get_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        if get_task in done:
+            try:
+                yield get_task.result()
+            finally:
+                progress_queue.task_done()
+            continue
+
+        get_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await get_task
+
+
 async def stream_council(
     user_message: str,
     conversation_id: str,
@@ -328,17 +358,20 @@ async def stream_council(
     if bypass_interview:
         user_message = user_message.replace("--default", "").strip()
 
-    # Queue to hold progress events for yielding
-    progress_queue: list[str] = []
+    progress_queue: asyncio.Queue[str] = asyncio.Queue()
+    progress_sequence = 0
 
     # Create progress callback to capture events
     async def progress_callback(event_data: dict[str, Any]) -> None:
-        progress_queue.append(
+        nonlocal progress_sequence
+        progress_sequence += 1
+        event_with_sequence = {**event_data, "sequence": progress_sequence}
+        await progress_queue.put(
             sse(
                 "council_progress",
                 make_envelope(
                     "council_progress",
-                    event_data,
+                    event_with_sequence,
                     conversation_id,
                     request_id,
                 ),
@@ -355,16 +388,16 @@ async def stream_council(
         )
     )
 
-    # Yield progress events as they arrive
-    while not result_task.done():
-        while progress_queue:
-            yield progress_queue.pop(0)
-        await asyncio.sleep(0.1)  # Small delay to prevent busy waiting
+    try:
+        async for frame in _drain_progress_queue(progress_queue, result_task):
+            yield frame
 
-    # Get final result
-    result = await result_task
-    while progress_queue:
-        yield progress_queue.pop(0)
+        result = await result_task
+    except asyncio.CancelledError:
+        result_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await result_task
+        raise
 
     result_type = result.get("type")
 
@@ -412,6 +445,7 @@ async def stream_council(
             session_id=session_id,
             conversation_id=conversation_id,
             request_id=request_id,
+            progress_sequence_start=progress_sequence + 1,
         ):
             yield frame
 
