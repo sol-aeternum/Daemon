@@ -933,8 +933,11 @@ async def stream_sse_chat(
                             # watermark (last_message_observed_at) will only advance
                             # to messages the in-flight run actually saw, so we need
                             # a follow-up that runs after it finishes to pick up any
-                            # turns that arrived during the run.
-                            follow_up_id = f"{extract_job_id}:followup:{uuid4().hex[:8]}"
+                            # turns that arrived during the run. Use a deterministic
+                            # follow-up _job_id so rapid-fire duplicate enqueues while
+                            # the original is still in-flight collapse into one
+                            # trailing extraction instead of one per duplicate turn.
+                            follow_up_id = f"{extract_job_id}:followup"
                             try:
                                 await queue.enqueue_job(
                                     "extract_memories",
