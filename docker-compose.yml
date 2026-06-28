@@ -4,7 +4,11 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     environment:
-      - DATABASE_URL=${DATABASE_URL:-postgresql://daemon:$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}")@postgres:5432/daemon}
+      - POSTGRES_USER=${POSTGRES_USER:-daemon}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=${POSTGRES_DB:-daemon}
+      - DATABASE_URL=${DATABASE_URL:-}
     volumes:
       - .:/app
     command: python scripts/migrate.py
@@ -30,7 +34,11 @@ services:
       - XAI_API_KEY=${XAI_API_KEY}
       - FAL_KEY=${FAL_KEY}
       - MOCK_LLM=${MOCK_LLM:-false}
-      - DATABASE_URL=${DATABASE_URL:-postgresql://daemon:$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}")@postgres:5432/daemon}
+      - POSTGRES_USER=${POSTGRES_USER:-daemon}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=${POSTGRES_DB:-daemon}
+      - DATABASE_URL=${DATABASE_URL:-}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - DAEMON_ENCRYPTION_KEY=${DAEMON_ENCRYPTION_KEY}
       - DAEMON_ENVIRONMENT=${DAEMON_ENVIRONMENT:-development}
@@ -89,7 +97,11 @@ services:
       - XAI_API_KEY=${XAI_API_KEY}
       - FAL_KEY=${FAL_KEY}
       - MOCK_LLM=${MOCK_LLM:-false}
-      - DATABASE_URL=${DATABASE_URL:-postgresql://daemon:$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}")@postgres:5432/daemon}
+      - POSTGRES_USER=${POSTGRES_USER:-daemon}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=${POSTGRES_DB:-daemon}
+      - DATABASE_URL=${DATABASE_URL:-}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - DAEMON_ENCRYPTION_KEY=${DAEMON_ENCRYPTION_KEY}
       - DAEMON_ENVIRONMENT=${DAEMON_ENVIRONMENT:-development}

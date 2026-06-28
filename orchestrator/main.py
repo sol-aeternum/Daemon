@@ -7,7 +7,7 @@ import logging
 import os
 import time
 import uuid
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import asyncpg
 import httpx
@@ -132,27 +132,53 @@ def _database_password_from_url(database_url: str | None) -> str | None:
     """Extract the password component from a DATABASE_URL.
 
     asyncpg accepts credentials either in the userinfo (``postgresql://user:pass@host``)
-    or as ``?password=...`` query options, so we read both and return the first hit.
+    or as ``?password=...`` query options, and for repeated query keys it uses the
+    LAST value, so we mirror that precedence here.
     """
     if not database_url:
         return None
     parsed = urlparse(database_url)
     if parsed.password is not None:
         return unquote(parsed.password)
-    query_password = parse_qs(parsed.query).get("password", [None])[0]
+    # parse_qs keeps only the last value when keep_blank_values is False (the default).
+    query_password = parse_qs(parsed.query, keep_blank_values=False).get("password", [None])[-1]
     if query_password is not None:
         return unquote(query_password)
     return None
 
 
+def _resolve_database_url_from_postgres_env() -> str | None:
+    """Build a DATABASE_URL from POSTGRES_* env vars when not explicitly set.
+
+    Docker Compose interpolation does not support command substitution, so we
+    cannot URL-encode POSTGRES_PASSWORD inside the compose file directly. Instead
+    we accept the raw POSTGRES_* values and let the application construct a
+    properly-encoded DATABASE_URL.
+    """
+    explicit = os.getenv("DATABASE_URL")
+    if explicit:
+        return explicit
+    user = os.getenv("POSTGRES_USER")
+    password = os.getenv("POSTGRES_PASSWORD")
+    host = os.getenv("POSTGRES_HOST")
+    db = os.getenv("POSTGRES_DB")
+    if user is None or password is None or host is None or db is None:
+        return None
+    return f"postgresql://{user}:{quote(password, safe='')}@{host}:5432/{db}"
+
+
 def _validate_database_credentials(settings: Settings) -> None:
     if settings.daemon_environment.strip().lower() != "production":
         return
-    # Always inspect BOTH POSTGRES_PASSWORD and DATABASE_URL so a safe-looking
-    # env var cannot mask an unsafe URL.
+    # If DATABASE_URL was not set explicitly but the host/user/password/db
+    # quartet is, derive it so a default password cannot slip through.
+    resolved_database_url = settings.database_url or _resolve_database_url_from_postgres_env()
+    # Always inspect every asyncpg credential source so a safe-looking env var
+    # cannot mask an unsafe URL or fallback password.
     password_candidates: list[tuple[str, str | None]] = [
         ("POSTGRES_PASSWORD", os.getenv("POSTGRES_PASSWORD")),
-        ("DATABASE_URL", _database_password_from_url(settings.database_url)),
+        ("PGPASSWORD", os.getenv("PGPASSWORD")),
+        ("DATABASE_URL", _database_password_from_url(resolved_database_url)),
     ]
     for source, password in password_candidates:
         if password is None:
