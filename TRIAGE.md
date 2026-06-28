@@ -139,7 +139,7 @@
 - **Likely cause**: basedpyright auto-ratchets the committed baseline when diagnostics disappear in touched files. Confidence: 90%.
 - **Suggested action**: Commit intentional baseline reductions with the issue PR when touched code removes a grandfathered diagnostic, so CI lock mode remains green.
 - **Seen again**: 2026-06-13 during #138 hosted CI. Backend gates failed at `uv run basedpyright --level error` with `baselined errors changed but the baseline file cannot be updated when --baselinemode=lock (went down by 1)`. Rerunning `uv run basedpyright --level error --baselinemode=auto ...` updated `.basedpyright/baseline.json` to 369 errors and normal lock-mode focused basedpyright then passed.
-=======
+
 ## 2026-06-13T23:24:00+09:30 — #53 PR Wrapper Refused On Host Cache And Frontend Install Failures
 - **Severity**: warning
 - **Scope**: host | project

@@ -426,7 +426,9 @@ class TestApplyDeleteAction:
                     "skill-to-delete", cast(MemoryStore, store), user_id
                 )
 
-                assert result == {"deleted": True, "reason": "ok"}
+                assert result["deleted"] is True
+                assert result["reason"] == "ok"
+                assert result["audit_id"] == audit_id
                 assert events == [
                     ("audit", "pending"),
                     ("skill_delete", "skill-to-delete"),
@@ -508,10 +510,9 @@ class TestApplyDeleteAction:
                     "skill-to-delete", cast(MemoryStore, store), user_id
                 )
 
-        assert result == {
-            "deleted": False,
-            "reason": "projection unavailable for skill-to-delete",
-        }
+        assert result["deleted"] is False
+        assert result["reason"] == "projection unavailable for skill-to-delete"
+        assert result["audit_id"] == audit_id
         mock_delete.assert_called_once_with("skill-to-delete")
         assert store.logged_action["status"] == "pending"
         assert store.status_updates == [

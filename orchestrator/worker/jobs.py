@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, cast, TypedDict
+from typing import Any, cast, NotRequired, TypedDict
 from zoneinfo import ZoneInfo
 
 from arq.connections import ArqRedis
@@ -923,6 +923,7 @@ class ConsolidationNudgeAction(TypedDict):
     reason: str
     similarity: float | None
     status: str
+    audit_id: NotRequired[uuid.UUID]
 
 
 class ConsolidationNudgeResults(TypedDict):
@@ -1154,6 +1155,7 @@ async def _process_user_consolidation_nudge(
         elif action_type == "delete":
             if skill_id in autonomous_skill_ids:
                 delete_result = await _apply_delete_action(skill_id, store, user_id)
+                audit_id: uuid.UUID | None = delete_result.get("audit_id")
                 if delete_result["deleted"]:
                     actions.append(
                         ConsolidationNudgeAction(
@@ -1163,6 +1165,7 @@ async def _process_user_consolidation_nudge(
                             reason=action.get("reason", "model-driven delete"),
                             similarity=None,
                             status="applied",
+                            audit_id=audit_id,
                         )
                     )
                 else:
@@ -1174,6 +1177,7 @@ async def _process_user_consolidation_nudge(
                             reason=delete_result.get("reason", "delete failed"),
                             similarity=None,
                             status="skipped",
+                            audit_id=audit_id,
                         )
                     )
 
@@ -1206,6 +1210,13 @@ async def _process_user_consolidation_nudge(
                 skill_use_count = s.get("use_count")
                 skill_last_used = s.get("last_used_at")
                 break
+        existing_audit_id = action.get("audit_id")
+        if existing_audit_id is not None:
+            await store.update_consolidation_nudge_action_status(
+                existing_audit_id,
+                status=action["status"],
+            )
+            continue
         await store.log_consolidation_nudge_action(
             user_id=user_id,
             run_id=run_id,
@@ -1343,7 +1354,7 @@ async def _apply_delete_action(
             audit_id,
             status="applied",
         )
-        return {"deleted": True, "reason": "ok"}
+        return {"deleted": True, "reason": "ok", "audit_id": audit_id}
     except Exception as e:
         try:
             await store.update_consolidation_nudge_action_status(
@@ -1353,7 +1364,7 @@ async def _apply_delete_action(
             )
         except Exception:
             logger.warning("Failed to mark consolidation delete audit row failed", exc_info=True)
-        return {"deleted": False, "reason": str(e)}
+        return {"deleted": False, "reason": str(e), "audit_id": audit_id}
 
 
 async def _find_duplicate_autonomous_skills(
