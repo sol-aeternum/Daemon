@@ -102,12 +102,7 @@ def _result_status_error(result: Any) -> tuple[str, str] | None:
         isinstance(error_count, int) and error_count > 0
     ):
         return None
-    reason = (
-        result.get("reason")
-        or result.get("error")
-        or result.get("errors")
-        or "unknown"
-    )
+    reason = result.get("reason") or result.get("error") or result.get("errors") or "unknown"
     if isinstance(reason, list):
         reason = "; ".join(str(item) for item in reason)
     return "ErrorStatusResult", str(reason)[:_MAX_ARGUMENT_STRING_LENGTH]
