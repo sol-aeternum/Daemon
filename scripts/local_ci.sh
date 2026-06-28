@@ -4,7 +4,7 @@
 # Mirrors the AGENTS.md gate inventory and the GitHub Actions CI workflow
 # at .github/workflows/ci.yml. Blocking gates fail this script; inventory
 # gates (those marked `continue-on-error: true` in CI) are reported but do
-# not block. Pre-existing debt must be tracked in TRIAGE.md, not silenced
+# not block. Pre-existing debt must be tracked in a GitHub issue, not silenced
 # here.
 #
 # Usage:
@@ -26,7 +26,7 @@
 #     counts as inventory (CI does the same; existing node_modules are
 #     reused when present).
 #   - Frontend `npm run build` may regenerate `frontend/next-env.d.ts`
-#     and PWA service-worker artifacts; these are tracked in TRIAGE.md.
+#     and PWA service-worker artifacts; this regeneration is expected, not a gate failure.
 
 set -u
 set -o pipefail
@@ -242,7 +242,7 @@ if [[ ${#REPORTED_INVENTORY[@]} -gt 0 ]]; then
     done
     log ""
     log "These gates are marked continue-on-error in CI for legacy reasons."
-    log "Pre-existing debt should be tracked in TRIAGE.md, not silenced here."
+    log "Pre-existing debt should be tracked in a GitHub issue, not silenced here."
 fi
 
 log ""

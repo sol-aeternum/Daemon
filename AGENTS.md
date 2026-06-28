@@ -204,6 +204,8 @@ Accumulate qualifying anomalies during execution; reconcile against GitHub in on
 
 File only. Do not assign, prioritize, close, or fix triaged items unless they block the current task. Review is out-of-band.
 
+If `gh` is unavailable (missing or unauthenticated), do not drop a qualifying project/upstream finding: record it in `.triage.local.md` using the template below and surface it in your completion report, then file it as an issue once `gh` is restored.
+
 ### Issue body template
 - Severity: critical | warning
 - Scope: project | upstream
