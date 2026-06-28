@@ -571,6 +571,7 @@ class TestSetupCookiePolicyValidation:
         monkeypatch.setenv("DAEMON_ALLOWED_ORIGINS", "https://app.daemon.ai")
         monkeypatch.setenv("DAEMON_PUBLIC_ORIGIN", "https://app.daemon.ai")
         monkeypatch.setenv("DAEMON_ENVIRONMENT", "production")
+        monkeypatch.setenv("DAEMON_ALLOWED_HOSTS", "app.daemon.ai")
         monkeypatch.setenv("DAEMON_COOKIE_SECURE", "false")
         monkeypatch.setenv("DAEMON_AUTH_PEPPER", "test-pepper-for-all-tests-12345678901234567890")
         monkeypatch.setenv("DAEMON_SETUP_TOKEN_FILE", str(tmp_path / "setup-token"))
