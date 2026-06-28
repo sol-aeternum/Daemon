@@ -54,6 +54,7 @@ def _build_consolidation_cron_job(interval: int) -> Any:
             consolidate_memories,
             hour=2,
             minute=0,
+            keep_result=3600,
         )
     if interval == 7:
         # Weekly at 2 AM UTC on Sundays
@@ -62,6 +63,7 @@ def _build_consolidation_cron_job(interval: int) -> Any:
             hour=2,
             minute=0,
             weekday=6,  # Sunday (arq: 0=Monday, 6=Sunday)
+            keep_result=3600,
         )
     raise _unsupported_consolidation_interval_error(interval)
 
