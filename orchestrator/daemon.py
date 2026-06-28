@@ -91,6 +91,13 @@ async def stream_with_keepalives(
                 frame = pending.result()
             except StopAsyncIteration:
                 break
+            except Exception as exc:
+                # Catch generator exceptions here so the stack trace does not
+                # propagate to the StreamingResponse and leak to the client
+                # (CodeQL py/stack-trace-exposure). The error event surface
+                # downstream is responsible for emitting a sanitized message.
+                logger.exception("SSE upstream generator raised: %s", exc)
+                break
 
             yield frame
             pending = asyncio.ensure_future(anext(iterator))
