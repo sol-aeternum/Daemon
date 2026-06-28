@@ -9,6 +9,13 @@ from orchestrator.config import Settings
 from orchestrator.daemon import SSE_KEEPALIVE_FRAME, sse, stream_with_keepalives
 
 
+@pytest.fixture(autouse=True)
+def _isolate_sse_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Strip host shell overrides so the fallback test exercises the
+    # stream_ping_interval_s path unconditionally.
+    monkeypatch.delenv("DAEMON_SSE_KEEPALIVE_INTERVAL_S", raising=False)
+
+
 @pytest.mark.asyncio
 async def test_idle_sse_stream_emits_keepalive_before_next_frame() -> None:
     async def idle_stream() -> AsyncIterator[str]:

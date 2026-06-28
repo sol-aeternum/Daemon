@@ -92,12 +92,14 @@ async def stream_with_keepalives(
             except StopAsyncIteration:
                 break
             except Exception as exc:
-                # Catch generator exceptions here so the stack trace does not
-                # propagate to the StreamingResponse and leak to the client
-                # (CodeQL py/stack-trace-exposure). The error event surface
-                # downstream is responsible for emitting a sanitized message.
+                # The wrapped iterator raised instead of yielding an endpoint-
+                # level error event. Log the traceback server-side for triage
+                # and re-raise as a sanitized user-visible error so FastAPI's
+                # exception handler returns a 500 with the generic error body
+                # (never the stack trace) instead of an apparently clean EOF
+                # that misleads clients into thinking the stream succeeded.
                 logger.exception("SSE upstream generator raised: %s", exc)
-                break
+                raise RuntimeError("SSE upstream generator failed") from exc
 
             yield frame
             pending = asyncio.ensure_future(anext(iterator))
