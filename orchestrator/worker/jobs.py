@@ -1353,13 +1353,10 @@ async def _apply_delete_action(
         return {"deleted": False, "reason": f"audit log failed before delete: {e}"}
 
     try:
-        from orchestrator.skills_projection import SkillProjectionStore
         from orchestrator.skills_store import delete_skill
 
         delete_skill(skill_id)
-        if getattr(store, "_pool", None):
-            projection_store = SkillProjectionStore(store._pool)
-            await projection_store.delete_projection(skill_id)
+        await store.delete_skill_projection(skill_id)
         await store.update_consolidation_nudge_action_status(
             audit_id,
             status="applied",

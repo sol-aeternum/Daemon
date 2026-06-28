@@ -159,7 +159,16 @@
 - **Evidence**: `PYTHONPATH=. uv run pytest -q tests/council/test_progressive_sse.py tests/council/test_integration.py::TestCouncilRegressionFixes` passed with `12 passed, 22 warnings`; warnings included `<string>:12: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version`.
 - **Likely cause**: Existing council test doubles or generated model snippets still construct UTC timestamps with naive `datetime.utcnow()` (confidence 80%).
 - **Suggested action**: Replace those test/helper timestamp constructions with timezone-aware `datetime.now(datetime.UTC)` in a warning-cleanup PR.
-
+## 2026-06-13T16:38:00+09:30 — #51 PR Wrapper Timed Out After Existing Worktree Env Failure
+- **Severity**: warning
+- **Scope**: project | host
+- **Encountered during**: Issue #51 worker failure audit PR creation
+- **Category**: build-error | test-failure | dependency | security
+- **Blocked current task**: no
+- **What happened**: `scripts/pr_create.sh` ran all local CI families and did not reach `gh pr create` before the outer timeout. The issue-scoped worker tests, changed-file lint/type checks, backend blocking gates with the `.uv-venv` symlink, and aggregate gates had already passed.
+- **Evidence**: `timeout 180s scripts/pr_create.sh -- --title "fix(worker): persist failed job audit records" ...` first failed `backend/basedpyright (exit=3)` with `venv .uv-venv subdirectory not found in venv path /tmp/daemon-51`, then continued through existing inventory Bandit findings, sandbox `pip-audit` DNS failure for `pypi.org`, and full pytest progress through `[ 90%]` before the wrapper timeout exited `124`.
+- **Likely cause**: The PR wrapper does not inherit the temporary worktree `.uv-venv` symlink workaround and still runs the long full-suite inventory path for a backend-only PR (confidence 95%).
+- **Suggested action**: Open #51 directly after the documented wrapper failure, rely on hosted branch-protection checks and Codex review before merge, and fix wrapper environment setup / affected-family support separately.
 ## 2026-06-13T23:24:00+09:30 — #53 PR Wrapper Refused On Host Cache And Frontend Install Failures
 - **Severity**: warning
 - **Scope**: host | project
@@ -2273,7 +2282,7 @@
 - **Seen again**: 2026-06-14 during #45 council read-only tool registry verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed known auth-scoping setup errors plus a late-suite `F` marker before reaching `[ 90%]` and exiting `124`.
 - **Seen again**: 2026-06-13 during #61 memory dedup TOCTOU verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing non-blocking findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest again showed the known `EEEEE` auth-scoping setup errors plus one `F` marker before the outer timeout exited `124`.
 - **Seen again**: 2026-06-13 during #53 audit-before-delete verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed early errors plus one failure before reaching late-suite progress and exiting `124` at the outer timeout.
-
+- **Seen again**: 2026-06-13 during #51 worker failure audit verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, inventory `pip-audit` failed DNS resolution for `pypi.org`, and inventory full pytest printed the known `tests/test_auth_user_scoping.py` setup error plus one `F` marker before the outer timeout exited `124`.
 - **Seen again**: 2026-06-14 during #46 council progress queue verification. `timeout 420s scripts/local_ci.sh backend` passed blocking `ruff-check`, `ruff-format`, `basedpyright`, and `pytest-collect`; inventory `bandit` reported existing low/medium findings, `pip-audit` failed DNS resolution for `pypi.org`, and full pytest printed the known auth-scoping setup errors plus late-suite `F` markers before reaching `[ 90%]` and exiting `124`.## 2026-06-12 11:20 UTC — Existing auth user scoping fixture fails development pepper setup
 - **Severity**: warning
 - **Scope**: project
@@ -2288,6 +2297,7 @@
 - **Seen again**: 2026-06-13 during #56 backend local CI inventory. Full pytest again surfaced the same `TypeError: 'coroutine' object does not support the asynchronous context manager protocol (missed __aexit__ method)` at `orchestrator/auth_runtime_state.py:97` in `tests/test_auth_user_scoping.py` setup; #56 focused session cleanup / refresh tests were unaffected.
 - **Seen again**: 2026-06-14 during #45 PR-wrapper backend inventory. Full pytest again surfaced the same `TypeError: 'coroutine' object does not support the asynchronous context manager protocol (missed __aexit__ method)` at `orchestrator/auth_runtime_state.py:97` in `tests/test_auth_user_scoping.py` setup; #45 focused council tool-registry tests were unaffected.
 - **Seen again**: 2026-06-23 during #108 PR-wrapper backend inventory. Full pytest again surfaced 5 setup errors in `tests/test_auth_user_scoping.py`, all rooted in `TypeError: 'coroutine' object does not support the asynchronous context manager protocol` at `orchestrator/auth_runtime_state.py:97`; #108 frontend advisor tests were unaffected.
+- **Seen again**: 2026-06-13 during #51 worker failure audit verification. `PYTHONPATH=. timeout 180s uv run pytest -q -x` failed after 303 passed / 5 skipped with the same `TypeError: 'coroutine' object does not support the asynchronous context manager protocol (missed __aexit__ method)` at `orchestrator/auth_runtime_state.py:97` while setting up `tests/test_auth_user_scoping.py::test_conversations_list_uses_authenticated_user`; the focused worker audit tests were unaffected.
 
 ## 2026-06-12 11:20 UTC — Chat history tests still emit existing AsyncMock warning debt
 - **Severity**: info

@@ -9,7 +9,7 @@ from typing import Any, cast
 import asyncpg
 from arq.connections import RedisSettings
 from arq.cron import cron
-from arq.worker import Worker, func
+from arq.worker import func
 
 from orchestrator.config import get_settings
 from orchestrator.auth_pepper import initialize_development_pepper
@@ -20,6 +20,7 @@ from orchestrator.memory.encryption import (
 )
 from orchestrator.memory.store import MemoryStore
 
+from orchestrator.worker.audit import AuditedWorker
 from orchestrator.worker.jobs import (
     cleanup_generated_files,
     cleanup_generated_images,
@@ -53,6 +54,7 @@ def _build_consolidation_cron_job(interval: int) -> Any:
             consolidate_memories,
             hour=2,
             minute=0,
+            keep_result=3600,
         )
     if interval == 7:
         # Weekly at 2 AM UTC on Sundays
@@ -61,6 +63,7 @@ def _build_consolidation_cron_job(interval: int) -> Any:
             hour=2,
             minute=0,
             weekday=6,  # Sunday (arq: 0=Monday, 6=Sunday)
+            keep_result=3600,
         )
     raise _unsupported_consolidation_interval_error(interval)
 
@@ -108,6 +111,10 @@ except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
 # Build cron jobs based on settings
+# All cron jobs register keep_result=3600 so the AuditedWorker can capture
+# raised failures via the standard finish_job result_data path. arq's
+# cron() default of keep_result=0 drops the result_data before the audit
+# path sees it, making critical-job failures invisible.
 cron_jobs: list[Any] = []
 if _worker_settings.consolidation_enabled:
     interval = _worker_settings.consolidation_interval_days
@@ -126,6 +133,7 @@ if _worker_settings.dreaming_enabled:
         cron(
             run_scheduled_dreaming_job,
             minute=0,
+            keep_result=3600,
         )
     )
     logger.info(
@@ -138,6 +146,7 @@ if _worker_settings.consolidation_nudge_enabled:
         cron(
             run_consolidation_nudge_job,
             minute=0,
+            keep_result=3600,
         )
     )
     logger.info(
@@ -151,22 +160,25 @@ cron_jobs.extend(
             garbage_collect,
             hour=3,
             minute=0,
+            keep_result=3600,
         ),
         cron(
             cleanup_generated_files,
             hour=3,
             minute=15,
+            keep_result=3600,
         ),
         cron(
             cleanup_generated_images,
             hour=3,
             minute=30,
+            keep_result=3600,
         ),
     ]
 )
 logger.info("Memory and generated artifact cleanup scheduled: daily at 03:00-03:30 UTC")
 
-worker = Worker(
+worker = AuditedWorker(
     functions=[
         func(extract_memories, max_tries=_worker_settings.retry_attempts),
         func(generate_title, max_tries=_worker_settings.retry_attempts),

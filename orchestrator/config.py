@@ -453,6 +453,7 @@ class Settings(BaseSettings):
     daemon_mail_smtp_username: str = ""
     daemon_mail_smtp_password: str = ""
     daemon_mail_smtp_use_tls: bool = True
+    daemon_worker_failure_alert_email: str = ""
 
     # ----- Native / web / temporary refresh transport knobs (TODO 9) -----
     # Long-lived refresh TTL for the web and native private persistence.

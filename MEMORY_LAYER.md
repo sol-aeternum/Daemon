@@ -254,6 +254,10 @@ Handled by the arq worker (`orchestrator/worker/`):
 2. **Summary update** — `generate_or_update_summary()` post-extraction (best-effort)
 3. **Consolidation** — `run_consolidation()` on configurable interval (default 7 days, enabled by `consolidation_enabled`)
 
+Worker failures are persisted to `job_failures` before arq result TTL cleanup. Critical memory
+jobs can send a best-effort alert through the existing mail sender when
+`DAEMON_WORKER_FAILURE_ALERT_EMAIL` is configured.
+
 ---
 
 ## Environment Variables
