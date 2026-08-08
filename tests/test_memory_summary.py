@@ -80,7 +80,13 @@ async def test_extraction_summary_advances_same_persisted_baseline(
     update_kwargs = update_args.kwargs
     assert update_kwargs["summary"] == "Updated summary."
     assert update_kwargs["expected_summary_updated_at"] is None
-    assert update_kwargs["summarized_message_count"] == 5
+    # The persisted claim is capped at the contiguous-prefix boundary
+    # (``min(persisted_baseline + len(messages), contiguous_baseline)``
+    # = ``min(5, 3) = 3``) so the two fetched rows — which are beyond
+    # the contiguous finalized prefix at the snapshot — do not push
+    # the cursor past the prefix (Codex P2 on PR #165,
+    # ``summary.py:147``).
+    assert update_kwargs["summarized_message_count"] == 3
     assert "summary_snapshot_at" in update_kwargs
 
 
@@ -159,7 +165,10 @@ async def test_inline_summary_uses_contiguous_baseline_when_streaming_row_comple
     store = object.__new__(MemoryStore)
     store.get_conversation = AsyncMock(
         return_value={
-            "summary": "",
+            # Non-empty summary so ``validated_summary_baseline`` accepts
+            # ``last_summarized_msg_count=20``; with an empty summary
+            # the validator conservatively replays from 0.
+            "summary": "prior",
             "summary_updated_at": None,
             # Persisted baseline is 20 — the previous commit saw 20
             # finalized rows. The 21st row was streaming at the snapshot.
@@ -180,8 +189,10 @@ async def test_inline_summary_uses_contiguous_baseline_when_streaming_row_comple
     result = await summary_module._generate_or_update_summary_result(conversation_id, store)
 
     # No messages were fetched because the offset is still 20, so the
-    # result is a no-op and continuation is not needed.
-    assert result.summary is None or result.summary == ""
+    # result is a no-op and continuation is not needed. The existing
+    # summary text is preserved (the worker returns it unchanged when
+    # the batch is empty).
+    assert result.summary == "prior"
     assert result.continuation_needed is False
     fetch_args = store.get_summary_message_batch.await_args
     assert fetch_args is not None

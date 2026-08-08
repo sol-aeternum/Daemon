@@ -288,11 +288,25 @@ async def extract_memories(
                     defer_by=timedelta(seconds=1),
                     args=(str(_as_uuid(conversation_id)), True),
                 )
+        except Retry:
+            # Let arq's Retry signal propagate so the extraction job is
+            # retried; the inline summary was already committed by
+            # ``process_extraction`` and the required continuation must
+            # not be lost (Codex P2 on PR #165, ``worker/jobs.py:295``).
+            raise
         except Exception:
+            # ``generate_summary_job`` is the only periodic caller of
+            # the forced-continuation path; if Redis transiently rejects
+            # the enqueue, surface it as an arq ``Retry`` so the
+            # extraction job is retried rather than silently leaving the
+            # remaining summary backlog unscheduled (Codex P2 on PR
+            # #165, ``worker/jobs.py:295``).
             logger.warning(
-                "Failed to enqueue summary continuation for conversation %s",
+                "Failed to enqueue summary continuation for conversation %s; "
+                "raising arq Retry to reschedule extraction",
                 conversation_id,
             )
+            raise Retry(defer=5) from None
 
     return {"status": "ok", "processed_messages": len(messages)}
 
