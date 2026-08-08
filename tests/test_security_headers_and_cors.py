@@ -138,3 +138,60 @@ def test_frontend_proxy_emits_matching_security_headers() -> None:
     assert "crypto.randomUUID" in source
     assert "X-CSP-Nonce" in source
     assert "x-nonce" in source
+
+    # Real-runtime CSP must allow the Google Identity Services script
+    # (loaded by AuthLanding.tsx for hosted Google sign-in) and the
+    # ElevenLabs WebSocket origin (used by useStreamingTts.ts / useStt.ts
+    # / TextToSpeechButton.tsx). Without these, hosted Google sign-in
+    # and streaming TTS / realtime STT are blocked by the strict CSP.
+    assert "https://accounts.google.com" in source
+    assert "wss://api.elevenlabs.io" in source
+
+    # CSP must include a media-src directive so provider-hosted video
+    # (e.g. fal / xAI generation URLs passed to <video>) is not blocked
+    # by default-src 'self'.
+    assert "media-src" in source
+
+    # CSP must forward on the request headers (alongside x-nonce) so Next
+    # propagates it to the rendered response — otherwise framework bootstrap
+    # scripts are blocked by the strict nonce-only script-src.
+    assert "requestHeaders.set('Content-Security-Policy'" in source
+
+
+def test_inline_artifact_src_doc_includes_csp_nonce_on_inline_tags() -> None:
+    """The InlineArtifact iframe's srcDoc contains inline <style> and
+    <script> tags. Without a nonce, the embedding page's CSP blocks
+    them. The component must read the per-request nonce from the
+    <meta name="csp-nonce"> tag rendered by the root layout and inject
+    it onto both inline tags.
+    """
+    source = (ROOT / "frontend" / "components" / "chat" / "InlineArtifact.tsx").read_text()
+    assert 'meta[name="csp-nonce"]' in source
+    assert "styleNonceAttr" in source
+    assert "scriptNonceAttr" in source
+    assert "<style${styleNonceAttr}>" in source
+    assert "<script${scriptNonceAttr}>" in source
+
+
+def test_root_layout_propagates_csp_nonce_to_client() -> None:
+    """The root layout must read the per-request `x-nonce` header set by
+    the proxy and surface it as a <meta name="csp-nonce"> tag so the
+    InlineArtifact iframe (and any other client component that needs it)
+    can pull the nonce into their inline scripts/styles.
+    """
+    source = (ROOT / "frontend" / "app" / "layout.tsx").read_text()
+    assert "headers()" in source
+    assert '"x-nonce"' in source
+    assert 'meta name="csp-nonce"' in source
+
+
+def test_production_disables_fastapi_docs_endpoints() -> None:
+    """The strict CSP forbids the docs CDN assets and inline bootstrap
+    script that FastAPI / Swagger UI / ReDoc require. We disable them
+    when daemon_environment='production' so the policy and the docs
+    surface don't conflict.
+    """
+    source = (ROOT / "orchestrator" / "main.py").read_text()
+    assert "docs_url=None if _is_production else" in source
+    assert "redoc_url=None if _is_production else" in source
+    assert "openapi_url=None if _is_production else" in source

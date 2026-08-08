@@ -328,7 +328,19 @@ async def _check_first_boot_setup(state: AppState) -> None:
         logger.warning("First-boot setup check failed", exc_info=True)
 
 
-app = FastAPI(title="daemon-orchestrator", lifespan=lifespan)
+_is_production = get_settings().daemon_environment.lower().strip() == "production"
+app = FastAPI(
+    title="daemon-orchestrator",
+    lifespan=lifespan,
+    # In production, disable the auto-generated `/docs` and `/redoc` pages
+    # because they pull Swagger UI / ReDoc assets from a CDN and include
+    # an inline bootstrap script that the strict CSP does not allow. Tests
+    # (tests/test_security_headers_and_cors.py) exercise the non-production
+    # path; production envs simply 404 on these endpoints.
+    docs_url=None if _is_production else "/docs",
+    redoc_url=None if _is_production else "/redoc",
+    openapi_url=None if _is_production else "/openapi.json",
+)
 
 # CORS deny-by-default: use daemon_allowed_origins, filter empty strings.
 # An empty list means no cross-origin requests are allowed.
