@@ -31,7 +31,10 @@ class SkillDetail(SkillSummary):
 
 SKILLS_DIR = Path(__file__).resolve().parent.parent / "data" / "skills"
 _WHITESPACE_PATTERN = re.compile(r"\s+")
+_UNSAFE_ID_CHAR_PATTERN = re.compile(r"[^a-z0-9_-]")
+_PATH_SEPARATORS = frozenset({"/", "\\"})
 _SAFE_ID_PATTERN = re.compile(r"^[a-z0-9_-]+$")
+_SKILL_ID_MAX_LENGTH = 64
 _MAX_SKILLS_FOR_PROMPT = 8
 _MAX_CHARS_PER_SKILL = 2000
 
@@ -47,17 +50,54 @@ def ensure_skills_dir() -> None:
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _raise_invalid_skill_id(name: str) -> None:
+    raise ValueError(
+        "Skill id must contain only lowercase letters, numbers, underscores, or hyphens"
+    )
+
+
+def slugify_skill_name(name: str) -> str:
+    """Derive a safe skill ID from a user-visible display name.
+
+    Accepts names with punctuation, mixed case, and other characters that
+    would otherwise be rejected as path-traversal inputs, and returns a
+    slug that is safe to use as a filename. Inputs that still cannot be
+    turned into a safe slug (path separators, ``..`` components, blank)
+    raise ``ValueError``.
+    """
+    if any(separator in name for separator in _PATH_SEPARATORS):
+        _raise_invalid_skill_id(name)
+    candidate = _UNSAFE_ID_CHAR_PATTERN.sub("-", _WHITESPACE_PATTERN.sub("-", name.strip().lower()))
+    candidate = re.sub(r"-+", "-", candidate).strip("-_")
+    if ".." in candidate:
+        _raise_invalid_skill_id(name)
+    if not candidate:
+        _raise_invalid_skill_id(name)
+    candidate = candidate[:_SKILL_ID_MAX_LENGTH].rstrip("-_")
+    if not candidate:
+        _raise_invalid_skill_id(name)
+    return candidate
+
+
 def normalize_skill_id(name: str) -> str:
-    candidate = _WHITESPACE_PATTERN.sub("-", name.strip().lower()).strip("-_")
-    if not candidate:
-        raise ValueError("Skill name must include at least one alphanumeric character")
+    """Validate an already-formed skill ID, returning it unchanged if valid.
+
+    Used for IDs arriving from URL paths (the ``{skill_id}`` placeholders
+    in the skills router). Display names supplied to ``create_skill`` or
+    ``import_skill_markdown`` go through :func:`slugify_skill_name`
+    instead so punctuation is sanitized rather than rejected.
+    """
+    candidate = name.strip()
+    if any(separator in candidate for separator in _PATH_SEPARATORS):
+        _raise_invalid_skill_id(name)
     if not _SAFE_ID_PATTERN.fullmatch(candidate):
-        raise ValueError(
-            "Skill id must contain only lowercase letters, numbers, underscores, or hyphens"
-        )
-    candidate = candidate[:64].rstrip("-_")
-    if not candidate:
-        raise ValueError("Skill name must include at least one alphanumeric character")
+        _raise_invalid_skill_id(name)
+    if ".." in candidate:
+        _raise_invalid_skill_id(name)
+    if len(candidate) > _SKILL_ID_MAX_LENGTH:
+        candidate = candidate[:_SKILL_ID_MAX_LENGTH].rstrip("-_")
+        if not _SAFE_ID_PATTERN.fullmatch(candidate):
+            _raise_invalid_skill_id(name)
     return candidate
 
 
@@ -248,7 +288,7 @@ def create_skill(
     enabled: bool,
 ) -> SkillDetail:
     ensure_skills_dir()
-    skill_id = normalize_skill_id(name)
+    skill_id = slugify_skill_name(name)
     path = _skill_path(skill_id)
     if path.exists():
         raise FileExistsError(f"Skill '{skill_id}' already exists")
@@ -338,7 +378,7 @@ def import_skill_markdown(
             markdown=markdown,
         )
 
-    skill_id = normalize_skill_id(raw_name)
+    skill_id = slugify_skill_name(raw_name)
     path = _skill_path(skill_id)
     if path.exists() and not overwrite:
         raise FileExistsError(f"Skill '{skill_id}' already exists. Enable overwrite to replace it")

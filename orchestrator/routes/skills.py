@@ -367,6 +367,8 @@ async def download_skill(
     """
     try:
         markdown = skills_store.export_skill_markdown(skill_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

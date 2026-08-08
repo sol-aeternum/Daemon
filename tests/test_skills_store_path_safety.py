@@ -16,11 +16,30 @@ from orchestrator import skills_store
         "abc..def",
         "abc/def",
         "abc\\def",
+        "Code Review V2",
+        "C++ Review",
+        "Research & Synthesis",
+        "# Debug Workflow!!!",
+        "",
     ],
 )
-def test_normalize_skill_id_rejects_path_traversal_inputs(skill_id: str) -> None:
+def test_normalize_skill_id_rejects_path_traversal_and_non_normalized_inputs(
+    skill_id: str,
+) -> None:
     with pytest.raises(ValueError):
         skills_store.normalize_skill_id(skill_id)
+
+
+@pytest.mark.parametrize(
+    "skill_id",
+    [
+        "code-review-v2",
+        "_code-review-v2_",
+        "code_review_v2",
+    ],
+)
+def test_normalize_skill_id_accepts_already_safe_ids(skill_id: str) -> None:
+    assert skills_store.normalize_skill_id(skill_id) == skill_id
 
 
 @pytest.mark.parametrize(
@@ -29,13 +48,34 @@ def test_normalize_skill_id_rejects_path_traversal_inputs(skill_id: str) -> None
         ("code-review-v2", "code-review-v2"),
         ("Code Review V2", "code-review-v2"),
         ("_Code Review V2_", "code-review-v2"),
+        ("C++ Review", "c-review"),
+        ("Research & Synthesis", "research-synthesis"),
+        ("# Debug Workflow!!!", "debug-workflow"),
     ],
 )
-def test_normalize_skill_id_accepts_safe_ids_and_names(
+def test_slugify_skill_name_produces_safe_slug(
     raw_name: str,
     expected: str,
 ) -> None:
-    assert skills_store.normalize_skill_id(raw_name) == expected
+    assert skills_store.slugify_skill_name(raw_name) == expected
+
+
+@pytest.mark.parametrize(
+    "raw_name",
+    [
+        "../etc/passwd",
+        "/etc/passwd",
+        "..",
+        "...",
+        "abc/def",
+        "abc\\def",
+        "",
+        "   ",
+    ],
+)
+def test_slugify_skill_name_rejects_path_traversal_inputs(raw_name: str) -> None:
+    with pytest.raises(ValueError):
+        skills_store.slugify_skill_name(raw_name)
 
 
 def test_skill_path_resolves_inside_skills_directory(
