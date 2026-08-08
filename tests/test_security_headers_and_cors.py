@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -152,10 +153,39 @@ def test_frontend_proxy_emits_matching_security_headers() -> None:
     # by default-src 'self'.
     assert "media-src" in source
 
+    # media-src must permit `blob:` so authenticated audio that is
+    # converted to a blob: object URL (AudioPlaybackProvider /
+    # useAuthenticatedImageUrl) can play.
+    assert "blob:" in source
+    assert re.search(r"media-src[^;]*blob:", source) is not None
+
+    # connect-src must include the configured backend origin
+    # (NEXT_PUBLIC_API_URL) so direct browser hooks
+    # (useConversationHistory etc.) can reach the backend without going
+    # through the same-origin Next API routes.
+    assert "NEXT_PUBLIC_API_URL" in source
+    # The helper that builds the connect-src host list must reference the
+    # env var so the resulting directive includes the configured backend
+    # origin at runtime.
+    assert re.search(r"process\.env\.NEXT_PUBLIC_API_URL", source) is not None
+    # 'self' must remain in connect-src so same-origin requests still work.
+    assert re.search(r"connect-src[^;]*'self'", source) is not None
+
+    # frame-src must permit `blob:` and `data:` so PDF previews
+    # (FilePreview.tsx / PdfPreview.tsx) using blob:/data: URLs can
+    # load inside the preview iframe.
+    assert "frame-src" in source
+    assert re.search(r"frame-src[^;]*blob:", source) is not None
+    assert re.search(r"frame-src[^;]*data:", source) is not None
+
     # CSP must forward on the request headers (alongside x-nonce) so Next
     # propagates it to the rendered response — otherwise framework bootstrap
-    # scripts are blocked by the strict nonce-only script-src.
-    assert "requestHeaders.set('Content-Security-Policy'" in source
+    # scripts are blocked by the strict nonce-only script-src. Prettier
+    # may wrap the multi-arg set() call across lines, so we check for the
+    # method name plus the header key (rather than the full one-line call).
+    assert (
+        re.search(r"requestHeaders\.set\(\s*['\"]Content-Security-Policy['\"]", source) is not None
+    )
 
 
 def test_inline_artifact_src_doc_includes_csp_nonce_on_inline_tags() -> None:
@@ -187,11 +217,14 @@ def test_root_layout_propagates_csp_nonce_to_client() -> None:
 
 def test_production_disables_fastapi_docs_endpoints() -> None:
     """The strict CSP forbids the docs CDN assets and inline bootstrap
-    script that FastAPI / Swagger UI / ReDoc require. We disable them
-    when daemon_environment='production' so the policy and the docs
-    surface don't conflict.
+    script that FastAPI / Swagger UI / ReDoc require. We disable the
+    docs endpoints unconditionally so the policy and the docs surface
+    don't conflict in any environment.
     """
     source = (ROOT / "orchestrator" / "main.py").read_text()
-    assert "docs_url=None if _is_production else" in source
-    assert "redoc_url=None if _is_production else" in source
-    assert "openapi_url=None if _is_production else" in source
+    # docs/redoc/openapi URL kwargs are passed as plain `None` (not
+    # env-conditional) so FastAPI 404s on /docs and /redoc regardless of
+    # daemon_environment. The OpenAPI schema URL is also disabled.
+    assert "docs_url=None,\n    redoc_url=None,\n    openapi_url=None," in source or (
+        "docs_url=None" in source and "redoc_url=None" in source and "openapi_url=None" in source
+    )

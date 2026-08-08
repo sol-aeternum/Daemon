@@ -351,14 +351,17 @@ _is_production = get_settings().daemon_environment.lower().strip() == "productio
 app = FastAPI(
     title="daemon-orchestrator",
     lifespan=lifespan,
-    # In production, disable the auto-generated `/docs` and `/redoc` pages
-    # because they pull Swagger UI / ReDoc assets from a CDN and include
-    # an inline bootstrap script that the strict CSP does not allow. Tests
-    # (tests/test_security_headers_and_cors.py) exercise the non-production
-    # path; production envs simply 404 on these endpoints.
-    docs_url=None if _is_production else "/docs",
-    redoc_url=None if _is_production else "/redoc",
-    openapi_url=None if _is_production else "/openapi.json",
+    # The strict CSP does not allow FastAPI's auto-generated Swagger UI /
+    # ReDoc pages (CDN-hosted assets and an inline bootstrap script). We
+    # disable the docs endpoints unconditionally rather than serve a
+    # weakened policy in non-production environments — the OpenAPI schema
+    # is still available at /openapi.json when docs_url is None if a
+    # client wants to introspect the surface. Tests
+    # (tests/test_security_headers_and_cors.py) cover the docs endpoints
+    # returning 404.
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 # CORS deny-by-default: use daemon_allowed_origins, filter empty strings.

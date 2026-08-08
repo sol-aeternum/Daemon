@@ -28,23 +28,51 @@ const CONNECT_SRC_EXTERNAL_HOSTS = [
 // `media-src` is required so provider-hosted video/audio (e.g. fal/xAI
 // generation URLs passed to <video>) can render. The cross-origin <video>
 // element is not covered by `default-src` and was being blocked by the
-// strict policy.
+// strict policy. `blob:` covers authenticated audio that is converted to
+// a blob: object URL inside AudioPlaybackProvider / useAuthenticatedImageUrl.
 const MEDIA_SRC_EXTERNAL_HOSTS = ['https:'];
 const IMG_SRC_EXTERNAL_HOSTS = ['https:'];
+
+// `frame-src` is required so generated / authenticated PDFs (rendered via
+// `blob:` and `data:` URLs in `FilePreview.tsx` / `PdfPreview.tsx`) load
+// inside an `<iframe>`. Without this, `default-src 'self'` governs frames
+// and blocks the inline preview even though the document downloads.
+const FRAME_SRC_HOSTS = ["'self'", 'blob:', 'data:'];
+
+/**
+ * Build the `connect-src` host list. Always includes the static list of
+ * runtime adjacencies (ElevenLabs WebSocket, etc.); also includes the
+ * configured backend origin from `NEXT_PUBLIC_API_URL` so direct browser
+ * hooks (`useConversationHistory` etc.) can reach the daemon backend
+ * without going through the same-origin Next API routes.
+ */
+function buildConnectSrcHosts(): string[] {
+  const hosts = [...CONNECT_SRC_EXTERNAL_HOSTS];
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+  if (typeof apiUrl === 'string' && apiUrl.trim().length > 0) {
+    hosts.push(apiUrl.trim());
+  }
+  return hosts;
+}
 
 function makeNonce(): string {
   return crypto.randomUUID().replaceAll('-', '');
 }
 
 function buildContentSecurityPolicy(nonce: string): string {
+  const connectSrc = ["'self'", ...buildConnectSrcHosts()].join(' ').trim();
+  const mediaSrc = ["'self'", 'blob:', ...MEDIA_SRC_EXTERNAL_HOSTS]
+    .join(' ')
+    .trim();
   return [
     "default-src 'self'",
     `script-src 'self' 'nonce-${nonce}' ${SCRIPT_SRC_EXTERNAL_HOSTS.join(' ')}`.trim(),
     `style-src 'self' 'nonce-${nonce}'`,
     `img-src 'self' data: blob: ${IMG_SRC_EXTERNAL_HOSTS.join(' ')}`.trim(),
     "font-src 'self' data:",
-    `connect-src 'self' ${CONNECT_SRC_EXTERNAL_HOSTS.join(' ')}`.trim(),
-    `media-src 'self' ${MEDIA_SRC_EXTERNAL_HOSTS.join(' ')}`.trim(),
+    `connect-src ${connectSrc}`,
+    `media-src ${mediaSrc}`,
+    `frame-src ${FRAME_SRC_HOSTS.join(' ')}`.trim(),
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
@@ -61,7 +89,10 @@ export function proxy(request: NextRequest) {
   // middleware response (not the rendered page), which lets the framework
   // bootstrap scripts through one nonce but rejects application scripts
   // using a different nonce.
-  requestHeaders.set('Content-Security-Policy', buildContentSecurityPolicy(nonce));
+  requestHeaders.set(
+    'Content-Security-Policy',
+    buildContentSecurityPolicy(nonce),
+  );
 
   const response = NextResponse.next({
     request: {
