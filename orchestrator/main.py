@@ -124,7 +124,7 @@ class UnsafeProductionServerConfigError(RuntimeError):
 
 
 def _validate_production_server_args(settings: Settings, argv: Sequence[str] | None = None) -> None:
-    if settings.daemon_environment.lower() != "production":
+    if settings.daemon_environment.lower().strip() != "production":
         return
     args = sys.argv if argv is None else argv
     if any(arg == "--reload" or arg.startswith("--reload=") for arg in args):
