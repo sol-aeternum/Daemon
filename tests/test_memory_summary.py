@@ -53,11 +53,15 @@ async def test_extraction_summary_advances_same_persisted_baseline(
 
     assert result == "Updated summary."
     assert store.get_summary_message_batch.await_count == 1
-    batch_kwargs = store.get_summary_message_batch.await_args.kwargs
+    batch_args = store.get_summary_message_batch.await_args
+    assert batch_args is not None
+    batch_kwargs = batch_args.kwargs
     assert batch_kwargs["offset"] == 3
     assert batch_kwargs["limit"] == 20
     assert "snapshot_at" in batch_kwargs
-    update_kwargs = store.update_conversation_summary.await_args.kwargs
+    update_args = store.update_conversation_summary.await_args
+    assert update_args is not None
+    update_kwargs = update_args.kwargs
     assert update_kwargs["summary"] == "Updated summary."
     assert update_kwargs["expected_summary_updated_at"] is None
     assert update_kwargs["summarized_message_count"] == 5
