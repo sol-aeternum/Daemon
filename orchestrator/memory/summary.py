@@ -12,6 +12,7 @@ import litellm
 
 from orchestrator.config import get_settings
 from orchestrator.memory.store import MemoryStore
+from orchestrator.memory.summarization import validated_summary_baseline
 
 
 SUMMARY_PROMPT = """Given the existing summary and new messages, produce an updated summary of this conversation in 2-3 sentences.
@@ -65,40 +66,32 @@ async def generate_or_update_summary(
     Returns:
         New summary string or None if generation failed
     """
-    from datetime import datetime
-
-    # Get conversation to check for existing summary
+    # Get conversation to check for existing summary and persisted baseline.
     conversation = await store.get_conversation(conversation_id)
     if not conversation:
         return None
 
     existing_summary = conversation.get("summary") or ""
     summary_updated_at = conversation.get("summary_updated_at")
+    current_message_count = await store.count_summary_messages(conversation_id)
+    last_summarized_msg_count = validated_summary_baseline(
+        conversation,
+        current_message_count,
+    )
 
-    # Fetch messages - incremental if we have a previous summary with timestamp
-    if existing_summary and summary_updated_at and isinstance(summary_updated_at, datetime):
-        # Incremental: fetch only messages since last summary update
-        messages = await store.get_messages(
-            conversation_id,
-            limit=100,
-            created_after=summary_updated_at,
-        )
-        if not messages:
-            # No new messages since last summary
-            return existing_summary
-        is_incremental = True
-    else:
-        # No existing summary: fetch all messages for initial summary
-        messages = await store.get_messages(conversation_id, limit=100)
-        if not messages:
-            return None
-        is_incremental = False  # noqa: F841
+    # Keep the prompt bounded and only advance through messages actually included.
+    messages = await store.get_summary_message_batch(
+        conversation_id,
+        offset=last_summarized_msg_count,
+        limit=20,
+    )
+    if not messages:
+        return existing_summary or None
 
-    # Format messages for prompt (last 20 for context window)
     formatted_messages = "\n\n".join(
         [
             f"[{msg.get('role', 'unknown').upper()}]: {msg.get('content', '')[:500]}"
-            for msg in messages[-20:]
+            for msg in messages
         ]
     )
 
@@ -148,11 +141,15 @@ async def generate_or_update_summary(
             # Truncate to 3 sentences
             summary = ". ".join(sentences[:3]) + "."
 
-        # Update conversation with new summary
-        await store.update_conversation(
-            conversation_id=conversation_id,
+        # Persist the summary and finalized-message baseline atomically.
+        updated = await store.update_conversation_summary(
+            conversation_id,
             summary=summary,
+            expected_summary_updated_at=summary_updated_at,
+            summarized_message_count=last_summarized_msg_count + len(messages),
         )
+        if not updated:
+            return None
 
         return summary
 

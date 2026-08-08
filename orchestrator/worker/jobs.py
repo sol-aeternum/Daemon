@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, cast, NotRequired, TypedDict
 from zoneinfo import ZoneInfo
 
+from arq import Retry
 from arq.connections import ArqRedis
 from arq.jobs import Job
 
@@ -358,9 +359,14 @@ async def generate_conversation_title_job(
 async def generate_summary_job(
     ctx: WorkerContext,
     conversation_id: str,
+    force: bool = False,
 ) -> dict[str, Any]:
-    """Generate and store conversation summary."""
-    from orchestrator.memory.summarization import should_summarize, generate_summary
+    """Generate and store one bounded conversation-summary batch."""
+    from orchestrator.memory.summarization import (
+        generate_summary,
+        should_summarize,
+        validated_summary_baseline,
+    )
 
     store_obj = ctx.get("store")
     if not isinstance(store_obj, MemoryStore):
@@ -374,18 +380,64 @@ async def generate_summary_job(
         return {"status": "not_found"}
 
     last_summary_time = conversation.get("summary_updated_at")
-    settings = {}
+    previous_summary = conversation.get("summary")
+    current_message_count = await store.count_summary_messages(conv_id)
+    last_summarized_msg_count = validated_summary_baseline(
+        conversation,
+        current_message_count,
+    )
+    settings: dict[str, Any] = {}
 
-    if not await should_summarize(conv_id, last_summary_time, store, settings):
+    if not force and not await should_summarize(
+        conv_id,
+        last_summary_time,
+        last_summarized_msg_count,
+        store,
+        settings,
+    ):
         return {"status": "skipped", "reason": "thresholds_not_met"}
 
-    messages = await store.get_messages(conv_id, limit=100)
-    previous_summary = conversation.get("summary")
+    messages = await store.get_summary_message_batch(
+        conv_id,
+        offset=last_summarized_msg_count,
+        limit=100,
+    )
+    if not messages:
+        return {"status": "skipped", "reason": "up_to_date"}
 
     summary = await generate_summary(messages, previous_summary, settings)
-    await store.update_conversation(conv_id, summary=summary)
+    if not summary.strip():
+        raise Retry(defer=5)
 
-    return {"status": "success", "summary_length": len(summary)}
+    summarized_message_count = last_summarized_msg_count + len(messages)
+    updated = await store.update_conversation_summary(
+        conv_id,
+        summary=summary,
+        expected_summary_updated_at=last_summary_time,
+        summarized_message_count=summarized_message_count,
+    )
+    if not updated:
+        raise Retry(defer=5)
+
+    continuation_enqueued = False
+    if len(messages) == 100:
+        queue = ctx.get("redis")
+        if queue is not None:
+            follow_up = await enqueue_with_debounce(
+                cast(ArqRedis, queue),
+                "generate_summary_job",
+                job_id=f"summary:{conv_id}:{summarized_message_count}",
+                defer_by=timedelta(seconds=1),
+                args=(str(conv_id), True),
+            )
+            continuation_enqueued = follow_up is not None
+
+    return {
+        "status": "success",
+        "summary_length": len(summary),
+        "summarized_message_count": summarized_message_count,
+        "continuation_enqueued": continuation_enqueued,
+    }
 
 
 async def garbage_collect(ctx: WorkerContext) -> dict[str, int]:

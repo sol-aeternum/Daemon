@@ -358,24 +358,6 @@
                 }
             }
         ],
-        "./orchestrator/memory/summary.py": [
-            {
-                "code": "reportUnusedVariable",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 22,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnusedVariable",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 22,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./orchestrator/memory/trust_signals.py": [
             {
                 "code": "reportUnusedParameter",

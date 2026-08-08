@@ -443,13 +443,90 @@ class MemoryStore:
             results.append(_normalize_message(d))
         return results
 
+    async def get_summary_message_batch(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Load a bounded, ordered batch of finalized messages for summarization."""
+        batch_limit = min(100, max(1, int(limit)))
+        batch_offset = max(0, int(offset))
+        rows = await self._pool.fetch(
+            """
+            SELECT * FROM messages
+            WHERE conversation_id = $1
+              AND (status IS NULL OR status = 'complete')
+            ORDER BY created_at ASC, id ASC
+            LIMIT $2 OFFSET $3
+            """,
+            conversation_id,
+            batch_limit,
+            batch_offset,
+        )
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            message = dict(row)
+            message["content"] = self._enc.decrypt(message["content"])
+            if message.get("reasoning_text") is not None:
+                message["reasoning_text"] = self._enc.decrypt(message["reasoning_text"])
+            if message.get("advisor_traces") is not None:
+                message["advisor_traces"] = self._decrypt_advisor_traces(message["advisor_traces"])
+            results.append(_normalize_message(message))
+        return results
+
+    async def count_summary_messages(self, conversation_id: uuid.UUID) -> int:
+        """Count finalized messages eligible for conversation summaries."""
+        row = await self._pool.fetchrow(
+            """
+            SELECT COUNT(*) AS count
+            FROM messages
+            WHERE conversation_id = $1
+              AND (status IS NULL OR status = 'complete')
+            """,
+            conversation_id,
+        )
+        return int(row["count"]) if row else 0
+
     async def count_messages(self, conversation_id: uuid.UUID) -> int:
         """Count messages in a conversation without loading content."""
         row = await self._pool.fetchrow(
             "SELECT COUNT(*) as count FROM messages WHERE conversation_id = $1",
             conversation_id,
         )
-        return row["count"] if row else 0
+        return int(row["count"]) if row else 0
+
+    async def update_conversation_summary(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        summary: str,
+        expected_summary_updated_at: datetime | None,
+        summarized_message_count: int,
+    ) -> bool:
+        """Atomically persist a summary and its finalized-message baseline."""
+        row = await self._pool.fetchrow(
+            """
+            UPDATE conversations
+            SET summary = $2,
+                summary_updated_at = NOW(),
+                metadata = COALESCE(metadata, '{}'::jsonb)
+                    || jsonb_build_object(
+                        'last_summarized_msg_count',
+                        $4::bigint
+                    )
+            WHERE id = $1
+              AND summary_updated_at IS NOT DISTINCT FROM $3
+            RETURNING id
+            """,
+            conversation_id,
+            summary,
+            expected_summary_updated_at,
+            summarized_message_count,
+        )
+        return row is not None
 
     async def update_message(
         self,

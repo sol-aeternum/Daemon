@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -104,6 +105,33 @@ async def generate_summary(
     return content.strip()
 
 
+def validated_summary_baseline(
+    conversation: dict[str, Any],
+    current_message_count: int,
+) -> int:
+    """Return a safe persisted summary baseline, replaying invalid legacy state."""
+    metadata = conversation.get("metadata")
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (json.JSONDecodeError, TypeError):
+            metadata = {}
+
+    previous_summary = conversation.get("summary")
+    has_existing_summary = isinstance(previous_summary, str) and bool(previous_summary.strip())
+    raw_baseline = metadata.get("last_summarized_msg_count") if isinstance(metadata, dict) else None
+    if (
+        isinstance(raw_baseline, int)
+        and not isinstance(raw_baseline, bool)
+        and 0 <= raw_baseline <= current_message_count
+        and (raw_baseline == 0 or has_existing_summary)
+    ):
+        return raw_baseline
+
+    # Replaying is safer than guessing a cursor and skipping unseen messages.
+    return 0
+
+
 async def should_summarize(
     conversation_id: uuid.UUID,
     last_summary_time: datetime | None,
@@ -120,6 +148,7 @@ async def should_summarize(
     Args:
         conversation_id: UUID of conversation
         last_summary_time: When last summary was generated
+        last_summarized_msg_count: Number of finalized messages in the previous summary
         store: MemoryStore instance
         settings: Settings dict with summary_idle_minutes, summary_token_threshold
 
@@ -131,7 +160,7 @@ async def should_summarize(
     summary_message_delta = settings.get("summary_message_delta", 20)
     idle_delta = 6
 
-    current_msg_count = await store.count_messages(conversation_id)
+    current_msg_count = await store.count_summary_messages(conversation_id)
     delta = max(0, int(current_msg_count) - int(last_summarized_msg_count))
     if delta >= int(summary_message_delta):
         return True
