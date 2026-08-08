@@ -88,7 +88,11 @@ def test_frontend_compose_passes_next_public_build_args() -> None:
     """`npm run build` (in the Dockerfile) runs at image build time, so
     NEXT_PUBLIC_* vars must be passed as ``build.args`` so they are inlined
     into the client bundle. Without these, the production image would bundle
-    defaults that disagree with .env at runtime."""
+    defaults that disagree with .env at runtime.
+
+    ``NEXT_PUBLIC_API_URL`` must additionally be **env-interpolated** (with
+    localhost as the default), so the deployed backend URL is configurable
+    via .env at deploy time and not hardcoded into the production image."""
     frontend = _compose_services()["frontend"]
     args = frontend.get("build", {}).get("args", {})
 
@@ -96,6 +100,22 @@ def test_frontend_compose_passes_next_public_build_args() -> None:
     assert "NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE" in args
     assert "NEXT_PUBLIC_GOOGLE_CLIENT_ID" in args
     assert "NEXT_PUBLIC_EMAIL_ENABLED" in args
+
+    # NEXT_PUBLIC_API_URL must be env-interpolated, not hardcoded to localhost.
+    # Pattern: ${NEXT_PUBLIC_API_URL:-<default>}  (any non-empty default works).
+    api_url = args["NEXT_PUBLIC_API_URL"]
+    assert isinstance(api_url, str), (
+        f"NEXT_PUBLIC_API_URL must be a string in build.args, got {type(api_url)!r}"
+    )
+    assert api_url.startswith("${NEXT_PUBLIC_API_URL:") and api_url.endswith("}"), (
+        f"NEXT_PUBLIC_API_URL must be env-interpolated "
+        f"${{NEXT_PUBLIC_API_URL:-<default>}} so the deployed backend URL "
+        f"is configurable; got {api_url!r}"
+    )
+    # Default value must be non-empty so the build still succeeds when
+    # the var is unset (CI, first-run, etc.).
+    default = api_url[len("${NEXT_PUBLIC_API_URL:-") : -1]
+    assert default, f"NEXT_PUBLIC_API_URL build arg must have a non-empty default, got {api_url!r}"
 
 
 def test_frontend_dockerfile_declares_next_public_build_args() -> None:

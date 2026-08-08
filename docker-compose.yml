@@ -142,7 +142,7 @@ services:
       # NEXT_PUBLIC_* vars are baked into the client bundle at build time.
       # Pass them as ARGs so the Dockerfile's `npm run build` step sees them.
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:8000
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
         NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE: ${NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE:-self-hosted}
         NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
         NEXT_PUBLIC_EMAIL_ENABLED: ${NEXT_PUBLIC_EMAIL_ENABLED:-true}
