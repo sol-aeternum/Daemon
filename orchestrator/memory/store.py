@@ -461,15 +461,39 @@ class MemoryStore:
         """
         batch_limit = min(100, max(1, int(limit)))
         batch_offset = max(0, int(offset))
+        # Stop at the first non-finalized row instead of merely filtering it out.
+        # A row that was streaming at fetch time but finalized later (without a
+        # ``created_at`` change) would otherwise insert before already-summarized
+        # rows and replay the same messages on the next iteration (Codex P2 on
+        # PR #165, ``store.py:464``).
+        base_filter = "conversation_id = $1 AND (status IS NULL OR status = 'complete')"
         if snapshot_at is not None:
             rows = await self._pool.fetch(
-                """
-                SELECT * FROM messages
-                WHERE conversation_id = $1
-                  AND (status IS NULL OR status = 'complete')
-                  AND created_at <= $4
-                ORDER BY created_at ASC, id ASC
-                LIMIT $2 OFFSET $3
+                f"""
+                WITH ranked AS (
+                    SELECT id, ROW_NUMBER() OVER (
+                        ORDER BY created_at ASC, id ASC
+                    ) AS rn
+                    FROM messages
+                    WHERE {base_filter}
+                      AND created_at <= $4
+                ),
+                cutoff AS (
+                    SELECT COALESCE(
+                        MIN(rn) - 1,
+                        (SELECT MAX(rn) FROM ranked)
+                    ) AS contiguous_rn
+                    FROM ranked r
+                    JOIN messages m ON m.id = r.id
+                    WHERE m.status IS NOT NULL AND m.status <> 'complete'
+                      AND m.created_at <= $4
+                )
+                SELECT m.* FROM messages m
+                JOIN ranked r ON m.id = r.id
+                WHERE r.rn > $3
+                  AND r.rn <= (SELECT contiguous_rn FROM cutoff)
+                ORDER BY r.rn ASC
+                LIMIT $2
                 """,
                 conversation_id,
                 batch_limit,
@@ -478,12 +502,29 @@ class MemoryStore:
             )
         else:
             rows = await self._pool.fetch(
-                """
-                SELECT * FROM messages
-                WHERE conversation_id = $1
-                  AND (status IS NULL OR status = 'complete')
-                ORDER BY created_at ASC, id ASC
-                LIMIT $2 OFFSET $3
+                f"""
+                WITH ranked AS (
+                    SELECT id, created_at, status,
+                           ROW_NUMBER() OVER (
+                               ORDER BY created_at ASC, id ASC
+                           ) AS rn
+                    FROM messages
+                    WHERE {base_filter}
+                ),
+                cutoff AS (
+                    SELECT COALESCE(
+                        MIN(rn) - 1,
+                        (SELECT MAX(rn) FROM ranked)
+                    ) AS contiguous_rn
+                    FROM ranked
+                    WHERE status IS NOT NULL AND status <> 'complete'
+                )
+                SELECT m.* FROM messages m
+                JOIN ranked r ON m.id = r.id
+                WHERE r.rn > $3
+                  AND r.rn <= (SELECT contiguous_rn FROM cutoff)
+                ORDER BY r.rn ASC
+                LIMIT $2
                 """,
                 conversation_id,
                 batch_limit,

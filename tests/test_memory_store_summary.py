@@ -28,8 +28,51 @@ async def test_summary_batch_excludes_streaming_messages_and_applies_offset() ->
     assert actual_id == conversation_id
     assert limit == 100
     assert offset == 12
-    assert "status IS NULL OR status = 'complete'" in " ".join(query.split())
-    assert "ORDER BY created_at ASC, id ASC" in " ".join(query.split())
+    normalized = " ".join(query.split())
+    assert "status IS NULL OR status = 'complete'" in normalized
+    # Stop at the first non-finalized row (Codex P2 on PR #165,
+    # ``store.py:464``): the SQL now uses a ranked CTE with a cutoff
+    # derived from the first row whose status is non-finalized.
+    assert "ROW_NUMBER() OVER (" in normalized
+    assert "ORDER BY created_at ASC, id ASC" in normalized
+    assert "contiguous_rn" in normalized
+
+
+@pytest.mark.asyncio
+async def test_summary_batch_stops_at_first_non_finalized_row() -> None:
+    """Codex P2 on PR #165, store.py:464 — finalized rows after a
+    streaming or failed row must not be returned in the same batch;
+    the SQL must stop at the contiguous-prefix boundary rather than
+    merely filtering the gap row out.
+    """
+    conversation_id = uuid4()
+    snapshot = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
+    pool = AsyncMock()
+    pool.fetch.return_value = []
+    store = object.__new__(MemoryStore)
+    store._pool = pool
+    store._enc = cast(Any, _IdentityEncryption())
+
+    assert (
+        await store.get_summary_message_batch(
+            conversation_id,
+            offset=0,
+            limit=100,
+            snapshot_at=snapshot,
+        )
+        == []
+    )
+
+    query, _actual_id, _limit, _offset, _snapshot_arg = pool.fetch.await_args.args
+    normalized = " ".join(query.split())
+    # The cutoff CTE must compute a contiguous prefix that excludes
+    # any non-finalized row's later finalized rows.
+    assert "COALESCE" in normalized
+    assert "MIN(rn) - 1" in normalized
+    # The outer SELECT joins ranked CTE and applies ``r.rn > $3``
+    # (offset) and ``r.rn <= contiguous_rn`` (the boundary).
+    assert "r.rn > $3" in normalized
+    assert "r.rn <= (SELECT contiguous_rn FROM cutoff)" in normalized
 
 
 @pytest.mark.asyncio

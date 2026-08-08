@@ -438,6 +438,10 @@ async def generate_summary_job(
         conv_id,
         snapshot_at=iteration_snapshot,
     )
+    # ``last_summarized_msg_count`` is the count used by ``should_summarize``
+    # to compute delta against the current finalized-message count. It is
+    # not the offset — those are two distinct concepts (matches the inline
+    # path on PR #165).
     last_summarized_msg_count = max(persisted_baseline, contiguous_baseline)
     settings: dict[str, Any] = {}
 
@@ -450,9 +454,18 @@ async def generate_summary_job(
     ):
         return {"status": "skipped", "reason": "thresholds_not_met"}
 
+    # The cursor advances only through rows actually included in past
+    # summaries (``persisted_baseline``). ``contiguous_baseline`` is
+    # used solely to bound how far this iteration may claim — never as
+    # an offset. The prior ``max(...)`` offset skipped finalized rows
+    # that were contiguous-but-not-yet-summarized (e.g. baseline 0 with
+    # rows ``complete m1, streaming m2, complete m3``: offset became 1,
+    # so m1 was skipped). Using ``persisted_baseline`` directly produces
+    # the rows that need summarization (Codex P2 on PR #165,
+    # ``worker/jobs.py:441``).
     messages = await store.get_summary_message_batch(
         conv_id,
-        offset=last_summarized_msg_count,
+        offset=persisted_baseline,
         limit=100,
         snapshot_at=iteration_snapshot,
     )
