@@ -109,7 +109,14 @@ def validated_summary_baseline(
     conversation: dict[str, Any],
     current_message_count: int,
 ) -> int:
-    """Return a safe persisted summary baseline, replaying invalid legacy state."""
+    """Return a safe persisted summary baseline, replaying invalid legacy state.
+
+    The earlier snapshot timestamp accessor has been removed: the cursor
+    no longer needs a persisted upper bound because each iteration pins
+    its own ``now()`` snapshot when fetching the batch. The persisted
+    ``last_summarized_at_time`` is still written for audit / debugging
+    but is not consulted here.
+    """
     metadata = conversation.get("metadata")
     if isinstance(metadata, str):
         try:
@@ -120,6 +127,7 @@ def validated_summary_baseline(
     previous_summary = conversation.get("summary")
     has_existing_summary = isinstance(previous_summary, str) and bool(previous_summary.strip())
     raw_baseline = metadata.get("last_summarized_msg_count") if isinstance(metadata, dict) else None
+
     if (
         isinstance(raw_baseline, int)
         and not isinstance(raw_baseline, bool)

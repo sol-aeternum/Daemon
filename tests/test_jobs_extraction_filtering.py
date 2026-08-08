@@ -58,7 +58,7 @@ async def test_extract_memories_filters_memory_write_artifacts() -> None:
     )
 
     with patch("orchestrator.worker.jobs.process_extraction", new_callable=AsyncMock) as proc:
-        proc.return_value = (True, [])  # success, no new memories
+        proc.return_value = (True, [], False)  # success, no new memories, no continuation
         with patch("orchestrator.worker.jobs.MemoryStore", object):
             result = await extract_memories(ctx, user_id, conversation_id, messages_json)
 

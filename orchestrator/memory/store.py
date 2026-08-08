@@ -449,22 +449,46 @@ class MemoryStore:
         *,
         offset: int = 0,
         limit: int = 100,
+        snapshot_at: datetime | None = None,
     ) -> list[dict[str, Any]]:
-        """Load a bounded, ordered batch of finalized messages for summarization."""
+        """Load a bounded, ordered batch of finalized messages for summarization.
+
+        When ``snapshot_at`` is provided, only messages with
+        ``created_at <= snapshot_at`` are eligible. This pins the row set to the
+        moment the cursor was captured so a concurrent status flip from
+        ``streaming`` to ``complete`` (which does not change ``created_at``) can
+        not shift the order under an in-flight summary batch.
+        """
         batch_limit = min(100, max(1, int(limit)))
         batch_offset = max(0, int(offset))
-        rows = await self._pool.fetch(
-            """
-            SELECT * FROM messages
-            WHERE conversation_id = $1
-              AND (status IS NULL OR status = 'complete')
-            ORDER BY created_at ASC, id ASC
-            LIMIT $2 OFFSET $3
-            """,
-            conversation_id,
-            batch_limit,
-            batch_offset,
-        )
+        if snapshot_at is not None:
+            rows = await self._pool.fetch(
+                """
+                SELECT * FROM messages
+                WHERE conversation_id = $1
+                  AND (status IS NULL OR status = 'complete')
+                  AND created_at <= $4
+                ORDER BY created_at ASC, id ASC
+                LIMIT $2 OFFSET $3
+                """,
+                conversation_id,
+                batch_limit,
+                batch_offset,
+                snapshot_at,
+            )
+        else:
+            rows = await self._pool.fetch(
+                """
+                SELECT * FROM messages
+                WHERE conversation_id = $1
+                  AND (status IS NULL OR status = 'complete')
+                ORDER BY created_at ASC, id ASC
+                LIMIT $2 OFFSET $3
+                """,
+                conversation_id,
+                batch_limit,
+                batch_offset,
+            )
 
         results: list[dict[str, Any]] = []
         for row in rows:
@@ -490,6 +514,31 @@ class MemoryStore:
         )
         return int(row["count"]) if row else 0
 
+    async def count_summary_messages_at(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        snapshot_at: datetime,
+    ) -> int:
+        """Count finalized messages with ``created_at <= snapshot_at``.
+
+        Mirrors ``get_summary_message_batch``'s snapshot bound so callers
+        can decide whether a continuation job is needed without running
+        a second ordered query.
+        """
+        row = await self._pool.fetchrow(
+            """
+            SELECT COUNT(*) AS count
+            FROM messages
+            WHERE conversation_id = $1
+              AND (status IS NULL OR status = 'complete')
+              AND created_at <= $2
+            """,
+            conversation_id,
+            snapshot_at,
+        )
+        return int(row["count"]) if row else 0
+
     async def count_messages(self, conversation_id: uuid.UUID) -> int:
         """Count messages in a conversation without loading content."""
         row = await self._pool.fetchrow(
@@ -505,18 +554,38 @@ class MemoryStore:
         summary: str,
         expected_summary_updated_at: datetime | None,
         summarized_message_count: int,
+        summary_snapshot_at: datetime | None = None,
     ) -> bool:
-        """Atomically persist a summary and its finalized-message baseline."""
+        """Atomically persist a summary and its finalized-message baseline.
+
+        Also advances ``updated_at`` / ``last_activity_at`` (mirroring the
+        previous ``update_conversation(summary=...)`` behaviour) so the
+        conversation row reflects the new summary activity in the recent
+        list ordering, and stores ``last_summarized_at_time`` so the next
+        summary batch can pin its row set to the moment this cursor was
+        captured.
+        """
+        snapshot_iso: str | None = None
+        if summary_snapshot_at is not None:
+            snapshot_iso = summary_snapshot_at.isoformat()
         row = await self._pool.fetchrow(
             """
             UPDATE conversations
             SET summary = $2,
                 summary_updated_at = NOW(),
+                updated_at = NOW(),
+                last_activity_at = NOW(),
                 metadata = COALESCE(metadata, '{}'::jsonb)
                     || jsonb_build_object(
                         'last_summarized_msg_count',
                         $4::bigint
                     )
+                    || CASE
+                        WHEN $5::text IS NULL THEN '{}'::jsonb
+                        ELSE jsonb_build_object(
+                            'last_summarized_at_time', $5::text
+                        )
+                    END
             WHERE id = $1
               AND summary_updated_at IS NOT DISTINCT FROM $3
             RETURNING id
@@ -525,6 +594,7 @@ class MemoryStore:
             summary,
             expected_summary_updated_at,
             summarized_message_count,
+            snapshot_iso,
         )
         return row is not None
 

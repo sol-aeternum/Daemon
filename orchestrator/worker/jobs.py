@@ -243,7 +243,7 @@ async def extract_memories(
         default=None,
     )
 
-    extraction_success, new_memories = await process_extraction(
+    extraction_success, new_memories, summary_continuation_needed = await process_extraction(
         store=store_obj,
         user_id=_as_uuid(user_id),
         conversation_id=_as_uuid(conversation_id),
@@ -273,6 +273,26 @@ async def extract_memories(
                     user_id,
                     conversation_id,
                 )
+
+    if extraction_success and summary_continuation_needed:
+        try:
+            queue = ctx.get("redis")
+            if queue is not None and hasattr(queue, "enqueue_job"):
+                await enqueue_with_debounce(
+                    queue,
+                    "generate_summary_job",
+                    job_id=(
+                        f"summary_continuation:{_as_uuid(conversation_id)}:"
+                        f"{int(datetime.now(timezone.utc).timestamp())}"
+                    ),
+                    defer_by=timedelta(seconds=1),
+                    args=(str(_as_uuid(conversation_id)), True),
+                )
+        except Exception:
+            logger.warning(
+                "Failed to enqueue summary continuation for conversation %s",
+                conversation_id,
+            )
 
     return {"status": "ok", "processed_messages": len(messages)}
 
@@ -386,6 +406,11 @@ async def generate_summary_job(
         conversation,
         current_message_count,
     )
+    # Pin the iteration to the moment we started, so concurrent status
+    # flips from ``streaming`` to ``complete`` (which do not change
+    # ``created_at``) cannot reorder the row set under an in-flight
+    # cursor. The next iteration captures a fresh ``now()`` itself.
+    iteration_snapshot = datetime.now(timezone.utc)
     settings: dict[str, Any] = {}
 
     if not force and not await should_summarize(
@@ -401,6 +426,7 @@ async def generate_summary_job(
         conv_id,
         offset=last_summarized_msg_count,
         limit=100,
+        snapshot_at=iteration_snapshot,
     )
     if not messages:
         return {"status": "skipped", "reason": "up_to_date"}
@@ -415,6 +441,7 @@ async def generate_summary_job(
         summary=summary,
         expected_summary_updated_at=last_summary_time,
         summarized_message_count=summarized_message_count,
+        summary_snapshot_at=iteration_snapshot,
     )
     if not updated:
         raise Retry(defer=5)

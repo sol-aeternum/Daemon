@@ -6,6 +6,8 @@ Implements incremental summary generation using auto_fast_model.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import litellm
@@ -13,6 +15,12 @@ import litellm
 from orchestrator.config import get_settings
 from orchestrator.memory.store import MemoryStore
 from orchestrator.memory.summarization import validated_summary_baseline
+
+
+# Default inline batch size for the post-extraction summary path. Kept
+# small so the prompt stays bounded; the worker path uses a larger
+# 100-message batch with an explicit continuation enqueue.
+INLINE_SUMMARY_BATCH_LIMIT = 20
 
 
 SUMMARY_PROMPT = """Given the existing summary and new messages, produce an updated summary of this conversation in 2-3 sentences.
@@ -59,6 +67,13 @@ async def generate_or_update_summary(
     Fetches existing summary, summarizes only new messages since last update,
     and updates the conversation record with the new summary.
 
+    The inline post-extraction path is bounded to
+    ``INLINE_SUMMARY_BATCH_LIMIT`` messages per call. When the bound is
+    reached, the caller (a worker job with a redis handle) is expected to
+    enqueue ``generate_summary_job(force=True)`` to drain the remaining
+    tail — this avoids silent summarization gaps for backlogged
+    conversations.
+
     Args:
         conversation_id: UUID of conversation to summarize
         store: MemoryStore instance
@@ -66,10 +81,36 @@ async def generate_or_update_summary(
     Returns:
         New summary string or None if generation failed
     """
+    result = await _generate_or_update_summary_result(conversation_id, store)
+    return result.summary
+
+
+@dataclass
+class SummaryUpdateResult:
+    """Outcome of an inline ``generate_or_update_summary`` call.
+
+    Attributes:
+        summary: Newly persisted summary text, or ``None`` if the call
+            was a no-op (nothing to summarize) or failed.
+        continuation_needed: ``True`` when the inline batch filled its
+            bound (``INLINE_SUMMARY_BATCH_LIMIT``) and additional
+            finalized messages remain. The caller should enqueue
+            ``generate_summary_job(force=True)`` to drain the tail.
+    """
+
+    summary: str | None
+    continuation_needed: bool
+
+
+async def _generate_or_update_summary_result(
+    conversation_id: uuid.UUID,
+    store: MemoryStore,
+) -> SummaryUpdateResult:
+    """Worker-internal entry point that exposes the continuation flag."""
     # Get conversation to check for existing summary and persisted baseline.
     conversation = await store.get_conversation(conversation_id)
     if not conversation:
-        return None
+        return SummaryUpdateResult(summary=None, continuation_needed=False)
 
     existing_summary = conversation.get("summary") or ""
     summary_updated_at = conversation.get("summary_updated_at")
@@ -78,15 +119,24 @@ async def generate_or_update_summary(
         conversation,
         current_message_count,
     )
+    # Pin the iteration to the moment we started, so concurrent status
+    # flips from ``streaming`` to ``complete`` (which do not change
+    # ``created_at``) cannot reorder the row set under an in-flight
+    # cursor. The next iteration captures a fresh ``now()`` itself.
+    iteration_snapshot = datetime.now(timezone.utc)
 
     # Keep the prompt bounded and only advance through messages actually included.
     messages = await store.get_summary_message_batch(
         conversation_id,
         offset=last_summarized_msg_count,
-        limit=20,
+        limit=INLINE_SUMMARY_BATCH_LIMIT,
+        snapshot_at=iteration_snapshot,
     )
     if not messages:
-        return existing_summary or None
+        return SummaryUpdateResult(
+            summary=existing_summary or None,
+            continuation_needed=False,
+        )
 
     formatted_messages = "\n\n".join(
         [
@@ -131,7 +181,7 @@ async def generate_or_update_summary(
         # Extract content
         content = _extract_content(response)
         if not content:
-            return None
+            return SummaryUpdateResult(summary=None, continuation_needed=False)
 
         summary = content.strip()
 
@@ -147,11 +197,26 @@ async def generate_or_update_summary(
             summary=summary,
             expected_summary_updated_at=summary_updated_at,
             summarized_message_count=last_summarized_msg_count + len(messages),
+            summary_snapshot_at=iteration_snapshot,
         )
         if not updated:
-            return None
+            return SummaryUpdateResult(summary=None, continuation_needed=False)
 
-        return summary
+        # The batch is full whenever it hit the inline limit AND the
+        # snapshot has more finalized messages beyond it.
+        batch_was_full = len(messages) >= INLINE_SUMMARY_BATCH_LIMIT
+        continuation_needed = False
+        if batch_was_full:
+            finalizing_after = await store.count_summary_messages_at(
+                conversation_id,
+                snapshot_at=iteration_snapshot,
+            )
+            continuation_needed = finalizing_after > (last_summarized_msg_count + len(messages))
+
+        return SummaryUpdateResult(
+            summary=summary,
+            continuation_needed=continuation_needed,
+        )
 
     except Exception as e:
         # Log error but don't fail
@@ -159,7 +224,7 @@ async def generate_or_update_summary(
 
         logger = logging.getLogger(__name__)
         logger.error(f"Summary generation failed for {conversation_id}: {e}")
-        return None
+        return SummaryUpdateResult(summary=None, continuation_needed=False)
 
 
 def _extract_content(response: Any) -> str | None:
