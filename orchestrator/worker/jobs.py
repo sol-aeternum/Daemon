@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any, cast, NotRequired, TypedDict
 from zoneinfo import ZoneInfo
 
-from arq import Retry
 from arq.connections import ArqRedis
 from arq.jobs import Job
 
@@ -375,63 +374,16 @@ async def generate_summary_job(
         return {"status": "not_found"}
 
     last_summary_time = conversation.get("summary_updated_at")
-    previous_summary = conversation.get("summary")
-    has_existing_summary = isinstance(previous_summary, str) and bool(previous_summary.strip())
-    current_message_count = await store.count_messages(conv_id)
-
-    metadata = conversation.get("metadata")
-    if isinstance(metadata, str):
-        try:
-            metadata = json.loads(metadata)
-        except (json.JSONDecodeError, TypeError):
-            metadata = {}
-
-    raw_baseline = metadata.get("last_summarized_msg_count") if isinstance(metadata, dict) else None
-    if (
-        isinstance(raw_baseline, int)
-        and not isinstance(raw_baseline, bool)
-        and 0 <= raw_baseline <= current_message_count
-        and (raw_baseline == 0 or has_existing_summary)
-    ):
-        last_summarized_msg_count = raw_baseline
-    else:
-        # Missing or invalid legacy state is replayed from zero. Reprocessing is
-        # safer than guessing a cursor and permanently skipping unseen messages.
-        last_summarized_msg_count = 0
-
     settings = {}
 
-    if not await should_summarize(
-        conv_id,
-        last_summary_time,
-        last_summarized_msg_count,
-        store,
-        settings,
-    ):
+    if not await should_summarize(conv_id, last_summary_time, store, settings):
         return {"status": "skipped", "reason": "thresholds_not_met"}
 
-    messages = await store.get_summary_message_batch(conv_id, limit=100)
-    if not messages:
-        raise Retry(defer=5)
+    messages = await store.get_messages(conv_id, limit=100)
+    previous_summary = conversation.get("summary")
 
     summary = await generate_summary(messages, previous_summary, settings)
-    if not summary.strip():
-        raise Retry(defer=5)
-
-    summarized_message_ids = [cast(uuid.UUID, message["id"]) for message in messages]
-    summarized_message_count = last_summarized_msg_count + len(summarized_message_ids)
-    try:
-        updated = await store.update_conversation_summary(
-            conv_id,
-            summary=summary,
-            expected_summary_updated_at=last_summary_time,
-            summarized_message_count=summarized_message_count,
-            summarized_message_ids=summarized_message_ids,
-        )
-    except RuntimeError as exc:
-        raise Retry(defer=5) from exc
-    if not updated:
-        raise Retry(defer=5)
+    await store.update_conversation(conv_id, summary=summary)
 
     return {"status": "success", "summary_length": len(summary)}
 

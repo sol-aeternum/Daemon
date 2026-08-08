@@ -120,7 +120,6 @@ async def should_summarize(
     Args:
         conversation_id: UUID of conversation
         last_summary_time: When last summary was generated
-        last_summarized_msg_count: Number of messages included in the last summary
         store: MemoryStore instance
         settings: Settings dict with summary_idle_minutes, summary_token_threshold
 
