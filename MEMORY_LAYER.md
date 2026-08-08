@@ -39,6 +39,7 @@ pipeline TEXT DEFAULT 'cloud'  -- 'cloud' or 'local'
 summary TEXT
 summary_updated_at TIMESTAMPTZ
 message_count INTEGER DEFAULT 0
+metadata JSONB  -- includes last_summarized_msg_count worker baseline
 tokens_total INTEGER DEFAULT 0
 pinned BOOLEAN DEFAULT FALSE
 title_locked BOOLEAN DEFAULT FALSE
@@ -64,6 +65,7 @@ metadata JSONB
 reasoning_text TEXT  -- Fernet-encrypted
 reasoning_duration_secs INTEGER
 reasoning_model TEXT
+summary_included_at TIMESTAMPTZ  -- set atomically after summary inclusion
 created_at TIMESTAMPTZ DEFAULT NOW()
 ```
 
@@ -219,6 +221,10 @@ L0 memories bypass embedding-based retrieval entirely. They are always prepended
 - **Incremental:** fetches only messages since `summary_updated_at`
 - Uses `auto_fast_model` from tier config
 - Updates `conversations.summary` and `summary_updated_at`
+- The background summary worker processes at most 100 previously unincluded messages,
+  atomically marks their `summary_included_at` values, and persists
+  `metadata.last_summarized_msg_count` for threshold checks. Empty model output
+  and concurrent summary races raise an ARQ `Retry` rather than advancing the baseline.
 
 ### 9. Injection
 

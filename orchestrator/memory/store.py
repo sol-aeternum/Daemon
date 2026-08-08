@@ -443,13 +443,103 @@ class MemoryStore:
             results.append(_normalize_message(d))
         return results
 
+    async def get_summary_message_batch(
+        self,
+        conversation_id: uuid.UUID,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Load a bounded batch that has not been included in a summary."""
+        batch_limit = min(100, max(1, int(limit)))
+        rows = await self._pool.fetch(
+            """
+            SELECT * FROM messages
+            WHERE conversation_id = $1
+              AND summary_included_at IS NULL
+            ORDER BY created_at ASC, id ASC
+            LIMIT $2
+            """,
+            conversation_id,
+            batch_limit,
+        )
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            message = dict(row)
+            message["content"] = self._enc.decrypt(message["content"])
+            if message.get("reasoning_text") is not None:
+                message["reasoning_text"] = self._enc.decrypt(message["reasoning_text"])
+            if message.get("advisor_traces") is not None:
+                message["advisor_traces"] = self._decrypt_advisor_traces(message["advisor_traces"])
+            results.append(_normalize_message(message))
+
+        return results
+
     async def count_messages(self, conversation_id: uuid.UUID) -> int:
         """Count messages in a conversation without loading content."""
         row = await self._pool.fetchrow(
             "SELECT COUNT(*) as count FROM messages WHERE conversation_id = $1",
             conversation_id,
         )
-        return row["count"] if row else 0
+        return int(row["count"]) if row else 0
+
+    async def update_conversation_summary(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        summary: str,
+        expected_summary_updated_at: datetime | None,
+        summarized_message_count: int,
+        summarized_message_ids: list[uuid.UUID],
+    ) -> bool:
+        """Atomically persist a summary and mark its exact source messages."""
+        if not summarized_message_ids:
+            raise ValueError("summarized_message_ids must not be empty")
+        if summarized_message_count < len(summarized_message_ids):
+            raise ValueError("summarized_message_count is smaller than the batch")
+
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                row = await connection.fetchrow(
+                    """
+                    UPDATE conversations
+                    SET summary = $2,
+                        summary_updated_at = NOW(),
+                        metadata = COALESCE(metadata, '{}'::jsonb)
+                            || jsonb_build_object(
+                                'last_summarized_msg_count',
+                                $4::bigint
+                            )
+                    WHERE id = $1
+                      AND summary_updated_at IS NOT DISTINCT FROM $3
+                    RETURNING id
+                    """,
+                    conversation_id,
+                    summary,
+                    expected_summary_updated_at,
+                    summarized_message_count,
+                )
+                if row is None:
+                    return False
+
+                status = await connection.execute(
+                    """
+                    UPDATE messages
+                    SET summary_included_at = NOW()
+                    WHERE conversation_id = $1
+                      AND id = ANY($2::uuid[])
+                      AND summary_included_at IS NULL
+                    """,
+                    conversation_id,
+                    summarized_message_ids,
+                )
+                expected_status = f"UPDATE {len(summarized_message_ids)}"
+                if status != expected_status:
+                    raise RuntimeError(
+                        f"expected to mark {len(summarized_message_ids)} summary messages, "
+                        f"got {status}"
+                    )
+
+        return True
 
     async def update_message(
         self,
