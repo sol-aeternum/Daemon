@@ -561,10 +561,15 @@ class MemoryStore:
         captured, so concurrent ``streaming -> complete`` transitions can
         never reorder the row set under an in-flight summary batch.
         """
+        # ``prefix_count`` is the longest contiguous run of finalized rows
+        # from the snapshot. When a non-finalized row exists, prefix_count
+        # is its row number minus one. When every row at the snapshot is
+        # finalized, the inner ``WHERE`` returns nothing and ``MIN(rn)`` is
+        # NULL — fall back to the total ranked-row count so the prefix
+        # spans the whole snapshot (Codex P2 on PR #165, ``store.py:566``).
         row = await self._pool.fetchrow(
             """
-            SELECT COALESCE(MIN(rn) - 1, 0) AS prefix_count
-            FROM (
+            WITH ranked AS (
                 SELECT
                     row_number() OVER (
                         ORDER BY created_at ASC, id ASC
@@ -573,9 +578,12 @@ class MemoryStore:
                 FROM messages
                 WHERE conversation_id = $1
                   AND created_at <= $2
-            ) ranked
-            WHERE status IS NOT NULL
-              AND status <> 'complete'
+            )
+            SELECT COALESCE(
+                MIN(rn) FILTER (WHERE status IS NOT NULL AND status <> 'complete') - 1,
+                (SELECT COUNT(*) FROM ranked)
+            ) AS prefix_count
+            FROM ranked
             """,
             conversation_id,
             snapshot_at,

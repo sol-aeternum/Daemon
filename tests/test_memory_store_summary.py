@@ -134,3 +134,30 @@ async def test_update_conversation_summary_persists_snapshot_timestamp() -> None
     query, _actual_id, _summary, _time, _baseline, snapshot_arg = pool.fetchrow.await_args.args
     assert snapshot_arg == "2026-08-08T12:00:00+00:00"
     assert "last_summarized_at_time" in " ".join(query.split())
+
+
+@pytest.mark.asyncio
+async def test_count_contiguous_prefix_returns_total_when_all_finalized() -> None:
+    """Codex P2 on PR #165, store.py:566 — when every row at the snapshot
+    is finalized, the prefix must span the whole snapshot rather than
+    returning zero.
+    """
+    conversation_id = uuid4()
+    snapshot = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
+    pool = AsyncMock()
+    pool.fetchrow.return_value = {"prefix_count": 12}
+    store = object.__new__(MemoryStore)
+    store._pool = pool
+
+    assert (
+        await store.count_contiguous_finalized_messages_at(conversation_id, snapshot_at=snapshot)
+        == 12
+    )
+
+    query, _actual_id, snapshot_arg = pool.fetchrow.await_args.args
+    assert snapshot_arg == snapshot
+    normalized_query = " ".join(query.split())
+    # COALESCE fallback to total count is the regression target.
+    assert "COALESCE" in normalized_query
+    assert "COUNT(*)" in normalized_query
+    assert "FILTER" in normalized_query
