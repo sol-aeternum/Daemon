@@ -27,6 +27,7 @@ async def test_generate_summary_job_passes_persisted_baseline(
         }
     )
     store.count_summary_messages = AsyncMock(return_value=27)
+    store.count_contiguous_finalized_messages_at = AsyncMock(return_value=7)
     store.get_summary_message_batch = AsyncMock(
         return_value=[{"role": "user", "content": "new"}] * 20
     )
@@ -78,6 +79,7 @@ async def test_generate_summary_job_enqueues_continuation_for_full_batch(
         return_value={"summary": None, "summary_updated_at": None, "metadata": {}}
     )
     store.count_summary_messages = AsyncMock(return_value=100)
+    store.count_contiguous_finalized_messages_at = AsyncMock(return_value=0)
     store.get_summary_message_batch = AsyncMock(
         return_value=[{"role": "user", "content": "message"}] * 100
     )
@@ -102,6 +104,44 @@ async def test_generate_summary_job_enqueues_continuation_for_full_batch(
         defer_by=jobs.timedelta(seconds=1),
         args=(str(conversation_id), True),
     )
+
+
+@pytest.mark.asyncio
+async def test_generate_summary_job_uses_contiguous_baseline_not_raw_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex P2 #1 (PR #165): worker path uses
+    ``max(persisted_baseline, contiguous_baseline)`` as the offset, so a
+    row that was streaming at the prior snapshot but is now finalized
+    does not push the cursor forward into the contiguous-finalized
+    prefix (otherwise already-counted rows are replayed).
+    """
+    conversation_id = uuid4()
+    summary_time = datetime.now(timezone.utc)
+    store = object.__new__(MemoryStore)
+    store.get_conversation = AsyncMock(
+        return_value={
+            "summary": "existing",
+            "summary_updated_at": summary_time,
+            "metadata": {"last_summarized_msg_count": 50},
+        }
+    )
+    store.count_summary_messages = AsyncMock(return_value=52)
+    # A previously-streaming row at position 51 has completed, but a NEW
+    # streaming row at position 52 means the contiguous-finalized prefix
+    # is still 50 (matches the persisted baseline — ``max(50, 50) == 50``).
+    store.count_contiguous_finalized_messages_at = AsyncMock(return_value=50)
+    store.get_summary_message_batch = AsyncMock(return_value=[])
+    store.update_conversation_summary = AsyncMock(return_value=True)
+
+    monkeypatch.setattr(summarization, "should_summarize", AsyncMock(return_value=True))
+    monkeypatch.setattr(summarization, "generate_summary", AsyncMock(return_value="x"))
+
+    await jobs.generate_summary_job({"store": store}, str(conversation_id))
+
+    fetch_args = store.get_summary_message_batch.await_args
+    assert fetch_args is not None
+    assert fetch_args.kwargs["offset"] == 50
 
 
 def test_invalid_baseline_replays_from_zero() -> None:

@@ -402,7 +402,7 @@ async def generate_summary_job(
     last_summary_time = conversation.get("summary_updated_at")
     previous_summary = conversation.get("summary")
     current_message_count = await store.count_summary_messages(conv_id)
-    last_summarized_msg_count = validated_summary_baseline(
+    persisted_baseline = validated_summary_baseline(
         conversation,
         current_message_count,
     )
@@ -411,6 +411,20 @@ async def generate_summary_job(
     # ``created_at``) cannot reorder the row set under an in-flight
     # cursor. The next iteration captures a fresh ``now()`` itself.
     iteration_snapshot = datetime.now(timezone.utc)
+
+    # Advance only through the contiguous-finalized prefix at the snapshot.
+    # A row that was streaming at fetch time but is now finalized with an
+    # earlier ``created_at`` would otherwise insert before the prior
+    # finalized rows and replay messages already counted toward the
+    # baseline (Codex P2 on PR #165). ``persisted_baseline`` is the prior
+    # cursor (lower bound); ``contiguous_baseline`` is the current
+    # contiguous-prefix count, which is only larger when the streaming
+    # tail shrank.
+    contiguous_baseline = await store.count_contiguous_finalized_messages_at(
+        conv_id,
+        snapshot_at=iteration_snapshot,
+    )
+    last_summarized_msg_count = max(persisted_baseline, contiguous_baseline)
     settings: dict[str, Any] = {}
 
     if not force and not await should_summarize(

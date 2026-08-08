@@ -539,6 +539,49 @@ class MemoryStore:
         )
         return int(row["count"]) if row else 0
 
+    async def count_contiguous_finalized_messages_at(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        snapshot_at: datetime,
+    ) -> int:
+        """Count the contiguous-finalized-message prefix at ``snapshot_at``.
+
+        A "contiguous finalized prefix" is the longest run of finalized rows
+        (legacy ``status IS NULL`` or ``status = 'complete'``) in
+        ``(created_at ASC, id ASC)`` order such that every row in the prefix
+        is finalized. This excludes a row that was ``streaming`` at the
+        snapshot and later transitioned to ``complete`` — its ``created_at``
+        still satisfies ``created_at <= snapshot_at``, but inserting it
+        before the prior finalized rows would shift the cursor and replay
+        messages already counted toward the baseline.
+
+        Used as a stable completion cursor: the stored baseline must advance
+        only through rows that were finalized when the snapshot was
+        captured, so concurrent ``streaming -> complete`` transitions can
+        never reorder the row set under an in-flight summary batch.
+        """
+        row = await self._pool.fetchrow(
+            """
+            SELECT COALESCE(MIN(rn) - 1, 0) AS prefix_count
+            FROM (
+                SELECT
+                    row_number() OVER (
+                        ORDER BY created_at ASC, id ASC
+                    ) AS rn,
+                    status
+                FROM messages
+                WHERE conversation_id = $1
+                  AND created_at <= $2
+            ) ranked
+            WHERE status IS NOT NULL
+              AND status <> 'complete'
+            """,
+            conversation_id,
+            snapshot_at,
+        )
+        return int(row["prefix_count"]) if row else 0
+
     async def count_messages(self, conversation_id: uuid.UUID) -> int:
         """Count messages in a conversation without loading content."""
         row = await self._pool.fetchrow(

@@ -94,7 +94,9 @@ class SummaryUpdateResult:
             was a no-op (nothing to summarize) or failed.
         continuation_needed: ``True`` when the inline batch filled its
             bound (``INLINE_SUMMARY_BATCH_LIMIT``) and additional
-            finalized messages remain. The caller should enqueue
+            finalized messages remain, OR when an optimistic-concurrency
+            conflict left finalized messages unsummarized by either
+            party. The caller should enqueue
             ``generate_summary_job(force=True)`` to drain the tail.
     """
 
@@ -115,7 +117,7 @@ async def _generate_or_update_summary_result(
     existing_summary = conversation.get("summary") or ""
     summary_updated_at = conversation.get("summary_updated_at")
     current_message_count = await store.count_summary_messages(conversation_id)
-    last_summarized_msg_count = validated_summary_baseline(
+    persisted_baseline = validated_summary_baseline(
         conversation,
         current_message_count,
     )
@@ -124,6 +126,25 @@ async def _generate_or_update_summary_result(
     # ``created_at``) cannot reorder the row set under an in-flight
     # cursor. The next iteration captures a fresh ``now()`` itself.
     iteration_snapshot = datetime.now(timezone.utc)
+
+    # The cursor advances only through the contiguous-finalized prefix at
+    # the snapshot, never through rows that were ``streaming`` at fetch
+    # time. A later ``streaming -> complete`` transition would otherwise
+    # insert the row before the prior finalized rows and replay messages
+    # already counted toward the baseline (Codex P2 on PR #165).
+    contiguous_baseline = await store.count_contiguous_finalized_messages_at(
+        conversation_id,
+        snapshot_at=iteration_snapshot,
+    )
+    # ``persisted_baseline`` is the previous iteration's cursor; ``continu-
+    # ous_baseline`` is the current count of rows that were finalized at
+    # this snapshot and immediately precede the batch start. Use the
+    # larger of the two: a row that was streaming at the prior iteration
+    # but is now finalized and contiguous-with-the-prefix must NOT push
+    # the offset forward (its position is already behind the new rows).
+    # ``persisted_baseline`` is the safe lower bound; ``continu-
+    # ous_baseline`` is only larger when the streaming tail shrank.
+    last_summarized_msg_count = max(persisted_baseline, contiguous_baseline)
 
     # Keep the prompt bounded and only advance through messages actually included.
     messages = await store.get_summary_message_batch(
@@ -175,13 +196,31 @@ async def _generate_or_update_summary_result(
     if provider_config.extra_headers:
         call_params["extra_headers"] = provider_config.extra_headers
 
+    # Decide continuation BEFORE persisting so a transient follow-up
+    # error (``count_summary_messages_at`` raising) cannot leave the
+    # remaining backlog unsummarized (Codex P2 on PR #165). If the batch
+    # is full and there are more finalized rows in the contiguous prefix
+    # than we just covered, continuation is needed regardless of whether
+    # the persist succeeds.
+    batch_was_full = len(messages) >= INLINE_SUMMARY_BATCH_LIMIT
+    pre_persist_continuation = False
+    if batch_was_full:
+        finalizing_after = await store.count_summary_messages_at(
+            conversation_id,
+            snapshot_at=iteration_snapshot,
+        )
+        pre_persist_continuation = finalizing_after > (last_summarized_msg_count + len(messages))
+
     try:
         response = await litellm.acompletion(**call_params)
 
         # Extract content
         content = _extract_content(response)
         if not content:
-            return SummaryUpdateResult(summary=None, continuation_needed=False)
+            return SummaryUpdateResult(
+                summary=None,
+                continuation_needed=pre_persist_continuation,
+            )
 
         summary = content.strip()
 
@@ -200,31 +239,33 @@ async def _generate_or_update_summary_result(
             summary_snapshot_at=iteration_snapshot,
         )
         if not updated:
-            return SummaryUpdateResult(summary=None, continuation_needed=False)
-
-        # The batch is full whenever it hit the inline limit AND the
-        # snapshot has more finalized messages beyond it.
-        batch_was_full = len(messages) >= INLINE_SUMMARY_BATCH_LIMIT
-        continuation_needed = False
-        if batch_was_full:
-            finalizing_after = await store.count_summary_messages_at(
-                conversation_id,
-                snapshot_at=iteration_snapshot,
+            # Optimistic-concurrency conflict: another summary invocation
+            # committed against the same baseline. The winner's snapshot
+            # may predate finalized messages visible to this invocation,
+            # so surface continuation to drain anything they missed
+            # (Codex P2 on PR #165).
+            return SummaryUpdateResult(
+                summary=None,
+                continuation_needed=pre_persist_continuation,
             )
-            continuation_needed = finalizing_after > (last_summarized_msg_count + len(messages))
 
         return SummaryUpdateResult(
             summary=summary,
-            continuation_needed=continuation_needed,
+            continuation_needed=pre_persist_continuation,
         )
 
     except Exception as e:
-        # Log error but don't fail
+        # Log error but don't fail. Preserve the pre-persist continuation
+        # signal so a transient litellm or storage error doesn't strand
+        # the remaining tail (Codex P2 on PR #165).
         import logging
 
         logger = logging.getLogger(__name__)
         logger.error(f"Summary generation failed for {conversation_id}: {e}")
-        return SummaryUpdateResult(summary=None, continuation_needed=False)
+        return SummaryUpdateResult(
+            summary=None,
+            continuation_needed=pre_persist_continuation,
+        )
 
 
 def _extract_content(response: Any) -> str | None:
