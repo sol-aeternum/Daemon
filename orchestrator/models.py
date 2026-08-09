@@ -130,5 +130,5 @@ class TtsRequest(BaseModel):
     # influenced by an unauthenticated caller. Pydantic rejects
     # anything else with 422 before the filesystem path is constructed.
     # See issue #114.
-    format: Literal["mp3", "wav", "ogg"] | None = None
+    format: Literal["mp3", "opus", "wav", "ogg"] | None = None
     cache: bool | None = True

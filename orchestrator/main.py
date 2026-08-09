@@ -1351,7 +1351,7 @@ async def serve_generated_audio(
     media_type = "audio/mpeg"
     if safe_name.endswith(".wav"):
         media_type = "audio/wav"
-    elif safe_name.endswith(".ogg"):
+    elif safe_name.endswith((".ogg", ".opus")):
         media_type = "audio/ogg"
     return FileResponse(filepath, media_type=media_type)
 
@@ -1423,6 +1423,7 @@ async def text_to_speech(
 
     format_map = {
         "mp3": "mp3_22050_32",
+        "opus": "opus_48000_32",
         "wav": "pcm_22050",
         "ogg": "ogg_vorbis_22050",
     }
