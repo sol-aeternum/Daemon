@@ -36,9 +36,7 @@ def _is_blocked_domain(url: str, blocked_domains: list[str]) -> bool:
     hostname = (urlsplit(url).hostname or "").lower()
     for blocked in blocked_domains:
         normalized = blocked.lower().strip()
-        if normalized and (
-            hostname == normalized or hostname.endswith(f".{normalized}")
-        ):
+        if normalized and (hostname == normalized or hostname.endswith(f".{normalized}")):
             return True
     return False
 
