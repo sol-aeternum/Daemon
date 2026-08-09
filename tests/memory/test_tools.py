@@ -218,9 +218,11 @@ async def test_memory_write_update_calls_close_then_dedup():
 
         mock_store = AsyncMock()
         existing_memory_id = uuid.uuid4()
+        user_id = uuid.uuid4()
         mock_store.get_memory = AsyncMock()
         mock_store.get_memory.return_value = {
             "id": existing_memory_id,
+            "user_id": user_id,
             "content": "old content",
             "category": "fact",
             "source_type": "user_created",
@@ -228,15 +230,14 @@ async def test_memory_write_update_calls_close_then_dedup():
             "memory_slot": None,
         }
 
-        user_id = uuid.uuid4()
         tool = MemoryWriteTool(mock_store, user_id)
 
         await tool.execute(
             action="update", memory_id=str(existing_memory_id), content="new content"
         )
 
-        # Verify close_memory was called
-        mock_store.close_memory.assert_called_once()
+        # Verify close_memory was called with user_id for defense-in-depth.
+        mock_store.close_memory.assert_called_once_with(existing_memory_id, user_id=user_id)
         # Verify dedup_and_store was called after close
         mock_dedup.assert_called_once()
 
@@ -249,9 +250,11 @@ async def test_memory_write_update_inherits_category_and_slot():
 
         mock_store = AsyncMock()
         existing_memory_id = uuid.uuid4()
+        user_id = uuid.uuid4()
         mock_store.get_memory = AsyncMock()
         mock_store.get_memory.return_value = {
             "id": existing_memory_id,
+            "user_id": user_id,
             "content": "old content",
             "category": "preference",
             "source_type": "user_created",
@@ -259,7 +262,6 @@ async def test_memory_write_update_inherits_category_and_slot():
             "memory_slot": "inherited_slot",
         }
 
-        user_id = uuid.uuid4()
         tool = MemoryWriteTool(mock_store, user_id)
 
         await tool.execute(
@@ -303,20 +305,87 @@ async def test_memory_write_delete_calls_delete_memory_with_soft_true():
     """Test that delete action calls delete_memory with soft=True."""
     mock_store = AsyncMock()
     existing_memory_id = uuid.uuid4()
+    user_id = uuid.uuid4()
     mock_store.get_memory = AsyncMock()
     mock_store.get_memory.return_value = {
         "id": existing_memory_id,
+        "user_id": user_id,
         "content": "to delete",
         "category": "fact",
     }
 
-    user_id = uuid.uuid4()
     tool = MemoryWriteTool(mock_store, user_id)
 
     result = await tool.execute(action="delete", memory_id=str(existing_memory_id))
 
-    mock_store.delete_memory.assert_called_once_with(existing_memory_id, soft=True)
+    # Defense-in-depth: store-layer user_id filter.
+    mock_store.delete_memory.assert_called_once_with(existing_memory_id, soft=True, user_id=user_id)
     assert str(existing_memory_id) in result
+
+
+@pytest.mark.asyncio
+async def test_memory_write_update_rejects_cross_user_memory():
+    """`MemoryWriteTool.update` must refuse to operate on another user's
+    memory even if the caller already knows the UUID. Without this guard,
+    a user who learned another user's memory UUID via prompt injection,
+    log leakage, or shared exports could close (bitemporally retire) that
+    memory through the LLM-callable tool path. See issue #173.
+    """
+    mock_store = AsyncMock()
+    other_user_id = uuid.uuid4()
+    attacker_id = uuid.uuid4()
+    existing_memory_id = uuid.uuid4()
+    mock_store.get_memory = AsyncMock()
+    mock_store.get_memory.return_value = {
+        "id": existing_memory_id,
+        "user_id": other_user_id,
+        "content": "victim's secret",
+        "category": "fact",
+    }
+
+    tool = MemoryWriteTool(mock_store, attacker_id)
+
+    result = await tool.execute(
+        action="update",
+        memory_id=str(existing_memory_id),
+        content="attacker rewrite",
+    )
+
+    assert "not found" in result.lower()
+    # close_memory and dedup_and_store must NOT be invoked.
+    mock_store.close_memory.assert_not_called()
+    # dedup_and_store is patched at module level; we verify by checking
+    # the absence of close_memory side effects.
+
+
+@pytest.mark.asyncio
+async def test_memory_write_delete_rejects_cross_user_memory():
+    """`MemoryWriteTool.delete` must refuse to operate on another user's
+    memory even if the caller already knows the UUID. Without this guard,
+    a user could soft-delete another user's memory via the LLM tool path.
+    See issue #173.
+    """
+    mock_store = AsyncMock()
+    other_user_id = uuid.uuid4()
+    attacker_id = uuid.uuid4()
+    existing_memory_id = uuid.uuid4()
+    mock_store.get_memory = AsyncMock()
+    mock_store.get_memory.return_value = {
+        "id": existing_memory_id,
+        "user_id": other_user_id,
+        "content": "victim's secret",
+        "category": "fact",
+    }
+
+    tool = MemoryWriteTool(mock_store, attacker_id)
+
+    result = await tool.execute(
+        action="delete",
+        memory_id=str(existing_memory_id),
+    )
+
+    assert "not found" in result.lower()
+    mock_store.delete_memory.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -32,7 +32,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | **Chat & Streaming** | — | — | — | — | — | — |
 | Chat Streaming + Reconnect | Cross-client stable | Cross-client stable | Not started | Not started | POST /chat SSE streaming service | Yes |
 | File Upload | Cross-client stable | Cross-client stable | Not started | Not started | Client-side file attachments and chat serialization | No |
-| Stop/Cancel Streaming | Not started | Not started | Not started | Not started | Existing SSE disconnect handling; no user-visible stop control | No |
+| Stop/Cancel Streaming | Cross-client stable | Cross-client stable | Not started | Not started | Web/PWA composer exposes Stop and `Esc`, preserving partial output with a `(stopped)` label | No |
 | Copy Message | Not started | Not started | Not started | Not started | Pure client-side clipboard action not implemented | No |
 | Regenerate Response | Not started | Not started | Not started | Not started | Existing chat submission path; retry UI not wired | No |
 | Edit and Resubmit Message | Not started | Not started | Not started | Not started | Existing chat submission path; message edit UI not implemented | No |
@@ -81,8 +81,8 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Memory Management Settings | Cross-client stable | Cross-client stable | Not started | Not started | GET /memories, DELETE /memories/{id}, POST /memories/{id}/confirm, DELETE /memories?confirm=true | No |
 | **Auth & Sessions** | — | — | — | — | — | — |
 | First-boot Setup | Backend stable | Backend stable | Backend stable | Backend stable | Setup token: Postgres-shared one-time verifier, local 0600 operator token file, advisory lock, zero-active-device condition | Yes |
-| Hosted Auth Landing | Cross-client stable | Cross-client stable | Not started | Not started | Hosted auth landing UI routes users to identity sign-in or Advanced self-hosted setup | No |
-| Hosted `/auth` route | Cross-client stable | Cross-client stable | Not started | Not started | `/auth` page wraps `AuthLanding` with mode-aware redirects; runtime mode sourced from `GET /v1/auth/config` | No |
+| Hosted Auth Landing | Cross-client stable | Cross-client stable | Not started | Not started | Hosted auth landing UI routes users to identity sign-in or Advanced self-hosted setup; `/landing` login and signup CTAs enter through `/auth`, which redirects self-hosted deployments to `/setup` | No |
+| Hosted `/auth` route | Cross-client stable | Cross-client stable | Not started | Not started | `/auth` page wraps `AuthLanding` for hosted mode and redirects self-hosted or unresolved runtime mode to `/setup`; runtime mode sourced from `GET /v1/auth/config` | No |
 | Runtime auth config endpoint (`GET /v1/auth/config`) | Cross-client stable | Cross-client stable | Backend stable | Backend stable | Public no-store endpoint exposes `{mode, email, google}` so the frontend can decide `/auth` vs `/setup` without rebuilding | No |
 | Email Sign-In | Cross-client stable | Cross-client stable | Backend stable | Backend stable | Email code identity proof exchanges for Daemon-issued device/session tokens | Yes |
 | Google Sign-In | Cross-client stable | Cross-client stable | Not started | Not started | Google-start/complete identity proof with server nonce challenge and manual GIS callback | Yes |

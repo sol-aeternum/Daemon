@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import AuthLanding from './AuthLanding';
 import {
   fetchAuthConfig,
@@ -11,6 +12,7 @@ import {
 } from '../lib/auth-config';
 
 export default function AuthPageContent() {
+  const router = useRouter();
   const [runtimeConfig, setRuntimeConfig] = useState<AuthConfig | undefined>(
     () => getCachedAuthConfig(),
   );
@@ -39,6 +41,18 @@ export default function AuthPageContent() {
       unsubscribe();
     };
   }, [runtimeConfig]);
+
+  const redirectToSetup = !isLoadingConfig && runtimeConfig?.mode !== 'hosted';
+
+  useEffect(() => {
+    if (redirectToSetup) {
+      router.replace('/setup');
+    }
+  }, [redirectToSetup, router]);
+
+  if (redirectToSetup) {
+    return null;
+  }
 
   return (
     <AuthLanding

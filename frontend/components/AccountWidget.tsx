@@ -24,7 +24,9 @@ export function AccountWidget({
   const router = useRouter();
   const { logout } = useAuth();
 
-  // Close dropdown when clicking outside
+  // Close dropdown when clicking outside or pressing Escape. Without the
+  // Escape handler, the `data-stop-shortcut-block` attribute also blocks
+  // the global Stop shortcut, so an open dropdown leaves Escape inert.
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (
@@ -37,12 +39,21 @@ export function AccountWidget({
       }
     };
 
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && isOpen) {
+        setIsOpen(false);
+        event.stopPropagation();
+      }
+    };
+
     if (isOpen) {
       document.addEventListener('mousedown', handleClickOutside);
+      document.addEventListener('keydown', handleKeyDown);
     }
 
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
     };
   }, [isOpen]);
 
@@ -152,6 +163,7 @@ export function AccountWidget({
       {/* Dropdown menu - opens upward */}
       {isOpen && (
         <div
+          data-stop-shortcut-block="true"
           className="absolute bottom-full left-0 right-0 mb-1 bg-[var(--color-bg-secondary)] rounded-lg shadow-lg border border-[var(--color-border-muted)] py-1 z-50 animate-fade-in"
           style={{ animationDuration: '150ms' }}
         >

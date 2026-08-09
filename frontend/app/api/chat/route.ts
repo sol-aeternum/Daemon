@@ -92,6 +92,10 @@ export async function POST(req: Request) {
         method: 'POST',
         headers: proxyHeaders,
         credentials: 'include',
+        // Propagate the browser-side abort: when the user clicks Stop, the
+        // Next.js request stream closes, `req.signal` fires, and the backend
+        // SSE connection is torn down with it.
+        signal: req.signal,
         body: JSON.stringify({
           message: lastUserText,
           conversation_id: id || null,
@@ -153,282 +157,317 @@ export async function POST(req: Request) {
         }
       };
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+      // Stop-button abort: when the browser-side `req.signal` fires (the user
+      // clicked Stop), release the backend reader so the connection drops,
+      // emit a finish dataStreamPart so AI SDK flushes, and exit. Without this
+      // hook the read loop keeps draining backend tokens until the stream
+      // closes naturally, which means FastAPI keeps executing the request
+      // even though the UI has already stopped.
+      const onAbort = () => {
+        try {
+          reader.cancel().catch(() => undefined);
+        } catch {
+          // reader may already be released; ignore.
+        }
+      };
 
+      if (req.signal.aborted) {
+        onAbort();
+        return;
+      }
+      req.signal.addEventListener('abort', onAbort, { once: true });
+
+      try {
         while (true) {
-          const sepIdx = buffer.indexOf('\n\n');
-          if (sepIdx === -1) break;
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
 
-          const frame = buffer.slice(0, sepIdx);
-          buffer = buffer.slice(sepIdx + 2);
+          while (true) {
+            const sepIdx = buffer.indexOf('\n\n');
+            if (sepIdx === -1) break;
 
-          const lines = frame.split('\n');
-          let eventType = 'message';
-          let dataText = '';
+            const frame = buffer.slice(0, sepIdx);
+            buffer = buffer.slice(sepIdx + 2);
 
-          for (const line of lines) {
-            if (line.startsWith('event:')) {
-              eventType = line.slice(6).trim();
-            } else if (line.startsWith('data:')) {
-              dataText += line.slice(5).trim();
+            const lines = frame.split('\n');
+            let eventType = 'message';
+            let dataText = '';
+
+            for (const line of lines) {
+              if (line.startsWith('event:')) {
+                eventType = line.slice(6).trim();
+              } else if (line.startsWith('data:')) {
+                dataText += line.slice(5).trim();
+              }
             }
-          }
 
-          if (!dataText) continue;
+            if (!dataText) continue;
 
-          let payload: any;
-          try {
-            payload = JSON.parse(dataText);
-          } catch {
-            continue;
-          }
-
-          if (eventType === 'token') {
-            const delta =
-              payload?.data?.text ??
-              payload?.data?.delta ??
-              payload?.text ??
-              payload?.delta;
-            if (typeof delta === 'string' && delta.length > 0) {
-              assistantMessageStarted = true;
-              sawToken = true;
-              dataStream.write(formatDataStreamPart('text', delta));
+            let payload: any;
+            try {
+              payload = JSON.parse(dataText);
+            } catch {
+              continue;
             }
-          } else if (eventType === 'thinking') {
-            const content = payload?.data?.content ?? payload?.content;
-            if (typeof content === 'string' && content.length > 0) {
+
+            if (eventType === 'token') {
+              const delta =
+                payload?.data?.text ??
+                payload?.data?.delta ??
+                payload?.text ??
+                payload?.delta;
+              if (typeof delta === 'string' && delta.length > 0) {
+                assistantMessageStarted = true;
+                sawToken = true;
+                dataStream.write(formatDataStreamPart('text', delta));
+              }
+            } else if (eventType === 'thinking') {
+              const content = payload?.data?.content ?? payload?.content;
+              if (typeof content === 'string' && content.length > 0) {
+                dataStream.write(
+                  formatDataStreamPart('data', [
+                    {
+                      type: 'thinking',
+                      content: content,
+                      id: payload?.id ?? payload?.data?.id,
+                      request_id:
+                        payload?.request_id ?? payload?.data?.request_id,
+                    },
+                  ]),
+                );
+              }
+            } else if (eventType === 'routing') {
+              const modelId = payload?.data?.model;
+              if (typeof modelId === 'string' && modelId.length > 0) {
+                dataStream.write(
+                  formatDataStreamPart('data', [
+                    {
+                      type: 'routing',
+                      model: modelId,
+                      tier: payload?.data?.tier,
+                      reason: payload?.data?.reason,
+                      id: payload?.id ?? payload?.data?.id,
+                      request_id:
+                        payload?.request_id ?? payload?.data?.request_id,
+                    },
+                  ]),
+                );
+              }
+            } else if (eventType === 'conversation') {
+              const conversationId =
+                payload?.data?.conversation_id || payload?.conversation_id;
+              if (conversationId) {
+                dataStream.write(
+                  formatDataStreamPart('data', [
+                    {
+                      type: 'conversation',
+                      conversation_id: conversationId,
+                    },
+                  ]),
+                );
+              }
+            } else if (eventType === 'tool_call') {
+              const data =
+                payload?.data && typeof payload.data === 'object'
+                  ? payload.data
+                  : {};
               dataStream.write(
                 formatDataStreamPart('data', [
                   {
-                    type: 'thinking',
-                    content: content,
+                    ...data,
+                    type: 'tool_call',
+                    name: payload?.data?.name || '',
+                    arguments: payload?.data?.arguments || {},
                     id: payload?.id ?? payload?.data?.id,
                     request_id:
                       payload?.request_id ?? payload?.data?.request_id,
                   },
                 ]),
               );
-            }
-          } else if (eventType === 'routing') {
-            const modelId = payload?.data?.model;
-            if (typeof modelId === 'string' && modelId.length > 0) {
+            } else if (eventType === 'tool_result') {
+              const data =
+                payload?.data && typeof payload.data === 'object'
+                  ? payload.data
+                  : {};
               dataStream.write(
                 formatDataStreamPart('data', [
                   {
-                    type: 'routing',
-                    model: modelId,
-                    tier: payload?.data?.tier,
-                    reason: payload?.data?.reason,
+                    ...data,
+                    type: 'tool_result',
+                    name: payload?.data?.name || '',
+                    result: payload?.data?.result || '',
                     id: payload?.id ?? payload?.data?.id,
                     request_id:
                       payload?.request_id ?? payload?.data?.request_id,
                   },
                 ]),
               );
-            }
-          } else if (eventType === 'conversation') {
-            const conversationId =
-              payload?.data?.conversation_id || payload?.conversation_id;
-            if (conversationId) {
+            } else if (
+              eventType === 'advisor_start' ||
+              eventType === 'advisor_text_delta' ||
+              eventType === 'advisor_text_done' ||
+              eventType === 'advisor_error' ||
+              eventType === 'advisor_end'
+            ) {
+              const data =
+                payload?.data && typeof payload.data === 'object'
+                  ? payload.data
+                  : {};
+              const content =
+                payload?.data?.content ??
+                payload?.data?.text ??
+                payload?.content ??
+                payload?.text;
+              ensureAssistantMessageStarted();
               dataStream.write(
                 formatDataStreamPart('data', [
                   {
-                    type: 'conversation',
-                    conversation_id: conversationId,
-                  },
-                ]),
-              );
-            }
-          } else if (eventType === 'tool_call') {
-            const data =
-              payload?.data && typeof payload.data === 'object'
-                ? payload.data
-                : {};
-            dataStream.write(
-              formatDataStreamPart('data', [
-                {
-                  ...data,
-                  type: 'tool_call',
-                  name: payload?.data?.name || '',
-                  arguments: payload?.data?.arguments || {},
-                  id: payload?.id ?? payload?.data?.id,
-                  request_id: payload?.request_id ?? payload?.data?.request_id,
-                },
-              ]),
-            );
-          } else if (eventType === 'tool_result') {
-            const data =
-              payload?.data && typeof payload.data === 'object'
-                ? payload.data
-                : {};
-            dataStream.write(
-              formatDataStreamPart('data', [
-                {
-                  ...data,
-                  type: 'tool_result',
-                  name: payload?.data?.name || '',
-                  result: payload?.data?.result || '',
-                  id: payload?.id ?? payload?.data?.id,
-                  request_id: payload?.request_id ?? payload?.data?.request_id,
-                },
-              ]),
-            );
-          } else if (
-            eventType === 'advisor_start' ||
-            eventType === 'advisor_text_delta' ||
-            eventType === 'advisor_text_done' ||
-            eventType === 'advisor_error' ||
-            eventType === 'advisor_end'
-          ) {
-            const data =
-              payload?.data && typeof payload.data === 'object'
-                ? payload.data
-                : {};
-            const content =
-              payload?.data?.content ??
-              payload?.data?.text ??
-              payload?.content ??
-              payload?.text;
-            ensureAssistantMessageStarted();
-            dataStream.write(
-              formatDataStreamPart('data', [
-                {
-                  ...data,
-                  type: eventType,
-                  ...(typeof content === 'string' ? { content } : {}),
-                  id: payload?.id ?? payload?.data?.id,
-                  request_id: payload?.request_id ?? payload?.data?.request_id,
-                },
-              ]),
-            );
-          } else if (eventType === 'video_generating') {
-            const requestId = payload?.data?.request_id ?? payload?.request_id;
-            const estimatedSeconds =
-              payload?.data?.estimated_seconds ?? payload?.estimated_seconds;
-            if (requestId) {
-              dataStream.write(
-                formatDataStreamPart('data', [
-                  {
-                    type: 'video_generating',
-                    request_id: requestId,
-                    estimated_seconds:
-                      typeof estimatedSeconds === 'number'
-                        ? estimatedSeconds
-                        : 0,
+                    ...data,
+                    type: eventType,
+                    ...(typeof content === 'string' ? { content } : {}),
                     id: payload?.id ?? payload?.data?.id,
+                    request_id:
+                      payload?.request_id ?? payload?.data?.request_id,
                   },
                 ]),
               );
-            }
-          } else if (eventType === 'video_complete') {
-            const requestId = payload?.data?.request_id ?? payload?.request_id;
-            const url = payload?.data?.url ?? payload?.url;
-            if (requestId && url) {
+            } else if (eventType === 'video_generating') {
+              const requestId =
+                payload?.data?.request_id ?? payload?.request_id;
+              const estimatedSeconds =
+                payload?.data?.estimated_seconds ?? payload?.estimated_seconds;
+              if (requestId) {
+                dataStream.write(
+                  formatDataStreamPart('data', [
+                    {
+                      type: 'video_generating',
+                      request_id: requestId,
+                      estimated_seconds:
+                        typeof estimatedSeconds === 'number'
+                          ? estimatedSeconds
+                          : 0,
+                      id: payload?.id ?? payload?.data?.id,
+                    },
+                  ]),
+                );
+              }
+            } else if (eventType === 'video_complete') {
+              const requestId =
+                payload?.data?.request_id ?? payload?.request_id;
+              const url = payload?.data?.url ?? payload?.url;
+              if (requestId && url) {
+                dataStream.write(
+                  formatDataStreamPart('data', [
+                    {
+                      type: 'video_complete',
+                      request_id: requestId,
+                      url: url,
+                      duration: payload?.data?.duration ?? payload?.duration,
+                      resolution:
+                        payload?.data?.resolution ?? payload?.resolution,
+                      id: payload?.id ?? payload?.data?.id,
+                    },
+                  ]),
+                );
+              }
+            } else if (eventType === 'video_failed') {
+              const requestId =
+                payload?.data?.request_id ?? payload?.request_id;
+              const error = payload?.data?.error ?? payload?.error;
+              if (requestId) {
+                dataStream.write(
+                  formatDataStreamPart('data', [
+                    {
+                      type: 'video_failed',
+                      request_id: requestId,
+                      error: error || 'Video generation failed',
+                      refunded:
+                        payload?.data?.refunded ?? payload?.refunded ?? false,
+                      id: payload?.id ?? payload?.data?.id,
+                    },
+                  ]),
+                );
+              }
+            } else if (eventType === 'council_interview') {
+              ensureAssistantMessageStarted();
               dataStream.write(
                 formatDataStreamPart('data', [
                   {
-                    type: 'video_complete',
-                    request_id: requestId,
-                    url: url,
-                    duration: payload?.data?.duration ?? payload?.duration,
-                    resolution:
-                      payload?.data?.resolution ?? payload?.resolution,
+                    type: 'council_interview',
+                    ...payload?.data,
                     id: payload?.id ?? payload?.data?.id,
+                    request_id:
+                      payload?.request_id ?? payload?.data?.request_id,
                   },
                 ]),
               );
-            }
-          } else if (eventType === 'video_failed') {
-            const requestId = payload?.data?.request_id ?? payload?.request_id;
-            const error = payload?.data?.error ?? payload?.error;
-            if (requestId) {
+            } else if (eventType === 'council_progress') {
+              ensureAssistantMessageStarted();
               dataStream.write(
                 formatDataStreamPart('data', [
                   {
-                    type: 'video_failed',
-                    request_id: requestId,
-                    error: error || 'Video generation failed',
-                    refunded:
-                      payload?.data?.refunded ?? payload?.refunded ?? false,
+                    type: 'council_progress',
+                    ...payload?.data,
                     id: payload?.id ?? payload?.data?.id,
+                    request_id:
+                      payload?.request_id ?? payload?.data?.request_id,
                   },
                 ]),
               );
-            }
-          } else if (eventType === 'council_interview') {
-            ensureAssistantMessageStarted();
-            dataStream.write(
-              formatDataStreamPart('data', [
-                {
-                  type: 'council_interview',
-                  ...payload?.data,
-                  id: payload?.id ?? payload?.data?.id,
-                  request_id: payload?.request_id ?? payload?.data?.request_id,
-                },
-              ]),
-            );
-          } else if (eventType === 'council_progress') {
-            ensureAssistantMessageStarted();
-            dataStream.write(
-              formatDataStreamPart('data', [
-                {
-                  type: 'council_progress',
-                  ...payload?.data,
-                  id: payload?.id ?? payload?.data?.id,
-                  request_id: payload?.request_id ?? payload?.data?.request_id,
-                },
-              ]),
-            );
-          } else if (eventType === 'council_output') {
-            ensureAssistantMessageStarted();
-            dataStream.write(
-              formatDataStreamPart('data', [
-                {
-                  type: 'council_output',
-                  ...payload?.data,
-                  id: payload?.id ?? payload?.data?.id,
-                  request_id: payload?.request_id ?? payload?.data?.request_id,
-                },
-              ]),
-            );
-          } else if (eventType === 'council_done') {
-            ensureAssistantMessageStarted();
-            dataStream.write(
-              formatDataStreamPart('data', [
-                {
-                  type: 'council_done',
-                  ...payload?.data,
-                  id: payload?.id ?? payload?.data?.id,
-                  request_id: payload?.request_id ?? payload?.data?.request_id,
-                },
-              ]),
-            );
-          } else if (eventType === 'council_error') {
-            ensureAssistantMessageStarted();
-            dataStream.write(
-              formatDataStreamPart('data', [
-                {
-                  type: 'council_error',
-                  ...payload?.data,
-                  id: payload?.id ?? payload?.data?.id,
-                  request_id: payload?.request_id ?? payload?.data?.request_id,
-                },
-              ]),
-            );
-          } else if (eventType === 'final' && !sawToken) {
-            const content =
-              payload?.data?.text ??
-              payload?.data?.message?.content ??
-              payload?.text ??
-              payload?.message?.content;
-            if (typeof content === 'string' && content.length > 0) {
-              dataStream.write(formatDataStreamPart('text', content));
+            } else if (eventType === 'council_output') {
+              ensureAssistantMessageStarted();
+              dataStream.write(
+                formatDataStreamPart('data', [
+                  {
+                    type: 'council_output',
+                    ...payload?.data,
+                    id: payload?.id ?? payload?.data?.id,
+                    request_id:
+                      payload?.request_id ?? payload?.data?.request_id,
+                  },
+                ]),
+              );
+            } else if (eventType === 'council_done') {
+              ensureAssistantMessageStarted();
+              dataStream.write(
+                formatDataStreamPart('data', [
+                  {
+                    type: 'council_done',
+                    ...payload?.data,
+                    id: payload?.id ?? payload?.data?.id,
+                    request_id:
+                      payload?.request_id ?? payload?.data?.request_id,
+                  },
+                ]),
+              );
+            } else if (eventType === 'council_error') {
+              ensureAssistantMessageStarted();
+              dataStream.write(
+                formatDataStreamPart('data', [
+                  {
+                    type: 'council_error',
+                    ...payload?.data,
+                    id: payload?.id ?? payload?.data?.id,
+                    request_id:
+                      payload?.request_id ?? payload?.data?.request_id,
+                  },
+                ]),
+              );
+            } else if (eventType === 'final' && !sawToken) {
+              const content =
+                payload?.data?.text ??
+                payload?.data?.message?.content ??
+                payload?.text ??
+                payload?.message?.content;
+              if (typeof content === 'string' && content.length > 0) {
+                dataStream.write(formatDataStreamPart('text', content));
+              }
             }
           }
         }
+      } finally {
+        req.signal.removeEventListener('abort', onAbort);
       }
     },
   });

@@ -122,8 +122,6 @@ from orchestrator.security_headers import (
     SecurityHeadersMiddleware,
     _OuterSecurityHeadersMiddleware,
 )
-from orchestrator.tools.builtin import create_default_registry
-from orchestrator.tools.completion import completion_with_tools
 
 logger = logging.getLogger(__name__)
 
@@ -961,54 +959,6 @@ async def health(request: Request) -> dict[str, Any]:
         base["status"] = "degraded"
         base["error"] = str(e)
     return base
-
-
-@app.post("/v1/tools/test")
-async def test_tools(
-    request: Request,
-    app_state: AppState = Depends(get_app_state),
-    settings: Settings = Depends(get_settings),
-    auth: AuthenticatedDevice = Depends(require_device_auth),
-) -> StreamingResponse:
-    """Test endpoint for tool calling. Sends a message that triggers get_time tool."""
-
-    body = await request.json()
-    user_message = body.get("message", "What time is it right now?")
-    model = body.get("model", "llama-3.3-70b")
-
-    provider_config = settings.get_provider_config("openrouter")
-
-    store = app_state.memory_store
-    user_id = uuid.UUID("00000000-0000-0000-0000-000000000001") if store else None
-    registry = create_default_registry(
-        brave_api_key=settings.brave_api_key,
-        memory_store=store,
-        user_id=user_id,
-    )
-
-    messages = [
-        {
-            "role": "system",
-            "content": "You are a helpful assistant. Use tools when appropriate.",
-        },
-        {"role": "user", "content": user_message},
-    ]
-
-    async def generate():
-        async for event in completion_with_tools(
-            settings=settings,
-            provider_config=provider_config,
-            messages=messages,
-            registry=registry,
-            actual_model=model,
-        ):
-            yield f"data: {json.dumps(event)}\n\n"
-        yield "data: [DONE]\n\n"
-
-    return StreamingResponse(
-        stream_with_keepalives(generate(), settings.sse_keepalive_interval_s),
-        media_type="text/event-stream",
-    )
 
 
 @app.get("/providers")
