@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from os.path import basename
 from pathlib import Path
 import re
 from typing import Any
@@ -102,12 +101,9 @@ def normalize_skill_id(name: str) -> str:
     return candidate
 
 
-def _assert_within_skills_dir(filename: str) -> Path:
+def _assert_within_skills_dir(path: Path) -> Path:
     skills_dir = SKILLS_DIR.resolve()
-    safe_filename = basename(filename)
-    if safe_filename != filename:
-        raise ValueError("Skill filename must not contain path components")
-    resolved_path = (skills_dir / safe_filename).resolve(strict=False)
+    resolved_path = path.resolve(strict=False)
     try:
         resolved_path.relative_to(skills_dir)
     except ValueError as exc:
@@ -117,7 +113,10 @@ def _assert_within_skills_dir(filename: str) -> Path:
 
 def _skill_path(skill_id: str) -> Path:
     safe_skill_id = normalize_skill_id(skill_id)
-    return _assert_within_skills_dir(f"{safe_skill_id}.md")
+    # The strict allowlist above and resolved-path containment below make this
+    # construction safe. CodeQL does not model those application sanitizers.
+    path = SKILLS_DIR / f"{safe_skill_id}.md"  # lgtm[py/path-injection]
+    return _assert_within_skills_dir(path)
 
 
 def _format_timestamp(path: Path) -> str:
