@@ -54,9 +54,20 @@ export function ModelSelector({ selected, onSelect }: ModelSelectorProps) {
         setShowMore(false);
       }
     };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && open) {
+        setOpen(false);
+        setShowMore(false);
+        event.stopPropagation();
+      }
+    };
     document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [open]);
 
   const selectedName =
     selected === 'auto'

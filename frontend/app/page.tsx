@@ -744,6 +744,21 @@ function ChatContent() {
     setMessages(currentConversation.messages);
   }, [currentConversation?.messages, isLoading, messages.length, setMessages]);
 
+  // Refs mirroring composer state so async `submitChat` can compare the
+  // submitted snapshot against the *current* (post-edit) values. The
+  // closure-scoped `input` / `pendingAttachments` variables are stale by the
+  // time `append()` resolves (React rerenders do not update the captured
+  // locals), so without these refs the comparison always matches and
+  // composer edits made during streaming are silently cleared.
+  const inputRef = useRef(input);
+  const pendingAttachmentsRef = useRef(pendingAttachments);
+  useEffect(() => {
+    inputRef.current = input;
+  }, [input]);
+  useEffect(() => {
+    pendingAttachmentsRef.current = pendingAttachments;
+  }, [pendingAttachments]);
+
   const attachmentItems = useMemo(
     () =>
       pendingAttachments.map((attachment) => ({
@@ -881,6 +896,12 @@ function ChatContent() {
     // Without this snapshot, clicking Stop (which resolves `append()`) would
     // unconditionally `setInput("")` and `setPendingAttachments([])`, erasing
     // drafts the user composed while waiting for the partial response.
+    //
+    // Important: the closure-scoped `input` and `pendingAttachments`
+    // variables do not reflect rerenders, so the comparison after `append()`
+    // resolves must read from refs (`inputRef` / `pendingAttachmentsRef`)
+    // that are kept in sync by an effect. Comparing the closure values
+    // directly would always match the snapshot and silently drop edits.
     const submittedInput = input;
     const submittedAttachments = pendingAttachments;
 
@@ -900,12 +921,14 @@ function ChatContent() {
       );
 
       // Only clear fields the user has not edited since the submit fired.
-      // The `===` check is reference equality on the string and on the
-      // pending-attachment array; any edit changes the reference.
-      if (input === submittedInput) {
+      // `===` on a string compares values; `===` on the attachment array
+      // compares the array reference, which changes whenever the user adds
+      // or removes an attachment. Read the *current* values from refs so
+      // edits made during streaming are not silently cleared.
+      if (inputRef.current === submittedInput) {
         setInput('');
       }
-      if (pendingAttachments === submittedAttachments) {
+      if (pendingAttachmentsRef.current === submittedAttachments) {
         setPendingAttachments([]);
       }
     } catch (err) {
@@ -942,6 +965,7 @@ function ChatContent() {
     messages,
     stop: stopChat,
     archiveEvents: archiveCurrentEvents,
+    conversationId: currentId ?? null,
   });
 
   useStopShortcut({

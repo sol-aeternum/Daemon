@@ -9,15 +9,18 @@ function Harness({
   messages,
   stop,
   archiveEvents,
+  conversationId,
 }: {
   messages: Message[];
   stop: () => void;
   archiveEvents: (messageId: string) => void;
+  conversationId: string | null;
 }) {
   const { stoppedMessageIds, stopGeneration } = useStopGeneration({
     messages,
     stop,
     archiveEvents,
+    conversationId,
   });
 
   return (
@@ -46,6 +49,7 @@ describe('useStopGeneration', () => {
         ]}
         stop={stop}
         archiveEvents={archiveEvents}
+        conversationId="conv-1"
       />,
     );
 
@@ -68,6 +72,7 @@ describe('useStopGeneration', () => {
         ]}
         stop={stop}
         archiveEvents={archiveEvents}
+        conversationId="conv-2"
       />,
     );
 
@@ -91,6 +96,7 @@ describe('useStopGeneration', () => {
           messages={messagesByConversation[conversation]}
           stop={stop}
           archiveEvents={archiveEvents}
+          conversationId={`conv-${conversation}`}
         />
       );
     }
@@ -103,8 +109,51 @@ describe('useStopGeneration', () => {
     expect(screen.queryByText('(stopped)')).toBeNull();
 
     // Switch back to A — A's stopped marker should still be present
-    // because the in-memory set is keyed by message ID and persists.
+    // because the hook scopes markers per-conversation and retains them
+    // when the conversation re-mounts.
     rerender(<SwitchHarness conversation="a" />);
+    expect(screen.getByText('(stopped)')).not.toBeNull();
+  });
+
+  it('preserves stopped markers across New Chat and a return to the original conversation', () => {
+    const stop = vi.fn();
+    const archiveEvents = vi.fn();
+    const { rerender } = render(
+      <Harness
+        messages={[
+          { id: 'a_partial', role: 'assistant', content: 'A partial' },
+        ]}
+        stop={stop}
+        archiveEvents={archiveEvents}
+        conversationId="conv-a"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    expect(screen.getByText('(stopped)')).not.toBeNull();
+
+    // Simulate `handleNewChat`: the active conversation becomes `null` and
+    // a fresh "no ID yet" conversation mounts. The original conversation's
+    // markers must NOT be wiped when we later re-mount it.
+    rerender(
+      <Harness
+        messages={[]}
+        stop={stop}
+        archiveEvents={archiveEvents}
+        conversationId={null}
+      />,
+    );
+
+    // Reopen the original conversation.
+    rerender(
+      <Harness
+        messages={[
+          { id: 'a_partial', role: 'assistant', content: 'A partial' },
+        ]}
+        stop={stop}
+        archiveEvents={archiveEvents}
+        conversationId="conv-a"
+      />,
+    );
     expect(screen.getByText('(stopped)')).not.toBeNull();
   });
 });
