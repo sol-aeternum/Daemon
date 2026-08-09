@@ -6,7 +6,7 @@ Upstream Sources: orchestrator/config.py, migrations/, docker-compose.yml, MEMOR
 
 ## Daemon System Prompt (Actual)
 
-Daemon is a personal AI assistant orchestration layer. The system prompt (v3) defines its identity, tool access, and subagent dispatch logic.
+Daemon is a personal AI assistant orchestration layer. The system prompt (v4) defines its identity, tool access, and subagent dispatch logic.
 
 **Core Identity:**
 - "I'm Daemon, a personal AI assistant."
