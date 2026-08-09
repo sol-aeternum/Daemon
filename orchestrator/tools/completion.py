@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from typing import Any, AsyncIterator, cast
 
@@ -10,6 +11,75 @@ from orchestrator.config import ProviderConfig, Settings
 from orchestrator.guardrails import strip_reasoning_fields_from_message
 from orchestrator.tools.registry import ToolRegistry
 from orchestrator.tools.executor import ToolExecutor
+
+
+# Tool results reach the LLM as plain text. Adversarial tool outputs (web pages,
+# fetched files, memory records) can contain instructions like "Ignore previous
+# instructions and ...". To bound the prompt-injection surface we wrap every tool
+# result in a strict XML fence with a `trust="untrusted"` attribute, and the
+# system prompt explicitly tells the model to treat the contents as DATA, not
+# INSTRUCTIONS. The model is also instructed to ignore any instruction-like text
+# inside the fence. This mirrors the <memory_records> fence from issue #19.
+_TOOL_RESULT_FENCE_TAG = "tool_result"
+
+
+def _sanitize_xml_attr(value: str) -> str:
+    """Escape characters that could break out of an XML attribute value.
+
+    Tool names originate from the trusted registry, but a defense-in-depth
+    escape prevents any future tool name from being able to terminate the
+    `<tool_result tool="...">` attribute and inject a fake closing tag.
+    """
+    return value.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
+
+
+def _wrap_tool_result_untrusted(tool_name: str, body: str) -> str:
+    """Wrap a tool result body in a strict <tool_result> fence.
+
+    The fence has a `trust="untrusted"` attribute so the model can pattern-match
+    on it after the system prompt teaches it to. Any literal closing tag inside
+    the body is neutralized so adversarial tool output cannot break out of the
+    fence; parsers that need the original body must go through
+    `_unwrap_tool_result`. The opening and closing tags are on their own lines
+    so log scrapers and regex audits can detect them unambiguously.
+    """
+    safe_name = _sanitize_xml_attr(tool_name)
+    # Neutralize anything shaped like a closing tag, including XML-valid
+    # whitespace/case variants such as "</tool_result >".
+    safe_body = re.sub(
+        rf"<\s*/\s*{_TOOL_RESULT_FENCE_TAG}\s*>",
+        "&lt;/tool_result&gt;",
+        body,
+        flags=re.IGNORECASE,
+    )
+    return (
+        f'<{_TOOL_RESULT_FENCE_TAG} tool="{safe_name}" trust="untrusted">\n'
+        f"{safe_body}\n"
+        f"</{_TOOL_RESULT_FENCE_TAG}>"
+    )
+
+
+def _unwrap_tool_result(content: str) -> str:
+    """Strip the fence added by `_wrap_tool_result_untrusted`, if present.
+
+    Returns the inner body so existing parsers (e.g. session_id extraction from
+    spawn_agent results) keep operating on the raw tool output. Body escaping in
+    the wrapper guarantees the final closing tag is ours. Content without a
+    fence is returned unchanged.
+    """
+    stripped = content.strip()
+    closing = f"</{_TOOL_RESULT_FENCE_TAG}>"
+    if not stripped.startswith(f"<{_TOOL_RESULT_FENCE_TAG} ") or not stripped.endswith(closing):
+        return content
+    open_end = stripped.find(">")
+    if open_end == -1:
+        return content
+    body = stripped[open_end + 1 : -len(closing)].strip("\n")
+    # Reverse the wrapper's neutralization so parsers (e.g. spawn_agent
+    # metadata fields that legitimately contain the literal closing tag)
+    # see the original data, not the entity-escaped form. Whitespace/case
+    # variants are normalized to the canonical tag on round-trip.
+    return body.replace("&lt;/tool_result&gt;", closing)
 
 
 def _looks_like_tools_unsupported_error(err: Exception) -> bool:
@@ -33,12 +103,17 @@ def _extract_last_session_id(messages: list[dict[str, Any]]) -> str | None:
             if not content:
                 continue
             try:
-                parsed = json.loads(content) if isinstance(content, str) else content
+                parsed = (
+                    json.loads(_unwrap_tool_result(content))
+                    if isinstance(content, str)
+                    else content
+                )
             except Exception:
                 parsed = None
         elif role == "assistant" and isinstance(content, str):
-            if "Tool spawn_agent result:" in content:
-                payload = content.split("Tool spawn_agent result:", 1)[-1].strip()
+            unwrapped = _unwrap_tool_result(content)
+            if "Tool spawn_agent result:" in unwrapped:
+                payload = unwrapped.split("Tool spawn_agent result:", 1)[-1].strip()
                 try:
                     parsed = json.loads(payload)
                 except Exception:
@@ -71,12 +146,17 @@ def _extract_last_spawn_result(messages: list[dict[str, Any]]) -> dict[str, Any]
             if not content:
                 continue
             try:
-                parsed = json.loads(content) if isinstance(content, str) else content
+                parsed = (
+                    json.loads(_unwrap_tool_result(content))
+                    if isinstance(content, str)
+                    else content
+                )
             except Exception:
                 parsed = None
         elif role == "assistant" and isinstance(content, str):
-            if "tool_name: spawn_agent" in content and "tool_result:" in content:
-                payload = content.split("tool_result:", 1)[-1].strip()
+            unwrapped = _unwrap_tool_result(content)
+            if "tool_name: spawn_agent" in unwrapped and "tool_result:" in unwrapped:
+                payload = unwrapped.split("tool_result:", 1)[-1].strip()
                 try:
                     parsed = json.loads(payload)
                 except Exception:
@@ -478,17 +558,20 @@ async def completion_with_tools(
                             "tool_call_id": tc["id"],
                             "role": "tool",
                             "name": func_name,
-                            "content": result,
+                            "content": _wrap_tool_result_untrusted(func_name, result),
                         }
                     )
                 else:
                     current_messages.append(
                         {
                             "role": "assistant",
-                            "content": (
-                                "Tool result available. Use it to answer the user.\n"
-                                f"tool_name: {func_name}\n"
-                                f"tool_result: {result}"
+                            "content": _wrap_tool_result_untrusted(
+                                func_name,
+                                (
+                                    "Tool result available. Use it to answer the user.\n"
+                                    f"tool_name: {func_name}\n"
+                                    f"tool_result: {result}"
+                                ),
                             ),
                         }
                     )
@@ -553,17 +636,20 @@ async def completion_with_tools(
                             "tool_call_id": "auto_spawn_agent",
                             "role": "tool",
                             "name": "spawn_agent",
-                            "content": result,
+                            "content": _wrap_tool_result_untrusted("spawn_agent", result),
                         }
                     )
                 else:
                     current_messages.append(
                         {
                             "role": "assistant",
-                            "content": (
-                                "Tool result available. Use it to answer the user.\n"
-                                "tool_name: spawn_agent\n"
-                                f"tool_result: {result}"
+                            "content": _wrap_tool_result_untrusted(
+                                "spawn_agent",
+                                (
+                                    "Tool result available. Use it to answer the user.\n"
+                                    "tool_name: spawn_agent\n"
+                                    f"tool_result: {result}"
+                                ),
                             ),
                         }
                     )

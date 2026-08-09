@@ -50,9 +50,7 @@ def test_compose_passes_postgres_env_vars_for_app_side_resolution() -> None:
 
     for service in ("migrate", "backend", "worker"):
         assert "- POSTGRES_USER=${POSTGRES_USER:-daemon}" in compose
-        assert (
-            "- POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}" in compose
-        )
+        assert "- POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}" in compose
         assert "- POSTGRES_HOST=postgres" in compose
         assert "- POSTGRES_DB=${POSTGRES_DB:-daemon}" in compose
 

@@ -14,6 +14,7 @@ from orchestrator.auth import (
 from orchestrator.config import get_settings
 from orchestrator.db import get_app_state, AppState
 from orchestrator.memory.embedding import embed_documents
+from orchestrator.memory.store import MemoryContentConflictError
 
 router = APIRouter(prefix="/memories", tags=["memories"])
 
@@ -258,7 +259,13 @@ async def update_memory(
     existing = await store.get_memory(memory_id)
     if not existing or existing.get("user_id") != auth.user_id:
         raise HTTPException(status_code=404, detail="Memory not found")
-    await store.update_memory(memory_id, content=data.content)
+    try:
+        await store.update_memory(memory_id, content=data.content)
+    except MemoryContentConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Memory content duplicates an existing active memory",
+        ) from exc
     return {"status": "updated"}
 
 
@@ -295,7 +302,13 @@ async def confirm_memory(
     if not existing or existing.get("user_id") != auth.user_id:
         raise HTTPException(status_code=404, detail="Memory not found")
     confirmed = data.status == "confirmed"
-    await store.confirm_memory(memory_id, confirmed=confirmed)
+    try:
+        await store.confirm_memory(memory_id, confirmed=confirmed)
+    except MemoryContentConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Memory content duplicates an existing active memory",
+        ) from exc
     return {"status": data.status}
 
 

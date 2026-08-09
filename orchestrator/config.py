@@ -23,6 +23,34 @@ class HostedIdentityConfigError(ValueError):
     """Raised when hosted identity configuration fails fail-closed validation."""
 
 
+class HostSecurityConfigError(ValueError):
+    """Raised when the deployment is misconfigured for Host-header security.
+
+    Mirrors HostedIdentityConfigError but covers the TrustedHostMiddleware
+    allowlist. Production deployments must set ``daemon_allowed_hosts`` to a
+    non-empty, non-wildcard value; otherwise the host-header attack surface
+    is left open and the backend may generate absolute URLs that point to
+    attacker-controlled domains.
+    """
+
+
+def _strip_host_port(entry: str) -> str:
+    """Drop a ``:port`` suffix from an allowlist entry.
+
+    Starlette's TrustedHostMiddleware strips the port from the incoming
+    Host header before comparing, so ports in configured entries can never
+    match. Wildcard entries (``*``, ``*.example.com``) and bracketed IPv6
+    literals are returned unchanged apart from bracket-aware port removal.
+    """
+    if entry.startswith("["):
+        # [::1] or [::1]:8000 — keep the bracketed literal, drop the port.
+        closing = entry.find("]")
+        if closing != -1:
+            return entry[: closing + 1]
+        return entry
+    return entry.split(":", 1)[0]
+
+
 class ProviderConfig(BaseSettings):
     """Configuration for a single LLM provider."""
 
@@ -87,6 +115,12 @@ class Settings(BaseSettings):
     # Comma-separated list of allowed CORS origins. Default denies all cross-origin.
     daemon_allowed_origins: str = ""
 
+    # Comma-separated list of allowed Host header values for TrustedHostMiddleware.
+    # Supports `*.example.com` wildcards. Empty means "all hosts in development"
+    # and is rejected at startup in production. Setting this to `*` explicitly
+    # disables the host check (not recommended in production).
+    daemon_allowed_hosts: str = ""
+
     # Public origin for CSRF origin validation (e.g., "https://app.daemon.ai").
     daemon_public_origin: str | None = None
 
@@ -113,11 +147,20 @@ class Settings(BaseSettings):
 
     # Request and stream settings
     request_timeout_s: float = 90.0
-    stream_ping_interval_s: float = 15.0
+    stream_ping_interval_s: float = Field(default=15.0, ge=0)
+    daemon_sse_keepalive_interval_s: float | None = Field(default=None, ge=0)
     chat_history_limit: int = 50
 
     # Development fallback: stream a canned response without calling any provider.
     mock_llm: bool = False
+
+    @property
+    def sse_keepalive_interval_s(self) -> float:
+        return (
+            self.daemon_sse_keepalive_interval_s
+            if self.daemon_sse_keepalive_interval_s is not None
+            else self.stream_ping_interval_s
+        )
 
     # ===== TIER-BASED MODEL CONFIGURATION =====
     # Model tier to use by default (free, starter, pro, max, byok)
@@ -319,7 +362,10 @@ class Settings(BaseSettings):
 
     # ===== MEMORY CONSOLIDATION =====
     consolidation_enabled: bool = True
-    consolidation_interval_days: int = 7
+    consolidation_interval_days: int = Field(
+        default=7,
+        description="Supported memory consolidation intervals: 1 (daily) or 7 (weekly).",
+    )
 
     # ===== SKILL CONSOLIDATION NUDGE =====
     consolidation_nudge_enabled: bool = True
@@ -407,6 +453,7 @@ class Settings(BaseSettings):
     daemon_mail_smtp_username: str = ""
     daemon_mail_smtp_password: str = ""
     daemon_mail_smtp_use_tls: bool = True
+    daemon_worker_failure_alert_email: str = ""
 
     # ----- Native / web / temporary refresh transport knobs (TODO 9) -----
     # Long-lived refresh TTL for the web and native private persistence.
@@ -725,6 +772,97 @@ class Settings(BaseSettings):
             raise HostedIdentityConfigError(
                 f"daemon_mail_sender_mode must be one of {HOSTED_MAIL_SENDER_MODES}, "
                 f"got: {self.daemon_mail_sender_mode!r}"
+            )
+
+    def resolve_allowed_hosts(self) -> list[str]:
+        """Return the list of Host-header values to allow.
+
+        Development (``daemon_environment != "production"``): empty
+        ``daemon_allowed_hosts`` is treated as "all hosts allowed" and
+        the middleware is configured with ``["*"]``. Setting an explicit
+        non-empty list narrows the allowlist even in development.
+
+        Production: ``daemon_allowed_hosts`` MUST be set to a non-empty
+        list (or to a single ``"*"`` if the operator accepts the risk).
+        ``validate_host_security_config()`` enforces this at startup.
+
+        Each entry is a string. ``TrustedHostMiddleware`` natively
+        supports ``*.example.com`` wildcards, so we do not parse here.
+        Empty entries (from a trailing comma) are stripped. Entries are
+        lowercased (hostnames are case-insensitive) and any ``:port``
+        suffix is dropped: Starlette compares the incoming Host with the
+        port already stripped (``host.split(":")[0]``), so an entry like
+        ``backend:8000`` copied from a real Host header would never
+        match. A ``"*"`` mixed with other entries is rejected: Starlette
+        treats any ``"*"`` in the list as "allow all hosts", which would
+        silently disable the check the operator thought they had
+        narrowed.
+        """
+        raw = self.daemon_allowed_hosts or ""
+        entries = [
+            _strip_host_port(entry.strip().lower()) for entry in raw.split(",") if entry.strip()
+        ]
+        entries = [entry for entry in entries if entry]
+        if "*" in entries and len(entries) > 1:
+            raise HostSecurityConfigError(
+                "daemon_allowed_hosts mixes '*' with explicit hosts "
+                f"({raw!r}). Starlette treats any '*' entry as 'allow all', "
+                "silently disabling the host check. Use either an explicit "
+                "allowlist or a single '*'."
+            )
+        if not entries:
+            is_production = self.daemon_environment.lower().strip() == "production"
+            if is_production:
+                # Caller is expected to have called validate_host_security_config()
+                # before reaching here. We still fail closed in case the caller
+                # forgot.
+                raise HostSecurityConfigError(
+                    "daemon_allowed_hosts is empty in production. Set the env var "
+                    "to a comma-separated list of allowed Host values (e.g. "
+                    "'app.daemon.ai,*.daemon.ai') or to a single '*' to "
+                    "explicitly opt out of the host check."
+                )
+            return ["*"]
+        return entries
+
+    def validate_host_security_config(self) -> None:
+        """Validate Host-header security configuration and fail closed.
+
+        Production deployments must set ``daemon_allowed_hosts`` to a
+        non-empty list. A wildcard ``"*"`` is allowed but logs a warning
+        at startup (see main.py); a non-wildcard allowlist is the
+        recommended posture. Development deployments are not subject to
+        this check (the dev experience is preserved).
+
+        Raises:
+            HostSecurityConfigError: on a production deployment with an
+                empty allowlist.
+        """
+        raw = self.daemon_allowed_hosts or ""
+        entries = [
+            _strip_host_port(entry.strip().lower()) for entry in raw.split(",") if entry.strip()
+        ]
+        entries = [entry for entry in entries if entry]
+        if "*" in entries and len(entries) > 1:
+            raise HostSecurityConfigError(
+                "daemon_allowed_hosts mixes '*' with explicit hosts "
+                f"({raw!r}). Starlette treats any '*' entry as 'allow all', "
+                "silently disabling the host check. Use either an explicit "
+                "allowlist or a single '*'."
+            )
+
+        is_production = self.daemon_environment.lower().strip() == "production"
+        if not is_production:
+            return
+
+        if not entries:
+            raise HostSecurityConfigError(
+                "daemon_allowed_hosts is empty in production. The backend "
+                "would accept Host headers from any value, enabling URL "
+                "confusion and phishing. Set the env var to a "
+                "comma-separated list of allowed Host values (e.g. "
+                "'app.daemon.ai,*.daemon.ai') or to a single '*' to "
+                "explicitly opt out of the host check."
             )
 
 

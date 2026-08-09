@@ -2504,14 +2504,6 @@
                 }
             },
             {
-                "code": "reportUnusedVariable",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 22,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportIncompatibleMethodOverride",
                 "range": {
                     "startColumn": 22,

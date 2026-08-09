@@ -68,9 +68,9 @@ Daemon uses a tier-based model configuration system. Specific model assignments 
 - **Tools**: `web_search`, `http_request`, `calculate`, `get_time`, `notifications`, `reminders`, `memory_read`, `memory_write`.
 
 ### Phase 2: Memory System ✅
-- **Storage**: PostgreSQL + pgvector with 35 migrations applied (latest: `035_refresh_rotation_grace.sql`).
+- **Storage**: PostgreSQL + pgvector with 39 migrations applied (latest: `038_extraction_watermark.sql`).
 - **Pipeline**: Extraction (GPT-4o-mini) → Embedding (Voyage 4) → Dedup → Retrieval (Hybrid).
-- **Encryption**: Fernet for messages and memories.
+- **Pipeline**: Extraction (GPT-4o-mini) → Embedding (Voyage 4) → Dedup → Retrieval (Hybrid).- **Encryption**: Fernet for messages and memories.
 - **Background Jobs**: Extraction, summary, consolidation, dreaming.
 
 ### Video Generation + Credits ✅
@@ -92,7 +92,7 @@ Daemon uses a tier-based model configuration system. Specific model assignments 
 ### Docker Compose Services (7 services)
 1. `migrate`: One-shot migration runner.
 2. `backend`: FastAPI app (port 8000).
-3. `worker`: arq background job processor.
+3. `worker`: arq background job processor with durable `job_failures` audit rows.
 4. `frontend`: Next.js 16 (port 3000).
 5. `postgres`: pgvector/pg16 (port 5432).
 6. `redis`: Redis 7 Alpine (port 6379).
@@ -135,4 +135,4 @@ For detailed architecture, see [MEMORY_LAYER.md](../MEMORY_LAYER.md).
 - **Local Pipeline**: Blocked on hardware (RTX 5090); cloud pipeline runs independently.
 - **Linter Scope**: `check_doc_freshness.py` gates high-confidence structured facts only.
 - **Model Assignments**: Tier-to-model mappings are env-var configurable in `config.py`.
-- **Migrations**: 35 migrations applied.
+- **Migrations**: 39 migrations applied.

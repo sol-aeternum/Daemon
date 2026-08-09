@@ -5,6 +5,7 @@ import logging
 import re
 import uuid
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 from dataclasses import dataclass  # noqa: E402
@@ -588,7 +589,12 @@ async def extract_facts_from_text(
 
 
 async def process_extraction(
-    store: MemoryStore, user_id: uuid.UUID, conversation_id: uuid.UUID, text: str
+    store: MemoryStore,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    text: str,
+    *,
+    last_message_observed_at: datetime | None = None,
 ) -> tuple[bool, list[dict[str, Any]]]:
     """Orchestrate extraction -> dedup -> insert.
 
@@ -661,6 +667,7 @@ async def process_extraction(
             "retry_used": retry_used,
         },
         model_used=model,
+        last_message_observed_at=last_message_observed_at,
     )
 
     try:

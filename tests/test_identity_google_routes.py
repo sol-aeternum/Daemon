@@ -593,7 +593,10 @@ class TestGoogleCompleteRoute:
         # Session issuance was for the right client_kind/persistence.
         assert captured_issue_requests[0].client_kind == "web"
         assert captured_issue_requests[0].device_persistence == "private"
-        assert [policy[0] for policy in captured_policies] == ["ip"]
+        assert [policy[0] for policy in captured_policies] == [
+            "ip",
+            "ip",
+        ]  # Two ip policies: pre-claim (#129 L1070) and post-claim (L1076)
 
     @pytest.mark.asyncio
     async def test_web_temporary_uses_session_cookie(self, route_client, monkeypatch):

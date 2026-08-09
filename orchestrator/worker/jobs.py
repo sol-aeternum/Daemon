@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, cast, TypedDict
+from typing import Any, cast, NotRequired, TypedDict
 from zoneinfo import ZoneInfo
 
 from arq.connections import ArqRedis
@@ -237,11 +237,17 @@ async def extract_memories(
     if not text:
         return {"status": "skipped", "reason": "no_messages"}
 
+    last_message_observed_at = max(
+        (msg["created_at"] for msg in filtered_raw_messages if msg.get("created_at")),
+        default=None,
+    )
+
     extraction_success, new_memories = await process_extraction(
         store=store_obj,
         user_id=_as_uuid(user_id),
         conversation_id=_as_uuid(conversation_id),
         text=text,
+        last_message_observed_at=last_message_observed_at,
     )
 
     if extraction_success and new_memories:
@@ -387,30 +393,7 @@ async def garbage_collect(ctx: WorkerContext) -> dict[str, int]:
     if not isinstance(store_obj, MemoryStore):
         return {"scanned": 0, "deleted": 0}
 
-    async with store_obj._pool.acquire() as conn:
-        scanned = await conn.fetchval(
-            """
-            SELECT COUNT(*)
-            FROM memories
-            WHERE (status = 'inactive' AND updated_at < NOW() - INTERVAL '90 days')
-               OR (status = 'rejected' AND updated_at < NOW() - INTERVAL '30 days')
-               OR (status = 'pending' AND updated_at < NOW() - INTERVAL '30 days')
-               OR (status = 'deleted' AND updated_at < NOW() - INTERVAL '30 days')
-            """
-        )
-
-        result = await conn.execute(
-            """
-            DELETE FROM memories
-            WHERE (status = 'inactive' AND updated_at < NOW() - INTERVAL '90 days')
-               OR (status = 'rejected' AND updated_at < NOW() - INTERVAL '30 days')
-               OR (status = 'pending' AND updated_at < NOW() - INTERVAL '30 days')
-               OR (status = 'deleted' AND updated_at < NOW() - INTERVAL '30 days')
-            """
-        )
-
-    deleted = int(result.split()[-1]) if result else 0
-    return {"scanned": int(scanned or 0), "deleted": deleted}
+    return await store_obj.run_garbage_collect()
 
 
 async def cleanup_generated_files(ctx: WorkerContext) -> dict[str, int]:
@@ -418,7 +401,7 @@ async def cleanup_generated_files(ctx: WorkerContext) -> dict[str, int]:
     from orchestrator.config import get_settings
 
     settings = get_settings()  # noqa: F841
-    generated_files_dir = Path(__file__).resolve().parent.parent / "data" / "generated_files"
+    generated_files_dir = Path(__file__).resolve().parent.parent.parent / "data" / "generated_files"
 
     if not generated_files_dir.exists():
         return {"scanned": 0, "deleted": 0}
@@ -679,16 +662,7 @@ async def consolidate_memories(
             results["error_count"] = 1
     else:
         # Periodic job - find all users with eligible L1 memories
-        rows = await store._pool.fetch(
-            """
-            SELECT DISTINCT user_id
-            FROM memories
-            WHERE status = 'active'
-              AND tier = 'l1'
-              AND embedding IS NOT NULL
-            """
-        )
-        user_ids = [row["user_id"] for row in rows]
+        user_ids = await store.list_users_with_eligible_l1_memories()
         logger.info(f"Found {len(user_ids)} users with eligible memories for consolidation")
 
     # Process each user
@@ -955,6 +929,7 @@ class ConsolidationNudgeAction(TypedDict):
     reason: str
     similarity: float | None
     status: str
+    audit_id: NotRequired[uuid.UUID]
 
 
 class ConsolidationNudgeResults(TypedDict):
@@ -1185,16 +1160,24 @@ async def _process_user_consolidation_nudge(
 
         elif action_type == "delete":
             if skill_id in autonomous_skill_ids:
-                delete_result = await _apply_delete_action(skill_id, store, user_id)
+                delete_result = await _apply_delete_action(
+                    skill_id,
+                    store,
+                    user_id,
+                    reason=action.get("reason", "model-driven delete"),
+                )
+                audit_id: uuid.UUID | None = delete_result.get("audit_id")
                 if delete_result["deleted"]:
                     actions.append(
                         ConsolidationNudgeAction(
                             action_type="delete",
                             skill_id=skill_id,
                             target_skill_id=None,
-                            reason=action.get("reason", "model-driven delete"),
+                            reason=delete_result.get("reason")
+                            or action.get("reason", "model-driven delete"),
                             similarity=None,
                             status="applied",
+                            audit_id=audit_id,
                         )
                     )
                 else:
@@ -1206,6 +1189,7 @@ async def _process_user_consolidation_nudge(
                             reason=delete_result.get("reason", "delete failed"),
                             similarity=None,
                             status="skipped",
+                            audit_id=audit_id,
                         )
                     )
 
@@ -1238,6 +1222,15 @@ async def _process_user_consolidation_nudge(
                 skill_use_count = s.get("use_count")
                 skill_last_used = s.get("last_used_at")
                 break
+        existing_audit_id = action.get("audit_id")
+        if existing_audit_id is not None:
+            # _apply_delete_action pre-wrote the pending audit row and has
+            # already finalized its status (applied on success, failed with
+            # reason on failure). Re-touching the row here would either
+            # duplicate the work or overwrite the `failed` status with the
+            # outer loop's `skipped`. Skip persistence; the action is kept
+            # in the returned list for caller visibility.
+            continue
         await store.log_consolidation_nudge_action(
             user_id=user_id,
             run_id=run_id,
@@ -1347,28 +1340,44 @@ async def _apply_delete_action(
     skill_id: str,
     store: MemoryStore,
     user_id: uuid.UUID,
+    *,
+    reason: str = "model-driven delete",
 ) -> dict[str, Any]:
+    run_id = uuid.uuid4()
     try:
-        from orchestrator.skills_store import delete_skill
-        from orchestrator.skills_projection import SkillProjectionStore
-
-        delete_skill(skill_id)
-        if store._pool:
-            projection_store = SkillProjectionStore(store._pool)
-            await projection_store.delete_projection(skill_id)
-        await store.log_consolidation_nudge_action(
+        audit_id = await store.log_consolidation_nudge_action(
             user_id=user_id,
-            run_id=uuid.uuid4(),
+            run_id=run_id,
             action_type="delete",
             skill_id=skill_id,
             target_skill_id=None,
-            reason="model-driven delete",
+            reason=reason,
             similarity=None,
+            status="pending",
+        )
+    except Exception as e:
+        return {"deleted": False, "reason": f"audit log failed before delete: {e}"}
+
+    try:
+        from orchestrator.skills_store import delete_skill
+
+        delete_skill(skill_id)
+        await store.delete_skill_projection(skill_id)
+        await store.update_consolidation_nudge_action_status(
+            audit_id,
             status="applied",
         )
-        return {"deleted": True, "reason": "ok"}
+        return {"deleted": True, "reason": "ok", "audit_id": audit_id}
     except Exception as e:
-        return {"deleted": False, "reason": str(e)}
+        try:
+            await store.update_consolidation_nudge_action_status(
+                audit_id,
+                status="failed",
+                reason=f"delete failed: {e}",
+            )
+        except Exception:
+            logger.warning("Failed to mark consolidation delete audit row failed", exc_info=True)
+        return {"deleted": False, "reason": str(e), "audit_id": audit_id}
 
 
 async def _find_duplicate_autonomous_skills(

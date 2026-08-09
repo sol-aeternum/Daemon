@@ -28,6 +28,9 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from starlette.datastructures import MutableHeaders
+from starlette.types import Receive, Scope, Send
 from fastapi.responses import FileResponse, StreamingResponse
 
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
@@ -44,6 +47,7 @@ from orchestrator.auth_runtime_state import (
 )
 from orchestrator.council.sse import stream_council, stream_council_interview_response
 from orchestrator.config import (
+    HostSecurityConfigError,
     HostedIdentityConfigError,
     ProviderConfig,
     Settings,
@@ -56,6 +60,7 @@ from orchestrator.daemon import (
     now_rfc3339,
     sse,
     stream_sse_chat,
+    stream_with_keepalives,
 )
 from orchestrator.db import (
     AppState,
@@ -64,6 +69,7 @@ from orchestrator.db import (
     get_app_state,
     init_app_state,
 )
+from orchestrator.memory.encryption import ContentEncryption, EncryptionInitError
 from orchestrator.session_cleanup import (
     cleanup_stale_sessions,
     start_session_cleanup_task,
@@ -211,6 +217,9 @@ def _validate_startup_config(settings: Settings) -> None:
     validate_pepper_config(settings)
     settings.validate_deployment_mode()
     settings.validate_hosted_identity_config()
+    if settings.daemon_encryption_key is not None:
+        ContentEncryption(settings.daemon_encryption_key)
+    settings.validate_host_security_config()
 
 
 @asynccontextmanager
@@ -228,6 +237,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except HostedIdentityConfigError as exc:
         logger.critical("Hosted identity config validation failed: %s", exc)
         raise
+    except EncryptionInitError as exc:
+        logger.critical("Encryption config validation failed: %s", exc)
+        raise
+    except HostSecurityConfigError as exc:
+        logger.critical("Host security config validation failed: %s", exc)
+        raise
 
     state = await init_app_state(settings)
     app.state.app_state = state
@@ -239,6 +254,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     if state.db_pool is not None:
         await initialize_development_pepper(settings, state.db_pool)
+        if state.memory_store is not None:
+            try:
+                backfilled = await state.memory_store.backfill_memory_content_hashes()
+                if backfilled:
+                    logger.info("Backfilled content_hash for %s current memories", backfilled)
+            except Exception:
+                logger.warning("Failed to backfill memory content hashes", exc_info=True)
         asyncio.create_task(_backfill_skill_projections(state.db_pool))
         asyncio.create_task(_sync_repo_skills(state.db_pool))
         await _check_first_boot_setup(state)
@@ -385,6 +407,61 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# TrustedHostMiddleware: enforce an allowlist on the inbound Host header.
+# Without this, a Host-header injection (Host: attacker.com) can be used
+# to generate absolute URLs in error responses that point to attacker-
+# controlled domains, confuse reverse proxies, or bypass domain-based
+# authentication. The allowlist is read from DAEMON_ALLOWED_HOSTS via
+# the Settings class. In production an empty allowlist is rejected at
+# startup; in development it falls back to ["*"] for the dev experience.
+# NOTE for operators: requests proxied by the Next frontend reach the
+# backend with Host values like "backend:8000" or "localhost:8000".
+# Starlette strips the port before matching, so DAEMON_ALLOWED_HOSTS must
+# include the BARE internal hostnames (e.g. "backend", "localhost");
+# resolve_allowed_hosts() also drops any :port suffix it finds.
+
+
+class CaseInsensitiveTrustedHostMiddleware(TrustedHostMiddleware):
+    """Starlette matches Host case-sensitively; hostnames are not.
+
+    Lowercase the inbound Host header before matching (and for downstream
+    consumers — DNS hostnames are case-insensitive by RFC 4343) so
+    ``Host: APP.DAEMON.AI`` matches an ``app.daemon.ai`` allowlist entry.
+    Allowlist entries are already lowercased by ``resolve_allowed_hosts``.
+    """
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if not self.allow_any and scope["type"] in ("http", "websocket"):
+            headers = MutableHeaders(scope=scope)
+            host = headers.get("host", "")
+            lowered = host.lower()
+            if lowered != host:
+                headers["host"] = lowered
+        await super().__call__(scope, receive, send)
+
+
+# Import-time resolution must not raise: production-startup tests exercise
+# other fail-closed paths in _validate_startup_config and must be able to
+# import this module first. A misconfigured allowlist falls back to ["*"]
+# here, but the app still refuses to START because the lifespan validation
+# chain re-raises HostSecurityConfigError (fail-closed, just later).
+try:
+    _allowed_hosts = get_settings().resolve_allowed_hosts()
+except HostSecurityConfigError as _host_exc:
+    logger.critical(
+        "Host security config invalid; startup will abort in lifespan: %s",
+        _host_exc,
+    )
+    _allowed_hosts = ["*"]
+if _allowed_hosts == ["*"]:
+    logger.warning(
+        "TrustedHostMiddleware is configured with allowed_hosts=['*']; "
+        "the backend will accept any Host header. This is the default in "
+        "development but is unsafe in production. Set DAEMON_ALLOWED_HOSTS "
+        "to a comma-separated allowlist (e.g. 'app.daemon.ai,*.daemon.ai')."
+    )
+app.add_middleware(CaseInsensitiveTrustedHostMiddleware, allowed_hosts=_allowed_hosts)
 
 
 DEFAULT_BILLING_USER_ID = "00000000-0000-0000-0000-000000000001"
@@ -940,7 +1017,10 @@ async def test_tools(
             yield f"data: {json.dumps(event)}\n\n"
         yield "data: [DONE]\n\n"
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream_with_keepalives(generate(), settings.sse_keepalive_interval_s),
+        media_type="text/event-stream",
+    )
 
 
 @app.get("/providers")
@@ -1177,7 +1257,7 @@ async def openai_chat_completions(
                     user_message=last_message,
                     conversation_id=conversation_id,
                     request_id=request_id,
-                    ping_interval_s=settings.stream_ping_interval_s,
+                    ping_interval_s=settings.sse_keepalive_interval_s,
                     is_disconnected=is_disconnected,
                     actual_model=actual_model,
                 ):
@@ -1246,7 +1326,7 @@ async def openai_chat_completions(
                 yield "data: [DONE]\n\n"
 
         return StreamingResponse(
-            generator(),
+            stream_with_keepalives(generator(), settings.sse_keepalive_interval_s),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -1271,7 +1351,7 @@ async def openai_chat_completions(
                 user_message=last_message,
                 conversation_id=conversation_id,
                 request_id=request_id,
-                ping_interval_s=settings.stream_ping_interval_s,
+                ping_interval_s=settings.sse_keepalive_interval_s,
                 is_disconnected=is_disconnected,
                 actual_model=actual_model,
             ):
@@ -2063,7 +2143,7 @@ async def chat(
                 history_messages=history_messages,
                 conversation_id=conversation_id,
                 request_id=request_id,
-                ping_interval_s=settings.stream_ping_interval_s,
+                ping_interval_s=settings.sse_keepalive_interval_s,
                 is_disconnected=is_disconnected,
                 actual_model=actual_model,
                 reported_model=selected_model,
@@ -2136,7 +2216,7 @@ async def chat(
             )
 
     return StreamingResponse(
-        generator(),
+        stream_with_keepalives(generator(), settings.sse_keepalive_interval_s),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

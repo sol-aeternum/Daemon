@@ -73,7 +73,7 @@ A wave **fails** → full rollback, document failure mode in `tests/benchmark_re
 **Why first:** `MEMORY_LAYER.md` records Phase 0 reopened after a 10.0pp triple-run spread (required ≤3pp). Nothing else is measurable until this is resolved. Running Wave 1 against an unstable baseline produces uninterpretable results.
 
 **Scope:**
-- Identify variance sources. Suspects (high → low): judge-model non-determinism, retrieval tie-breaking instability, arq job completion timing (see `benchmark_extraction.py` fixed-50s-sleep issue — CURRENT_ISSUES.md #5), embedding retries returning intermittent values.
+- Identify variance sources. Suspects (high → low): judge-model non-determinism, retrieval tie-breaking instability, arq job completion timing (see `benchmark_extraction.py` fixed-50s-sleep issue), embedding retries returning intermittent values.
 - Lock judge model + temperature + seed where supported.
 - Replace fixed-sleep extraction wait with `extraction_log` completion poll.
 - Add deterministic tie-breakers in retrieval (e.g., `ORDER BY score DESC, id ASC`).
@@ -252,7 +252,7 @@ Pure prompt/injection changes. Zero schema, zero re-embed, zero new dependencies
 - **Change surface:**
   - Schema: `memories.scope TEXT DEFAULT 'personal'`
   - Retrieval: `WHERE scope = $active_scope` default; optional cross-scope mode
-  - Frontend Projects page (currently placeholder per CURRENT_ISSUES.md #3): finally gets a real contract — project = scope
+  - Frontend Projects page (currently placeholder): finally gets a real contract — project = scope
   - Incognito mode: conversations with `scope = 'ephemeral'` neither read nor write memory
 
 **Why deferred to W7 rather than earlier:** benchmark-neutral on LongMemEval (single-user, single-scope corpus). The gain is UX/trust, not LongMemEval_S. Ship it when the easier benchmark wins have been banked and there's slack to invest in UX.

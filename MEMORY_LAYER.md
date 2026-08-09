@@ -26,7 +26,7 @@ memories.content          → encrypted
 extraction_log.input_snippet → encrypted
 ```
 
-If `DAEMON_ENCRYPTION_KEY` is not set, content falls back to plaintext (logged as a warning on startup).
+If `DAEMON_ENCRYPTION_KEY` is missing or invalid when memory storage is initialized, startup fails closed instead of writing plaintext. Encryption init, encrypt, and decrypt failures increment the `encryption_operations_failed_total` status metric and raise to the caller.
 
 ### Tables
 
@@ -74,6 +74,7 @@ created_at TIMESTAMPTZ DEFAULT NOW()
 id UUID PRIMARY KEY
 user_id UUID REFERENCES users(id)
 content TEXT NOT NULL  -- Fernet-encrypted
+content_hash TEXT  -- HMAC-SHA256(normalized plaintext, DAEMON_AUTH_PEPPER)
 embedding VECTOR(1024)  -- plaintext; Voyage 4-large document vectors
 category TEXT CHECK (category IN ('fact', 'preference', 'project', 'summary', 'correction'))
 source_type TEXT CHECK (source_type IN ('conversation', 'manual', 'import', 'extracted', 'user_created'))
@@ -252,6 +253,10 @@ Handled by the arq worker (`orchestrator/worker/`):
 1. **Extraction** — `process_extraction()` after each conversation turn
 2. **Summary update** — `generate_or_update_summary()` post-extraction (best-effort)
 3. **Consolidation** — `run_consolidation()` on configurable interval (default 7 days, enabled by `consolidation_enabled`)
+
+Worker failures are persisted to `job_failures` before arq result TTL cleanup. Critical memory
+jobs can send a best-effort alert through the existing mail sender when
+`DAEMON_WORKER_FAILURE_ALERT_EMAIL` is configured.
 
 ---
 
