@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, cast, NotRequired, TypedDict
 from zoneinfo import ZoneInfo
 
+from arq import Retry
 from arq.connections import ArqRedis
 from arq.jobs import Job
 
@@ -206,6 +207,54 @@ async def extract_memories(
     if not isinstance(store_obj, MemoryStore):
         return {"status": "skipped", "reason": "store_unavailable"}
 
+    # Retry-recovery: if a previous attempt committed a summary with
+    # ``summary_continuation_pending=true`` but failed to enqueue the
+    # forced-summary continuation (e.g. Redis transient error -> Retry),
+    # the watermark will have advanced past the messages, so this retry
+    # may find ``no_messages`` and exit before reaching the continuation
+    # enqueue block. Consume the flag first: if it was set, enqueue the
+    # continuation immediately (Codex P2 on PR #165, ``worker/jobs.py:295``).
+    continuation_pending = False
+    if hasattr(store_obj, "consume_summary_continuation_pending"):
+        try:
+            continuation_pending = await store_obj.consume_summary_continuation_pending(
+                _as_uuid(conversation_id)
+            )
+        except Exception:
+            logger.warning(
+                "Failed to consume summary_continuation_pending for conversation %s",
+                conversation_id,
+            )
+
+    if continuation_pending:
+        queue = ctx.get("redis")
+        if queue is not None and hasattr(queue, "enqueue_job"):
+            try:
+                await enqueue_with_debounce(
+                    queue,
+                    "generate_summary_job",
+                    job_id=(
+                        f"summary_continuation_recovery:{_as_uuid(conversation_id)}:"
+                        f"{int(datetime.now(timezone.utc).timestamp())}"
+                    ),
+                    defer_by=timedelta(seconds=1),
+                    args=(str(_as_uuid(conversation_id)), True),
+                )
+            except Exception:
+                # ``generate_summary_job`` is the only periodic caller of
+                # the forced-continuation path; if Redis transiently
+                # rejects the enqueue, surface it as an arq ``Retry`` so
+                # the extraction job is retried rather than silently
+                # leaving the remaining summary backlog unscheduled.
+                logger.warning(
+                    "Failed to enqueue recovered summary continuation for "
+                    "conversation %s; raising arq Retry",
+                    conversation_id,
+                )
+                raise Retry(defer=5) from None
+        # Whether the enqueue succeeded or not, the flag is already
+        # consumed. Continue with the normal extraction flow.
+
     raw_messages: list[dict[str, Any]]
     if messages_json is None:
         # Get the last extraction time for this conversation
@@ -242,7 +291,7 @@ async def extract_memories(
         default=None,
     )
 
-    extraction_success, new_memories = await process_extraction(
+    extraction_success, new_memories, summary_continuation_needed = await process_extraction(
         store=store_obj,
         user_id=_as_uuid(user_id),
         conversation_id=_as_uuid(conversation_id),
@@ -272,6 +321,40 @@ async def extract_memories(
                     user_id,
                     conversation_id,
                 )
+
+    if extraction_success and summary_continuation_needed:
+        try:
+            queue = ctx.get("redis")
+            if queue is not None and hasattr(queue, "enqueue_job"):
+                await enqueue_with_debounce(
+                    queue,
+                    "generate_summary_job",
+                    job_id=(
+                        f"summary_continuation:{_as_uuid(conversation_id)}:"
+                        f"{int(datetime.now(timezone.utc).timestamp())}"
+                    ),
+                    defer_by=timedelta(seconds=1),
+                    args=(str(_as_uuid(conversation_id)), True),
+                )
+        except Retry:
+            # Let arq's Retry signal propagate so the extraction job is
+            # retried; the inline summary was already committed by
+            # ``process_extraction`` and the required continuation must
+            # not be lost (Codex P2 on PR #165, ``worker/jobs.py:295``).
+            raise
+        except Exception:
+            # ``generate_summary_job`` is the only periodic caller of
+            # the forced-continuation path; if Redis transiently rejects
+            # the enqueue, surface it as an arq ``Retry`` so the
+            # extraction job is retried rather than silently leaving the
+            # remaining summary backlog unscheduled (Codex P2 on PR
+            # #165, ``worker/jobs.py:295``).
+            logger.warning(
+                "Failed to enqueue summary continuation for conversation %s; "
+                "raising arq Retry to reschedule extraction",
+                conversation_id,
+            )
+            raise Retry(defer=5) from None
 
     return {"status": "ok", "processed_messages": len(messages)}
 
@@ -358,9 +441,14 @@ async def generate_conversation_title_job(
 async def generate_summary_job(
     ctx: WorkerContext,
     conversation_id: str,
+    force: bool = False,
 ) -> dict[str, Any]:
-    """Generate and store conversation summary."""
-    from orchestrator.memory.summarization import should_summarize, generate_summary
+    """Generate and store one bounded conversation-summary batch."""
+    from orchestrator.memory.summarization import (
+        generate_summary,
+        should_summarize,
+        validated_summary_baseline,
+    )
 
     store_obj = ctx.get("store")
     if not isinstance(store_obj, MemoryStore):
@@ -374,18 +462,112 @@ async def generate_summary_job(
         return {"status": "not_found"}
 
     last_summary_time = conversation.get("summary_updated_at")
-    settings = {}
+    previous_summary = conversation.get("summary")
+    current_message_count = await store.count_summary_messages(conv_id)
+    persisted_baseline = validated_summary_baseline(
+        conversation,
+        current_message_count,
+    )
+    # Pin the iteration to the moment we started, so concurrent status
+    # flips from ``streaming`` to ``complete`` (which do not change
+    # ``created_at``) cannot reorder the row set under an in-flight
+    # cursor. The next iteration captures a fresh ``now()`` itself.
+    iteration_snapshot = datetime.now(timezone.utc)
 
-    if not await should_summarize(conv_id, last_summary_time, store, settings):
+    # Advance only through the contiguous-finalized prefix at the snapshot.
+    # A row that was streaming at fetch time but is now finalized with an
+    # earlier ``created_at`` would otherwise insert before the prior
+    # finalized rows and replay messages already counted toward the
+    # baseline (Codex P2 on PR #165). ``persisted_baseline`` is the prior
+    # cursor (lower bound); ``contiguous_baseline`` is the current
+    # contiguous-prefix count, which is only larger when the streaming
+    # tail shrank.
+    contiguous_baseline = await store.count_contiguous_finalized_messages_at(
+        conv_id,
+        snapshot_at=iteration_snapshot,
+    )
+    # ``last_summarized_msg_count`` is the count used by ``should_summarize``
+    # to compute delta against the current finalized-message count. It is
+    # not the offset — those are two distinct concepts (matches the inline
+    # path on PR #165).
+    last_summarized_msg_count = max(persisted_baseline, contiguous_baseline)
+    settings: dict[str, Any] = {}
+
+    if not force and not await should_summarize(
+        conv_id,
+        last_summary_time,
+        last_summarized_msg_count,
+        store,
+        settings,
+    ):
         return {"status": "skipped", "reason": "thresholds_not_met"}
 
-    messages = await store.get_messages(conv_id, limit=100)
-    previous_summary = conversation.get("summary")
+    # The cursor advances only through rows actually included in past
+    # summaries (``persisted_baseline``). ``contiguous_baseline`` is
+    # used solely to bound how far this iteration may claim — never as
+    # an offset. The prior ``max(...)`` offset skipped finalized rows
+    # that were contiguous-but-not-yet-summarized (e.g. baseline 0 with
+    # rows ``complete m1, streaming m2, complete m3``: offset became 1,
+    # so m1 was skipped). Using ``persisted_baseline`` directly produces
+    # the rows that need summarization (Codex P2 on PR #165,
+    # ``worker/jobs.py:441``).
+    messages = await store.get_summary_message_batch(
+        conv_id,
+        offset=persisted_baseline,
+        limit=100,
+        snapshot_at=iteration_snapshot,
+    )
+    if not messages:
+        return {"status": "skipped", "reason": "up_to_date"}
 
     summary = await generate_summary(messages, previous_summary, settings)
-    await store.update_conversation(conv_id, summary=summary)
+    if not summary.strip():
+        raise Retry(defer=5)
 
-    return {"status": "success", "summary_length": len(summary)}
+    # Advance the persisted baseline by ONLY the rows actually
+    # incorporated in this iteration (``persisted_baseline + len(messages)``),
+    # capped at the contiguous-prefix boundary so a later
+    # ``streaming -> complete`` transition cannot pull already-claimed
+    # rows back into the next batch. Matches the inline path on PR
+    # #165 (``summary.py:225``). Prior implementation derived the
+    # advance from ``last_summarized_msg_count`` (the inflated
+    # ``max(persisted_baseline, contiguous_baseline)``), which caused
+    # the persisted baseline to skip finalized rows that were
+    # contiguous-but-not-yet-summarized (Codex P2 on PR #165,
+    # ``worker/jobs.py:445``).
+    summarized_message_count = min(
+        persisted_baseline + len(messages),
+        contiguous_baseline,
+    )
+    updated = await store.update_conversation_summary(
+        conv_id,
+        summary=summary,
+        expected_summary_updated_at=last_summary_time,
+        summarized_message_count=summarized_message_count,
+        summary_snapshot_at=iteration_snapshot,
+    )
+    if not updated:
+        raise Retry(defer=5)
+
+    continuation_enqueued = False
+    if len(messages) == 100:
+        queue = ctx.get("redis")
+        if queue is not None:
+            follow_up = await enqueue_with_debounce(
+                cast(ArqRedis, queue),
+                "generate_summary_job",
+                job_id=f"summary:{conv_id}:{summarized_message_count}",
+                defer_by=timedelta(seconds=1),
+                args=(str(conv_id), True),
+            )
+            continuation_enqueued = follow_up is not None
+
+    return {
+        "status": "success",
+        "summary_length": len(summary),
+        "summarized_message_count": summarized_message_count,
+        "continuation_enqueued": continuation_enqueued,
+    }
 
 
 async def garbage_collect(ctx: WorkerContext) -> dict[str, int]:

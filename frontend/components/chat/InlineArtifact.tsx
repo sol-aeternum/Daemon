@@ -10,6 +10,21 @@ interface InlineArtifactProps {
   artifactId?: string;
 }
 
+/**
+ * Read the per-request CSP nonce from the <meta name="csp-nonce"> tag
+ * that the root layout renders from the `x-nonce` request header
+ * (frontend/proxy.ts). The nonce is used to mark the inline <style> and
+ * <script> tags inside the srcDoc so the iframe's inherited CSP does
+ * not block the artifact shell.
+ */
+function readCspNonce(): string | undefined {
+  if (typeof document === "undefined") {
+    return undefined;
+  }
+  const meta = document.querySelector<HTMLMetaElement>('meta[name="csp-nonce"]');
+  return meta?.content || undefined;
+}
+
 interface ThemeVars {
   bgPrimary: string;
   bgSecondary: string;
@@ -181,9 +196,12 @@ export function InlineArtifact({ htmlContent, title, artifactId }: InlineArtifac
   const srcDoc = useMemo(() => {
     const sanitized = sanitizeHtml(htmlContent);
     const safeArtifactId = escapeSingleQuotedJsString(artifactId ?? "");
+    const nonce = readCspNonce();
+    const styleNonceAttr = nonce ? ` nonce="${nonce}"` : "";
+    const scriptNonceAttr = nonce ? ` nonce="${nonce}"` : "";
 
     const shellStyles = `
-<style>
+<style${styleNonceAttr}>
   :root {
     --bg-primary: ${themeVars.bgPrimary};
     --bg-secondary: ${themeVars.bgSecondary};
@@ -305,7 +323,7 @@ export function InlineArtifact({ htmlContent, title, artifactId }: InlineArtifac
 </style>`;
 
     const resizeScript = `
-<script>
+<script${scriptNonceAttr}>
   (function () {
     var ticking = false;
     var lastHeight = 0;

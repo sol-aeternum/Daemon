@@ -76,7 +76,7 @@ services:
       - DAEMON_HOSTED_IDENTITY_REQUIRE_REDIS=${DAEMON_HOSTED_IDENTITY_REQUIRE_REDIS:-true}
     volumes:
       - .:/app
-    command: uvicorn orchestrator.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn orchestrator.main:app --host 0.0.0.0 --port 8000
     depends_on:
       postgres:
         condition: service_healthy
@@ -151,13 +151,22 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      # NEXT_PUBLIC_* vars are baked into the client bundle at build time.
+      # Pass them as ARGs so the Dockerfile's `npm run build` step sees them.
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+        NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE: ${NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE:-self-hosted}
+        NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
+        NEXT_PUBLIC_EMAIL_ENABLED: ${NEXT_PUBLIC_EMAIL_ENABLED:-true}
     ports:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
-      # NEXT_PUBLIC_* vars are baked at build time. Default is
-      # self-hosted (setup-first landing); set "hosted" to switch the
-      # landing to Google / email sign-in. See .env.example.
+      # NEXT_PUBLIC_* vars are baked at build time (see `build.args` above).
+      # The runtime entries below are kept for parity but only NEXT_PUBLIC_API_URL
+      # is meaningful at runtime in this image; the others are baked at build.
+      # Default is self-hosted (setup-first landing); set "hosted" to switch
+      # the landing to Google / email sign-in. See .env.example.
       - NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE=${NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE:-self-hosted}
       # Public Google OAuth web client ID; required for the Google
       # sign-in button on the hosted landing. Leave empty for self-hosted.
@@ -166,11 +175,7 @@ services:
       # DAEMON_EMAIL_ENABLED so hosted UI does not render the email form when
       # the provider is disabled.
       - NEXT_PUBLIC_EMAIL_ENABLED=${NEXT_PUBLIC_EMAIL_ENABLED:-true}
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-      - /app/.next
-    command: npm run dev
+    command: npm run start
     depends_on:
       - backend
     networks:

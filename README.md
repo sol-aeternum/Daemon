@@ -93,7 +93,7 @@ Note: The top-level `backend/` directory contains only a Dockerfile for Docker b
 # Local development (backend only, postgres/redis must be running)
 uv run uvicorn orchestrator.main:app --reload --host 0.0.0.0 --port 8000
 
-# Docker (full stack)
+# Docker (full stack, production server commands)
 cp .env.example .env    # Configure providers
 # Edit .env and set a unique POSTGRES_PASSWORD before first startup.
 docker compose up --build
@@ -102,6 +102,10 @@ docker compose up --build
 Docker compose binds PostgreSQL and Redis to `127.0.0.1` only. Containers use
 the private compose network; external database access should be an explicit
 operator override, not the committed default.
+
+The Docker compose stack starts uvicorn without `--reload` and serves the
+frontend with `next start`. Use host-local commands such as `npm run dev` only
+for development sessions.
 
 Verify: `curl http://localhost:8000/health`
 

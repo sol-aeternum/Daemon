@@ -5,14 +5,14 @@ import hashlib
 import json
 import logging
 import os
+import sys
 import time
 import uuid
-from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import asyncpg
 import httpx
 import litellm
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -69,6 +69,11 @@ from orchestrator.db import (
     get_app_state,
     init_app_state,
 )
+from orchestrator.database_url import (
+    UnsafeDatabaseCredentialError,
+    apply_resolved_database_url,
+    validate_database_credentials,
+)
 from orchestrator.memory.encryption import ContentEncryption, EncryptionInitError
 from orchestrator.session_cleanup import (
     cleanup_stale_sessions,
@@ -113,98 +118,53 @@ from orchestrator.models import (
 )
 from orchestrator.prompts import DAEMON_SYSTEM_PROMPT
 from orchestrator.router import route_message
+from orchestrator.security_headers import (
+    SecurityHeadersMiddleware,
+    _OuterSecurityHeadersMiddleware,
+)
 from orchestrator.tools.builtin import create_default_registry
 from orchestrator.tools.completion import completion_with_tools
 
 logger = logging.getLogger(__name__)
 
-KNOWN_DEFAULT_POSTGRES_PASSWORDS = frozenset(
-    {
-        "postgres",
-        "password",
-        "changeme",
-        "change-me",
-        "daemon",
-        "admin",
-    }
+CORS_ALLOW_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
+CORS_ALLOW_HEADERS = (
+    "Authorization",
+    "Content-Type",
+    "X-Daemon-Client-IP",
+    "X-CSRF-Token",
 )
 
 
-class UnsafeDatabaseCredentialError(RuntimeError):
-    """Raised when production starts with known-default database credentials."""
-
-
-def _database_password_from_url(database_url: str | None) -> str | None:
-    """Extract the password component from a DATABASE_URL.
-
-    asyncpg accepts credentials either in the userinfo (``postgresql://user:pass@host``)
-    or as ``?password=...`` query options, and for repeated query keys it uses the
-    LAST value, so we mirror that precedence here.
-    """
-    if not database_url:
-        return None
-    parsed = urlparse(database_url)
-    if parsed.password is not None:
-        return unquote(parsed.password)
-    # parse_qs keeps only the last value when keep_blank_values is False (the default).
-    query_password = parse_qs(parsed.query, keep_blank_values=False).get("password", [None])[-1]
-    if query_password is not None:
-        return unquote(query_password)
-    return None
-
-
-def _resolve_database_url_from_postgres_env() -> str | None:
-    """Build a DATABASE_URL from POSTGRES_* env vars when not explicitly set.
-
-    Docker Compose interpolation does not support command substitution, so we
-    cannot URL-encode POSTGRES_PASSWORD inside the compose file directly. Instead
-    we accept the raw POSTGRES_* values and let the application construct a
-    properly-encoded DATABASE_URL.
-    """
-    explicit = os.getenv("DATABASE_URL")
-    if explicit:
-        return explicit
-    user = os.getenv("POSTGRES_USER")
-    password = os.getenv("POSTGRES_PASSWORD")
-    host = os.getenv("POSTGRES_HOST")
-    db = os.getenv("POSTGRES_DB")
-    if user is None or password is None or host is None or db is None:
-        return None
-    return f"postgresql://{user}:{quote(password, safe='')}@{host}:5432/{db}"
-
-
-def _validate_database_credentials(settings: Settings) -> None:
-    if settings.daemon_environment.strip().lower() != "production":
+def warn_on_unsafe_cors_wildcards(
+    *,
+    allow_credentials: bool,
+    allow_methods: Sequence[str],
+    allow_headers: Sequence[str],
+) -> None:
+    if not allow_credentials:
         return
-    # If DATABASE_URL was not set explicitly but the host/user/password/db
-    # quartet is, derive it so a default password cannot slip through.
-    resolved_database_url = settings.database_url or _resolve_database_url_from_postgres_env()
-    # Always inspect every asyncpg credential source so a safe-looking env var
-    # cannot mask an unsafe URL or fallback password.
-    password_candidates: list[tuple[str, str | None]] = [
-        ("POSTGRES_PASSWORD", os.getenv("POSTGRES_PASSWORD")),
-        ("PGPASSWORD", os.getenv("PGPASSWORD")),
-        ("DATABASE_URL", _database_password_from_url(resolved_database_url)),
-    ]
-    for source, password in password_candidates:
-        if password is None:
-            continue
-        if password.strip().lower() in KNOWN_DEFAULT_POSTGRES_PASSWORDS:
-            raise UnsafeDatabaseCredentialError(f"{source} uses a known default database password")
+    if "*" in allow_methods or "*" in allow_headers:
+        logger.warning(
+            "Unsafe CORS configuration: wildcard methods or headers with credentials enabled"
+        )
 
 
-def validate_database_credentials_for_worker(settings: Settings) -> None:
-    """Same fail-closed check, callable from the worker entrypoint.
-
-    The arq worker process does not run the FastAPI lifespan, so it must invoke
-    this validation explicitly before opening a database connection. Mirrors
-    ``_validate_database_credentials`` so production workers also reject the
-    known default database credentials.
-    """
-    _validate_database_credentials(settings)
+class UnsafeProductionServerConfigError(RuntimeError):
+    """Raised when the process is launched with dev-only server flags in production."""
 
 
-def _validate_startup_config(settings: Settings) -> None:
+def _validate_production_server_args(settings: Settings, argv: Sequence[str] | None = None) -> None:
+    if settings.daemon_environment.lower().strip() != "production":
+        return
+    args = sys.argv if argv is None else argv
+    if any(arg == "--reload" or arg.startswith("--reload=") for arg in args):
+        raise UnsafeProductionServerConfigError(
+            "uvicorn --reload is not allowed when DAEMON_ENVIRONMENT=production"
+        )
+
+
+def _validate_startup_config(settings: Settings, argv: Sequence[str] | None = None) -> None:
     """Run all fail-closed startup-time config validations.
 
     Centralized so the FastAPI lifespan hook stays compact and the
@@ -213,7 +173,8 @@ def _validate_startup_config(settings: Settings) -> None:
     first (authentication substrate), then hosted identity (deployment
     posture). Either failure aborts startup before any AppState work.
     """
-    _validate_database_credentials(settings)
+    validate_database_credentials(settings)
+    _validate_production_server_args(settings, argv)
     validate_pepper_config(settings)
     settings.validate_deployment_mode()
     settings.validate_hosted_identity_config()
@@ -225,11 +186,15 @@ def _validate_startup_config(settings: Settings) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+    apply_resolved_database_url(settings)
 
     try:
         _validate_startup_config(settings)
     except UnsafeDatabaseCredentialError as exc:
         logger.critical("Unsafe database credential configuration: %s", exc)
+        raise
+    except UnsafeProductionServerConfigError as exc:
+        logger.critical("Unsafe production server configuration: %s", exc)
         raise
     except PepperValidationError as exc:
         logger.critical("Production pepper validation failed: %s", exc)
@@ -395,18 +360,41 @@ async def _check_first_boot_setup(state: AppState) -> None:
         logger.warning("First-boot setup check failed", exc_info=True)
 
 
-app = FastAPI(title="daemon-orchestrator", lifespan=lifespan)
+_is_production = get_settings().daemon_environment.lower().strip() == "production"
+app = FastAPI(
+    title="daemon-orchestrator",
+    lifespan=lifespan,
+    # The strict CSP does not allow FastAPI's auto-generated Swagger UI /
+    # ReDoc pages (CDN-hosted assets and an inline bootstrap script). We
+    # disable the rendered docs endpoints unconditionally rather than
+    # serve a weakened policy in any environment — the OpenAPI schema
+    # itself remains available at the default /openapi.json path so API
+    # clients, SDK generators, and development tooling can still introspect
+    # the surface. Tests (tests/test_security_headers_and_cors.py) cover
+    # the rendered docs endpoints returning 404.
+    docs_url=None,
+    redoc_url=None,
+    # openapi_url left at the FastAPI default ("/openapi.json") — the schema
+    # has no CDN assets or inline scripts that conflict with the strict CSP,
+    # so disabling it would silently remove a useful API surface for tooling.
+)
 
 # CORS deny-by-default: use daemon_allowed_origins, filter empty strings.
 # An empty list means no cross-origin requests are allowed.
 _cors_allowed = [o.strip() for o in get_settings().daemon_allowed_origins.split(",") if o.strip()]
+warn_on_unsafe_cors_wildcards(
+    allow_credentials=True,
+    allow_methods=CORS_ALLOW_METHODS,
+    allow_headers=CORS_ALLOW_HEADERS,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_allowed,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=list(CORS_ALLOW_METHODS),
+    allow_headers=list(CORS_ALLOW_HEADERS),
 )
+app.add_middleware(SecurityHeadersMiddleware)
 
 # TrustedHostMiddleware: enforce an allowlist on the inbound Host header.
 # Without this, a Host-header injection (Host: attacker.com) can be used
@@ -2235,3 +2223,16 @@ app.include_router(users.router)
 app.include_router(video_credits.router)
 app.include_router(auth_config_router)
 app.include_router(auth_setup_router)
+
+
+# Wrap the full ASGI stack with the outer security-headers middleware so
+# that 500 responses generated by Starlette's outermost
+# ``ServerErrorMiddleware`` for unhandled exceptions still carry the same
+# HSTS / CSP / X-Frame-Options headers as normal responses. The inner
+# ``SecurityHeadersMiddleware`` sits below Starlette's error handler and
+# therefore does not see those responses. ``app.middleware_stack`` is
+# None until the first request, so we build it eagerly here and wrap the
+# resulting stack (which already has ``ServerErrorMiddleware`` on the
+# outside) with our outer security-headers pass.
+_built_stack = app.build_middleware_stack()
+app.middleware_stack = _OuterSecurityHeadersMiddleware(_built_stack)

@@ -1,20 +1,24 @@
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 import yaml
 
+import orchestrator.db as db_module
 from orchestrator.config import Settings
-from orchestrator.main import (
+from orchestrator.database_url import (
     UnsafeDatabaseCredentialError,
-    _resolve_database_url_from_postgres_env,
-    _validate_database_credentials,
+    apply_resolved_database_url,
+    resolve_database_url,
+    validate_database_credentials,
 )
 
 
 ROOT = Path(__file__).resolve().parents[1]
+worker_module = importlib.import_module("orchestrator.worker.worker")
 
 
 def _compose_services() -> dict[str, dict[str, Any]]:
@@ -73,7 +77,7 @@ def test_production_startup_rejects_known_default_postgres_password(
     settings = Settings(daemon_environment="production")
 
     with pytest.raises(UnsafeDatabaseCredentialError, match="known default"):
-        _validate_database_credentials(settings)
+        validate_database_credentials(settings)
 
 
 def test_production_startup_rejects_known_default_database_url_password(
@@ -87,7 +91,7 @@ def test_production_startup_rejects_known_default_database_url_password(
     )
 
     with pytest.raises(UnsafeDatabaseCredentialError, match="known default"):
-        _validate_database_credentials(settings)
+        validate_database_credentials(settings)
 
 
 def test_production_startup_allows_non_default_database_password(
@@ -99,7 +103,7 @@ def test_production_startup_allows_non_default_database_password(
     )
     settings = Settings(daemon_environment="production")
 
-    _validate_database_credentials(settings)
+    validate_database_credentials(settings)
 
 
 def test_production_startup_rejects_unsafe_database_url_when_postgres_password_safe(
@@ -111,7 +115,7 @@ def test_production_startup_rejects_unsafe_database_url_when_postgres_password_s
     settings = Settings(daemon_environment="production")
 
     with pytest.raises(UnsafeDatabaseCredentialError, match="DATABASE_URL uses a known default"):
-        _validate_database_credentials(settings)
+        validate_database_credentials(settings)
 
 
 def test_production_startup_accepts_database_url_password_query_param(
@@ -125,7 +129,7 @@ def test_production_startup_accepts_database_url_password_query_param(
         database_url="postgresql://postgres:5432/daemon?user=daemon&password=unique-local-secret-2026",
     )
 
-    _validate_database_credentials(settings)
+    validate_database_credentials(settings)
 
 
 def test_production_startup_rejects_known_default_database_url_password_query_param(
@@ -139,7 +143,7 @@ def test_production_startup_rejects_known_default_database_url_password_query_pa
     )
 
     with pytest.raises(UnsafeDatabaseCredentialError, match="DATABASE_URL uses a known default"):
-        _validate_database_credentials(settings)
+        validate_database_credentials(settings)
 
 
 def test_production_startup_strips_daemon_environment_whitespace(
@@ -150,7 +154,7 @@ def test_production_startup_strips_daemon_environment_whitespace(
     settings = Settings(daemon_environment=" production ")
 
     with pytest.raises(UnsafeDatabaseCredentialError, match="known default"):
-        _validate_database_credentials(settings)
+        validate_database_credentials(settings)
 
 
 def test_production_startup_rejects_repeated_password_query_options_last_wins(
@@ -165,7 +169,7 @@ def test_production_startup_rejects_repeated_password_query_options_last_wins(
     )
 
     with pytest.raises(UnsafeDatabaseCredentialError, match="DATABASE_URL uses a known default"):
-        _validate_database_credentials(settings)
+        validate_database_credentials(settings)
 
 
 def test_production_startup_rejects_pgpassword_fallback(
@@ -181,7 +185,7 @@ def test_production_startup_rejects_pgpassword_fallback(
     )
 
     with pytest.raises(UnsafeDatabaseCredentialError, match="PGPASSWORD uses a known default"):
-        _validate_database_credentials(settings)
+        validate_database_credentials(settings)
 
 
 def test_resolve_database_url_from_postgres_env_encodes_password(
@@ -194,7 +198,7 @@ def test_resolve_database_url_from_postgres_env_encodes_password(
     monkeypatch.setenv("POSTGRES_HOST", "postgres")
     monkeypatch.setenv("POSTGRES_DB", "daemon")
 
-    url = _resolve_database_url_from_postgres_env()
+    url = resolve_database_url()
 
     assert url == "postgresql://daemon:p%40ss%2F%3F%23word@postgres:5432/daemon"
 
@@ -208,10 +212,7 @@ def test_resolve_database_url_returns_explicit_database_url_unchanged(
     monkeypatch.setenv("POSTGRES_HOST", "ignored")
     monkeypatch.setenv("POSTGRES_DB", "ignored")
 
-    assert (
-        _resolve_database_url_from_postgres_env()
-        == "postgresql://daemon:secret@postgres:5432/daemon"
-    )
+    assert resolve_database_url() == "postgresql://daemon:secret@postgres:5432/daemon"
 
 
 def test_resolve_database_url_returns_none_when_inputs_missing(
@@ -220,7 +221,7 @@ def test_resolve_database_url_returns_none_when_inputs_missing(
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
 
-    assert _resolve_database_url_from_postgres_env() is None
+    assert resolve_database_url() is None
 
 
 def test_production_startup_rejects_postgres_env_derived_default_password(
@@ -237,4 +238,74 @@ def test_production_startup_rejects_postgres_env_derived_default_password(
     with pytest.raises(
         UnsafeDatabaseCredentialError, match="POSTGRES_PASSWORD uses a known default"
     ):
-        _validate_database_credentials(settings)
+        validate_database_credentials(settings)
+
+
+def test_apply_resolved_database_url_updates_settings_for_connection_entrypoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", "")
+    monkeypatch.setenv("POSTGRES_USER", "daemon user")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "unique@secret")
+    monkeypatch.setenv("POSTGRES_HOST", "postgres")
+    monkeypatch.setenv("POSTGRES_DB", "daemon/db")
+    settings = Settings(database_url=None, daemon_environment="development")
+
+    resolved = apply_resolved_database_url(settings)
+
+    assert resolved == "postgresql://daemon%20user:unique%40secret@postgres:5432/daemon%2Fdb"
+    assert settings.database_url == resolved
+
+
+@pytest.mark.asyncio
+async def test_backend_pool_uses_postgres_env_derived_database_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", "")
+    monkeypatch.setenv("POSTGRES_USER", "daemon")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "unique@secret")
+    monkeypatch.setenv("POSTGRES_HOST", "postgres")
+    monkeypatch.setenv("POSTGRES_DB", "daemon")
+    captured: dict[str, object] = {}
+
+    async def fail_after_capture(**kwargs: object) -> None:
+        captured.update(kwargs)
+        raise OSError("expected test stop")
+
+    monkeypatch.setattr(db_module.asyncpg, "create_pool", fail_after_capture)
+    settings = Settings(
+        database_url=None,
+        redis_url=None,
+        daemon_environment="development",
+    )
+
+    state = await db_module.init_app_state(settings)
+
+    assert state.db_pool is None
+    assert captured["dsn"] == "postgresql://daemon:unique%40secret@postgres:5432/daemon"
+
+
+@pytest.mark.asyncio
+async def test_worker_pool_uses_postgres_env_derived_database_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", "")
+    monkeypatch.setenv("POSTGRES_USER", "daemon")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "unique@secret")
+    monkeypatch.setenv("POSTGRES_HOST", "postgres")
+    monkeypatch.setenv("POSTGRES_DB", "daemon")
+    settings = Settings(database_url=None, daemon_environment="development")
+    captured: dict[str, object] = {}
+
+    async def fail_after_capture(**kwargs: object) -> None:
+        captured.update(kwargs)
+        raise OSError("expected test stop")
+
+    monkeypatch.setattr(worker_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(worker_module.asyncpg, "create_pool", fail_after_capture)
+
+    with pytest.raises(OSError, match="expected test stop"):
+        await worker_module.on_startup({})
+
+    assert settings.database_url == "postgresql://daemon:unique%40secret@postgres:5432/daemon"
+    assert captured["dsn"] == settings.database_url

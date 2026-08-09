@@ -41,10 +41,11 @@ class TestProcessExtractionReturnsTuple:
             )
 
             assert isinstance(result, tuple)
-            assert len(result) == 2
-            success, new_memories = result
+            assert len(result) == 3
+            success, new_memories, continuation_needed = result
             assert success is True
             assert new_memories == []
+            assert continuation_needed is False
 
 
 class TestEntityResolutionJobBestEffort:

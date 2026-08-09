@@ -10,8 +10,13 @@ import shutil
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 BASE_DIR = PROJECT_ROOT / "tests/benchmark_results/wave0_rerun_v1"
 
+from tests.benchmark_harness.database import configured_benchmark_database_url  # noqa: E402
+
+os.environ["DATABASE_URL"] = configured_benchmark_database_url()
 os.environ["PYTHONPATH"] = str(PROJECT_ROOT)
 
 
@@ -33,7 +38,6 @@ import sys
 sys.path.insert(0, "{PROJECT_ROOT}")
 import os
 os.environ["BENCHMARK_MODE"] = "1"
-os.environ["DATABASE_URL"] = "postgresql://daemon:daemon@127.0.0.1:5432/daemon"
 
 PATCH_CODE = """
 import sys

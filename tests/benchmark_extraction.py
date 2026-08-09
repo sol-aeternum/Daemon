@@ -51,6 +51,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, cast
 
 try:
@@ -109,6 +110,10 @@ def _load_dotenv() -> None:
 
 # Auto-load .env on import so DAEMON_ENCRYPTION_KEY + DATABASE_URL are available
 _load_dotenv()
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from tests.benchmark_harness.database import configured_benchmark_database_url  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Configuration (read AFTER dotenv load)
@@ -146,9 +151,7 @@ def _resolve_db_url(url: str) -> str:
     return url
 
 
-DATABASE_URL = _resolve_db_url(
-    os.environ.get("DATABASE_URL", "postgresql://daemon:daemon@localhost:5432/daemon")
-)
+DATABASE_URL = _resolve_db_url(configured_benchmark_database_url())
 REDIS_URL_RAW = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
 

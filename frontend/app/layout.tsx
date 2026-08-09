@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { headers } from "next/headers";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { AuthProvider } from "@/components/AuthProvider";
 import "./globals.css";
@@ -25,13 +26,23 @@ export const viewport: Viewport = {
   viewportFit: "cover",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // Surface the per-request CSP nonce to client components (notably the
+  // <InlineArtifact /> srcDoc builder, which injects the nonce into its
+  // inline <style> and <script> tags so the iframe's CSP — inherited from
+  // the embedding page — does not block the artifact shell). The proxy
+  // sets `x-nonce` on the request headers; Next.js strips it from the
+  // auto-forwarded headers unless we read it explicitly here.
+  const nonce = (await headers()).get("x-nonce") ?? undefined;
   return (
     <html lang="en" suppressHydrationWarning>
+      <head>
+        {nonce ? <meta name="csp-nonce" content={nonce} /> : null}
+      </head>
       <body className="antialiased">
         <ThemeProvider>
           <AuthProvider>{children}</AuthProvider>
