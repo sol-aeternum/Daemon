@@ -277,7 +277,6 @@ Browser
 
 Old directly protected `orchestrator/main.py` routes must move from legacy `require_api_key` to access-token auth: `/providers`, `/chat/completions`, `/tts`, `/audio/token`, `/audio/scribe-token`, `/stt`, `/sound-effects`, and `/chat`.
 
-<!-- DOC_FRESHNESS_EXCEPTION: ROUTE expires=2026-12-31 reason="Removed /v1/tools/test endpoint is intentionally referenced in the historical note below; route is absent from source by design (issue #115)." -->
 > Note: the v1 tools test endpoint (an undocumented cost-bearing test scaffolding route) was removed (see issue #115); it is no longer in the route table and does not need hardening.
 
 Audit gaps to harden:
