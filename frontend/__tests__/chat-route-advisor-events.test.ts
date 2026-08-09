@@ -237,4 +237,48 @@ describe('chat route advisor event bridge', () => {
       ]),
     );
   });
+
+  it('passes req.signal to the backend fetch so abort propagates upstream', async () => {
+    let capturedInit: RequestInit | undefined;
+
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockImplementation((_input: RequestInfo | URL, init?: RequestInit) => {
+          capturedInit = init;
+          return Promise.resolve(
+            new Response('event: token\ndata: {"data":{"text":"hi"}}\n\n', {
+              status: 200,
+              headers: { 'Content-Type': 'text/event-stream' },
+            }),
+          );
+        }),
+    );
+
+    const controller = new AbortController();
+    const request = new Request('http://test/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: 'hi' }],
+        id: 'conv_signal',
+      }),
+    });
+    // Replace `req.signal` so we can observe the route forwarding the
+    // browser-side signal into the backend fetch.
+    Object.defineProperty(request, 'signal', {
+      configurable: true,
+      get: () => controller.signal,
+    });
+
+    controller.abort();
+
+    await POST(request);
+
+    // The route must forward the signal it received into the backend call
+    // so the FastAPI connection is torn down when the user clicks Stop.
+    expect(capturedInit?.signal).toBe(controller.signal);
+    expect(capturedInit?.signal?.aborted).toBe(true);
+  });
 });

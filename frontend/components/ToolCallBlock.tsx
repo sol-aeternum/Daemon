@@ -150,6 +150,21 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
     };
   }, [imagePath]);
 
+  // Dismiss the open image lightbox with Escape so the global Stop shortcut
+  // is not left inert. The lightbox carries `data-stop-shortcut-block`, so
+  // without this Escape does nothing while the lightbox is open.
+  useEffect(() => {
+    if (!isLightboxOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsLightboxOpen(false);
+        event.stopPropagation();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [isLightboxOpen]);
+
   if (!isToolCallEvent(rawCall)) {
     return null;
   }
@@ -409,6 +424,10 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
 
         {isLightboxOpen && (
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Generated image preview"
+            data-stop-shortcut-block="true"
             className="fixed inset-0 z-[60] flex items-center justify-center bg-black/95 backdrop-blur-sm p-4 animate-in fade-in duration-200"
             onClick={() => setIsLightboxOpen(false)}
           >

@@ -54,9 +54,20 @@ export function ModelSelector({ selected, onSelect }: ModelSelectorProps) {
         setShowMore(false);
       }
     };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && open) {
+        setOpen(false);
+        setShowMore(false);
+        event.stopPropagation();
+      }
+    };
     document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [open]);
 
   const selectedName =
     selected === 'auto'
@@ -106,7 +117,10 @@ export function ModelSelector({ selected, onSelect }: ModelSelectorProps) {
       </button>
 
       {open && catalog && (
-        <div className="absolute bottom-full mb-2 left-0 w-72 bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)] rounded-lg shadow-lg overflow-hidden z-50">
+        <div
+          data-stop-shortcut-block="true"
+          className="absolute bottom-full mb-2 left-0 w-72 bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)] rounded-lg shadow-lg overflow-hidden z-50"
+        >
           <button
             type="button"
             onClick={() => {

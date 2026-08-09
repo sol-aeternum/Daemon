@@ -1293,50 +1293,101 @@ class MemoryStore:
             memory_ids,
         )
 
-    async def close_memory(self, memory_id: uuid.UUID) -> bool:
-        exists = await self._pool.fetchval(
-            """
-            SELECT EXISTS(
-                SELECT 1
-                FROM memories
-                WHERE id = $1
-            )
-            """,
-            memory_id,
+    async def close_memory(
+        self,
+        memory_id: uuid.UUID,
+        *,
+        user_id: uuid.UUID | None = None,
+    ) -> bool:
+        # When `user_id` is provided, the existence check and the UPDATE
+        # both filter on it. This is defense-in-depth for the
+        # `MemoryWriteTool` IDOR: callers that already enforce
+        # user-scoping at the tool/route layer should pass `user_id` so
+        # the SQL itself rejects any future caller that forgets the
+        # application-layer guard. Callers that operate on
+        # already-user-scoped rows (e.g. `dedup.py`, which queries a
+        # user's own memory rows before closing) may omit `user_id`.
+        exists_query = (
+            "SELECT EXISTS(SELECT 1 FROM memories WHERE id = $1)"
+            if user_id is None
+            else "SELECT EXISTS(SELECT 1 FROM memories WHERE id = $1 AND user_id = $2)"
         )
+        exists_args: tuple[Any, ...] = (memory_id,) if user_id is None else (memory_id, user_id)
+        exists = await self._pool.fetchval(exists_query, *exists_args)
         if not bool(exists):
             return False
 
-        await self._pool.execute(
-            """
+        update_query = """
             UPDATE memories
             SET valid_to = NOW(),
                 updated_at = NOW()
             WHERE id = $1
               AND valid_to IS NULL
-            """,
-            memory_id,
-        )
-        return True
-
-    async def delete_memory(self, memory_id: uuid.UUID, *, soft: bool = True) -> bool:
-        if soft:
-            result = await self._pool.execute(
-                """
+            """
+        update_args: tuple[Any, ...] = (memory_id,)
+        if user_id is not None:
+            update_query = """
                 UPDATE memories
-                SET status = 'deleted',
-                    valid_to = COALESCE(valid_to, NOW()),
+                SET valid_to = NOW(),
                     updated_at = NOW()
                 WHERE id = $1
-                """,
-                memory_id,
-            )
+                  AND user_id = $2
+                  AND valid_to IS NULL
+                """
+            update_args = (memory_id, user_id)
+        await self._pool.execute(update_query, *update_args)
+        return True
+
+    async def delete_memory(
+        self,
+        memory_id: uuid.UUID,
+        *,
+        soft: bool = True,
+        user_id: uuid.UUID | None = None,
+    ) -> bool:
+        # `user_id` is defense-in-depth for the `MemoryWriteTool` IDOR:
+        # when provided, both soft and hard delete paths filter on
+        # `user_id` so a future caller that forgets the application-layer
+        # guard cannot affect another user's row. Trusted callers (e.g.
+        # `dedup.py`, operating on already-user-scoped rows) may omit it.
+        if soft:
+            if user_id is None:
+                result = await self._pool.execute(
+                    """
+                    UPDATE memories
+                    SET status = 'deleted',
+                        valid_to = COALESCE(valid_to, NOW()),
+                        updated_at = NOW()
+                    WHERE id = $1
+                    """,
+                    memory_id,
+                )
+            else:
+                result = await self._pool.execute(
+                    """
+                    UPDATE memories
+                    SET status = 'deleted',
+                        valid_to = COALESCE(valid_to, NOW()),
+                        updated_at = NOW()
+                    WHERE id = $1
+                      AND user_id = $2
+                    """,
+                    memory_id,
+                    user_id,
+                )
             return result == "UPDATE 1"
 
-        result = await self._pool.execute(
-            "DELETE FROM memories WHERE id = $1",
-            memory_id,
-        )
+        if user_id is None:
+            result = await self._pool.execute(
+                "DELETE FROM memories WHERE id = $1",
+                memory_id,
+            )
+        else:
+            result = await self._pool.execute(
+                "DELETE FROM memories WHERE id = $1 AND user_id = $2",
+                memory_id,
+                user_id,
+            )
         return result == "DELETE 1"
 
     async def search_memories(
