@@ -1,0 +1,186 @@
+# Codex PR review → ready-for-human-review label sync
+#
+# Watches `pull_request_review` events from the chatgpt-codex-connector[bot]
+# account. When Codex posts a review with no findings on a PR, applies the
+# `ready-for-human-review` label automatically. The resolver's strict four-step
+# clean check (see ~/.hermes/skills/resolve-to-green/SKILL.md → "Strict
+# definition of AUTO_REVIEWER_CLEAN") remains the authoritative gate; this
+# workflow is a fast-path for the common case. If the workflow labels a PR
+# incorrectly, the resolver's next tick will leave a `Status: LABEL_CORRECTED`
+# comment and remove the label per the resolver's label-correction permission.
+#
+# AGENTS.md interaction: the repo already has a `## Codex PR Review` section
+# (line 169+ as of writing) that defines Codex's clean-review comment template
+# starting with `Review status: No findings`. This workflow matches that
+# template as one of its clean signals. Do NOT add a separate `## Code Review
+# Rules` section — that's a different file and Codex reads only one.
+
+name: codex-clean-label
+
+on:
+  pull_request_review:
+    types: [submitted, edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  sync-clean-label:
+    # Only react to reviews from the Codex bot.
+    if: github.event.review.user.login == 'chatgpt-codex-connector[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Classify Codex review and apply label
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.issue;
+            const review = context.payload.review;
+            const reviewState = review.state;          // APPROVED | COMMENTED | CHANGES_REQUESTED
+            const reviewBody = review.body || '';
+            const reviewId = review.id;
+            const commitId = review.commit_id;         // The commit SHA Codex reviewed
+
+            // Helper: log a structured event for ops triage
+            const log = (event, extra = {}) => core.info(JSON.stringify({
+              event, pr: pr.number, reviewId, commitId, reviewState, ...extra
+            }));
+
+            // Step 1: state-based shortcuts
+            // APPROVED is unambiguous → ready. CHANGES_REQUESTED → not ready.
+            if (reviewState === 'CHANGES_REQUESTED') {
+              log('review.changes_requested.skip_label');
+              return;
+            }
+            if (reviewState !== 'APPROVED' && reviewState !== 'COMMENTED') {
+              log('review.unknown_state.skip', { reviewState });
+              return;
+            }
+
+            // Step 2: load inline review comments on this commit. The Codex bot
+            // sometimes posts substantive findings as inline review comments
+            // (line comments on specific files), not just in the formal review
+            // body. Both must be empty of severity badges for a clean signal.
+            // We check both the review-specific endpoint AND the PR-level review
+            // comments endpoint — the bot's comment-association behaviour is
+            // documented to vary, and we don't want a silent miss.
+            const reviewSpecificComments = await github.paginate(
+              github.rest.pulls.listCommentsForReview,
+              { owner: pr.owner, repo: pr.repo, pull_number: pr.number, review_id: reviewId, per_page: 100 }
+            );
+            const prLevelReviewComments = await github.paginate(
+              github.rest.pulls.listReviewComments,
+              { owner: pr.owner, repo: pr.repo, pull_number: pr.number, per_page: 100 }
+            );
+            // De-duplicate by comment id — same comment may appear under both
+            // endpoints if it's somehow linked both ways.
+            const seenIds = new Set();
+            const reviewComments = [...reviewSpecificComments, ...prLevelReviewComments]
+              .filter(c => { if (seenIds.has(c.id)) return false; seenIds.add(c.id); return true; })
+              // Filter to comments on the same commit SHA as the review, so a
+              // stale inline comment from an earlier commit doesn't poison the
+              // signal. The PR-level endpoint returns comments across all SHAs.
+              .filter(c => c.commit_id === commitId || c.commit_id === undefined);
+
+            log('review.fetched_inline', {
+              reviewSpecific: reviewSpecificComments.length,
+              prLevel: prLevelReviewComments.length,
+              dedupedOnCommit: reviewComments.length
+            });
+
+            // Step 3: detect clean signals and finding signals
+            const cleanTemplateMatched = /\bReview status:\s*No findings\b/i.test(reviewBody);
+            const severityBadgeRegex = /\bP[0-3]\b|shields\.io\/badge\/P[0-3]/i;
+            const hasSeverityBadge = severityBadgeRegex.test(reviewBody);
+            const hasInlineFindings = reviewComments.some(c =>
+              severityBadgeRegex.test(c.body || '')
+            );
+
+            // Step 4: classify. APPROVED is always clean. COMMENTED requires
+            // either the AGENTS.md-defined clean template, or no findings at all.
+            const isClean =
+              reviewState === 'APPROVED' ||
+              (reviewState === 'COMMENTED' && !hasSeverityBadge && !hasInlineFindings);
+
+            log('review.classified', {
+              cleanTemplateMatched, hasSeverityBadge, hasInlineFindings, isClean
+            });
+
+            // Step 5: also fetch PR's current head SHA so we don't label on
+            // a review that targets an older commit than the branch tip.
+            const { data: prData } = await github.rest.pulls.get({
+              owner: pr.owner, repo: pr.repo, pull_number: pr.number
+            });
+            const headSha = prData.head.sha;
+            const reviewedLatest = (commitId === headSha);
+
+            log('review.sha_check', { headSha, reviewedLatest });
+
+            if (!isClean) {
+              log('finding_present.skip_label');
+              return;
+            }
+            if (!reviewedLatest) {
+              log('stale_review.skip_label', { headSha, reviewCommit: commitId });
+              return;
+            }
+
+            // Step 6: apply the label. Idempotent — adding an existing label is
+            // a no-op. If the label doesn't exist, create it (best-effort).
+            const labelName = 'ready-for-human-review';
+            try {
+              await github.rest.issues.addLabels({
+                owner: pr.owner, repo: pr.repo, issue_number: pr.number,
+                labels: [labelName]
+              });
+              log('label.applied');
+            } catch (e) {
+              // Label doesn't exist — try to create it then add. Best-effort:
+              // if creation fails (insufficient perms), the add will too. We
+              // log and continue; the resolver's strict four-step check on
+              // the next tick is the authoritative gate regardless.
+              log('label.apply_failed', { error: String(e) });
+              try {
+                await github.rest.issues.createLabel({
+                  owner: pr.owner, repo: pr.repo,
+                  name: labelName, color: '0e8a16',
+                  description: 'Codex review is clean on the latest commit; human review recommended'
+                });
+                await github.rest.issues.addLabels({
+                  owner: pr.owner, repo: pr.repo, issue_number: pr.number,
+                  labels: [labelName]
+                });
+                log('label.created_and_applied');
+              } catch (e2) {
+                log('label.create_failed', { error: String(e2) });
+              }
+            }
+
+            // Step 7: leave a brief audit comment so the timeline shows why
+            // the label was applied. The resolver's LABEL_CORRECTED mechanism
+            // will remove the label if it later disagrees.
+            const auditBody = [
+              '`Status: CODEX_CLEAN_LABEL_APPLIED`',
+              '',
+              `Trigger: \`pull_request_review\` from \`${review.user.login}\` (review #${reviewId}).`,
+              `Classification: state=${reviewState}, cleanTemplate=${cleanTemplateMatched}, ` +
+                `severityBadge=${hasSeverityBadge}, inlineFindings=${hasInlineFindings}, ` +
+                `reviewedLatestCommit=${reviewedLatest}.`,
+              '',
+              'This label is fast-path only. The resolver\'s strict four-step clean check ' +
+                '(see `AGENTS.md` and `resolve-to-green` skill body) remains authoritative; ' +
+                'if it disagrees on the next tick, a `Status: LABEL_CORRECTED` comment will ' +
+                'remove this label with evidence.',
+              '',
+              'No merge performed. Final review and merge remain human tasks.'
+            ].join('\n');
+            try {
+              await github.rest.issues.createComment({
+                owner: pr.owner, repo: pr.repo, issue_number: pr.number,
+                body: auditBody
+              });
+              log('comment.posted');
+            } catch (e) {
+              log('comment.failed', { error: String(e) });
+            }
