@@ -12,11 +12,15 @@ error rather than letting the request proceed.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import functools
 import ipaddress
 import os
 import socket
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import Any, Iterator
 from urllib.parse import urlparse
 
@@ -62,6 +66,14 @@ MAX_URL_LENGTH = 2048
 ALLOWED_SCHEMES: frozenset[str] = frozenset({"https"})
 ALLOWED_PORTS: frozenset[int] = frozenset({443})
 
+# DNS lookups are blocking and platform resolvers do not support cancellation.
+# Isolate them from asyncio's process-wide default executor so attacker-controlled
+# slow lookups cannot starve unrelated backend work. The worker and slot bounds
+# cap both active lookups and queued work, including lookups that outlive a caller
+# timeout because the platform resolver is still blocked.
+_RESOLVER_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ssrf-resolver")
+_RESOLVER_SLOTS = asyncio.Semaphore(8)
+
 # IANA only allocates global unicast from 2000::/3. Everything outside it is
 # special-use, reserved, or transition machinery (IPv4-compatible, SIIT
 # encodings like ::ffff:0:a.b.c.d, etc.) and is rejected outright so oddly
@@ -71,6 +83,16 @@ _IPV6_GLOBAL_UNICAST = ipaddress.ip_network("2000::/3")
 
 class SsrfViolation(Exception):
     """Raised when a URL fails SSRF validation."""
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedUrl:
+    """A validated URL and the public addresses approved for its connection."""
+
+    url: str
+    host: str
+    port: int
+    addresses: tuple[str, ...]
 
 
 def is_disallowed_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -100,7 +122,7 @@ def is_disallowed_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return any(ip in net for net in networks)
 
 
-def _resolve_and_check(host: str, port: int) -> None:
+def _resolve_and_check(host: str, port: int) -> tuple[str, ...]:
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
@@ -111,6 +133,7 @@ def _resolve_and_check(host: str, port: int) -> None:
         raise SsrfViolation(f"hostname {host!r} is not a valid DNS name: {exc}") from exc
     if not infos:
         raise SsrfViolation(f"DNS resolution returned no results for {host!r}")
+    addresses: list[str] = []
     for _family, _stype, _proto, _canon, sockaddr in infos:
         ip_str = sockaddr[0]
         try:
@@ -121,6 +144,10 @@ def _resolve_and_check(host: str, port: int) -> None:
             ) from exc
         if is_disallowed_ip(ip):
             raise SsrfViolation(f"hostname {host!r} resolves to blocked IP {ip}")
+        normalized = str(ip)
+        if normalized not in addresses:
+            addresses.append(normalized)
+    return tuple(addresses)
 
 
 def validate_url(
@@ -129,11 +156,25 @@ def validate_url(
     allowed_schemes: frozenset[str] = ALLOWED_SCHEMES,
     allowed_ports: frozenset[int] = ALLOWED_PORTS,
 ) -> str:
-    """Validate `url` for SSRF safety. Returns the URL unchanged on success.
+    """Validate `url` for SSRF safety. Returns the URL unchanged on success."""
+    return validate_url_and_resolve(
+        url,
+        allowed_schemes=allowed_schemes,
+        allowed_ports=allowed_ports,
+    ).url
 
-    Raises SsrfViolation on unsupported scheme, disallowed port, userinfo,
-    length over MAX_URL_LENGTH, missing hostname, or non-public resolution.
-    This is the pre-flight check; `socket_guard` re-validates at connect time.
+
+def validate_url_and_resolve(
+    url: str,
+    *,
+    allowed_schemes: frozenset[str] = ALLOWED_SCHEMES,
+    allowed_ports: frozenset[int] = ALLOWED_PORTS,
+) -> ValidatedUrl:
+    """Validate a URL and return the exact public IPs approved for connecting.
+
+    Callers that make the connection should connect to one of ``addresses``
+    directly while preserving ``host`` for the HTTP Host header and TLS SNI.
+    This closes the DNS-rebinding window without mutating process-global DNS.
     """
     if not url or not isinstance(url, str):
         raise SsrfViolation("URL is required")
@@ -149,18 +190,56 @@ def validate_url(
         raise SsrfViolation("URLs containing userinfo (user:pass@) are not allowed")
     try:
         host = parsed.hostname
-        port = parsed.port
+        explicit_port = parsed.port
     except ValueError as exc:
         # urlparse defers netloc validation: malformed ports (e.g. :99999) and
         # invalid IPv6 brackets raise here, not at parse time. Fail closed.
         raise SsrfViolation(f"malformed host/port in URL: {exc}") from exc
     if not host:
         raise SsrfViolation("URL is missing a hostname")
-    if port is not None and port not in allowed_ports:
-        raise SsrfViolation(f"port {port} is not allowed (allowed: {sorted(allowed_ports)})")
+    if explicit_port is not None and explicit_port not in allowed_ports:
+        raise SsrfViolation(
+            f"port {explicit_port} is not allowed (allowed: {sorted(allowed_ports)})"
+        )
     default_port = 80 if parsed.scheme == "http" else 443
-    _resolve_and_check(host, port if port is not None else default_port)
-    return url
+    port = explicit_port if explicit_port is not None else default_port
+    addresses = _resolve_and_check(host, port)
+    return ValidatedUrl(url=url, host=host, port=port, addresses=addresses)
+
+
+async def validate_url_and_resolve_async(
+    url: str,
+    *,
+    allowed_schemes: frozenset[str] = ALLOWED_SCHEMES,
+    allowed_ports: frozenset[int] = ALLOWED_PORTS,
+    timeout: float = 10.0,
+) -> ValidatedUrl:
+    """Validate through the bounded resolver pool without blocking the event loop."""
+    validation = functools.partial(
+        validate_url_and_resolve,
+        url,
+        allowed_schemes=allowed_schemes,
+        allowed_ports=allowed_ports,
+    )
+    loop = asyncio.get_running_loop()
+    try:
+        await asyncio.wait_for(_RESOLVER_SLOTS.acquire(), timeout=timeout)
+    except TimeoutError as exc:
+        raise SsrfViolation(f"DNS validation timed out for {url}") from exc
+
+    try:
+        future = loop.run_in_executor(_RESOLVER_EXECUTOR, validation)
+    except BaseException:
+        _RESOLVER_SLOTS.release()
+        raise
+
+    # Shield the resolver future so a caller timeout does not cancel the only
+    # completion signal that releases capacity after the blocking lookup ends.
+    future.add_done_callback(lambda _future: _RESOLVER_SLOTS.release())
+    try:
+        return await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
+    except TimeoutError as exc:
+        raise SsrfViolation(f"DNS validation timed out for {url}") from exc
 
 
 def _load_allowed_domains() -> frozenset[str]:

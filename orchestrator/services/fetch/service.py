@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from collections.abc import Sequence
@@ -18,7 +17,10 @@ from orchestrator.services.fetch.strategies.crawl4ai import Crawl4AIStrategy
 from orchestrator.services.fetch.strategies.direct import DirectFetchStrategy
 from orchestrator.services.fetch.strategies.jina import JinaReaderStrategy
 from orchestrator.services.fetch.strategies.youtube import YouTubeTranscriptStrategy
-from orchestrator.tools.ssrf_guard import SsrfViolation, validate_url
+from orchestrator.tools.ssrf_guard import (
+    SsrfViolation,
+    validate_url_and_resolve_async,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,16 +59,12 @@ class FetchService:
             return None
 
         try:
-            await asyncio.wait_for(
-                asyncio.to_thread(
-                    validate_url,
-                    fetch_url,
-                    allowed_schemes=_FETCH_SCHEMES,
-                    allowed_ports=_FETCH_PORTS,
-                ),
-                timeout=10.0,
+            await validate_url_and_resolve_async(
+                fetch_url,
+                allowed_schemes=_FETCH_SCHEMES,
+                allowed_ports=_FETCH_PORTS,
             )
-        except (TimeoutError, SsrfViolation) as exc:
+        except SsrfViolation as exc:
             logger.info("FetchService blocked unsafe URL %s: %s", fetch_url, exc)
             return None
 
@@ -120,11 +118,19 @@ class FetchService:
         else:
             strategies = self._default_strategy_chain()
 
-        result = await self._run_strategy_chain(
-            fetch_url=fetch_url,
-            normalized_url=normalized_url,
-            strategies=strategies,
-        )
+        try:
+            result = await self._run_strategy_chain(
+                fetch_url=fetch_url,
+                normalized_url=normalized_url,
+                strategies=strategies,
+            )
+        except SsrfViolation as exc:
+            logger.info(
+                "FetchService stopped fallback chain for %s: unsafe redirect: %s",
+                normalized_url,
+                exc,
+            )
+            return None
         if result is None:
             logger.info(
                 "FetchService exhausted strategies for %s without success",
@@ -152,7 +158,6 @@ class FetchService:
         return (
             ("direct", self.direct_strategy),
             ("jina", self.jina_strategy),
-            ("crawl4ai", self.crawl4ai_strategy),
             ("archive", self.archive_strategy),
         )
 
@@ -198,6 +203,8 @@ class FetchService:
 
         try:
             result = await strategy.fetch(fetch_url)
+        except SsrfViolation:
+            raise
         except Exception:
             elapsed_ms = (time.perf_counter() - started_at) * 1000
             logger.info(

@@ -1,3 +1,4 @@
+import socket
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -19,6 +20,7 @@ from orchestrator.services.fetch.strategies.direct import DirectFetchStrategy
 from orchestrator.services.fetch.strategies.jina import JinaReaderStrategy
 from orchestrator.services.fetch.strategies.youtube import YouTubeTranscriptStrategy
 from orchestrator.services.fetch.url_extract import extract_urls
+from orchestrator.tools.ssrf_guard import SsrfViolation
 
 
 @pytest.fixture
@@ -89,13 +91,97 @@ class TestDirectStrategy:
         redirect.status_code = 302
         redirect.headers = {"location": "http://169.254.169.254/latest/meta-data/"}
         redirect.text = "This body must not be treated as successful redirected content"
-        redirect.raise_for_status = MagicMock()
+        with (
+            patch(
+                "httpx.AsyncClient.get", new_callable=AsyncMock, return_value=redirect
+            ) as mock_get,
+            pytest.raises(SsrfViolation, match="blocked IP"),
+        ):
+            await strategy.fetch("https://8.8.8.8/start")
 
-        with patch("httpx.AsyncClient.get", return_value=redirect) as mock_get:
-            result = await strategy.fetch("https://8.8.8.8/start")
-
-        assert result is None
         mock_get.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_nonstandard_port_is_blocked(self, fetch_policy):
+        strategy = DirectFetchStrategy(fetch_policy)
+
+        with pytest.raises(SsrfViolation, match="port 8443 is not allowed"):
+            await strategy.fetch("https://8.8.8.8:8443/private")
+
+    @pytest.mark.asyncio
+    async def test_redirect_to_policy_blocked_domain_stops_fetch(self, fetch_policy):
+        blocked_policy = fetch_policy.model_copy(update={"blocked_domains": ["example.com"]})
+        strategy = DirectFetchStrategy(blocked_policy)
+        redirect = MagicMock()
+        redirect.status_code = 302
+        redirect.headers = {"location": "https://example.com/private"}
+        success = MagicMock()
+        success.status_code = 200
+        success.headers = {"content-type": "text/plain"}
+        success.text = "This content must not be returned from a blocked redirect target"
+        success.raise_for_status = MagicMock()
+
+        with (
+            patch(
+                "orchestrator.tools.ssrf_guard._resolve_and_check",
+                return_value=("8.8.8.8",),
+            ),
+            patch(
+                "httpx.AsyncClient.get",
+                new_callable=AsyncMock,
+                side_effect=[redirect, success],
+            ) as mock_get,
+            pytest.raises(SsrfViolation, match="blocked by fetch policy"),
+        ):
+            await strategy.fetch("https://8.8.8.8/start")
+
+        mock_get.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_fetch_does_not_patch_process_dns(self, fetch_policy):
+        strategy = DirectFetchStrategy(fetch_policy)
+        original_getaddrinfo = socket.getaddrinfo
+        response = MagicMock()
+        response.status_code = 200
+        response.headers = {"content-type": "text/plain"}
+        response.text = "This is sufficiently long direct content for testing purposes"
+        response.raise_for_status = MagicMock()
+
+        async def assert_dns_is_unpatched(*_args, **_kwargs):
+            assert socket.getaddrinfo is original_getaddrinfo
+            return response
+
+        with patch("httpx.AsyncClient.get", side_effect=assert_dns_is_unpatched):
+            result = await strategy.fetch("https://8.8.8.8/article")
+
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_fetch_pins_connection_to_validated_ip(self, fetch_policy):
+        strategy = DirectFetchStrategy(fetch_policy)
+        response = MagicMock()
+        response.status_code = 200
+        response.headers = {"content-type": "text/plain"}
+        response.text = "This is sufficiently long direct content for testing purposes"
+        response.raise_for_status = MagicMock()
+
+        with (
+            patch(
+                "orchestrator.tools.ssrf_guard._resolve_and_check",
+                return_value=("93.184.216.34",),
+            ),
+            patch(
+                "httpx.AsyncClient.get", new_callable=AsyncMock, return_value=response
+            ) as mock_get,
+        ):
+            result = await strategy.fetch("https://example.com/article?q=1")
+
+        assert result is not None
+        request_call = mock_get.await_args
+        assert request_call is not None
+        assert request_call.args[0] == "https://93.184.216.34/article?q=1"
+        assert request_call.kwargs["headers"]["Host"] == "example.com"
+        assert request_call.kwargs["extensions"]["sni_hostname"] == "example.com"
 
 
 class TestYouTubeStrategy:
@@ -362,8 +448,33 @@ class TestFetchService:
         assert result.strategy_used == "archive"
         fetch_service.direct_strategy.fetch.assert_called_once_with("https://example.com")
         fetch_service.jina_strategy.fetch.assert_called_once_with("https://example.com")
-        fetch_service.crawl4ai_strategy.fetch.assert_called_once_with("https://example.com")
+        fetch_service.crawl4ai_strategy.fetch.assert_not_called()
         fetch_service.archive_strategy.fetch.assert_called_once_with("https://example.com")
+
+    @pytest.mark.asyncio
+    async def test_ssrf_violation_stops_fallback_chain(self, fetch_service):
+        fetch_service.cache.get = AsyncMock(return_value=None)
+        fetch_service.direct_strategy = MagicMock()
+        fetch_service.direct_strategy.fetch = AsyncMock(
+            side_effect=SsrfViolation("redirect resolved to a blocked IP")
+        )
+        fallback_result = FetchResult(
+            url="https://8.8.8.8/start",
+            content="This fallback must not run after an SSRF policy violation",
+            title="",
+            strategy_used="jina",
+            cached=False,
+            fetch_time_ms=0.0,
+            content_length=60,
+        )
+        fetch_service.jina_strategy = MagicMock()
+        fetch_service.jina_strategy.fetch = AsyncMock(return_value=fallback_result)
+
+        result = await fetch_service.fetch("https://8.8.8.8/start")
+
+        assert result is None
+        fetch_service.direct_strategy.fetch.assert_awaited_once()
+        fetch_service.jina_strategy.fetch.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_cache_hit(self, fetch_service):

@@ -13,6 +13,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import socket
+import time
 from unittest.mock import patch
 
 import httpx
@@ -30,6 +31,7 @@ from orchestrator.tools.ssrf_guard import (
     is_disallowed_ip,
     socket_guard,
     validate_url,
+    validate_url_and_resolve_async,
 )
 
 
@@ -97,6 +99,22 @@ class TestIsDisallowedIp:
     def test_ipv4_mapped_public_ipv6_is_allowed(self) -> None:
         mapped = ipaddress.IPv6Address("::ffff:8.8.8.8")
         assert is_disallowed_ip(mapped) is False
+
+
+class TestValidateUrlAsync:
+    @pytest.mark.asyncio
+    async def test_timeout_is_reported_as_ssrf_violation(self) -> None:
+        def slow_validation(*_args: object, **_kwargs: object) -> None:
+            time.sleep(0.2)
+
+        with (
+            patch(
+                "orchestrator.tools.ssrf_guard.validate_url_and_resolve",
+                side_effect=slow_validation,
+            ),
+            pytest.raises(SsrfViolation, match="DNS validation timed out"),
+        ):
+            await validate_url_and_resolve_async("https://example.com", timeout=0.01)
 
 
 class TestValidateUrlScheme:
