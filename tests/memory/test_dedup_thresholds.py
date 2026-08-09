@@ -7,6 +7,17 @@ and that branch behavior follows config values — not hardcoded constants.
 import pytest
 from unittest.mock import patch, MagicMock
 
+from orchestrator.memory.embedding import EmbeddingBatchResult
+
+
+def _embedding_result(vector: list[float]) -> EmbeddingBatchResult:
+    return EmbeddingBatchResult(
+        embeddings=[vector],
+        provider="voyage",
+        model="voyage-4-large",
+        storage_model="voyage-4-large",
+    )
+
 
 class TestThresholdAccessors:
     """Verify threshold accessors route to config, not hardcoded constants."""
@@ -94,7 +105,7 @@ class TestThresholdBranchBehavior:
 
         with (
             patch(
-                "orchestrator.memory.dedup.embed_documents",
+                "orchestrator.memory.dedup.embed_documents_with_metadata",
                 new_callable=AsyncMock,
             ) as mock_embed,
             patch(
@@ -103,7 +114,7 @@ class TestThresholdBranchBehavior:
                 return_value=(True, "threshold test contradiction"),
             ),
         ):
-            mock_embed.return_value = [[0.1] * 1024]
+            mock_embed.return_value = _embedding_result([0.1] * 1024)
 
             # Case A: merge_threshold=0.0 → any candidate merges (similarity 0.5 >= 0.0)
             with patch("orchestrator.memory.dedup.get_settings") as mock_settings:
@@ -111,6 +122,7 @@ class TestThresholdBranchBehavior:
                 mock_settings.return_value.dedup_supersede_threshold = 0.0
                 mock_settings.return_value.dedup_supersede_same_slot_threshold = 0.0
                 mock_settings.return_value.background_reasoning_model = "gpt-4o-mini"
+                mock_settings.return_value.embedding_document_model = "voyage-4-large"
 
                 result = await deduplicate_facts(
                     store=mock_store,
@@ -147,6 +159,7 @@ class TestThresholdBranchBehavior:
                 mock_settings.return_value.dedup_supersede_threshold = 0.0
                 mock_settings.return_value.dedup_supersede_same_slot_threshold = 0.0
                 mock_settings.return_value.background_reasoning_model = "gpt-4o-mini"
+                mock_settings.return_value.embedding_document_model = "voyage-4-large"
 
                 result = await deduplicate_facts(
                     store=mock_store,
@@ -207,7 +220,7 @@ class TestThresholdBranchBehavior:
 
         with (
             patch(
-                "orchestrator.memory.dedup.embed_documents",
+                "orchestrator.memory.dedup.embed_documents_with_metadata",
                 new_callable=AsyncMock,
             ) as mock_embed,
             patch(
@@ -216,7 +229,7 @@ class TestThresholdBranchBehavior:
                 return_value=(True, "threshold test contradiction"),
             ),
         ):
-            mock_embed.return_value = [[0.1] * 1024]
+            mock_embed.return_value = _embedding_result([0.1] * 1024)
 
             # With same_slot_threshold=0.0, similarity 0.7 would supersede
             with patch("orchestrator.memory.dedup.get_settings") as mock_settings:
@@ -224,6 +237,7 @@ class TestThresholdBranchBehavior:
                 mock_settings.return_value.dedup_supersede_threshold = 1.0
                 mock_settings.return_value.dedup_supersede_same_slot_threshold = 0.0
                 mock_settings.return_value.background_reasoning_model = "gpt-4o-mini"
+                mock_settings.return_value.embedding_document_model = "voyage-4-large"
 
                 result = await deduplicate_facts(
                     store=mock_store,

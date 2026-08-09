@@ -66,7 +66,9 @@ class TestRetrieveMemoriesWithEntityExpansion:
         mock_store.search_memories = AsyncMock(return_value=[])
         mock_store.search_memories_bm25 = AsyncMock(return_value=[])
 
-        with patch("orchestrator.memory.retrieval.embed_query") as mock_embed:
+        with patch(
+            "orchestrator.memory.retrieval.embed_query_for_configured_storage_models"
+        ) as mock_embed:
             mock_embed.return_value = [0.1] * 1024
 
             result = await retrieve_memories(
@@ -104,7 +106,9 @@ class TestRetrieveMemoriesWithEntityExpansion:
         )
         mock_store.search_memories_bm25 = AsyncMock(return_value=[])
 
-        with patch("orchestrator.memory.retrieval.embed_query") as mock_embed:
+        with patch(
+            "orchestrator.memory.retrieval.embed_query_for_configured_storage_models"
+        ) as mock_embed:
             mock_embed.return_value = [0.1] * 1024
 
             result = await retrieve_memories(
@@ -297,7 +301,9 @@ class TestAliasAwareRetrievalIntegration:
             }
         )
 
-        with patch("orchestrator.memory.retrieval.embed_query") as mock_embed:
+        with patch(
+            "orchestrator.memory.retrieval.embed_query_for_configured_storage_models"
+        ) as mock_embed:
             mock_embed.return_value = [0.1] * 1024
 
             result = await retrieve_memories(

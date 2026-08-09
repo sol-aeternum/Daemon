@@ -11,6 +11,16 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from orchestrator.memory.dedup import deduplicate_facts
+from orchestrator.memory.embedding import EmbeddingBatchResult
+
+
+def _embedding_result(vector: list[float]) -> EmbeddingBatchResult:
+    return EmbeddingBatchResult(
+        embeddings=[vector],
+        provider="voyage",
+        model="voyage-4-large",
+        storage_model="voyage-4-large",
+    )
 
 
 @dataclass
@@ -59,9 +69,9 @@ class TestDedupSlotFallback:
         mock_embedding = [0.1] * 1024
 
         with patch(
-            "orchestrator.memory.dedup.embed_documents",
+            "orchestrator.memory.dedup.embed_documents_with_metadata",
             new_callable=AsyncMock,
-            return_value=[mock_embedding],
+            return_value=_embedding_result(mock_embedding),
         ) as mock_embed_documents:
             # Call deduplicate_facts
             result = await deduplicate_facts(
@@ -107,9 +117,9 @@ class TestDedupSlotFallback:
         mock_embedding = [0.1] * 1024
 
         with patch(
-            "orchestrator.memory.dedup.embed_documents",
+            "orchestrator.memory.dedup.embed_documents_with_metadata",
             new_callable=AsyncMock,
-            return_value=[mock_embedding],
+            return_value=_embedding_result(mock_embedding),
         ) as mock_embed_documents:
             # Call deduplicate_facts
             result = await deduplicate_facts(

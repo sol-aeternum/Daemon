@@ -15,7 +15,7 @@ import asyncpg
 from orchestrator.auth_pepper import validate_and_get_pepper
 from orchestrator.config import get_settings
 from orchestrator.memory.encryption import ContentEncryption
-from orchestrator.memory.embedding import embed_query
+from orchestrator.memory.embedding import embed_query_with_metadata
 
 
 def is_explicit_memory(memory: dict[str, Any]) -> bool:
@@ -1352,7 +1352,15 @@ class MemoryStore:
         memory_slot: str | None = None,
         include_dream_observations: bool = False,
         source_conversation_ids: list[uuid.UUID] | None = None,
+        embedding_model: str | None = None,
     ) -> list[dict[str, Any]]:
+        storage_model_metadata = getattr(query_embedding, "storage_model", None)
+        inferred_embedding_model = (
+            storage_model_metadata if isinstance(storage_model_metadata, str) else None
+        )
+        effective_embedding_model = (
+            embedding_model or inferred_embedding_model or _default_embedding_model()
+        )
         embedding_str = _format_vector(query_embedding)
         conversation_filter = [str(value) for value in source_conversation_ids or []] or None
 
@@ -1370,6 +1378,7 @@ class MemoryStore:
                   AND ($9::bool OR source_type != 'dream')
                   AND ($10::uuid[] IS NULL OR source_conversation_id = ANY($10::uuid[]))
                   AND embedding IS NOT NULL
+                  AND ($11::text IS NULL OR embedding_model = $11)
                   AND category = $6
                   AND ($8::text IS NULL OR memory_slot = $8)
                   AND 1 - (embedding <=> $2::vector) >= $3
@@ -1386,6 +1395,7 @@ class MemoryStore:
                 memory_slot,
                 include_dream_observations,
                 conversation_filter,
+                effective_embedding_model,
             )
         else:
             rows = await self._pool.fetch(
@@ -1401,6 +1411,7 @@ class MemoryStore:
                   AND ($8::bool OR source_type != 'dream')
                   AND ($9::uuid[] IS NULL OR source_conversation_id = ANY($9::uuid[]))
                   AND embedding IS NOT NULL
+                  AND ($10::text IS NULL OR embedding_model = $10)
                   AND ($7::text IS NULL OR memory_slot = $7)
                   AND 1 - (embedding <=> $2::vector) >= $3
                 ORDER BY embedding <=> $2::vector
@@ -1415,6 +1426,7 @@ class MemoryStore:
                 memory_slot,
                 include_dream_observations,
                 conversation_filter,
+                effective_embedding_model,
             )
 
         results = []
@@ -1436,15 +1448,18 @@ class MemoryStore:
         memory_slot: str | None = None,
         include_dream_observations: bool = False,
         source_conversation_ids: list[uuid.UUID] | None = None,
+        embedding_models: list[str] | tuple[str, ...] | None = None,
+        include_l0: bool = True,
     ) -> list[dict[str, Any]]:
         """Search memories using BM25 full-text search.
 
         Uses PostgreSQL ts_rank on content_tsv with plainto_tsquery for
         natural language query parsing.
         """
-        # By design: L0 memories are always injected, but they must remain
-        # directly searchable via BM25 for explicit recall queries.
+        # By design, L0 memories remain directly searchable for explicit recall
+        # queries. Dedup callers opt out so frozen memories cannot be mutated.
         conversation_filter = [str(value) for value in source_conversation_ids or []] or None
+        effective_embedding_models = sorted(set(embedding_models or (_default_embedding_model(),)))
         if category:
             rows = await self._pool.fetch(
                 """
@@ -1457,6 +1472,8 @@ class MemoryStore:
                   AND ($4::bool OR local_only = FALSE)
                   AND ($8::bool OR source_type != 'dream')
                   AND ($9::uuid[] IS NULL OR source_conversation_id = ANY($9::uuid[]))
+                  AND embedding_model = ANY($10::text[])
+                  AND ($11::bool OR tier != 'l0')
                   AND content_tsv IS NOT NULL
                   AND content_tsv @@ plainto_tsquery('english', $2)
                   AND category = $5
@@ -1473,6 +1490,8 @@ class MemoryStore:
                 memory_slot,
                 include_dream_observations,
                 conversation_filter,
+                effective_embedding_models,
+                include_l0,
             )
         else:
             rows = await self._pool.fetch(
@@ -1486,6 +1505,8 @@ class MemoryStore:
                   AND ($4::bool OR local_only = FALSE)
                   AND ($7::bool OR source_type != 'dream')
                   AND ($8::uuid[] IS NULL OR source_conversation_id = ANY($8::uuid[]))
+                  AND embedding_model = ANY($9::text[])
+                  AND ($10::bool OR tier != 'l0')
                   AND content_tsv IS NOT NULL
                   AND content_tsv @@ plainto_tsquery('english', $2)
                   AND ($5::text IS NULL OR memory_slot = $5)
@@ -1500,8 +1521,76 @@ class MemoryStore:
                 limit,
                 include_dream_observations,
                 conversation_filter,
+                effective_embedding_models,
+                include_l0,
             )
 
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["content"] = self._enc.decrypt(d["content"])
+            results.append(d)
+        return results
+
+    async def has_memories_with_embedding_model(
+        self,
+        user_id: uuid.UUID,
+        embedding_model: str,
+        *,
+        include_local: bool = False,
+        include_historical: bool = False,
+    ) -> bool:
+        return bool(
+            await self._pool.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM memories
+                    WHERE user_id = $1
+                      AND embedding_model = $2
+                      AND status != 'deleted'
+                      AND tier != 'l0'
+                      AND ($3::bool OR valid_to IS NULL)
+                      AND ($4::bool OR local_only = FALSE)
+                )
+                """,
+                user_id,
+                embedding_model,
+                include_historical,
+                include_local,
+            )
+        )
+
+    async def list_memories_by_slot_family(
+        self,
+        user_id: uuid.UUID,
+        slot_family: str,
+        *,
+        include_local: bool = False,
+        include_historical: bool = False,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        rows = await self._pool.fetch(
+            """
+            SELECT *
+            FROM memories
+            WHERE user_id = $1
+              AND status != 'deleted'
+              AND tier != 'l0'
+              AND ($3::bool OR valid_to IS NULL)
+              AND ($4::bool OR local_only = FALSE)
+              AND source_type != 'dream'
+              AND memory_slot IS NOT NULL
+              AND split_part(lower(memory_slot), '.', 1) = $2
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT $5
+            """,
+            user_id,
+            slot_family.lower(),
+            include_historical,
+            include_local,
+            limit,
+        )
         results = []
         for r in rows:
             d = dict(r)
@@ -1539,11 +1628,11 @@ class MemoryStore:
             List of memory dicts filtered by source_type
         """
         # Embed the text query
-        embedding = await embed_query(text)
+        embedding_result = await embed_query_with_metadata(text)
         # Call search_memories with the same params
         results = await self.search_memories(
             user_id,
-            embedding,
+            embedding_result.embedding,
             limit=limit,
             min_similarity=min_similarity,
             category=category,
@@ -1551,6 +1640,7 @@ class MemoryStore:
             include_historical=include_historical,
             memory_slot=memory_slot,
             include_dream_observations=include_dream_observations,
+            embedding_model=embedding_result.storage_model,
         )
         # Filter by source_types if provided
         if source_types:

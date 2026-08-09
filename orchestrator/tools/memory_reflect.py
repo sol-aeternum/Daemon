@@ -8,7 +8,7 @@ from typing import Any
 import litellm
 
 from orchestrator.config import get_settings
-from orchestrator.memory.embedding import embed_query
+from orchestrator.memory.embedding import embed_query_with_metadata
 from orchestrator.memory.retrieval import retrieve_memories_for_text
 from orchestrator.memory.store import MemoryStore
 from orchestrator.tools.registry import Tool
@@ -58,17 +58,19 @@ class MemoryReflectTool(Tool):
         limit = kwargs.get("limit", 15)
         effective_limit = max(1, min(limit, 50))
 
-        query_embedding = await embed_query(topic)
+        query_result = await embed_query_with_metadata(topic)
         memories = await retrieve_memories_for_text(
             store=self.store,
             query_text=topic,
             user_id=self.user_id,
-            query_embedding=query_embedding,
+            query_embedding=query_result.embedding,
             limit=effective_limit,
             include_local=True,
             include_historical=True,
             include_l0=True,
             include_dream_observations=True,
+            storage_embedding_model=query_result.storage_model,
+            query_embedding_model=query_result.model,
         )
 
         if not memories:

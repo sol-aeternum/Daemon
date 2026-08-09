@@ -11,9 +11,19 @@ import pytest
 
 from orchestrator.config import Settings
 from orchestrator.memory.dreaming import dream_on_cluster, run_dreaming
+from orchestrator.memory.embedding import EmbeddingBatchResult
 from orchestrator.memory.retrieval import retrieve_memories
 from orchestrator.memory.store import MemoryStore
 from orchestrator.worker.jobs import run_dreaming_job, _user_matches_dream_schedule_hour
+
+
+def _embedding_result(vector: list[float]) -> EmbeddingBatchResult:
+    return EmbeddingBatchResult(
+        embeddings=[vector],
+        provider="voyage",
+        model="voyage-4-large",
+        storage_model="voyage-4-large",
+    )
 
 
 class MockLitellmResponse:
@@ -147,8 +157,8 @@ async def test_run_dreaming_skips_unchanged_families_and_logs_run() -> None:
             ),
         ) as mock_dream:
             with patch(
-                "orchestrator.memory.dreaming.embed_documents",
-                AsyncMock(return_value=[[0.1, 0.2, 0.3]]),
+                "orchestrator.memory.dreaming.embed_documents_with_metadata",
+                AsyncMock(return_value=_embedding_result([0.1, 0.2, 0.3])),
             ):
                 result = await run_dreaming(user_id, store=store)
 
