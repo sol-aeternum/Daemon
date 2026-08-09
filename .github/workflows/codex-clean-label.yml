@@ -24,6 +24,14 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  # `issues: write` is required so the fallback label-creation step below
+  # (when `ready-for-human-review` has not already been provisioned) can
+  # call `POST /repos/{owner}/{repo}/labels`. Without it, the create
+  # attempt 403s on `Resource not accessible by integration` and the
+  # subsequent `addLabels` call also fails; the workflow silently
+  # leaves the PR unlabelled. See the GitHub REST docs for
+  # `issues.createLabel` which requires the `issues: write` scope.
+  issues: write
 
 jobs:
   sync-clean-label:
@@ -130,12 +138,14 @@ jobs:
             // Step 6: apply the label. Idempotent — adding an existing label is
             // a no-op. If the label doesn't exist, create it (best-effort).
             const labelName = 'ready-for-human-review';
+            let labelApplied = false;
             try {
               await github.rest.issues.addLabels({
                 owner: pr.owner, repo: pr.repo, issue_number: pr.number,
                 labels: [labelName]
               });
               log('label.applied');
+              labelApplied = true;
             } catch (e) {
               // Label doesn't exist — try to create it then add. Best-effort:
               // if creation fails (insufficient perms), the add will too. We
@@ -153,14 +163,22 @@ jobs:
                   labels: [labelName]
                 });
                 log('label.created_and_applied');
+                labelApplied = true;
               } catch (e2) {
                 log('label.create_failed', { error: String(e2) });
               }
             }
 
             // Step 7: leave a brief audit comment so the timeline shows why
-            // the label was applied. The resolver's LABEL_CORRECTED mechanism
-            // will remove the label if it later disagrees.
+            // the label was applied. ONLY post this when the label actually
+            // landed — otherwise we leave a misleading "the label was
+            // applied" comment on the PR even though it wasn't. The
+            // resolver's LABEL_CORRECTED mechanism will remove the label
+            // if it later disagrees.
+            if (!labelApplied) {
+              log('audit.skipped.label_not_applied');
+              return;
+            }
             const auditBody = [
               '`Status: CODEX_CLEAN_LABEL_APPLIED`',
               '',
