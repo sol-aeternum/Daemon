@@ -10,25 +10,27 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 
 ALLOWED_CONTINUE_ON_ERROR_STEPS = {
-    ("backend", "Bandit SAST inventory"),
-    ("backend", "Python dependency audit inventory"),
-    ("backend", "Pytest"),
-    ("frontend", "ESLint"),
-    ("frontend", "Prettier check"),
-    ("frontend", "Frontend dependency audit inventory"),
-    ("frontend", "Vitest"),
+    ("frontend", "Browser regression inventory"),
 }
 
-TEMPORARY_BASELINE_INVENTORY_STEPS = {
+BLOCKING_GATE_STEPS = {
+    ("backend", "Sync backend dependencies"),
+    ("backend", "Ruff lint"),
+    ("backend", "Ruff format check"),
+    ("backend", "Basedpyright error gate"),
+    ("backend", "Bandit SAST"),
+    ("backend", "Python dependency audit"),
     ("backend", "Pytest"),
-    ("frontend", "ESLint"),
-    ("frontend", "Prettier check"),
-    ("frontend", "Vitest"),
-}
-
-REQUIRED_BLOCKING_STEPS = {
+    ("frontend", "Install frontend dependencies"),
     ("frontend", "Type check"),
+    ("frontend", "ESLint"),
+    ("frontend", "Prettier check"),
+    ("frontend", "Frontend dependency audit"),
+    ("frontend", "Vitest"),
     ("frontend", "Build"),
+    ("feature-matrix", "Validate feature matrix"),
+    ("pre-commit-security", "Run pre-commit hooks"),
+    ("pre-commit-security", "Run commit message hook"),
 }
 
 
@@ -57,41 +59,38 @@ def _iter_job_steps(workflow: dict[str, Any]) -> list[tuple[str, str, dict[str, 
     return steps
 
 
-def test_ci_continue_on_error_is_limited_to_inventory_steps() -> None:
+def test_ci_documented_gates_are_present_and_blocking() -> None:
     workflow = _load_ci_workflow()
-    offenders = [
+    all_steps = _iter_job_steps(workflow)
+    steps_by_key = {(job_id, name): step for job_id, name, step in all_steps}
+
+    missing = BLOCKING_GATE_STEPS - steps_by_key.keys()
+    assert not missing, f"Missing documented workflow steps: {missing}"
+
+    accidentally_nonblocking = [
         (job_id, name)
-        for job_id, name, step in _iter_job_steps(workflow)
-        if step.get("continue-on-error") is True
-        and (job_id, name) not in ALLOWED_CONTINUE_ON_ERROR_STEPS
+        for job_id, name in BLOCKING_GATE_STEPS
+        if steps_by_key[(job_id, name)].get("continue-on-error") is True
     ]
+    assert not accidentally_nonblocking, (
+        f"Documented blocking steps marked continue-on-error: {accidentally_nonblocking}"
+    )
 
-    assert offenders == []
+    nonblocking_steps = {
+        (job_id, name) for job_id, name, step in all_steps if step.get("continue-on-error") is True
+    }
+    assert nonblocking_steps == ALLOWED_CONTINUE_ON_ERROR_STEPS, (
+        f"Unexpected continue-on-error policy: {nonblocking_steps}"
+    )
 
 
-def test_ci_currently_green_test_and_build_steps_are_blocking() -> None:
+def test_frontend_browser_regression_blocking_sequence_is_anchored() -> None:
     workflow = _load_ci_workflow()
-    steps_by_key = {(job_id, name): step for job_id, name, step in _iter_job_steps(workflow)}
+    frontend_steps = [name for job_id, name, _ in _iter_job_steps(workflow) if job_id == "frontend"]
 
-    missing = REQUIRED_BLOCKING_STEPS - steps_by_key.keys()
-    assert missing == set()
+    vitest_idx = frontend_steps.index("Vitest")
+    chromium_idx = frontend_steps.index("Install Chromium for browser regressions")
+    browser_idx = frontend_steps.index("Browser regression inventory")
+    build_idx = frontend_steps.index("Build")
 
-    non_blocking = [
-        key for key in REQUIRED_BLOCKING_STEPS if steps_by_key[key].get("continue-on-error") is True
-    ]
-    assert non_blocking == []
-
-
-def test_known_red_baseline_steps_stay_nonblocking_until_precursors_land() -> None:
-    workflow = _load_ci_workflow()
-    steps_by_key = {(job_id, name): step for job_id, name, step in _iter_job_steps(workflow)}
-
-    missing = TEMPORARY_BASELINE_INVENTORY_STEPS - steps_by_key.keys()
-    assert missing == set()
-
-    blocking = [
-        key
-        for key in TEMPORARY_BASELINE_INVENTORY_STEPS
-        if steps_by_key[key].get("continue-on-error") is not True
-    ]
-    assert blocking == []
+    assert vitest_idx < chromium_idx < browser_idx < build_idx

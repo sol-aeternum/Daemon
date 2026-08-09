@@ -443,13 +443,305 @@ class MemoryStore:
             results.append(_normalize_message(d))
         return results
 
+    async def get_summary_message_batch(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        snapshot_at: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """Load a bounded, ordered batch of finalized messages for summarization.
+
+        When ``snapshot_at`` is provided, only messages with
+        ``created_at <= snapshot_at`` are eligible. This pins the row set to the
+        moment the cursor was captured so a concurrent status flip from
+        ``streaming`` to ``complete`` (which does not change ``created_at``) can
+        not shift the order under an in-flight summary batch.
+        """
+        batch_limit = min(100, max(1, int(limit)))
+        batch_offset = max(0, int(offset))
+        # Stop at the first non-finalized row instead of merely filtering it out.
+        # A row that was streaming at fetch time but finalized later (without a
+        # ``created_at`` change) would otherwise insert before already-summarized
+        # rows and replay the same messages on the next iteration (Codex P2 on
+        # PR #165, ``store.py:464``).
+        #
+        # The ``ranked`` CTE must include ALL conversation rows (not just the
+        # finalized ones) so the ``cutoff`` CTE can find the first non-finalized
+        # row and stop the contiguous prefix before it. The outer SELECT then
+        # filters to finalized-only rows within that contiguous prefix.
+        base_filter = "conversation_id = $1 AND (status IS NULL OR status = 'complete')"
+        if snapshot_at is not None:
+            rows = await self._pool.fetch(
+                f"""
+                WITH ranked AS (
+                    SELECT id, ROW_NUMBER() OVER (
+                        ORDER BY created_at ASC, id ASC
+                    ) AS rn
+                    FROM messages
+                    WHERE conversation_id = $1
+                      AND created_at <= $4
+                ),
+                cutoff AS (
+                    SELECT COALESCE(
+                        MIN(rn) - 1,
+                        (SELECT MAX(rn) FROM ranked)
+                    ) AS contiguous_rn
+                    FROM ranked r
+                    JOIN messages m ON m.id = r.id
+                    WHERE m.status IS NOT NULL AND m.status <> 'complete'
+                      AND m.created_at <= $4
+                )
+                SELECT m.* FROM messages m
+                JOIN ranked r ON m.id = r.id
+                WHERE {base_filter}
+                  AND r.rn > $3
+                  AND r.rn <= (SELECT contiguous_rn FROM cutoff)
+                ORDER BY r.rn ASC
+                LIMIT $2
+                """,
+                conversation_id,
+                batch_limit,
+                batch_offset,
+                snapshot_at,
+            )
+        else:
+            rows = await self._pool.fetch(
+                f"""
+                WITH ranked AS (
+                    SELECT id, created_at, status,
+                           ROW_NUMBER() OVER (
+                               ORDER BY created_at ASC, id ASC
+                           ) AS rn
+                    FROM messages
+                    WHERE conversation_id = $1
+                ),
+                cutoff AS (
+                    SELECT COALESCE(
+                        MIN(rn) - 1,
+                        (SELECT MAX(rn) FROM ranked)
+                    ) AS contiguous_rn
+                    FROM ranked
+                    WHERE status IS NOT NULL AND status <> 'complete'
+                )
+                SELECT m.* FROM messages m
+                JOIN ranked r ON m.id = r.id
+                WHERE {base_filter}
+                  AND r.rn > $3
+                  AND r.rn <= (SELECT contiguous_rn FROM cutoff)
+                ORDER BY r.rn ASC
+                LIMIT $2
+                """,
+                conversation_id,
+                batch_limit,
+                batch_offset,
+            )
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            message = dict(row)
+            message["content"] = self._enc.decrypt(message["content"])
+            if message.get("reasoning_text") is not None:
+                message["reasoning_text"] = self._enc.decrypt(message["reasoning_text"])
+            if message.get("advisor_traces") is not None:
+                message["advisor_traces"] = self._decrypt_advisor_traces(message["advisor_traces"])
+            results.append(_normalize_message(message))
+        return results
+
+    async def count_summary_messages(self, conversation_id: uuid.UUID) -> int:
+        """Count finalized messages eligible for conversation summaries."""
+        row = await self._pool.fetchrow(
+            """
+            SELECT COUNT(*) AS count
+            FROM messages
+            WHERE conversation_id = $1
+              AND (status IS NULL OR status = 'complete')
+            """,
+            conversation_id,
+        )
+        return int(row["count"]) if row else 0
+
+    async def count_summary_messages_at(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        snapshot_at: datetime,
+    ) -> int:
+        """Count finalized messages with ``created_at <= snapshot_at``.
+
+        Mirrors ``get_summary_message_batch``'s snapshot bound so callers
+        can decide whether a continuation job is needed without running
+        a second ordered query.
+        """
+        row = await self._pool.fetchrow(
+            """
+            SELECT COUNT(*) AS count
+            FROM messages
+            WHERE conversation_id = $1
+              AND (status IS NULL OR status = 'complete')
+              AND created_at <= $2
+            """,
+            conversation_id,
+            snapshot_at,
+        )
+        return int(row["count"]) if row else 0
+
+    async def count_contiguous_finalized_messages_at(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        snapshot_at: datetime,
+    ) -> int:
+        """Count the contiguous-finalized-message prefix at ``snapshot_at``.
+
+        A "contiguous finalized prefix" is the longest run of finalized rows
+        (legacy ``status IS NULL`` or ``status = 'complete'``) in
+        ``(created_at ASC, id ASC)`` order such that every row in the prefix
+        is finalized. This excludes a row that was ``streaming`` at the
+        snapshot and later transitioned to ``complete`` — its ``created_at``
+        still satisfies ``created_at <= snapshot_at``, but inserting it
+        before the prior finalized rows would shift the cursor and replay
+        messages already counted toward the baseline.
+
+        Used as a stable completion cursor: the stored baseline must advance
+        only through rows that were finalized when the snapshot was
+        captured, so concurrent ``streaming -> complete`` transitions can
+        never reorder the row set under an in-flight summary batch.
+        """
+        # ``prefix_count`` is the longest contiguous run of finalized rows
+        # from the snapshot. When a non-finalized row exists, prefix_count
+        # is its row number minus one. When every row at the snapshot is
+        # finalized, the inner ``WHERE`` returns nothing and ``MIN(rn)`` is
+        # NULL — fall back to the total ranked-row count so the prefix
+        # spans the whole snapshot (Codex P2 on PR #165, ``store.py:566``).
+        row = await self._pool.fetchrow(
+            """
+            WITH ranked AS (
+                SELECT
+                    row_number() OVER (
+                        ORDER BY created_at ASC, id ASC
+                    ) AS rn,
+                    status
+                FROM messages
+                WHERE conversation_id = $1
+                  AND created_at <= $2
+            )
+            SELECT COALESCE(
+                MIN(rn) FILTER (WHERE status IS NOT NULL AND status <> 'complete') - 1,
+                (SELECT COUNT(*) FROM ranked)
+            ) AS prefix_count
+            FROM ranked
+            """,
+            conversation_id,
+            snapshot_at,
+        )
+        return int(row["prefix_count"]) if row else 0
+
     async def count_messages(self, conversation_id: uuid.UUID) -> int:
         """Count messages in a conversation without loading content."""
         row = await self._pool.fetchrow(
             "SELECT COUNT(*) as count FROM messages WHERE conversation_id = $1",
             conversation_id,
         )
-        return row["count"] if row else 0
+        return int(row["count"]) if row else 0
+
+    async def consume_summary_continuation_pending(
+        self,
+        conversation_id: uuid.UUID,
+    ) -> bool:
+        """Atomically clear the ``summary_continuation_pending`` flag
+        and return its prior value.
+
+        Used by the extraction job's retry-recovery path: if a previous
+        attempt committed the summary + continuation-pending flag but
+        failed to enqueue the forced-summary continuation (e.g. Redis
+        transient error -> ``Retry``), the retry may find ``no_messages``
+        after the watermark advances — so we need a separate signal that
+        survives the watermark (Codex P2 on PR #165,
+        ``worker/jobs.py:295``).
+        """
+        row = await self._pool.fetchrow(
+            """
+            UPDATE conversations
+            SET metadata = COALESCE(metadata, '{}'::jsonb)
+                || jsonb_build_object(
+                    'summary_continuation_pending',
+                    false
+                )
+            WHERE id = $1
+              AND COALESCE(
+                  (metadata ->> 'summary_continuation_pending')::boolean,
+                  false
+              ) = true
+            RETURNING id
+            """,
+            conversation_id,
+        )
+        return row is not None
+
+    async def update_conversation_summary(
+        self,
+        conversation_id: uuid.UUID,
+        summary: str,
+        *,
+        expected_summary_updated_at: datetime | None,
+        summarized_message_count: int,
+        summary_snapshot_at: datetime | None = None,
+        summary_continuation_pending: bool = False,
+    ) -> bool:
+        """Atomically persist a summary and its finalized-message baseline.
+
+        Also advances ``updated_at`` / ``last_activity_at`` (mirroring the
+        previous ``update_conversation(summary=...)`` behaviour) so the
+        conversation row reflects the new summary activity in the recent
+        list ordering, and stores ``last_summarized_at_time`` so the next
+        summary batch can pin its row set to the moment this cursor was
+        captured.
+
+        ``summary_continuation_pending`` is persisted as a metadata flag
+        atomically with the summary update so a retry of the extraction
+        job (which may find ``no_messages`` after the watermark advances)
+        can still recover and enqueue the forced-summary continuation
+        (Codex P2 on PR #165, ``worker/jobs.py:295``).
+        """
+        snapshot_iso: str | None = None
+        if summary_snapshot_at is not None:
+            snapshot_iso = summary_snapshot_at.isoformat()
+        row = await self._pool.fetchrow(
+            """
+            UPDATE conversations
+            SET summary = $2,
+                summary_updated_at = NOW(),
+                updated_at = NOW(),
+                last_activity_at = NOW(),
+                metadata = COALESCE(metadata, '{}'::jsonb)
+                    || jsonb_build_object(
+                        'last_summarized_msg_count',
+                        $4::bigint
+                    )
+                    || jsonb_build_object(
+                        'summary_continuation_pending',
+                        $6::boolean
+                    )
+                    || CASE
+                        WHEN $5::text IS NULL THEN '{}'::jsonb
+                        ELSE jsonb_build_object(
+                            'last_summarized_at_time', $5::text
+                        )
+                    END
+            WHERE id = $1
+              AND summary_updated_at IS NOT DISTINCT FROM $3
+            RETURNING id
+            """,
+            conversation_id,
+            summary,
+            expected_summary_updated_at,
+            summarized_message_count,
+            snapshot_iso,
+            summary_continuation_pending,
+        )
+        return row is not None
 
     async def update_message(
         self,

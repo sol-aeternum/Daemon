@@ -2,10 +2,8 @@
 # local_ci.sh — Run Daemon's quality gates locally before PR submission.
 #
 # Mirrors the AGENTS.md gate inventory and the GitHub Actions CI workflow
-# at .github/workflows/ci.yml. Blocking gates fail this script; inventory
-# gates (those marked `continue-on-error: true` in CI) are reported but do
-# not block. Pre-existing debt must be tracked in a GitHub issue, not silenced
-# here.
+# at .github/workflows/ci.yml. Blocking gates fail this script; inventory gates
+# (such as browser regression) are not represented in this table.
 #
 # Usage:
 #   scripts/local_ci.sh                  # run every gate
@@ -22,9 +20,7 @@
 #
 # Notes:
 #   - The script changes to the repository root before doing anything.
-#   - For frontend gates, `npm ci` is run once before the gate family and
-#     counts as inventory (CI does the same; existing node_modules are
-#     reused when present).
+#   - For frontend gates, `npm ci` is included as a first-class gate.
 #   - Frontend `npm run build` may regenerate `frontend/next-env.d.ts`
 #     and PWA service-worker artifacts; this regeneration is expected, not a gate failure.
 
@@ -59,16 +55,15 @@ read -r -d '' GATE_TABLE <<'EOF' || true
 backend|ruff-check|blocking|uv run ruff check .
 backend|ruff-format|blocking|uv run ruff format --check .
 backend|basedpyright|blocking|uv run basedpyright --level error
-backend|pytest-collect|blocking|PYTHONPATH=. uv run pytest --collect-only -q
-backend|bandit|inventory|uv run bandit -r orchestrator providers scripts tests
-backend|pip-audit|inventory|uv run pip-audit
-backend|pytest|inventory|PYTHONPATH=. uv run pytest -q
-frontend|npm-ci|inventory|npm ci --prefix frontend --no-audit --no-fund --prefer-offline
+backend|bandit|blocking|uv run bandit -r orchestrator providers scripts tests
+backend|pip-audit|blocking|uv run pip-audit
+backend|pytest|blocking|PYTHONPATH=. uv run pytest -q
+frontend|npm-ci|blocking|npm ci --prefix frontend --no-audit --no-fund --prefer-offline
 frontend|type-check|blocking|npm --prefix frontend run type-check
-frontend|lint|inventory|npm --prefix frontend run lint
-frontend|format-check|inventory|npm --prefix frontend run format:check
-frontend|audit-ci|inventory|npm --prefix frontend run audit:ci
-frontend|test-run|inventory|npm --prefix frontend run test:run
+frontend|lint|blocking|npm --prefix frontend run lint
+frontend|format-check|blocking|npm --prefix frontend run format:check
+frontend|audit-ci|blocking|npm --prefix frontend run audit:ci
+frontend|test-run|blocking|npm --prefix frontend run test:run
 frontend|build|blocking|npm --prefix frontend run build
 aggregate|feature-matrix|blocking|python scripts/lint_feature_matrix.py
 aggregate|pre-commit|blocking|uv run pre-commit run --all-files

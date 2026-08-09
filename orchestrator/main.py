@@ -5,13 +5,14 @@ import hashlib
 import json
 import logging
 import os
+import sys
 import time
 import uuid
 
 import asyncpg
 import httpx
 import litellm
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -112,13 +113,53 @@ from orchestrator.models import (
 )
 from orchestrator.prompts import DAEMON_SYSTEM_PROMPT
 from orchestrator.router import route_message
+from orchestrator.security_headers import (
+    SecurityHeadersMiddleware,
+    _OuterSecurityHeadersMiddleware,
+)
 from orchestrator.tools.builtin import create_default_registry
 from orchestrator.tools.completion import completion_with_tools
 
 logger = logging.getLogger(__name__)
 
+CORS_ALLOW_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
+CORS_ALLOW_HEADERS = (
+    "Authorization",
+    "Content-Type",
+    "X-Daemon-Client-IP",
+    "X-CSRF-Token",
+)
 
-def _validate_startup_config(settings: Settings) -> None:
+
+def warn_on_unsafe_cors_wildcards(
+    *,
+    allow_credentials: bool,
+    allow_methods: Sequence[str],
+    allow_headers: Sequence[str],
+) -> None:
+    if not allow_credentials:
+        return
+    if "*" in allow_methods or "*" in allow_headers:
+        logger.warning(
+            "Unsafe CORS configuration: wildcard methods or headers with credentials enabled"
+        )
+
+
+class UnsafeProductionServerConfigError(RuntimeError):
+    """Raised when the process is launched with dev-only server flags in production."""
+
+
+def _validate_production_server_args(settings: Settings, argv: Sequence[str] | None = None) -> None:
+    if settings.daemon_environment.lower().strip() != "production":
+        return
+    args = sys.argv if argv is None else argv
+    if any(arg == "--reload" or arg.startswith("--reload=") for arg in args):
+        raise UnsafeProductionServerConfigError(
+            "uvicorn --reload is not allowed when DAEMON_ENVIRONMENT=production"
+        )
+
+
+def _validate_startup_config(settings: Settings, argv: Sequence[str] | None = None) -> None:
     """Run all fail-closed startup-time config validations.
 
     Centralized so the FastAPI lifespan hook stays compact and the
@@ -127,6 +168,7 @@ def _validate_startup_config(settings: Settings) -> None:
     first (authentication substrate), then hosted identity (deployment
     posture). Either failure aborts startup before any AppState work.
     """
+    _validate_production_server_args(settings, argv)
     validate_pepper_config(settings)
     settings.validate_deployment_mode()
     settings.validate_hosted_identity_config()
@@ -141,6 +183,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     try:
         _validate_startup_config(settings)
+    except UnsafeProductionServerConfigError as exc:
+        logger.critical("Unsafe production server configuration: %s", exc)
+        raise
     except PepperValidationError as exc:
         logger.critical("Production pepper validation failed: %s", exc)
         raise
@@ -305,18 +350,41 @@ async def _check_first_boot_setup(state: AppState) -> None:
         logger.warning("First-boot setup check failed", exc_info=True)
 
 
-app = FastAPI(title="daemon-orchestrator", lifespan=lifespan)
+_is_production = get_settings().daemon_environment.lower().strip() == "production"
+app = FastAPI(
+    title="daemon-orchestrator",
+    lifespan=lifespan,
+    # The strict CSP does not allow FastAPI's auto-generated Swagger UI /
+    # ReDoc pages (CDN-hosted assets and an inline bootstrap script). We
+    # disable the rendered docs endpoints unconditionally rather than
+    # serve a weakened policy in any environment — the OpenAPI schema
+    # itself remains available at the default /openapi.json path so API
+    # clients, SDK generators, and development tooling can still introspect
+    # the surface. Tests (tests/test_security_headers_and_cors.py) cover
+    # the rendered docs endpoints returning 404.
+    docs_url=None,
+    redoc_url=None,
+    # openapi_url left at the FastAPI default ("/openapi.json") — the schema
+    # has no CDN assets or inline scripts that conflict with the strict CSP,
+    # so disabling it would silently remove a useful API surface for tooling.
+)
 
 # CORS deny-by-default: use daemon_allowed_origins, filter empty strings.
 # An empty list means no cross-origin requests are allowed.
 _cors_allowed = [o.strip() for o in get_settings().daemon_allowed_origins.split(",") if o.strip()]
+warn_on_unsafe_cors_wildcards(
+    allow_credentials=True,
+    allow_methods=CORS_ALLOW_METHODS,
+    allow_headers=CORS_ALLOW_HEADERS,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_allowed,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=list(CORS_ALLOW_METHODS),
+    allow_headers=list(CORS_ALLOW_HEADERS),
 )
+app.add_middleware(SecurityHeadersMiddleware)
 
 # TrustedHostMiddleware: enforce an allowlist on the inbound Host header.
 # Without this, a Host-header injection (Host: attacker.com) can be used
@@ -2145,3 +2213,16 @@ app.include_router(users.router)
 app.include_router(video_credits.router)
 app.include_router(auth_config_router)
 app.include_router(auth_setup_router)
+
+
+# Wrap the full ASGI stack with the outer security-headers middleware so
+# that 500 responses generated by Starlette's outermost
+# ``ServerErrorMiddleware`` for unhandled exceptions still carry the same
+# HSTS / CSP / X-Frame-Options headers as normal responses. The inner
+# ``SecurityHeadersMiddleware`` sits below Starlette's error handler and
+# therefore does not see those responses. ``app.middleware_stack`` is
+# None until the first request, so we build it eagerly here and wrap the
+# resulting stack (which already has ``ServerErrorMiddleware`` on the
+# outside) with our outer security-headers pass.
+_built_stack = app.build_middleware_stack()
+app.middleware_stack = _OuterSecurityHeadersMiddleware(_built_stack)

@@ -11,6 +11,11 @@ interface DocxPreviewProps {
 const DOCX_RENDER_TIMEOUT_MS = 20000;
 const DOCX_CLASS_NAME = "docx-preview";
 
+function readCspNonce(): string | undefined {
+  const meta = document.querySelector<HTMLMetaElement>('meta[name="csp-nonce"]');
+  return meta?.content || undefined;
+}
+
 export function DocxPreview({ content, filename }: DocxPreviewProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -151,10 +156,15 @@ export function DocxPreview({ content, filename }: DocxPreviewProps) {
 
         // Render DOCX
         const { renderAsync } = await import("docx-preview");
+        // docx-preview writes generated <style> elements into its optional
+        // style container. Keep that container detached until every style has
+        // the response nonce; CSP evaluates a style when it is attached, so
+        // adding the nonce afterwards is too late.
+        const styleContainer = document.createElement("div");
 
         await Promise.race([
           Promise.resolve().then(() =>
-            renderAsync(docxData, containerRef.current!, undefined, {
+            renderAsync(docxData, containerRef.current!, styleContainer, {
               className: DOCX_CLASS_NAME,
               inWrapper: true,
             })
@@ -165,6 +175,18 @@ export function DocxPreview({ content, filename }: DocxPreviewProps) {
             }, DOCX_RENDER_TIMEOUT_MS);
           }),
         ]);
+
+        if (cancelled || runIdRef.current !== runId || !containerRef.current) {
+          return;
+        }
+
+        const nonce = readCspNonce();
+        if (nonce) {
+          styleContainer.querySelectorAll("style").forEach((style) => {
+            style.setAttribute("nonce", nonce);
+          });
+        }
+        containerRef.current.prepend(...Array.from(styleContainer.childNodes));
 
         requestAnimationFrame(() => {
           fitDocxToContainer();
