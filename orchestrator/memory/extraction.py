@@ -5,6 +5,7 @@ import logging
 import re
 import uuid
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 from dataclasses import dataclass  # noqa: E402
@@ -588,13 +589,22 @@ async def extract_facts_from_text(
 
 
 async def process_extraction(
-    store: MemoryStore, user_id: uuid.UUID, conversation_id: uuid.UUID, text: str
-) -> tuple[bool, list[dict[str, Any]]]:
+    store: MemoryStore,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    text: str,
+    *,
+    last_message_observed_at: datetime | None = None,
+) -> tuple[bool, list[dict[str, Any]], bool]:
     """Orchestrate extraction -> dedup -> insert.
 
     Returns:
-        Tuple of (success, new_memories) where new_memories is the list of
-        newly created memory dicts from deduplication.
+        Tuple of ``(success, new_memories, summary_continuation_needed)``.
+
+        ``summary_continuation_needed`` is ``True`` when the inline
+        post-extraction summary call filled its bounded batch and more
+        finalized messages remain. Worker callers should enqueue
+        ``generate_summary_job(force=True)`` to drain the tail.
     """
     from orchestrator.memory.dedup import deduplicate_facts
 
@@ -627,7 +637,7 @@ async def process_extraction(
             outcome = retry_outcome
 
     if not outcome.facts:
-        return True, []
+        return True, [], False
 
     result = await deduplicate_facts(
         store,
@@ -661,15 +671,26 @@ async def process_extraction(
             "retry_used": retry_used,
         },
         model_used=model,
+        last_message_observed_at=last_message_observed_at,
     )
 
     try:
         import importlib
 
         summary_module = importlib.import_module("orchestrator.memory.summary")
-        generate_or_update_summary = getattr(summary_module, "generate_or_update_summary")
-        await generate_or_update_summary(conversation_id, store)
+        update_result_fn = getattr(summary_module, "_generate_or_update_summary_result", None)
+        if update_result_fn is not None:
+            update_result = await update_result_fn(conversation_id, store)
+        else:
+            # Older test / shim: fall back to the public wrapper that hides
+            # the continuation flag.
+            legacy = getattr(summary_module, "generate_or_update_summary")
+            await legacy(conversation_id, store)
+            update_result = None
     except Exception:
-        pass
+        return True, result.new, False
 
-    return True, result.new
+    summary_continuation_needed = bool(
+        update_result is not None and update_result.continuation_needed
+    )
+    return True, result.new, summary_continuation_needed

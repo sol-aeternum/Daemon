@@ -26,7 +26,7 @@ memories.content          → encrypted
 extraction_log.input_snippet → encrypted
 ```
 
-If `DAEMON_ENCRYPTION_KEY` is not set, content falls back to plaintext (logged as a warning on startup).
+If `DAEMON_ENCRYPTION_KEY` is missing or invalid when memory storage is initialized, startup fails closed instead of writing plaintext. Encryption init, encrypt, and decrypt failures increment the `encryption_operations_failed_total` status metric and raise to the caller.
 
 ### Tables
 
@@ -74,6 +74,7 @@ created_at TIMESTAMPTZ DEFAULT NOW()
 id UUID PRIMARY KEY
 user_id UUID REFERENCES users(id)
 content TEXT NOT NULL  -- Fernet-encrypted
+content_hash TEXT  -- HMAC-SHA256(normalized plaintext, DAEMON_AUTH_PEPPER)
 embedding VECTOR(1024)  -- plaintext; Voyage 4-large document vectors
 category TEXT CHECK (category IN ('fact', 'preference', 'project', 'summary', 'correction'))
 source_type TEXT CHECK (source_type IN ('conversation', 'manual', 'import', 'extracted', 'user_created'))
@@ -214,10 +215,11 @@ L0 memories bypass embedding-based retrieval entirely. They are always prepended
 
 `summary.py` — `generate_or_update_summary()`:
 
-- Triggered after each successful extraction (best-effort)
-- **Incremental:** fetches only messages since `summary_updated_at`
-- Uses `auto_fast_model` from tier config
-- Updates `conversations.summary` and `summary_updated_at`
+- Triggered after each successful extraction (best-effort) and periodically by `generate_summary_job` (arq worker)
+- **Cursor model:** persists `last_summarized_msg_count` in `conversations.metadata` JSONB and a per-iteration `snapshot_at` timestamp. The batch is read at `offset = persisted_baseline` and bounded by the contiguous-finalized prefix at the snapshot (the rank of the first non-finalized row, in `created_at ASC, id ASC` order, minus 1). The persisted baseline advances only by the rows actually incorporated in this iteration, capped at `contiguous_baseline` (matches the inline path on `summary.py:225`).
+- **Atomic write:** `update_conversation_summary` advances `summary`, `summary_updated_at`, `summarized_message_count`, `last_summarized_msg_count`, and `summary_continuation_pending` in a single SQL row, with optimistic concurrency; on conflict the inline path surfaces continuation to the extraction caller which re-enqueues `generate_summary_job(force=True)`.
+- **Continuation:** a full batch (100 rows in the worker, 20 in the inline path) sets `summary_continuation_pending` and the worker enqueues a forced summary continuation. The flag survives extraction retries via `consume_summary_continuation_pending` at the top of `extract_memories`.
+- Uses `auto_fast_model` from tier config.
 
 ### 9. Injection
 
@@ -252,6 +254,10 @@ Handled by the arq worker (`orchestrator/worker/`):
 1. **Extraction** — `process_extraction()` after each conversation turn
 2. **Summary update** — `generate_or_update_summary()` post-extraction (best-effort)
 3. **Consolidation** — `run_consolidation()` on configurable interval (default 7 days, enabled by `consolidation_enabled`)
+
+Worker failures are persisted to `job_failures` before arq result TTL cleanup. Critical memory
+jobs can send a best-effort alert through the existing mail sender when
+`DAEMON_WORKER_FAILURE_ALERT_EMAIL` is configured.
 
 ---
 

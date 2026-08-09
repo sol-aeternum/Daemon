@@ -143,12 +143,13 @@ export async function POST(req: Request) {
       const reader = backendRes.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+      let assistantMessageStarted = false;
       let sawToken = false;
 
       const ensureAssistantMessageStarted = () => {
-        if (!sawToken) {
-          sawToken = true;
-          dataStream.write(formatDataStreamPart('text', '.'));
+        if (!assistantMessageStarted) {
+          assistantMessageStarted = true;
+          dataStream.write(formatDataStreamPart('text', ''));
         }
       };
 
@@ -192,6 +193,7 @@ export async function POST(req: Request) {
               payload?.text ??
               payload?.delta;
             if (typeof delta === 'string' && delta.length > 0) {
+              assistantMessageStarted = true;
               sawToken = true;
               dataStream.write(formatDataStreamPart('text', delta));
             }
@@ -241,9 +243,14 @@ export async function POST(req: Request) {
               );
             }
           } else if (eventType === 'tool_call') {
+            const data =
+              payload?.data && typeof payload.data === 'object'
+                ? payload.data
+                : {};
             dataStream.write(
               formatDataStreamPart('data', [
                 {
+                  ...data,
                   type: 'tool_call',
                   name: payload?.data?.name || '',
                   arguments: payload?.data?.arguments || {},
@@ -253,12 +260,45 @@ export async function POST(req: Request) {
               ]),
             );
           } else if (eventType === 'tool_result') {
+            const data =
+              payload?.data && typeof payload.data === 'object'
+                ? payload.data
+                : {};
             dataStream.write(
               formatDataStreamPart('data', [
                 {
+                  ...data,
                   type: 'tool_result',
                   name: payload?.data?.name || '',
                   result: payload?.data?.result || '',
+                  id: payload?.id ?? payload?.data?.id,
+                  request_id: payload?.request_id ?? payload?.data?.request_id,
+                },
+              ]),
+            );
+          } else if (
+            eventType === 'advisor_start' ||
+            eventType === 'advisor_text_delta' ||
+            eventType === 'advisor_text_done' ||
+            eventType === 'advisor_error' ||
+            eventType === 'advisor_end'
+          ) {
+            const data =
+              payload?.data && typeof payload.data === 'object'
+                ? payload.data
+                : {};
+            const content =
+              payload?.data?.content ??
+              payload?.data?.text ??
+              payload?.content ??
+              payload?.text;
+            ensureAssistantMessageStarted();
+            dataStream.write(
+              formatDataStreamPart('data', [
+                {
+                  ...data,
+                  type: eventType,
+                  ...(typeof content === 'string' ? { content } : {}),
                   id: payload?.id ?? payload?.data?.id,
                   request_id: payload?.request_id ?? payload?.data?.request_id,
                 },

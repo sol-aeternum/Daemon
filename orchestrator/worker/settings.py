@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 from orchestrator.config import Settings
 
+SUPPORTED_CONSOLIDATION_INTERVAL_DAYS = frozenset({1, 7})
+
 
 @dataclass
 class WorkerSettings:
@@ -19,6 +21,16 @@ class WorkerSettings:
     consolidation_nudge_conversation_interval: int = 15
     consolidation_nudge_stale_days: int = 30
     consolidation_nudge_min_skills: int = 3
+
+    def __post_init__(self) -> None:
+        if self.consolidation_interval_days not in SUPPORTED_CONSOLIDATION_INTERVAL_DAYS:
+            supported = ", ".join(
+                str(value) for value in sorted(SUPPORTED_CONSOLIDATION_INTERVAL_DAYS)
+            )
+            raise ValueError(
+                "consolidation_interval_days must be one of "
+                f"{supported}; got {self.consolidation_interval_days}"
+            )
 
     @classmethod
     def from_app_settings(cls, settings: Settings) -> "WorkerSettings":

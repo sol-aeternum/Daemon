@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
+from datetime import timedelta
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -30,6 +32,33 @@ class FakeMemoryStore:
         return self.row or {"id": message_id}
 
 
+class FakeDedupQueue:
+    def __init__(self) -> None:
+        self.attempts: list[dict[str, Any]] = []
+        self.accepted_job_ids: set[str] = set()
+
+    async def enqueue_job(
+        self,
+        *args: Any,
+        _job_id: str | None = None,
+        _defer_by: timedelta | None = None,
+        **kwargs: Any,
+    ) -> SimpleNamespace | None:
+        self.attempts.append(
+            {
+                "args": args,
+                "job_id": _job_id,
+                "defer_by": _defer_by,
+                "kwargs": kwargs,
+            }
+        )
+        if _job_id is not None and _job_id in self.accepted_job_ids:
+            return None
+        if _job_id is not None:
+            self.accepted_job_ids.add(_job_id)
+        return SimpleNamespace(job_id=_job_id)
+
+
 async def _not_disconnected() -> bool:
     return False
 
@@ -37,12 +66,16 @@ async def _not_disconnected() -> bool:
 async def _collect_stream(
     store: FakeMemoryStore,
     completion_events: AsyncIterator[dict[str, Any]],
+    *,
+    queue: FakeDedupQueue | None = None,
+    conversation_uuid: uuid.UUID | None = None,
 ) -> list[str]:
     async def fake_completion_with_tools(**_kwargs: Any) -> AsyncIterator[dict[str, Any]]:
         async for event in completion_events:
             yield event
 
     frames: list[str] = []
+    effective_conversation_uuid = conversation_uuid or uuid.uuid4()
     with patch("orchestrator.daemon.completion_with_tools", fake_completion_with_tools):
         async for frame in stream_sse_chat(
             settings=Settings(mock_llm=False),
@@ -50,11 +83,12 @@ async def _collect_stream(
             system_prompt="system",
             user_message="hello",
             request_id="req_123",
-            conversation_id=f"conv_{uuid.uuid4().hex}",
+            conversation_id=f"conv_{effective_conversation_uuid.hex}",
             is_disconnected=_not_disconnected,
             memory_store=store,
             user_id=uuid.uuid4(),
-            conversation_uuid=uuid.uuid4(),
+            conversation_uuid=effective_conversation_uuid,
+            queue=queue,
         ):
             frames.append(frame)
     return frames
@@ -137,3 +171,57 @@ async def test_real_completed_stream_keeps_advisor_traces_on_preinserted_row() -
     advisor_traces = final_updates[0]["advisor_traces"]
     assert advisor_traces["advisor_1"]["text"] == "nested advice"
     assert advisor_traces["advisor_1"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_extraction_enqueue_uses_stable_conversation_debounce_key() -> None:
+    async def successful_completion() -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "content_delta", "content": "answer"}
+        yield {"type": "done", "finish_reason": "stop"}
+
+    conversation_uuid = uuid.uuid4()
+    queue = FakeDedupQueue()
+
+    for _ in range(5):
+        await _collect_stream(
+            FakeMemoryStore(),
+            successful_completion(),
+            queue=queue,
+            conversation_uuid=conversation_uuid,
+        )
+
+    extraction_attempts = [
+        attempt
+        for attempt in queue.attempts
+        if attempt["args"]
+        and attempt["args"][0] == "extract_memories"
+        and attempt.get("job_id") == f"extract:{conversation_uuid}"
+    ]
+
+    assert len(extraction_attempts) == 5
+    assert {attempt["job_id"] for attempt in extraction_attempts} == {
+        f"extract:{conversation_uuid}"
+    }
+    assert all(attempt["defer_by"] == timedelta(seconds=30) for attempt in extraction_attempts)
+    # The first duplicate enqueue schedules a follow-up extraction so turns
+    # that arrive during an in-flight run are not lost; subsequent duplicates
+    # collapse into the same deterministic follow-up _job_id and arq drops them.
+    assert queue.accepted_job_ids == {
+        f"extract:{conversation_uuid}",
+        f"extract:{conversation_uuid}:followup",
+    }
+    followup_attempts = [
+        attempt
+        for attempt in queue.attempts
+        if attempt.get("job_id") == f"extract:{conversation_uuid}:followup"
+    ]
+    assert len(followup_attempts) == 4
+    assert all(attempt["defer_by"] == timedelta(seconds=60) for attempt in followup_attempts)
+
+
+def test_extract_memories_worker_registration_does_not_retain_result_key() -> None:
+    from orchestrator.worker.worker import worker
+
+    extract_function = worker.functions["extract_memories"]
+
+    assert extract_function.keep_result_s == 0

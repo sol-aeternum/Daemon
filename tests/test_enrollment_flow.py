@@ -1476,6 +1476,8 @@ class TestWebEnrollCookiePolicyErrorBeforeDbMutation:
         monkeypatch.setenv("DAEMON_PUBLIC_ORIGIN", "https://app.daemon.ai")
         monkeypatch.setenv("DAEMON_ENVIRONMENT", "production")
         monkeypatch.setenv("DAEMON_AUTH_PEPPER", "test-pepper-for-all-tests-12345678901234567890")
+        # Required since #105 TrustedHostMiddleware; production cannot run with empty host list.
+        monkeypatch.setenv("DAEMON_ALLOWED_HOSTS", "app.daemon.ai")
         # Explicitly false — in production this raises CookiePolicyError
         monkeypatch.setenv("DAEMON_COOKIE_SECURE", "false")
         get_settings.cache_clear()
@@ -1575,6 +1577,7 @@ class TestWebEnrollCookiePolicyErrorBeforeDbMutation:
         monkeypatch.setenv("DAEMON_PUBLIC_ORIGIN", "https://app.daemon.ai")
         monkeypatch.setenv("DAEMON_ENVIRONMENT", "production")
         monkeypatch.setenv("DAEMON_AUTH_PEPPER", "test-pepper-for-all-tests-12345678901234567890")
+        monkeypatch.setenv("DAEMON_ALLOWED_HOSTS", "app.daemon.ai")
         monkeypatch.setenv("DAEMON_COOKIE_SECURE", "false")
         get_settings.cache_clear()
 

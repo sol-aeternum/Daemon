@@ -5,13 +5,14 @@ import hashlib
 import json
 import logging
 import os
+import sys
 import time
 import uuid
 
 import asyncpg
 import httpx
 import litellm
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -27,6 +28,9 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from starlette.datastructures import MutableHeaders
+from starlette.types import Receive, Scope, Send
 from fastapi.responses import FileResponse, StreamingResponse
 
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
@@ -43,6 +47,7 @@ from orchestrator.auth_runtime_state import (
 )
 from orchestrator.council.sse import stream_council, stream_council_interview_response
 from orchestrator.config import (
+    HostSecurityConfigError,
     HostedIdentityConfigError,
     ProviderConfig,
     Settings,
@@ -55,6 +60,7 @@ from orchestrator.daemon import (
     now_rfc3339,
     sse,
     stream_sse_chat,
+    stream_with_keepalives,
 )
 from orchestrator.db import (
     AppState,
@@ -63,6 +69,7 @@ from orchestrator.db import (
     get_app_state,
     init_app_state,
 )
+from orchestrator.memory.encryption import ContentEncryption, EncryptionInitError
 from orchestrator.session_cleanup import (
     cleanup_stale_sessions,
     start_session_cleanup_task,
@@ -106,13 +113,53 @@ from orchestrator.models import (
 )
 from orchestrator.prompts import DAEMON_SYSTEM_PROMPT
 from orchestrator.router import route_message
+from orchestrator.security_headers import (
+    SecurityHeadersMiddleware,
+    _OuterSecurityHeadersMiddleware,
+)
 from orchestrator.tools.builtin import create_default_registry
 from orchestrator.tools.completion import completion_with_tools
 
 logger = logging.getLogger(__name__)
 
+CORS_ALLOW_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
+CORS_ALLOW_HEADERS = (
+    "Authorization",
+    "Content-Type",
+    "X-Daemon-Client-IP",
+    "X-CSRF-Token",
+)
 
-def _validate_startup_config(settings: Settings) -> None:
+
+def warn_on_unsafe_cors_wildcards(
+    *,
+    allow_credentials: bool,
+    allow_methods: Sequence[str],
+    allow_headers: Sequence[str],
+) -> None:
+    if not allow_credentials:
+        return
+    if "*" in allow_methods or "*" in allow_headers:
+        logger.warning(
+            "Unsafe CORS configuration: wildcard methods or headers with credentials enabled"
+        )
+
+
+class UnsafeProductionServerConfigError(RuntimeError):
+    """Raised when the process is launched with dev-only server flags in production."""
+
+
+def _validate_production_server_args(settings: Settings, argv: Sequence[str] | None = None) -> None:
+    if settings.daemon_environment.lower().strip() != "production":
+        return
+    args = sys.argv if argv is None else argv
+    if any(arg == "--reload" or arg.startswith("--reload=") for arg in args):
+        raise UnsafeProductionServerConfigError(
+            "uvicorn --reload is not allowed when DAEMON_ENVIRONMENT=production"
+        )
+
+
+def _validate_startup_config(settings: Settings, argv: Sequence[str] | None = None) -> None:
     """Run all fail-closed startup-time config validations.
 
     Centralized so the FastAPI lifespan hook stays compact and the
@@ -121,9 +168,13 @@ def _validate_startup_config(settings: Settings) -> None:
     first (authentication substrate), then hosted identity (deployment
     posture). Either failure aborts startup before any AppState work.
     """
+    _validate_production_server_args(settings, argv)
     validate_pepper_config(settings)
     settings.validate_deployment_mode()
     settings.validate_hosted_identity_config()
+    if settings.daemon_encryption_key is not None:
+        ContentEncryption(settings.daemon_encryption_key)
+    settings.validate_host_security_config()
 
 
 @asynccontextmanager
@@ -132,11 +183,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     try:
         _validate_startup_config(settings)
+    except UnsafeProductionServerConfigError as exc:
+        logger.critical("Unsafe production server configuration: %s", exc)
+        raise
     except PepperValidationError as exc:
         logger.critical("Production pepper validation failed: %s", exc)
         raise
     except HostedIdentityConfigError as exc:
         logger.critical("Hosted identity config validation failed: %s", exc)
+        raise
+    except EncryptionInitError as exc:
+        logger.critical("Encryption config validation failed: %s", exc)
+        raise
+    except HostSecurityConfigError as exc:
+        logger.critical("Host security config validation failed: %s", exc)
         raise
 
     state = await init_app_state(settings)
@@ -149,6 +209,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     if state.db_pool is not None:
         await initialize_development_pepper(settings, state.db_pool)
+        if state.memory_store is not None:
+            try:
+                backfilled = await state.memory_store.backfill_memory_content_hashes()
+                if backfilled:
+                    logger.info("Backfilled content_hash for %s current memories", backfilled)
+            except Exception:
+                logger.warning("Failed to backfill memory content hashes", exc_info=True)
         asyncio.create_task(_backfill_skill_projections(state.db_pool))
         asyncio.create_task(_sync_repo_skills(state.db_pool))
         await _check_first_boot_setup(state)
@@ -283,18 +350,96 @@ async def _check_first_boot_setup(state: AppState) -> None:
         logger.warning("First-boot setup check failed", exc_info=True)
 
 
-app = FastAPI(title="daemon-orchestrator", lifespan=lifespan)
+_is_production = get_settings().daemon_environment.lower().strip() == "production"
+app = FastAPI(
+    title="daemon-orchestrator",
+    lifespan=lifespan,
+    # The strict CSP does not allow FastAPI's auto-generated Swagger UI /
+    # ReDoc pages (CDN-hosted assets and an inline bootstrap script). We
+    # disable the rendered docs endpoints unconditionally rather than
+    # serve a weakened policy in any environment — the OpenAPI schema
+    # itself remains available at the default /openapi.json path so API
+    # clients, SDK generators, and development tooling can still introspect
+    # the surface. Tests (tests/test_security_headers_and_cors.py) cover
+    # the rendered docs endpoints returning 404.
+    docs_url=None,
+    redoc_url=None,
+    # openapi_url left at the FastAPI default ("/openapi.json") — the schema
+    # has no CDN assets or inline scripts that conflict with the strict CSP,
+    # so disabling it would silently remove a useful API surface for tooling.
+)
 
 # CORS deny-by-default: use daemon_allowed_origins, filter empty strings.
 # An empty list means no cross-origin requests are allowed.
 _cors_allowed = [o.strip() for o in get_settings().daemon_allowed_origins.split(",") if o.strip()]
+warn_on_unsafe_cors_wildcards(
+    allow_credentials=True,
+    allow_methods=CORS_ALLOW_METHODS,
+    allow_headers=CORS_ALLOW_HEADERS,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_allowed,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=list(CORS_ALLOW_METHODS),
+    allow_headers=list(CORS_ALLOW_HEADERS),
 )
+app.add_middleware(SecurityHeadersMiddleware)
+
+# TrustedHostMiddleware: enforce an allowlist on the inbound Host header.
+# Without this, a Host-header injection (Host: attacker.com) can be used
+# to generate absolute URLs in error responses that point to attacker-
+# controlled domains, confuse reverse proxies, or bypass domain-based
+# authentication. The allowlist is read from DAEMON_ALLOWED_HOSTS via
+# the Settings class. In production an empty allowlist is rejected at
+# startup; in development it falls back to ["*"] for the dev experience.
+# NOTE for operators: requests proxied by the Next frontend reach the
+# backend with Host values like "backend:8000" or "localhost:8000".
+# Starlette strips the port before matching, so DAEMON_ALLOWED_HOSTS must
+# include the BARE internal hostnames (e.g. "backend", "localhost");
+# resolve_allowed_hosts() also drops any :port suffix it finds.
+
+
+class CaseInsensitiveTrustedHostMiddleware(TrustedHostMiddleware):
+    """Starlette matches Host case-sensitively; hostnames are not.
+
+    Lowercase the inbound Host header before matching (and for downstream
+    consumers — DNS hostnames are case-insensitive by RFC 4343) so
+    ``Host: APP.DAEMON.AI`` matches an ``app.daemon.ai`` allowlist entry.
+    Allowlist entries are already lowercased by ``resolve_allowed_hosts``.
+    """
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if not self.allow_any and scope["type"] in ("http", "websocket"):
+            headers = MutableHeaders(scope=scope)
+            host = headers.get("host", "")
+            lowered = host.lower()
+            if lowered != host:
+                headers["host"] = lowered
+        await super().__call__(scope, receive, send)
+
+
+# Import-time resolution must not raise: production-startup tests exercise
+# other fail-closed paths in _validate_startup_config and must be able to
+# import this module first. A misconfigured allowlist falls back to ["*"]
+# here, but the app still refuses to START because the lifespan validation
+# chain re-raises HostSecurityConfigError (fail-closed, just later).
+try:
+    _allowed_hosts = get_settings().resolve_allowed_hosts()
+except HostSecurityConfigError as _host_exc:
+    logger.critical(
+        "Host security config invalid; startup will abort in lifespan: %s",
+        _host_exc,
+    )
+    _allowed_hosts = ["*"]
+if _allowed_hosts == ["*"]:
+    logger.warning(
+        "TrustedHostMiddleware is configured with allowed_hosts=['*']; "
+        "the backend will accept any Host header. This is the default in "
+        "development but is unsafe in production. Set DAEMON_ALLOWED_HOSTS "
+        "to a comma-separated allowlist (e.g. 'app.daemon.ai,*.daemon.ai')."
+    )
+app.add_middleware(CaseInsensitiveTrustedHostMiddleware, allowed_hosts=_allowed_hosts)
 
 
 DEFAULT_BILLING_USER_ID = "00000000-0000-0000-0000-000000000001"
@@ -850,7 +995,10 @@ async def test_tools(
             yield f"data: {json.dumps(event)}\n\n"
         yield "data: [DONE]\n\n"
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream_with_keepalives(generate(), settings.sse_keepalive_interval_s),
+        media_type="text/event-stream",
+    )
 
 
 @app.get("/providers")
@@ -1087,7 +1235,7 @@ async def openai_chat_completions(
                     user_message=last_message,
                     conversation_id=conversation_id,
                     request_id=request_id,
-                    ping_interval_s=settings.stream_ping_interval_s,
+                    ping_interval_s=settings.sse_keepalive_interval_s,
                     is_disconnected=is_disconnected,
                     actual_model=actual_model,
                 ):
@@ -1156,7 +1304,7 @@ async def openai_chat_completions(
                 yield "data: [DONE]\n\n"
 
         return StreamingResponse(
-            generator(),
+            stream_with_keepalives(generator(), settings.sse_keepalive_interval_s),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -1181,7 +1329,7 @@ async def openai_chat_completions(
                 user_message=last_message,
                 conversation_id=conversation_id,
                 request_id=request_id,
-                ping_interval_s=settings.stream_ping_interval_s,
+                ping_interval_s=settings.sse_keepalive_interval_s,
                 is_disconnected=is_disconnected,
                 actual_model=actual_model,
             ):
@@ -1973,7 +2121,7 @@ async def chat(
                 history_messages=history_messages,
                 conversation_id=conversation_id,
                 request_id=request_id,
-                ping_interval_s=settings.stream_ping_interval_s,
+                ping_interval_s=settings.sse_keepalive_interval_s,
                 is_disconnected=is_disconnected,
                 actual_model=actual_model,
                 reported_model=selected_model,
@@ -2046,7 +2194,7 @@ async def chat(
             )
 
     return StreamingResponse(
-        generator(),
+        stream_with_keepalives(generator(), settings.sse_keepalive_interval_s),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -2065,3 +2213,16 @@ app.include_router(users.router)
 app.include_router(video_credits.router)
 app.include_router(auth_config_router)
 app.include_router(auth_setup_router)
+
+
+# Wrap the full ASGI stack with the outer security-headers middleware so
+# that 500 responses generated by Starlette's outermost
+# ``ServerErrorMiddleware`` for unhandled exceptions still carry the same
+# HSTS / CSP / X-Frame-Options headers as normal responses. The inner
+# ``SecurityHeadersMiddleware`` sits below Starlette's error handler and
+# therefore does not see those responses. ``app.middleware_stack`` is
+# None until the first request, so we build it eagerly here and wrap the
+# resulting stack (which already has ``ServerErrorMiddleware`` on the
+# outside) with our outer security-headers pass.
+_built_stack = app.build_middleware_stack()
+app.middleware_stack = _OuterSecurityHeadersMiddleware(_built_stack)

@@ -1,29 +1,50 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useSyncExternalStore } from 'react';
+import { useClientMounted } from './useClientMounted';
+
+const subscribe = (callback: () => void) => {
+  if (typeof window === 'undefined') {
+    return () => {};
+  }
+
+  window.addEventListener('online', callback);
+  window.addEventListener('offline', callback);
+  return () => {
+    window.removeEventListener('online', callback);
+    window.removeEventListener('offline', callback);
+  };
+};
+
+const readOnlineState = () => {
+  if (typeof navigator === 'undefined') {
+    return true;
+  }
+  return navigator.onLine;
+};
 
 export function useOnlineStatus() {
-  const [isOnline, setIsOnline] = useState(() =>
-    typeof navigator === 'undefined' ? true : navigator.onLine,
+  const isClientMounted = useClientMounted();
+  const isOnline = useSyncExternalStore(
+    subscribe,
+    () => (isClientMounted ? readOnlineState() : true),
+    () => true,
   );
   const [wasOffline, setWasOffline] = useState(false);
 
   useEffect(() => {
-    const handleOnline = () => {
-      setIsOnline(true);
-    };
+    if (!isClientMounted) {
+      return;
+    }
 
     const handleOffline = () => {
-      setIsOnline(false);
       setWasOffline(true);
     };
 
-    window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
     return () => {
-      window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
-  }, []);
+  }, [isClientMounted]);
 
   return { isOnline, wasOffline };
 }

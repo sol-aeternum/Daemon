@@ -540,8 +540,16 @@ interface ToolCallLogProps {
 
 export function ToolCallLog({ events }: ToolCallLogProps) {
   const executions: ToolExecution[] = [];
+  const isAdvisorScoped = (event: ChatEvent) =>
+    'advisor_id' in event &&
+    typeof event.advisor_id === 'string' &&
+    event.advisor_id.length > 0;
 
   events.forEach((event) => {
+    if (isAdvisorScoped(event)) {
+      return;
+    }
+
     if (isToolCallEvent(event)) {
       executions.push({ call: event });
     } else if (isToolResultEvent(event)) {

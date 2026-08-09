@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+import hashlib
+import hmac
 from datetime import datetime
 from typing import Any, cast
 
 import asyncpg
 
+from orchestrator.auth_pepper import validate_and_get_pepper
 from orchestrator.config import get_settings
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.embedding import embed_query
@@ -25,6 +28,24 @@ logger = logging.getLogger(__name__)
 
 def _default_embedding_model() -> str:
     return get_settings().embedding_document_model
+
+
+def _normalize_memory_content_for_hash(content: str) -> str:
+    return " ".join(content.strip().split())
+
+
+def compute_memory_content_hash(content: str) -> str:
+    pepper = validate_and_get_pepper(get_settings())
+    normalized = _normalize_memory_content_for_hash(content)
+    return hmac.new(
+        pepper.encode("utf-8"),
+        normalized.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+class MemoryContentConflictError(Exception):
+    """Raised when an active memory edit duplicates another active memory."""
 
 
 class MemoryStore:
@@ -49,6 +70,86 @@ class MemoryStore:
         except Exception:
             logger.warning("Failed to decrypt advisor_traces", exc_info=True)
             return None
+
+    def _memory_row_to_dict(self, row: Any) -> dict[str, Any]:
+        result = cast(dict[str, Any], dict(row))
+        result["content"] = self._enc.decrypt(result["content"])
+        return result
+
+    async def _get_active_memory_by_content_hash(
+        self,
+        user_id: uuid.UUID,
+        content_hash: str,
+        local_only: bool,
+    ) -> dict[str, Any] | None:
+        row = await self._pool.fetchrow(
+            """
+            SELECT *
+            FROM memories
+            WHERE user_id = $1
+              AND content_hash = $2
+              AND local_only = $3
+              AND status = 'active'
+              AND valid_to IS NULL
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            user_id,
+            content_hash,
+            local_only,
+        )
+        if row is None:
+            return None
+        return self._memory_row_to_dict(row)
+
+    async def backfill_memory_content_hashes(self) -> int:
+        """Populate content_hash for legacy current memories that predate the column."""
+        rows = await self._pool.fetch(
+            """
+            SELECT id, content
+            FROM memories
+            WHERE content_hash IS NULL
+              AND valid_to IS NULL
+            ORDER BY created_at ASC
+            """
+        )
+        backfilled = 0
+        for row in rows:
+            content = self._enc.decrypt(row["content"])
+            content_hash = compute_memory_content_hash(content)
+            try:
+                result = await self._pool.execute(
+                    """
+                    UPDATE memories
+                    SET content_hash = $2,
+                        updated_at = NOW()
+                    WHERE id = $1
+                      AND content_hash IS NULL
+                    """,
+                    row["id"],
+                    content_hash,
+                )
+            except asyncpg.UniqueViolationError:
+                logger.warning(
+                    "Closing duplicate legacy memory after content_hash backfill conflict for memory %s",
+                    row["id"],
+                    exc_info=True,
+                )
+                await self._pool.execute(
+                    """
+                    UPDATE memories
+                    SET valid_to = NOW(),
+                        updated_at = NOW()
+                    WHERE id = $1
+                      AND content_hash IS NULL
+                      AND valid_to IS NULL
+                    """,
+                    row["id"],
+                )
+                continue
+            if result == "UPDATE 1":
+                backfilled += 1
+        return backfilled
 
     # ------------------------------------------------------------------
     # Conversation operations
@@ -203,6 +304,32 @@ class MemoryStore:
         )
         return result == "DELETE 1"
 
+    async def run_garbage_collect(self) -> dict[str, int]:
+        """Physically delete expired non-active memory rows."""
+        scanned = await self._pool.fetchval(
+            """
+            SELECT COUNT(*)
+            FROM memories
+            WHERE (status = 'inactive' AND updated_at < NOW() - INTERVAL '90 days')
+               OR (status = 'rejected' AND updated_at < NOW() - INTERVAL '30 days')
+               OR (status = 'pending' AND updated_at < NOW() - INTERVAL '30 days')
+               OR (status = 'deleted' AND updated_at < NOW() - INTERVAL '30 days')
+            """
+        )
+
+        result = await self._pool.execute(
+            """
+            DELETE FROM memories
+            WHERE (status = 'inactive' AND updated_at < NOW() - INTERVAL '90 days')
+               OR (status = 'rejected' AND updated_at < NOW() - INTERVAL '30 days')
+               OR (status = 'pending' AND updated_at < NOW() - INTERVAL '30 days')
+               OR (status = 'deleted' AND updated_at < NOW() - INTERVAL '30 days')
+            """
+        )
+
+        deleted = int(result.split()[-1]) if result else 0
+        return {"scanned": int(scanned or 0), "deleted": deleted}
+
     # ------------------------------------------------------------------
     # Message operations
     # ------------------------------------------------------------------
@@ -316,13 +443,305 @@ class MemoryStore:
             results.append(_normalize_message(d))
         return results
 
+    async def get_summary_message_batch(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        snapshot_at: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """Load a bounded, ordered batch of finalized messages for summarization.
+
+        When ``snapshot_at`` is provided, only messages with
+        ``created_at <= snapshot_at`` are eligible. This pins the row set to the
+        moment the cursor was captured so a concurrent status flip from
+        ``streaming`` to ``complete`` (which does not change ``created_at``) can
+        not shift the order under an in-flight summary batch.
+        """
+        batch_limit = min(100, max(1, int(limit)))
+        batch_offset = max(0, int(offset))
+        # Stop at the first non-finalized row instead of merely filtering it out.
+        # A row that was streaming at fetch time but finalized later (without a
+        # ``created_at`` change) would otherwise insert before already-summarized
+        # rows and replay the same messages on the next iteration (Codex P2 on
+        # PR #165, ``store.py:464``).
+        #
+        # The ``ranked`` CTE must include ALL conversation rows (not just the
+        # finalized ones) so the ``cutoff`` CTE can find the first non-finalized
+        # row and stop the contiguous prefix before it. The outer SELECT then
+        # filters to finalized-only rows within that contiguous prefix.
+        base_filter = "conversation_id = $1 AND (status IS NULL OR status = 'complete')"
+        if snapshot_at is not None:
+            rows = await self._pool.fetch(
+                f"""
+                WITH ranked AS (
+                    SELECT id, ROW_NUMBER() OVER (
+                        ORDER BY created_at ASC, id ASC
+                    ) AS rn
+                    FROM messages
+                    WHERE conversation_id = $1
+                      AND created_at <= $4
+                ),
+                cutoff AS (
+                    SELECT COALESCE(
+                        MIN(rn) - 1,
+                        (SELECT MAX(rn) FROM ranked)
+                    ) AS contiguous_rn
+                    FROM ranked r
+                    JOIN messages m ON m.id = r.id
+                    WHERE m.status IS NOT NULL AND m.status <> 'complete'
+                      AND m.created_at <= $4
+                )
+                SELECT m.* FROM messages m
+                JOIN ranked r ON m.id = r.id
+                WHERE {base_filter}
+                  AND r.rn > $3
+                  AND r.rn <= (SELECT contiguous_rn FROM cutoff)
+                ORDER BY r.rn ASC
+                LIMIT $2
+                """,
+                conversation_id,
+                batch_limit,
+                batch_offset,
+                snapshot_at,
+            )
+        else:
+            rows = await self._pool.fetch(
+                f"""
+                WITH ranked AS (
+                    SELECT id, created_at, status,
+                           ROW_NUMBER() OVER (
+                               ORDER BY created_at ASC, id ASC
+                           ) AS rn
+                    FROM messages
+                    WHERE conversation_id = $1
+                ),
+                cutoff AS (
+                    SELECT COALESCE(
+                        MIN(rn) - 1,
+                        (SELECT MAX(rn) FROM ranked)
+                    ) AS contiguous_rn
+                    FROM ranked
+                    WHERE status IS NOT NULL AND status <> 'complete'
+                )
+                SELECT m.* FROM messages m
+                JOIN ranked r ON m.id = r.id
+                WHERE {base_filter}
+                  AND r.rn > $3
+                  AND r.rn <= (SELECT contiguous_rn FROM cutoff)
+                ORDER BY r.rn ASC
+                LIMIT $2
+                """,
+                conversation_id,
+                batch_limit,
+                batch_offset,
+            )
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            message = dict(row)
+            message["content"] = self._enc.decrypt(message["content"])
+            if message.get("reasoning_text") is not None:
+                message["reasoning_text"] = self._enc.decrypt(message["reasoning_text"])
+            if message.get("advisor_traces") is not None:
+                message["advisor_traces"] = self._decrypt_advisor_traces(message["advisor_traces"])
+            results.append(_normalize_message(message))
+        return results
+
+    async def count_summary_messages(self, conversation_id: uuid.UUID) -> int:
+        """Count finalized messages eligible for conversation summaries."""
+        row = await self._pool.fetchrow(
+            """
+            SELECT COUNT(*) AS count
+            FROM messages
+            WHERE conversation_id = $1
+              AND (status IS NULL OR status = 'complete')
+            """,
+            conversation_id,
+        )
+        return int(row["count"]) if row else 0
+
+    async def count_summary_messages_at(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        snapshot_at: datetime,
+    ) -> int:
+        """Count finalized messages with ``created_at <= snapshot_at``.
+
+        Mirrors ``get_summary_message_batch``'s snapshot bound so callers
+        can decide whether a continuation job is needed without running
+        a second ordered query.
+        """
+        row = await self._pool.fetchrow(
+            """
+            SELECT COUNT(*) AS count
+            FROM messages
+            WHERE conversation_id = $1
+              AND (status IS NULL OR status = 'complete')
+              AND created_at <= $2
+            """,
+            conversation_id,
+            snapshot_at,
+        )
+        return int(row["count"]) if row else 0
+
+    async def count_contiguous_finalized_messages_at(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        snapshot_at: datetime,
+    ) -> int:
+        """Count the contiguous-finalized-message prefix at ``snapshot_at``.
+
+        A "contiguous finalized prefix" is the longest run of finalized rows
+        (legacy ``status IS NULL`` or ``status = 'complete'``) in
+        ``(created_at ASC, id ASC)`` order such that every row in the prefix
+        is finalized. This excludes a row that was ``streaming`` at the
+        snapshot and later transitioned to ``complete`` — its ``created_at``
+        still satisfies ``created_at <= snapshot_at``, but inserting it
+        before the prior finalized rows would shift the cursor and replay
+        messages already counted toward the baseline.
+
+        Used as a stable completion cursor: the stored baseline must advance
+        only through rows that were finalized when the snapshot was
+        captured, so concurrent ``streaming -> complete`` transitions can
+        never reorder the row set under an in-flight summary batch.
+        """
+        # ``prefix_count`` is the longest contiguous run of finalized rows
+        # from the snapshot. When a non-finalized row exists, prefix_count
+        # is its row number minus one. When every row at the snapshot is
+        # finalized, the inner ``WHERE`` returns nothing and ``MIN(rn)`` is
+        # NULL — fall back to the total ranked-row count so the prefix
+        # spans the whole snapshot (Codex P2 on PR #165, ``store.py:566``).
+        row = await self._pool.fetchrow(
+            """
+            WITH ranked AS (
+                SELECT
+                    row_number() OVER (
+                        ORDER BY created_at ASC, id ASC
+                    ) AS rn,
+                    status
+                FROM messages
+                WHERE conversation_id = $1
+                  AND created_at <= $2
+            )
+            SELECT COALESCE(
+                MIN(rn) FILTER (WHERE status IS NOT NULL AND status <> 'complete') - 1,
+                (SELECT COUNT(*) FROM ranked)
+            ) AS prefix_count
+            FROM ranked
+            """,
+            conversation_id,
+            snapshot_at,
+        )
+        return int(row["prefix_count"]) if row else 0
+
     async def count_messages(self, conversation_id: uuid.UUID) -> int:
         """Count messages in a conversation without loading content."""
         row = await self._pool.fetchrow(
             "SELECT COUNT(*) as count FROM messages WHERE conversation_id = $1",
             conversation_id,
         )
-        return row["count"] if row else 0
+        return int(row["count"]) if row else 0
+
+    async def consume_summary_continuation_pending(
+        self,
+        conversation_id: uuid.UUID,
+    ) -> bool:
+        """Atomically clear the ``summary_continuation_pending`` flag
+        and return its prior value.
+
+        Used by the extraction job's retry-recovery path: if a previous
+        attempt committed the summary + continuation-pending flag but
+        failed to enqueue the forced-summary continuation (e.g. Redis
+        transient error -> ``Retry``), the retry may find ``no_messages``
+        after the watermark advances — so we need a separate signal that
+        survives the watermark (Codex P2 on PR #165,
+        ``worker/jobs.py:295``).
+        """
+        row = await self._pool.fetchrow(
+            """
+            UPDATE conversations
+            SET metadata = COALESCE(metadata, '{}'::jsonb)
+                || jsonb_build_object(
+                    'summary_continuation_pending',
+                    false
+                )
+            WHERE id = $1
+              AND COALESCE(
+                  (metadata ->> 'summary_continuation_pending')::boolean,
+                  false
+              ) = true
+            RETURNING id
+            """,
+            conversation_id,
+        )
+        return row is not None
+
+    async def update_conversation_summary(
+        self,
+        conversation_id: uuid.UUID,
+        summary: str,
+        *,
+        expected_summary_updated_at: datetime | None,
+        summarized_message_count: int,
+        summary_snapshot_at: datetime | None = None,
+        summary_continuation_pending: bool = False,
+    ) -> bool:
+        """Atomically persist a summary and its finalized-message baseline.
+
+        Also advances ``updated_at`` / ``last_activity_at`` (mirroring the
+        previous ``update_conversation(summary=...)`` behaviour) so the
+        conversation row reflects the new summary activity in the recent
+        list ordering, and stores ``last_summarized_at_time`` so the next
+        summary batch can pin its row set to the moment this cursor was
+        captured.
+
+        ``summary_continuation_pending`` is persisted as a metadata flag
+        atomically with the summary update so a retry of the extraction
+        job (which may find ``no_messages`` after the watermark advances)
+        can still recover and enqueue the forced-summary continuation
+        (Codex P2 on PR #165, ``worker/jobs.py:295``).
+        """
+        snapshot_iso: str | None = None
+        if summary_snapshot_at is not None:
+            snapshot_iso = summary_snapshot_at.isoformat()
+        row = await self._pool.fetchrow(
+            """
+            UPDATE conversations
+            SET summary = $2,
+                summary_updated_at = NOW(),
+                updated_at = NOW(),
+                last_activity_at = NOW(),
+                metadata = COALESCE(metadata, '{}'::jsonb)
+                    || jsonb_build_object(
+                        'last_summarized_msg_count',
+                        $4::bigint
+                    )
+                    || jsonb_build_object(
+                        'summary_continuation_pending',
+                        $6::boolean
+                    )
+                    || CASE
+                        WHEN $5::text IS NULL THEN '{}'::jsonb
+                        ELSE jsonb_build_object(
+                            'last_summarized_at_time', $5::text
+                        )
+                    END
+            WHERE id = $1
+              AND summary_updated_at IS NOT DISTINCT FROM $3
+            RETURNING id
+            """,
+            conversation_id,
+            summary,
+            expected_summary_updated_at,
+            summarized_message_count,
+            snapshot_iso,
+            summary_continuation_pending,
+        )
+        return row is not None
 
     async def update_message(
         self,
@@ -436,6 +855,7 @@ class MemoryStore:
         memory_slot: str | None = None,
     ) -> dict[str, Any]:
         encrypted_content = self._enc.encrypt(content)
+        content_hash = compute_memory_content_hash(content)
         embedding_str = _format_vector(embedding) if embedding else None
         effective_embedding_model = embedding_model or _default_embedding_model()
 
@@ -445,13 +865,15 @@ class MemoryStore:
             row = await self._pool.fetchrow(
                 """
                 INSERT INTO memories
-                    (user_id, content, content_tsv, embedding, embedding_model, category, source_type,
-                     source_conversation_id, local_only, confidence, status, memory_slot)
-                VALUES ($1, $2, to_tsvector('english', $12), $3::vector, $4, $5, $6, $7, $8, $9, $10, $11)
+                    (user_id, content, content_hash, content_tsv, embedding, embedding_model,
+                     category, source_type, source_conversation_id, local_only, confidence,
+                     status, memory_slot)
+                VALUES ($1, $2, $3, to_tsvector('english', $13), $4::vector, $5, $6, $7, $8, $9, $10, $11, $12)
                 RETURNING *
                 """,
                 user_id,
                 encrypted_content,
+                content_hash,
                 embedding_str,
                 effective_embedding_model,
                 category,
@@ -468,19 +890,27 @@ class MemoryStore:
             return row
 
         try:
-            row = await _insert(source_conversation_id)
-        except asyncpg.ForeignKeyViolationError as error:
-            if source_conversation_id is None:
-                raise
-            logger.warning(
-                "insert_memory: source_conversation_id %s missing; retrying without source conversation reference (%s)",
-                source_conversation_id,
-                error,
+            try:
+                row = await _insert(source_conversation_id)
+            except asyncpg.ForeignKeyViolationError as error:
+                if source_conversation_id is None:
+                    raise
+                logger.warning(
+                    "insert_memory: source_conversation_id %s missing; retrying without source conversation reference (%s)",
+                    source_conversation_id,
+                    error,
+                )
+                row = await _insert(None)
+        except asyncpg.UniqueViolationError:
+            existing = await self._get_active_memory_by_content_hash(
+                user_id,
+                content_hash,
+                local_only,
             )
-            row = await _insert(None)
-        result = dict(row)  # type: ignore[arg-type]
-        result["content"] = self._enc.decrypt(result["content"])
-        return result
+            if existing is not None:
+                return existing
+            raise
+        return self._memory_row_to_dict(row)
 
     async def get_memory(self, memory_id: uuid.UUID) -> dict[str, Any] | None:
         row = await self._pool.fetchrow(
@@ -565,29 +995,35 @@ class MemoryStore:
         confidence: float | None = None,
     ) -> dict[str, Any] | None:
         encrypted_content = self._enc.encrypt(content)
+        content_hash = compute_memory_content_hash(content)
         embedding_str = _format_vector(embedding) if embedding else None
-        row = await self._pool.fetchrow(
-            """
-            UPDATE memories
-            SET content    = $2,
-                embedding  = COALESCE($3::vector, embedding),
-                confidence = COALESCE($4, confidence),
-                content_tsv = to_tsvector('english', $5),
-                updated_at = NOW()
-            WHERE id = $1
-            RETURNING *
-            """,
-            memory_id,
-            encrypted_content,
-            embedding_str,
-            confidence,
-            content,
-        )
+        try:
+            row = await self._pool.fetchrow(
+                """
+                UPDATE memories
+                SET content    = $2,
+                    embedding  = COALESCE($3::vector, embedding),
+                    confidence = COALESCE($4, confidence),
+                    content_tsv = to_tsvector('english', $5),
+                    content_hash = $6,
+                    updated_at = NOW()
+                WHERE id = $1
+                RETURNING *
+                """,
+                memory_id,
+                encrypted_content,
+                embedding_str,
+                confidence,
+                content,
+                content_hash,
+            )
+        except asyncpg.UniqueViolationError as exc:
+            raise MemoryContentConflictError(
+                "Memory content duplicates an existing active memory"
+            ) from exc
         if not row:
             return None
-        result = dict(row)
-        result["content"] = self._enc.decrypt(result["content"])
-        return result
+        return self._memory_row_to_dict(row)
 
     async def update_memory_embedding(
         self,
@@ -632,6 +1068,35 @@ class MemoryStore:
         memory_id: uuid.UUID,
         status: str,
     ) -> bool:
+        if status == "active":
+            row = await self._pool.fetchrow(
+                "SELECT content, content_hash FROM memories WHERE id = $1",
+                memory_id,
+            )
+            if row is None:
+                return False
+            content_hash = row["content_hash"]
+            if content_hash is None:
+                content_hash = compute_memory_content_hash(self._enc.decrypt(row["content"]))
+            try:
+                result = await self._pool.execute(
+                    """
+                    UPDATE memories
+                    SET status = $2,
+                        content_hash = $3,
+                        updated_at = NOW()
+                    WHERE id = $1
+                    """,
+                    memory_id,
+                    status,
+                    content_hash,
+                )
+            except asyncpg.UniqueViolationError as exc:
+                raise MemoryContentConflictError(
+                    "Memory content duplicates an existing active memory"
+                ) from exc
+            return result == "UPDATE 1"
+
         result = await self._pool.execute(
             """
             UPDATE memories
@@ -702,6 +1167,7 @@ class MemoryStore:
     ) -> dict[str, Any]:
         """Create a new memory and mark the old one as superseded (transaction)."""
         encrypted_content = self._enc.encrypt(new_content)
+        content_hash = compute_memory_content_hash(new_content)
         embedding_str = _format_vector(embedding) if embedding else None
         effective_embedding_model = embedding_model or _default_embedding_model()
         metadata_json = json.dumps(metadata) if metadata is not None else None
@@ -715,13 +1181,15 @@ class MemoryStore:
                     row = await conn.fetchrow(
                         """
                         INSERT INTO memories
-                            (user_id, content, embedding, embedding_model, category, source_type,
-                             source_conversation_id, confidence, status, memory_slot, metadata, content_tsv)
-                        VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11, to_tsvector('english', $12))
+                            (user_id, content, content_hash, embedding, embedding_model, category,
+                             source_type, source_conversation_id, confidence, status, memory_slot,
+                             metadata, content_tsv)
+                        VALUES ($1, $2, $3, $4::vector, $5, $6, $7, $8, $9, $10, $11, $12, to_tsvector('english', $13))
                         RETURNING *
                         """,
                         user_id,
                         encrypted_content,
+                        content_hash,
                         embedding_str,
                         effective_embedding_model,
                         new_category,
@@ -737,17 +1205,52 @@ class MemoryStore:
                         raise RuntimeError("supersede_memory: insert returned no row")
                     return row
 
+                async def _get_active_duplicate() -> asyncpg.Record | None:
+                    return await conn.fetchrow(
+                        """
+                        SELECT *
+                        FROM memories
+                        WHERE user_id = $1
+                          AND content_hash = $2
+                          AND local_only = FALSE
+                          AND status = 'active'
+                          AND valid_to IS NULL
+                        ORDER BY created_at ASC
+                        LIMIT 1
+                        """,
+                        user_id,
+                        content_hash,
+                    )
+
                 try:
-                    new_row = await _insert(source_conversation_id)
-                except asyncpg.ForeignKeyViolationError as error:
-                    if source_conversation_id is None:
+                    async with conn.transaction():
+                        try:
+                            new_row = await _insert(source_conversation_id)
+                        except asyncpg.ForeignKeyViolationError as error:
+                            if source_conversation_id is None:
+                                raise
+                            logger.warning(
+                                "supersede_memory: source_conversation_id %s missing; retrying without source conversation reference (%s)",
+                                source_conversation_id,
+                                error,
+                            )
+                            new_row = await _insert(None)
+                except asyncpg.UniqueViolationError:
+                    # PostgreSQL aborts the inner transaction on the unique
+                    # violation, but the savepoint above scopes the rollback
+                    # so the outer transaction stays usable. The recovery
+                    # lookup and update below run against the still-alive
+                    # outer transaction.
+                    duplicate_row = await _get_active_duplicate()
+                    if duplicate_row is None:
                         raise
                     logger.warning(
-                        "supersede_memory: source_conversation_id %s missing; retrying without source conversation reference (%s)",
-                        source_conversation_id,
-                        error,
+                        "supersede_memory: recovered existing active memory after content_hash conflict",
+                        exc_info=True,
                     )
-                    new_row = await _insert(None)
+                    if duplicate_row["id"] == old_memory_id:
+                        return self._memory_row_to_dict(duplicate_row)
+                    new_row = duplicate_row
 
                 update_result = await conn.execute(
                     """
@@ -764,9 +1267,7 @@ class MemoryStore:
                 if update_result != "UPDATE 1":
                     raise RuntimeError("Supersede failed to close source memory in active state")
 
-        result = cast(dict[str, Any], dict(new_row))
-        result["content"] = self._enc.decrypt(result["content"])
-        return result
+        return self._memory_row_to_dict(new_row)
 
     async def touch_memory(self, memory_id: uuid.UUID) -> None:
         await self._pool.execute(
@@ -1297,6 +1798,24 @@ class MemoryStore:
             )
         return results
 
+    async def list_users_with_eligible_l1_memories(self) -> list[uuid.UUID]:
+        rows = await self._pool.fetch(
+            """
+            SELECT DISTINCT user_id
+            FROM memories
+            WHERE status = 'active'
+              AND tier = 'l1'
+              AND embedding IS NOT NULL
+            """
+        )
+        return [row["user_id"] for row in rows]
+
+    async def delete_skill_projection(self, skill_id: str) -> bool:
+        from orchestrator.skills_projection import SkillProjectionStore
+
+        projection_store = SkillProjectionStore(self._pool)
+        return await projection_store.delete_projection(skill_id)
+
     async def get_recent_memories_for_user(
         self, user_id: uuid.UUID, limit: int = 20
     ) -> list[dict[str, Any]]:
@@ -1421,13 +1940,14 @@ class MemoryStore:
         skill_description: str | None = None,
         skill_use_count: int | None = None,
         skill_last_used_at: Any = None,
-    ) -> None:
-        await self._pool.execute(
+    ) -> uuid.UUID:
+        row = await self._pool.fetchrow(
             """
             INSERT INTO skill_consolidation_log
                 (user_id, run_id, action_type, skill_id, target_skill_id, reason,
                  similarity, status, skill_name, skill_description, skill_use_count, skill_last_used_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            RETURNING id
             """,
             user_id,
             run_id,
@@ -1442,6 +1962,57 @@ class MemoryStore:
             skill_use_count,
             skill_last_used_at,
         )
+        return cast(uuid.UUID, row["id"])
+
+    async def update_consolidation_nudge_action_status(
+        self,
+        action_id: uuid.UUID,
+        *,
+        status: str,
+        reason: str | None = None,
+    ) -> None:
+        await self._pool.execute(
+            """
+            UPDATE skill_consolidation_log
+            SET status = $2,
+                reason = COALESCE($3, reason)
+            WHERE id = $1
+            """,
+            action_id,
+            status,
+            reason,
+        )
+
+    async def list_consolidation_nudge_actions(
+        self,
+        *,
+        user_id: uuid.UUID | None = None,
+        action_type: str | None = None,
+        status: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        rows = await self._pool.fetch(
+            """
+            SELECT *
+            FROM skill_consolidation_log
+            WHERE ($1::uuid IS NULL OR user_id = $1)
+              AND ($2::text IS NULL OR action_type = $2)
+              AND ($3::text IS NULL OR status = $3)
+              AND ($4::timestamptz IS NULL OR run_at >= $4)
+              AND ($5::timestamptz IS NULL OR run_at < $5)
+            ORDER BY run_at DESC
+            LIMIT $6
+            """,
+            user_id,
+            action_type,
+            status,
+            since,
+            until,
+            limit,
+        )
+        return [dict(row) for row in rows]
 
     # ------------------------------------------------------------------
     # Extraction log
@@ -1456,14 +2027,16 @@ class MemoryStore:
         extracted_facts: list[Any] | None = None,
         dedup_results: dict[str, Any] | None = None,
         model_used: str | None = None,
+        last_message_observed_at: datetime | None = None,
     ) -> dict[str, Any]:
         encrypted_snippet = self._enc.encrypt(input_snippet)
         row = await self._pool.fetchrow(
             """
             INSERT INTO memory_extraction_log
                 (conversation_id, user_id, input_snippet,
-                 extracted_facts, dedup_results, model_used)
-            VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6)
+                 extracted_facts, dedup_results, model_used,
+                 last_message_observed_at)
+            VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)
             RETURNING *
             """,
             conversation_id,
@@ -1472,6 +2045,7 @@ class MemoryStore:
             json.dumps(extracted_facts or []),
             json.dumps(dedup_results or {}),
             model_used,
+            last_message_observed_at,
         )
         result = dict(row)  # type: ignore[arg-type]
         result["input_snippet"] = self._enc.decrypt(result["input_snippet"])
@@ -1481,16 +2055,22 @@ class MemoryStore:
         self,
         conversation_id: uuid.UUID,
     ) -> datetime | None:
-        """Get the timestamp of the last extraction for a conversation."""
+        """Get the watermark for the next extraction.
+
+        Prefers last_message_observed_at over created_at so that a turn
+        which arrived while the previous extraction was in flight is not
+        skipped by the `created_at > last_extraction_time` filter.
+        """
         row = await self._pool.fetchrow(
             """
-            SELECT created_at FROM memory_extraction_log 
-            WHERE conversation_id = $1 
-            ORDER BY created_at DESC LIMIT 1
+            SELECT COALESCE(last_message_observed_at, created_at) AS watermark
+            FROM memory_extraction_log
+            WHERE conversation_id = $1
+            ORDER BY COALESCE(last_message_observed_at, created_at) DESC LIMIT 1
             """,
             conversation_id,
         )
-        return row["created_at"] if row else None
+        return row["watermark"] if row else None
 
     # ------------------------------------------------------------------
     # Retrieval log operations
@@ -1953,30 +2533,36 @@ class MemoryStore:
 
         inserted = 0
         for mem in memories:
-            encrypted_content = self._enc.encrypt(mem["content"])
+            content = mem["content"]
+            encrypted_content = self._enc.encrypt(content)
+            content_hash = compute_memory_content_hash(content)
             embedding_str = _format_vector(mem["embedding"]) if mem.get("embedding") else None
             embedding_model = mem.get("embedding_model") or _default_embedding_model()
             status = mem.get("status", "active")
             memory_slot = mem.get("memory_slot")
-            await self._pool.execute(
-                """
-                INSERT INTO memories
-                    (user_id, content, embedding, embedding_model, category, source_type,
-                     local_only, confidence, status, memory_slot)
-                VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10)
-                """,
-                user_id,
-                encrypted_content,
-                embedding_str,
-                embedding_model,
-                mem.get("category", "fact"),
-                mem.get("source_type", "import"),
-                mem.get("local_only", False),
-                mem.get("confidence", 1.0),
-                status,
-                memory_slot,
-            )
-            inserted += 1
+            try:
+                await self._pool.execute(
+                    """
+                    INSERT INTO memories
+                        (user_id, content, content_hash, embedding, embedding_model,
+                         category, source_type, local_only, confidence, status, memory_slot)
+                    VALUES ($1, $2, $3, $4::vector, $5, $6, $7, $8, $9, $10, $11)
+                    """,
+                    user_id,
+                    encrypted_content,
+                    content_hash,
+                    embedding_str,
+                    embedding_model,
+                    mem.get("category", "fact"),
+                    mem.get("source_type", "import"),
+                    mem.get("local_only", False),
+                    mem.get("confidence", 1.0),
+                    status,
+                    memory_slot,
+                )
+                inserted += 1
+            except asyncpg.UniqueViolationError:
+                continue
         return inserted
 
     async def count_memories(

@@ -1,8 +1,10 @@
 'use client';
 
 import { useState, useCallback, useRef } from 'react';
+import { useClientMounted } from './useClientMounted';
 
 export function useLocalStorage<T>(key: string, initialValue: T) {
+  const isClientMounted = useClientMounted();
   const [storedValue, setStoredValue] = useState<T>(() => {
     if (typeof window === 'undefined') {
       return initialValue;
@@ -50,5 +52,10 @@ export function useLocalStorage<T>(key: string, initialValue: T) {
     }
   }, [key, initialValue]);
 
-  return { value: storedValue, setValue, removeValue, isLoaded: true };
+  return {
+    value: isClientMounted ? storedValue : initialValue,
+    setValue,
+    removeValue,
+    isLoaded: isClientMounted,
+  };
 }

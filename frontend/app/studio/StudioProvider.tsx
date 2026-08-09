@@ -14,6 +14,7 @@ import type {
   StudioModel,
   StudioReferenceImage,
 } from './types';
+import { useClientMounted } from '../../hooks/useClientMounted';
 
 const MAX_MODELS = 4;
 const STORAGE_MODELS_KEY = 'studio:selectedModels';
@@ -91,14 +92,23 @@ export function StudioProvider({ children }: { children: ReactNode }) {
   const [resolution, setResolution] = useState<string>('1K');
   const [generations, setGenerations] = useState<StudioGeneration[]>([]);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
+  const isClientMounted = useClientMounted();
 
   useEffect(() => {
+    if (!isClientMounted) {
+      return;
+    }
+
     localStorage.setItem(STORAGE_MODELS_KEY, JSON.stringify(selectedModels));
-  }, [selectedModels]);
+  }, [isClientMounted, selectedModels]);
 
   useEffect(() => {
+    if (!isClientMounted) {
+      return;
+    }
+
     localStorage.setItem(STORAGE_ASPECT_RATIO_KEY, aspectRatio);
-  }, [aspectRatio]);
+  }, [isClientMounted, aspectRatio]);
 
   const addModel = useCallback((modelId: string) => {
     setSelectedModels((prev) => {
@@ -150,11 +160,11 @@ export function StudioProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<StudioContextValue>(
     () => ({
-      selectedModels,
+      selectedModels: isClientMounted ? selectedModels : [],
       prompt,
       referenceImage,
       availableModels,
-      aspectRatio,
+      aspectRatio: isClientMounted ? aspectRatio : '1:1',
       resolution,
       generations,
       isGenerating,
@@ -173,6 +183,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     }),
     [
       availableModels,
+      isClientMounted,
       selectedModels,
       prompt,
       referenceImage,

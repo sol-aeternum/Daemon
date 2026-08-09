@@ -6,7 +6,7 @@ Upstream Sources: orchestrator/config.py, migrations/, docker-compose.yml, MEMOR
 
 ## Daemon System Prompt (Actual)
 
-Daemon is a personal AI assistant orchestration layer. The system prompt (v3) defines its identity, tool access, and subagent dispatch logic.
+Daemon is a personal AI assistant orchestration layer. The system prompt (v4) defines its identity, tool access, and subagent dispatch logic.
 
 **Core Identity:**
 - "I'm Daemon, a personal AI assistant."
@@ -74,7 +74,7 @@ The `/chat` endpoint streams Server-Sent Events with typed frames:
 
 ## Database Schema
 
-PostgreSQL 16 with pgvector extension. 35 migrations in the `migrations/` directory.
+PostgreSQL 16 with pgvector extension. 39 migrations in the `migrations/` directory.
 
 ### Core Tables
 - **`users`**: Settings and profile data.
@@ -87,8 +87,7 @@ PostgreSQL 16 with pgvector extension. 35 migrations in the `migrations/` direct
 - **`dream_log`**: Logs for background consolidation and dreaming jobs.
 - **`skill_projections`**: Mapping of skills to conversation context.
 
-Latest migration: `035_refresh_rotation_grace.sql`.
-
+Latest migration: `038_extraction_watermark.sql`.
 ---
 
 ## Memory Pipeline
@@ -142,6 +141,7 @@ Hybrid search combining:
 ### Key Environment Variables
 - `OPENROUTER_API_KEY`, `VOYAGE_API_KEY`, `XAI_API_KEY`, `FAL_KEY`, `BRAVE_API_KEY`, `ELEVENLABS_API_KEY`.
 - `DATABASE_URL`, `REDIS_URL`, `DAEMON_ENCRYPTION_KEY`.
+- `DAEMON_WORKER_FAILURE_ALERT_EMAIL` enables best-effort email alerts for critical worker failures.
 - **EMBEDDING_DOCUMENT_MODEL**: voyage-4-large
 - **EMBEDDING_QUERY_MODEL**: voyage-4-lite
 - **EMBEDDING_DIMENSIONS**: 1024

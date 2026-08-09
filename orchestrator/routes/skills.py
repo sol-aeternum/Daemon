@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+from datetime import datetime
 from typing import Any, Annotated
 
 from fastapi import (
@@ -8,6 +10,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     Request,
     UploadFile,
 )
@@ -364,6 +367,8 @@ async def download_skill(
     """
     try:
         markdown = skills_store.export_skill_markdown(skill_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -384,6 +389,38 @@ class AdminSyncResponse(BaseModel):
     total_deprecated: int
     total_errors: int
     repo_skills_found: int
+
+
+@router.get("/admin/consolidation-audit")
+async def admin_list_consolidation_audit(
+    request: Request,
+    auth: AdminOrDeviceAuth = Depends(require_admin_or_device_auth),
+    user_id: uuid.UUID | None = Query(default=None),
+    action_type: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    since: datetime | None = Query(default=None),
+    until: datetime | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict[str, list[dict[str, Any]]]:
+    if not auth.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    if not hasattr(request.app.state, "app_state"):
+        raise HTTPException(status_code=503, detail="App state not available")
+
+    app_state = request.app.state.app_state
+    if not hasattr(app_state, "memory_store") or app_state.memory_store is None:
+        raise HTTPException(status_code=503, detail="Memory store not available")
+
+    rows = await app_state.memory_store.list_consolidation_nudge_actions(
+        user_id=user_id,
+        action_type=action_type,
+        status=status,
+        since=since,
+        until=until,
+        limit=limit,
+    )
+    return {"actions": rows}
 
 
 @router.post("/admin/sync", response_model=AdminSyncResponse)

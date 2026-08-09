@@ -1,9 +1,27 @@
 type BaseEvent = { id?: string; request_id?: string };
+type TraceMeta = {
+  tool_call_id?: string;
+  advisor_id?: string;
+  event_tags?: Record<string, unknown>;
+  trace_key?: string;
+  parent_trace_key?: string;
+};
+type AdvisorBaseEvent = TraceMeta & {
+  advisor_id: string;
+};
+type AdvisorUsage = {
+  total_tokens?: number;
+  tokens_in?: number;
+  tokens_out?: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  latency_ms?: number;
+};
 
 export type ChatEvent = BaseEvent &
   (
     | { type: 'text'; content: string }
-    | { type: 'thinking'; content: string; agent?: string }
+    | ({ type: 'thinking'; content: string; agent?: string } & TraceMeta)
     | { type: 'routing'; model: string; tier?: string; reason?: string }
     | { type: 'agent_spawn'; agent: string; agentType: string; task: string }
     | {
@@ -33,8 +51,33 @@ export type ChatEvent = BaseEvent &
         error: string;
         refunded: boolean;
       }
-    | { type: 'tool_call'; name: string; arguments: Record<string, any> }
-    | { type: 'tool_result'; name: string; result: any }
+    | ({
+        type: 'tool_call';
+        name: string;
+        arguments: Record<string, any>;
+      } & TraceMeta)
+    | ({ type: 'tool_result'; name: string; result: any } & TraceMeta)
+    | ({
+        type: 'advisor_start';
+        domain: string;
+        difficulty: string;
+        model: string;
+      } & AdvisorBaseEvent)
+    | ({ type: 'advisor_text_delta'; content: string } & AdvisorBaseEvent)
+    | ({ type: 'advisor_text_done'; content: string } & AdvisorBaseEvent)
+    | ({
+        type: 'advisor_error';
+        error: string;
+      } & AdvisorBaseEvent)
+    | ({
+        type: 'advisor_end';
+        status: 'completed' | 'error';
+        error?: string;
+        tokens_in?: number;
+        tokens_out?: number;
+        latency_ms?: number;
+        usage?: AdvisorUsage;
+      } & AdvisorBaseEvent)
     | { type: 'pipeline_switch'; pipeline: 'cloud' | 'local' }
     | { type: 'conversation'; conversation_id: string }
     | {
@@ -84,6 +127,11 @@ export function isChatEvent(obj: unknown): obj is ChatEvent {
     'video_failed',
     'tool_call',
     'tool_result',
+    'advisor_start',
+    'advisor_text_delta',
+    'advisor_text_done',
+    'advisor_error',
+    'advisor_end',
     'pipeline_switch',
     'conversation',
     'council_interview',
@@ -107,6 +155,59 @@ export function isToolResultEvent(
   event: ChatEvent,
 ): event is ChatEvent & { type: 'tool_result'; name: string; result: any } {
   return event.type === 'tool_result';
+}
+
+export function isAdvisorEvent(event: ChatEvent): event is ChatEvent & {
+  type:
+    | 'advisor_start'
+    | 'advisor_text_delta'
+    | 'advisor_text_done'
+    | 'advisor_error'
+    | 'advisor_end';
+} {
+  return [
+    'advisor_start',
+    'advisor_text_delta',
+    'advisor_text_done',
+    'advisor_error',
+    'advisor_end',
+  ].includes(event.type);
+}
+
+export function isAdvisorStartEvent(event: ChatEvent): event is ChatEvent & {
+  type: 'advisor_start';
+  advisor_id: string;
+  domain: string;
+  difficulty: string;
+  model: string;
+} {
+  return event.type === 'advisor_start';
+}
+
+export function isAdvisorTextDeltaEvent(
+  event: ChatEvent,
+): event is ChatEvent & {
+  type: 'advisor_text_delta';
+  advisor_id: string;
+  content: string;
+} {
+  return event.type === 'advisor_text_delta';
+}
+
+export function isAdvisorTextDoneEvent(event: ChatEvent): event is ChatEvent & {
+  type: 'advisor_text_done';
+  advisor_id: string;
+  content: string;
+} {
+  return event.type === 'advisor_text_done';
+}
+
+export function isAdvisorEndEvent(event: ChatEvent): event is ChatEvent & {
+  type: 'advisor_end';
+  advisor_id: string;
+  status: 'completed' | 'error';
+} {
+  return event.type === 'advisor_end';
 }
 
 export function isVideoGeneratingEvent(event: ChatEvent): event is ChatEvent & {
@@ -135,7 +236,6 @@ export function isVideoFailedEvent(event: ChatEvent): event is ChatEvent & {
 } {
   return event.type === 'video_failed';
 }
-
 export function isCouncilEvent(event: ChatEvent): event is ChatEvent & {
   type:
     | 'council_interview'

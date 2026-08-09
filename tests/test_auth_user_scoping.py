@@ -30,6 +30,14 @@ async def authenticated_app(monkeypatch):
     app_state.db_pool = AsyncMock()
     app_state.db_pool.fetchval = AsyncMock(return_value=1)
     app_state.db_pool.close = AsyncMock()
+    # asyncpg-style acquire() is itself an async context manager (NOT a
+    # coroutine-returning method), so `async with db_pool.acquire() as conn:`
+    # works without an await. AsyncMock alone returns a coroutine from the
+    # call, breaking the protocol; configure acquire to return a context
+    # manager directly.
+    app_state.db_pool.acquire = MagicMock(
+        return_value=AsyncMock(__aenter__=AsyncMock(), __aexit__=AsyncMock())
+    )
     app_state.redis = None
     app_state.memory_store = None
     app_state.video_credits_dal = None

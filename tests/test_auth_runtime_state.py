@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from contextlib import asynccontextmanager
 
 import pytest
@@ -16,6 +17,8 @@ from orchestrator.auth_runtime_state import (
 )
 from orchestrator.auth_tokens import verify_token
 from orchestrator.config import Settings
+from orchestrator.main import lifespan
+from orchestrator.worker.worker import on_startup
 
 
 class RuntimeStateConn:
@@ -100,3 +103,17 @@ async def test_development_pepper_is_shared_through_db_across_process_caches() -
         assert first_process_pepper == pool.state["auth.development_pepper"]
     finally:
         set_development_pepper_cache(None)
+
+
+def test_lifespan_initializes_development_pepper_before_memory_hash_backfill() -> None:
+    source = inspect.getsource(lifespan)
+
+    assert source.index("initialize_development_pepper") < source.index(
+        "backfill_memory_content_hashes"
+    )
+
+
+def test_worker_startup_initializes_development_pepper_before_memory_store() -> None:
+    source = inspect.getsource(on_startup)
+
+    assert source.index("initialize_development_pepper") < source.index("MemoryStore")

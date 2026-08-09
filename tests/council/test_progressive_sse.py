@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
+from contextlib import suppress
+import json
+from typing import Any
 import uuid
 from unittest.mock import AsyncMock, patch
 
@@ -11,6 +15,17 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from orchestrator.config import get_settings
+
+
+def _payloads_from_frames(frames: list[str]) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for frame in frames:
+        for line in frame.splitlines():
+            if line.startswith("data: "):
+                decoded = json.loads(line[len("data: ") :])
+                if isinstance(decoded, dict):
+                    payloads.append(decoded)
+    return payloads
 
 
 @pytest_asyncio.fixture
@@ -72,6 +87,103 @@ async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncClient,
                     yield http_client
         finally:
             app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_stream_council_emits_concurrent_progress_once_in_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from orchestrator.council.sse import stream_council
+
+    total_events = 1000
+
+    async def mock_handle_council_command(
+        message: str,
+        conversation_id: str,
+        bypass_interview: bool,
+        progress_callback=None,
+    ):
+        assert progress_callback is not None
+
+        async def emit_progress(index: int) -> None:
+            await progress_callback(
+                {
+                    "stage": "stress",
+                    "current_round": 1,
+                    "total_rounds": 1,
+                    "models_complete": index,
+                    "models_total": total_events,
+                }
+            )
+
+        await asyncio.gather(*(emit_progress(index) for index in range(total_events)))
+
+        return {
+            "type": "council_output",
+            "session_id": "ses_test_progress_stress",
+            "output": {
+                "consensus": "Test consensus",
+                "perspectives_summary": "",
+                "findings": [],
+                "metadata": {
+                    "total_tokens": 1,
+                    "total_cost": 0.0,
+                    "models_used": ["model-a"],
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        "orchestrator.council.sse.handle_council_command",
+        mock_handle_council_command,
+    )
+
+    frames = [
+        frame
+        async for frame in stream_council(
+            "/council --default Test progress stress",
+            conversation_id="conv_stress",
+            request_id="req_stress",
+        )
+    ]
+    payloads = _payloads_from_frames(frames)
+    progress_events = [payload for payload in payloads if payload.get("type") == "council_progress"]
+    stress_events = [
+        event for event in progress_events if event.get("data", {}).get("stage") == "stress"
+    ]
+
+    assert len(stress_events) == total_events
+    assert [event["data"]["sequence"] for event in stress_events] == list(
+        range(1, total_events + 1)
+    )
+    assert [event["data"]["sequence"] for event in progress_events] == list(
+        range(1, total_events + 2)
+    )
+    assert payloads[-1]["type"] == "council_done"
+
+
+@pytest.mark.asyncio
+async def test_progress_queue_drain_exits_after_producer_cancellation() -> None:
+    from orchestrator.council.sse import _drain_progress_queue
+
+    progress_queue: asyncio.Queue[str] = asyncio.Queue()
+
+    async def cancelled_producer() -> None:
+        await progress_queue.put("frame-1")
+        await progress_queue.put("frame-2")
+        raise asyncio.CancelledError
+
+    producer_task = asyncio.create_task(cancelled_producer())
+    with suppress(asyncio.CancelledError):
+        await producer_task
+
+    async def collect_frames() -> list[str]:
+        return [frame async for frame in _drain_progress_queue(progress_queue, producer_task)]
+
+    frames = await asyncio.wait_for(collect_frames(), timeout=1)
+
+    assert frames == ["frame-1", "frame-2"]
+    assert progress_queue.empty()
 
 
 @pytest.mark.asyncio

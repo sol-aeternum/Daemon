@@ -30,6 +30,7 @@ import { AgentStatusList } from '../components/AgentStatusList';
 import { OfflineIndicator } from '../components/OfflineIndicator';
 import { RetryButton } from '../components/RetryButton';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
+import { useClientMounted } from '../hooks/useClientMounted';
 import { MicButton } from '../components/MicButton';
 import { TextToSpeechButton } from '../components/TextToSpeechButton';
 import { StreamingTtsMessage } from '../components/StreamingTtsMessage';
@@ -387,13 +388,12 @@ const getTimeGreeting = () => {
 };
 
 function WelcomeScreen({ setInput, onSubmit }: WelcomeScreenProps) {
-  const [greeting] = useState(getTimeGreeting);
-  const [userName] = useState<string | null>(() => {
-    if (typeof localStorage === 'undefined') {
-      return null;
-    }
-    return localStorage.getItem('user_name');
-  });
+  const isClientMounted = useClientMounted();
+  const greeting = isClientMounted ? getTimeGreeting() : 'Good evening';
+  const userName =
+    isClientMounted && typeof localStorage !== 'undefined'
+      ? localStorage.getItem('user_name')
+      : null;
 
   const quickActions = [
     {
@@ -691,7 +691,7 @@ function ChatContent() {
       await refreshIfNeeded();
       const body = init?.body ? JSON.parse(init.body as string) : {};
       body.model = activeModel;
-      if (body.id === undefined) {
+      if (body.id === undefined || body.id === null) {
         body.id = currentId || latestConversationIdRef.current || null;
       }
       const headers = new Headers(init?.headers);
