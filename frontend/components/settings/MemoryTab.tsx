@@ -1,7 +1,11 @@
 'use client';
 
 import { useState, useCallback, useEffect } from 'react';
-import { SkeletonLine, SkeletonBlock, SkeletonCircle } from '@/components/ui/Skeleton';
+import {
+  SkeletonLine,
+  SkeletonBlock,
+  SkeletonCircle,
+} from '@/components/ui/Skeleton';
 import { useMemories, Memory } from '@/hooks/useMemories';
 import MemoryFilters from './memory/MemoryFilters';
 import { MemoryCard } from './memory/MemoryCard';
@@ -69,7 +73,9 @@ export default function MemoryTab() {
     process.env.NEXT_PUBLIC_API_URL ||
     (process.env.NODE_ENV === 'development' ? 'http://localhost:8000' : '');
 
-  const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
+  const getAuthHeaders = useCallback(async (): Promise<
+    Record<string, string>
+  > => {
     const header = await ensureAuthHeader();
     if (!header) return {};
     return { Authorization: header };
@@ -78,7 +84,9 @@ export default function MemoryTab() {
   const apiCandidates = useCallback(
     (path: string) => {
       const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-      const trimmedBase = apiBaseUrl.endsWith('/') ? apiBaseUrl.slice(0, -1) : apiBaseUrl;
+      const trimmedBase = apiBaseUrl.endsWith('/')
+        ? apiBaseUrl.slice(0, -1)
+        : apiBaseUrl;
 
       if (!trimmedBase) {
         return [normalizedPath];
@@ -86,7 +94,7 @@ export default function MemoryTab() {
 
       return [`${trimmedBase}${normalizedPath}`, normalizedPath];
     },
-    [apiBaseUrl]
+    [apiBaseUrl],
   );
 
   const fetchWithFallback = useCallback(
@@ -98,14 +106,19 @@ export default function MemoryTab() {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => {
           try {
-            controller.abort(new DOMException('Memory request timed out', 'AbortError'));
+            controller.abort(
+              new DOMException('Memory request timed out', 'AbortError'),
+            );
           } catch {
             controller.abort();
           }
         }, timeoutMs);
 
         try {
-          const response = await fetch(candidate, { ...init, signal: controller.signal });
+          const response = await fetch(candidate, {
+            ...init,
+            signal: controller.signal,
+          });
           clearTimeout(timeoutId);
 
           if (response.status === 404 && index < candidates.length - 1) {
@@ -123,7 +136,7 @@ export default function MemoryTab() {
 
       throw new Error('Request failed');
     },
-    [apiCandidates]
+    [apiCandidates],
   );
 
   // Fetch memory count on mount
@@ -134,7 +147,9 @@ export default function MemoryTab() {
       });
       if (!response.ok) {
         setActionStatus('error');
-        setActionMessage('Failed to load memories. Please verify API connectivity.');
+        setActionMessage(
+          'Failed to load memories. Please verify API connectivity.',
+        );
         setStats({ total: 0, memories: [] });
         return;
       }
@@ -158,10 +173,13 @@ export default function MemoryTab() {
   }, [fetchMemoryStats]);
 
   // Handle filter changes from MemoryFilters
-  const handleFilterChange = useCallback((newFilters: FilterState) => {
-    setFilters(newFilters);
-    fetchMemories(newFilters);
-  }, [fetchMemories]);
+  const handleFilterChange = useCallback(
+    (newFilters: FilterState) => {
+      setFilters(newFilters);
+      fetchMemories(newFilters);
+    },
+    [fetchMemories],
+  );
 
   // Handle memory selection - go to detail view
   const handleSelectMemory = useCallback((memoryId: string) => {
@@ -176,20 +194,28 @@ export default function MemoryTab() {
   }, []);
 
   // Handle memory correction
-  const handleCorrectMemory = useCallback(async (id: string, content: string, category?: string) => {
-    await correctMemory(id, content, category);
-  }, [correctMemory]);
+  const handleCorrectMemory = useCallback(
+    async (id: string, content: string, category?: string) => {
+      await correctMemory(id, content, category);
+    },
+    [correctMemory],
+  );
 
   // Handle memory deletion
-  const handleDeleteMemory = useCallback(async (id: string) => {
-    const success = await deleteMemory(id);
-    if (success) {
-      handleBackToList();
-    }
-  }, [deleteMemory, handleBackToList]);
+  const handleDeleteMemory = useCallback(
+    async (id: string) => {
+      const success = await deleteMemory(id);
+      if (success) {
+        handleBackToList();
+      }
+    },
+    [deleteMemory, handleBackToList],
+  );
 
   // Get selected memory object
-  const selectedMemory: Memory | undefined = memories.find(m => m.id === selectedMemoryId);
+  const selectedMemory: Memory | undefined = memories.find(
+    (m) => m.id === selectedMemoryId,
+  );
 
   // Handle clear all memories
   const handleClearMemories = async () => {
@@ -204,7 +230,9 @@ export default function MemoryTab() {
 
       if (!response.ok) {
         setActionStatus('error');
-        setActionMessage('Failed to clear memories. Please verify API connectivity.');
+        setActionMessage(
+          'Failed to clear memories. Please verify API connectivity.',
+        );
         return;
       }
 
@@ -284,7 +312,9 @@ export default function MemoryTab() {
         <div className="mb-6 p-4 rounded-lg bg-status-error-bg border border-status-error/20 flex items-start gap-3 animate-slide-up">
           <AlertCircle className="w-5 h-5 text-status-error flex-shrink-0 mt-0.5" />
           <div>
-            <p className="text-sm font-medium text-status-error">Action failed</p>
+            <p className="text-sm font-medium text-status-error">
+              Action failed
+            </p>
             <p className="text-sm text-text-secondary">{actionMessage}</p>
           </div>
         </div>
@@ -294,7 +324,9 @@ export default function MemoryTab() {
       {actionStatus === 'success' && (
         <div className="mb-6 p-4 rounded-lg bg-status-success-bg border border-status-success/20 flex items-center gap-3 animate-slide-up">
           <CheckCircle2 className="w-5 h-5 text-status-success flex-shrink-0" />
-          <p className="text-sm font-medium text-status-success">{actionMessage}</p>
+          <p className="text-sm font-medium text-status-success">
+            {actionMessage}
+          </p>
         </div>
       )}
 
@@ -305,7 +337,9 @@ export default function MemoryTab() {
         <section className="space-y-5">
           <div className="flex items-center gap-2">
             <Database className="w-5 h-5 text-accent-primary" />
-            <h3 className="text-base font-semibold text-text-primary">Memory Storage</h3>
+            <h3 className="text-base font-semibold text-text-primary">
+              Memory Storage
+            </h3>
           </div>
 
           <div className="space-y-5 pl-4 border-l-2 border-border-primary">
@@ -342,7 +376,9 @@ export default function MemoryTab() {
                       <Search className="w-5 h-5 text-accent-primary" />
                     </div>
                     <div>
-                      <h3 className="font-medium text-text-primary">Memory Browser</h3>
+                      <h3 className="font-medium text-text-primary">
+                        Memory Browser
+                      </h3>
                       <p className="text-xs text-text-muted">
                         {memoriesTotal > 0
                           ? `${memoriesTotal} memories found`
@@ -380,12 +416,16 @@ export default function MemoryTab() {
                       </div>
                     ) : memoriesError ? (
                       <div className="p-4 rounded-lg bg-status-error-bg border border-status-error/20">
-                        <p className="text-sm text-status-error">{memoriesError}</p>
+                        <p className="text-sm text-status-error">
+                          {memoriesError}
+                        </p>
                       </div>
                     ) : memories.length === 0 ? (
                       <div className="py-8 text-center">
                         <MessageSquare className="w-8 h-8 text-text-muted mx-auto mb-2" />
-                        <p className="text-sm text-text-muted">No memories found</p>
+                        <p className="text-sm text-text-muted">
+                          No memories found
+                        </p>
                         <p className="text-xs text-text-muted mt-1">
                           Try adjusting your filters or start a conversation
                         </p>
@@ -414,7 +454,9 @@ export default function MemoryTab() {
         <section className="space-y-5">
           <div className="flex items-center gap-2">
             <AlertTriangle className="w-5 h-5 text-status-error" />
-            <h3 className="text-base font-semibold text-text-primary">Danger Zone</h3>
+            <h3 className="text-base font-semibold text-text-primary">
+              Danger Zone
+            </h3>
           </div>
 
           <div className="space-y-5 pl-4 border-l-2 border-border-primary">
@@ -429,14 +471,17 @@ export default function MemoryTab() {
                     Clear All Memories
                   </label>
                   <p className="text-xs text-text-muted">
-                    Permanently delete all stored memories. This action cannot be undone.
+                    Permanently delete all stored memories. This action cannot
+                    be undone.
                   </p>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setShowConfirmDialog(true)}
-                disabled={actionStatus === 'loading' || (stats?.total ?? 0) === 0}
+                disabled={
+                  actionStatus === 'loading' || (stats?.total ?? 0) === 0
+                }
                 className="inline-flex items-center gap-2 px-4 py-2 bg-status-error-bg border border-status-error/50 text-status-error hover:bg-status-error hover:text-white font-medium rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-status-error/50"
               >
                 {actionStatus === 'loading' ? (
@@ -482,8 +527,9 @@ export default function MemoryTab() {
 
               {/* Dialog Body */}
               <p className="text-sm text-text-secondary mb-6">
-                This will permanently delete all {stats?.total?.toLocaleString() ?? 0} stored
-                memories. This action cannot be undone and all learned facts, preferences, and
+                This will permanently delete all{' '}
+                {stats?.total?.toLocaleString() ?? 0} stored memories. This
+                action cannot be undone and all learned facts, preferences, and
                 conversation context will be lost.
               </p>
 

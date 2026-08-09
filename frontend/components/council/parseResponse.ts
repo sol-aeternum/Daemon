@@ -29,7 +29,7 @@ export interface Round2ParsedResponse {
  */
 function extractConfidence(text: string): number {
   if (!text) return 0;
-  
+
   // Look for leading number
   const match = text.match(/^\s*(\d+)/);
   if (match) {
@@ -37,7 +37,7 @@ function extractConfidence(text: string): number {
     // Clamp to reasonable range (0-10)
     return Math.max(0, Math.min(10, num));
   }
-  
+
   return 0;
 }
 
@@ -54,7 +54,7 @@ export function parseRound1Response(response: string): ParsedResponse {
     confidence: 0,
     missingInformation: '',
     raw: response,
-    parsed: false
+    parsed: false,
   };
 
   if (!response) return result;
@@ -66,7 +66,7 @@ export function parseRound1Response(response: string): ParsedResponse {
     '\\*\\*Assumptions\\*\\*': 'assumptions',
     '\\*\\*Blind Spot\\*\\*': 'blindSpot',
     '\\*\\*Confidence\\*\\*': 'confidence',
-    '\\*\\*Missing Information\\*\\*': 'missingInformation'
+    '\\*\\*Missing Information\\*\\*': 'missingInformation',
   };
 
   let foundCount = 0;
@@ -75,7 +75,7 @@ export function parseRound1Response(response: string): ParsedResponse {
   for (const [pattern, field] of Object.entries(sections)) {
     const regex = new RegExp(`${pattern}\\s*:?\\s*\\n?([^*]*)`, 'i');
     const match = response.match(regex);
-    
+
     if (match && match[1]) {
       const value = match[1].trim();
       if (field === 'confidence') {
@@ -104,7 +104,7 @@ export function parseRound2Response(response: string): Round2ParsedResponse {
     revisedPosition: '',
     revisedConfidence: 0,
     raw: response,
-    parsed: false
+    parsed: false,
   };
 
   if (!response) return result;
@@ -114,7 +114,7 @@ export function parseRound2Response(response: string): Round2ParsedResponse {
     '\\*\\*Weakest Assumption\\*\\*': 'weakestAssumption',
     '\\*\\*Strongest Point\\*\\*': 'strongestPoint',
     '\\*\\*Revised Position\\*\\*': 'revisedPosition',
-    '\\*\\*Revised Confidence\\*\\*': 'revisedConfidence'
+    '\\*\\*Revised Confidence\\*\\*': 'revisedConfidence',
   };
 
   let foundCount = 0;
@@ -123,7 +123,7 @@ export function parseRound2Response(response: string): Round2ParsedResponse {
   for (const [pattern, field] of Object.entries(sections)) {
     const regex = new RegExp(`${pattern}\\s*:?\\s*\\n?([^*]*)`, 'i');
     const match = response.match(regex);
-    
+
     if (match && match[1]) {
       const value = match[1].trim();
       if (field === 'revisedConfidence') {

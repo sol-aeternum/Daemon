@@ -1,6 +1,6 @@
-"use client";
+'use client';
 
-import { Mic, Square } from "lucide-react";
+import { Mic, Square } from 'lucide-react';
 
 interface MicButtonProps {
   isRecording: boolean;
@@ -11,13 +11,13 @@ interface MicButtonProps {
   error?: Error | null;
 }
 
-export function MicButton({ 
-  isRecording, 
-  isConnecting, 
-  start, 
-  stop, 
+export function MicButton({
+  isRecording,
+  isConnecting,
+  start,
+  stop,
   disabled,
-  error 
+  error,
 }: MicButtonProps) {
   const handleMouseDown = async () => {
     if (disabled || isRecording) return;
@@ -48,10 +48,10 @@ export function MicButton({
       {isRecording && (
         <div className="absolute inset-0 rounded-full animate-ping bg-[var(--color-status-error)] opacity-75 pointer-events-none" />
       )}
-      
+
       {(isRecording || isConnecting) && (
         <span className="absolute -top-8 left-1/2 -translate-x-1/2 whitespace-nowrap text-xs bg-black/75 text-white px-2 py-1 rounded pointer-events-none">
-          {isRecording ? "Listening..." : "Connecting..."}
+          {isRecording ? 'Listening...' : 'Connecting...'}
         </span>
       )}
 
@@ -61,23 +61,23 @@ export function MicButton({
         </span>
       )}
 
-       <button
-         type="button"
-         disabled={disabled || isConnecting}
-         onMouseDown={handleMouseDown}
-         onMouseUp={handleMouseUp}
-         onMouseLeave={handleMouseUp}
-         onTouchStart={handleTouchStart}
-         onTouchEnd={handleTouchEnd}
-         title={isRecording ? "Release to stop" : "Hold to speak"}
-         className={`relative z-10 min-h-[44px] min-w-[44px] rounded-full p-2 transition-all duration-200 ${
-           isRecording
-             ? "bg-[var(--color-status-error)] text-white scale-110 shadow-lg"
-             : isConnecting
-             ? "bg-[var(--color-status-warning)] text-white"
-             : "bg-[var(--color-text-muted)] text-[var(--color-text-primary)] hover:bg-[var(--color-text-secondary)] hover:scale-105"
-         } ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
-       >
+      <button
+        type="button"
+        disabled={disabled || isConnecting}
+        onMouseDown={handleMouseDown}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
+        title={isRecording ? 'Release to stop' : 'Hold to speak'}
+        className={`relative z-10 min-h-[44px] min-w-[44px] rounded-full p-2 transition-all duration-200 ${
+          isRecording
+            ? 'bg-[var(--color-status-error)] text-white scale-110 shadow-lg'
+            : isConnecting
+              ? 'bg-[var(--color-status-warning)] text-white'
+              : 'bg-[var(--color-text-muted)] text-[var(--color-text-primary)] hover:bg-[var(--color-text-secondary)] hover:scale-105'
+        } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+      >
         {isRecording ? (
           <Square className="h-4 w-4 fill-current" />
         ) : (

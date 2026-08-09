@@ -1,9 +1,9 @@
-"use client";
+'use client';
 
-import { Suspense } from "react";
-import { FolderKanban, Plus } from "lucide-react";
-import { SidebarShell } from "@/components/SidebarShell";
-import { ConversationHistoryProvider } from "@/components/ConversationHistoryProvider";
+import { Suspense } from 'react';
+import { FolderKanban, Plus } from 'lucide-react';
+import { SidebarShell } from '@/components/SidebarShell';
+import { ConversationHistoryProvider } from '@/components/ConversationHistoryProvider';
 
 function ProjectsView() {
   return (
@@ -25,10 +25,13 @@ function ProjectsView() {
           <div className="inline-flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--color-accent-subtle)] text-[var(--color-accent-primary)]">
             <FolderKanban className="h-6 w-6" />
           </div>
-          <h2 className="mt-4 text-2xl font-semibold text-[var(--color-text-primary)]">Project workspace</h2>
+          <h2 className="mt-4 text-2xl font-semibold text-[var(--color-text-primary)]">
+            Project workspace
+          </h2>
           <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[var(--color-text-secondary)]">
-            Projects are coming next. This page is now wired into the sidebar and ready for scoped project views,
-            grouped conversations, and project-level memory.
+            Projects are coming next. This page is now wired into the sidebar
+            and ready for scoped project views, grouped conversations, and
+            project-level memory.
           </p>
           <p className="mt-3 text-xs text-[var(--color-text-muted)]">
             Out of scope for this pass: project data model and backend APIs.
@@ -41,7 +44,13 @@ function ProjectsView() {
 
 export default function ProjectsPage() {
   return (
-    <Suspense fallback={<div className="flex h-screen items-center justify-center">Loading projects...</div>}>
+    <Suspense
+      fallback={
+        <div className="flex h-screen items-center justify-center">
+          Loading projects...
+        </div>
+      }
+    >
       <ConversationHistoryProvider>
         <ProjectsView />
       </ConversationHistoryProvider>

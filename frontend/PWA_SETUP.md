@@ -10,11 +10,13 @@ You need to generate the PNG icons for the PWA to work correctly on all devices.
 ### Using `sharp` (Recommended)
 
 1.  Install `sharp` (if not already installed, or use `npx`):
+
     ```bash
     npm install sharp
     ```
 
 2.  Create a script `generate-icons.js`:
+
     ```javascript
     const sharp = require('sharp');
     const fs = require('fs');
@@ -24,12 +26,12 @@ You need to generate the PNG icons for the PWA to work correctly on all devices.
     const input = path.join(__dirname, 'public/icons/icon.svg');
     const outputDir = path.join(__dirname, 'public/icons');
 
-    sizes.forEach(size => {
+    sizes.forEach((size) => {
       sharp(input)
         .resize(size, size)
         .toFile(path.join(outputDir, `icon-${size}x${size}.png`))
         .then(() => console.log(`Generated ${size}x${size}`))
-        .catch(err => console.error(err));
+        .catch((err) => console.error(err));
     });
     ```
 

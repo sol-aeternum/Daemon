@@ -1,6 +1,6 @@
-"use client";
+'use client';
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect } from 'react';
 import {
   Play,
   Pause,
@@ -11,7 +11,7 @@ import {
   Download,
   Loader2,
   AlertCircle,
-} from "lucide-react";
+} from 'lucide-react';
 
 interface VideoPlayerProps {
   src: string;
@@ -25,11 +25,11 @@ interface VideoPlayerProps {
 function formatDuration(seconds: number): string {
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
-  return `${mins}:${secs.toString().padStart(2, "0")}`;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
 function isBase64Video(src: string): boolean {
-  return src.startsWith("data:video") || src.includes("base64");
+  return src.startsWith('data:video') || src.includes('base64');
 }
 
 export function VideoPlayer({
@@ -37,8 +37,8 @@ export function VideoPlayer({
   duration,
   isGenerating = false,
   onDownload,
-  filename = "video.mp4",
-  className = "",
+  filename = 'video.mp4',
+  className = '',
 }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -72,8 +72,8 @@ export function VideoPlayer({
         videoRef.current.pause();
       } else {
         videoRef.current.play().catch((err) => {
-          setError("Failed to play video");
-          console.error("Video playback error:", err);
+          setError('Failed to play video');
+          console.error('Video playback error:', err);
         });
       }
     }
@@ -87,15 +87,18 @@ export function VideoPlayer({
     }
   }, []);
 
-  const handleVolumeChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const newVolume = parseFloat(e.target.value);
-    if (videoRef.current) {
-      videoRef.current.volume = newVolume;
-      videoRef.current.muted = newVolume === 0;
-    }
-    setVolume(newVolume);
-    setIsMuted(newVolume === 0);
-  }, []);
+  const handleVolumeChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const newVolume = parseFloat(e.target.value);
+      if (videoRef.current) {
+        videoRef.current.volume = newVolume;
+        videoRef.current.muted = newVolume === 0;
+      }
+      setVolume(newVolume);
+      setIsMuted(newVolume === 0);
+    },
+    [],
+  );
 
   const toggleMute = useCallback(() => {
     if (videoRef.current) {
@@ -124,7 +127,7 @@ export function VideoPlayer({
         }
       }
     } catch (err) {
-      console.error("Fullscreen error:", err);
+      console.error('Fullscreen error:', err);
     }
   }, [isFullscreen]);
 
@@ -132,8 +135,9 @@ export function VideoPlayer({
     const handleFullscreenChange = () => {
       setIsFullscreen(!!document.fullscreenElement);
     };
-    document.addEventListener("fullscreenchange", handleFullscreenChange);
-    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () =>
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, []);
 
   const handleDownload = useCallback(() => {
@@ -142,11 +146,11 @@ export function VideoPlayer({
       return;
     }
 
-    const link = document.createElement("a");
+    const link = document.createElement('a');
     link.href = src;
     link.download = filename;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -171,24 +175,24 @@ export function VideoPlayer({
     const handlePlay = () => setIsPlaying(true);
     const handlePause = () => setIsPlaying(false);
     const handleError = () => {
-      setError("Failed to load video");
+      setError('Failed to load video');
       setIsLoading(false);
     };
     const handleCanPlay = () => setIsLoading(false);
     const handleWaiting = () => setIsLoading(true);
 
-    video.addEventListener("play", handlePlay);
-    video.addEventListener("pause", handlePause);
-    video.addEventListener("error", handleError);
-    video.addEventListener("canplay", handleCanPlay);
-    video.addEventListener("waiting", handleWaiting);
+    video.addEventListener('play', handlePlay);
+    video.addEventListener('pause', handlePause);
+    video.addEventListener('error', handleError);
+    video.addEventListener('canplay', handleCanPlay);
+    video.addEventListener('waiting', handleWaiting);
 
     return () => {
-      video.removeEventListener("play", handlePlay);
-      video.removeEventListener("pause", handlePause);
-      video.removeEventListener("error", handleError);
-      video.removeEventListener("canplay", handleCanPlay);
-      video.removeEventListener("waiting", handleWaiting);
+      video.removeEventListener('play', handlePlay);
+      video.removeEventListener('pause', handlePause);
+      video.removeEventListener('error', handleError);
+      video.removeEventListener('canplay', handleCanPlay);
+      video.removeEventListener('waiting', handleWaiting);
     };
   }, []);
 
@@ -200,7 +204,8 @@ export function VideoPlayer({
     };
   }, []);
 
-  const progressPercent = videoDuration > 0 ? (currentTime / videoDuration) * 100 : 0;
+  const progressPercent =
+    videoDuration > 0 ? (currentTime / videoDuration) * 100 : 0;
 
   if (isGenerating) {
     return (
@@ -236,7 +241,9 @@ export function VideoPlayer({
             <p className="text-sm font-medium text-[var(--color-text-primary)]">
               Failed to load video
             </p>
-            <p className="text-xs text-[var(--color-text-muted)] mt-1">{error}</p>
+            <p className="text-xs text-[var(--color-text-muted)] mt-1">
+              {error}
+            </p>
           </div>
         </div>
       </div>
@@ -281,7 +288,7 @@ export function VideoPlayer({
 
       <div
         className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-4 transition-opacity duration-300 ${
-          showControls || !isPlaying ? "opacity-100" : "opacity-0"
+          showControls || !isPlaying ? 'opacity-100' : 'opacity-0'
         }`}
       >
         <div className="relative mb-3 group/progress">
@@ -311,7 +318,7 @@ export function VideoPlayer({
               type="button"
               onClick={togglePlay}
               className="text-white hover:text-[var(--color-accent-primary)] transition-colors"
-              aria-label={isPlaying ? "Pause" : "Play"}
+              aria-label={isPlaying ? 'Pause' : 'Play'}
             >
               {isPlaying ? (
                 <Pause className="h-5 w-5" fill="white" />
@@ -329,7 +336,7 @@ export function VideoPlayer({
                 type="button"
                 onClick={toggleMute}
                 className="text-white hover:text-[var(--color-accent-primary)] transition-colors"
-                aria-label={isMuted ? "Unmute" : "Mute"}
+                aria-label={isMuted ? 'Unmute' : 'Mute'}
               >
                 {isMuted || volume === 0 ? (
                   <VolumeX className="h-5 w-5" />
@@ -367,7 +374,7 @@ export function VideoPlayer({
               type="button"
               onClick={toggleFullscreen}
               className="text-white hover:text-[var(--color-accent-primary)] transition-colors"
-              aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+              aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
             >
               {isFullscreen ? (
                 <Minimize className="h-5 w-5" />

@@ -51,7 +51,9 @@ describe('AccountWidget logout', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /test user/i }));
 
-    const logoutButton = await screen.findByRole('button', { name: /log out/i });
+    const logoutButton = await screen.findByRole('button', {
+      name: /log out/i,
+    });
     fireEvent.click(logoutButton);
 
     await waitFor(() => {
@@ -63,7 +65,9 @@ describe('AccountWidget logout', () => {
     render(<AccountWidget displayName="Test User" tier="Pro" />);
 
     fireEvent.click(screen.getByRole('button', { name: /test user/i }));
-    const logoutButton = await screen.findByRole('button', { name: /log out/i });
+    const logoutButton = await screen.findByRole('button', {
+      name: /log out/i,
+    });
     fireEvent.click(logoutButton);
 
     await waitFor(() => {
