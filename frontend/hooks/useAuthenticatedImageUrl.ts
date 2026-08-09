@@ -1,9 +1,14 @@
-"use client";
+'use client';
 
-import { useEffect, useState } from "react";
-import { ensureAuthHeader } from "@/lib/auth";
+import { useEffect, useState } from 'react';
+import { ensureAuthHeader } from '@/lib/auth';
 
-const PROTECTED_PREFIXES = ["/generated-images/", "/api/images/", "/generated-audio/", "/generated-files/"];
+const PROTECTED_PREFIXES = [
+  '/generated-images/',
+  '/api/images/',
+  '/generated-audio/',
+  '/generated-files/',
+];
 
 export function isProtectedPath(url: string): boolean {
   return getProtectedMediaUrl(url) !== null;
@@ -12,7 +17,7 @@ export function isProtectedPath(url: string): boolean {
 function buildFullUrl(path: string): string {
   const apiBaseUrl =
     process.env.NEXT_PUBLIC_API_URL ||
-    (process.env.NODE_ENV === "development" ? "http://localhost:8000" : "");
+    (process.env.NODE_ENV === 'development' ? 'http://localhost:8000' : '');
   return `${apiBaseUrl}${path}`;
 }
 
@@ -21,14 +26,18 @@ export function getProtectedMediaUrl(url: string): string | null {
     return buildFullUrl(url);
   }
 
-  const apiBaseUrl = buildFullUrl("");
+  const apiBaseUrl = buildFullUrl('');
   if (!apiBaseUrl) return null;
 
   try {
     const parsedUrl = new URL(url);
     const parsedApiBase = new URL(apiBaseUrl);
     if (parsedUrl.origin !== parsedApiBase.origin) return null;
-    return PROTECTED_PREFIXES.some((prefix) => parsedUrl.pathname.startsWith(prefix)) ? url : null;
+    return PROTECTED_PREFIXES.some((prefix) =>
+      parsedUrl.pathname.startsWith(prefix),
+    )
+      ? url
+      : null;
   } catch {
     return null;
   }
@@ -40,7 +49,9 @@ interface UseAuthenticatedImageUrlResult {
   error: boolean;
 }
 
-export function useAuthenticatedImageUrl(rawUrl: string | null | undefined): UseAuthenticatedImageUrlResult {
+export function useAuthenticatedImageUrl(
+  rawUrl: string | null | undefined,
+): UseAuthenticatedImageUrlResult {
   const [displayUrl, setDisplayUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
@@ -74,9 +85,12 @@ export function useAuthenticatedImageUrl(rawUrl: string | null | undefined): Use
       try {
         const authHeader = await ensureAuthHeader();
         const headers: HeadersInit = {};
-        if (authHeader) headers["Authorization"] = authHeader;
+        if (authHeader) headers['Authorization'] = authHeader;
 
-        const res = await fetch(fullUrl, { headers, signal: controller.signal });
+        const res = await fetch(fullUrl, {
+          headers,
+          signal: controller.signal,
+        });
         if (!res.ok) throw new Error(`fetch ${res.status}`);
         const blob = await res.blob();
         if (revoked) return;

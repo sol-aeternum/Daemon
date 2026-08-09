@@ -7,11 +7,21 @@ import asyncpg
 import pytest
 
 from orchestrator.memory.dedup import check_contradiction, deduplicate_facts
+from orchestrator.memory.embedding import EmbeddingBatchResult
 from orchestrator.memory.extraction import ExtractedFact
 
 
 def _new_fact(content: str, slot: str | None = None) -> ExtractedFact:
     return ExtractedFact(content=content, category="fact", confidence=0.9, slot=slot)
+
+
+def _embedding_result(vector: list[float]) -> EmbeddingBatchResult:
+    return EmbeddingBatchResult(
+        embeddings=[vector],
+        provider="voyage",
+        model="voyage-4-large",
+        storage_model="voyage-4-large",
+    )
 
 
 class MockLitellmResponse:
@@ -83,10 +93,13 @@ async def test_dedup_supersession_with_contradiction() -> None:
     }
 
     with (
-        patch("orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock) as embed,
+        patch(
+            "orchestrator.memory.dedup.embed_documents_with_metadata",
+            new_callable=AsyncMock,
+        ) as embed,
         patch("orchestrator.memory.dedup.litellm.acompletion") as litellm_mock,
     ):
-        embed.return_value = [[0.01, 0.02]]
+        embed.return_value = _embedding_result([0.01, 0.02])
         litellm_mock.return_value = MockLitellmResponse("YES. Fact B directly contradicts Fact A.")
         result = await deduplicate_facts(
             store,
@@ -203,10 +216,13 @@ async def test_dedup_supersession_retries_without_metadata_column() -> None:
     ]
 
     with (
-        patch("orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock) as embed,
+        patch(
+            "orchestrator.memory.dedup.embed_documents_with_metadata",
+            new_callable=AsyncMock,
+        ) as embed,
         patch("orchestrator.memory.dedup.litellm.acompletion") as litellm_mock,
     ):
-        embed.return_value = [[0.01, 0.02]]
+        embed.return_value = _embedding_result([0.01, 0.02])
         litellm_mock.return_value = MockLitellmResponse("YES. Fact B directly contradicts Fact A.")
         result = await deduplicate_facts(
             store,
@@ -245,10 +261,13 @@ async def test_dedup_supersession_proceeds_on_llm_failure() -> None:
     }
 
     with (
-        patch("orchestrator.memory.dedup.embed_documents", new_callable=AsyncMock) as embed,
+        patch(
+            "orchestrator.memory.dedup.embed_documents_with_metadata",
+            new_callable=AsyncMock,
+        ) as embed,
         patch("orchestrator.memory.dedup.litellm.acompletion") as litellm_mock,
     ):
-        embed.return_value = [[0.01, 0.02]]
+        embed.return_value = _embedding_result([0.01, 0.02])
         litellm_mock.side_effect = Exception("LLM unavailable")
         result = await deduplicate_facts(
             store,

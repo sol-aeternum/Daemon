@@ -3,16 +3,17 @@
 Covers the audit finding: the `/tts` endpoint accepted any string in
 `payload.format`, then built `f"{cache_key}.{fmt}"` for the server-side
 cache file path. An authenticated caller could influence the write path.
-The fix constrains `TtsRequest.format` to `Literal["mp3","opus","wav","ogg"] | None`
+The fix constrains `TtsRequest.format` to `Literal["mp3","opus","wav"] | None`
 so Pydantic rejects anything else with 422 before the filesystem path is
 constructed, while generated-file routes reject traversal and symlink escapes.
 
 The test asserts:
-1. `TtsRequest` accepts exactly the four valid formats plus None.
+1. `TtsRequest` accepts exactly the three valid formats plus None.
 2. Pydantic rejects invalid formats with a 422-shaped ValidationError.
 3. POST `/tts` with an invalid `format` returns 422 and writes no file
    to TTS_CACHE_DIR (verified by listing the directory before/after).
 4. Generated-file resolution stays inside its configured base directory.
+5. Supported formats are sent through ElevenLabs' documented query parameter.
 """
 
 from __future__ import annotations
@@ -37,8 +38,8 @@ from orchestrator.models import TtsRequest
 
 
 def test_tts_request_accepts_valid_formats() -> None:
-    """All four supported formats are accepted without modification."""
-    for fmt in ("mp3", "opus", "wav", "ogg"):
+    """All three supported formats are accepted without modification."""
+    for fmt in ("mp3", "opus", "wav"):
         req = TtsRequest(text="hello", format=fmt)  # type: ignore[arg-type]
         assert req.format == fmt
 
@@ -53,6 +54,8 @@ def test_tts_request_accepts_none_format() -> None:
     "bad_format",
     [
         "exe",
+        "flac",
+        "ogg",
         "../etc/passwd",
         "mp3\x00.wav",
         "MP3",  # case-sensitive; only the lowercase literals are allowed
@@ -144,19 +147,32 @@ async def test_tts_endpoint_rejects_invalid_format(
 
 
 @pytest.mark.asyncio
-async def test_tts_endpoint_maps_opus_format(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("requested_format", "expected_provider_format"),
+    [
+        (None, "mp3_22050_32"),
+        ("mp3", "mp3_22050_32"),
+        ("opus", "opus_48000_32"),
+        ("wav", "wav_22050"),
+    ],
+)
+async def test_tts_endpoint_maps_supported_formats(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    requested_format: str | None,
+    expected_provider_format: str,
 ) -> None:
-    """The persisted frontend Opus setting maps to ElevenLabs' Opus output."""
+    """Supported client formats map to ElevenLabs' output-format query parameter."""
     cache_dir = tmp_path / "tts_cache"
     cache_dir.mkdir()
     monkeypatch.setattr("orchestrator.main.TTS_CACHE_DIR", cache_dir)
     monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
     posted_json: dict[str, Any] = {}
+    posted_params: dict[str, Any] = {}
 
     class FakeResponse:
         status_code = 200
-        content = b"opus-audio"
+        content = b"audio-data"
         text = ""
 
     class FakeAsyncClient:
@@ -171,6 +187,7 @@ async def test_tts_endpoint_maps_opus_format(
 
         async def post(self, _url: str, **kwargs: Any) -> FakeResponse:
             posted_json.update(kwargs["json"])
+            posted_params.update(kwargs["params"])
             return FakeResponse()
 
     async def override_auth() -> AuthenticatedDevice:
@@ -191,13 +208,16 @@ async def test_tts_endpoint_maps_opus_format(
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.post(
-                "/tts", json={"text": "hello", "format": "opus", "cache": False}
-            )
+            request_json: dict[str, Any] = {"text": "hello", "cache": False}
+            if requested_format is not None:
+                request_json["format"] = requested_format
+            response = await client.post("/tts", json=request_json)
+        expected_extension = requested_format or "mp3"
         assert response.status_code == 200, response.text
-        assert posted_json["output_format"] == "opus_48000_32"
-        assert response.json()["audio_path"].endswith(".opus")
-        assert next(cache_dir.glob("*.opus")).read_bytes() == b"opus-audio"
+        assert posted_params["output_format"] == expected_provider_format
+        assert "output_format" not in posted_json
+        assert response.json()["audio_path"].endswith(f".{expected_extension}")
+        assert next(cache_dir.glob(f"*.{expected_extension}")).read_bytes() == b"audio-data"
     finally:
         app.dependency_overrides.pop(require_device_auth, None)
         app.dependency_overrides.pop(get_settings, None)

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 import asyncio
-import os
 import sys
 from pathlib import Path
 
 import asyncpg
+
+from orchestrator.database_url import resolve_database_url
 
 
 MIGRATIONS_DIR = Path(__file__).parent.parent / "migrations"
@@ -58,9 +59,9 @@ async def apply_migration(conn: asyncpg.Connection, filepath: Path):
 
 
 async def run_migrations():
-    database_url = os.getenv("DATABASE_URL")
+    database_url = resolve_database_url()
     if not database_url:
-        print("❌ DATABASE_URL not set")
+        print("❌ DATABASE_URL or complete POSTGRES_* settings are required")
         sys.exit(1)
 
     if not MIGRATIONS_DIR.exists():

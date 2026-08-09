@@ -1,10 +1,15 @@
-"use client";
+'use client';
 
-import { useMemo } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
-import { ROSTER_CONFIG } from "./constants";
-import { parseRound1Response, parseRound2Response, type ParsedResponse, type Round2ParsedResponse } from "./parseResponse";
-import MarkdownMessage from "../MarkdownMessage";
+import { useMemo } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
+import { ROSTER_CONFIG } from './constants';
+import {
+  parseRound1Response,
+  parseRound2Response,
+  type ParsedResponse,
+  type Round2ParsedResponse,
+} from './parseResponse';
+import MarkdownMessage from '../MarkdownMessage';
 
 interface AdvisorCardProps {
   role: string;
@@ -14,34 +19,46 @@ interface AdvisorCardProps {
   onToggle: () => void;
 }
 
-export function AdvisorCard({ role, response, round, isExpanded, onToggle }: AdvisorCardProps) {
+export function AdvisorCard({
+  role,
+  response,
+  round,
+  isExpanded,
+  onToggle,
+}: AdvisorCardProps) {
   const config = ROSTER_CONFIG[role] || ROSTER_CONFIG.analyst;
   const Icon = config.icon;
 
   const isRound2 = round >= 2;
-  
+
   const parsedRound1 = useMemo(() => parseRound1Response(response), [response]);
   const parsedRound2 = useMemo(() => parseRound2Response(response), [response]);
-  
+
   const parsed = isRound2 ? parsedRound2 : parsedRound1;
   const isParsed = parsed.parsed;
 
-  const positionSummary = isRound2 
+  const positionSummary = isRound2
     ? (parsed as Round2ParsedResponse).revisedPosition
-      ? (parsed as Round2ParsedResponse).revisedPosition.slice(0, 120) + ((parsed as Round2ParsedResponse).revisedPosition.length > 120 ? "..." : "")
-      : ""
+      ? (parsed as Round2ParsedResponse).revisedPosition.slice(0, 120) +
+        ((parsed as Round2ParsedResponse).revisedPosition.length > 120
+          ? '...'
+          : '')
+      : ''
     : (parsed as ParsedResponse).position
-      ? (parsed as ParsedResponse).position.slice(0, 120) + ((parsed as ParsedResponse).position.length > 120 ? "..." : "")
-      : "";
+      ? (parsed as ParsedResponse).position.slice(0, 120) +
+        ((parsed as ParsedResponse).position.length > 120 ? '...' : '')
+      : '';
 
-  const confidence = isRound2 ? (parsed as Round2ParsedResponse).revisedConfidence : (parsed as ParsedResponse).confidence;
+  const confidence = isRound2
+    ? (parsed as Round2ParsedResponse).revisedConfidence
+    : (parsed as ParsedResponse).confidence;
 
   return (
     <div
       className="rounded-lg border-2 overflow-hidden mb-3"
       style={{
         borderColor: config.borderColor,
-        backgroundColor: "var(--color-bg-secondary)",
+        backgroundColor: 'var(--color-bg-secondary)',
       }}
     >
       <button
@@ -72,20 +89,20 @@ export function AdvisorCard({ role, response, round, isExpanded, onToggle }: Adv
             style={{
               backgroundColor:
                 confidence <= 3
-                  ? "rgba(239, 68, 68, 0.2)"
+                  ? 'rgba(239, 68, 68, 0.2)'
                   : confidence <= 6
-                  ? "rgba(245, 158, 11, 0.2)"
-                  : confidence <= 8
-                  ? "rgba(59, 130, 246, 0.2)"
-                  : "rgba(34, 197, 94, 0.2)",
+                    ? 'rgba(245, 158, 11, 0.2)'
+                    : confidence <= 8
+                      ? 'rgba(59, 130, 246, 0.2)'
+                      : 'rgba(34, 197, 94, 0.2)',
               color:
                 confidence <= 3
-                  ? "rgb(239, 68, 68)"
+                  ? 'rgb(239, 68, 68)'
                   : confidence <= 6
-                  ? "rgb(245, 158, 11)"
-                  : confidence <= 8
-                  ? "rgb(59, 130, 246)"
-                  : "rgb(34, 197, 94)",
+                    ? 'rgb(245, 158, 11)'
+                    : confidence <= 8
+                      ? 'rgb(59, 130, 246)'
+                      : 'rgb(34, 197, 94)',
             }}
           >
             {confidence}/10
@@ -137,7 +154,9 @@ export function AdvisorCard({ role, response, round, isExpanded, onToggle }: Adv
                     Key Arguments
                   </div>
                   <div className="text-[var(--color-text-primary)]">
-                    <MarkdownMessage content={(parsed as ParsedResponse).keyArguments} />
+                    <MarkdownMessage
+                      content={(parsed as ParsedResponse).keyArguments}
+                    />
                   </div>
                 </div>
               )}
@@ -164,16 +183,17 @@ export function AdvisorCard({ role, response, round, isExpanded, onToggle }: Adv
                 </div>
               )}
 
-              {isRound2 && (parsed as Round2ParsedResponse).weakestAssumption && (
-                <div>
-                  <div className="text-xs font-medium text-[var(--color-text-muted)] uppercase mb-2">
-                    Weakest Assumption
+              {isRound2 &&
+                (parsed as Round2ParsedResponse).weakestAssumption && (
+                  <div>
+                    <div className="text-xs font-medium text-[var(--color-text-muted)] uppercase mb-2">
+                      Weakest Assumption
+                    </div>
+                    <div className="text-[var(--color-text-secondary)] text-sm">
+                      {(parsed as Round2ParsedResponse).weakestAssumption}
+                    </div>
                   </div>
-                  <div className="text-[var(--color-text-secondary)] text-sm">
-                    {(parsed as Round2ParsedResponse).weakestAssumption}
-                  </div>
-                </div>
-              )}
+                )}
 
               {!isRound2 && (parsed as ParsedResponse).blindSpot && (
                 <div className="p-3 rounded-lg bg-amber-500/10 border-l-4 border-l-amber-500">
@@ -189,7 +209,7 @@ export function AdvisorCard({ role, response, round, isExpanded, onToggle }: Adv
               {confidence > 0 && (
                 <div>
                   <div className="text-xs font-medium text-[var(--color-text-muted)] uppercase mb-1">
-                    {isRound2 ? "Revised Confidence" : "Confidence"}
+                    {isRound2 ? 'Revised Confidence' : 'Confidence'}
                   </div>
                   <div className="text-[var(--color-text-primary)]">
                     {confidence}/10

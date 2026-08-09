@@ -6,4 +6,6 @@ out/
 build/
 package-lock.json
 bun.lock
+next-env.d.ts
 public/sw.js
+public/workbox-*.js

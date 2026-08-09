@@ -69,6 +69,11 @@ from orchestrator.db import (
     get_app_state,
     init_app_state,
 )
+from orchestrator.database_url import (
+    UnsafeDatabaseCredentialError,
+    apply_resolved_database_url,
+    validate_database_credentials,
+)
 from orchestrator.memory.encryption import ContentEncryption, EncryptionInitError
 from orchestrator.session_cleanup import (
     cleanup_stale_sessions,
@@ -168,6 +173,7 @@ def _validate_startup_config(settings: Settings, argv: Sequence[str] | None = No
     first (authentication substrate), then hosted identity (deployment
     posture). Either failure aborts startup before any AppState work.
     """
+    validate_database_credentials(settings)
     _validate_production_server_args(settings, argv)
     validate_pepper_config(settings)
     settings.validate_deployment_mode()
@@ -180,9 +186,13 @@ def _validate_startup_config(settings: Settings, argv: Sequence[str] | None = No
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+    apply_resolved_database_url(settings)
 
     try:
         _validate_startup_config(settings)
+    except UnsafeDatabaseCredentialError as exc:
+        logger.critical("Unsafe database credential configuration: %s", exc)
+        raise
     except UnsafeProductionServerConfigError as exc:
         logger.critical("Unsafe production server configuration: %s", exc)
         raise
@@ -1506,15 +1516,13 @@ async def text_to_speech(
     format_map = {
         "mp3": "mp3_22050_32",
         "opus": "opus_48000_32",
-        "wav": "pcm_22050",
-        "ogg": "ogg_vorbis_22050",
+        "wav": "wav_22050",
     }
     output_format = format_map[fmt]
 
     request_body: dict[str, Any] = {
         "text": text,
         "model_id": model if model.startswith("eleven") else "eleven_multilingual_v2",
-        "output_format": output_format,
     }
     if speed and speed != 1.0:
         request_body["voice_settings"] = {
@@ -1525,7 +1533,12 @@ async def text_to_speech(
         }
 
     async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(url, json=request_body, headers=headers)
+        response = await client.post(
+            url,
+            params={"output_format": output_format},
+            json=request_body,
+            headers=headers,
+        )
         if response.status_code != 200:
             raise HTTPException(
                 status_code=502,

@@ -1,42 +1,45 @@
 const API_URLS = [
   process.env.DAEMON_INTERNAL_API_URL,
   process.env.NEXT_PUBLIC_API_URL,
-  "http://backend:8000",
-  "http://localhost:8000",
+  'http://backend:8000',
+  'http://localhost:8000',
 ].filter((url): url is string => Boolean(url));
 
 type RouteContext = { params: Promise<{ path: string[] }> };
 
 function normalizePathSegments(path: string[] | undefined): string {
   if (!Array.isArray(path)) {
-    return "";
+    return '';
   }
-  return path.map((s) => encodeURIComponent(s)).join("/");
+  return path.map((s) => encodeURIComponent(s)).join('/');
 }
 
 function buildProxyHeaders(req: Request): Headers {
   const requestHeaders = new Headers(req.headers);
 
-  if (!req.headers.get("authorization")) {
-    requestHeaders.delete("Authorization");
+  if (!req.headers.get('authorization')) {
+    requestHeaders.delete('Authorization');
   }
-  requestHeaders.delete("host");
-  requestHeaders.delete("content-length");
+  requestHeaders.delete('host');
+  requestHeaders.delete('content-length');
 
-  const xForwardedHost = req.headers.get("x-forwarded-host");
-  if (xForwardedHost && !requestHeaders.has("x-forwarded-host")) {
-    requestHeaders.set("X-Forwarded-Host", xForwardedHost);
+  const xForwardedHost = req.headers.get('x-forwarded-host');
+  if (xForwardedHost && !requestHeaders.has('x-forwarded-host')) {
+    requestHeaders.set('X-Forwarded-Host', xForwardedHost);
   }
 
-  const xForwardedProto = req.headers.get("x-forwarded-proto");
-  if (xForwardedProto && !requestHeaders.has("x-forwarded-proto")) {
-    requestHeaders.set("X-Forwarded-Proto", xForwardedProto);
+  const xForwardedProto = req.headers.get('x-forwarded-proto');
+  if (xForwardedProto && !requestHeaders.has('x-forwarded-proto')) {
+    requestHeaders.set('X-Forwarded-Proto', xForwardedProto);
   }
 
   return requestHeaders;
 }
 
-async function proxyRequest(req: Request, context: RouteContext): Promise<Response> {
+async function proxyRequest(
+  req: Request,
+  context: RouteContext,
+): Promise<Response> {
   const method = req.method.toUpperCase();
   const requestUrl = new URL(req.url);
   const search = requestUrl.search;
@@ -44,20 +47,23 @@ async function proxyRequest(req: Request, context: RouteContext): Promise<Respon
   const { path } = await context.params;
   const normalizedPath = normalizePathSegments(path);
 
-  if (method === "POST") {
-    const origin = req.headers.get("origin");
+  if (method === 'POST') {
+    const origin = req.headers.get('origin');
     if (origin && origin !== requestUrl.origin) {
-      return new Response(JSON.stringify({ error: "Cross-origin POST is not allowed" }), {
-        status: 403,
-        headers: { "content-type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ error: 'Cross-origin POST is not allowed' }),
+        {
+          status: 403,
+          headers: { 'content-type': 'application/json' },
+        },
+      );
     }
   }
 
   const requestHeaders = buildProxyHeaders(req);
 
   const body =
-    method === "GET" || method === "HEAD" ? undefined : await req.arrayBuffer();
+    method === 'GET' || method === 'HEAD' ? undefined : await req.arrayBuffer();
 
   let backendRes: Response | null = null;
   let lastError: Error | null = null;
@@ -67,7 +73,7 @@ async function proxyRequest(req: Request, context: RouteContext): Promise<Respon
       backendRes = await fetch(`${apiUrl}/skills/${normalizedPath}${search}`, {
         method,
         headers: requestHeaders,
-        credentials: "include",
+        credentials: 'include',
         body,
       });
       break;
@@ -78,19 +84,21 @@ async function proxyRequest(req: Request, context: RouteContext): Promise<Respon
 
   if (!backendRes) {
     return new Response(
-      JSON.stringify({ error: `Backend error (network): ${lastError?.message || "unknown error"}` }),
+      JSON.stringify({
+        error: `Backend error (network): ${lastError?.message || 'unknown error'}`,
+      }),
       {
         status: 502,
-        headers: { "content-type": "application/json" },
+        headers: { 'content-type': 'application/json' },
       },
     );
   }
 
   const responseHeaders = new Headers();
   backendRes.headers.forEach((value, key) => {
-    if (key.toLowerCase() === "set-cookie") {
+    if (key.toLowerCase() === 'set-cookie') {
       responseHeaders.append(key, value);
-    } else if (key.toLowerCase() !== "content-encoding") {
+    } else if (key.toLowerCase() !== 'content-encoding') {
       responseHeaders.set(key, value);
     }
   });

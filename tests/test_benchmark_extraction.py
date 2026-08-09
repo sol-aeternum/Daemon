@@ -43,6 +43,53 @@ def test_ensure_benchmark_user_sync_wrapper_uses_async_helper(
     assert captured_user_ids == [expected_user_id]
 
 
+def test_wipe_refusal_does_not_log_database_credentials(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    database_url = "postgresql://benchmark-user:sensitive-password@example.com/daemon"
+
+    assert benchmark_extraction.wipe_memories(database_url) == 0
+
+    captured = capsys.readouterr()
+    assert "Refusing to wipe non-local database" in captured.err
+    assert database_url not in captured.err
+    assert "sensitive-password" not in captured.err
+
+
+@pytest.mark.parametrize(
+    ("database_url", "expected"),
+    [
+        ("postgresql://user:secret@localhost/daemon", True),
+        ("postgresql://user:secret@127.0.0.1:5432/daemon", True),
+        ("postgresql://user:secret@postgres/daemon", True),
+        ("postgresql://user:secret@db/daemon", True),
+        ("postgresql://user:secret@example.com/postgres", False),
+        ("postgresql://user:secret@postgres.example.com/daemon", False),
+        ("not a database url", False),
+    ],
+)
+def test_database_wipe_guard_exact_matches_hostname(
+    database_url: str,
+    expected: bool,
+) -> None:
+    assert benchmark_extraction._is_safe_db(database_url) is expected
+
+
+@pytest.mark.parametrize(
+    ("redis_url", "expected"),
+    [
+        ("redis://localhost:6379/0", True),
+        ("redis://redis:6379/0", True),
+        ("rediss://cache:6379/0", True),
+        ("redis://example.com/cache", False),
+        ("redis://redis.example.com/0", False),
+        ("not a redis url", False),
+    ],
+)
+def test_redis_wipe_guard_exact_matches_hostname(redis_url: str, expected: bool) -> None:
+    assert benchmark_extraction._is_safe_redis(redis_url) is expected
+
+
 @pytest.mark.asyncio
 async def test_replay_benchmark_conversation_uses_cumulative_user_transcript(
     monkeypatch: pytest.MonkeyPatch,

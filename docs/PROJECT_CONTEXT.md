@@ -102,7 +102,7 @@ Daemon uses a tier-based model configuration system. Specific model assignments 
 
 For detailed architecture, see [MEMORY_LAYER.md](../MEMORY_LAYER.md).
 
-- **Embeddings**: `voyage-4-large` (1024d) for documents, `voyage-4-lite` (1024d) for queries.
+- **Embeddings**: Direct Voyage `voyage-4-large` (1024d) for documents, and `voyage-4-lite` (1024d) for queries, with opt-in OpenRouter Voyage and OpenAI fallback routes. Each fallback is isolated under its own storage identity and queried only when enabled matching rows exist for the user; routed Voyage is not assumed vector-identical to the direct API.
 - **Dedup Thresholds**:
   - Merge: ≥ 0.90
   - Supersede (generic): ≥ 0.82

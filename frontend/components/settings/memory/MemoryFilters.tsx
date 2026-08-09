@@ -46,11 +46,20 @@ export default function MemoryFilters({ onFilterChange }: MemoryFiltersProps) {
     }, 300);
 
     return () => clearTimeout(timer);
-  }, [searchQuery, selectedCategory, selectedSource, selectedStatus, onFilterChange]);
+  }, [
+    searchQuery,
+    selectedCategory,
+    selectedSource,
+    selectedStatus,
+    onFilterChange,
+  ]);
 
-  const handleSearchChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    setSearchQuery(e.target.value);
-  }, []);
+  const handleSearchChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      setSearchQuery(e.target.value);
+    },
+    [],
+  );
 
   const handleCategoryClick = useCallback((category: string) => {
     setSelectedCategory(category);
@@ -65,7 +74,8 @@ export default function MemoryFilters({ onFilterChange }: MemoryFiltersProps) {
   }, []);
 
   const getChipClasses = (isSelected: boolean) => {
-    const baseClasses = 'px-3 py-1 text-xs font-medium rounded-full cursor-pointer transition-colors whitespace-nowrap';
+    const baseClasses =
+      'px-3 py-1 text-xs font-medium rounded-full cursor-pointer transition-colors whitespace-nowrap';
     if (isSelected) {
       return `${baseClasses} bg-accent-primary text-white`;
     }
@@ -90,7 +100,9 @@ export default function MemoryFilters({ onFilterChange }: MemoryFiltersProps) {
       <div className="space-y-3">
         {/* Category Chips */}
         <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-          <span className="text-xs text-text-muted font-medium shrink-0">Category:</span>
+          <span className="text-xs text-text-muted font-medium shrink-0">
+            Category:
+          </span>
           <div className="flex gap-2 overflow-x-auto pb-1 sm:pb-0">
             {CATEGORIES.map((category) => (
               <button
@@ -107,7 +119,9 @@ export default function MemoryFilters({ onFilterChange }: MemoryFiltersProps) {
 
         {/* Source Chips */}
         <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-          <span className="text-xs text-text-muted font-medium shrink-0">Source:</span>
+          <span className="text-xs text-text-muted font-medium shrink-0">
+            Source:
+          </span>
           <div className="flex gap-2 overflow-x-auto pb-1 sm:pb-0">
             {SOURCES.map((source) => (
               <button
@@ -124,7 +138,9 @@ export default function MemoryFilters({ onFilterChange }: MemoryFiltersProps) {
 
         {/* Status Chips */}
         <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-          <span className="text-xs text-text-muted font-medium shrink-0">Status:</span>
+          <span className="text-xs text-text-muted font-medium shrink-0">
+            Status:
+          </span>
           <div className="flex gap-2 overflow-x-auto pb-1 sm:pb-0">
             {STATUSES.map((status) => (
               <button

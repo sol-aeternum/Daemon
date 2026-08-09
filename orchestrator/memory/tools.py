@@ -11,7 +11,7 @@ from typing import Any
 from orchestrator.memory.retrieval import retrieve_memories_for_text
 from orchestrator.memory.store import MemoryStore
 from orchestrator.memory.dedup import dedup_and_store, check_contradiction
-from orchestrator.memory.embedding import embed_query, embed_documents
+from orchestrator.memory.embedding import embed_documents_with_metadata, embed_query_with_metadata
 from orchestrator.tools.registry import Tool
 
 logger = logging.getLogger(__name__)
@@ -74,16 +74,18 @@ class MemoryReadTool(Tool):
 
         if mode == "semantic":
             normalized_slot = slot if isinstance(slot, str) and slot.strip() else None
-            query_embedding = await embed_query(query)
+            query_result = await embed_query_with_metadata(query)
             memories = await retrieve_memories_for_text(
                 store=self.store,
                 query_text=query,
                 user_id=self.user_id,
-                query_embedding=query_embedding,
+                query_embedding=query_result.embedding,
                 limit=limit,
                 include_local=True,
                 include_historical=history,
                 memory_slot=normalized_slot,
+                storage_embedding_model=query_result.storage_model,
+                query_embedding_model=query_result.model,
             )
         else:
             try:
@@ -166,13 +168,15 @@ class MemoryWriteTool(Tool):
 
         try:
             embedding_input = f"{slot.strip()}: {content.strip()}"
-            embedding = (await embed_documents([embedding_input]))[0]
+            embedding_result = await embed_documents_with_metadata([embedding_input])
+            embedding = embedding_result.embeddings[0]
             candidates = await self.store.search_memories(
                 user_id=self.user_id,
                 query_embedding=embedding,
                 limit=10,
                 min_similarity=0.5,
                 memory_slot=slot,
+                embedding_model=embedding_result.storage_model,
             )
             for candidate in candidates:
                 if candidate.get("id") == memory_id:

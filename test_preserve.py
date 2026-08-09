@@ -3,13 +3,12 @@ import asyncio, sys, json, uuid, os
 from pathlib import Path
 
 sys.path.insert(0, '.')
+
+from tests.benchmark_harness.database import configured_benchmark_database_url
+
 if __name__ == "__main__":
     os.environ['BENCHMARK_MODE'] = '1'
-
-    import dotenv
-
-    dotenv.load_dotenv()
-    os.environ['DATABASE_URL'] = 'postgresql://daemon:daemon@127.0.0.1:5432/daemon'
+    os.environ['DATABASE_URL'] = configured_benchmark_database_url()
 
 from orchestrator.eval.fact_harness import LongMemEvalFactRunner
 from orchestrator.memory.encryption import ContentEncryption
@@ -20,8 +19,6 @@ import hashlib
 
 PATCH_CODE = """
 import sys
-import dotenv
-dotenv.load_dotenv()
 import orchestrator.memory.extraction as _ext
 _ext.BENCHMARK_EXTRACTION_ENDPOINT_SLUG = "openai"
 _BenchmarkSamplingError = _ext.BenchmarkSamplingError

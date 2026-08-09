@@ -1,9 +1,10 @@
-"""Embedding utility for Voyage text embeddings with retry logic."""
+"""Embedding utility for text embeddings with provider fallback and retry logic."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
@@ -19,9 +20,15 @@ INITIAL_BACKOFF_S = 1.0
 MAX_ITEMS_PER_REQUEST = 1000
 DOCUMENT_MAX_TOKENS = 120_000
 QUERY_MAX_TOKENS = 1_000_000
+OPENAI_MAX_TOKENS_PER_INPUT = 8_000
+VOYAGE_CIRCUIT_BREAKER_FAILURES = 5
+VOYAGE_CIRCUIT_BREAKER_WINDOW_S = 60.0
 
 _retry_count = 0
 _last_retry_at: float | None = None
+_embedding_failures_total = 0
+_embedding_provider_used: dict[str, int] = {"voyage": 0, "openrouter": 0, "openai": 0}
+_voyage_failure_timestamps: list[float] = []
 
 
 class EmbeddingError(Exception):
@@ -36,6 +43,37 @@ class EmbeddingRequestError(EmbeddingError):
     pass
 
 
+@dataclass(frozen=True)
+class EmbeddingBatchResult:
+    embeddings: list[list[float]]
+    provider: str
+    model: str
+    storage_model: str
+
+
+@dataclass(frozen=True)
+class EmbeddingVectorResult:
+    embedding: list[float]
+    provider: str
+    model: str
+    storage_model: str
+
+
+class EmbeddingVector(list[float]):
+    def __init__(
+        self,
+        values: list[float],
+        *,
+        provider: str,
+        model: str,
+        storage_model: str,
+    ) -> None:
+        super().__init__(values)
+        self.provider = provider
+        self.model = model
+        self.storage_model = storage_model
+
+
 @lru_cache(maxsize=1)
 def _get_voyage_api_key() -> str:
     settings = get_settings()
@@ -43,6 +81,104 @@ def _get_voyage_api_key() -> str:
     if not api_key:
         raise EmbeddingConfigurationError("VOYAGE_API_KEY environment variable not set")
     return api_key
+
+
+@lru_cache(maxsize=1)
+def _get_openai_api_key() -> str:
+    settings = get_settings()
+    api_key = settings.openai_api_key
+    if not api_key:
+        raise EmbeddingConfigurationError("OPENAI_API_KEY environment variable not set")
+    return api_key
+
+
+@lru_cache(maxsize=1)
+def _get_openrouter_api_key() -> str:
+    settings = get_settings()
+    api_key = settings.openrouter_api_key
+    if not api_key:
+        raise EmbeddingConfigurationError("OPENROUTER_API_KEY environment variable not set")
+    return api_key
+
+
+def get_configured_embedding_providers() -> tuple[str, ...]:
+    settings = get_settings()
+    fallback_raw = getattr(settings, "embedding_fallback_providers", "")
+    fallbacks = [
+        provider.strip().lower() for provider in str(fallback_raw).split(",") if provider.strip()
+    ]
+    providers: list[str] = ["voyage"]
+    providers.extend(provider for provider in fallbacks if provider not in providers)
+    return tuple(providers)
+
+
+def get_configured_embedding_fallback_storage_models() -> tuple[str, ...]:
+    settings = get_settings()
+    models: list[str] = []
+    providers = get_configured_embedding_providers()
+    if "openrouter" in providers:
+        document_model = getattr(
+            settings,
+            "embedding_openrouter_document_model",
+            "voyageai/voyage-4-large",
+        )
+        models.append(_openrouter_model_identity(document_model))
+    if "openai" in providers:
+        openai_model = getattr(
+            settings,
+            "embedding_openai_fallback_model",
+            "text-embedding-3-small",
+        )
+        models.append(_openai_model_identity(openai_model))
+    return tuple(models)
+
+
+def get_embedding_provider_used_counts() -> dict[str, int]:
+    return dict(_embedding_provider_used)
+
+
+def get_embedding_failures_total() -> int:
+    return _embedding_failures_total
+
+
+def reset_embedding_metrics_for_tests() -> None:
+    global _embedding_failures_total, _last_retry_at, _retry_count
+    _retry_count = 0
+    _last_retry_at = None
+    _embedding_failures_total = 0
+    _embedding_provider_used.clear()
+    _embedding_provider_used.update({"voyage": 0, "openrouter": 0, "openai": 0})
+    _voyage_failure_timestamps.clear()
+    _get_voyage_api_key.cache_clear()
+    _get_openrouter_api_key.cache_clear()
+    _get_openai_api_key.cache_clear()
+
+
+def _record_provider_used(provider: str) -> None:
+    _embedding_provider_used[provider] = _embedding_provider_used.get(provider, 0) + 1
+
+
+def _record_provider_failure(provider: str) -> None:
+    global _embedding_failures_total
+    _embedding_failures_total += 1
+    if provider != "voyage":
+        return
+
+    now = asyncio.get_running_loop().time()
+    _voyage_failure_timestamps.append(now)
+    _prune_voyage_failures(now)
+
+
+def _prune_voyage_failures(now: float) -> None:
+    cutoff = now - VOYAGE_CIRCUIT_BREAKER_WINDOW_S
+    kept = [timestamp for timestamp in _voyage_failure_timestamps if timestamp >= cutoff]
+    _voyage_failure_timestamps[:] = kept
+
+
+def _is_voyage_circuit_open() -> bool:
+    now = asyncio.get_running_loop().time()
+    _prune_voyage_failures(now)
+    return len(_voyage_failure_timestamps) >= VOYAGE_CIRCUIT_BREAKER_FAILURES
 
 
 def _estimate_tokens(text: str) -> int:
@@ -82,6 +218,20 @@ def _chunk_texts(texts: list[str], max_tokens: int) -> list[list[str]]:
     return chunks
 
 
+def _truncate_text_to_token_limit(text: str, max_tokens: int) -> str:
+    if _estimate_tokens(text) <= max_tokens:
+        return text
+    return text[: max_tokens * 4]
+
+
+def _openai_model_identity(model: str) -> str:
+    return f"openai:{model}"
+
+
+def _openrouter_model_identity(model: str) -> str:
+    return f"openrouter:{model}"
+
+
 async def _post_embeddings(
     *,
     api_key: str,
@@ -108,7 +258,93 @@ async def _post_embeddings(
         return response.json()
 
 
-async def _embed_with_retry(
+async def _post_openai_embeddings(
+    *,
+    api_key: str,
+    texts: list[str],
+    model: str,
+    output_dimension: int,
+) -> dict[str, Any]:
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            "https://api.openai.com/v1/embeddings",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "input": texts,
+                "model": model,
+                "dimensions": output_dimension,
+            },
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+async def _post_openrouter_embeddings(
+    *,
+    api_key: str,
+    texts: list[str],
+    model: str,
+    input_type: str,
+    output_dimension: int,
+) -> dict[str, Any]:
+    settings = get_settings()
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    if settings.openrouter_referer:
+        headers["HTTP-Referer"] = settings.openrouter_referer
+    if settings.openrouter_title:
+        headers["X-Title"] = settings.openrouter_title
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            f"{settings.openrouter_base_url.rstrip('/')}/embeddings",
+            headers=headers,
+            json={
+                "input": texts,
+                "model": model,
+                "input_type": input_type,
+                "dimensions": output_dimension,
+                "encoding_format": "float",
+            },
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+def _parse_embedding_payload(
+    payload: dict[str, Any],
+    *,
+    provider: str,
+    texts_count: int,
+    output_dimension: int,
+) -> tuple[list[list[float]], int]:
+    data = payload.get("data")
+    if not isinstance(data, list):
+        raise EmbeddingRequestError(f"Invalid {provider} embedding response: missing data list")
+    ordered = sorted(data, key=lambda item: int(item.get("index", 0)))
+    embeddings = [list(item.get("embedding", [])) for item in ordered]
+    if len(embeddings) != texts_count:
+        raise EmbeddingRequestError(
+            f"Embedding response size mismatch: expected {texts_count} got {len(embeddings)}"
+        )
+    for index, vector in enumerate(embeddings):
+        if len(vector) != output_dimension:
+            raise EmbeddingRequestError(
+                f"Embedding dimension mismatch at index {index}: expected {output_dimension} got {len(vector)}"
+            )
+    usage = payload.get("usage")
+    total_tokens = 0
+    if isinstance(usage, dict):
+        total_tokens = int(usage.get("total_tokens", usage.get("prompt_tokens", 0)) or 0)
+    return embeddings, total_tokens
+
+
+async def _embed_with_voyage_retry(
     texts: list[str],
     *,
     model: str,
@@ -133,25 +369,12 @@ async def _embed_with_retry(
                 input_type=input_type,
                 output_dimension=output_dimension,
             )
-            data = payload.get("data")
-            if not isinstance(data, list):
-                raise EmbeddingRequestError("Invalid Voyage embedding response: missing data list")
-            ordered = sorted(data, key=lambda item: int(item.get("index", 0)))
-            embeddings = [list(item.get("embedding", [])) for item in ordered]
-            if len(embeddings) != len(texts):
-                raise EmbeddingRequestError(
-                    f"Embedding response size mismatch: expected {len(texts)} got {len(embeddings)}"
-                )
-            for index, vector in enumerate(embeddings):
-                if len(vector) != output_dimension:
-                    raise EmbeddingRequestError(
-                        f"Embedding dimension mismatch at index {index}: expected {output_dimension} got {len(vector)}"
-                    )
-            usage = payload.get("usage")
-            total_tokens = 0
-            if isinstance(usage, dict):
-                total_tokens = int(usage.get("total_tokens", 0) or 0)
-            return embeddings, total_tokens
+            return _parse_embedding_payload(
+                payload,
+                provider="Voyage",
+                texts_count=len(texts),
+                output_dimension=output_dimension,
+            )
         except Exception as error:
             last_error = error
             if attempt < MAX_RETRIES - 1:
@@ -167,48 +390,313 @@ async def _embed_with_retry(
     ) from last_error
 
 
+async def _embed_with_openai_retry(
+    texts: list[str],
+    *,
+    model: str,
+    output_dimension: int,
+) -> tuple[list[list[float]], int]:
+    global _retry_count, _last_retry_at
+
+    if not texts:
+        return [], 0
+
+    api_key = _get_openai_api_key()
+    last_error: Exception | None = None
+    backoff = INITIAL_BACKOFF_S
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            payload = await _post_openai_embeddings(
+                api_key=api_key,
+                texts=texts,
+                model=model,
+                output_dimension=output_dimension,
+            )
+            return _parse_embedding_payload(
+                payload,
+                provider="OpenAI",
+                texts_count=len(texts),
+                output_dimension=output_dimension,
+            )
+        except Exception as error:
+            last_error = error
+            if attempt < MAX_RETRIES - 1:
+                _retry_count += 1
+                _last_retry_at = asyncio.get_event_loop().time()
+                await asyncio.sleep(backoff)
+                backoff *= 2
+                continue
+            break
+
+    raise EmbeddingRequestError(
+        f"Failed to embed with OpenAI after {MAX_RETRIES} attempts: {last_error}"
+    ) from last_error
+
+
+async def _embed_with_openrouter_retry(
+    texts: list[str],
+    *,
+    model: str,
+    input_type: str,
+    output_dimension: int,
+) -> tuple[list[list[float]], int]:
+    global _retry_count, _last_retry_at
+
+    if not texts:
+        return [], 0
+
+    api_key = _get_openrouter_api_key()
+    last_error: Exception | None = None
+    backoff = INITIAL_BACKOFF_S
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            payload = await _post_openrouter_embeddings(
+                api_key=api_key,
+                texts=texts,
+                model=model,
+                input_type=input_type,
+                output_dimension=output_dimension,
+            )
+            return _parse_embedding_payload(
+                payload,
+                provider="OpenRouter",
+                texts_count=len(texts),
+                output_dimension=output_dimension,
+            )
+        except Exception as error:
+            last_error = error
+            if attempt < MAX_RETRIES - 1:
+                _retry_count += 1
+                _last_retry_at = asyncio.get_event_loop().time()
+                await asyncio.sleep(backoff)
+                backoff *= 2
+                continue
+            break
+
+    raise EmbeddingRequestError(
+        f"Failed to embed with OpenRouter after {MAX_RETRIES} attempts: {last_error}"
+    ) from last_error
+
+
 async def _embed_texts(
     texts: list[str],
     *,
     model: str,
     input_type: str,
     max_tokens: int,
-) -> list[list[float]]:
+) -> EmbeddingBatchResult:
     valid_texts = [t for t in texts if t and t.strip()]
     if not valid_texts:
-        return []
+        return EmbeddingBatchResult(
+            embeddings=[],
+            provider="none",
+            model=model,
+            storage_model=model,
+        )
 
     settings = get_settings()
     output_dimension = settings.embedding_dimensions
-    chunks = _chunk_texts(valid_texts, max_tokens=max_tokens)
+    voyage_chunks = _chunk_texts(valid_texts, max_tokens=max_tokens)
+
+    if not _is_voyage_circuit_open():
+        try:
+            all_embeddings: list[list[float]] = []
+            total_tokens = 0
+            for chunk in voyage_chunks:
+                embeddings, chunk_tokens = await _embed_with_voyage_retry(
+                    chunk,
+                    model=model,
+                    input_type=input_type,
+                    output_dimension=output_dimension,
+                )
+                all_embeddings.extend(embeddings)
+                total_tokens += chunk_tokens
+            _record_provider_used("voyage")
+            logger.info(
+                "Embeddings generated",
+                extra={
+                    "embedding_model": model,
+                    "input_type": input_type,
+                    "texts": len(valid_texts),
+                    "chunks": len(voyage_chunks),
+                    "providers": {"voyage": 1},
+                    "output_dimension": output_dimension,
+                    "total_tokens": total_tokens,
+                },
+            )
+            return EmbeddingBatchResult(
+                embeddings=all_embeddings,
+                provider="voyage",
+                model=model,
+                storage_model=model,
+            )
+        except Exception as error:
+            _record_provider_failure("voyage")
+            logger.warning("Voyage embedding provider failed; trying fallback", exc_info=True)
+            voyage_error = error
+    else:
+        voyage_error = EmbeddingRequestError("voyage: circuit open")
+
+    provider_errors = [f"voyage: {voyage_error}"]
+    last_error: Exception = voyage_error
+    for provider in get_configured_embedding_providers()[1:]:
+        try:
+            if provider == "openrouter":
+                return await _embed_texts_with_openrouter(
+                    valid_texts,
+                    input_type=input_type,
+                )
+            if provider == "openai":
+                return await _embed_texts_with_openai(
+                    valid_texts,
+                    input_type=input_type,
+                )
+        except Exception as error:
+            last_error = error
+            provider_errors.append(f"{provider}: {error}")
+            logger.warning(
+                "Embedding fallback provider failed",
+                extra={"embedding_provider": provider},
+                exc_info=True,
+            )
+
+    raise EmbeddingRequestError("; ".join(provider_errors)) from last_error
+
+
+async def _embed_texts_with_openai(
+    texts: list[str],
+    *,
+    input_type: str,
+) -> EmbeddingBatchResult:
+    valid_texts = [t for t in texts if t and t.strip()]
+    settings = get_settings()
+    fallback_model = getattr(
+        settings,
+        "embedding_openai_fallback_model",
+        "text-embedding-3-small",
+    )
+    storage_model = _openai_model_identity(fallback_model)
+    if not valid_texts:
+        return EmbeddingBatchResult(
+            embeddings=[],
+            provider="openai",
+            model=storage_model,
+            storage_model=storage_model,
+        )
+
+    output_dimension = settings.embedding_dimensions
+    openai_texts = [
+        _truncate_text_to_token_limit(text, OPENAI_MAX_TOKENS_PER_INPUT) for text in valid_texts
+    ]
+    openai_chunks = _chunk_texts(openai_texts, max_tokens=OPENAI_MAX_TOKENS_PER_INPUT)
     all_embeddings: list[list[float]] = []
     total_tokens = 0
+    try:
+        for chunk in openai_chunks:
+            embeddings, chunk_tokens = await _embed_with_openai_retry(
+                chunk,
+                model=fallback_model,
+                output_dimension=output_dimension,
+            )
+            all_embeddings.extend(embeddings)
+            total_tokens += chunk_tokens
+    except Exception:
+        _record_provider_failure("openai")
+        raise
 
-    for chunk in chunks:
-        embeddings, chunk_tokens = await _embed_with_retry(
-            chunk,
-            model=model,
-            input_type=input_type,
-            output_dimension=output_dimension,
-        )
-        all_embeddings.extend(embeddings)
-        total_tokens += chunk_tokens
-
+    _record_provider_used("openai")
     logger.info(
-        "Voyage embeddings generated",
+        "Embeddings generated",
         extra={
-            "embedding_model": model,
+            "embedding_model": storage_model,
             "input_type": input_type,
             "texts": len(valid_texts),
-            "chunks": len(chunks),
+            "chunks": len(openai_chunks),
+            "providers": {"openai": 1},
             "output_dimension": output_dimension,
             "total_tokens": total_tokens,
         },
     )
-    return all_embeddings
+    return EmbeddingBatchResult(
+        embeddings=all_embeddings,
+        provider="openai",
+        model=storage_model,
+        storage_model=storage_model,
+    )
 
 
-async def embed_documents(texts: list[str]) -> list[list[float]]:
+async def _embed_texts_with_openrouter(
+    texts: list[str],
+    *,
+    input_type: str,
+) -> EmbeddingBatchResult:
+    valid_texts = [t for t in texts if t and t.strip()]
+    settings = get_settings()
+    if input_type == "document":
+        model = getattr(
+            settings,
+            "embedding_openrouter_document_model",
+            "voyageai/voyage-4-large",
+        )
+        max_tokens = DOCUMENT_MAX_TOKENS
+    else:
+        model = getattr(
+            settings,
+            "embedding_openrouter_query_model",
+            "voyageai/voyage-4-lite",
+        )
+        max_tokens = QUERY_MAX_TOKENS
+    model_identity = _openrouter_model_identity(model)
+    if not valid_texts:
+        return EmbeddingBatchResult(
+            embeddings=[],
+            provider="openrouter",
+            model=model_identity,
+            storage_model=model_identity,
+        )
+
+    output_dimension = settings.embedding_dimensions
+    chunks = _chunk_texts(valid_texts, max_tokens=max_tokens)
+    all_embeddings: list[list[float]] = []
+    total_tokens = 0
+    try:
+        for chunk in chunks:
+            embeddings, chunk_tokens = await _embed_with_openrouter_retry(
+                chunk,
+                model=model,
+                input_type=input_type,
+                output_dimension=output_dimension,
+            )
+            all_embeddings.extend(embeddings)
+            total_tokens += chunk_tokens
+    except Exception:
+        _record_provider_failure("openrouter")
+        raise
+
+    _record_provider_used("openrouter")
+    logger.info(
+        "Embeddings generated",
+        extra={
+            "embedding_model": model_identity,
+            "input_type": input_type,
+            "texts": len(valid_texts),
+            "chunks": len(chunks),
+            "providers": {"openrouter": 1},
+            "output_dimension": output_dimension,
+            "total_tokens": total_tokens,
+        },
+    )
+    return EmbeddingBatchResult(
+        embeddings=all_embeddings,
+        provider="openrouter",
+        model=model_identity,
+        storage_model=model_identity,
+    )
+
+
+async def embed_documents_with_metadata(texts: list[str]) -> EmbeddingBatchResult:
     settings = get_settings()
     return await _embed_texts(
         texts,
@@ -218,17 +706,131 @@ async def embed_documents(texts: list[str]) -> list[list[float]]:
     )
 
 
-async def embed_query(text: str) -> list[float]:
+async def embed_query_with_metadata(text: str) -> EmbeddingVectorResult:
     settings = get_settings()
-    embeddings = await _embed_texts(
+    result = await _embed_texts(
         [text],
         model=settings.embedding_query_model,
         input_type="query",
         max_tokens=QUERY_MAX_TOKENS,
     )
-    if not embeddings:
+    if not result.embeddings:
         raise EmbeddingRequestError("Cannot embed empty or whitespace-only query text")
-    return embeddings[0]
+    if result.provider == "voyage":
+        storage_model = settings.embedding_document_model
+    elif result.provider == "openrouter":
+        storage_model = _openrouter_model_identity(
+            getattr(
+                settings,
+                "embedding_openrouter_document_model",
+                "voyageai/voyage-4-large",
+            )
+        )
+    else:
+        storage_model = result.storage_model
+    return EmbeddingVectorResult(
+        embedding=EmbeddingVector(
+            result.embeddings[0],
+            provider=result.provider,
+            model=result.model,
+            storage_model=storage_model,
+        ),
+        provider=result.provider,
+        model=result.model,
+        storage_model=storage_model,
+    )
+
+
+async def embed_query_for_configured_storage_models(
+    text: str,
+    *,
+    primary_result: EmbeddingVectorResult | None = None,
+    fallback_storage_models: set[str] | None = None,
+) -> list[EmbeddingVectorResult]:
+    settings = get_settings()
+    results = [primary_result or await embed_query_with_metadata(text)]
+
+    fallback_specs = {
+        "openrouter": (
+            _openrouter_model_identity(
+                getattr(
+                    settings,
+                    "embedding_openrouter_document_model",
+                    "voyageai/voyage-4-large",
+                )
+            ),
+            _embed_texts_with_openrouter,
+        ),
+        "openai": (
+            _openai_model_identity(
+                getattr(
+                    settings,
+                    "embedding_openai_fallback_model",
+                    "text-embedding-3-small",
+                )
+            ),
+            _embed_texts_with_openai,
+        ),
+    }
+
+    for provider in get_configured_embedding_providers()[1:]:
+        spec = fallback_specs.get(provider)
+        if spec is None:
+            continue
+        storage_model, embedder = spec
+        if results[0].storage_model == storage_model or (
+            fallback_storage_models is not None and storage_model not in fallback_storage_models
+        ):
+            continue
+
+        try:
+            fallback_result = await embedder([text], input_type="query")
+        except Exception:
+            logger.warning(
+                "Fallback query embedding unavailable",
+                extra={"embedding_provider": provider},
+                exc_info=True,
+            )
+            continue
+
+        if not fallback_result.embeddings:
+            continue
+        results.append(
+            EmbeddingVectorResult(
+                embedding=EmbeddingVector(
+                    fallback_result.embeddings[0],
+                    provider=provider,
+                    model=fallback_result.model,
+                    storage_model=storage_model,
+                ),
+                provider=provider,
+                model=fallback_result.model,
+                storage_model=storage_model,
+            )
+        )
+    return results
+
+
+async def embed_documents(texts: list[str]) -> list[list[float]]:
+    result = await embed_documents_with_metadata(texts)
+    primary_storage_model = get_settings().embedding_document_model
+    if result.storage_model != primary_storage_model:
+        raise EmbeddingRequestError(
+            "Legacy embed_documents cannot return fallback vectors without storage model metadata; "
+            "use embed_documents_with_metadata for provider fallback support"
+        )
+    return result.embeddings
+
+
+async def embed_query(text: str) -> list[float]:
+    result = await embed_query_with_metadata(text)
+    primary_storage_model = get_settings().embedding_document_model
+    if result.storage_model != primary_storage_model:
+        raise EmbeddingRequestError(
+            "Legacy embed_query cannot return fallback vectors without storage model metadata; "
+            "use embed_query_with_metadata for provider fallback support"
+        )
+    return result.embedding
 
 
 async def embed_text(text: str, model: str = DEFAULT_MODEL) -> list[float]:

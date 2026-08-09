@@ -6,11 +6,16 @@ import logging
 import re
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import cast
 
 from orchestrator.config import get_settings
-from orchestrator.memory.embedding import embed_query
+from orchestrator.memory.embedding import (
+    EmbeddingVectorResult,
+    get_configured_embedding_fallback_storage_models,
+    embed_query_for_configured_storage_models,
+)
 from orchestrator.memory.entities import (
     _normalize_lookup_key,
     extract_candidates_baseline,
@@ -156,6 +161,42 @@ def _is_retrieval_logging_enabled(explicit_flag: bool) -> bool:
         return False
 
 
+async def _available_fallback_storage_models(
+    store: MemoryStore,
+    user_id: uuid.UUID,
+    *,
+    include_local: bool,
+    include_historical: bool,
+) -> set[str]:
+    checker = getattr(store, "has_memories_with_embedding_model", None)
+    if not callable(checker):
+        return set()
+    typed_checker = cast(
+        Callable[..., Awaitable[bool]],
+        checker,
+    )
+
+    present: set[str] = set()
+    for storage_model in get_configured_embedding_fallback_storage_models():
+        try:
+            has_model = await typed_checker(
+                user_id,
+                storage_model,
+                include_local=include_local,
+                include_historical=include_historical,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to check fallback embedding storage model presence",
+                extra={"embedding_model": storage_model},
+                exc_info=True,
+            )
+            continue
+        if has_model is True:
+            present.add(storage_model)
+    return present
+
+
 # Empirical hybrid-search calibration:
 # - keep vector similarity as the primary signal so the existing vector-only path
 #   remains stable when BM25 returns nothing;
@@ -182,6 +223,11 @@ def _as_float(value: object, default: float) -> float:
 
 def _normalize_query_text(query_text: str | None) -> str:
     return " ".join(str(query_text or "").split())
+
+
+def _embedding_metadata_value(query_embedding: list[float], name: str) -> str | None:
+    value = getattr(query_embedding, name, None)
+    return value if isinstance(value, str) and value.strip() else None
 
 
 def _normalize_memory_slot(memory_slot: str | None) -> str | None:
@@ -352,6 +398,19 @@ def _log_retrieval_results(
         )
 
 
+def _schedule_memory_touches(store: MemoryStore, memory_ids: list[uuid.UUID]) -> None:
+    if not memory_ids:
+        return
+
+    async def _touch() -> None:
+        try:
+            await store.bulk_touch_memories(memory_ids)
+        except Exception:
+            logger.exception("Failed to update memory access timestamps")
+
+    _ = asyncio.create_task(_touch())
+
+
 async def retrieve_memories_for_text(
     store: MemoryStore,
     query_text: str,
@@ -368,6 +427,8 @@ async def retrieve_memories_for_text(
     retrieval_triggered_by: str | None = None,
     allowed_source_conversation_ids: list[uuid.UUID] | None = None,
     include_dream_observations: bool = False,
+    storage_embedding_model: str | None = None,
+    query_embedding_model: str | None = None,
 ) -> list[dict[str, object]]:
     """Canonical text-query retrieval contract.
 
@@ -381,31 +442,168 @@ async def retrieve_memories_for_text(
     normalized_slot = _normalize_memory_slot(memory_slot)
     effective_embedding = query_embedding
     embedding_model_used: str | None = None
+    effective_storage_embedding_model = storage_embedding_model
+    l0_log_embedding: list[float] | None = None
+    l0_log_embedding_model: str | None = None
+    scored_candidates_by_id: dict[uuid.UUID, dict[str, object]] = {}
 
     ranked: list[dict[str, object]] = []
     if normalized_query:
-        if effective_embedding is None:
-            effective_embedding = await embed_query(normalized_query)
-        settings = get_settings()
-        embedding_model_used = settings.embedding_query_model
-        ranked = await retrieve_memories(
-            store=store,
-            query_embedding=effective_embedding,
-            query_text=query_text,  # Use original query for entity extraction
-            user_id=user_id,
-            limit=limit,
+        effective_include_historical_for_spaces = include_historical or (
+            _detect_temporal_query_window(
+                normalized_query,
+                query_reference_time=query_reference_time,
+            )
+            is not None
+        )
+        fallback_storage_models = await _available_fallback_storage_models(
+            store,
+            user_id,
             include_local=include_local,
-            include_historical=include_historical,
-            query_reference_time=query_reference_time,
-            memory_slot=normalized_slot,
-            log_retrieval=_is_retrieval_logging_enabled(log_retrieval) and not include_l0,
-            retrieval_triggered_by=retrieval_triggered_by,
-            retrieval_context="prompt_injection" if retrieval_triggered_by is None else None,
-            allowed_source_conversation_ids=allowed_source_conversation_ids,
-            include_dream_observations=include_dream_observations,
+            include_historical=effective_include_historical_for_spaces,
+        )
+        if effective_embedding is None:
+            embedding_results = await embed_query_for_configured_storage_models(
+                normalized_query,
+                fallback_storage_models=fallback_storage_models,
+            )
+        else:
+            settings = get_settings()
+            inferred_query_model = _embedding_metadata_value(effective_embedding, "model")
+            inferred_storage_model = _embedding_metadata_value(effective_embedding, "storage_model")
+            embedding_model_used = (
+                query_embedding_model or inferred_query_model or settings.embedding_query_model
+            )
+            effective_storage_embedding_model = (
+                effective_storage_embedding_model
+                or inferred_storage_model
+                or settings.embedding_document_model
+            )
+            primary_result = EmbeddingVectorResult(
+                embedding=effective_embedding,
+                provider=_embedding_metadata_value(effective_embedding, "provider") or "unknown",
+                model=embedding_model_used,
+                storage_model=effective_storage_embedding_model,
+            )
+            embedding_results = await embed_query_for_configured_storage_models(
+                normalized_query,
+                primary_result=primary_result,
+                fallback_storage_models=fallback_storage_models,
+            )
+
+        combined_ranked: dict[uuid.UUID, dict[str, object]] = {}
+        for index, embedding_result in enumerate(embedding_results):
+            effective_embedding = embedding_result.embedding
+            embedding_model_used = embedding_result.model
+            effective_storage_embedding_model = embedding_result.storage_model
+            if index == 0:
+                l0_log_embedding = embedding_result.embedding
+                l0_log_embedding_model = embedding_result.model
+            partial_scored: list[dict[str, object]] = []
+            partial_ranked = await retrieve_memories(
+                store=store,
+                query_embedding=effective_embedding,
+                query_text=query_text,  # Use original query for entity extraction
+                user_id=user_id,
+                limit=limit,
+                include_local=include_local,
+                include_historical=include_historical,
+                query_reference_time=query_reference_time,
+                memory_slot=normalized_slot,
+                log_retrieval=False,
+                retrieval_triggered_by=retrieval_triggered_by,
+                retrieval_context="prompt_injection" if retrieval_triggered_by is None else None,
+                allowed_source_conversation_ids=allowed_source_conversation_ids,
+                include_dream_observations=include_dream_observations,
+                embedding_model=effective_storage_embedding_model,
+                query_embedding_model=embedding_model_used,
+                touch_results=False,
+                scored_candidates_out=partial_scored,
+            )
+            for candidate in partial_scored:
+                candidate_id = candidate.get("id")
+                if not isinstance(candidate_id, uuid.UUID):
+                    continue
+                existing_candidate = scored_candidates_by_id.get(candidate_id)
+                if existing_candidate is None or _as_float(
+                    candidate.get("final_score"), 0.0
+                ) > _as_float(existing_candidate.get("final_score"), 0.0):
+                    scored_candidates_by_id[candidate_id] = candidate
+            for memory in partial_ranked:
+                memory_id = memory.get("id")
+                if not isinstance(memory_id, uuid.UUID):
+                    continue
+                existing = combined_ranked.get(memory_id)
+                if existing is None or _as_float(memory.get("final_score"), 0.0) > _as_float(
+                    existing.get("final_score"), 0.0
+                ):
+                    combined_ranked[memory_id] = memory
+        ranked = sorted(
+            combined_ranked.values(),
+            key=lambda item: (
+                -_as_float(item.get("final_score"), 0.0),
+                str(item.get("id")),
+            ),
+        )[:limit]
+        _schedule_memory_touches(
+            store,
+            [
+                cast(uuid.UUID, memory["id"])
+                for memory in ranked
+                if isinstance(memory.get("id"), uuid.UUID)
+            ],
         )
 
     l0_included = False
+    if (
+        not include_l0
+        and _is_retrieval_logging_enabled(log_retrieval)
+        and normalized_query
+        and l0_log_embedding is not None
+    ):
+        end_time = time.monotonic()
+        latency_ms = int((end_time - start_time) * 1000)
+        combined_candidate_scores: dict[str, object] = {}
+        for c in scored_candidates_by_id.values():
+            mid = c.get("id")
+            if isinstance(mid, uuid.UUID):
+                combined_candidate_scores[str(mid)] = {
+                    "vector_sim": _as_float(c.get("vector_sim"), 0.0),
+                    "bm25_normalized": _as_float(c.get("bm25_normalized"), 0.0),
+                    "recency_boost": _as_float(c.get("recency_boost"), 0.0),
+                    "source_boost": _as_float(c.get("source_boost"), 0.0),
+                    "access_boost": _as_float(c.get("access_boost"), 0.0),
+                    "confidence": _as_float(c.get("confidence"), 1.0),
+                    "trust": _as_float(c.get("trust_score"), 0.5),
+                    "final_score": _as_float(c.get("final_score"), 0.0),
+                }
+        combined_selected_ids: list[uuid.UUID] = [
+            cast(uuid.UUID, m.get("id")) for m in ranked if isinstance(m.get("id"), uuid.UUID)
+        ]
+
+        async def _persist_combined_log() -> None:
+            try:
+                await store.log_retrieval(
+                    user_id=user_id,
+                    query_text=normalized_query or "",
+                    query_embedding_model=l0_log_embedding_model
+                    or get_settings().embedding_query_model,
+                    query_embedding=l0_log_embedding,
+                    candidate_memory_ids=[uuid.UUID(k) for k in combined_candidate_scores],
+                    candidate_scores=combined_candidate_scores,
+                    selected_memory_ids=combined_selected_ids,
+                    l0_included=False,
+                    latency_ms=latency_ms,
+                    retrieval_context="prompt_injection"
+                    if retrieval_triggered_by is None
+                    else None,
+                    retrieval_triggered_by=retrieval_triggered_by,
+                )
+            except Exception:
+                logger.exception("Failed to persist text retrieval log")
+
+        _ = asyncio.create_task(_persist_combined_log())
+
     if include_l0:
         l0_memories = cast(list[dict[str, object]], await store.get_l0_memories(user_id))
         combined = _prepend_l0_memories(l0_memories, ranked)
@@ -414,12 +612,12 @@ async def retrieve_memories_for_text(
         if (
             _is_retrieval_logging_enabled(log_retrieval)
             and normalized_query
-            and effective_embedding is not None
+            and l0_log_embedding is not None
         ):
             end_time = time.monotonic()
             latency_ms = int((end_time - start_time) * 1000)
             candidate_scores: dict[str, object] = {}
-            for c in ranked:
+            for c in scored_candidates_by_id.values():
                 mid = c.get("id")
                 if isinstance(mid, uuid.UUID):
                     candidate_scores[str(mid)] = {
@@ -441,9 +639,9 @@ async def retrieve_memories_for_text(
                     await store.log_retrieval(
                         user_id=user_id,
                         query_text=normalized_query or "",
-                        query_embedding_model=embedding_model_used
+                        query_embedding_model=l0_log_embedding_model
                         or get_settings().embedding_query_model,
-                        query_embedding=effective_embedding,
+                        query_embedding=l0_log_embedding,
                         candidate_memory_ids=[uuid.UUID(k) for k in candidate_scores],
                         candidate_scores=candidate_scores,
                         selected_memory_ids=selected_ids,
@@ -471,6 +669,7 @@ async def _get_entity_expanded_candidates(
     *,
     include_local: bool = False,
     allowed_source_conversation_ids: list[uuid.UUID] | None = None,
+    embedding_model: str | None = None,
 ) -> list[dict[str, object]]:
     if not query_text or not user_id:
         return []
@@ -533,6 +732,11 @@ async def _get_entity_expanded_candidates(
                         continue
                     if memory.get("source_type") == "dream":
                         continue
+                    memory_embedding_model = memory.get("embedding_model")
+                    if not isinstance(memory_embedding_model, str):
+                        memory_embedding_model = get_settings().embedding_document_model
+                    if embedding_model is not None and memory_embedding_model != embedding_model:
+                        continue
                     if memory.get("local_only") and not include_local:
                         continue
                     if allowed_conversation_ids is not None:
@@ -566,6 +770,10 @@ async def retrieve_memories(
     retrieval_context: str | None = None,
     allowed_source_conversation_ids: list[uuid.UUID] | None = None,
     include_dream_observations: bool = False,
+    embedding_model: str | None = None,
+    query_embedding_model: str | None = None,
+    touch_results: bool = True,
+    scored_candidates_out: list[dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
     if not query_embedding:
         return []
@@ -576,6 +784,12 @@ async def retrieve_memories(
     effective_include_local = bool(include_local)
     normalized_query = _normalize_query_text(query_text)
     normalized_slot = _normalize_memory_slot(memory_slot)
+    inferred_storage_model = getattr(query_embedding, "storage_model", None)
+    effective_embedding_model = (
+        embedding_model
+        or (inferred_storage_model if isinstance(inferred_storage_model, str) else None)
+        or get_settings().embedding_document_model
+    )
     effective_user_id: uuid.UUID | None = user_id
     temporal_window = _detect_temporal_query_window(
         normalized_query,
@@ -617,6 +831,7 @@ async def retrieve_memories(
             memory_slot=normalized_slot,
             include_dream_observations=include_dream_observations,
             source_conversation_ids=allowed_source_conversation_ids,
+            embedding_model=effective_embedding_model,
         ),
     )
 
@@ -633,6 +848,7 @@ async def retrieve_memories(
                 memory_slot=normalized_slot,
                 include_dream_observations=include_dream_observations,
                 source_conversation_ids=allowed_source_conversation_ids,
+                embedding_models=[effective_embedding_model],
             ),
         )
 
@@ -673,6 +889,7 @@ async def retrieve_memories(
                 query_text,  # Use original query (not normalized) for entity extraction
                 include_local=effective_include_local,
                 allowed_source_conversation_ids=allowed_source_conversation_ids,
+                embedding_model=effective_embedding_model,
             )
             for memory in entity_candidates:
                 memory_id = str(memory.get("id", ""))
@@ -732,6 +949,9 @@ async def retrieve_memories(
         entry["final_score"] = final_score
         scored.append(entry)
 
+    if scored_candidates_out is not None:
+        scored_candidates_out.extend(dict(item) for item in scored)
+
     filtered = [
         item for item in scored if _as_float(item.get("final_score"), 0.0) >= MIN_FINAL_SCORE
     ]
@@ -753,25 +973,20 @@ async def retrieve_memories(
             memory_slot=normalized_slot,
         )
 
-    memory_ids: list[uuid.UUID] = []
-    for memory in ranked:
-        memory_id = memory.get("id")
-        if isinstance(memory_id, uuid.UUID):
-            memory_ids.append(memory_id)
-    if memory_ids:
-
-        async def _touch() -> None:
-            try:
-                await store.bulk_touch_memories(memory_ids)
-            except Exception:
-                logger.exception("Failed to update memory access timestamps")
-
-        _ = asyncio.create_task(_touch())
+    if touch_results:
+        _schedule_memory_touches(
+            store,
+            [
+                cast(uuid.UUID, memory["id"])
+                for memory in ranked
+                if isinstance(memory.get("id"), uuid.UUID)
+            ],
+        )
 
     if _is_retrieval_logging_enabled(log_retrieval):
         latency_ms = int((time.monotonic() - start_time) * 1000)
         settings = get_settings()
-        embedding_model = settings.embedding_query_model
+        logged_embedding_model = query_embedding_model or settings.embedding_query_model
         candidate_scores: dict[str, object] = {}
         for c in scored:
             mid = c.get("id")
@@ -796,7 +1011,7 @@ async def retrieve_memories(
                 await store.log_retrieval(
                     user_id=effective_user_id,
                     query_text=normalized_query or "",
-                    query_embedding_model=embedding_model,
+                    query_embedding_model=logged_embedding_model,
                     query_embedding=query_embedding,
                     candidate_memory_ids=[uuid.UUID(k) for k in candidate_scores],
                     candidate_scores=candidate_scores,

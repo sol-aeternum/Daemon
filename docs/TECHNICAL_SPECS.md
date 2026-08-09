@@ -96,7 +96,7 @@ Daemon uses a multi-stage pipeline for durable fact management. See [MEMORY_LAYE
 
 ### Extraction & Dedup
 - **Extraction**: GPT-4o-mini extracts facts from conversation turns.
-- **Embeddings**: `voyage-4-large` (1024d) for documents, `voyage-4-lite` (1024d) for queries.
+- **Embeddings**: Direct Voyage `voyage-4-large` (1024d) for documents, and `voyage-4-lite` (1024d) for queries, with an explicit ordered fallback chain configured by `EMBEDDING_FALLBACK_PROVIDERS`. Supported fallbacks are the corresponding Voyage models through OpenRouter (reusing `OPENROUTER_API_KEY`) and OpenAI `text-embedding-3-small`. Routed Voyage parity is unproven, so fallback vectors retain distinct `openrouter:<model>` or `openai:<model>` storage identities. Vector/BM25 retrieval only searches enabled identities with stored rows for that user, including inferred historical windows; dedup reconciles spaces lexically/by slot without cross-provider vector comparisons and excludes L0/dream rows.
 - **Dedup Thresholds**:
   - Merge: ≥ 0.90
   - Supersede (generic): ≥ 0.82
@@ -145,6 +145,10 @@ Hybrid search combining:
 - **EMBEDDING_DOCUMENT_MODEL**: voyage-4-large
 - **EMBEDDING_QUERY_MODEL**: voyage-4-lite
 - **EMBEDDING_DIMENSIONS**: 1024
+- **EMBEDDING_FALLBACK_PROVIDERS**: unset by default; ordered comma-separated opt-in (`openrouter`, `openai`, or `openrouter,openai`)
+- **EMBEDDING_OPENROUTER_DOCUMENT_MODEL**: voyageai/voyage-4-large
+- **EMBEDDING_OPENROUTER_QUERY_MODEL**: voyageai/voyage-4-lite
+- **EMBEDDING_OPENAI_FALLBACK_MODEL**: text-embedding-3-small
 
 ---
 

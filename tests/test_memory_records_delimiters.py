@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -76,8 +77,14 @@ async def test_l1_only_wrapped_in_memory_records() -> None:
 
     with (
         patch(
-            "orchestrator.memory.injection.embed_query",
-            AsyncMock(return_value=[0.0] * 8),
+            "orchestrator.memory.injection.embed_query_with_metadata",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    embedding=[0.0] * 8,
+                    model="voyage-4-lite",
+                    storage_model="voyage-4-large",
+                )
+            ),
         ),
         patch(
             "orchestrator.memory.injection.retrieve_memories_for_text",
@@ -114,8 +121,14 @@ async def test_l0_and_l1_wrapped_together() -> None:
 
     with (
         patch(
-            "orchestrator.memory.injection.embed_query",
-            AsyncMock(return_value=[0.0] * 8),
+            "orchestrator.memory.injection.embed_query_with_metadata",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    embedding=[0.0] * 8,
+                    model="voyage-4-lite",
+                    storage_model="voyage-4-large",
+                )
+            ),
         ),
         patch(
             "orchestrator.memory.injection.retrieve_memories_for_text",

@@ -236,7 +236,6 @@ export function isVideoFailedEvent(event: ChatEvent): event is ChatEvent & {
 } {
   return event.type === 'video_failed';
 }
-
 export function isCouncilEvent(event: ChatEvent): event is ChatEvent & {
   type:
     | 'council_interview'

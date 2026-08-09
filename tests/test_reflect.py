@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from orchestrator.tools.memory_reflect import MemoryReflectTool
+
+
+def _query_result() -> SimpleNamespace:
+    return SimpleNamespace(
+        embedding=[0.1] * 128,
+        model="voyage-4-lite",
+        storage_model="voyage-4-large",
+    )
 
 
 class MockLitellmResponse:
@@ -51,8 +60,8 @@ async def test_reflect_no_memories_found():
     store = AsyncMock()
     user_id = uuid.uuid4()
 
-    with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
-        mock_embed.return_value = [0.1] * 128
+    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
+        mock_embed.return_value = _query_result()
 
         with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = []
@@ -86,8 +95,8 @@ async def test_reflect_successful_synthesis():
         },
     ]
 
-    with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
-        mock_embed.return_value = [0.1] * 128
+    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
+        mock_embed.return_value = _query_result()
 
         with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = memories
@@ -125,8 +134,8 @@ async def test_reflect_includes_l0_memories():
         "source": "l0",
     }
 
-    with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
-        mock_embed.return_value = [0.1] * 128
+    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
+        mock_embed.return_value = _query_result()
 
         with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = [l0_memory]
@@ -148,8 +157,8 @@ async def test_reflect_uses_expanded_retrieval_limit():
     store = AsyncMock()
     user_id = uuid.uuid4()
 
-    with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
-        mock_embed.return_value = [0.1] * 128
+    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
+        mock_embed.return_value = _query_result()
 
         with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = []
@@ -166,8 +175,8 @@ async def test_reflect_custom_limit():
     store = AsyncMock()
     user_id = uuid.uuid4()
 
-    with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
-        mock_embed.return_value = [0.1] * 128
+    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
+        mock_embed.return_value = _query_result()
 
         with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = []
@@ -194,8 +203,8 @@ async def test_reflect_llm_failure_returns_error():
         },
     ]
 
-    with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
-        mock_embed.return_value = [0.1] * 128
+    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
+        mock_embed.return_value = _query_result()
 
         with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = memories
@@ -223,8 +232,8 @@ async def test_reflect_is_non_persistent():
     store = AsyncMock()
     user_id = uuid.uuid4()
 
-    with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
-        mock_embed.return_value = [0.1] * 128
+    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
+        mock_embed.return_value = _query_result()
 
         with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = []
@@ -300,8 +309,8 @@ async def test_reflect_truncates_limit_to_max_50():
     store = AsyncMock()
     user_id = uuid.uuid4()
 
-    with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
-        mock_embed.return_value = [0.1] * 128
+    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
+        mock_embed.return_value = _query_result()
 
         with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = []
@@ -318,8 +327,8 @@ async def test_reflect_enforces_minimum_limit_of_1():
     store = AsyncMock()
     user_id = uuid.uuid4()
 
-    with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
-        mock_embed.return_value = [0.1] * 128
+    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
+        mock_embed.return_value = _query_result()
 
         with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = []
@@ -346,8 +355,8 @@ async def test_reflect_passes_timeout_from_provider_config():
         },
     ]
 
-    with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
-        mock_embed.return_value = [0.1] * 128
+    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
+        mock_embed.return_value = _query_result()
 
         with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = memories
@@ -393,8 +402,8 @@ async def test_reflect_uses_zero_timeout_when_configured():
         },
     ]
 
-    with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
-        mock_embed.return_value = [0.1] * 128
+    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
+        mock_embed.return_value = _query_result()
 
         with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = memories
@@ -435,8 +444,8 @@ async def test_reflect_includes_dream_observations():
     store = AsyncMock()
     user_id = uuid.uuid4()
 
-    with patch("orchestrator.tools.memory_reflect.embed_query") as mock_embed:
-        mock_embed.return_value = [0.1] * 128
+    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
+        mock_embed.return_value = _query_result()
 
         with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
             mock_retrieve.return_value = []
