@@ -56,13 +56,26 @@ const FRAME_SRC_HOSTS = ["'self'", 'blob:', 'data:', ...FRAME_SRC_GIS_HOSTS];
  * runtime adjacencies (ElevenLabs WebSocket, etc.); also includes the
  * configured backend origin from `NEXT_PUBLIC_API_URL` so direct browser
  * hooks (`useConversationHistory` etc.) can reach the daemon backend
- * without going through the same-origin Next API routes.
+ * without going through the same-origin Next API routes. When the env
+ * var is unset (the documented local-development fallback — see
+ * ``frontend/hooks/useConversationHistory.ts`` and ``frontend/components/Studio*``),
+ * include ``http://localhost:8000`` so the dev fallback still passes
+ * connect-src evaluation.
  */
 function buildConnectSrcHosts(): string[] {
   const hosts = [...CONNECT_SRC_EXTERNAL_HOSTS];
   const apiUrl = process.env.NEXT_PUBLIC_API_URL;
   if (typeof apiUrl === 'string' && apiUrl.trim().length > 0) {
     hosts.push(apiUrl.trim());
+  } else {
+    // Local-development fallback: when NEXT_PUBLIC_API_URL is unset,
+    // hooks like ``useConversationHistory`` and the Studio video
+    // generation path explicitly fall back to ``http://localhost:8000``
+    // (the default Docker compose backend host). Without this entry,
+    // the strict connect-src blocks those cross-origin requests before
+    // the same-origin fallback can help. Production deployments must
+    // set NEXT_PUBLIC_API_URL so this fallback is never added.
+    hosts.push('http://localhost:8000');
   }
   return hosts;
 }
@@ -76,10 +89,34 @@ function buildContentSecurityPolicy(nonce: string): string {
   const mediaSrc = ["'self'", 'blob:', ...MEDIA_SRC_EXTERNAL_HOSTS]
     .join(' ')
     .trim();
+  // ``script-src`` requires ``'unsafe-eval'`` in development because
+  // Next's webpack dev server emits modules that load via ``eval(...)``.
+  // Production builds do not use eval, so the loose keyword is only
+  // added when ``NODE_ENV === 'development'`` (the documented
+  // ``npm run dev`` command path). This keeps the production CSP
+  // strict while allowing the documented local-development workflow
+  // to actually render the client bundle (Codex P1 on PR #163).
+  const isDevelopment = process.env.NODE_ENV === 'development';
+  const scriptSrcParts = [
+    "'self'",
+    `'nonce-${nonce}'`,
+    ...SCRIPT_SRC_EXTERNAL_HOSTS,
+  ];
+  if (isDevelopment) {
+    scriptSrcParts.push("'unsafe-eval'");
+  }
+  // ``style-src`` includes ``'unsafe-inline'`` because ``docx-preview``
+  // (frontend/src/components/previews/DocxPreview.tsx) injects
+  // dynamically generated ``<style>`` elements without a nonce, and the
+  // generated CSS is what makes the supported DOCX preview render
+  // correctly. Nonces authorize whole ``<style>`` tags but cannot be
+  // applied to runtime-injected tags from third-party libraries. The
+  // strict CSP otherwise blocks those styles and the document /
+  // numbering CSS is lost (Codex P2 on PR #163).
   return [
     "default-src 'self'",
-    `script-src 'self' 'nonce-${nonce}' ${SCRIPT_SRC_EXTERNAL_HOSTS.join(' ')}`.trim(),
-    `style-src 'self' 'nonce-${nonce}'`,
+    `script-src ${scriptSrcParts.join(' ')}`.trim(),
+    `style-src 'self' 'nonce-${nonce}' 'unsafe-inline'`.trim(),
     // `style-src-attr 'unsafe-inline'` is required because React's `style={{...}}`
     // attributes cannot be nonce-tagged (nonces authorize whole `<style>` tags
     // or external stylesheets, not inline attribute values). The repository
