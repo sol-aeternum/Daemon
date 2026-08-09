@@ -163,10 +163,7 @@ export function proxy(request: NextRequest) {
   // middleware response (not the rendered page), which lets the framework
   // bootstrap scripts through one nonce but rejects application scripts
   // using a different nonce.
-  requestHeaders.set(
-    'Content-Security-Policy',
-    contentSecurityPolicy,
-  );
+  requestHeaders.set('Content-Security-Policy', contentSecurityPolicy);
 
   const response = NextResponse.next({
     request: {

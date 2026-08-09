@@ -1,9 +1,13 @@
 'use client';
 
 import { useTheme } from '@/lib/theme';
-import { useEffect, useState } from 'react';
-import { SkeletonLine, SkeletonBlock, SkeletonCircle } from '@/components/ui/Skeleton';
+import {
+  SkeletonLine,
+  SkeletonBlock,
+  SkeletonCircle,
+} from '@/components/ui/Skeleton';
 import { Palette, Monitor, Sun, Moon, Check } from 'lucide-react';
+import { useClientMounted } from '@/hooks/useClientMounted';
 
 type ThemeOption = 'dark' | 'light' | 'system';
 
@@ -55,7 +59,8 @@ const themes: ThemeConfig[] = [
     icon: Monitor,
     preview: {
       bg: 'linear-gradient(135deg, var(--color-bg-inverse) 50%, var(--color-bg-primary) 50%)',
-      sidebar: 'linear-gradient(135deg, var(--color-bg-secondary) 50%, var(--color-bg-tertiary) 50%)',
+      sidebar:
+        'linear-gradient(135deg, var(--color-bg-secondary) 50%, var(--color-bg-tertiary) 50%)',
       card: 'linear-gradient(135deg, var(--color-bg-tertiary) 50%, var(--color-bg-secondary) 50%)',
       accent: 'var(--color-accent-primary)',
       text: 'var(--color-text-muted)',
@@ -65,11 +70,7 @@ const themes: ThemeConfig[] = [
 
 export default function AppearanceTab() {
   const { theme, setTheme, resolvedTheme } = useTheme();
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
+  const mounted = useClientMounted();
 
   const handleThemeChange = (newTheme: ThemeOption) => {
     setTheme(newTheme);
@@ -117,7 +118,9 @@ export default function AppearanceTab() {
           <Palette className="w-5 h-5 text-accent-primary" />
         </div>
         <div>
-          <h2 className="text-lg font-semibold text-text-primary">Appearance</h2>
+          <h2 className="text-lg font-semibold text-text-primary">
+            Appearance
+          </h2>
           <p className="text-sm text-text-muted">
             Customize the look and feel of your workspace
           </p>
@@ -194,7 +197,9 @@ export default function AppearanceTab() {
                         : 'border-border-primary group-hover:border-border-focus'
                     }`}
                   >
-                    {isSelected && <div className="w-2 h-2 rounded-full bg-white" />}
+                    {isSelected && (
+                      <div className="w-2 h-2 rounded-full bg-white" />
+                    )}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
@@ -205,7 +210,9 @@ export default function AppearanceTab() {
                       />
                       <span
                         className={`font-medium ${
-                          isSelected ? 'text-text-primary' : 'text-text-secondary'
+                          isSelected
+                            ? 'text-text-primary'
+                            : 'text-text-secondary'
                         }`}
                       >
                         {themeOption.label}
@@ -232,10 +239,7 @@ export default function AppearanceTab() {
               </span>{' '}
               theme
               {currentTheme === 'system' && (
-                <span className="text-text-muted">
-                  {' '}
-                  (system preference)
-                </span>
+                <span className="text-text-muted"> (system preference)</span>
               )}
             </span>
           </div>

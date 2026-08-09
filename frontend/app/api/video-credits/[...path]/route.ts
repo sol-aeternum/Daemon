@@ -1,22 +1,27 @@
 const API_URLS = [
   process.env.DAEMON_INTERNAL_API_URL,
   process.env.NEXT_PUBLIC_API_URL,
-  "http://backend:8000",
-  "http://localhost:8000",
+  'http://backend:8000',
+  'http://localhost:8000',
 ].filter((url): url is string => Boolean(url));
 
 type RouteContext = { params: Promise<{ path: string[] }> };
 
-const ALLOWED_SEGMENTS = new Set(["balance", "transactions", "estimate", "grant"]);
+const ALLOWED_SEGMENTS = new Set([
+  'balance',
+  'transactions',
+  'estimate',
+  'grant',
+]);
 
 function normalizePathSegments(path: string[] | undefined): string {
   if (!Array.isArray(path) || path.length !== 1) {
-    throw new Error("Unsupported video credits API path");
+    throw new Error('Unsupported video credits API path');
   }
 
   const segment = path[0]?.trim();
   if (!segment || !ALLOWED_SEGMENTS.has(segment)) {
-    throw new Error("Unsupported video credits API path");
+    throw new Error('Unsupported video credits API path');
   }
 
   return encodeURIComponent(segment);
@@ -25,72 +30,81 @@ function normalizePathSegments(path: string[] | undefined): string {
 function buildProxyHeaders(req: Request): Headers {
   const requestHeaders = new Headers(req.headers);
 
-  if (!req.headers.get("authorization")) {
-    requestHeaders.delete("Authorization");
+  if (!req.headers.get('authorization')) {
+    requestHeaders.delete('Authorization');
   }
-  requestHeaders.delete("host");
-  requestHeaders.delete("content-length");
+  requestHeaders.delete('host');
+  requestHeaders.delete('content-length');
 
-  const xForwardedHost = req.headers.get("x-forwarded-host");
-  if (xForwardedHost && !requestHeaders.has("x-forwarded-host")) {
-    requestHeaders.set("X-Forwarded-Host", xForwardedHost);
+  const xForwardedHost = req.headers.get('x-forwarded-host');
+  if (xForwardedHost && !requestHeaders.has('x-forwarded-host')) {
+    requestHeaders.set('X-Forwarded-Host', xForwardedHost);
   }
 
-  const xForwardedProto = req.headers.get("x-forwarded-proto");
-  if (xForwardedProto && !requestHeaders.has("x-forwarded-proto")) {
-    requestHeaders.set("X-Forwarded-Proto", xForwardedProto);
+  const xForwardedProto = req.headers.get('x-forwarded-proto');
+  if (xForwardedProto && !requestHeaders.has('x-forwarded-proto')) {
+    requestHeaders.set('X-Forwarded-Proto', xForwardedProto);
   }
 
   return requestHeaders;
 }
 
-async function proxyRequest(req: Request, context: RouteContext): Promise<Response> {
+async function proxyRequest(
+  req: Request,
+  context: RouteContext,
+): Promise<Response> {
   const method = req.method.toUpperCase();
   const requestUrl = new URL(req.url);
   const search = requestUrl.search;
 
-  let normalizedPath = "";
+  let normalizedPath = '';
   try {
     const { path } = await context.params;
     normalizedPath = normalizePathSegments(path);
   } catch (error) {
     return new Response(
-      JSON.stringify({ error: error instanceof Error ? error.message : "Invalid path" }),
+      JSON.stringify({
+        error: error instanceof Error ? error.message : 'Invalid path',
+      }),
       {
         status: 400,
-        headers: { "content-type": "application/json" },
+        headers: { 'content-type': 'application/json' },
       },
     );
   }
 
-  if (method === "POST") {
-    const origin = req.headers.get("origin");
+  if (method === 'POST') {
+    const origin = req.headers.get('origin');
     if (origin && origin !== requestUrl.origin) {
-      return new Response(JSON.stringify({ error: "Cross-origin POST is not allowed" }), {
-        status: 403,
-        headers: { "content-type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ error: 'Cross-origin POST is not allowed' }),
+        {
+          status: 403,
+          headers: { 'content-type': 'application/json' },
+        },
+      );
     }
   }
 
   const requestHeaders = buildProxyHeaders(req);
 
   const body =
-    method === "GET" || method === "HEAD"
-      ? undefined
-      : await req.arrayBuffer();
+    method === 'GET' || method === 'HEAD' ? undefined : await req.arrayBuffer();
 
   let backendRes: Response | null = null;
   let lastError: Error | null = null;
 
   for (const apiUrl of API_URLS) {
     try {
-      backendRes = await fetch(`${apiUrl}/video-credits/${normalizedPath}${search}`, {
-        method,
-        headers: requestHeaders,
-        credentials: "include",
-        body,
-      });
+      backendRes = await fetch(
+        `${apiUrl}/video-credits/${normalizedPath}${search}`,
+        {
+          method,
+          headers: requestHeaders,
+          credentials: 'include',
+          body,
+        },
+      );
       break;
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
@@ -99,19 +113,21 @@ async function proxyRequest(req: Request, context: RouteContext): Promise<Respon
 
   if (!backendRes) {
     return new Response(
-      JSON.stringify({ error: `Backend error (network): ${lastError?.message || "unknown error"}` }),
+      JSON.stringify({
+        error: `Backend error (network): ${lastError?.message || 'unknown error'}`,
+      }),
       {
         status: 502,
-        headers: { "content-type": "application/json" },
+        headers: { 'content-type': 'application/json' },
       },
     );
   }
 
   const responseHeaders = new Headers();
   backendRes.headers.forEach((value, key) => {
-    if (key.toLowerCase() === "set-cookie") {
+    if (key.toLowerCase() === 'set-cookie') {
       responseHeaders.append(key, value);
-    } else if (key.toLowerCase() !== "content-encoding") {
+    } else if (key.toLowerCase() !== 'content-encoding') {
       responseHeaders.set(key, value);
     }
   });

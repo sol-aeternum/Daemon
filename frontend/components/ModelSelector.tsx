@@ -1,7 +1,7 @@
-"use client";
+'use client';
 
-import { useEffect, useRef, useState } from "react";
-import { ChevronDown, Flame, Search, Zap } from "lucide-react";
+import { useEffect, useRef, useState } from 'react';
+import { ChevronDown, Flame, Search, Zap } from 'lucide-react';
 
 type CatalogModel = {
   id: string;
@@ -24,11 +24,13 @@ export function ModelSelector({ selected, onSelect }: ModelSelectorProps) {
   const [open, setOpen] = useState(false);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [showMore, setShowMore] = useState(false);
-  const [allModels, setAllModels] = useState<{ id: string; name?: string }[]>([]);
-  const [search, setSearch] = useState("");
+  const [allModels, setAllModels] = useState<{ id: string; name?: string }[]>(
+    [],
+  );
+  const [search, setSearch] = useState('');
   const ref = useRef<HTMLDivElement>(null);
 
-  const apiBase = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
+  const apiBase = (process.env.NEXT_PUBLIC_API_URL || '').replace(/\/$/, '');
 
   useEffect(() => {
     fetch(`${apiBase}/v1/catalog`)
@@ -52,21 +54,22 @@ export function ModelSelector({ selected, onSelect }: ModelSelectorProps) {
         setShowMore(false);
       }
     };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
   }, []);
 
   const selectedName =
-    selected === "auto"
-      ? "Auto"
+    selected === 'auto'
+      ? 'Auto'
       : catalog?.featured.find((m) => m.id === selected)?.name ||
         allModels.find((m) => m.id === selected)?.name ||
-        selected.split("/").pop() ||
+        selected.split('/').pop() ||
         selected;
 
   const Badge = ({ type }: { type: string }) => {
-    if (type === "hot") return <Flame className="w-3 h-3 text-[var(--color-status-warning)]" />;
-    if (type === "new") {
+    if (type === 'hot')
+      return <Flame className="w-3 h-3 text-[var(--color-status-warning)]" />;
+    if (type === 'new') {
       return (
         <span className="ml-1.5 rounded-full bg-[var(--color-status-success-bg)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--color-status-success)]">
           NEW
@@ -80,7 +83,8 @@ export function ModelSelector({ selected, onSelect }: ModelSelectorProps) {
     .filter((m) => {
       const q = search.toLowerCase();
       return (
-        m.id.toLowerCase().includes(q) || (m.name || "").toLowerCase().includes(q)
+        m.id.toLowerCase().includes(q) ||
+        (m.name || '').toLowerCase().includes(q)
       );
     })
     .slice(0, 20);
@@ -92,8 +96,12 @@ export function ModelSelector({ selected, onSelect }: ModelSelectorProps) {
         onClick={() => setOpen((v) => !v)}
         className="flex min-h-[44px] items-center gap-1.5 rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2 text-sm transition-colors hover:bg-[var(--color-bg-tertiary)]"
       >
-        {selected === "auto" && <Zap className="w-3.5 h-3.5 text-[var(--color-status-warning)]" />}
-        <span className="text-[var(--color-text-secondary)] truncate max-w-[120px]">{selectedName}</span>
+        {selected === 'auto' && (
+          <Zap className="w-3.5 h-3.5 text-[var(--color-status-warning)]" />
+        )}
+        <span className="text-[var(--color-text-secondary)] truncate max-w-[120px]">
+          {selectedName}
+        </span>
         <ChevronDown className="w-3 h-3 text-[var(--color-text-muted)]" />
       </button>
 
@@ -105,17 +113,19 @@ export function ModelSelector({ selected, onSelect }: ModelSelectorProps) {
           <button
             type="button"
             onClick={() => {
-              onSelect("auto");
+              onSelect('auto');
               setOpen(false);
             }}
             className={`w-full min-h-[44px] px-3 py-2.5 flex items-center gap-2 text-left hover:bg-[var(--color-bg-tertiary)] ${
-              selected === "auto" ? "bg-[var(--color-accent-subtle)]" : ""
+              selected === 'auto' ? 'bg-[var(--color-accent-subtle)]' : ''
             }`}
           >
             <Zap className="w-4 h-4 text-[var(--color-status-warning)]" />
             <div>
               <div className="text-sm font-medium">Auto</div>
-              <div className="text-xs text-[var(--color-text-muted)]">Smart routing based on your message</div>
+              <div className="text-xs text-[var(--color-text-muted)]">
+                Smart routing based on your message
+              </div>
             </div>
           </button>
 
@@ -130,7 +140,7 @@ export function ModelSelector({ selected, onSelect }: ModelSelectorProps) {
                 setOpen(false);
               }}
               className={`w-full min-h-[44px] px-3 py-2.5 flex items-start gap-2 text-left hover:bg-[var(--color-bg-tertiary)] ${
-                selected === model.id ? "bg-[var(--color-accent-subtle)]" : ""
+                selected === model.id ? 'bg-[var(--color-accent-subtle)]' : ''
               }`}
             >
               <div className="flex-1 min-w-0">
@@ -140,7 +150,9 @@ export function ModelSelector({ selected, onSelect }: ModelSelectorProps) {
                     <Badge key={b} type={b} />
                   ))}
                 </div>
-                <div className="text-xs text-[var(--color-text-muted)] truncate">{model.tagline}</div>
+                <div className="text-xs text-[var(--color-text-muted)] truncate">
+                  {model.tagline}
+                </div>
               </div>
             </button>
           ))}

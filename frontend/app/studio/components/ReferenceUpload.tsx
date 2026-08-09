@@ -1,16 +1,17 @@
-"use client";
+'use client';
 
-import { useRef, useState } from "react";
-import { Upload } from "lucide-react";
-import { useStudio } from "../StudioProvider";
-import { ensureAuthHeader } from "@/lib/auth";
-import { useAuthenticatedImageUrl } from "@/hooks/useAuthenticatedImageUrl";
+import { useRef, useState } from 'react';
+import Image from 'next/image';
+import { Upload } from 'lucide-react';
+import { useStudio } from '../StudioProvider';
+import { ensureAuthHeader } from '@/lib/auth';
+import { useAuthenticatedImageUrl } from '@/hooks/useAuthenticatedImageUrl';
 
 export function ReferenceUpload() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const { referenceImage, setReferenceImage, clearReference } = useStudio();
   const [isUploading, setIsUploading] = useState(false);
-  const [urlValue, setUrlValue] = useState("");
+  const [urlValue, setUrlValue] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const uploadFile = async (file: File) => {
@@ -18,14 +19,14 @@ export function ReferenceUpload() {
     setError(null);
     try {
       const form = new FormData();
-      form.append("file", file);
+      form.append('file', file);
 
       const authHeader = await ensureAuthHeader();
       const headers = new Headers();
-      if (authHeader) headers.set("Authorization", authHeader);
+      if (authHeader) headers.set('Authorization', authHeader);
 
-      const response = await fetch("/api/images/upload-reference", {
-        method: "POST",
+      const response = await fetch('/api/images/upload-reference', {
+        method: 'POST',
         headers,
         body: form,
       });
@@ -39,7 +40,7 @@ export function ReferenceUpload() {
       };
       setReferenceImage({ id: payload.reference_id, url: payload.image_url });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to upload image");
+      setError(err instanceof Error ? err.message : 'Failed to upload image');
     } finally {
       setIsUploading(false);
     }
@@ -47,7 +48,9 @@ export function ReferenceUpload() {
 
   return (
     <section className="rounded-2xl border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] p-4">
-      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-[var(--color-text-secondary)]">References</h2>
+      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-[var(--color-text-secondary)]">
+        References
+      </h2>
 
       <div className="space-y-3">
         <button
@@ -57,7 +60,7 @@ export function ReferenceUpload() {
           disabled={isUploading}
         >
           <Upload className="h-4 w-4" />
-          {isUploading ? "Uploading..." : "Upload reference image"}
+          {isUploading ? 'Uploading...' : 'Upload reference image'}
         </button>
         <input
           ref={fileInputRef}
@@ -69,12 +72,14 @@ export function ReferenceUpload() {
             if (file) {
               void uploadFile(file);
             }
-            event.currentTarget.value = "";
+            event.currentTarget.value = '';
           }}
         />
 
         <div className="space-y-2">
-          <label className="text-xs font-medium text-[var(--color-text-muted)]">Or paste image URL</label>
+          <label className="text-xs font-medium text-[var(--color-text-muted)]">
+            Or paste image URL
+          </label>
           <div className="flex gap-2">
             <input
               type="url"
@@ -90,7 +95,7 @@ export function ReferenceUpload() {
               onClick={() => {
                 const normalized = urlValue.trim();
                 setReferenceImage({ id: `url:${normalized}`, url: normalized });
-                setUrlValue("");
+                setUrlValue('');
               }}
             >
               Use
@@ -121,10 +126,25 @@ function ReferenceImagePreview({ url }: { url: string }) {
   const { displayUrl, loading, error } = useAuthenticatedImageUrl(url);
 
   if (loading) {
-    return <div className="h-24 w-full rounded-md bg-[var(--color-bg-tertiary)] animate-pulse" />;
+    return (
+      <div className="h-24 w-full rounded-md bg-[var(--color-bg-tertiary)] animate-pulse" />
+    );
   }
   if (error || !displayUrl) {
-    return <div className="h-24 w-full rounded-md bg-[var(--color-bg-tertiary)] flex items-center justify-center text-[var(--color-text-muted)] text-xs">Failed to load</div>;
+    return (
+      <div className="h-24 w-full rounded-md bg-[var(--color-bg-tertiary)] flex items-center justify-center text-[var(--color-text-muted)] text-xs">
+        Failed to load
+      </div>
+    );
   }
-  return <img src={displayUrl} alt="Reference" className="h-24 w-full rounded-md object-cover" />;
+  return (
+    <Image
+      src={displayUrl}
+      alt="Reference"
+      width={384}
+      height={96}
+      unoptimized
+      className="h-24 w-full rounded-md object-cover"
+    />
+  );
 }

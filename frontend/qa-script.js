@@ -26,10 +26,10 @@ async function runQA() {
 
     // --- Pin/Delete Scenario ---
     log('Starting Pin/Delete Scenario...');
-    
+
     // Ensure at least one chat exists
     const chatItems = page.locator('[data-testid="chat-item"]');
-    if (await chatItems.count() === 0) {
+    if ((await chatItems.count()) === 0) {
       log('No chats found, creating one...');
       // Try multiple selectors for the input
       const inputSelector = 'textarea[placeholder="Ask anything..."]';
@@ -40,98 +40,104 @@ async function runQA() {
         log('Input not found with "Ask anything...", trying generic textarea');
         await page.fill('textarea', 'Hello world');
       }
-      
+
       await page.keyboard.press('Enter');
       // Wait for response or just wait a bit
-      await page.waitForTimeout(5000); 
+      await page.waitForTimeout(5000);
     }
 
     // Find the first chat item
     const firstChat = chatItems.first();
     await firstChat.hover();
-    
+
     // Look for Pin button (assuming it's visible on hover or in a menu)
     // Adjust selector based on actual UI implementation
     const pinButton = firstChat.locator('button[aria-label="Pin"]');
     if (await pinButton.isVisible()) {
-        await pinButton.click();
-        log('Clicked Pin button');
+      await pinButton.click();
+      log('Clicked Pin button');
     } else {
-        // Maybe it's in a context menu?
-        const menuButton = firstChat.locator('button[aria-label="Options"]');
-        if (await menuButton.isVisible()) {
-            await menuButton.click();
-            // Wait for menu to appear
-            await page.waitForSelector('text=Pin');
-            await page.click('text=Pin');
-            log('Clicked Pin from menu');
-        } else {
-            log('Could not find Pin button or menu');
-        }
+      // Maybe it's in a context menu?
+      const menuButton = firstChat.locator('button[aria-label="Options"]');
+      if (await menuButton.isVisible()) {
+        await menuButton.click();
+        // Wait for menu to appear
+        await page.waitForSelector('text=Pin');
+        await page.click('text=Pin');
+        log('Clicked Pin from menu');
+      } else {
+        log('Could not find Pin button or menu');
+      }
     }
 
     // Verify pinned (check for pinned section or icon)
     // This depends on UI implementation. For now, just wait a bit.
     await page.waitForTimeout(1000);
-    
-    await page.screenshot({ path: path.join(evidenceDir, 'task-5-pin-delete.png') });
+
+    await page.screenshot({
+      path: path.join(evidenceDir, 'task-5-pin-delete.png'),
+    });
     log('Saved task-5-pin-delete.png');
 
     // Delete the chat
     await firstChat.hover();
     const deleteButton = firstChat.locator('button[aria-label="Delete"]');
     if (await deleteButton.isVisible()) {
-        await deleteButton.click();
+      await deleteButton.click();
+      // Confirm delete if modal appears
+      const confirmButton = page.locator('button:has-text("Delete")');
+      if (await confirmButton.isVisible()) {
+        await confirmButton.click();
+      }
+      log('Clicked Delete button');
+    } else {
+      const menuButton = firstChat.locator('button[aria-label="Options"]');
+      if (await menuButton.isVisible()) {
+        await menuButton.click();
+        // Wait for menu
+        await page.waitForSelector('text=Delete');
+        await page.click('text=Delete');
         // Confirm delete if modal appears
         const confirmButton = page.locator('button:has-text("Delete")');
         if (await confirmButton.isVisible()) {
-            await confirmButton.click();
+          await confirmButton.click();
         }
-        log('Clicked Delete button');
-    } else {
-         const menuButton = firstChat.locator('button[aria-label="Options"]');
-        if (await menuButton.isVisible()) {
-            await menuButton.click();
-            // Wait for menu
-            await page.waitForSelector('text=Delete');
-            await page.click('text=Delete');
-             // Confirm delete if modal appears
-            const confirmButton = page.locator('button:has-text("Delete")');
-            if (await confirmButton.isVisible()) {
-                await confirmButton.click();
-            }
-            log('Clicked Delete from menu');
-        }
+        log('Clicked Delete from menu');
+      }
     }
-    
+
     await page.waitForTimeout(1000);
 
     // --- Search Scenario ---
     log('Starting Search Scenario...');
-    
+
     // Create a specific chat for search
     await page.goto('http://localhost:3000'); // Reset to new chat
-    await page.fill('textarea[placeholder="Send a message..."]', 'Searchable Content 123');
+    await page.fill(
+      'textarea[placeholder="Send a message..."]',
+      'Searchable Content 123',
+    );
     await page.keyboard.press('Enter');
     await page.waitForTimeout(5000);
 
     // Search for it
     const searchInput = page.locator('input[placeholder="Search chats..."]');
     if (await searchInput.isVisible()) {
-        await searchInput.fill('Searchable');
-        await page.waitForTimeout(1000);
-        
-        // Verify results
-        const results = page.locator('[data-testid="chat-item"]');
-        const count = await results.count();
-        log(`Found ${count} search results`);
-        
-        await page.screenshot({ path: path.join(evidenceDir, 'task-5-search.png') });
-        log('Saved task-5-search.png');
-    } else {
-        log('Search input not found');
-    }
+      await searchInput.fill('Searchable');
+      await page.waitForTimeout(1000);
 
+      // Verify results
+      const results = page.locator('[data-testid="chat-item"]');
+      const count = await results.count();
+      log(`Found ${count} search results`);
+
+      await page.screenshot({
+        path: path.join(evidenceDir, 'task-5-search.png'),
+      });
+      log('Saved task-5-search.png');
+    } else {
+      log('Search input not found');
+    }
   } catch (error) {
     log('QA Failed: ' + error);
     await page.screenshot({ path: path.join(evidenceDir, 'qa-failure.png') });

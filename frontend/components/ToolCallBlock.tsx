@@ -31,6 +31,18 @@ function sanitizeProtectedArtifactPaths(text: string): string {
     .replace(/\/api\/images\/[^\s"'`\\]+/g, '[protected image]');
 }
 
+function getDownloadSafeStem(
+  value: string | null | undefined,
+  fallback: string,
+): string {
+  const stem = (value || fallback)
+    .replace(/\.[a-z0-9]+$/i, '')
+    .replace(/[^a-z0-9_-]+/gi, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+  return stem || fallback;
+}
+
 function getSpawnMode(call: ChatEvent): string | null {
   if (!isToolCallEvent(call) || call.name !== 'spawn_agent') {
     return null;
@@ -324,6 +336,7 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
     const studioHref = `/studio?image=${encodeURIComponent(imagePath)}${
       prompt ? `&prompt=${encodeURIComponent(prompt)}` : ''
     }`;
+    const imageDownloadName = `${getDownloadSafeStem(imagePath.split('/').pop(), 'generated-image')}.png`;
 
     return (
       <div className="my-2">
@@ -346,7 +359,7 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
               width={768}
               height={512}
               unoptimized
-              className="w-full h-auto max-h-96 object-cover cursor-pointer hover:opacity-95 transition-opacity"
+              className="h-auto max-h-96 w-full cursor-pointer object-cover transition-opacity hover:opacity-95"
               onClick={() => setIsLightboxOpen(true)}
             />
           ) : imageBlobLoadError ? (
@@ -381,7 +394,7 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
             {imageBlobUrl && !imageBlobLoadError ? (
               <a
                 href={imageBlobUrl}
-                download="generated-image.png"
+                download={imageDownloadName}
                 className="p-1.5 bg-black/50 hover:bg-black/70 text-white rounded-md backdrop-blur-sm transition-colors"
                 title="Download"
                 target="_blank"
@@ -417,7 +430,7 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
                 width={1600}
                 height={1200}
                 unoptimized
-                className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
+                className="max-h-full max-w-full rounded-lg object-contain shadow-2xl"
                 onClick={(e) => e.stopPropagation()}
               />
             ) : imageBlobLoadError ? (
@@ -433,7 +446,7 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
               >
                 <a
                   href={imageBlobUrl}
-                  download="generated-image.png"
+                  download={imageDownloadName}
                   className="flex items-center gap-2 px-4 py-2 bg-[var(--color-bg-inverse)] text-[var(--color-text-inverse)] rounded-full font-medium hover:bg-[var(--color-bg-hover)] transition-colors shadow-lg"
                   target="_blank"
                   rel="noopener noreferrer"
@@ -658,6 +671,7 @@ function AudioPlayerBlock({ audioPath, prompt }: AudioPlayerBlockProps) {
   const [progress, setProgress] = useState(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const { displayUrl, loading, error } = useAuthenticatedImageUrl(audioPath);
+  const audioDownloadName = `${getDownloadSafeStem(prompt || audioPath.split('/').pop(), 'sound-effect')}.mp3`;
 
   const handlePlayPause = () => {
     if (!audioRef.current) return;
@@ -742,7 +756,7 @@ function AudioPlayerBlock({ audioPath, prompt }: AudioPlayerBlockProps) {
         {displayUrl && !loading && !error ? (
           <a
             href={displayUrl}
-            download="sound-effect.mp3"
+            download={audioDownloadName}
             className="flex-shrink-0 p-2 text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] rounded-lg transition-colors"
             title="Download"
             target="_blank"

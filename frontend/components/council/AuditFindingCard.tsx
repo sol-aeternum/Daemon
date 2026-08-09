@@ -1,7 +1,7 @@
-"use client";
+'use client';
 
-import { useMemo } from "react";
-import { ROSTER_CONFIG } from "./constants";
+import { useMemo } from 'react';
+import { ROSTER_CONFIG } from './constants';
 
 interface AuditFindingCardProps {
   content: string;
@@ -25,14 +25,14 @@ function parseAuditContent(content: string): ParsedAudit {
   if (!content) return result;
 
   const sections: Record<string, keyof ParsedAudit> = {
-    "**CRITICAL FINDINGS**": "critical",
-    "**MODERATE FINDINGS**": "moderate",
-    "**NOTES**": "notes",
-    "**SHARED ASSUMPTIONS**": "sharedAssumptions",
+    '**CRITICAL FINDINGS**': 'critical',
+    '**MODERATE FINDINGS**': 'moderate',
+    '**NOTES**': 'notes',
+    '**SHARED ASSUMPTIONS**': 'sharedAssumptions',
   };
 
   for (const [pattern, field] of Object.entries(sections)) {
-    const regex = new RegExp(`${pattern}\\s*:?\\s*\\n?([^*]*)`, "i");
+    const regex = new RegExp(`${pattern}\\s*:?\\s*\\n?([^*]*)`, 'i');
     const match = content.match(regex);
     if (match && match[1]) {
       const items = match[1].split(/\n+/).filter((s) => s.trim());
@@ -67,7 +67,7 @@ export function AuditFindingCard({ content }: AuditFindingCardProps) {
     title: string,
     items: string[],
     borderColor: string,
-    bgColor: string
+    bgColor: string,
   ) => {
     if (items.length === 0) return null;
 
@@ -79,14 +79,20 @@ export function AuditFindingCard({ content }: AuditFindingCardProps) {
           backgroundColor: bgColor,
         }}
       >
-        <div className="text-xs font-medium uppercase mb-2" style={{ color: borderColor }}>
+        <div
+          className="text-xs font-medium uppercase mb-2"
+          style={{ color: borderColor }}
+        >
           {title}
         </div>
         <div className="space-y-2">
           {items.map((item, idx) => {
             const agents = extractAgentReferences(item);
             return (
-              <div key={idx} className="text-sm text-[var(--color-text-primary)]">
+              <div
+                key={idx}
+                className="text-sm text-[var(--color-text-primary)]"
+              >
                 <span className="text-[var(--color-text-muted)]">•</span> {item}
                 {agents.length > 0 && (
                   <div className="flex gap-1 mt-1">
@@ -121,10 +127,30 @@ export function AuditFindingCard({ content }: AuditFindingCardProps) {
       <div className="font-medium text-[var(--color-text-primary)] mb-4 flex items-center gap-2">
         <span>🔍</span> Audit Findings
       </div>
-      {renderSection("Critical Findings", parsed.critical, "rgb(239, 68, 68)", "rgba(239, 68, 68, 0.1)")}
-      {renderSection("Moderate Findings", parsed.moderate, "rgb(245, 158, 11)", "rgba(245, 158, 11, 0.1)")}
-      {renderSection("Notes", parsed.notes, "rgb(107, 114, 128)", "rgba(107, 114, 128, 0.1)")}
-      {renderSection("Shared Assumptions", parsed.sharedAssumptions, "rgb(168, 85, 247)", "rgba(168, 85, 247, 0.1)")}
+      {renderSection(
+        'Critical Findings',
+        parsed.critical,
+        'rgb(239, 68, 68)',
+        'rgba(239, 68, 68, 0.1)',
+      )}
+      {renderSection(
+        'Moderate Findings',
+        parsed.moderate,
+        'rgb(245, 158, 11)',
+        'rgba(245, 158, 11, 0.1)',
+      )}
+      {renderSection(
+        'Notes',
+        parsed.notes,
+        'rgb(107, 114, 128)',
+        'rgba(107, 114, 128, 0.1)',
+      )}
+      {renderSection(
+        'Shared Assumptions',
+        parsed.sharedAssumptions,
+        'rgb(168, 85, 247)',
+        'rgba(168, 85, 247, 0.1)',
+      )}
     </div>
   );
 }

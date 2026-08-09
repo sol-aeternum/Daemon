@@ -1,7 +1,7 @@
-"use client";
+'use client';
 
-import { useState, useEffect, useCallback } from "react";
-import { Loader2, AlertCircle, FileText, Download } from "lucide-react";
+import { useState, useEffect, useCallback } from 'react';
+import { Loader2, AlertCircle, FileText, Download } from 'lucide-react';
 
 interface PdfPreviewProps {
   url: string;
@@ -23,7 +23,7 @@ export function PdfPreview({ url, filename }: PdfPreviewProps) {
 
       try {
         // If it's already a data URL or blob URL, use it directly
-        if (url.startsWith("data:") || url.startsWith("blob:")) {
+        if (url.startsWith('data:') || url.startsWith('blob:')) {
           if (isMounted) {
             setObjectUrl(url);
             setIsLoading(false);
@@ -34,7 +34,9 @@ export function PdfPreview({ url, filename }: PdfPreviewProps) {
         // Otherwise, fetch and create a blob URL
         const response = await fetch(url);
         if (!response.ok) {
-          throw new Error(`Failed to load PDF: ${response.status} ${response.statusText}`);
+          throw new Error(
+            `Failed to load PDF: ${response.status} ${response.statusText}`,
+          );
         }
 
         const blob = await response.blob();
@@ -49,7 +51,7 @@ export function PdfPreview({ url, filename }: PdfPreviewProps) {
         }
       } catch (err) {
         if (isMounted) {
-          setError(err instanceof Error ? err.message : "Failed to load PDF");
+          setError(err instanceof Error ? err.message : 'Failed to load PDF');
           setIsLoading(false);
         }
       }
@@ -67,11 +69,11 @@ export function PdfPreview({ url, filename }: PdfPreviewProps) {
 
   const handleDownload = useCallback(() => {
     if (!objectUrl) return;
-    const link = document.createElement("a");
+    const link = document.createElement('a');
     link.href = objectUrl;
-    link.download = filename || "document.pdf";
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
+    link.download = filename || 'document.pdf';
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -81,7 +83,9 @@ export function PdfPreview({ url, filename }: PdfPreviewProps) {
     return (
       <div className="flex items-center justify-center gap-3 p-8 bg-[var(--color-bg-tertiary)] rounded-xl border border-[var(--color-border-primary)] max-h-[400px]">
         <Loader2 className="w-5 h-5 animate-spin text-[var(--color-accent-primary)]" />
-        <span className="text-sm text-[var(--color-text-muted)]">Loading PDF...</span>
+        <span className="text-sm text-[var(--color-text-muted)]">
+          Loading PDF...
+        </span>
       </div>
     );
   }
@@ -92,7 +96,9 @@ export function PdfPreview({ url, filename }: PdfPreviewProps) {
         <div className="flex items-start gap-3">
           <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
           <div className="flex-1">
-            <p className="text-sm font-medium text-red-500">Failed to load PDF</p>
+            <p className="text-sm font-medium text-red-500">
+              Failed to load PDF
+            </p>
             <p className="text-xs text-red-400 mt-1">{error}</p>
           </div>
         </div>
@@ -114,7 +120,7 @@ export function PdfPreview({ url, filename }: PdfPreviewProps) {
         <div className="flex items-center gap-2">
           <FileText className="w-4 h-4 text-red-400" />
           <span className="text-sm font-medium text-[var(--color-text-secondary)]">
-            {filename || "PDF Preview"}
+            {filename || 'PDF Preview'}
           </span>
         </div>
         <button
@@ -130,7 +136,7 @@ export function PdfPreview({ url, filename }: PdfPreviewProps) {
         <div className="overflow-auto max-h-[340px]">
           <iframe
             src={objectUrl}
-            title={filename || "PDF Preview"}
+            title={filename || 'PDF Preview'}
             className="w-full min-h-[340px] bg-[var(--color-bg-secondary)]"
           />
         </div>

@@ -15,13 +15,13 @@ export type SttSettings = {
 export const DEFAULT_TTS_SETTINGS: TtsSettings = {
   enabled: true,
   autoPlay: false,
-  voice: "Xb7hH8MSUJpSbSDYk0k2",
-  model: "eleven_flash_v2_5",
+  voice: 'Xb7hH8MSUJpSbSDYk0k2',
+  model: 'eleven_flash_v2_5',
   speed: 1.0,
-  format: "mp3",
+  format: 'mp3',
 };
 
 export const DEFAULT_STT_SETTINGS: SttSettings = {
-  language: "en",
+  language: 'en',
   enablePartials: true,
 };
