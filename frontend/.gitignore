@@ -8,6 +8,7 @@ out/
 # Local build metadata
 tsconfig.tsbuildinfo
 next-env.d.ts.root.*
+/e2e/csp-preview-app/next-env.d.ts
 
 # Local test/debug outputs
 test-results/

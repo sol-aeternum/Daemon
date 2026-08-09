@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { HTML_PREVIEW_FRAME_PATH } from './lib/htmlPreviewFrame';
 
 const STATIC_SECURITY_HEADERS: Record<string, string> = {
   'Strict-Transport-Security': 'max-age=63072000; includeSubDomains',
@@ -39,7 +40,8 @@ const FRAME_SRC_GIS_HOSTS = ['https://accounts.google.com'];
 // generation URLs passed to <video>) can render. The cross-origin <video>
 // element is not covered by `default-src` and was being blocked by the
 // strict policy. `blob:` covers authenticated audio that is converted to
-// a blob: object URL inside AudioPlaybackProvider / useAuthenticatedImageUrl.
+// a blob: object URL inside AudioPlaybackProvider / useAuthenticatedImageUrl;
+// `data:` covers inline videos accepted by ToolCallBlock / VideoPlayer.
 const MEDIA_SRC_EXTERNAL_HOSTS = ['https:'];
 const IMG_SRC_EXTERNAL_HOSTS = ['https:'];
 
@@ -50,6 +52,24 @@ const IMG_SRC_EXTERNAL_HOSTS = ['https:'];
 // host is also allowed so the hosted Google sign-in iframe prompt can
 // render inside its own iframe container.
 const FRAME_SRC_HOSTS = ["'self'", 'blob:', 'data:', ...FRAME_SRC_GIS_HOSTS];
+
+// Raw generated HTML needs inline scripts/styles to remain interactive, but
+// relaxing the application policy would defeat the nonce baseline. The
+// dedicated frame document is sandboxed by HtmlPreview and receives this
+// isolated policy instead. X-Frame-Options is narrowed to SAMEORIGIN below so
+// only the Daemon frontend can embed the frame endpoint.
+const HTML_PREVIEW_CONTENT_SECURITY_POLICY = [
+  "default-src 'none'",
+  "script-src 'unsafe-inline'",
+  "style-src 'unsafe-inline'",
+  'img-src data: blob: https:',
+  'font-src data: https:',
+  'media-src data: blob: https:',
+  "frame-src 'self'",
+  "frame-ancestors 'self'",
+  "base-uri 'none'",
+  "form-action 'none'",
+].join('; ');
 
 /**
  * Build the `connect-src` host list. Always includes the static list of
@@ -86,7 +106,7 @@ function makeNonce(): string {
 
 function buildContentSecurityPolicy(nonce: string): string {
   const connectSrc = ["'self'", ...buildConnectSrcHosts()].join(' ').trim();
-  const mediaSrc = ["'self'", 'blob:', ...MEDIA_SRC_EXTERNAL_HOSTS]
+  const mediaSrc = ["'self'", 'blob:', 'data:', ...MEDIA_SRC_EXTERNAL_HOSTS]
     .join(' ')
     .trim();
   // ``script-src`` requires ``'unsafe-eval'`` in development because
@@ -105,18 +125,10 @@ function buildContentSecurityPolicy(nonce: string): string {
   if (isDevelopment) {
     scriptSrcParts.push("'unsafe-eval'");
   }
-  // ``style-src`` includes ``'unsafe-inline'`` because ``docx-preview``
-  // (frontend/src/components/previews/DocxPreview.tsx) injects
-  // dynamically generated ``<style>`` elements without a nonce, and the
-  // generated CSS is what makes the supported DOCX preview render
-  // correctly. Nonces authorize whole ``<style>`` tags but cannot be
-  // applied to runtime-injected tags from third-party libraries. The
-  // strict CSP otherwise blocks those styles and the document /
-  // numbering CSS is lost (Codex P2 on PR #163).
   return [
     "default-src 'self'",
     `script-src ${scriptSrcParts.join(' ')}`.trim(),
-    `style-src 'self' 'nonce-${nonce}' 'unsafe-inline'`.trim(),
+    `style-src 'self' 'nonce-${nonce}'`.trim(),
     // `style-src-attr 'unsafe-inline'` is required because React's `style={{...}}`
     // attributes cannot be nonce-tagged (nonces authorize whole `<style>` tags
     // or external stylesheets, not inline attribute values). The repository
@@ -138,6 +150,11 @@ function buildContentSecurityPolicy(nonce: string): string {
 
 export function proxy(request: NextRequest) {
   const nonce = makeNonce();
+  const isHtmlPreviewFrame =
+    request.nextUrl.pathname === HTML_PREVIEW_FRAME_PATH;
+  const contentSecurityPolicy = isHtmlPreviewFrame
+    ? HTML_PREVIEW_CONTENT_SECURITY_POLICY
+    : buildContentSecurityPolicy(nonce);
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set('x-nonce', nonce);
   // Forward the CSP *header* so Next.js attaches it to the rendered HTML
@@ -148,7 +165,7 @@ export function proxy(request: NextRequest) {
   // using a different nonce.
   requestHeaders.set(
     'Content-Security-Policy',
-    buildContentSecurityPolicy(nonce),
+    contentSecurityPolicy,
   );
 
   const response = NextResponse.next({
@@ -160,10 +177,10 @@ export function proxy(request: NextRequest) {
   for (const [name, value] of Object.entries(STATIC_SECURITY_HEADERS)) {
     response.headers.set(name, value);
   }
-  response.headers.set(
-    'Content-Security-Policy',
-    buildContentSecurityPolicy(nonce),
-  );
+  if (isHtmlPreviewFrame) {
+    response.headers.set('X-Frame-Options', 'SAMEORIGIN');
+  }
+  response.headers.set('Content-Security-Policy', contentSecurityPolicy);
   response.headers.set('X-CSP-Nonce', nonce);
 
   return response;
