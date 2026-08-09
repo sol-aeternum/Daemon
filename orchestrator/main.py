@@ -1408,16 +1408,15 @@ def _resolve_safe_file_path(base_dir: Path, filename: str) -> Path | None:
         return None
     try:
         base_resolved = base_dir.resolve()
-        candidate = (base_resolved / safe_name).resolve()
-    except (OSError, RuntimeError):
+        for directory_entry in base_resolved.iterdir():
+            if directory_entry.name != safe_name:
+                continue
+            candidate = directory_entry.resolve()
+            candidate.relative_to(base_resolved)
+            return candidate if candidate.is_file() else None
+    except (OSError, RuntimeError, ValueError):
         return None
-    try:
-        candidate.relative_to(base_resolved)
-    except ValueError:
-        return None
-    if not candidate.exists() or not candidate.is_file():
-        return None
-    return candidate
+    return None
 
 
 @app.get("/generated-audio/{filename}")
