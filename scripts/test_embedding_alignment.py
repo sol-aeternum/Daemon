@@ -18,6 +18,7 @@ sys.path.insert(0, "/app")
 
 import asyncpg
 from orchestrator.config import get_settings
+from orchestrator.database_url import resolve_database_url
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.embedding import _embed_texts
 
@@ -104,7 +105,9 @@ async def run_alignment_test():
     print(f"Embedding dimensions:     {settings.embedding_dimensions}")
     print()
 
-    db_url = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@postgres:5432/daemon")
+    db_url = resolve_database_url(settings.database_url)
+    if not db_url:
+        raise RuntimeError("DATABASE_URL or complete POSTGRES_* settings are required")
     print("Connecting to database...")
 
     db_pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)

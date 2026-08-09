@@ -1,6 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from 'react';
 import {
   AlertCircle,
   CheckCircle,
@@ -59,11 +66,30 @@ const EMPTY_DETAIL: SkillDetail = {
   updated_at: '',
 };
 
-const SOURCE_BADGE_CONFIG: Record<string, { icon: typeof Lock; color: string; label: string }> = {
-  system: { icon: Lock, color: 'text-blue-400 bg-blue-500/10', label: 'System' },
-  imported: { icon: Globe, color: 'text-purple-400 bg-purple-500/10', label: 'Imported' },
-  manual: { icon: User, color: 'text-green-400 bg-green-500/10', label: 'Manual' },
-  autonomous: { icon: Bot, color: 'text-amber-400 bg-amber-500/10', label: 'Autonomous' },
+const SOURCE_BADGE_CONFIG: Record<
+  string,
+  { icon: typeof Lock; color: string; label: string }
+> = {
+  system: {
+    icon: Lock,
+    color: 'text-blue-400 bg-blue-500/10',
+    label: 'System',
+  },
+  imported: {
+    icon: Globe,
+    color: 'text-purple-400 bg-purple-500/10',
+    label: 'Imported',
+  },
+  manual: {
+    icon: User,
+    color: 'text-green-400 bg-green-500/10',
+    label: 'Manual',
+  },
+  autonomous: {
+    icon: Bot,
+    color: 'text-amber-400 bg-amber-500/10',
+    label: 'Autonomous',
+  },
 };
 
 export default function SkillsTab() {
@@ -86,15 +112,15 @@ export default function SkillsTab() {
   }, []);
 
   const getJsonHeaders = useCallback(async (): Promise<HeadersInit> => {
-      const authHeader = await ensureAuthHeader();
-      if (authHeader) {
-        return {
-          'Content-Type': 'application/json',
-          Authorization: authHeader,
-        };
-      }
-      return { 'Content-Type': 'application/json' };
-    }, []);
+    const authHeader = await ensureAuthHeader();
+    if (authHeader) {
+      return {
+        'Content-Type': 'application/json',
+        Authorization: authHeader,
+      };
+    }
+    return { 'Content-Type': 'application/json' };
+  }, []);
 
   const fetchWithTimeout = useCallback(
     async (path: string, init: RequestInit = {}, timeoutMs = 12000) => {
@@ -109,7 +135,10 @@ export default function SkillsTab() {
       }, timeoutMs);
 
       try {
-        const response = await fetch(proxyPath, { ...init, signal: controller.signal });
+        const response = await fetch(proxyPath, {
+          ...init,
+          signal: controller.signal,
+        });
         clearTimeout(timeoutId);
         return response;
       } catch (error) {
@@ -117,7 +146,7 @@ export default function SkillsTab() {
         throw error;
       }
     },
-    []
+    [],
   );
 
   const setActionMessage = (nextStatus: ActionStatus, nextMessage: string) => {
@@ -128,7 +157,10 @@ export default function SkillsTab() {
   const getErrorDetail = async (response: Response, fallback: string) => {
     try {
       const payload = await response.json();
-      if (typeof payload?.detail === 'string' && payload.detail.trim().length > 0) {
+      if (
+        typeof payload?.detail === 'string' &&
+        payload.detail.trim().length > 0
+      ) {
         return payload.detail;
       }
     } catch {
@@ -144,7 +176,10 @@ export default function SkillsTab() {
       });
       if (!response.ok) {
         setSkills([]);
-        setActionMessage('error', 'Failed to load skills. Please verify API connectivity.');
+        setActionMessage(
+          'error',
+          'Failed to load skills. Please verify API connectivity.',
+        );
         return;
       }
       const data = (await response.json()) as { skills: SkillSummary[] };
@@ -165,7 +200,7 @@ export default function SkillsTab() {
     } finally {
       setIsLoadingList(false);
     }
-  }, [fetchWithTimeout, selectedId]);
+  }, [fetchWithTimeout, getAuthHeaders, selectedId]);
 
   const fetchSkillDetail = useCallback(
     async (skillId: string) => {
@@ -175,7 +210,10 @@ export default function SkillsTab() {
           headers: await getAuthHeaders(),
         });
         if (!response.ok) {
-          const detail = await getErrorDetail(response, 'Failed to load selected skill.');
+          const detail = await getErrorDetail(
+            response,
+            'Failed to load selected skill.',
+          );
           setActionMessage('error', detail);
           return;
         }
@@ -183,7 +221,10 @@ export default function SkillsTab() {
         setDraft(data);
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') {
-          setActionMessage('error', 'Skill detail request timed out. Please retry.');
+          setActionMessage(
+            'error',
+            'Skill detail request timed out. Please retry.',
+          );
         } else {
           setActionMessage('error', 'Failed to load selected skill.');
         }
@@ -191,7 +232,7 @@ export default function SkillsTab() {
         setIsLoadingDetail(false);
       }
     },
-    [fetchWithTimeout]
+    [fetchWithTimeout, getAuthHeaders],
   );
 
   useEffect(() => {
@@ -208,7 +249,8 @@ export default function SkillsTab() {
 
   const filteredSkills = useMemo(() => {
     return skills.filter((skill) => {
-      const matchesFilter = filterType === 'all' || skill.source_type === filterType;
+      const matchesFilter =
+        filterType === 'all' || skill.source_type === filterType;
       const query = searchQuery.toLowerCase().trim();
       const matchesSearch =
         !query ||
@@ -220,13 +262,16 @@ export default function SkillsTab() {
   }, [skills, filterType, searchQuery]);
 
   const pendingUpdateCount = useMemo(
-    () => skills.filter((s) => s.pending_update && Object.keys(s.pending_update).length > 0).length,
-    [skills]
+    () =>
+      skills.filter(
+        (s) => s.pending_update && Object.keys(s.pending_update).length > 0,
+      ).length,
+    [skills],
   );
 
   const autonomousCount = useMemo(
     () => skills.filter((s) => s.source_type === 'autonomous').length,
-    [skills]
+    [skills],
   );
 
   const handleCreateSkill = async () => {
@@ -246,7 +291,8 @@ export default function SkillsTab() {
         body: JSON.stringify({
           name: nextName,
           description: 'Describe when this skill should be used.',
-          content: '# Instructions\n\nAdd actionable guidance for the agent here.',
+          content:
+            '# Instructions\n\nAdd actionable guidance for the agent here.',
           enabled: true,
         }),
       });
@@ -254,7 +300,7 @@ export default function SkillsTab() {
       if (!response.ok) {
         const detail = await getErrorDetail(
           response,
-          'Failed to create skill. Please verify API connectivity.'
+          'Failed to create skill. Please verify API connectivity.',
         );
         setActionMessage('error', detail);
         return;
@@ -266,7 +312,10 @@ export default function SkillsTab() {
       setActionMessage('success', 'Skill created.');
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
-        setActionMessage('error', 'Create skill request timed out. Please retry.');
+        setActionMessage(
+          'error',
+          'Create skill request timed out. Please retry.',
+        );
       } else {
         setActionMessage('error', 'Failed to create skill.');
       }
@@ -292,7 +341,7 @@ export default function SkillsTab() {
       if (!response.ok) {
         const detail = await getErrorDetail(
           response,
-          'Failed to save skill. Please verify API connectivity.'
+          'Failed to save skill. Please verify API connectivity.',
         );
         setActionMessage('error', detail);
         return;
@@ -304,7 +353,10 @@ export default function SkillsTab() {
       setActionMessage('success', 'Skill saved.');
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
-        setActionMessage('error', 'Save skill request timed out. Please retry.');
+        setActionMessage(
+          'error',
+          'Save skill request timed out. Please retry.',
+        );
       } else {
         setActionMessage('error', 'Failed to save skill.');
       }
@@ -315,7 +367,10 @@ export default function SkillsTab() {
     if (!selectedId) return;
 
     setDraft((prev) => ({ ...prev, enabled }));
-    setActionMessage('loading', enabled ? 'Enabling skill...' : 'Disabling skill...');
+    setActionMessage(
+      'loading',
+      enabled ? 'Enabling skill...' : 'Disabling skill...',
+    );
     try {
       const response = await fetchWithTimeout(`/skills/${selectedId}/enabled`, {
         method: 'PATCH',
@@ -324,7 +379,10 @@ export default function SkillsTab() {
       });
 
       if (!response.ok) {
-        const detail = await getErrorDetail(response, 'Failed to update skill status.');
+        const detail = await getErrorDetail(
+          response,
+          'Failed to update skill status.',
+        );
         setActionMessage('error', detail);
         return;
       }
@@ -332,10 +390,16 @@ export default function SkillsTab() {
       const updated = (await response.json()) as SkillDetail;
       setDraft(updated);
       await fetchSkills();
-      setActionMessage('success', enabled ? 'Skill enabled.' : 'Skill disabled.');
+      setActionMessage(
+        'success',
+        enabled ? 'Skill enabled.' : 'Skill disabled.',
+      );
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
-        setActionMessage('error', 'Skill status request timed out. Please retry.');
+        setActionMessage(
+          'error',
+          'Skill status request timed out. Please retry.',
+        );
       } else {
         setActionMessage('error', 'Failed to update skill status.');
       }
@@ -345,26 +409,45 @@ export default function SkillsTab() {
   const handleToggleAutonomousEdit = async (allow_autonomous_edit: boolean) => {
     if (!selectedId) return;
 
-    setActionMessage('loading', allow_autonomous_edit ? 'Enabling autonomous edit...' : 'Disabling autonomous edit...');
+    setActionMessage(
+      'loading',
+      allow_autonomous_edit
+        ? 'Enabling autonomous edit...'
+        : 'Disabling autonomous edit...',
+    );
     try {
-      const response = await fetchWithTimeout(`/skills/${selectedId}/autonomous-edit`, {
-        method: 'PATCH',
-        headers: await getJsonHeaders(),
-        body: JSON.stringify({ allow_autonomous_edit }),
-      });
+      const response = await fetchWithTimeout(
+        `/skills/${selectedId}/autonomous-edit`,
+        {
+          method: 'PATCH',
+          headers: await getJsonHeaders(),
+          body: JSON.stringify({ allow_autonomous_edit }),
+        },
+      );
 
       if (!response.ok) {
-        const detail = await getErrorDetail(response, 'Failed to update autonomous edit setting.');
+        const detail = await getErrorDetail(
+          response,
+          'Failed to update autonomous edit setting.',
+        );
         setActionMessage('error', detail);
         return;
       }
 
       await fetchSkills();
       await fetchSkillDetail(selectedId);
-      setActionMessage('success', allow_autonomous_edit ? 'Autonomous edit enabled.' : 'Autonomous edit disabled.');
+      setActionMessage(
+        'success',
+        allow_autonomous_edit
+          ? 'Autonomous edit enabled.'
+          : 'Autonomous edit disabled.',
+      );
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
-        setActionMessage('error', 'Autonomous edit request timed out. Please retry.');
+        setActionMessage(
+          'error',
+          'Autonomous edit request timed out. Please retry.',
+        );
       } else {
         setActionMessage('error', 'Failed to update autonomous edit setting.');
       }
@@ -374,26 +457,41 @@ export default function SkillsTab() {
   const handlePendingUpdateAction = async (action: 'apply' | 'dismiss') => {
     if (!selectedId) return;
 
-    setActionMessage('loading', action === 'apply' ? 'Applying update...' : 'Dismissing update...');
+    setActionMessage(
+      'loading',
+      action === 'apply' ? 'Applying update...' : 'Dismissing update...',
+    );
     try {
-      const response = await fetchWithTimeout(`/skills/${selectedId}/pending-update`, {
-        method: 'POST',
-        headers: await getJsonHeaders(),
-        body: JSON.stringify({ action }),
-      });
+      const response = await fetchWithTimeout(
+        `/skills/${selectedId}/pending-update`,
+        {
+          method: 'POST',
+          headers: await getJsonHeaders(),
+          body: JSON.stringify({ action }),
+        },
+      );
 
       if (!response.ok) {
-        const detail = await getErrorDetail(response, `Failed to ${action} pending update.`);
+        const detail = await getErrorDetail(
+          response,
+          `Failed to ${action} pending update.`,
+        );
         setActionMessage('error', detail);
         return;
       }
 
       await fetchSkills();
       await fetchSkillDetail(selectedId);
-      setActionMessage('success', action === 'apply' ? 'Update applied.' : 'Update dismissed.');
+      setActionMessage(
+        'success',
+        action === 'apply' ? 'Update applied.' : 'Update dismissed.',
+      );
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
-        setActionMessage('error', 'Pending update request timed out. Please retry.');
+        setActionMessage(
+          'error',
+          'Pending update request timed out. Please retry.',
+        );
       } else {
         setActionMessage('error', `Failed to ${action} pending update.`);
       }
@@ -403,7 +501,9 @@ export default function SkillsTab() {
   const handleDelete = async () => {
     if (!selectedId) return;
 
-    const confirmed = window.confirm('Delete this skill? This action cannot be undone.');
+    const confirmed = window.confirm(
+      'Delete this skill? This action cannot be undone.',
+    );
     if (!confirmed) return;
 
     setActionMessage('loading', 'Deleting skill...');
@@ -414,7 +514,10 @@ export default function SkillsTab() {
       });
 
       if (!response.ok) {
-        const detail = await getErrorDetail(response, 'Failed to delete skill.');
+        const detail = await getErrorDetail(
+          response,
+          'Failed to delete skill.',
+        );
         setActionMessage('error', detail);
         return;
       }
@@ -425,7 +528,10 @@ export default function SkillsTab() {
       setActionMessage('success', 'Skill deleted.');
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
-        setActionMessage('error', 'Delete skill request timed out. Please retry.');
+        setActionMessage(
+          'error',
+          'Delete skill request timed out. Please retry.',
+        );
       } else {
         setActionMessage('error', 'Failed to delete skill.');
       }
@@ -436,13 +542,19 @@ export default function SkillsTab() {
     if (!selectedId) return;
 
     try {
-      const response = await fetchWithTimeout(`/skills/${selectedId}/download`, {
-        method: 'GET',
-        headers: await getAuthHeaders(),
-      });
+      const response = await fetchWithTimeout(
+        `/skills/${selectedId}/download`,
+        {
+          method: 'GET',
+          headers: await getAuthHeaders(),
+        },
+      );
 
       if (!response.ok) {
-        const detail = await getErrorDetail(response, 'Failed to download skill.');
+        const detail = await getErrorDetail(
+          response,
+          'Failed to download skill.',
+        );
         setActionMessage('error', detail);
         return;
       }
@@ -468,7 +580,7 @@ export default function SkillsTab() {
 
   const selectedSummary = useMemo(
     () => skills.find((skill) => skill.id === selectedId) || null,
-    [selectedId, skills]
+    [selectedId, skills],
   );
 
   const handleUploadClick = () => {
@@ -482,7 +594,10 @@ export default function SkillsTab() {
     if (!file) return;
 
     if (!file.name.toLowerCase().endsWith('.md')) {
-      setActionMessage('error', 'Only .md files are supported for skill upload.');
+      setActionMessage(
+        'error',
+        'Only .md files are supported for skill upload.',
+      );
       return;
     }
 
@@ -528,27 +643,41 @@ export default function SkillsTab() {
     if (!config) return null;
     const Icon = config.icon;
     return (
-      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider ${config.color}`}>
+      <span
+        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider ${config.color}`}
+      >
         <Icon className="h-3 w-3" />
         {config.label}
       </span>
     );
   };
 
-  const hasPendingUpdate = selectedSummary?.pending_update && Object.keys(selectedSummary.pending_update).length > 0;
-  const pendingIsDeprecated = hasPendingUpdate && selectedSummary?.pending_update?.deprecated === true;
+  const hasPendingUpdate =
+    selectedSummary?.pending_update &&
+    Object.keys(selectedSummary.pending_update).length > 0;
+  const pendingIsDeprecated =
+    hasPendingUpdate && selectedSummary?.pending_update?.deprecated === true;
 
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="text-2xl font-semibold text-text-primary mb-2">Skills</h1>
+        <h1 className="text-2xl font-semibold text-text-primary mb-2">
+          Skills
+        </h1>
         <p className="text-text-secondary">
-          Create reusable skill files and control which ones are injected into agent prompts.
+          Create reusable skill files and control which ones are injected into
+          agent prompts.
         </p>
         <div className="mt-2 flex flex-wrap gap-4 text-xs text-[var(--color-text-muted)]">
           <span>{skills.length} total</span>
-          {autonomousCount > 0 && <span className="text-amber-400">{autonomousCount} autonomous</span>}
-          {pendingUpdateCount > 0 && <span className="text-blue-400">{pendingUpdateCount} pending updates</span>}
+          {autonomousCount > 0 && (
+            <span className="text-amber-400">{autonomousCount} autonomous</span>
+          )}
+          {pendingUpdateCount > 0 && (
+            <span className="text-blue-400">
+              {pendingUpdateCount} pending updates
+            </span>
+          )}
         </div>
       </header>
 
@@ -618,7 +747,15 @@ export default function SkillsTab() {
 
             {showFilters && (
               <div className="flex flex-wrap gap-1">
-                {(['all', 'system', 'imported', 'manual', 'autonomous'] as FilterType[]).map((type) => (
+                {(
+                  [
+                    'all',
+                    'system',
+                    'imported',
+                    'manual',
+                    'autonomous',
+                  ] as FilterType[]
+                ).map((type) => (
                   <button
                     key={type}
                     onClick={() => setFilterType(type)}
@@ -644,17 +781,25 @@ export default function SkillsTab() {
           />
 
           <div className="space-y-1 max-h-[500px] overflow-y-auto">
-            {isLoadingList && <div className="px-3 py-2 text-sm text-[var(--color-text-muted)]">Loading skills...</div>}
+            {isLoadingList && (
+              <div className="px-3 py-2 text-sm text-[var(--color-text-muted)]">
+                Loading skills...
+              </div>
+            )}
 
             {!isLoadingList && filteredSkills.length === 0 && (
               <div className="px-3 py-2 text-sm text-[var(--color-text-muted)]">
-                {searchQuery || filterType !== 'all' ? 'No matching skills.' : 'No skills yet. Create your first skill.'}
+                {searchQuery || filterType !== 'all'
+                  ? 'No matching skills.'
+                  : 'No skills yet. Create your first skill.'}
               </div>
             )}
 
             {filteredSkills.map((skill) => {
               const active = selectedId === skill.id;
-              const hasPending = skill.pending_update && Object.keys(skill.pending_update).length > 0;
+              const hasPending =
+                skill.pending_update &&
+                Object.keys(skill.pending_update).length > 0;
               return (
                 <button
                   key={skill.id}
@@ -666,27 +811,40 @@ export default function SkillsTab() {
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="truncate text-sm font-medium text-[var(--color-text-primary)]">{skill.name}</span>
+                    <span className="truncate text-sm font-medium text-[var(--color-text-primary)]">
+                      {skill.name}
+                    </span>
                     <div className="flex items-center gap-1.5 shrink-0">
-                      {skill.source_type && renderSourceBadge(skill.source_type)}
+                      {skill.source_type &&
+                        renderSourceBadge(skill.source_type)}
                       {hasPending && (
-                        <span className="text-blue-400" title="Update available">
+                        <span
+                          className="text-blue-400"
+                          title="Update available"
+                        >
                           <AlertTriangle className="h-3 w-3" />
                         </span>
                       )}
                       {skill.allow_autonomous_edit && (
-                        <span className="text-amber-400" title="Autonomous edit enabled">
+                        <span
+                          className="text-amber-400"
+                          title="Autonomous edit enabled"
+                        >
                           <Sparkles className="h-3 w-3" />
                         </span>
                       )}
                       <span
                         className={`h-2 w-2 rounded-full ${
-                          skill.enabled ? 'bg-green-400' : 'bg-[var(--color-text-muted)]'
+                          skill.enabled
+                            ? 'bg-green-400'
+                            : 'bg-[var(--color-text-muted)]'
                         }`}
                       />
                     </div>
                   </div>
-                  <p className="mt-1 truncate text-xs text-[var(--color-text-muted)]">{skill.description || 'No description'}</p>
+                  <p className="mt-1 truncate text-xs text-[var(--color-text-muted)]">
+                    {skill.description || 'No description'}
+                  </p>
                 </button>
               );
             })}
@@ -694,31 +852,53 @@ export default function SkillsTab() {
         </section>
 
         <section className="rounded-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] p-4 sm:p-5">
-          {!selectedId && <div className="text-sm text-[var(--color-text-muted)]">Select a skill to edit.</div>}
+          {!selectedId && (
+            <div className="text-sm text-[var(--color-text-muted)]">
+              Select a skill to edit.
+            </div>
+          )}
 
           {selectedId && (
             <div className="space-y-4">
               <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--color-border-primary)] pb-3">
                 <div className="space-y-1">
-                  <h3 className="text-lg font-semibold text-[var(--color-text-primary)]">{selectedSummary?.name || draft.name}</h3>
+                  <h3 className="text-lg font-semibold text-[var(--color-text-primary)]">
+                    {selectedSummary?.name || draft.name}
+                  </h3>
                   <div className="flex flex-wrap items-center gap-2 text-xs">
-                    {selectedSummary?.source_type && renderSourceBadge(selectedSummary.source_type)}
+                    {selectedSummary?.source_type &&
+                      renderSourceBadge(selectedSummary.source_type)}
                     <span className="text-[var(--color-text-muted)]">
-                      Updated {selectedSummary ? new Date(selectedSummary.updated_at).toLocaleDateString() : '-'}
+                      Updated{' '}
+                      {selectedSummary
+                        ? new Date(
+                            selectedSummary.updated_at,
+                          ).toLocaleDateString()
+                        : '-'}
                     </span>
-                    {typeof selectedSummary?.use_count === 'number' && selectedSummary.use_count > 0 && (
-                      <span className="text-[var(--color-text-muted)]">· Used {selectedSummary.use_count}×</span>
-                    )}
+                    {typeof selectedSummary?.use_count === 'number' &&
+                      selectedSummary.use_count > 0 && (
+                        <span className="text-[var(--color-text-muted)]">
+                          · Used {selectedSummary.use_count}×
+                        </span>
+                      )}
                   </div>
                 </div>
 
                 <div className="flex items-center gap-3">
-                  {(selectedSummary?.source_type === 'system' || selectedSummary?.source_type === 'imported' || selectedSummary?.source_type === 'manual') && (
-                    <label className="inline-flex items-center gap-2 text-xs text-[var(--color-text-secondary)]" title="Allow the system to autonomously modify this skill based on usage patterns">
+                  {(selectedSummary?.source_type === 'system' ||
+                    selectedSummary?.source_type === 'imported' ||
+                    selectedSummary?.source_type === 'manual') && (
+                    <label
+                      className="inline-flex items-center gap-2 text-xs text-[var(--color-text-secondary)]"
+                      title="Allow the system to autonomously modify this skill based on usage patterns"
+                    >
                       <input
                         type="checkbox"
                         checked={!!selectedSummary?.allow_autonomous_edit}
-                        onChange={(event) => handleToggleAutonomousEdit(event.target.checked)}
+                        onChange={(event) =>
+                          handleToggleAutonomousEdit(event.target.checked)
+                        }
                         className="h-3.5 w-3.5 accent-[var(--color-accent-primary)]"
                       />
                       <span className="flex items-center gap-1">
@@ -731,7 +911,9 @@ export default function SkillsTab() {
                     <input
                       type="checkbox"
                       checked={draft.enabled}
-                      onChange={(event) => handleToggleEnabled(event.target.checked)}
+                      onChange={(event) =>
+                        handleToggleEnabled(event.target.checked)
+                      }
                       className="h-4 w-4 accent-[var(--color-accent-primary)]"
                     />
                     Enabled
@@ -740,16 +922,24 @@ export default function SkillsTab() {
               </div>
 
               {hasPendingUpdate && (
-                <div className={`rounded-md border px-4 py-3 text-sm ${
-                  pendingIsDeprecated
-                    ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
-                    : 'border-blue-500/40 bg-blue-500/10 text-blue-300'
-                }`}>
+                <div
+                  className={`rounded-md border px-4 py-3 text-sm ${
+                    pendingIsDeprecated
+                      ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+                      : 'border-blue-500/40 bg-blue-500/10 text-blue-300'
+                  }`}
+                >
                   <div className="flex items-start gap-2">
-                    {pendingIsDeprecated ? <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" /> : <Sparkles className="h-4 w-4 shrink-0 mt-0.5" />}
+                    {pendingIsDeprecated ? (
+                      <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                    ) : (
+                      <Sparkles className="h-4 w-4 shrink-0 mt-0.5" />
+                    )}
                     <div className="flex-1">
                       <p className="font-medium">
-                        {pendingIsDeprecated ? 'Skill deprecated' : 'Update available'}
+                        {pendingIsDeprecated
+                          ? 'Skill deprecated'
+                          : 'Update available'}
                       </p>
                       <p className="text-xs opacity-80 mt-1">
                         {pendingIsDeprecated
@@ -784,46 +974,78 @@ export default function SkillsTab() {
               {selectedSummary?.source_type === 'autonomous' && (
                 <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
                   <Bot className="h-4 w-4 shrink-0" />
-                  <p>Created autonomously by the system. Always editable based on usage patterns.</p>
+                  <p>
+                    Created autonomously by the system. Always editable based on
+                    usage patterns.
+                  </p>
                 </div>
               )}
 
-              {(selectedSummary?.source_type === 'system' || selectedSummary?.source_type === 'imported' || selectedSummary?.source_type === 'manual') && selectedSummary?.allow_autonomous_edit && (
-                <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
-                  <Sparkles className="h-4 w-4 shrink-0" />
-                  <p>Autonomous edits enabled. The system may modify this skill automatically based on usage patterns.</p>
-                </div>
-              )}
+              {(selectedSummary?.source_type === 'system' ||
+                selectedSummary?.source_type === 'imported' ||
+                selectedSummary?.source_type === 'manual') &&
+                selectedSummary?.allow_autonomous_edit && (
+                  <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
+                    <Sparkles className="h-4 w-4 shrink-0" />
+                    <p>
+                      Autonomous edits enabled. The system may modify this skill
+                      automatically based on usage patterns.
+                    </p>
+                  </div>
+                )}
 
               {isLoadingDetail ? (
-                <div className="text-sm text-[var(--color-text-muted)]">Loading skill details...</div>
+                <div className="text-sm text-[var(--color-text-muted)]">
+                  Loading skill details...
+                </div>
               ) : (
                 <>
                   <div>
-                    <label className="mb-2 block text-sm font-medium text-[var(--color-text-secondary)]">Name</label>
+                    <label className="mb-2 block text-sm font-medium text-[var(--color-text-secondary)]">
+                      Name
+                    </label>
                     <input
                       type="text"
                       value={draft.name}
-                      onChange={(event) => setDraft((prev) => ({ ...prev, name: event.target.value }))}
+                      onChange={(event) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          name: event.target.value,
+                        }))
+                      }
                       className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-tertiary)] px-3 py-2 text-[var(--color-text-primary)] focus:border-[var(--color-accent-primary)] focus:outline-none"
                     />
                   </div>
 
                   <div>
-                    <label className="mb-2 block text-sm font-medium text-[var(--color-text-secondary)]">Description</label>
+                    <label className="mb-2 block text-sm font-medium text-[var(--color-text-secondary)]">
+                      Description
+                    </label>
                     <input
                       type="text"
                       value={draft.description}
-                      onChange={(event) => setDraft((prev) => ({ ...prev, description: event.target.value }))}
+                      onChange={(event) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          description: event.target.value,
+                        }))
+                      }
                       className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-tertiary)] px-3 py-2 text-[var(--color-text-primary)] focus:border-[var(--color-accent-primary)] focus:outline-none"
                     />
                   </div>
 
                   <div>
-                    <label className="mb-2 block text-sm font-medium text-[var(--color-text-secondary)]">Instructions (Markdown)</label>
+                    <label className="mb-2 block text-sm font-medium text-[var(--color-text-secondary)]">
+                      Instructions (Markdown)
+                    </label>
                     <textarea
                       value={draft.content}
-                      onChange={(event) => setDraft((prev) => ({ ...prev, content: event.target.value }))}
+                      onChange={(event) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          content: event.target.value,
+                        }))
+                      }
                       rows={16}
                       className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-tertiary)] px-3 py-2 font-mono text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent-primary)] focus:outline-none"
                     />

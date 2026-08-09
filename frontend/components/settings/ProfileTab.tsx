@@ -1,7 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { SkeletonLine, SkeletonBlock, SkeletonCircle } from '@/components/ui/Skeleton';
+import {
+  SkeletonLine,
+  SkeletonBlock,
+  SkeletonCircle,
+} from '@/components/ui/Skeleton';
 import { User, Save, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import { ensureAuthHeader } from '@/lib/auth';
 
@@ -39,7 +43,9 @@ export default function ProfileTab() {
     process.env.NEXT_PUBLIC_API_URL ||
     (process.env.NODE_ENV === 'development' ? 'http://localhost:8000' : '');
 
-  const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
+  const getAuthHeaders = useCallback(async (): Promise<
+    Record<string, string>
+  > => {
     const header = await ensureAuthHeader();
     if (!header) return {};
     return { Authorization: header };
@@ -48,7 +54,9 @@ export default function ProfileTab() {
   const apiCandidates = useCallback(
     (path: string) => {
       const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-      const trimmedBase = apiBaseUrl.endsWith('/') ? apiBaseUrl.slice(0, -1) : apiBaseUrl;
+      const trimmedBase = apiBaseUrl.endsWith('/')
+        ? apiBaseUrl.slice(0, -1)
+        : apiBaseUrl;
 
       if (!trimmedBase) {
         return [normalizedPath];
@@ -56,7 +64,7 @@ export default function ProfileTab() {
 
       return [`${trimmedBase}${normalizedPath}`, normalizedPath];
     },
-    [apiBaseUrl]
+    [apiBaseUrl],
   );
 
   const fetchWithFallback = useCallback(
@@ -68,14 +76,19 @@ export default function ProfileTab() {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => {
           try {
-            controller.abort(new DOMException('Settings request timed out', 'AbortError'));
+            controller.abort(
+              new DOMException('Settings request timed out', 'AbortError'),
+            );
           } catch {
             controller.abort();
           }
         }, timeoutMs);
 
         try {
-          const response = await fetch(candidate, { ...init, signal: controller.signal });
+          const response = await fetch(candidate, {
+            ...init,
+            signal: controller.signal,
+          });
           clearTimeout(timeoutId);
 
           if (response.status === 404 && index < candidates.length - 1) {
@@ -93,7 +106,7 @@ export default function ProfileTab() {
 
       throw new Error('Request failed');
     },
-    [apiCandidates]
+    [apiCandidates],
   );
 
   // Fetch user settings on mount
@@ -105,7 +118,9 @@ export default function ProfileTab() {
         });
 
         if (!response.ok) {
-          setErrorMessage('Failed to load settings. Please check API connectivity.');
+          setErrorMessage(
+            'Failed to load settings. Please check API connectivity.',
+          );
           return;
         }
 
@@ -127,7 +142,7 @@ export default function ProfileTab() {
     };
 
     fetchSettings();
-  }, [fetchWithFallback]);
+  }, [fetchWithFallback, getAuthHeaders]);
 
   // Handle form submission
   const handleSubmit = async (e: { preventDefault: () => void }) => {
@@ -136,23 +151,29 @@ export default function ProfileTab() {
     setErrorMessage('');
 
     try {
-      const response = await fetchWithFallback('/users/me/settings', {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(await getAuthHeaders()),
-        },
-        body: JSON.stringify({
-          preferences: {
-            display_name: formData.displayName,
-            custom_instructions: formData.preferences,
+      const response = await fetchWithFallback(
+        '/users/me/settings',
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(await getAuthHeaders()),
           },
-        }),
-      }, 12000);
+          body: JSON.stringify({
+            preferences: {
+              display_name: formData.displayName,
+              custom_instructions: formData.preferences,
+            },
+          }),
+        },
+        12000,
+      );
 
       if (!response.ok) {
         setSaveStatus('error');
-        setErrorMessage('Failed to save settings. Please verify API key and connectivity.');
+        setErrorMessage(
+          'Failed to save settings. Please verify API key and connectivity.',
+        );
         return;
       }
 
@@ -208,8 +229,12 @@ export default function ProfileTab() {
           <User className="w-5 h-5 text-accent-primary" />
         </div>
         <div>
-          <h2 className="text-lg font-semibold text-text-primary">Profile Settings</h2>
-          <p className="text-sm text-text-muted">Manage your display name and preferences</p>
+          <h2 className="text-lg font-semibold text-text-primary">
+            Profile Settings
+          </h2>
+          <p className="text-sm text-text-muted">
+            Manage your display name and preferences
+          </p>
         </div>
       </div>
 
@@ -228,7 +253,9 @@ export default function ProfileTab() {
       {saveStatus === 'success' && (
         <div className="mb-6 p-4 rounded-lg bg-status-success-bg border border-status-success/20 flex items-center gap-3 animate-slide-up">
           <CheckCircle2 className="w-5 h-5 text-status-success flex-shrink-0" />
-          <p className="text-sm font-medium text-status-success">Settings saved successfully</p>
+          <p className="text-sm font-medium text-status-success">
+            Settings saved successfully
+          </p>
         </div>
       )}
 
@@ -246,7 +273,9 @@ export default function ProfileTab() {
             type="text"
             id="displayName"
             value={formData.displayName}
-            onChange={(e) => setFormData({ ...formData, displayName: e.target.value })}
+            onChange={(e) =>
+              setFormData({ ...formData, displayName: e.target.value })
+            }
             placeholder="Enter your display name"
             disabled={saveStatus === 'loading'}
             className="w-full px-3 py-2.5 bg-bg-input border border-border-primary rounded-md text-text-primary placeholder-text-muted focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus transition-colors"
@@ -267,14 +296,17 @@ export default function ProfileTab() {
           <textarea
             id="preferences"
             value={formData.preferences}
-            onChange={(e) => setFormData({ ...formData, preferences: e.target.value })}
+            onChange={(e) =>
+              setFormData({ ...formData, preferences: e.target.value })
+            }
             placeholder="Describe how you'd like the AI to interact with you..."
             rows={6}
             disabled={saveStatus === 'loading'}
             className="w-full px-3 py-2.5 bg-bg-input border border-border-primary rounded-md text-text-primary placeholder-text-muted focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus transition-colors resize-y"
           />
           <p className="text-xs text-text-muted">
-            These instructions help personalize the AI's responses to your style and preferences
+            These instructions help personalize the AI&apos;s responses to your
+            style and preferences
           </p>
         </div>
       </div>

@@ -1,10 +1,10 @@
-"use client";
+'use client';
 
-import { ReactNode, useState } from "react";
-import { useRouter } from "next/navigation";
-import { ConversationList, type SidebarSection } from "./ConversationList";
-import { MobileHeader } from "./MobileHeader";
-import { useConversationHistoryContext } from "./ConversationHistoryProvider";
+import { ReactNode, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { ConversationList, type SidebarSection } from './ConversationList';
+import { MobileHeader } from './MobileHeader';
+import { useConversationHistoryContext } from './ConversationHistoryProvider';
 
 interface SidebarShellProps {
   section: SidebarSection;
@@ -13,7 +13,12 @@ interface SidebarShellProps {
   headerAction?: ReactNode;
 }
 
-export function SidebarShell({ section, title, children, headerAction }: SidebarShellProps) {
+export function SidebarShell({
+  section,
+  title,
+  children,
+  headerAction,
+}: SidebarShellProps) {
   const router = useRouter();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const {
@@ -29,8 +34,8 @@ export function SidebarShell({ section, title, children, headerAction }: Sidebar
   } = useConversationHistoryContext();
 
   const handleNavigate = (target: SidebarSection) => {
-    if (target === "home") {
-      router.push("/");
+    if (target === 'home') {
+      router.push('/');
       setIsSidebarOpen(false);
       return;
     }
@@ -43,7 +48,7 @@ export function SidebarShell({ section, title, children, headerAction }: Sidebar
     const createdId = await createConversation();
     setIsSidebarOpen(false);
     if (!createdId) {
-      router.push("/");
+      router.push('/');
     }
   };
 
@@ -60,7 +65,7 @@ export function SidebarShell({ section, title, children, headerAction }: Sidebar
         className={`
           fixed inset-y-0 left-0 z-50 w-[260px] bg-[var(--color-bg-secondary)] transform transition-transform duration-300
           md:relative md:inset-auto md:z-0 md:w-auto md:translate-x-0
-          ${isSidebarOpen ? "translate-x-0" : "-translate-x-full"}
+          ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
         `}
       >
         <ConversationList
@@ -78,17 +83,22 @@ export function SidebarShell({ section, title, children, headerAction }: Sidebar
           isLoading={!isLoaded}
           activeSection={section}
           onNavigate={handleNavigate}
-          onGoHome={() => handleNavigate("home")}
+          onGoHome={() => handleNavigate('home')}
         />
       </div>
 
       <div className="flex-1 flex flex-col min-w-0">
-        <MobileHeader title={title} onOpenSidebar={() => setIsSidebarOpen(true)}>
+        <MobileHeader
+          title={title}
+          onOpenSidebar={() => setIsSidebarOpen(true)}
+        >
           {headerAction}
         </MobileHeader>
 
         <header className="hidden md:flex bg-[var(--color-bg-secondary)] border-b border-[var(--color-border-primary)] px-6 py-4 items-center justify-between">
-          <h1 className="text-3xl font-semibold tracking-tight text-[var(--color-text-primary)]">{title}</h1>
+          <h1 className="text-3xl font-semibold tracking-tight text-[var(--color-text-primary)]">
+            {title}
+          </h1>
           {headerAction}
         </header>
 

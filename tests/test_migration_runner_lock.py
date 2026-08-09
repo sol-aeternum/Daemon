@@ -135,3 +135,30 @@ async def test_migration_lock_released_after_runner_finishes(
     assert state.acquire_count == 2
     assert state.unlock_count == 2
     assert state.locked is False
+
+
+@pytest.mark.asyncio
+async def test_migration_runner_derives_database_url_from_postgres_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state = _SharedLockState()
+    state.allow_first_sql_finish.set()
+    migrations_dir = _write_migration(tmp_path)
+    captured: list[str] = []
+
+    async def connect(database_url: str) -> _FakeConnection:
+        captured.append(database_url)
+        return _FakeConnection(state)
+
+    monkeypatch.setenv("DATABASE_URL", "")
+    monkeypatch.setenv("POSTGRES_USER", "daemon")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "unique@secret")
+    monkeypatch.setenv("POSTGRES_HOST", "postgres")
+    monkeypatch.setenv("POSTGRES_DB", "daemon")
+    monkeypatch.setattr(migrate, "MIGRATIONS_DIR", migrations_dir)
+    monkeypatch.setattr(migrate.asyncpg, "connect", connect)
+
+    await migrate.run_migrations()
+
+    assert captured == ["postgresql://daemon:unique%40secret@postgres:5432/daemon"]

@@ -10,10 +10,5 @@ interface MarkdownMessageProps {
 export default function MarkdownMessage({ content }: MarkdownMessageProps) {
   const processedContent = formatMessageContent(content);
 
-  return (
-    <MarkdownRenderer
-      content={processedContent}
-      compact={true}
-    />
-  );
+  return <MarkdownRenderer content={processedContent} compact={true} />;
 }

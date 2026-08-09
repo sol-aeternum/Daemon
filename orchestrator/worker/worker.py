@@ -11,8 +11,12 @@ from arq.connections import RedisSettings
 from arq.cron import cron
 from arq.worker import func
 
-from orchestrator.config import get_settings
 from orchestrator.auth_pepper import initialize_development_pepper
+from orchestrator.config import get_settings
+from orchestrator.database_url import (
+    apply_resolved_database_url,
+    validate_database_credentials,
+)
 from orchestrator.memory.encryption import (
     ContentEncryption,
     SharedEncryptionFailureCounter,
@@ -70,6 +74,7 @@ def _build_consolidation_cron_job(interval: int) -> Any:
 
 async def on_startup(ctx: WorkerContext) -> None:
     app_settings = get_settings()
+    apply_resolved_database_url(app_settings)
     ctx["settings"] = app_settings
     shared_counter = ctx.get("redis")
     set_shared_encryption_failure_counter(
@@ -79,6 +84,8 @@ async def on_startup(ctx: WorkerContext) -> None:
     )
     ctx["encryption"] = ContentEncryption(app_settings.daemon_encryption_key)
     ctx["store"] = None
+
+    validate_database_credentials(app_settings)
 
     if not app_settings.database_url:
         logger.info("DATABASE_URL not configured; worker memory jobs degraded")
