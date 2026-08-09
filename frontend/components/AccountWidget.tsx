@@ -149,6 +149,7 @@ export function AccountWidget({
       {/* Dropdown menu - opens upward */}
       {isOpen && (
         <div
+          data-stop-shortcut-block="true"
           className="absolute bottom-full left-0 right-0 mb-1 bg-[var(--color-bg-secondary)] rounded-lg shadow-lg border border-[var(--color-border-muted)] py-1 z-50 animate-fade-in"
           style={{ animationDuration: "150ms" }}
         >

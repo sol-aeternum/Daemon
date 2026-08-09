@@ -18,6 +18,8 @@ import { useConversationHistory } from "../hooks/useConversationHistory";
 import { ConversationHistoryProvider, useConversationHistoryContext } from "../components/ConversationHistoryProvider";
 import { AudioPlaybackProvider } from "../components/AudioPlaybackProvider";
 import { useEventArchive } from "../hooks/useEventArchive";
+import { useStopGeneration } from "../hooks/useStopGeneration";
+import { useStopShortcut } from "../hooks/useStopShortcut";
 import { formatMessageContent } from "../lib/format";
 import { useAgentStatus } from "../hooks/useAgentStatus";
 import { AgentStatusList } from "../components/AgentStatusList";
@@ -524,6 +526,7 @@ function ChatContent() {
   const [activeModel, setActiveModel] = useState<string>("auto");
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
 
+
   const currentConversation = getCurrentConversation();
 
   useEffect(() => {
@@ -599,7 +602,7 @@ function ChatContent() {
     return normalizeThinkingText(rawContent);
   };
 
-  const { messages, input, setInput, handleInputChange, append, setMessages, isLoading, error, reload, data } = useChat({
+  const { messages, input, setInput, handleInputChange, append, setMessages, isLoading, error, reload, data, stop: stopChat } = useChat({
     api: "/api/chat",
     body: { id: currentId || latestConversationIdRef.current || null },
     id: currentId || undefined,
@@ -814,6 +817,15 @@ function ChatContent() {
     isLoading,
   });
 
+  const inputIsBusy = isLoading && messages.length > 0;
+  const { stoppedMessageIds, stopGeneration, resetStoppedMessages } = useStopGeneration({
+    messages,
+    stop: stopChat,
+    archiveEvents: archiveCurrentEvents,
+  });
+
+  useStopShortcut({ active: inputIsBusy, onStop: stopGeneration });
+
   const persistedMessagesById = useMemo(() => {
     const entries = (currentConversation?.messages || []).reduce<Array<[string, ReasoningMessage]>>(
       (acc, message) => {
@@ -886,9 +898,8 @@ function ChatContent() {
     messagesEndRef.current.scrollIntoView({ behavior });
   }, [messages, isLoading]);
 
-  const inputIsBusy = isLoading && messages.length > 0;
-
   const handleSelectConversation = async (id: string) => {
+    resetStoppedMessages();
     switchConversation(id);
   };
 
@@ -896,6 +907,7 @@ function ChatContent() {
     await createConversation();
     setPendingAttachments([]);
     setArchivedEvents({});
+    resetStoppedMessages();
     thinkingDurationRef.current = 0;
     eventsRef.current = [];
     lastArchivedEventKeysRef.current = new Set();
@@ -1292,6 +1304,11 @@ function ChatContent() {
                         <div className="w-full">
                           <MarkdownMessage content={messageContent} />
                         </div>
+                        {stoppedMessageIds.has(message.id) && (
+                          <p className="text-xs italic text-[var(--color-text-muted)]" role="status">
+                            (stopped)
+                          </p>
+                        )}
                         {documentDownloadForMessage && (
                           <div className="mt-4 w-full">
                             <FileDownloadCard
@@ -1376,6 +1393,7 @@ function ChatContent() {
               onInputChange={handleInputChange}
               onSubmit={handleSubmit}
               isLoading={inputIsBusy}
+              onStop={stopGeneration}
               attachments={attachmentItems}
               onAttachFiles={handleAttachFiles}
               onRemoveAttachment={handleRemoveAttachment}

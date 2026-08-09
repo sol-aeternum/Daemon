@@ -226,6 +226,7 @@ export function ConversationList({
 
           {menuOpenId === conv.id && menuPosition && isBrowser && createPortal(
             <div
+              data-stop-shortcut-block="true"
               className="fixed w-32 bg-[var(--color-bg-secondary)] rounded-lg shadow-lg border border-[var(--color-border-muted)] py-1 z-50"
               style={{ top: menuPosition.top, left: menuPosition.left }}
               onClick={(e) => e.stopPropagation()}
@@ -368,7 +369,13 @@ export function ConversationList({
       <AccountWidget />
 
       {deleteConfirmId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Delete conversation"
+          data-stop-shortcut-block="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+        >
           <div className="w-full max-w-sm rounded-lg bg-[var(--color-bg-secondary)] p-4 shadow-xl">
             <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">Delete Conversation</h3>
             <p className="mt-2 text-xs text-[var(--color-text-secondary)]">

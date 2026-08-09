@@ -396,6 +396,10 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
 
         {isLightboxOpen && (
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Generated image preview"
+            data-stop-shortcut-block="true"
             className="fixed inset-0 z-[60] flex items-center justify-center bg-black/95 backdrop-blur-sm p-4 animate-in fade-in duration-200"
             onClick={() => setIsLightboxOpen(false)}
           >

@@ -32,7 +32,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | **Chat & Streaming** | — | — | — | — | — | — |
 | Chat Streaming + Reconnect | Cross-client stable | Cross-client stable | Not started | Not started | POST /chat SSE streaming service | Yes |
 | File Upload | Cross-client stable | Cross-client stable | Not started | Not started | Client-side file attachments and chat serialization | No |
-| Stop/Cancel Streaming | Not started | Not started | Not started | Not started | Existing SSE disconnect handling; no user-visible stop control | No |
+| Stop/Cancel Streaming | Cross-client stable | Cross-client stable | Not started | Not started | Web/PWA composer exposes Stop and `Esc`, preserving partial output with a `(stopped)` label | No |
 | Copy Message | Not started | Not started | Not started | Not started | Pure client-side clipboard action not implemented | No |
 | Regenerate Response | Not started | Not started | Not started | Not started | Existing chat submission path; retry UI not wired | No |
 | Edit and Resubmit Message | Not started | Not started | Not started | Not started | Existing chat submission path; message edit UI not implemented | No |
