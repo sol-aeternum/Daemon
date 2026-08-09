@@ -15,6 +15,7 @@ import pytest_asyncio
 
 from orchestrator.config import Settings
 from orchestrator.memory.encryption import ContentEncryption
+from orchestrator.memory.embedding import EmbeddingVector
 from orchestrator.memory.store import (
     MemoryContentConflictError,
     MemoryStore,
@@ -416,6 +417,80 @@ async def test_update_memory_status_active_conflict_raises_controlled_error(
 
     with pytest.raises(MemoryContentConflictError):
         await memory_store.update_memory_status(uuid.uuid4(), "active")
+
+
+@pytest.mark.asyncio
+async def test_search_memories_infers_embedding_model_from_vector_metadata(
+    memory_store: MemoryStore,
+    mock_db_pool: AsyncMock,
+) -> None:
+    mock_db_pool.fetch.return_value = []
+    query_embedding = EmbeddingVector(
+        [0.1, 0.2],
+        provider="openai",
+        model="openai:text-embedding-3-small",
+        storage_model="openai:text-embedding-3-small",
+    )
+
+    await memory_store.search_memories(
+        user_id=uuid.uuid4(),
+        query_embedding=query_embedding,
+    )
+
+    mock_db_pool.fetch.assert_called_once()
+    assert mock_db_pool.fetch.call_args.args[10] == "openai:text-embedding-3-small"
+
+
+@pytest.mark.asyncio
+async def test_search_memories_defaults_plain_vectors_to_primary_model(
+    memory_store: MemoryStore,
+    mock_db_pool: AsyncMock,
+) -> None:
+    mock_db_pool.fetch.return_value = []
+
+    await memory_store.search_memories(
+        user_id=uuid.uuid4(),
+        query_embedding=[0.1, 0.2],
+    )
+
+    assert mock_db_pool.fetch.call_args.args[10] == "voyage-4-large"
+
+
+@pytest.mark.asyncio
+async def test_search_memories_bm25_filters_enabled_models_and_can_exclude_l0(
+    memory_store: MemoryStore,
+    mock_db_pool: AsyncMock,
+) -> None:
+    mock_db_pool.fetch.return_value = []
+    enabled_models = ["voyage-4-large", "openrouter:voyageai/voyage-4-large"]
+
+    await memory_store.search_memories_bm25(
+        user_id=uuid.uuid4(),
+        query="shellfish allergy",
+        embedding_models=enabled_models,
+        include_l0=False,
+    )
+
+    call_args = mock_db_pool.fetch.call_args.args
+    assert "embedding_model = ANY($9::text[])" in call_args[0]
+    assert "($10::bool OR tier != 'l0')" in call_args[0]
+    assert call_args[9] == sorted(enabled_models)
+    assert call_args[10] is False
+
+
+@pytest.mark.asyncio
+async def test_list_memories_by_slot_family_excludes_dream_observations(
+    memory_store: MemoryStore,
+    mock_db_pool: AsyncMock,
+) -> None:
+    mock_db_pool.fetch.return_value = []
+
+    await memory_store.list_memories_by_slot_family(
+        user_id=uuid.uuid4(),
+        slot_family="vehicle",
+    )
+
+    assert "source_type != 'dream'" in mock_db_pool.fetch.call_args.args[0]
 
 
 @pytest.mark.asyncio

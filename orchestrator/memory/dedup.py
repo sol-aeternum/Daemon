@@ -4,13 +4,17 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import logging
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, cast
 
 import asyncpg
 import litellm
 
 from orchestrator.config import get_settings
-from orchestrator.memory.embedding import embed_documents
+from orchestrator.memory.embedding import (
+    embed_documents_with_metadata,
+    get_configured_embedding_fallback_storage_models,
+)
 from orchestrator.memory.store import MemoryStore
 
 logger = logging.getLogger(__name__)
@@ -33,6 +37,18 @@ def _lazy_import_trust_signals():
 
 def _document_model() -> str:
     return get_settings().embedding_document_model
+
+
+def _is_fallback_storage_model(model: str) -> bool:
+    return model != _document_model()
+
+
+def _has_configured_fallback_storage_spaces() -> bool:
+    return bool(get_configured_embedding_fallback_storage_models())
+
+
+def _normalize_lexical_content(value: object) -> str:
+    return " ".join(str(value or "").strip().casefold().split())
 
 
 def _embedding_text(content: str, slot: str | None) -> str:
@@ -289,6 +305,9 @@ async def _close_active_family_memories(
         SELECT id
         FROM memories
         WHERE user_id = $1
+          AND status != 'deleted'
+          AND tier != 'l0'
+          AND source_type != 'dream'
           AND valid_to IS NULL
           AND memory_slot IS NOT NULL
           AND split_part(lower(memory_slot), '.', 1) = $2
@@ -305,6 +324,30 @@ async def _close_active_family_memories(
         if excluded_ids is not None and memory_id in excluded_ids:
             continue
         await store.close_memory(memory_id)
+
+
+async def _find_slot_family_candidates(
+    store: MemoryStore,
+    user_id: uuid.UUID,
+    slot_family: str,
+) -> list[dict[str, Any]]:
+    finder = getattr(store, "list_memories_by_slot_family", None)
+    if not callable(finder):
+        return []
+    typed_finder = cast(Callable[..., Awaitable[list[dict[str, Any]]]], finder)
+
+    try:
+        candidates = await typed_finder(
+            user_id,
+            slot_family,
+            include_historical=True,
+            limit=50,
+        )
+    except Exception:
+        logger.exception("Failed to fetch same-slot dedup candidates")
+        return []
+
+    return candidates if isinstance(candidates, list) else []
 
 
 async def _close_current_related_candidates(
@@ -357,7 +400,9 @@ async def deduplicate_facts(
         if current_like_slot and fact_slot_family:
             current_slot_families.add(fact_slot_family)
         embedding_input = _embedding_text(fact.content, fact_slot)
-        embedding = (await embed_documents([embedding_input]))[0]
+        embedding_result = await embed_documents_with_metadata([embedding_input])
+        embedding = embedding_result.embeddings[0]
+        document_model = embedding_result.storage_model
 
         min_similarity = (
             _get_supersede_same_slot_threshold() if fact_slot_family else _get_supersede_threshold()
@@ -371,7 +416,78 @@ async def deduplicate_facts(
             min_similarity=min_similarity,
             include_historical=True,
             memory_slot=None,
+            embedding_model=document_model,
         )
+        if _is_fallback_storage_model(document_model) or _has_configured_fallback_storage_spaces():
+            enabled_storage_models = sorted(
+                {
+                    _document_model(),
+                    document_model,
+                    *get_configured_embedding_fallback_storage_models(),
+                }
+            )
+            raw_lexical_candidates = await store.search_memories_bm25(
+                user_id=user_id,
+                query=fact.content,
+                limit=50,
+                include_historical=True,
+                memory_slot=None,
+                embedding_models=enabled_storage_models,
+                include_l0=False,
+            )
+            lexical_candidates = (
+                raw_lexical_candidates if isinstance(raw_lexical_candidates, list) else []
+            )
+            seen_ids = {candidate.get("id") for candidate in similar}
+            normalized_fact_content = _normalize_lexical_content(fact.content)
+            for candidate in lexical_candidates:
+                candidate_id = candidate.get("id")
+                if candidate_id in seen_ids:
+                    continue
+                candidate_slot = candidate.get("memory_slot")
+                lexical_similarity = 0.0
+                if _normalize_lexical_content(candidate.get("content")) == normalized_fact_content:
+                    lexical_similarity = _get_merge_threshold()
+                elif fact_slot is not None and candidate_slot == fact_slot:
+                    lexical_similarity = _get_supersede_same_slot_threshold()
+                elif fact_slot_family and _slot_family(candidate_slot) == fact_slot_family:
+                    lexical_similarity = _get_supersede_same_slot_threshold()
+
+                if lexical_similarity <= 0:
+                    continue
+                candidate_with_similarity = dict(candidate)
+                candidate_with_similarity["similarity"] = max(
+                    float(candidate_with_similarity.get("similarity") or 0.0),
+                    lexical_similarity,
+                )
+                similar.append(candidate_with_similarity)
+                seen_ids.add(candidate_id)
+            if fact_slot_family:
+                slot_family_candidates = await _find_slot_family_candidates(
+                    store,
+                    user_id,
+                    fact_slot_family,
+                )
+                for candidate in slot_family_candidates:
+                    candidate_id = candidate.get("id")
+                    if candidate_id in seen_ids:
+                        continue
+                    candidate_slot = candidate.get("memory_slot")
+                    lexical_similarity = 0.0
+                    if fact_slot is not None and candidate_slot == fact_slot:
+                        lexical_similarity = _get_supersede_same_slot_threshold()
+                    elif _slot_family(candidate_slot) == fact_slot_family:
+                        lexical_similarity = _get_supersede_same_slot_threshold()
+
+                    if lexical_similarity <= 0:
+                        continue
+                    candidate_with_similarity = dict(candidate)
+                    candidate_with_similarity["similarity"] = max(
+                        float(candidate_with_similarity.get("similarity") or 0.0),
+                        lexical_similarity,
+                    )
+                    similar.append(candidate_with_similarity)
+                    seen_ids.add(candidate_id)
         best_match: dict[str, Any] | None = None
         supersede_threshold = _get_supersede_threshold()
 
@@ -411,7 +527,7 @@ async def deduplicate_facts(
                 category=fact.category,
                 source_type=source_type,
                 embedding=embedding,
-                embedding_model=_document_model(),
+                embedding_model=document_model,
                 source_conversation_id=conversation_id,
                 confidence=fact.confidence,
                 status=status,
@@ -479,7 +595,7 @@ async def deduplicate_facts(
                         category=fact.category,
                         source_type=source_type,
                         embedding=embedding,
-                        embedding_model=_document_model(),
+                        embedding_model=document_model,
                         source_conversation_id=conversation_id,
                         confidence=fact.confidence,
                         status=status,
@@ -526,7 +642,7 @@ async def deduplicate_facts(
                         category=fact.category,
                         source_type=source_type,
                         embedding=embedding,
-                        embedding_model=_document_model(),
+                        embedding_model=document_model,
                         source_conversation_id=conversation_id,
                         confidence=fact.confidence,
                         status=status,
@@ -551,7 +667,7 @@ async def deduplicate_facts(
                         "new_source_type": source_type,
                         "user_id": user_id,
                         "embedding": embedding,
-                        "embedding_model": _document_model(),
+                        "embedding_model": document_model,
                         "source_conversation_id": conversation_id,
                         "confidence": fact.confidence,
                         "new_status": status,
@@ -614,7 +730,7 @@ async def deduplicate_facts(
                     category=fact.category,
                     source_type=source_type,
                     embedding=embedding,
-                    embedding_model=_document_model(),
+                    embedding_model=document_model,
                     source_conversation_id=conversation_id,
                     confidence=fact.confidence,
                     status=status,
@@ -657,6 +773,9 @@ async def deduplicate_facts(
             SET valid_to = NOW(),
                 updated_at = NOW()
             WHERE user_id = $1
+              AND status != 'deleted'
+              AND tier != 'l0'
+              AND source_type != 'dream'
               AND valid_to IS NULL
               AND memory_slot IS NOT NULL
               AND split_part(lower(memory_slot), '.', 1) = $2
@@ -713,14 +832,15 @@ async def dedup_and_store(
     else:
         # Fallback - create directly
         embedding_input = _embedding_text(content, slot)
-        embedding = (await embed_documents([embedding_input]))[0]
+        embedding_result = await embed_documents_with_metadata([embedding_input])
+        embedding = embedding_result.embeddings[0]
         memory = await store.insert_memory(
             user_id=user_id,
             content=content,
             category=category,
             source_type=source_type,
             embedding=embedding,
-            embedding_model=_document_model(),
+            embedding_model=embedding_result.storage_model,
             source_conversation_id=conversation_id,
             status=status,
             memory_slot=slot,

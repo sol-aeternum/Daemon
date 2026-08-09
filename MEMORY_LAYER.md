@@ -242,8 +242,12 @@ L0 memories bypass embedding-based retrieval entirely. They are always prepended
 |---|---|---|---|
 | Document (memory writes) | `voyage-4-large` | `input_type="document"` | 1024 |
 | Query (retrieval) | `voyage-4-lite` | `input_type="query"` | 1024 |
+| Optional fallback | `voyageai/voyage-4-large` / `voyageai/voyage-4-lite` via OpenRouter | matching `document` / `query` input type | configured `EMBEDDING_DIMENSIONS` (default 1024) |
+| Optional fallback | `text-embedding-3-small` via OpenAI | OpenAI embeddings API | configured `EMBEDDING_DIMENSIONS` (default 1024) |
 
 Retry logic: 3 attempts with exponential backoff (1s → 2s → 4s). Counters `_retry_count` and `_last_retry_at` are exposed via `/status` as `embedding_retry_activations` and `embedding_last_retry_at`.
+
+Fallback logic: Voyage remains primary. `EMBEDDING_FALLBACK_PROVIDERS` is empty by default; operators can explicitly configure an ordered `openrouter,openai` chain (or either provider alone). After 5 Voyage failures within 60 seconds, a circuit breaker skips Voyage and tries that chain until the failure window clears. OpenRouter reuses `OPENROUTER_API_KEY` and sends native `input_type="document"` / `input_type="query"` requests, but routed-vector parity with direct Voyage has not been demonstrated, so those vectors use a distinct `openrouter:<model>` storage identity. OpenAI vectors likewise use `openai:<model>`. Vector and BM25 search filter by enabled storage identity; retrieval embeds fallback queries only when that user has rows in the corresponding active or inferred historical space. Dedup reconciles enabled spaces lexically and by slot without cross-provider vector comparison, while excluding L0 and dream observations. OpenAI inputs are truncated to its smaller per-input limit. `/status` exposes `embedding_failures_total` and per-provider `embedding_provider_used` counters.
 
 ---
 

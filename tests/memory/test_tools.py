@@ -2,6 +2,7 @@
 
 import pytest
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from orchestrator.memory.tools import MemoryReadTool, MemoryWriteTool
@@ -21,8 +22,15 @@ async def test_memory_tools_import():
 @pytest.mark.asyncio
 async def test_memory_read_semantic_mode_passes_memory_slot():
     """Test that semantic mode passes memory_slot to search_memories."""
-    with patch("orchestrator.memory.tools.embed_query", new_callable=AsyncMock) as mock_embed:
-        mock_embed.return_value = [0.1, 0.2, 0.3]
+    with patch(
+        "orchestrator.memory.tools.embed_query_with_metadata",
+        new_callable=AsyncMock,
+    ) as mock_embed:
+        mock_embed.return_value = SimpleNamespace(
+            embedding=[0.1, 0.2, 0.3],
+            model="voyage-4-lite",
+            storage_model="voyage-4-large",
+        )
 
         mock_store = AsyncMock()
         mock_store.search_memories = AsyncMock()

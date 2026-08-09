@@ -10,6 +10,8 @@ import uuid
 sys.path.insert(0, "/home/sol/daemon")
 
 import asyncpg
+from orchestrator.config import get_settings
+from orchestrator.database_url import resolve_database_url
 from orchestrator.memory.store import MemoryStore
 from orchestrator.memory.embedding import embed_query
 from orchestrator.memory.encryption import ContentEncryption
@@ -21,7 +23,9 @@ TEST_USER_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")
 async def main():
     """Run diagnostic retrieval test."""
     # Get connection settings from environment
-    db_url = os.getenv("DATABASE_URL", "postgresql://daemon:daemon@postgres:5432/daemon")
+    db_url = resolve_database_url(get_settings().database_url)
+    if not db_url:
+        raise RuntimeError("DATABASE_URL or complete POSTGRES_* settings are required")
     encryption_key = os.getenv("ENCRYPTION_KEY", "test-key-for-development-only")
 
     print("Connecting to database...")

@@ -51,7 +51,9 @@ import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlparse
 
 try:
     psycopg2 = importlib.import_module("psycopg2")
@@ -109,6 +111,10 @@ def _load_dotenv() -> None:
 
 # Auto-load .env on import so DAEMON_ENCRYPTION_KEY + DATABASE_URL are available
 _load_dotenv()
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from tests.benchmark_harness.database import configured_benchmark_database_url  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Configuration (read AFTER dotenv load)
@@ -146,9 +152,7 @@ def _resolve_db_url(url: str) -> str:
     return url
 
 
-DATABASE_URL = _resolve_db_url(
-    os.environ.get("DATABASE_URL", "postgresql://daemon:daemon@localhost:5432/daemon")
-)
+DATABASE_URL = _resolve_db_url(os.environ.get("DATABASE_URL", ""))
 REDIS_URL_RAW = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
 
@@ -202,11 +206,17 @@ def _decrypt_content(value: Any) -> str:
 
 def _is_safe_db(db_url: str) -> bool:
     """Check that DATABASE_URL points to a local/dev database."""
-    return any(h in db_url for h in SAFE_HOSTS)
+    try:
+        return urlparse(db_url).hostname in SAFE_HOSTS
+    except ValueError:
+        return False
 
 
 def _is_safe_redis(redis_url: str) -> bool:
-    return any(h in redis_url for h in SAFE_HOSTS + ("redis", "cache"))
+    try:
+        return urlparse(redis_url).hostname in SAFE_HOSTS + ("redis", "cache")
+    except ValueError:
+        return False
 
 
 def wipe_redis_extract_keys(redis_url: str = REDIS_URL) -> int:
@@ -271,10 +281,7 @@ def wipe_memories(db_url: str = DATABASE_URL) -> int:
     Refuses to wipe non-local databases as a safety measure.
     """
     if not _is_safe_db(db_url):
-        print(
-            f"  ⚠ Refusing to wipe non-local database: {db_url}",
-            file=sys.stderr,
-        )
+        print("  ⚠ Refusing to wipe non-local database", file=sys.stderr)
         return 0
 
     # Try the actual table name — could be extraction_log or memory_extraction_log
@@ -1122,7 +1129,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    effective_db_url = args.db_url if args.db_url else DATABASE_URL
+    effective_db_url = (
+        args.db_url if args.db_url else _resolve_db_url(configured_benchmark_database_url())
+    )
 
     # Override wait
     if args.wait != DEFAULT_WAIT:
@@ -1139,10 +1148,9 @@ def main() -> None:
     else:
         scenarios = SCENARIOS
 
-    db_display = effective_db_url.split("@")[-1] if "@" in effective_db_url else effective_db_url
     print("Daemon Memory Extraction Benchmark v2.4")
     print("Mode: deterministic transcript replay (no /chat assistant generation)")
-    print(f"Database: {db_display}")
+    print("Database: configured host-side benchmark database")
     print(f"Redis: {REDIS_URL}")
     print(f"Legacy wait setting: {args.wait}s (ignored in replay mode)")
     print(f"Scenarios: {len(scenarios)}")
