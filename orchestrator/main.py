@@ -1390,24 +1390,27 @@ async def serve_generated_image(
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> FileResponse:
     """Serve a generated image file from disk."""
-    # Sanitize filename to prevent path traversal
-    safe_name = Path(filename).name
-    filepath = GENERATED_IMAGES_DIR / safe_name
-    if not filepath.exists() or not filepath.is_file():
+    filepath = _resolve_safe_file_path(GENERATED_IMAGES_DIR, filename)
+    if filepath is None:
         raise HTTPException(status_code=404, detail="Image not found")
+
     media_type = "image/png"
-    if safe_name.endswith(".jpg") or safe_name.endswith(".jpeg"):
+    if filename.endswith((".jpg", ".jpeg")):
         media_type = "image/jpeg"
-    elif safe_name.endswith(".webp"):
+    elif filename.endswith(".webp"):
         media_type = "image/webp"
     return FileResponse(filepath, media_type=media_type)
 
 
 def _resolve_safe_file_path(base_dir: Path, filename: str) -> Path | None:
-    if not filename or filename != Path(filename).name:
+    safe_name = os.path.basename(filename)
+    if not safe_name or filename != safe_name:
         return None
-    base_resolved = base_dir.resolve()
-    candidate = (base_resolved / filename).resolve()
+    try:
+        base_resolved = base_dir.resolve()
+        candidate = (base_resolved / safe_name).resolve()
+    except (OSError, RuntimeError):
+        return None
     try:
         candidate.relative_to(base_resolved)
     except ValueError:
@@ -1423,15 +1426,16 @@ async def serve_generated_audio(
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> FileResponse:
     """Serve a generated audio file from disk (TTS or sound effects)."""
-    filepath = _resolve_safe_file_path(GENERATED_IMAGES_DIR, filename)
+    filepath = _resolve_safe_file_path(TTS_CACHE_DIR, filename)
     if filepath is None:
-        filepath = GENERATED_AUDIO_DIR / safe_name
-    if not filepath.exists() or not filepath.is_file():
-    if filename.endswith(".jpg") or filename.endswith(".jpeg"):
+        filepath = _resolve_safe_file_path(GENERATED_AUDIO_DIR, filename)
+    if filepath is None:
+        raise HTTPException(status_code=404, detail="Audio not found")
+
     media_type = "audio/mpeg"
-    elif filename.endswith(".webp"):
+    if filename.endswith(".wav"):
         media_type = "audio/wav"
-    elif safe_name.endswith((".ogg", ".opus")):
+    elif filename.endswith((".ogg", ".opus")):
         media_type = "audio/ogg"
     return FileResponse(filepath, media_type=media_type)
 
@@ -1440,39 +1444,40 @@ async def serve_generated_audio(
 async def serve_generated_file(
     filename: str,
     auth: AuthenticatedDevice = Depends(require_device_auth),
+) -> FileResponse:
     """Serve a generated document file from disk."""
-    filepath = _resolve_safe_file_path(TTS_CACHE_DIR, filename)
+    filepath = _resolve_safe_file_path(GENERATED_FILES_DIR, filename)
     if filepath is None:
-        filepath = _resolve_safe_file_path(GENERATED_AUDIO_DIR, filename)
-    if filepath is None:
+        raise HTTPException(status_code=404, detail="File not found")
 
     # Determine media type based on extension
-    if filename.endswith(".wav"):
-    if safe_name.endswith(".docx"):
-    elif filename.endswith((".ogg", ".opus")):
-    elif safe_name.endswith(".csv"):
+    media_type = "application/octet-stream"
+    if filename.endswith(".docx"):
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    elif filename.endswith(".csv"):
         media_type = "text/csv"
-    elif safe_name.endswith(".xlsx"):
+    elif filename.endswith(".xlsx"):
         media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    elif safe_name.endswith(".txt"):
+    elif filename.endswith(".txt"):
         media_type = "text/plain"
 
     return FileResponse(filepath, media_type=media_type)
 
 
-    filepath = _resolve_safe_file_path(GENERATED_FILES_DIR, filename)
-    if filepath is None:
+@app.post("/tts")
+async def text_to_speech(
+    payload: TtsRequest,
     settings: Settings = Depends(get_settings),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> dict[str, Any]:
     text = (payload.text or "").strip()
-    if filename.endswith(".docx"):
+    if not text:
         raise HTTPException(status_code=400, detail="Text is required")
-    elif filename.endswith(".csv"):
+
     model = payload.model or "eleven_flash_v2_5"
-    elif filename.endswith(".xlsx"):
+    voice = payload.voice or "Xb7hH8MSUJpSbSDYk0k2"
     speed = payload.speed or 1.0
-    elif filename.endswith(".txt"):
+    fmt = payload.format or "mp3"
     use_cache = payload.cache is not False
 
     cache_key = hashlib.sha256(f"{model}|{voice}|{speed}|{fmt}|{text}".encode("utf-8")).hexdigest()
@@ -1505,7 +1510,7 @@ async def serve_generated_file(
         "wav": "pcm_22050",
         "ogg": "ogg_vorbis_22050",
     }
-    output_format = format_map.get(fmt, "mp3_44100_128")
+    output_format = format_map[fmt]
 
     request_body: dict[str, Any] = {
         "text": text,

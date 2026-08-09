@@ -5,14 +5,14 @@ Covers the audit finding: the `/tts` endpoint accepted any string in
 cache file path. An authenticated caller could influence the write path.
 The fix constrains `TtsRequest.format` to `Literal["mp3","opus","wav","ogg"] | None`
 so Pydantic rejects anything else with 422 before the filesystem path is
-constructed.
+constructed, while generated-file routes reject traversal and symlink escapes.
 
 The test asserts:
 1. `TtsRequest` accepts exactly the four valid formats plus None.
 2. Pydantic rejects invalid formats with a 422-shaped ValidationError.
 3. POST `/tts` with an invalid `format` returns 422 and writes no file
    to TTS_CACHE_DIR (verified by listing the directory before/after).
-4. POST `/tts` with no `format` field still uses the default ("mp3").
+4. Generated-file resolution stays inside its configured base directory.
 """
 
 from __future__ import annotations
@@ -26,7 +26,8 @@ from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
-from orchestrator.main import app
+from orchestrator.config import get_settings
+from orchestrator.main import _resolve_safe_file_path, app
 from orchestrator.models import TtsRequest
 
 
@@ -65,6 +66,28 @@ def test_tts_request_rejects_invalid_formats(bad_format: str) -> None:
         TtsRequest(text="hello", format=bad_format)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("filename", ["", "../secret.mp3", "nested/file.mp3", "/tmp/file.mp3"])
+def test_safe_file_path_rejects_non_basename_paths(tmp_path: Path, filename: str) -> None:
+    assert _resolve_safe_file_path(tmp_path, filename) is None
+
+
+def test_safe_file_path_rejects_symlink_escape(tmp_path: Path) -> None:
+    base_dir = tmp_path / "generated"
+    base_dir.mkdir()
+    outside_file = tmp_path / "secret.mp3"
+    outside_file.write_bytes(b"secret")
+    (base_dir / "escaped.mp3").symlink_to(outside_file)
+
+    assert _resolve_safe_file_path(base_dir, "escaped.mp3") is None
+
+
+def test_safe_file_path_accepts_regular_file_inside_base(tmp_path: Path) -> None:
+    expected = tmp_path / "audio.mp3"
+    expected.write_bytes(b"audio")
+
+    assert _resolve_safe_file_path(tmp_path, expected.name) == expected.resolve()
+
+
 # ---------------------------------------------------------------------------
 # Endpoint-layer: POST /tts
 # ---------------------------------------------------------------------------
@@ -78,10 +101,8 @@ async def test_tts_endpoint_rejects_invalid_format(
 
     The test uses a fresh TTS_CACHE_DIR via monkeypatch so we can assert
     the directory contents are unchanged. We override `require_device_auth`
-    so we don't need real device credentials, and we patch
-    `text_to_speech` upstream of the ElevenLabs call so the test does not
-    need a real API key — the only path we care about is the request
-    validation before any file is written.
+    so we don't need real device credentials. The only path we care about
+    is request validation before any provider call or file write.
     """
     # Use a tmp directory as the cache; capture the original module
     # constant so we can restore it after the test.
@@ -98,7 +119,13 @@ async def test_tts_endpoint_rejects_invalid_format(
             session_id=uuid.UUID("00000000-0000-0000-0000-000000000003"),
         )
 
+    settings = get_settings()
+
+    async def override_settings():
+        return settings
+
     app.dependency_overrides[require_device_auth] = override_auth
+    app.dependency_overrides[get_settings] = override_settings
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -113,6 +140,7 @@ async def test_tts_endpoint_rejects_invalid_format(
         )
     finally:
         app.dependency_overrides.pop(require_device_auth, None)
+        app.dependency_overrides.pop(get_settings, None)
 
 
 @pytest.mark.asyncio
@@ -152,8 +180,14 @@ async def test_tts_endpoint_maps_opus_format(
             session_id=uuid.UUID("00000000-0000-0000-0000-000000000003"),
         )
 
+    settings = get_settings()
+
+    async def override_settings():
+        return settings
+
     monkeypatch.setattr("orchestrator.main.httpx.AsyncClient", FakeAsyncClient)
     app.dependency_overrides[require_device_auth] = override_auth
+    app.dependency_overrides[get_settings] = override_settings
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -166,10 +200,10 @@ async def test_tts_endpoint_maps_opus_format(
         assert next(cache_dir.glob("*.opus")).read_bytes() == b"opus-audio"
     finally:
         app.dependency_overrides.pop(require_device_auth, None)
+        app.dependency_overrides.pop(get_settings, None)
 
 
-@pytest.mark.asyncio
-async def test_tts_request_validation_error_payload_is_shape_only() -> None:
+def test_tts_request_validation_error_payload_is_shape_only() -> None:
     """Sanity: the ValidationError raised by an invalid TtsRequest mentions `format`."""
     try:
         TtsRequest(text="hello", format="not-a-real-format")  # type: ignore[arg-type]
