@@ -274,6 +274,64 @@ def test_proxy_csp_permits_inline_style_attributes() -> None:
     assert "style-src-attr 'unsafe-inline'" in source
 
 
+def test_proxy_csp_permits_development_unsafe_eval() -> None:
+    """Next's webpack dev server emits modules that load via ``eval(...)``,
+    so the documented ``npm run dev`` workflow requires ``'unsafe-eval'``
+    in ``script-src`` to render the client bundle. The keyword is added
+    only when ``NODE_ENV === 'development'`` so production CSP remains
+    strict (Codex P1 on PR #163).
+    """
+    source = (ROOT / "frontend" / "proxy.ts").read_text()
+    # The conditional must check NODE_ENV and add 'unsafe-eval' only in dev.
+    assert (
+        re.search(
+            r"isDevelopment\s*=\s*process\.env\.NODE_ENV\s*===\s*['\"]development['\"]",
+            source,
+        )
+        is not None
+    )
+    # 'unsafe-eval' must be added to the script-src parts list when isDevelopment.
+    assert (
+        re.search(
+            r"isDevelopment[\s\S]{0,200}scriptSrcParts\.push\(['\"]'unsafe-eval'['\"]\)",
+            source,
+        )
+        is not None
+    )
+
+
+def test_proxy_csp_permits_local_api_fallback_in_connect_src() -> None:
+    """When ``NEXT_PUBLIC_API_URL`` is unset (the documented local
+    development fallback), the connect-src host list must include
+    ``http://localhost:8000`` so hooks like ``useConversationHistory`` and
+    the Studio video generation path can reach the daemon backend
+    (Codex P2 on PR #163). Production deployments must set
+    ``NEXT_PUBLIC_API_URL`` so this fallback is never added.
+    """
+    source = (ROOT / "frontend" / "proxy.ts").read_text()
+    # The fallback must be added in the else branch when NEXT_PUBLIC_API_URL
+    # is empty.
+    assert (
+        re.search(
+            r"NEXT_PUBLIC_API_URL[\s\S]{0,400}http://localhost:8000",
+            source,
+        )
+        is not None
+    )
+
+
+def test_proxy_csp_permits_docx_preview_inline_styles() -> None:
+    """``docx-preview`` (frontend/src/components/previews/DocxPreview.tsx)
+    injects dynamically generated ``<style>`` elements without a nonce,
+    and the generated CSS is what makes the DOCX preview render
+    correctly. ``style-src`` must include ``'unsafe-inline'`` so those
+    styles are not blocked (Codex P2 on PR #163).
+    """
+    source = (ROOT / "frontend" / "proxy.ts").read_text()
+    # style-src must include 'unsafe-inline' alongside 'self' and 'nonce-'.
+    assert re.search(r"style-src[^;]*'unsafe-inline'", source) is not None
+
+
 @pytest.mark.asyncio
 async def test_openapi_schema_endpoint_remains_available() -> None:
     """The /openapi.json schema endpoint must remain reachable for API
