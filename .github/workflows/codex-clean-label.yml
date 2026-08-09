@@ -37,7 +37,8 @@ jobs:
           script: |
             const pr = context.issue;
             const review = context.payload.review;
-            const reviewState = review.state;          // APPROVED | COMMENTED | CHANGES_REQUESTED
+            const reviewState = String(review.state || '').toLowerCase();
+            // GitHub webhook states are lowercase: approved | commented | changes_requested
             const reviewBody = review.body || '';
             const reviewId = review.id;
             const commitId = review.commit_id;         // The commit SHA Codex reviewed
@@ -48,12 +49,12 @@ jobs:
             }));
 
             // Step 1: state-based shortcuts
-            // APPROVED is unambiguous → ready. CHANGES_REQUESTED → not ready.
-            if (reviewState === 'CHANGES_REQUESTED') {
+            // approved is unambiguous → ready. changes_requested → not ready.
+            if (reviewState === 'changes_requested') {
               log('review.changes_requested.skip_label');
               return;
             }
-            if (reviewState !== 'APPROVED' && reviewState !== 'COMMENTED') {
+            if (reviewState !== 'approved' && reviewState !== 'commented') {
               log('review.unknown_state.skip', { reviewState });
               return;
             }
@@ -97,11 +98,11 @@ jobs:
               severityBadgeRegex.test(c.body || '')
             );
 
-            // Step 4: classify. APPROVED is always clean. COMMENTED requires
+            // Step 4: classify. approved is always clean. commented requires
             // either the AGENTS.md-defined clean template, or no findings at all.
             const isClean =
-              reviewState === 'APPROVED' ||
-              (reviewState === 'COMMENTED' && !hasSeverityBadge && !hasInlineFindings);
+              reviewState === 'approved' ||
+              (reviewState === 'commented' && !hasSeverityBadge && !hasInlineFindings);
 
             log('review.classified', {
               cleanTemplateMatched, hasSeverityBadge, hasInlineFindings, isClean
