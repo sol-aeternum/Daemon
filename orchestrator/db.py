@@ -8,6 +8,7 @@ from arq.connections import ArqRedis, RedisSettings, create_pool as arq_create_p
 from fastapi import Request
 
 from orchestrator.config import Settings
+from orchestrator.database_url import resolve_database_url
 from db.video_credits import VideoCreditsDAL
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
@@ -28,15 +29,16 @@ class AppState:
 
 async def init_app_state(settings: Settings) -> AppState:
     state = AppState(settings=settings)
+    database_url = resolve_database_url(settings.database_url)
 
-    if settings.database_url:
+    if database_url:
         try:
 
             async def init_connection(conn):
                 await conn.execute("SET ivfflat.probes = 10")
 
             state.db_pool = await asyncpg.create_pool(
-                dsn=settings.database_url,
+                dsn=database_url,
                 min_size=5,
                 max_size=20,
                 init=init_connection,

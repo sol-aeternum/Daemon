@@ -18,13 +18,16 @@ from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
 DATASET = PROJECT_ROOT / "tests/benchmark_longmemeval/fixtures/dev_subset.json"
 BASE_OUTPUT_DIR = PROJECT_ROOT / "tests/benchmark_results/wave0_rerun_v1"
 
 os.environ["BENCHMARK_MODE"] = "1"
 
 BASE_ENV = os.environ.copy()
-BASE_ENV["DATABASE_URL"] = "postgresql://daemon:daemon@127.0.0.1:5432/daemon"
+from tests.benchmark_harness.database import configured_benchmark_database_url  # noqa: E402
+
+BASE_ENV["DATABASE_URL"] = configured_benchmark_database_url()
 
 PATCH_CODE = """
 import sys

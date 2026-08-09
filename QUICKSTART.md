@@ -10,6 +10,11 @@ Edit `.env`:
 # Required - for LLM chat
 OPENROUTER_API_KEY=your_key_here
 
+# Required for Docker Compose - unique database password (production startup
+# fails closed if POSTGRES_PASSWORD matches a known default like "daemon",
+# "postgres", "password", "changeme", "change-me", or "admin").
+POSTGRES_PASSWORD=your_unique_database_password
+
 # Optional - for @research agent web search
 BRAVE_API_KEY=your_key_here
 

@@ -26,9 +26,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 # Apply patches BEFORE any other imports that might cache settings
 import dotenv  # noqa: E402
+from tests.benchmark_harness.database import configured_benchmark_database_url  # noqa: E402
 
 dotenv.load_dotenv()
-os.environ["DATABASE_URL"] = "postgresql://daemon:daemon@127.0.0.1:5432/daemon"
+os.environ["DATABASE_URL"] = configured_benchmark_database_url()
 os.environ["BENCHMARK_MODE"] = "1"
 
 # Patch extraction
