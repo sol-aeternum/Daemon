@@ -22,6 +22,25 @@ _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _MAX_REDIRECTS = 5
 
 
+def _encode_idna(host: str) -> str:
+    """Convert a Unicode hostname to its ASCII (IDNA) form.
+
+    Returns ``host`` unchanged when it is already ASCII. Raises ``ValueError``
+    if the hostname cannot be encoded (httpx requires ASCII header values).
+    """
+    if host.isascii():
+        return host
+    return host.encode("idna").decode("ascii")
+
+
+def _host_header(url: str) -> str:
+    """Build an ASCII Host header while preserving brackets and an explicit port."""
+    parsed = urlsplit(url)
+    host = _encode_idna(parsed.hostname or "")
+    authority_host = f"[{host}]" if ":" in host else host
+    return f"{authority_host}:{parsed.port}" if parsed.port is not None else authority_host
+
+
 def _pin_url_to_address(url: str, address: str) -> str:
     """Replace only the URL authority host with an already-validated IP."""
     parsed = urlsplit(url)
@@ -32,11 +51,17 @@ def _pin_url_to_address(url: str, address: str) -> str:
 
 
 def _is_blocked_domain(url: str, blocked_domains: list[str]) -> bool:
-    """Return whether URL host exactly matches or is below a blocked domain."""
-    hostname = (urlsplit(url).hostname or "").lower()
+    """Return whether URL host exactly matches or is below a blocked domain.
+
+    Hostnames are canonicalized by stripping a trailing dot before comparison so
+    that DNS-equivalent forms (e.g. ``example.com.``) cannot bypass the policy.
+    """
+    hostname = (urlsplit(url).hostname or "").lower().rstrip(".")
     for blocked in blocked_domains:
-        normalized = blocked.lower().strip()
-        if normalized and (hostname == normalized or hostname.endswith(f".{normalized}")):
+        normalized = blocked.lower().strip().rstrip(".")
+        if not normalized:
+            continue
+        if hostname == normalized or hostname.endswith(f".{normalized}"):
             return True
     return False
 
@@ -92,18 +117,30 @@ class DirectFetchStrategy:
                     raise SsrfViolation(
                         f"DNS resolution returned no usable results for {validated.host!r}"
                     )
-                origin = urlsplit(current_url)
-                # Use one client per hop. A pooled connection is keyed by the
-                # pinned IP origin, so reusing it across hostnames that share a
-                # CDN address could otherwise reuse the wrong TLS/SNI session.
-                async with httpx.AsyncClient(
-                    timeout=10.0, follow_redirects=False, trust_env=False
-                ) as client:
-                    response = await client.get(
-                        _pin_url_to_address(current_url, validated.addresses[0]),
-                        headers={"User-Agent": user_agent, "Host": origin.netloc},
-                        extensions={"sni_hostname": validated.host},
-                    )
+                # httpx requires ASCII header values; convert IDN hosts to IDNA
+                # so Unicode hostnames (e.g. bücher.example) don't raise
+                # UnicodeEncodeError when constructing the request. Preserve an
+                # explicit default port and IPv6 brackets in the Host header.
+                try:
+                    host_header = _host_header(current_url)
+                    sni_hostname = _encode_idna(validated.host)
+                except (ValueError, UnicodeError) as exc:
+                    logger.warning(f"Direct fetch cannot encode hostname for {url}: {exc}")
+                    return None
+                # Use one client per address in each hop. A pooled connection is
+                # keyed by the pinned-IP origin, so reusing it across hostnames
+                # that share a CDN address could reuse the wrong TLS/SNI session.
+                response = await self._request_with_address_fallback(
+                    current_url=current_url,
+                    addresses=validated.addresses,
+                    host_header=host_header,
+                    sni_hostname=sni_hostname,
+                    user_agent=user_agent,
+                )
+                if response is None:
+                    # Every validated address was unreachable. Return ``None``
+                    # so FetchService can continue to its next strategy.
+                    return None
                 if response.status_code not in _REDIRECT_STATUSES:
                     break
                 location = response.headers.get("location")
@@ -138,3 +175,48 @@ class DirectFetchStrategy:
         except Exception as e:
             logger.warning(f"Direct fetch failed for {url}: {e}")
             return None
+
+    async def _request_with_address_fallback(
+        self,
+        *,
+        current_url: str,
+        addresses: tuple[str, ...],
+        host_header: str,
+        sni_hostname: str,
+        user_agent: str,
+    ) -> httpx.Response | None:
+        """Issue ``GET current_url`` against each validated address in turn.
+
+        Returns the first successful response, or ``None`` if every address
+        fails to produce a response. Network-level errors against an address
+        are logged at debug and the next address is tried; non-network errors
+        are propagated.
+
+        A fresh ``httpx.AsyncClient`` is used per address so the pinned-IP
+        connection pool is never reused across distinct addresses (which would
+        otherwise reuse a connection keyed to the wrong host).
+        """
+        last_error: Exception | None = None
+        for address in addresses:
+            try:
+                async with httpx.AsyncClient(
+                    timeout=10.0, follow_redirects=False, trust_env=False
+                ) as client:
+                    response = await client.get(
+                        _pin_url_to_address(current_url, address),
+                        headers={"User-Agent": user_agent, "Host": host_header},
+                        extensions={"sni_hostname": sni_hostname},
+                    )
+                return response
+            except httpx.RequestError as exc:
+                last_error = exc
+                logger.debug("Direct fetch address %s for %s failed: %s", address, current_url, exc)
+                continue
+        if last_error is not None:
+            logger.info(
+                "Direct fetch exhausted %d addresses for %s; last error: %s",
+                len(addresses),
+                current_url,
+                last_error,
+            )
+        return None

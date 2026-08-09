@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 # Conditional import to allow tests to run without optional dependency
@@ -182,6 +183,118 @@ class TestDirectStrategy:
         assert request_call.args[0] == "https://93.184.216.34/article?q=1"
         assert request_call.kwargs["headers"]["Host"] == "example.com"
         assert request_call.kwargs["extensions"]["sni_hostname"] == "example.com"
+
+    @pytest.mark.asyncio
+    async def test_redirect_to_policy_blocked_domain_with_trailing_dot_is_blocked(
+        self, fetch_policy
+    ):
+        """DNS-equivalent trailing-dot hostnames must not bypass blocked_domains."""
+        blocked_policy = fetch_policy.model_copy(update={"blocked_domains": ["example.com"]})
+        strategy = DirectFetchStrategy(blocked_policy)
+        redirect = MagicMock()
+        redirect.status_code = 302
+        redirect.headers = {"location": "https://example.com./private"}
+        success = MagicMock()
+        success.status_code = 200
+        success.headers = {"content-type": "text/plain"}
+        success.text = "This content must not be returned from a trailing-dot bypass"
+        success.raise_for_status = MagicMock()
+
+        with (
+            patch(
+                "orchestrator.tools.ssrf_guard._resolve_and_check",
+                return_value=("8.8.8.8",),
+            ),
+            patch(
+                "httpx.AsyncClient.get",
+                new_callable=AsyncMock,
+                side_effect=[redirect, success],
+            ) as mock_get,
+            pytest.raises(SsrfViolation, match="blocked by fetch policy"),
+        ):
+            await strategy.fetch("https://8.8.8.8/start")
+
+        mock_get.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_idn_hostname_is_idna_encoded(self, fetch_policy):
+        """Unicode hostnames must be encoded to IDNA before the Host header is set."""
+        strategy = DirectFetchStrategy(fetch_policy)
+        response = MagicMock()
+        response.status_code = 200
+        response.headers = {"content-type": "text/plain"}
+        response.text = "This is sufficiently long content for IDN fetch validation"
+        response.raise_for_status = MagicMock()
+
+        with (
+            patch(
+                "orchestrator.tools.ssrf_guard._resolve_and_check",
+                return_value=("93.184.216.34",),
+            ),
+            patch(
+                "httpx.AsyncClient.get", new_callable=AsyncMock, return_value=response
+            ) as mock_get,
+        ):
+            result = await strategy.fetch("https://bücher.example:443/article")
+
+        assert result is not None
+        request_call = mock_get.await_args
+        assert request_call is not None
+        assert request_call.kwargs["headers"]["Host"] == "xn--bcher-kva.example:443"
+        assert request_call.kwargs["extensions"]["sni_hostname"] == "xn--bcher-kva.example"
+
+    @pytest.mark.asyncio
+    async def test_address_fallback_tries_next_address_when_first_unreachable(self, fetch_policy):
+        """When ``addresses[0]`` raises a network error, the next address must be tried."""
+        strategy = DirectFetchStrategy(fetch_policy)
+        response = MagicMock()
+        response.status_code = 200
+        response.headers = {"content-type": "text/plain"}
+        response.text = "This is sufficiently long content reached via fallback address"
+        response.raise_for_status = MagicMock()
+
+        with (
+            patch(
+                "orchestrator.tools.ssrf_guard._resolve_and_check",
+                return_value=("2606:4700:4700::1111", "93.184.216.34"),
+            ),
+            patch(
+                "httpx.AsyncClient.get",
+                new_callable=AsyncMock,
+                side_effect=[httpx.ConnectError("IPv6 unreachable"), response],
+            ) as mock_get,
+        ):
+            result = await strategy.fetch("https://example.com/article")
+
+        assert result is not None
+        assert mock_get.await_count == 2
+        first_call = mock_get.await_args_list[0]
+        second_call = mock_get.await_args_list[1]
+        assert first_call.args[0] == "https://[2606:4700:4700::1111]/article"
+        assert second_call.args[0] == "https://93.184.216.34/article"
+
+    @pytest.mark.asyncio
+    async def test_address_fallback_returns_none_when_all_addresses_fail(self, fetch_policy):
+        """When every validated address fails to connect, the strategy returns ``None``."""
+        strategy = DirectFetchStrategy(fetch_policy)
+
+        with (
+            patch(
+                "orchestrator.tools.ssrf_guard._resolve_and_check",
+                return_value=("2606:4700:4700::1111", "2001:4860:4860::8888"),
+            ),
+            patch(
+                "httpx.AsyncClient.get",
+                new_callable=AsyncMock,
+                side_effect=[
+                    httpx.ConnectError("first address unreachable"),
+                    httpx.ConnectError("second address unreachable"),
+                ],
+            ),
+        ):
+            result = await strategy.fetch("https://example.com/article")
+
+        assert result is None
 
 
 class TestYouTubeStrategy:
@@ -530,7 +643,17 @@ class TestFetchService:
         fetch_service.cache.set.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_private_address_rejected_before_cache_or_strategy(self, fetch_service):
+    @pytest.mark.parametrize(
+        "unsafe_url",
+        [
+            "https://169.254.169.254/latest/meta-data/",
+            "https://100.64.0.1/private",
+            "https://[::ffff:169.254.169.254]/private",
+        ],
+    )
+    async def test_private_address_rejected_before_cache_or_strategy(
+        self, fetch_service, unsafe_url
+    ):
         fetch_service.cache.get = AsyncMock(return_value=None)
         strategies = [
             fetch_service.direct_strategy,
@@ -542,7 +665,7 @@ class TestFetchService:
             assert strategy is not None
             strategy.fetch = AsyncMock(return_value=None)
 
-        result = await fetch_service.fetch("https://169.254.169.254/latest/meta-data/")
+        result = await fetch_service.fetch(unsafe_url)
 
         assert result is None
         fetch_service.cache.get.assert_not_called()
@@ -649,3 +772,60 @@ class TestFetchService:
         fetch_service.jina_strategy.fetch.assert_not_called()
         fetch_service.crawl4ai_strategy.fetch.assert_not_called()
         fetch_service.archive_strategy.fetch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_served_without_dns_resolution(self, fetch_service):
+        """A cached hit must be served even when DNS resolution fails.
+
+        Mirrors Codex finding #4: cache lookups happen before the DNS-based
+        ``validate_url_and_resolve_async`` call so a temporary DNS outage
+        does not invalidate a still-valid cached entry. The static gate
+        (``_is_supported_url``) still rejects obviously-unsafe URLs up front,
+        so private IP literals are not served from cache.
+        """
+        cached_result = FetchResult(
+            url="https://example.com",
+            content="This is sufficiently long cached content for testing purposes",
+            title="",
+            strategy_used="direct",
+            cached=True,
+            fetch_time_ms=0.0,
+            content_length=100,
+        )
+        fetch_service.cache.get = AsyncMock(return_value=cached_result)
+
+        # Patch the DNS validator to simulate a saturated resolver; a cache
+        # hit must return before this coroutine is awaited.
+        from orchestrator.services.fetch import service as _service_module
+
+        dns_validator = AsyncMock(side_effect=SsrfViolation("DNS validation timed out"))
+
+        with patch.object(_service_module, "validate_url_and_resolve_async", dns_validator):
+            result = await fetch_service.fetch("https://example.com")
+
+        assert result is not None
+        assert result.cached is True
+        fetch_service.cache.get.assert_awaited_once()
+        dns_validator.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_trailing_dot_blocked_domain_is_rejected(self, fetch_service):
+        """DNS-equivalent trailing-dot hostnames must not bypass ``blocked_domains``."""
+        fetch_service.policy = FetchPolicy(blocked_domains=["blocked.com"])
+        strategies = [
+            fetch_service.direct_strategy,
+            fetch_service.jina_strategy,
+            fetch_service.crawl4ai_strategy,
+            fetch_service.archive_strategy,
+        ]
+        for strategy in strategies:
+            assert strategy is not None
+            strategy.fetch = AsyncMock(return_value=None)
+        fetch_service.cache.get = AsyncMock(return_value=None)
+
+        result = await fetch_service.fetch("https://blocked.com./private")
+
+        assert result is None
+        fetch_service.cache.get.assert_not_called()
+        for strategy in strategies:
+            strategy.fetch.assert_not_called()

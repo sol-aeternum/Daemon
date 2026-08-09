@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import logging
 import time
 from collections.abc import Sequence
@@ -18,7 +19,9 @@ from orchestrator.services.fetch.strategies.direct import DirectFetchStrategy
 from orchestrator.services.fetch.strategies.jina import JinaReaderStrategy
 from orchestrator.services.fetch.strategies.youtube import YouTubeTranscriptStrategy
 from orchestrator.tools.ssrf_guard import (
+    MAX_URL_LENGTH,
     SsrfViolation,
+    is_disallowed_ip,
     validate_url_and_resolve_async,
 )
 
@@ -58,14 +61,14 @@ class FetchService:
             logger.info("FetchService skipping fetch: empty URL")
             return None
 
-        try:
-            await validate_url_and_resolve_async(
-                fetch_url,
-                allowed_schemes=_FETCH_SCHEMES,
-                allowed_ports=_FETCH_PORTS,
-            )
-        except SsrfViolation as exc:
-            logger.info("FetchService blocked unsafe URL %s: %s", fetch_url, exc)
+        # Static (non-DNS) policy checks run before cache access so that a valid
+        # cached result is still served when DNS is temporarily unavailable.
+        # These checks enforce scheme/port and the operator's blocked-domain
+        # list against the normalized URL hostname alone — they do not require
+        # resolving the host. DNS-based validation runs only when we actually
+        # need to issue an outbound request.
+        if not self._is_supported_url(fetch_url):
+            logger.info("FetchService blocked unsupported URL %s", fetch_url)
             return None
 
         normalized_url = normalize_url(fetch_url)
@@ -76,6 +79,13 @@ class FetchService:
             force_refresh,
         )
 
+        if self._is_blocked_domain(normalized_url):
+            logger.info(
+                "FetchService skipping fetch for %s: blocked domain policy matched",
+                normalized_url,
+            )
+            return None
+
         cached_result: FetchResult | None = None
         if force_refresh:
             logger.info(
@@ -84,13 +94,6 @@ class FetchService:
             )
         else:
             cached_result = await self.cache.get(normalized_url)
-
-        if self._is_blocked_domain(normalized_url):
-            logger.info(
-                "FetchService skipping fetch for %s: blocked domain policy matched",
-                normalized_url,
-            )
-            return None
 
         if cached_result is not None:
             if self.policy.content_is_valid(cached_result.content):
@@ -107,6 +110,18 @@ class FetchService:
             )
         elif not force_refresh:
             logger.info("FetchService cache miss for %s", normalized_url)
+
+        # DNS resolution / IP-range validation runs only when a real outbound
+        # fetch is about to be attempted. A cache hit short-circuits above.
+        try:
+            await validate_url_and_resolve_async(
+                fetch_url,
+                allowed_schemes=_FETCH_SCHEMES,
+                allowed_ports=_FETCH_PORTS,
+            )
+        except SsrfViolation as exc:
+            logger.info("FetchService blocked unsafe URL %s: %s", fetch_url, exc)
+            return None
 
         strategies: Sequence[tuple[str, FetchStrategy | None]]
         if self._is_youtube_url(normalized_url):
@@ -160,6 +175,55 @@ class FetchService:
             ("jina", self.jina_strategy),
             ("archive", self.archive_strategy),
         )
+
+    def _is_supported_url(self, url: str) -> bool:
+        """Static (non-DNS) policy gate.
+
+        Mirrors the non-network parts of ``validate_url_and_resolve_async`` plus
+        the same disallowed-range check for IP literals. The combination lets
+        ``fetch`` consult the cache before issuing any DNS query, while still
+        rejecting obviously-unsafe URLs up front.
+
+        A hostname URL passes this check; the DNS-based IP-range validation
+        runs later in ``fetch`` immediately before the strategy chain.
+        """
+        if not url or not isinstance(url, str):
+            return False
+        if len(url) > MAX_URL_LENGTH:
+            return False
+        try:
+            parsed = urlparse(url)
+        except ValueError:
+            return False
+        if parsed.scheme not in _FETCH_SCHEMES:
+            return False
+        if parsed.username is not None or parsed.password is not None:
+            return False
+        try:
+            host = parsed.hostname
+            explicit_port = parsed.port
+        except ValueError:
+            return False
+        if not host:
+            return False
+        if explicit_port is not None and explicit_port not in _FETCH_PORTS:
+            return False
+        # Apply exactly the same literal-IP classification as the DNS
+        # validator. In particular this rejects CGNAT, documentation, mapped
+        # IPv6, and transition ranges that the stdlib's individual
+        # ``is_private`` / ``is_reserved`` flags do not cover consistently.
+        try:
+            literal = ipaddress.ip_address(host)
+        except ValueError:
+            # IDNA validation is local and deterministic: it rejects malformed
+            # host labels without issuing a DNS query, while valid hostnames
+            # remain eligible for a cache hit during a resolver outage.
+            try:
+                host.encode("idna")
+            except UnicodeError:
+                return False
+            return True
+        return not is_disallowed_ip(literal)
 
     async def _run_strategy_chain(
         self,
@@ -256,12 +320,12 @@ class FetchService:
         return result
 
     def _is_blocked_domain(self, url: str) -> bool:
-        hostname = (urlparse(url).hostname or "").lower()
+        hostname = (urlparse(url).hostname or "").lower().rstrip(".")
         if not hostname:
             return False
 
         for blocked_domain in self.policy.blocked_domains:
-            normalized_blocked_domain = blocked_domain.lower().strip()
+            normalized_blocked_domain = blocked_domain.lower().strip().rstrip(".")
             if not normalized_blocked_domain:
                 continue
 
