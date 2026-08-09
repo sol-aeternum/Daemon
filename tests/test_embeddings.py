@@ -3,7 +3,16 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from orchestrator.memory.embedding import embed_documents, embed_query
+from orchestrator.memory.embedding import (
+    embed_documents,
+    embed_query,
+    reset_embedding_metrics_for_tests,
+)
+
+
+@pytest.fixture(autouse=True)
+def reset_embedding_metrics() -> None:
+    reset_embedding_metrics_for_tests()
 
 
 @pytest.mark.asyncio

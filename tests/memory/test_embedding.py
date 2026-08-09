@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -19,7 +20,9 @@ from orchestrator.memory.embedding import (
 
 
 @pytest.fixture(autouse=True)
-def reset_embedding_metrics() -> None:
+def reset_embedding_metrics() -> Iterator[None]:
+    reset_embedding_metrics_for_tests()
+    yield
     reset_embedding_metrics_for_tests()
 
 

@@ -122,6 +122,7 @@ class TestThresholdBranchBehavior:
                 mock_settings.return_value.dedup_supersede_threshold = 0.0
                 mock_settings.return_value.dedup_supersede_same_slot_threshold = 0.0
                 mock_settings.return_value.background_reasoning_model = "gpt-4o-mini"
+                mock_settings.return_value.embedding_document_model = "voyage-4-large"
 
                 result = await deduplicate_facts(
                     store=mock_store,
@@ -158,6 +159,7 @@ class TestThresholdBranchBehavior:
                 mock_settings.return_value.dedup_supersede_threshold = 0.0
                 mock_settings.return_value.dedup_supersede_same_slot_threshold = 0.0
                 mock_settings.return_value.background_reasoning_model = "gpt-4o-mini"
+                mock_settings.return_value.embedding_document_model = "voyage-4-large"
 
                 result = await deduplicate_facts(
                     store=mock_store,
@@ -235,6 +237,7 @@ class TestThresholdBranchBehavior:
                 mock_settings.return_value.dedup_supersede_threshold = 1.0
                 mock_settings.return_value.dedup_supersede_same_slot_threshold = 0.0
                 mock_settings.return_value.background_reasoning_model = "gpt-4o-mini"
+                mock_settings.return_value.embedding_document_model = "voyage-4-large"
 
                 result = await deduplicate_facts(
                     store=mock_store,
