@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Sequence
@@ -17,8 +18,12 @@ from orchestrator.services.fetch.strategies.crawl4ai import Crawl4AIStrategy
 from orchestrator.services.fetch.strategies.direct import DirectFetchStrategy
 from orchestrator.services.fetch.strategies.jina import JinaReaderStrategy
 from orchestrator.services.fetch.strategies.youtube import YouTubeTranscriptStrategy
+from orchestrator.tools.ssrf_guard import SsrfViolation, validate_url
 
 logger = logging.getLogger(__name__)
+
+_FETCH_SCHEMES = frozenset({"http", "https"})
+_FETCH_PORTS = frozenset({80, 443})
 
 
 class FetchStrategy(Protocol):
@@ -49,6 +54,20 @@ class FetchService:
         fetch_url = url.strip()
         if not fetch_url:
             logger.info("FetchService skipping fetch: empty URL")
+            return None
+
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    validate_url,
+                    fetch_url,
+                    allowed_schemes=_FETCH_SCHEMES,
+                    allowed_ports=_FETCH_PORTS,
+                ),
+                timeout=10.0,
+            )
+        except (TimeoutError, SsrfViolation) as exc:
+            logger.info("FetchService blocked unsafe URL %s: %s", fetch_url, exc)
             return None
 
         normalized_url = normalize_url(fetch_url)

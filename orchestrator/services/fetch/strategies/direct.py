@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
+from urllib.parse import urljoin
 
 import httpx
 
 from orchestrator.services.fetch.models import FetchResult, FetchPolicy
+from orchestrator.tools.ssrf_guard import SsrfViolation, socket_guard, validate_url
 
 logger = logging.getLogger(__name__)
+
+_FETCH_SCHEMES = frozenset({"http", "https"})
+_FETCH_PORTS = frozenset({80, 443})
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_MAX_REDIRECTS = 5
 
 # Common browser user agents for rotation
 USER_AGENTS = [
@@ -48,10 +56,31 @@ class DirectFetchStrategy:
         user_agent = random.choice(USER_AGENTS)
 
         try:
-            async with httpx.AsyncClient(
-                timeout=10.0, follow_redirects=True, max_redirects=5
-            ) as client:
-                response = await client.get(url, headers={"User-Agent": user_agent})
+            current_url = url
+            response: httpx.Response | None = None
+            with socket_guard():
+                async with httpx.AsyncClient(
+                    timeout=10.0, follow_redirects=False, trust_env=False
+                ) as client:
+                    for redirect_count in range(_MAX_REDIRECTS + 1):
+                        await asyncio.wait_for(
+                            asyncio.to_thread(
+                                validate_url,
+                                current_url,
+                                allowed_schemes=_FETCH_SCHEMES,
+                                allowed_ports=_FETCH_PORTS,
+                            ),
+                            timeout=10.0,
+                        )
+                        response = await client.get(current_url, headers={"User-Agent": user_agent})
+                        if response.status_code not in _REDIRECT_STATUSES:
+                            break
+                        location = response.headers.get("location")
+                        if not location or redirect_count == _MAX_REDIRECTS:
+                            return None
+                        current_url = urljoin(current_url, location)
+
+                assert response is not None
                 _ = response.raise_for_status()
 
                 content = response.text
@@ -72,6 +101,9 @@ class DirectFetchStrategy:
                     content_length=len(content),
                 )
 
+        except (TimeoutError, SsrfViolation) as e:
+            logger.warning(f"Direct fetch blocked unsafe URL {url}: {e}")
+            return None
         except Exception as e:
             logger.warning(f"Direct fetch failed for {url}: {e}")
             return None

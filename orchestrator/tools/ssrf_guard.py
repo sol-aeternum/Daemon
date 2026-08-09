@@ -123,7 +123,12 @@ def _resolve_and_check(host: str, port: int) -> None:
             raise SsrfViolation(f"hostname {host!r} resolves to blocked IP {ip}")
 
 
-def validate_url(url: str) -> str:
+def validate_url(
+    url: str,
+    *,
+    allowed_schemes: frozenset[str] = ALLOWED_SCHEMES,
+    allowed_ports: frozenset[int] = ALLOWED_PORTS,
+) -> str:
     """Validate `url` for SSRF safety. Returns the URL unchanged on success.
 
     Raises SsrfViolation on unsupported scheme, disallowed port, userinfo,
@@ -135,10 +140,10 @@ def validate_url(url: str) -> str:
     if len(url) > MAX_URL_LENGTH:
         raise SsrfViolation(f"URL exceeds {MAX_URL_LENGTH} characters")
     parsed = urlparse(url)
-    if parsed.scheme not in ALLOWED_SCHEMES:
+    if parsed.scheme not in allowed_schemes:
         raise SsrfViolation(
             f"scheme {parsed.scheme or '<empty>'!r} is not allowed "
-            f"(allowed: {sorted(ALLOWED_SCHEMES)})"
+            f"(allowed: {sorted(allowed_schemes)})"
         )
     if parsed.username is not None or parsed.password is not None:
         raise SsrfViolation("URLs containing userinfo (user:pass@) are not allowed")
@@ -151,9 +156,10 @@ def validate_url(url: str) -> str:
         raise SsrfViolation(f"malformed host/port in URL: {exc}") from exc
     if not host:
         raise SsrfViolation("URL is missing a hostname")
-    if port is not None and port not in ALLOWED_PORTS:
-        raise SsrfViolation(f"port {port} is not allowed (allowed: {sorted(ALLOWED_PORTS)})")
-    _resolve_and_check(host, port if port is not None else 443)
+    if port is not None and port not in allowed_ports:
+        raise SsrfViolation(f"port {port} is not allowed (allowed: {sorted(allowed_ports)})")
+    default_port = 80 if parsed.scheme == "http" else 443
+    _resolve_and_check(host, port if port is not None else default_port)
     return url
 
 

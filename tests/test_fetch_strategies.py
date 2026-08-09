@@ -82,6 +82,21 @@ class TestDirectStrategy:
 
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_redirect_to_link_local_is_blocked(self, fetch_policy):
+        strategy = DirectFetchStrategy(fetch_policy)
+        redirect = MagicMock()
+        redirect.status_code = 302
+        redirect.headers = {"location": "http://169.254.169.254/latest/meta-data/"}
+        redirect.text = "This body must not be treated as successful redirected content"
+        redirect.raise_for_status = MagicMock()
+
+        with patch("httpx.AsyncClient.get", return_value=redirect) as mock_get:
+            result = await strategy.fetch("https://8.8.8.8/start")
+
+        assert result is None
+        mock_get.assert_awaited_once()
+
 
 class TestYouTubeStrategy:
     @pytest.mark.asyncio
@@ -402,6 +417,49 @@ class TestFetchService:
         assert "sufficiently long fetched content" in result.content
         fetch_service.cache.get.assert_called_once_with("https://example.com")
         fetch_service.cache.set.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_private_address_rejected_before_cache_or_strategy(self, fetch_service):
+        fetch_service.cache.get = AsyncMock(return_value=None)
+        strategies = [
+            fetch_service.direct_strategy,
+            fetch_service.jina_strategy,
+            fetch_service.crawl4ai_strategy,
+            fetch_service.archive_strategy,
+        ]
+        for strategy in strategies:
+            assert strategy is not None
+            strategy.fetch = AsyncMock(return_value=None)
+
+        result = await fetch_service.fetch("https://169.254.169.254/latest/meta-data/")
+
+        assert result is None
+        fetch_service.cache.get.assert_not_called()
+        for strategy in strategies:
+            strategy.fetch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_public_http_address_is_preserved(self, fetch_service):
+        fetch_service.cache.get = AsyncMock(return_value=None)
+        fetch_service.cache.set = AsyncMock(return_value=True)
+        fetch_service.direct_strategy = MagicMock()
+        fetch_service.direct_strategy.fetch = AsyncMock(
+            return_value=FetchResult(
+                url="http://8.8.8.8/article",
+                content="This is sufficiently long public HTTP content for testing purposes",
+                title="",
+                strategy_used="direct",
+                cached=False,
+                fetch_time_ms=0.0,
+                content_length=68,
+            )
+        )
+
+        result = await fetch_service.fetch("http://8.8.8.8/article")
+
+        assert result is not None
+        assert result.strategy_used == "direct"
+        fetch_service.direct_strategy.fetch.assert_awaited_once_with("http://8.8.8.8/article")
 
     @pytest.mark.asyncio
     async def test_blocked_domain(self, fetch_service):
