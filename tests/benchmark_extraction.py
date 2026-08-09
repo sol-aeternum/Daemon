@@ -53,6 +53,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlparse
 
 try:
     psycopg2 = importlib.import_module("psycopg2")
@@ -205,11 +206,17 @@ def _decrypt_content(value: Any) -> str:
 
 def _is_safe_db(db_url: str) -> bool:
     """Check that DATABASE_URL points to a local/dev database."""
-    return any(h in db_url for h in SAFE_HOSTS)
+    try:
+        return urlparse(db_url).hostname in SAFE_HOSTS
+    except ValueError:
+        return False
 
 
 def _is_safe_redis(redis_url: str) -> bool:
-    return any(h in redis_url for h in SAFE_HOSTS + ("redis", "cache"))
+    try:
+        return urlparse(redis_url).hostname in SAFE_HOSTS + ("redis", "cache")
+    except ValueError:
+        return False
 
 
 def wipe_redis_extract_keys(redis_url: str = REDIS_URL) -> int:
@@ -274,10 +281,7 @@ def wipe_memories(db_url: str = DATABASE_URL) -> int:
     Refuses to wipe non-local databases as a safety measure.
     """
     if not _is_safe_db(db_url):
-        print(
-            f"  ⚠ Refusing to wipe non-local database: {db_url}",
-            file=sys.stderr,
-        )
+        print("  ⚠ Refusing to wipe non-local database", file=sys.stderr)
         return 0
 
     # Try the actual table name — could be extraction_log or memory_extraction_log
@@ -1144,10 +1148,9 @@ def main() -> None:
     else:
         scenarios = SCENARIOS
 
-    db_display = effective_db_url.split("@")[-1] if "@" in effective_db_url else effective_db_url
     print("Daemon Memory Extraction Benchmark v2.4")
     print("Mode: deterministic transcript replay (no /chat assistant generation)")
-    print(f"Database: {db_display}")
+    print("Database: configured host-side benchmark database")
     print(f"Redis: {REDIS_URL}")
     print(f"Legacy wait setting: {args.wait}s (ignored in replay mode)")
     print(f"Scenarios: {len(scenarios)}")
