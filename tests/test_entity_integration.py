@@ -8,6 +8,7 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from cryptography.fernet import Fernet
 
 
 class TestProcessExtractionReturnsTuple:
@@ -303,7 +304,7 @@ class TestEntityAliasPersistenceRegression:
         }
         mock_pool.fetchrow = AsyncMock(return_value=stored_row)
 
-        store = MemoryStore(mock_pool, MockEncryption())
+        store = MemoryStore(mock_pool, MockEncryption(Fernet.generate_key().decode()))
 
         result = await store.insert_entity(
             user_id=user_id,
@@ -346,7 +347,7 @@ class TestEntityAliasPersistenceRegression:
         }
         mock_pool.fetchrow = AsyncMock(return_value=stored_row)
 
-        store = MemoryStore(mock_pool, MockEncryption())
+        store = MemoryStore(mock_pool, MockEncryption(Fernet.generate_key().decode()))
 
         result = await store.update_entity_aliases(
             entity_id=entity_id,
