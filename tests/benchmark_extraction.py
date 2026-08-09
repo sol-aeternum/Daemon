@@ -151,7 +151,7 @@ def _resolve_db_url(url: str) -> str:
     return url
 
 
-DATABASE_URL = _resolve_db_url(configured_benchmark_database_url())
+DATABASE_URL = _resolve_db_url(os.environ.get("DATABASE_URL", ""))
 REDIS_URL_RAW = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
 
@@ -1125,7 +1125,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    effective_db_url = args.db_url if args.db_url else DATABASE_URL
+    effective_db_url = (
+        args.db_url if args.db_url else _resolve_db_url(configured_benchmark_database_url())
+    )
 
     # Override wait
     if args.wait != DEFAULT_WAIT:

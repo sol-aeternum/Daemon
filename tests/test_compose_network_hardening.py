@@ -6,6 +6,7 @@ from typing import Any, cast
 
 import pytest
 import yaml
+from cryptography.fernet import Fernet
 
 import orchestrator.db as db_module
 from orchestrator.config import Settings
@@ -249,7 +250,10 @@ def test_apply_resolved_database_url_updates_settings_for_connection_entrypoints
     monkeypatch.setenv("POSTGRES_PASSWORD", "unique@secret")
     monkeypatch.setenv("POSTGRES_HOST", "postgres")
     monkeypatch.setenv("POSTGRES_DB", "daemon/db")
-    settings = Settings(database_url=None, daemon_environment="development")
+    settings = Settings(
+        database_url=None,
+        daemon_environment="development",
+    )
 
     resolved = apply_resolved_database_url(settings)
 
@@ -294,7 +298,11 @@ async def test_worker_pool_uses_postgres_env_derived_database_url(
     monkeypatch.setenv("POSTGRES_PASSWORD", "unique@secret")
     monkeypatch.setenv("POSTGRES_HOST", "postgres")
     monkeypatch.setenv("POSTGRES_DB", "daemon")
-    settings = Settings(database_url=None, daemon_environment="development")
+    settings = Settings(
+        database_url=None,
+        daemon_environment="development",
+        daemon_encryption_key=Fernet.generate_key().decode(),
+    )
     captured: dict[str, object] = {}
 
     async def fail_after_capture(**kwargs: object) -> None:
