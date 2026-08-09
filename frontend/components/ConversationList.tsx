@@ -160,6 +160,28 @@ export function ConversationList({
     onNavigate?.(section);
   };
 
+  // Dismiss open menus / the delete-confirmation dialog with Escape so the
+  // global Stop shortcut is not left inert. Without this, the
+  // `data-stop-shortcut-block` attribute makes Escape do nothing while an
+  // overlay is open.
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (deleteConfirmId) {
+        setDeleteConfirmId(null);
+        event.stopPropagation();
+        return;
+      }
+      if (menuOpenId) {
+        setMenuOpenId(null);
+        setMenuPosition(null);
+        event.stopPropagation();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [deleteConfirmId, menuOpenId]);
+
   const togglePin = (
     e: React.MouseEvent,
     id: string,
@@ -202,7 +224,15 @@ export function ConversationList({
               onBlur={() => handleRename(conv.id, editTitle)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') handleRename(conv.id, editTitle);
-                if (e.key === 'Escape') setEditingId(null);
+                if (e.key === 'Escape') {
+                  // Prevent the global stop-generation Escape handler in
+                  // `useStopShortcut` from also firing on this keystroke;
+                  // without `stopPropagation`, cancelling a rename would
+                  // unexpectedly abort the active chat generation.
+                  e.stopPropagation();
+                  e.preventDefault();
+                  setEditingId(null);
+                }
               }}
               onClick={(e) => e.stopPropagation()}
               className="w-full px-1 py-0.5 text-sm border rounded focus:outline-none focus:border-[var(--color-border-focus)]"
@@ -256,6 +286,7 @@ export function ConversationList({
             isBrowser &&
             createPortal(
               <div
+                data-stop-shortcut-block="true"
                 className="fixed w-32 bg-[var(--color-bg-secondary)] rounded-lg shadow-lg border border-[var(--color-border-muted)] py-1 z-50"
                 style={{ top: menuPosition.top, left: menuPosition.left }}
                 onClick={(e) => e.stopPropagation()}
@@ -410,7 +441,13 @@ export function ConversationList({
       <AccountWidget />
 
       {deleteConfirmId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Delete conversation"
+          data-stop-shortcut-block="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+        >
           <div className="w-full max-w-sm rounded-lg bg-[var(--color-bg-secondary)] p-4 shadow-xl">
             <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
               Delete Conversation

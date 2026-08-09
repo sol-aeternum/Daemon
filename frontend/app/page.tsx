@@ -24,6 +24,8 @@ import {
 } from '../components/ConversationHistoryProvider';
 import { AudioPlaybackProvider } from '../components/AudioPlaybackProvider';
 import { useEventArchive } from '../hooks/useEventArchive';
+import { useStopGeneration } from '../hooks/useStopGeneration';
+import { useStopShortcut } from '../hooks/useStopShortcut';
 import { formatMessageContent } from '../lib/format';
 import { useAgentStatus } from '../hooks/useAgentStatus';
 import { AgentStatusList } from '../components/AgentStatusList';
@@ -682,6 +684,7 @@ function ChatContent() {
     error,
     reload,
     data,
+    stop: stopChat,
   } = useChat({
     api: '/api/chat',
     body: { id: currentId || null },
@@ -740,6 +743,21 @@ function ChatContent() {
     }
     setMessages(currentConversation.messages);
   }, [currentConversation?.messages, isLoading, messages.length, setMessages]);
+
+  // Refs mirroring composer state so async `submitChat` can compare the
+  // submitted snapshot against the *current* (post-edit) values. The
+  // closure-scoped `input` / `pendingAttachments` variables are stale by the
+  // time `append()` resolves (React rerenders do not update the captured
+  // locals), so without these refs the comparison always matches and
+  // composer edits made during streaming are silently cleared.
+  const inputRef = useRef(input);
+  const pendingAttachmentsRef = useRef(pendingAttachments);
+  useEffect(() => {
+    inputRef.current = input;
+  }, [input]);
+  useEffect(() => {
+    pendingAttachmentsRef.current = pendingAttachments;
+  }, [pendingAttachments]);
 
   const attachmentItems = useMemo(
     () =>
@@ -873,6 +891,20 @@ function ChatContent() {
 
     if (!content) return;
 
+    // Snapshot the values we are about to submit so we can preserve any
+    // newer edits the user typed or picked while the request was in flight.
+    // Without this snapshot, clicking Stop (which resolves `append()`) would
+    // unconditionally `setInput("")` and `setPendingAttachments([])`, erasing
+    // drafts the user composed while waiting for the partial response.
+    //
+    // Important: the closure-scoped `input` and `pendingAttachments`
+    // variables do not reflect rerenders, so the comparison after `append()`
+    // resolves must read from refs (`inputRef` / `pendingAttachmentsRef`)
+    // that are kept in sync by an effect. Comparing the closure values
+    // directly would always match the snapshot and silently drop edits.
+    const submittedInput = input;
+    const submittedAttachments = pendingAttachments;
+
     try {
       await append(
         {
@@ -888,8 +920,17 @@ function ChatContent() {
         },
       );
 
-      setInput('');
-      setPendingAttachments([]);
+      // Only clear fields the user has not edited since the submit fired.
+      // `===` on a string compares values; `===` on the attachment array
+      // compares the array reference, which changes whenever the user adds
+      // or removes an attachment. Read the *current* values from refs so
+      // edits made during streaming are not silently cleared.
+      if (inputRef.current === submittedInput) {
+        setInput('');
+      }
+      if (pendingAttachmentsRef.current === submittedAttachments) {
+        setPendingAttachments([]);
+      }
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Failed to send message';
@@ -913,6 +954,24 @@ function ChatContent() {
   } = useEventArchive({
     data: data || [],
     isLoading,
+  });
+
+  const inputIsBusy = isLoading && messages.length > 0;
+  const {
+    stoppedMessageIds,
+    stopGeneration: handleStopGeneration,
+    assignConversationId,
+    clearAssignedConversationId,
+  } = useStopGeneration({
+    messages,
+    stop: stopChat,
+    archiveEvents: archiveCurrentEvents,
+    conversationId: currentId ?? null,
+  });
+
+  useStopShortcut({
+    active: inputIsBusy,
+    onStop: handleStopGeneration,
   });
 
   const persistedMessagesById = useMemo(() => {
@@ -986,14 +1045,18 @@ function ChatContent() {
     messagesEndRef.current.scrollIntoView({ behavior });
   }, [messages, isLoading]);
 
-  const inputIsBusy = isLoading && messages.length > 0;
-
   const handleSelectConversation = async (id: string) => {
-    switchConversation(id);
+    // Preserve per-message stopped markers across conversation switches —
+    // clearing here would silently drop `(stopped)` indicators for the
+    // current conversation when the user navigates away and back, since
+    // the set is keyed by message ID and IDs are stable across renders.
+    await switchConversation(id);
   };
 
   const handleNewChat = async () => {
+    clearAssignedConversationId();
     await createConversation();
+    setInput('');
     setPendingAttachments([]);
     setArchivedEvents({});
     thinkingDurationRef.current = 0;
@@ -1107,6 +1170,12 @@ function ChatContent() {
 
     const conversationId = conversationEvent.conversation_id;
     latestConversationIdRef.current = conversationId;
+    if (!currentId) {
+      // A fast Stop can be recorded before the URL has the backend-assigned
+      // conversation ID. Promote those provisional markers immediately so
+      // the router transition does not make the marker disappear.
+      assignConversationId(conversationId);
+    }
     const hasCouncilEvent = flattenedData.some(isCouncilDataEvent);
     const hasCouncilDoneEvent = flattenedData.some(isCouncilDoneDataEvent);
     const shouldSyncConversationState = !hasCouncilEvent || hasCouncilDoneEvent;
@@ -1134,7 +1203,13 @@ function ChatContent() {
     if (currentId) {
       urlUpdatedRef.current = false;
     }
-  }, [flattenedData, currentId, refreshConversations, router]);
+  }, [
+    assignConversationId,
+    flattenedData,
+    currentId,
+    refreshConversations,
+    router,
+  ]);
 
   const agents = useAgentStatus(events);
 
@@ -1480,6 +1555,15 @@ function ChatContent() {
                                 events={councilOutputEvents}
                               />
                             )}
+
+                            {stoppedMessageIds.has(message.id) && (
+                              <div
+                                role="status"
+                                className="text-xs text-[var(--color-text-muted)]"
+                              >
+                                (stopped)
+                              </div>
+                            )}
                           </div>
                         )}
 
@@ -1489,6 +1573,14 @@ function ChatContent() {
                             <div className="w-full">
                               <MarkdownMessage content={messageContent} />
                             </div>
+                            {stoppedMessageIds.has(message.id) && (
+                              <div
+                                role="status"
+                                className="text-xs text-[var(--color-text-muted)]"
+                              >
+                                (stopped)
+                              </div>
+                            )}
                             {documentDownloadForMessage && (
                               <div className="mt-4 w-full">
                                 <FileDownloadCard
@@ -1596,6 +1688,7 @@ function ChatContent() {
                   onInputChange={handleInputChange}
                   onSubmit={handleSubmit}
                   isLoading={inputIsBusy}
+                  onStop={handleStopGeneration}
                   attachments={attachmentItems}
                   onAttachFiles={handleAttachFiles}
                   onRemoveAttachment={handleRemoveAttachment}

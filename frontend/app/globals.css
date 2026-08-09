@@ -66,6 +66,7 @@
   --color-status-warning-bg: hsl(38, 60%, 15%); /* Warning background */
   --color-status-error: hsl(0, 75%, 55%); /* Error states */
   --color-status-error-bg: hsl(0, 50%, 15%); /* Error background */
+  --color-status-stop: hsl(0 65% 55%); /* Stop generation control */
   --color-status-info: hsl(215, 70%, 55%); /* Info states */
   --color-status-info-bg: hsl(215, 50%, 15%); /* Info background */
 

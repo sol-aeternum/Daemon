@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Paperclip, Send, X } from 'lucide-react';
 import { ModelSelector } from './ModelSelector';
 import { MicButton } from './MicButton';
+import { StopButton } from './StopButton';
 
 const MAX_TEXTAREA_HEIGHT = 200;
 
@@ -20,6 +21,7 @@ interface ChatInputBarProps {
   onInputChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
   onSubmit: (e?: { preventDefault?: () => void }) => void;
   isLoading: boolean;
+  onStop: () => void;
   // Cloud/Local toggle props
   isLocal?: boolean;
   onToggleLocal?: () => void;
@@ -41,6 +43,7 @@ export function ChatInputBar({
   onInputChange,
   onSubmit,
   isLoading,
+  onStop,
   isLocal = false,
   onToggleLocal,
   attachments = [],
@@ -243,20 +246,22 @@ export function ChatInputBar({
               error={micError}
             />
 
-            <button
-              type="submit"
-              aria-label="Send message"
-              disabled={
-                (!input.trim() && attachments.length === 0) || isLoading
-              }
-              className={`min-h-[44px] min-w-[44px] rounded-xl p-2 transition-all duration-200 ${
-                (input.trim() || attachments.length > 0) && !isLoading
-                  ? 'bg-[var(--color-accent-primary)] text-white hover:bg-[var(--color-accent-hover)] shadow-sm'
-                  : 'bg-transparent text-[var(--color-text-muted)] cursor-not-allowed'
-              }`}
-            >
-              <Send className="w-4 h-4" />
-            </button>
+            {isLoading ? (
+              <StopButton onStop={onStop} />
+            ) : (
+              <button
+                type="submit"
+                aria-label="Send message"
+                disabled={!input.trim() && attachments.length === 0}
+                className={`min-h-[44px] min-w-[44px] rounded-xl p-2 transition-all duration-200 ${
+                  input.trim() || attachments.length > 0
+                    ? 'bg-[var(--color-accent-primary)] text-white hover:bg-[var(--color-accent-hover)] shadow-sm'
+                    : 'bg-transparent text-[var(--color-text-muted)] cursor-not-allowed'
+                }`}
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            )}
           </div>
         </div>
 
@@ -271,7 +276,8 @@ export function ChatInputBar({
 
       {/* Disclaimer */}
       <div className="text-center mt-2 text-xs text-[var(--color-text-muted)]">
-        Daemon can make mistakes. Consider checking important information.
+        <kbd>Esc</kbd> stop · Daemon can make mistakes. Consider checking
+        important information.
       </div>
     </div>
   );
