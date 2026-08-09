@@ -202,7 +202,15 @@ export function ConversationList({
               onBlur={() => handleRename(conv.id, editTitle)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') handleRename(conv.id, editTitle);
-                if (e.key === 'Escape') setEditingId(null);
+                if (e.key === 'Escape') {
+                  // Prevent the global stop-generation Escape handler in
+                  // `useStopShortcut` from also firing on this keystroke;
+                  // without `stopPropagation`, cancelling a rename would
+                  // unexpectedly abort the active chat generation.
+                  e.stopPropagation();
+                  e.preventDefault();
+                  setEditingId(null);
+                }
               }}
               onClick={(e) => e.stopPropagation()}
               className="w-full px-1 py-0.5 text-sm border rounded focus:outline-none focus:border-[var(--color-border-focus)]"

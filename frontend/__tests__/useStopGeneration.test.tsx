@@ -77,4 +77,34 @@ describe('useStopGeneration', () => {
     expect(archiveEvents).not.toHaveBeenCalled();
     expect(screen.queryByText('(stopped)')).toBeNull();
   });
+
+  it('preserves stopped markers when the messages array is swapped to a different conversation', () => {
+    const stop = vi.fn();
+    const archiveEvents = vi.fn();
+    function SwitchHarness({ conversation }: { conversation: 'a' | 'b' }) {
+      const messagesByConversation: Record<'a' | 'b', Message[]> = {
+        a: [{ id: 'a_partial', role: 'assistant', content: 'A partial' }],
+        b: [{ id: 'b_partial', role: 'assistant', content: 'B partial' }],
+      };
+      return (
+        <Harness
+          messages={messagesByConversation[conversation]}
+          stop={stop}
+          archiveEvents={archiveEvents}
+        />
+      );
+    }
+    const { rerender } = render(<SwitchHarness conversation="a" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    expect(screen.getByText('(stopped)')).not.toBeNull();
+
+    // Switch to conversation B — A's stopped marker should not appear on B.
+    rerender(<SwitchHarness conversation="b" />);
+    expect(screen.queryByText('(stopped)')).toBeNull();
+
+    // Switch back to A — A's stopped marker should still be present
+    // because the in-memory set is keyed by message ID and persists.
+    rerender(<SwitchHarness conversation="a" />);
+    expect(screen.getByText('(stopped)')).not.toBeNull();
+  });
 });

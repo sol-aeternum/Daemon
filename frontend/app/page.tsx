@@ -876,6 +876,14 @@ function ChatContent() {
 
     if (!content) return;
 
+    // Snapshot the values we are about to submit so we can preserve any
+    // newer edits the user typed or picked while the request was in flight.
+    // Without this snapshot, clicking Stop (which resolves `append()`) would
+    // unconditionally `setInput("")` and `setPendingAttachments([])`, erasing
+    // drafts the user composed while waiting for the partial response.
+    const submittedInput = input;
+    const submittedAttachments = pendingAttachments;
+
     try {
       await append(
         {
@@ -891,8 +899,15 @@ function ChatContent() {
         },
       );
 
-      setInput('');
-      setPendingAttachments([]);
+      // Only clear fields the user has not edited since the submit fired.
+      // The `===` check is reference equality on the string and on the
+      // pending-attachment array; any edit changes the reference.
+      if (input === submittedInput) {
+        setInput('');
+      }
+      if (pendingAttachments === submittedAttachments) {
+        setPendingAttachments([]);
+      }
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Failed to send message';
@@ -1006,8 +1021,11 @@ function ChatContent() {
   }, [messages, isLoading]);
 
   const handleSelectConversation = async (id: string) => {
-    resetStoppedMessages();
-    switchConversation(id);
+    // Preserve per-message stopped markers across conversation switches —
+    // clearing here would silently drop `(stopped)` indicators for the
+    // current conversation when the user navigates away and back, since
+    // the set is keyed by message ID and IDs are stable across renders.
+    await switchConversation(id);
   };
 
   const handleNewChat = async () => {
@@ -1499,6 +1517,15 @@ function ChatContent() {
                               <CouncilOutputViewer
                                 events={councilOutputEvents}
                               />
+                            )}
+
+                            {stoppedMessageIds.has(message.id) && (
+                              <div
+                                role="status"
+                                className="text-xs text-[var(--color-text-muted)]"
+                              >
+                                (stopped)
+                              </div>
                             )}
                           </div>
                         )}
