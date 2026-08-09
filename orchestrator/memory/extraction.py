@@ -595,12 +595,16 @@ async def process_extraction(
     text: str,
     *,
     last_message_observed_at: datetime | None = None,
-) -> tuple[bool, list[dict[str, Any]]]:
+) -> tuple[bool, list[dict[str, Any]], bool]:
     """Orchestrate extraction -> dedup -> insert.
 
     Returns:
-        Tuple of (success, new_memories) where new_memories is the list of
-        newly created memory dicts from deduplication.
+        Tuple of ``(success, new_memories, summary_continuation_needed)``.
+
+        ``summary_continuation_needed`` is ``True`` when the inline
+        post-extraction summary call filled its bounded batch and more
+        finalized messages remain. Worker callers should enqueue
+        ``generate_summary_job(force=True)`` to drain the tail.
     """
     from orchestrator.memory.dedup import deduplicate_facts
 
@@ -633,7 +637,7 @@ async def process_extraction(
             outcome = retry_outcome
 
     if not outcome.facts:
-        return True, []
+        return True, [], False
 
     result = await deduplicate_facts(
         store,
@@ -674,9 +678,19 @@ async def process_extraction(
         import importlib
 
         summary_module = importlib.import_module("orchestrator.memory.summary")
-        generate_or_update_summary = getattr(summary_module, "generate_or_update_summary")
-        await generate_or_update_summary(conversation_id, store)
+        update_result_fn = getattr(summary_module, "_generate_or_update_summary_result", None)
+        if update_result_fn is not None:
+            update_result = await update_result_fn(conversation_id, store)
+        else:
+            # Older test / shim: fall back to the public wrapper that hides
+            # the continuation flag.
+            legacy = getattr(summary_module, "generate_or_update_summary")
+            await legacy(conversation_id, store)
+            update_result = None
     except Exception:
-        pass
+        return True, result.new, False
 
-    return True, result.new
+    summary_continuation_needed = bool(
+        update_result is not None and update_result.continuation_needed
+    )
+    return True, result.new, summary_continuation_needed
