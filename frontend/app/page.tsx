@@ -526,7 +526,6 @@ function ChatContent() {
   const [activeModel, setActiveModel] = useState<string>("auto");
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
 
-
   const currentConversation = getCurrentConversation();
 
   useEffect(() => {
