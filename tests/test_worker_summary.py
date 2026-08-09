@@ -121,7 +121,9 @@ async def test_generate_summary_job_enqueues_continuation_for_full_batch(
         args=(str(conversation_id), True),
     )
     # The persisted baseline advance is min(persisted + len, contiguous).
-    update_kwargs = store.update_conversation_summary.await_args.kwargs
+    update_args = store.update_conversation_summary.await_args
+    assert update_args is not None
+    update_kwargs = update_args.kwargs
     assert update_kwargs["summarized_message_count"] == 100
 
 

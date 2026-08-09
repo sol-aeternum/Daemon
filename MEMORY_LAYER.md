@@ -215,10 +215,11 @@ L0 memories bypass embedding-based retrieval entirely. They are always prepended
 
 `summary.py` — `generate_or_update_summary()`:
 
-- Triggered after each successful extraction (best-effort)
-- **Incremental:** fetches only messages since `summary_updated_at`
-- Uses `auto_fast_model` from tier config
-- Updates `conversations.summary` and `summary_updated_at`
+- Triggered after each successful extraction (best-effort) and periodically by `generate_summary_job` (arq worker)
+- **Cursor model:** persists `last_summarized_msg_count` in `conversations.metadata` JSONB and a per-iteration `snapshot_at` timestamp. The batch is read at `offset = persisted_baseline` and bounded by the contiguous-finalized prefix at the snapshot (the rank of the first non-finalized row, in `created_at ASC, id ASC` order, minus 1). The persisted baseline advances only by the rows actually incorporated in this iteration, capped at `contiguous_baseline` (matches the inline path on `summary.py:225`).
+- **Atomic write:** `update_conversation_summary` advances `summary`, `summary_updated_at`, `summarized_message_count`, `last_summarized_msg_count`, and `summary_continuation_pending` in a single SQL row, with optimistic concurrency; on conflict the inline path surfaces continuation to the extraction caller which re-enqueues `generate_summary_job(force=True)`.
+- **Continuation:** a full batch (100 rows in the worker, 20 in the inline path) sets `summary_continuation_pending` and the worker enqueues a forced summary continuation. The flag survives extraction retries via `consume_summary_continuation_pending` at the top of `extract_memories`.
+- Uses `auto_fast_model` from tier config.
 
 ### 9. Injection
 
