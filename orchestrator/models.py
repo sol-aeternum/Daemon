@@ -125,5 +125,10 @@ class TtsRequest(BaseModel):
     voice: str | None = None
     model: str | None = None
     speed: float | None = None
-    format: str | None = None
+    # Constrained to the supported set so the on-disk cache filename
+    # (built from `format` in orchestrator/main.py:/tts) cannot be
+    # influenced by an unauthenticated caller. Pydantic rejects
+    # anything else with 422 before the filesystem path is constructed.
+    # See issue #114.
+    format: Literal["mp3", "wav", "ogg"] | None = None
     cache: bool | None = True
