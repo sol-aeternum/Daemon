@@ -960,7 +960,8 @@ function ChatContent() {
   const {
     stoppedMessageIds,
     stopGeneration: handleStopGeneration,
-    resetStoppedMessages,
+    assignConversationId,
+    clearAssignedConversationId,
   } = useStopGeneration({
     messages,
     stop: stopChat,
@@ -1053,11 +1054,11 @@ function ChatContent() {
   };
 
   const handleNewChat = async () => {
+    clearAssignedConversationId();
     await createConversation();
     setInput('');
     setPendingAttachments([]);
     setArchivedEvents({});
-    resetStoppedMessages();
     thinkingDurationRef.current = 0;
     eventsRef.current = [];
     lastArchivedEventKeysRef.current = new Set();
@@ -1169,6 +1170,12 @@ function ChatContent() {
 
     const conversationId = conversationEvent.conversation_id;
     latestConversationIdRef.current = conversationId;
+    if (!currentId) {
+      // A fast Stop can be recorded before the URL has the backend-assigned
+      // conversation ID. Promote those provisional markers immediately so
+      // the router transition does not make the marker disappear.
+      assignConversationId(conversationId);
+    }
     const hasCouncilEvent = flattenedData.some(isCouncilDataEvent);
     const hasCouncilDoneEvent = flattenedData.some(isCouncilDoneDataEvent);
     const shouldSyncConversationState = !hasCouncilEvent || hasCouncilDoneEvent;
@@ -1196,7 +1203,13 @@ function ChatContent() {
     if (currentId) {
       urlUpdatedRef.current = false;
     }
-  }, [flattenedData, currentId, refreshConversations, router]);
+  }, [
+    assignConversationId,
+    flattenedData,
+    currentId,
+    refreshConversations,
+    router,
+  ]);
 
   const agents = useAgentStatus(events);
 

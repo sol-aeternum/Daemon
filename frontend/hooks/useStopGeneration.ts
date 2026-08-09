@@ -34,8 +34,32 @@ export function useStopGeneration({
   const [stoppedByConversation, setStoppedByConversation] = useState<
     Record<string, Set<string>>
   >(() => ({}));
-  const activeKey = conversationId ?? '__new__';
+  const [assignedConversationId, setAssignedConversationId] = useState<
+    string | null
+  >(null);
+  const activeKey = conversationId ?? assignedConversationId ?? NEW_CHAT_KEY;
   const stoppedMessageIds = stoppedByConversation[activeKey] ?? EMPTY_SET;
+
+  const assignConversationId = useCallback((nextConversationId: string) => {
+    setAssignedConversationId(nextConversationId);
+    setStoppedByConversation((current) => {
+      const pendingStoppedIds = current[NEW_CHAT_KEY];
+      if (!pendingStoppedIds || pendingStoppedIds.size === 0) return current;
+
+      const nextStoppedIds = new Set(current[nextConversationId] ?? EMPTY_SET);
+      for (const messageId of pendingStoppedIds) {
+        nextStoppedIds.add(messageId);
+      }
+
+      const next = { ...current, [nextConversationId]: nextStoppedIds };
+      delete next[NEW_CHAT_KEY];
+      return next;
+    });
+  }, []);
+
+  const clearAssignedConversationId = useCallback(() => {
+    setAssignedConversationId(null);
+  }, []);
 
   const stopGeneration = useCallback(() => {
     const latestMessage = messages[messages.length - 1];
@@ -53,17 +77,13 @@ export function useStopGeneration({
     stop();
   }, [activeKey, archiveEvents, messages, stop]);
 
-  // Reset the markers for the *current* conversation only; other
-  // conversations retain their markers so the user can navigate back and
-  // see the `(stopped)` indicator on their previously-interrupted response.
-  const resetStoppedMessages = useCallback(() => {
-    setStoppedByConversation((current) => ({
-      ...current,
-      [activeKey]: new Set(),
-    }));
-  }, [activeKey]);
-
-  return { stoppedMessageIds, stopGeneration, resetStoppedMessages };
+  return {
+    stoppedMessageIds,
+    stopGeneration,
+    assignConversationId,
+    clearAssignedConversationId,
+  };
 }
 
+const NEW_CHAT_KEY = '__new__';
 const EMPTY_SET: Set<string> = new Set();

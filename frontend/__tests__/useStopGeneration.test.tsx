@@ -16,12 +16,13 @@ function Harness({
   archiveEvents: (messageId: string) => void;
   conversationId: string | null;
 }) {
-  const { stoppedMessageIds, stopGeneration } = useStopGeneration({
-    messages,
-    stop,
-    archiveEvents,
-    conversationId,
-  });
+  const { stoppedMessageIds, stopGeneration, assignConversationId } =
+    useStopGeneration({
+      messages,
+      stop,
+      archiveEvents,
+      conversationId,
+    });
 
   return (
     <>
@@ -33,6 +34,12 @@ function Harness({
       ))}
       <button type="button" onClick={stopGeneration}>
         Stop
+      </button>
+      <button
+        type="button"
+        onClick={() => assignConversationId('conv-assigned')}
+      >
+        Assign conversation
       </button>
     </>
   );
@@ -58,6 +65,43 @@ describe('useStopGeneration', () => {
     expect(stop).toHaveBeenCalledTimes(1);
     expect(archiveEvents).toHaveBeenCalledWith('partial');
     expect(screen.getByText('Partial answer')).not.toBeNull();
+    expect(screen.getByText('(stopped)')).not.toBeNull();
+  });
+
+  it('retains a stopped marker when a new chat receives its backend ID', () => {
+    const stop = vi.fn();
+    const archiveEvents = vi.fn();
+    const messages = [
+      { id: 'partial', role: 'assistant', content: 'Partial answer' },
+    ];
+    const { rerender } = render(
+      <Harness
+        messages={messages}
+        stop={stop}
+        archiveEvents={archiveEvents}
+        conversationId={null}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    expect(screen.getByText('(stopped)')).not.toBeNull();
+
+    // The conversation SSE event arrives before router.replace updates the
+    // URL-backed currentId. The marker must be promoted immediately and then
+    // remain visible after the router transition completes.
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Assign conversation' }),
+    );
+    expect(screen.getByText('(stopped)')).not.toBeNull();
+
+    rerender(
+      <Harness
+        messages={messages}
+        stop={stop}
+        archiveEvents={archiveEvents}
+        conversationId="conv-assigned"
+      />,
+    );
     expect(screen.getByText('(stopped)')).not.toBeNull();
   });
 
