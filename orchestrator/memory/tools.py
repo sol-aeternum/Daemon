@@ -241,13 +241,26 @@ class MemoryWriteTool(Tool):
             if not old_memory:
                 return "Memory not found"
 
+            # Authorization: the target memory must belong to the calling
+            # user. Without this check, any user who learns another user's
+            # memory UUID (via prompt injection, log leakage, shared exports)
+            # could close that user's memory through the LLM-callable tool
+            # path. The HTTP route (`orchestrator/routes/memories.py`) and
+            # sibling tool (`MemoryPromoteTool`) already enforce the same
+            # guard; this fixes the cross-user IDOR for `MemoryWriteTool`.
+            # Match the 404 wording used by the HTTP route so the response
+            # reveals nothing about whether the ID exists for another user.
+            if old_memory.get("user_id") != self.user_id:
+                return "Memory not found"
+
             # Inherit category and slot if not provided
             content = kwargs.get("content", old_memory.get("content", ""))
             category = kwargs.get("category", old_memory.get("category", "fact"))
             slot = kwargs.get("slot", old_memory.get("memory_slot"))
 
-            # Close the old memory
-            await self.store.close_memory(memory_id)
+            # Close the old memory (defense-in-depth: store-layer
+            # `user_id` filter also constrains the UPDATE).
+            await self.store.close_memory(memory_id, user_id=self.user_id)
 
             # Insert new memory with fresh embedding
             new_memory_id = await dedup_and_store(
@@ -273,7 +286,16 @@ class MemoryWriteTool(Tool):
             old_memory = await self.store.get_memory(memory_id)
             if not old_memory:
                 return "Memory not found"
-            await self.store.delete_memory(memory_id, soft=True)
+            # Same authorization guard as `update` above: the target memory
+            # must belong to the calling user. Without this check a user
+            # who learns another user's memory UUID can soft-delete that
+            # memory via the LLM tool path.
+            if old_memory.get("user_id") != self.user_id:
+                return "Memory not found"
+            # Defense-in-depth: also pass `user_id` to the store so the
+            # SQL UPDATE itself rejects any future caller that forgets the
+            # tool-layer guard.
+            await self.store.delete_memory(memory_id, soft=True, user_id=self.user_id)
             return f"Memory {memory_id} deleted."
 
         return json.dumps({"error": f"Unknown action: {action}"})
