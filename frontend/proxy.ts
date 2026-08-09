@@ -23,7 +23,17 @@ const CONNECT_SRC_EXTERNAL_HOSTS = [
   // ElevenLabs streaming TTS and realtime STT — frontend/hooks/useStreamingTts.ts,
   // frontend/hooks/useStt.ts, frontend/components/TextToSpeechButton.tsx.
   'wss://api.elevenlabs.io',
+  // Google Identity Services — GIS communicates with this origin during
+  // hosted sign-in (AuthLanding.tsx → google.accounts.id.prompt()). Without
+  // this exception the GIS iframe prompt and its XHR callbacks are blocked
+  // by the strict connect-src policy.
+  'https://accounts.google.com',
 ];
+
+// Hosts allowed in `frame-src` for the GIS iframe-based prompt
+// (google.accounts.id.prompt() in AuthLanding.tsx). The hosted Google
+// sign-in dialog renders inside an iframe pointed at this origin.
+const FRAME_SRC_GIS_HOSTS = ['https://accounts.google.com'];
 
 // `media-src` is required so provider-hosted video/audio (e.g. fal/xAI
 // generation URLs passed to <video>) can render. The cross-origin <video>
@@ -36,8 +46,10 @@ const IMG_SRC_EXTERNAL_HOSTS = ['https:'];
 // `frame-src` is required so generated / authenticated PDFs (rendered via
 // `blob:` and `data:` URLs in `FilePreview.tsx` / `PdfPreview.tsx`) load
 // inside an `<iframe>`. Without this, `default-src 'self'` governs frames
-// and blocks the inline preview even though the document downloads.
-const FRAME_SRC_HOSTS = ["'self'", 'blob:', 'data:'];
+// and blocks the inline preview even though the document downloads. The GIS
+// host is also allowed so the hosted Google sign-in iframe prompt can
+// render inside its own iframe container.
+const FRAME_SRC_HOSTS = ["'self'", 'blob:', 'data:', ...FRAME_SRC_GIS_HOSTS];
 
 /**
  * Build the `connect-src` host list. Always includes the static list of
@@ -68,6 +80,14 @@ function buildContentSecurityPolicy(nonce: string): string {
     "default-src 'self'",
     `script-src 'self' 'nonce-${nonce}' ${SCRIPT_SRC_EXTERNAL_HOSTS.join(' ')}`.trim(),
     `style-src 'self' 'nonce-${nonce}'`,
+    // `style-src-attr 'unsafe-inline'` is required because React's `style={{...}}`
+    // attributes cannot be nonce-tagged (nonces authorize whole `<style>` tags
+    // or external stylesheets, not inline attribute values). The repository
+    // uses these attributes for behavior-critical values such as the
+    // conversation menu's `top`/`left`, video and council progress widths,
+    // preview colors, and input sizing — without this, browsers enforcing
+    // strict CSP silently strip those values and leave controls misplaced.
+    "style-src-attr 'unsafe-inline'",
     `img-src 'self' data: blob: ${IMG_SRC_EXTERNAL_HOSTS.join(' ')}`.trim(),
     "font-src 'self' data:",
     `connect-src ${connectSrc}`,

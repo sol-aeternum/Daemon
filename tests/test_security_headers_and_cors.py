@@ -17,7 +17,14 @@ from orchestrator.main import (
     app,
     warn_on_unsafe_cors_wildcards,
 )
-from orchestrator.security_headers import SECURITY_HEADER_VALUES, SecurityHeadersMiddleware
+from orchestrator.security_headers import (
+    SECURITY_HEADER_VALUES,
+    STRICT_TRANSPORT_SECURITY,
+    SecurityHeadersMiddleware,
+    X_CONTENT_TYPE_OPTIONS,
+    X_FRAME_OPTIONS,
+    _OuterSecurityHeadersMiddleware,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -218,13 +225,120 @@ def test_root_layout_propagates_csp_nonce_to_client() -> None:
 def test_production_disables_fastapi_docs_endpoints() -> None:
     """The strict CSP forbids the docs CDN assets and inline bootstrap
     script that FastAPI / Swagger UI / ReDoc require. We disable the
-    docs endpoints unconditionally so the policy and the docs surface
-    don't conflict in any environment.
+    rendered docs endpoints unconditionally so the policy and the docs
+    surface don't conflict in any environment; the OpenAPI schema
+    endpoint (``/openapi.json``) is left at the FastAPI default so API
+    clients, SDK generators, and development tooling can still introspect
+    the surface.
     """
     source = (ROOT / "orchestrator" / "main.py").read_text()
-    # docs/redoc/openapi URL kwargs are passed as plain `None` (not
-    # env-conditional) so FastAPI 404s on /docs and /redoc regardless of
-    # daemon_environment. The OpenAPI schema URL is also disabled.
-    assert "docs_url=None,\n    redoc_url=None,\n    openapi_url=None," in source or (
-        "docs_url=None" in source and "redoc_url=None" in source and "openapi_url=None" in source
-    )
+    # Rendered docs URLs are explicitly disabled.
+    assert "docs_url=None" in source
+    assert "redoc_url=None" in source
+    # The OpenAPI schema URL is intentionally not overridden to ``None``
+    # — the JSON schema has no CDN assets or inline scripts that
+    # conflict with the strict CSP, and SDK generators / tooling depend
+    # on it. The FastAPI default leaves the kwarg unset entirely, so we
+    # check that no assignment to that name exists on the FastAPI(...)
+    # constructor invocation.
+    fastapi_ctor_block_match = re.search(r"FastAPI\([^)]*\)", source, flags=re.DOTALL)
+    assert fastapi_ctor_block_match is not None
+    assert "openapi_url" not in fastapi_ctor_block_match.group(0)
+
+
+def test_proxy_csp_permits_gis_frame_and_connect() -> None:
+    """Hosted Google sign-in (frontend/components/AuthLanding.tsx →
+    google.accounts.id.prompt()) renders an iframe pointed at
+    https://accounts.google.com and exchanges XHRs with that origin. The
+    strict CSP must allow Google in both frame-src and connect-src so
+    the GIS iframe prompt and its callbacks are not blocked.
+    """
+    source = (ROOT / "frontend" / "proxy.ts").read_text()
+    # frame-src must include the GIS origin.
+    assert re.search(r"frame-src[^;]*https://accounts\.google\.com", source) is not None
+    # connect-src must include the GIS origin (not just ElevenLabs /
+    # NEXT_PUBLIC_API_URL). Both directives reference it.
+    assert source.count("https://accounts.google.com") >= 3
+
+
+def test_proxy_csp_permits_inline_style_attributes() -> None:
+    """React's ``style={{...}}`` attributes cannot carry nonces — nonces
+    authorize whole ``<style>`` tags or external stylesheets, not inline
+    attribute values. The repository relies on inline style attributes
+    for behavior-critical positioning (conversation menu offsets, video /
+    council progress widths, preview colors, input sizing). Without
+    ``style-src-attr 'unsafe-inline'`` browsers enforcing strict CSP
+    silently strip those values.
+    """
+    source = (ROOT / "frontend" / "proxy.ts").read_text()
+    assert "style-src-attr 'unsafe-inline'" in source
+
+
+@pytest.mark.asyncio
+async def test_openapi_schema_endpoint_remains_available() -> None:
+    """The /openapi.json schema endpoint must remain reachable for API
+    clients, SDK generators, and development tooling. Only the rendered
+    docs (Swagger UI / ReDoc) are disabled.
+    """
+    from orchestrator.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/openapi.json")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body.get("openapi")
+    assert body.get("paths") is not None
+
+
+@pytest.mark.asyncio
+async def test_rendered_docs_endpoints_return_404() -> None:
+    """Swagger UI and ReDoc are disabled — both render CDN assets that
+    conflict with the strict CSP, so they return 404 in every environment.
+    """
+    from orchestrator.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        docs_response = await client.get("/docs")
+        redoc_response = await client.get("/redoc")
+
+    assert docs_response.status_code == 404
+    assert redoc_response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_unhandled_exception_response_carries_security_headers() -> None:
+    """When a route raises an unhandled exception, Starlette's outermost
+    ``ServerErrorMiddleware`` generates the 500 response *outside* the
+    user-added middleware stack. ``add_middleware`` only places the
+    middleware inside that error handler, so the outer wrap must be done
+    by building the middleware stack explicitly and wrapping it. Verify
+    the resulting 500 still carries HSTS, CSP, and X-Frame-Options.
+    """
+
+    crash_app = FastAPI()
+
+    @crash_app.get("/boom")
+    async def boom() -> None:
+        raise RuntimeError("intentional crash for security-headers regression test")
+
+    # Mimic the orchestrator.main wiring: build the stack eagerly (which
+    # puts ServerErrorMiddleware on the outside) and wrap with the outer
+    # security-headers pass so 500s emitted by ServerErrorMiddleware
+    # carry the headers.
+    _built = crash_app.build_middleware_stack()
+    crash_app.middleware_stack = _OuterSecurityHeadersMiddleware(_built)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=crash_app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        response = await client.get("/boom")
+
+    assert response.status_code == 500
+    assert response.headers["Strict-Transport-Security"] == STRICT_TRANSPORT_SECURITY
+    assert response.headers["X-Frame-Options"] == X_FRAME_OPTIONS
+    assert response.headers["X-Content-Type-Options"] == X_CONTENT_TYPE_OPTIONS
+    csp = response.headers["Content-Security-Policy"]
+    assert "default-src 'self'" in csp
+    assert "frame-ancestors 'none'" in csp
