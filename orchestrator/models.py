@@ -125,5 +125,6 @@ class TtsRequest(BaseModel):
     voice: str | None = None
     model: str | None = None
     speed: float | None = None
-    format: str | None = None
+    # Keep the provider format and cache-file suffix within the supported set.
+    format: Literal["mp3", "opus", "wav"] | None = None
     cache: bool | None = True

@@ -1400,17 +1400,33 @@ async def serve_generated_image(
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> FileResponse:
     """Serve a generated image file from disk."""
-    # Sanitize filename to prevent path traversal
-    safe_name = Path(filename).name
-    filepath = GENERATED_IMAGES_DIR / safe_name
-    if not filepath.exists() or not filepath.is_file():
+    filepath = _resolve_safe_file_path(GENERATED_IMAGES_DIR, filename)
+    if filepath is None:
         raise HTTPException(status_code=404, detail="Image not found")
+
     media_type = "image/png"
-    if safe_name.endswith(".jpg") or safe_name.endswith(".jpeg"):
+    if filename.endswith((".jpg", ".jpeg")):
         media_type = "image/jpeg"
-    elif safe_name.endswith(".webp"):
+    elif filename.endswith(".webp"):
         media_type = "image/webp"
     return FileResponse(filepath, media_type=media_type)
+
+
+def _resolve_safe_file_path(base_dir: Path, filename: str) -> Path | None:
+    safe_name = os.path.basename(filename)
+    if not safe_name or filename != safe_name:
+        return None
+    try:
+        base_resolved = base_dir.resolve()
+        for directory_entry in base_resolved.iterdir():
+            if directory_entry.name != safe_name:
+                continue
+            candidate = directory_entry.resolve()
+            candidate.relative_to(base_resolved)
+            return candidate if candidate.is_file() else None
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return None
 
 
 @app.get("/generated-audio/{filename}")
@@ -1419,17 +1435,16 @@ async def serve_generated_audio(
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> FileResponse:
     """Serve a generated audio file from disk (TTS or sound effects)."""
-    safe_name = Path(filename).name
-    # Check TTS cache first, then generated audio directory
-    filepath = TTS_CACHE_DIR / safe_name
-    if not filepath.exists():
-        filepath = GENERATED_AUDIO_DIR / safe_name
-    if not filepath.exists() or not filepath.is_file():
+    filepath = _resolve_safe_file_path(TTS_CACHE_DIR, filename)
+    if filepath is None:
+        filepath = _resolve_safe_file_path(GENERATED_AUDIO_DIR, filename)
+    if filepath is None:
         raise HTTPException(status_code=404, detail="Audio not found")
+
     media_type = "audio/mpeg"
-    if safe_name.endswith(".wav"):
+    if filename.endswith(".wav"):
         media_type = "audio/wav"
-    elif safe_name.endswith(".ogg"):
+    elif filename.endswith((".ogg", ".opus")):
         media_type = "audio/ogg"
     return FileResponse(filepath, media_type=media_type)
 
@@ -1440,20 +1455,19 @@ async def serve_generated_file(
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> FileResponse:
     """Serve a generated document file from disk."""
-    safe_name = Path(filename).name
-    filepath = GENERATED_FILES_DIR / safe_name
-    if not filepath.exists() or not filepath.is_file():
+    filepath = _resolve_safe_file_path(GENERATED_FILES_DIR, filename)
+    if filepath is None:
         raise HTTPException(status_code=404, detail="File not found")
 
     # Determine media type based on extension
-    media_type = "application/octet-stream"  # default
-    if safe_name.endswith(".docx"):
+    media_type = "application/octet-stream"
+    if filename.endswith(".docx"):
         media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    elif safe_name.endswith(".csv"):
+    elif filename.endswith(".csv"):
         media_type = "text/csv"
-    elif safe_name.endswith(".xlsx"):
+    elif filename.endswith(".xlsx"):
         media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    elif safe_name.endswith(".txt"):
+    elif filename.endswith(".txt"):
         media_type = "text/plain"
 
     return FileResponse(filepath, media_type=media_type)
@@ -1501,15 +1515,14 @@ async def text_to_speech(
 
     format_map = {
         "mp3": "mp3_22050_32",
-        "wav": "pcm_22050",
-        "ogg": "ogg_vorbis_22050",
+        "opus": "opus_48000_32",
+        "wav": "wav_22050",
     }
-    output_format = format_map.get(fmt, "mp3_44100_128")
+    output_format = format_map[fmt]
 
     request_body: dict[str, Any] = {
         "text": text,
         "model_id": model if model.startswith("eleven") else "eleven_multilingual_v2",
-        "output_format": output_format,
     }
     if speed and speed != 1.0:
         request_body["voice_settings"] = {
@@ -1520,7 +1533,12 @@ async def text_to_speech(
         }
 
     async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(url, json=request_body, headers=headers)
+        response = await client.post(
+            url,
+            params={"output_format": output_format},
+            json=request_body,
+            headers=headers,
+        )
         if response.status_code != 200:
             raise HTTPException(
                 status_code=502,
