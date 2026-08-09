@@ -1,6 +1,6 @@
-import type { ReactNode } from "react";
-import { FileText, Table, File, Download } from "lucide-react";
-import { ensureAuthHeader } from "@/lib/auth";
+import type { ReactNode } from 'react';
+import { FileText, Table, File, Download } from 'lucide-react';
+import { ensureAuthHeader } from '@/lib/auth';
 
 interface FileDownloadCardProps {
   filename: string;
@@ -12,27 +12,30 @@ interface FileDownloadCardProps {
 }
 
 function formatFileSize(bytes: number): string {
-  if (bytes === 0) return "0 B";
+  if (bytes === 0) return '0 B';
   const k = 1024;
-  const sizes = ["B", "KB", "MB", "GB"];
+  const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
 function getFileIcon(fileType?: string, filename?: string) {
-  const ext = fileType?.toLowerCase() || filename?.split(".").pop()?.toLowerCase();
+  const ext =
+    fileType?.toLowerCase() || filename?.split('.').pop()?.toLowerCase();
 
   switch (ext) {
-    case "docx":
-    case "doc":
-    case "pdf":
-    case "txt":
-    case "md":
-      return <FileText className="w-8 h-8 text-[var(--color-accent-primary)]" />;
-    case "csv":
-    case "xlsx":
-    case "xls":
-    case "json":
+    case 'docx':
+    case 'doc':
+    case 'pdf':
+    case 'txt':
+    case 'md':
+      return (
+        <FileText className="w-8 h-8 text-[var(--color-accent-primary)]" />
+      );
+    case 'csv':
+    case 'xlsx':
+    case 'xls':
+    case 'json':
       return <Table className="w-8 h-8 text-[var(--color-status-success)]" />;
     default:
       return <File className="w-8 h-8 text-[var(--color-text-muted)]" />;
@@ -41,8 +44,8 @@ function getFileIcon(fileType?: string, filename?: string) {
 
 function getFileTypeLabel(fileType?: string, filename?: string): string {
   if (fileType) return fileType.toUpperCase();
-  const ext = filename?.split(".").pop()?.toLowerCase();
-  return ext ? ext.toUpperCase() : "FILE";
+  const ext = filename?.split('.').pop()?.toLowerCase();
+  return ext ? ext.toUpperCase() : 'FILE';
 }
 
 export function FileDownloadCard({
@@ -60,17 +63,17 @@ export function FileDownloadCard({
       const authHeader = await ensureAuthHeader();
       const headers = new Headers();
       if (authHeader) {
-        headers.set("Authorization", authHeader);
+        headers.set('Authorization', authHeader);
       }
       const response = await fetch(fileUrl, { headers });
       if (!response.ok) throw new Error(`Download failed: ${response.status}`);
       const blob = await response.blob();
       objectUrl = URL.createObjectURL(blob);
-      const link = document.createElement("a");
+      const link = document.createElement('a');
       link.href = objectUrl;
       link.download = filename;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
       document.body.appendChild(link);
       cleanupAnchor = link;
       link.click();
@@ -83,7 +86,9 @@ export function FileDownloadCard({
   };
 
   return (
-    <div className={`flex items-center gap-4 p-4 bg-[var(--color-bg-tertiary)] rounded-xl border border-[var(--color-border-primary)] w-full transition-all hover:shadow-md hover:border-[var(--color-border-secondary)] ${className ?? ""}`}>
+    <div
+      className={`flex items-center gap-4 p-4 bg-[var(--color-bg-tertiary)] rounded-xl border border-[var(--color-border-primary)] w-full transition-all hover:shadow-md hover:border-[var(--color-border-secondary)] ${className ?? ''}`}
+    >
       <div className="flex-shrink-0 w-12 h-12 flex items-center justify-center bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border-primary)]">
         {getFileIcon(fileType, filename)}
       </div>
@@ -120,7 +125,9 @@ export function FileDownloadCard({
         <span className="hidden sm:inline">Download</span>
       </button>
 
-      {trailingAction ? <div className="flex-shrink-0">{trailingAction}</div> : null}
+      {trailingAction ? (
+        <div className="flex-shrink-0">{trailingAction}</div>
+      ) : null}
     </div>
   );
 }

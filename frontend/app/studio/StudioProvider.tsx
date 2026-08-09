@@ -1,11 +1,58 @@
-"use client";
+'use client';
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import type { StudioGeneration, StudioModel, StudioReferenceImage } from "./types";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
+import type {
+  StudioGeneration,
+  StudioModel,
+  StudioReferenceImage,
+} from './types';
+import { useClientMounted } from '../../hooks/useClientMounted';
 
 const MAX_MODELS = 4;
-const STORAGE_MODELS_KEY = "studio:selectedModels";
-const STORAGE_ASPECT_RATIO_KEY = "studio:aspectRatio";
+const STORAGE_MODELS_KEY = 'studio:selectedModels';
+const STORAGE_ASPECT_RATIO_KEY = 'studio:aspectRatio';
+
+const readStoredModels = (): string[] => {
+  if (typeof localStorage === 'undefined') {
+    return [];
+  }
+
+  const storedModels = localStorage.getItem(STORAGE_MODELS_KEY);
+  if (!storedModels) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(storedModels);
+    return Array.isArray(parsed)
+      ? parsed
+          .filter((value): value is string => typeof value === 'string')
+          .slice(0, MAX_MODELS)
+      : [];
+  } catch {
+    localStorage.removeItem(STORAGE_MODELS_KEY);
+    return [];
+  }
+};
+
+const readStoredAspectRatio = (): string => {
+  if (typeof localStorage === 'undefined') {
+    return '1:1';
+  }
+
+  const storedAspectRatio = localStorage.getItem(STORAGE_ASPECT_RATIO_KEY);
+  return storedAspectRatio && typeof storedAspectRatio === 'string'
+    ? storedAspectRatio
+    : '1:1';
+};
 
 interface StudioContextValue {
   availableModels: StudioModel[];
@@ -34,40 +81,34 @@ const StudioContext = createContext<StudioContextValue | null>(null);
 
 export function StudioProvider({ children }: { children: ReactNode }) {
   const [availableModels, setAvailableModels] = useState<StudioModel[]>([]);
-  const [selectedModels, setSelectedModels] = useState<string[]>([]);
-  const [prompt, setPrompt] = useState<string>("");
-  const [referenceImage, setReferenceImage] = useState<StudioReferenceImage | null>(null);
-  const [aspectRatio, setAspectRatioState] = useState<string>("1:1");
-  const [resolution, setResolution] = useState<string>("1K");
+  const [selectedModels, setSelectedModels] =
+    useState<string[]>(readStoredModels);
+  const [prompt, setPrompt] = useState<string>('');
+  const [referenceImage, setReferenceImage] =
+    useState<StudioReferenceImage | null>(null);
+  const [aspectRatio, setAspectRatioState] = useState<string>(
+    readStoredAspectRatio,
+  );
+  const [resolution, setResolution] = useState<string>('1K');
   const [generations, setGenerations] = useState<StudioGeneration[]>([]);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
+  const isClientMounted = useClientMounted();
 
   useEffect(() => {
-    const storedModels = localStorage.getItem(STORAGE_MODELS_KEY);
-    if (storedModels) {
-      try {
-        const parsed = JSON.parse(storedModels);
-        if (Array.isArray(parsed)) {
-          setSelectedModels(parsed.filter((value): value is string => typeof value === "string").slice(0, MAX_MODELS));
-        }
-      } catch {
-        localStorage.removeItem(STORAGE_MODELS_KEY);
-      }
+    if (!isClientMounted) {
+      return;
     }
 
-    const storedAspectRatio = localStorage.getItem(STORAGE_ASPECT_RATIO_KEY);
-    if (storedAspectRatio && typeof storedAspectRatio === "string") {
-      setAspectRatioState(storedAspectRatio);
-    }
-  }, []);
-
-  useEffect(() => {
     localStorage.setItem(STORAGE_MODELS_KEY, JSON.stringify(selectedModels));
-  }, [selectedModels]);
+  }, [isClientMounted, selectedModels]);
 
   useEffect(() => {
+    if (!isClientMounted) {
+      return;
+    }
+
     localStorage.setItem(STORAGE_ASPECT_RATIO_KEY, aspectRatio);
-  }, [aspectRatio]);
+  }, [isClientMounted, aspectRatio]);
 
   const addModel = useCallback((modelId: string) => {
     setSelectedModels((prev) => {
@@ -97,18 +138,21 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     setGenerations((prev) => [value, ...prev]);
   }, []);
 
-  const upsertGeneration = useCallback((value: { id: string } & Partial<StudioGeneration>) => {
-    setGenerations((prev) => {
-      const index = prev.findIndex((item) => item.id === value.id);
-      if (index === -1) {
-        return [value as StudioGeneration, ...prev];
-      }
+  const upsertGeneration = useCallback(
+    (value: { id: string } & Partial<StudioGeneration>) => {
+      setGenerations((prev) => {
+        const index = prev.findIndex((item) => item.id === value.id);
+        if (index === -1) {
+          return [value as StudioGeneration, ...prev];
+        }
 
-      const copy = [...prev];
-      copy[index] = { ...copy[index], ...value } as StudioGeneration;
-      return copy;
-    });
-  }, []);
+        const copy = [...prev];
+        copy[index] = { ...copy[index], ...value } as StudioGeneration;
+        return copy;
+      });
+    },
+    [],
+  );
 
   const clearGallery = useCallback(() => {
     setGenerations([]);
@@ -116,11 +160,11 @@ export function StudioProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<StudioContextValue>(
     () => ({
-      selectedModels,
+      selectedModels: isClientMounted ? selectedModels : [],
       prompt,
       referenceImage,
       availableModels,
-      aspectRatio,
+      aspectRatio: isClientMounted ? aspectRatio : '1:1',
       resolution,
       generations,
       isGenerating,
@@ -139,6 +183,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     }),
     [
       availableModels,
+      isClientMounted,
       selectedModels,
       prompt,
       referenceImage,
@@ -156,13 +201,15 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     ],
   );
 
-  return <StudioContext.Provider value={value}>{children}</StudioContext.Provider>;
+  return (
+    <StudioContext.Provider value={value}>{children}</StudioContext.Provider>
+  );
 }
 
 export function useStudio() {
   const context = useContext(StudioContext);
   if (!context) {
-    throw new Error("useStudio must be used within a StudioProvider");
+    throw new Error('useStudio must be used within a StudioProvider');
   }
   return context;
 }

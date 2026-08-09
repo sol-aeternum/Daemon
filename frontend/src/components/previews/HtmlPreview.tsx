@@ -1,12 +1,12 @@
-"use client";
+'use client';
 
-import { useState, useEffect, useRef, useCallback } from "react";
-import { AlertCircle, Code2 } from "lucide-react";
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { AlertCircle, Code2 } from 'lucide-react';
 import {
   HTML_PREVIEW_FRAME_PATH,
   HTML_PREVIEW_MESSAGE_TYPE,
   type HtmlPreviewMessage,
-} from "@/lib/htmlPreviewFrame";
+} from '@/lib/htmlPreviewFrame';
 
 interface HtmlPreviewProps {
   content: string;
@@ -25,13 +25,13 @@ export function HtmlPreview({ content, title }: HtmlPreviewProps) {
     const message: HtmlPreviewMessage = {
       type: HTML_PREVIEW_MESSAGE_TYPE,
       content,
-      title: title || "HTML Preview",
+      title: title || 'HTML Preview',
     };
     // The outer frame is intentionally sandboxed without allow-same-origin,
     // so its effective origin is opaque and postMessage requires "*". The
     // message is still sent directly to that frame's contentWindow, and the
     // receiver accepts messages only from window.parent.
-    target.postMessage(message, "*");
+    target.postMessage(message, '*');
   }, [content, title]);
 
   useEffect(() => {
@@ -45,7 +45,7 @@ export function HtmlPreview({ content, title }: HtmlPreviewProps) {
 
   // Handle iframe load errors
   const handleIframeError = () => {
-    setError("Failed to load HTML preview");
+    setError('Failed to load HTML preview');
   };
 
   if (error) {
@@ -67,7 +67,7 @@ export function HtmlPreview({ content, title }: HtmlPreviewProps) {
         <div className="flex items-center gap-2">
           <Code2 className="w-4 h-4 text-[var(--color-accent-primary)]" />
           <span className="text-sm font-medium text-[var(--color-text-secondary)]">
-            {title || "HTML Preview"}
+            {title || 'HTML Preview'}
           </span>
         </div>
         <span className="text-xs text-[var(--color-text-muted)] bg-[var(--color-bg-tertiary)] px-2 py-1 rounded">
@@ -81,7 +81,7 @@ export function HtmlPreview({ content, title }: HtmlPreviewProps) {
           ref={iframeRef}
           src={HTML_PREVIEW_FRAME_PATH}
           sandbox="allow-scripts"
-          title={title || "HTML Preview"}
+          title={title || 'HTML Preview'}
           className="w-full min-h-[300px] bg-white"
           onLoad={handleIframeLoad}
           onError={handleIframeError}

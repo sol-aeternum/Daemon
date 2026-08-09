@@ -221,7 +221,7 @@ def test_root_layout_propagates_csp_nonce_to_client() -> None:
     """
     source = (ROOT / "frontend" / "app" / "layout.tsx").read_text()
     assert "headers()" in source
-    assert '"x-nonce"' in source
+    assert re.search(r"\.get\((['\"])x-nonce\1\)", source) is not None
     assert 'meta name="csp-nonce"' in source
 
 

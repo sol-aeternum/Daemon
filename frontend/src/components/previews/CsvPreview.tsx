@@ -1,8 +1,8 @@
-"use client";
+'use client';
 
-import { useState, useEffect, useMemo } from "react";
-import { Loader2, AlertCircle, FileSpreadsheet } from "lucide-react";
-import Papa from "papaparse";
+import { useState, useEffect, useMemo } from 'react';
+import { Loader2, AlertCircle, FileSpreadsheet } from 'lucide-react';
+import Papa from 'papaparse';
 
 interface CsvPreviewProps {
   content: string;
@@ -30,19 +30,22 @@ export function CsvPreview({ content, maxRows = 100 }: CsvPreviewProps) {
       try {
         const result = Papa.parse<string[]>(content, {
           skipEmptyLines: true,
-          delimiter: ",",
+          delimiter: ',',
         });
 
         if (!isMounted) return;
 
-        if (result.errors.length > 0 && result.errors[0].code !== "TooFewFields") {
+        if (
+          result.errors.length > 0 &&
+          result.errors[0].code !== 'TooFewFields'
+        ) {
           setError(`Parse error: ${result.errors[0].message}`);
           return;
         }
 
         const allRows = result.data;
         if (allRows.length === 0) {
-          setError("CSV file is empty");
+          setError('CSV file is empty');
           return;
         }
 
@@ -54,7 +57,7 @@ export function CsvPreview({ content, maxRows = 100 }: CsvPreviewProps) {
         setData({ headers, rows, totalRows });
       } catch (err) {
         if (isMounted) {
-          setError(err instanceof Error ? err.message : "Failed to parse CSV");
+          setError(err instanceof Error ? err.message : 'Failed to parse CSV');
         }
       } finally {
         if (isMounted) {
@@ -84,7 +87,9 @@ export function CsvPreview({ content, maxRows = 100 }: CsvPreviewProps) {
     return (
       <div className="flex items-center justify-center gap-3 p-8 bg-[var(--color-bg-tertiary)] rounded-xl border border-[var(--color-border-primary)] max-h-[400px]">
         <Loader2 className="w-5 h-5 animate-spin text-[var(--color-accent-primary)]" />
-        <span className="text-sm text-[var(--color-text-muted)]">Parsing CSV...</span>
+        <span className="text-sm text-[var(--color-text-muted)]">
+          Parsing CSV...
+        </span>
       </div>
     );
   }
@@ -94,7 +99,9 @@ export function CsvPreview({ content, maxRows = 100 }: CsvPreviewProps) {
       <div className="flex items-start gap-3 p-4 bg-red-500/10 border border-red-500/30 rounded-xl max-h-[400px]">
         <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
         <div className="flex-1">
-          <p className="text-sm font-medium text-red-500">Failed to parse CSV</p>
+          <p className="text-sm font-medium text-red-500">
+            Failed to parse CSV
+          </p>
           <p className="text-xs text-red-400 mt-1">{error}</p>
         </div>
       </div>
@@ -115,7 +122,9 @@ export function CsvPreview({ content, maxRows = 100 }: CsvPreviewProps) {
             CSV Preview
           </span>
         </div>
-        <span className="text-xs text-[var(--color-text-muted)]">{rowInfo}</span>
+        <span className="text-xs text-[var(--color-text-muted)]">
+          {rowInfo}
+        </span>
       </div>
 
       {/* Table container with scroll */}
@@ -149,14 +158,16 @@ export function CsvPreview({ content, maxRows = 100 }: CsvPreviewProps) {
                 ))}
                 {/* Pad cells if row is shorter than headers */}
                 {row.length < data.headers.length &&
-                  Array.from({ length: data.headers.length - row.length }).map((_, padIdx) => (
-                    <td
-                      key={`pad-${padIdx}`}
-                      className="px-4 py-2 text-[var(--color-text-muted)]"
-                    >
-                      —
-                    </td>
-                  ))}
+                  Array.from({ length: data.headers.length - row.length }).map(
+                    (_, padIdx) => (
+                      <td
+                        key={`pad-${padIdx}`}
+                        className="px-4 py-2 text-[var(--color-text-muted)]"
+                      >
+                        —
+                      </td>
+                    ),
+                  )}
               </tr>
             ))}
           </tbody>

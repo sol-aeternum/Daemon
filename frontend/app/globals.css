@@ -13,57 +13,61 @@
   /* ==========================================================================
      COLOR TOKENS - Background
      ========================================================================== */
-  --color-bg-primary: hsl(220, 13%, 10%);        /* Main app background - dark slate */
-  --color-bg-secondary: hsl(220, 15%, 14%);      /* Cards, elevated surfaces */
-  --color-bg-tertiary: hsl(220, 13%, 18%);       /* Input backgrounds, subtle surfaces */
-  --color-bg-inverse: hsl(220, 20%, 95%);        /* Inverted backgrounds */
-  --color-bg-sidebar: hsl(220, 15%, 12%);        /* Sidebar background */
-  --color-bg-input: hsl(220, 13%, 16%);          /* Form input backgrounds */
-  --color-bg-hover: hsl(220, 15%, 20%);          /* Hover state backgrounds */
-  --color-bg-active: hsl(220, 15%, 22%);         /* Active/pressed state */
-  --color-bg-overlay: hsla(220, 13%, 5%, 0.8);   /* Modal overlays */
-  --color-bg-tooltip: hsl(220, 15%, 20%);        /* Tooltip backgrounds */
+  --color-bg-primary: hsl(220, 13%, 10%); /* Main app background - dark slate */
+  --color-bg-secondary: hsl(220, 15%, 14%); /* Cards, elevated surfaces */
+  --color-bg-tertiary: hsl(
+    220,
+    13%,
+    18%
+  ); /* Input backgrounds, subtle surfaces */
+  --color-bg-inverse: hsl(220, 20%, 95%); /* Inverted backgrounds */
+  --color-bg-sidebar: hsl(220, 15%, 12%); /* Sidebar background */
+  --color-bg-input: hsl(220, 13%, 16%); /* Form input backgrounds */
+  --color-bg-hover: hsl(220, 15%, 20%); /* Hover state backgrounds */
+  --color-bg-active: hsl(220, 15%, 22%); /* Active/pressed state */
+  --color-bg-overlay: hsla(220, 13%, 5%, 0.8); /* Modal overlays */
+  --color-bg-tooltip: hsl(220, 15%, 20%); /* Tooltip backgrounds */
 
   /* ==========================================================================
      COLOR TOKENS - Text
      ========================================================================== */
-  --color-text-primary: hsl(220, 20%, 96%);      /* Headings, primary text */
-  --color-text-secondary: hsl(220, 15%, 75%);    /* Body text */
-  --color-text-muted: hsl(220, 10%, 55%);        /* Placeholder, disabled, hints */
-  --color-text-inverse: hsl(220, 13%, 10%);      /* Text on light backgrounds */
-  --color-text-accent: hsl(215, 60%, 65%);       /* Accent-colored text */
-  --color-text-link: hsl(215, 70%, 60%);         /* Interactive links */
-  --color-text-link-hover: hsl(215, 70%, 70%);   /* Link hover state */
+  --color-text-primary: hsl(220, 20%, 96%); /* Headings, primary text */
+  --color-text-secondary: hsl(220, 15%, 75%); /* Body text */
+  --color-text-muted: hsl(220, 10%, 55%); /* Placeholder, disabled, hints */
+  --color-text-inverse: hsl(220, 13%, 10%); /* Text on light backgrounds */
+  --color-text-accent: hsl(215, 60%, 65%); /* Accent-colored text */
+  --color-text-link: hsl(215, 70%, 60%); /* Interactive links */
+  --color-text-link-hover: hsl(215, 70%, 70%); /* Link hover state */
 
   /* ==========================================================================
      COLOR TOKENS - Border
      ========================================================================== */
-  --color-border-primary: hsl(220, 15%, 22%);    /* Default borders */
-  --color-border-secondary: hsl(220, 15%, 28%);  /* Subtle dividers */
-  --color-border-muted: hsl(220, 15%, 18%);      /* Very subtle separators */
-  --color-border-focus: hsl(215, 60%, 55%);      /* Focus ring borders */
-  --color-border-accent: hsl(215, 50%, 45%);     /* Accent-colored borders */
+  --color-border-primary: hsl(220, 15%, 22%); /* Default borders */
+  --color-border-secondary: hsl(220, 15%, 28%); /* Subtle dividers */
+  --color-border-muted: hsl(220, 15%, 18%); /* Very subtle separators */
+  --color-border-focus: hsl(215, 60%, 55%); /* Focus ring borders */
+  --color-border-accent: hsl(215, 50%, 45%); /* Accent-colored borders */
 
   /* ==========================================================================
      COLOR TOKENS - Accent (Muted Blue)
      ========================================================================== */
-  --color-accent-primary: hsl(215, 60%, 55%);    /* Primary accent */
-  --color-accent-hover: hsl(215, 65%, 60%);      /* Accent hover state */
-  --color-accent-active: hsl(215, 70%, 50%);     /* Accent pressed state */
-  --color-accent-muted: hsl(215, 40%, 35%);      /* Subtle accent backgrounds */
-  --color-accent-subtle: hsl(215, 40%, 20%);     /* Very subtle accent tint */
+  --color-accent-primary: hsl(215, 60%, 55%); /* Primary accent */
+  --color-accent-hover: hsl(215, 65%, 60%); /* Accent hover state */
+  --color-accent-active: hsl(215, 70%, 50%); /* Accent pressed state */
+  --color-accent-muted: hsl(215, 40%, 35%); /* Subtle accent backgrounds */
+  --color-accent-subtle: hsl(215, 40%, 20%); /* Very subtle accent tint */
 
   /* ==========================================================================
      COLOR TOKENS - Status
      ========================================================================== */
-  --color-status-success: hsl(145, 65%, 45%);    /* Success states */
+  --color-status-success: hsl(145, 65%, 45%); /* Success states */
   --color-status-success-bg: hsl(145, 40%, 15%); /* Success background */
-  --color-status-warning: hsl(38, 85%, 55%);     /* Warning states */
-  --color-status-warning-bg: hsl(38, 60%, 15%);  /* Warning background */
-  --color-status-error: hsl(0, 75%, 55%);        /* Error states */
-  --color-status-error-bg: hsl(0, 50%, 15%);     /* Error background */
-  --color-status-info: hsl(215, 70%, 55%);       /* Info states */
-  --color-status-info-bg: hsl(215, 50%, 15%);    /* Info background */
+  --color-status-warning: hsl(38, 85%, 55%); /* Warning states */
+  --color-status-warning-bg: hsl(38, 60%, 15%); /* Warning background */
+  --color-status-error: hsl(0, 75%, 55%); /* Error states */
+  --color-status-error-bg: hsl(0, 50%, 15%); /* Error background */
+  --color-status-info: hsl(215, 70%, 55%); /* Info states */
+  --color-status-info-bg: hsl(215, 50%, 15%); /* Info background */
 
   /* ==========================================================================
      RADIUS TOKENS
@@ -79,34 +83,42 @@
      SHADOW TOKENS
      ========================================================================== */
   --shadow-sm: 0 1px 2px 0 hsla(220, 13%, 5%, 0.3);
-  --shadow-md: 0 4px 6px -1px hsla(220, 13%, 5%, 0.4), 0 2px 4px -2px hsla(220, 13%, 5%, 0.2);
-  --shadow-lg: 0 10px 15px -3px hsla(220, 13%, 5%, 0.5), 0 4px 6px -4px hsla(220, 13%, 5%, 0.3);
-  --shadow-xl: 0 20px 25px -5px hsla(220, 13%, 5%, 0.5), 0 8px 10px -6px hsla(220, 13%, 5%, 0.3);
+  --shadow-md:
+    0 4px 6px -1px hsla(220, 13%, 5%, 0.4),
+    0 2px 4px -2px hsla(220, 13%, 5%, 0.2);
+  --shadow-lg:
+    0 10px 15px -3px hsla(220, 13%, 5%, 0.5),
+    0 4px 6px -4px hsla(220, 13%, 5%, 0.3);
+  --shadow-xl:
+    0 20px 25px -5px hsla(220, 13%, 5%, 0.5),
+    0 8px 10px -6px hsla(220, 13%, 5%, 0.3);
   --shadow-glow: 0 0 20px hsla(215, 60%, 55%, 0.3);
   --shadow-inner: inset 0 2px 4px 0 hsla(220, 13%, 5%, 0.3);
 
   /* ==========================================================================
      SPACE TOKENS (rem-based scale)
      ========================================================================== */
-  --space-1: 0.25rem;   /* 4px */
-  --space-2: 0.5rem;    /* 8px */
-  --space-3: 0.75rem;   /* 12px */
-  --space-4: 1rem;      /* 16px */
-  --space-5: 1.25rem;   /* 20px */
-  --space-6: 1.5rem;    /* 24px */
-  --space-8: 2rem;      /* 32px */
-  --space-10: 2.5rem;   /* 40px */
-  --space-12: 3rem;     /* 48px */
-  --space-16: 4rem;     /* 64px */
-  --space-20: 5rem;     /* 80px */
-  --space-24: 6rem;     /* 96px */
+  --space-1: 0.25rem; /* 4px */
+  --space-2: 0.5rem; /* 8px */
+  --space-3: 0.75rem; /* 12px */
+  --space-4: 1rem; /* 16px */
+  --space-5: 1.25rem; /* 20px */
+  --space-6: 1.5rem; /* 24px */
+  --space-8: 2rem; /* 32px */
+  --space-10: 2.5rem; /* 40px */
+  --space-12: 3rem; /* 48px */
+  --space-16: 4rem; /* 64px */
+  --space-20: 5rem; /* 80px */
+  --space-24: 6rem; /* 96px */
 
   /* ==========================================================================
      FONT TOKENS
      ========================================================================== */
-  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-sans:
+    system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-display: 'SF Pro Display', system-ui, sans-serif;
-  --font-mono: 'SF Mono', ui-monospace, 'Cascadia Code', 'Source Code Pro', monospace;
+  --font-mono:
+    'SF Mono', ui-monospace, 'Cascadia Code', 'Source Code Pro', monospace;
 
   --font-size-xs: 0.75rem;
   --font-size-sm: 0.875rem;
@@ -166,34 +178,34 @@
    Activated via data-theme="light" on html element
    ============================================================================= */
 
-[data-theme="light"] {
+[data-theme='light'] {
   /* Background colors - Light */
-  --color-bg-primary: hsl(220, 20%, 98%);        /* Main app background - off-white */
-  --color-bg-secondary: hsl(0, 0%, 100%);        /* Cards, elevated surfaces */
-  --color-bg-tertiary: hsl(220, 14%, 96%);       /* Input backgrounds */
-  --color-bg-inverse: hsl(220, 13%, 18%);        /* Inverted backgrounds */
-  --color-bg-sidebar: hsl(220, 20%, 97%);        /* Sidebar background */
-  --color-bg-input: hsl(0, 0%, 100%);            /* Form input backgrounds */
-  --color-bg-hover: hsl(220, 14%, 94%);          /* Hover state backgrounds */
-  --color-bg-active: hsl(220, 14%, 92%);         /* Active/pressed state */
-  --color-bg-overlay: hsla(220, 13%, 15%, 0.6);  /* Modal overlays */
-  --color-bg-tooltip: hsl(220, 13%, 20%);        /* Tooltip backgrounds */
+  --color-bg-primary: hsl(220, 20%, 98%); /* Main app background - off-white */
+  --color-bg-secondary: hsl(0, 0%, 100%); /* Cards, elevated surfaces */
+  --color-bg-tertiary: hsl(220, 14%, 96%); /* Input backgrounds */
+  --color-bg-inverse: hsl(220, 13%, 18%); /* Inverted backgrounds */
+  --color-bg-sidebar: hsl(220, 20%, 97%); /* Sidebar background */
+  --color-bg-input: hsl(0, 0%, 100%); /* Form input backgrounds */
+  --color-bg-hover: hsl(220, 14%, 94%); /* Hover state backgrounds */
+  --color-bg-active: hsl(220, 14%, 92%); /* Active/pressed state */
+  --color-bg-overlay: hsla(220, 13%, 15%, 0.6); /* Modal overlays */
+  --color-bg-tooltip: hsl(220, 13%, 20%); /* Tooltip backgrounds */
 
   /* Text colors - Light */
-  --color-text-primary: hsl(220, 20%, 12%);      /* Headings, primary text */
-  --color-text-secondary: hsl(220, 10%, 35%);    /* Body text */
-  --color-text-muted: hsl(220, 10%, 55%);        /* Placeholder, disabled, hints */
-  --color-text-inverse: hsl(220, 20%, 98%);      /* Text on dark backgrounds */
-  --color-text-accent: hsl(215, 70%, 45%);       /* Accent-colored text */
-  --color-text-link: hsl(215, 75%, 45%);         /* Interactive links */
-  --color-text-link-hover: hsl(215, 75%, 35%);   /* Link hover state */
+  --color-text-primary: hsl(220, 20%, 12%); /* Headings, primary text */
+  --color-text-secondary: hsl(220, 10%, 35%); /* Body text */
+  --color-text-muted: hsl(220, 10%, 55%); /* Placeholder, disabled, hints */
+  --color-text-inverse: hsl(220, 20%, 98%); /* Text on dark backgrounds */
+  --color-text-accent: hsl(215, 70%, 45%); /* Accent-colored text */
+  --color-text-link: hsl(215, 75%, 45%); /* Interactive links */
+  --color-text-link-hover: hsl(215, 75%, 35%); /* Link hover state */
 
   /* Border colors - Light */
-  --color-border-primary: hsl(220, 13%, 88%);    /* Default borders */
-  --color-border-secondary: hsl(220, 13%, 82%);  /* Subtle dividers */
-  --color-border-muted: hsl(220, 13%, 94%);      /* Very subtle separators */
-  --color-border-focus: hsl(215, 70%, 50%);      /* Focus ring borders */
-  --color-border-accent: hsl(215, 60%, 55%);     /* Accent-colored borders */
+  --color-border-primary: hsl(220, 13%, 88%); /* Default borders */
+  --color-border-secondary: hsl(220, 13%, 82%); /* Subtle dividers */
+  --color-border-muted: hsl(220, 13%, 94%); /* Very subtle separators */
+  --color-border-focus: hsl(215, 70%, 50%); /* Focus ring borders */
+  --color-border-accent: hsl(215, 60%, 55%); /* Accent-colored borders */
 
   /* Accent colors - Light (same hue, adjusted for light bg) */
   --color-accent-primary: hsl(215, 75%, 45%);
@@ -214,9 +226,15 @@
 
   /* Shadows - Light (softer, less opacity) */
   --shadow-sm: 0 1px 2px 0 hsla(220, 13%, 20%, 0.08);
-  --shadow-md: 0 4px 6px -1px hsla(220, 13%, 20%, 0.1), 0 2px 4px -2px hsla(220, 13%, 20%, 0.05);
-  --shadow-lg: 0 10px 15px -3px hsla(220, 13%, 20%, 0.1), 0 4px 6px -4px hsla(220, 13%, 20%, 0.05);
-  --shadow-xl: 0 20px 25px -5px hsla(220, 13%, 20%, 0.1), 0 8px 10px -6px hsla(220, 13%, 20%, 0.05);
+  --shadow-md:
+    0 4px 6px -1px hsla(220, 13%, 20%, 0.1),
+    0 2px 4px -2px hsla(220, 13%, 20%, 0.05);
+  --shadow-lg:
+    0 10px 15px -3px hsla(220, 13%, 20%, 0.1),
+    0 4px 6px -4px hsla(220, 13%, 20%, 0.05);
+  --shadow-xl:
+    0 20px 25px -5px hsla(220, 13%, 20%, 0.1),
+    0 8px 10px -6px hsla(220, 13%, 20%, 0.05);
   --shadow-glow: 0 0 20px hsla(215, 75%, 45%, 0.25);
   --shadow-inner: inset 0 2px 4px 0 hsla(220, 13%, 20%, 0.05);
 }
@@ -265,8 +283,12 @@
    ============================================================================= */
 
 @keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 @keyframes slideUp {
@@ -301,7 +323,8 @@
 }
 
 @keyframes pulseSubtle {
-  0%, 100% {
+  0%,
+  100% {
     opacity: 1;
   }
   50% {
@@ -317,7 +340,7 @@ html {
   color-scheme: dark;
 }
 
-[data-theme="light"] html {
+[data-theme='light'] html {
   color-scheme: light;
 }
 
