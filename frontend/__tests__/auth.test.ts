@@ -806,7 +806,23 @@ describe('refreshAccessToken', () => {
     expect(getAccessToken()).toBeNull();
   });
 
-  it('refreshAccessToken no-Web-Locks fallback: stale lock resolved false does not proceed to doRefresh', async () => {
+  it('refreshAccessToken no-Web-Locks fallback: unavailable localStorage does not proceed to doRefresh', async () => {
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { locks: undefined },
+    });
+    const setItem = vi.fn(() => {
+      throw new Error('localStorage unavailable');
+    });
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem: () => null,
+        setItem,
+        removeItem: () => {},
+      },
+    });
+
     // Mock fetch to return 401 so doRefresh fails if it were ever called
     const mockFetch = vi.fn(() =>
       Promise.resolve(new Response(null, { status: 401 })),
@@ -824,11 +840,11 @@ describe('refreshAccessToken', () => {
 
     const result = await refreshAccessToken();
 
-    // waitForRefresh returned false (no refreshed event received), doRefresh was NOT called.
-    // No POST was made, so fetch was never invoked.
+    // Lock acquisition failed, so doRefresh was NOT called.
     expect(result.success).toBe(false);
     expect(hasValidAccessToken()).toBe(false);
     expect(getAccessToken()).toBe('invalid-token');
+    expect(setItem).toHaveBeenCalled();
     expect(mockFetch).not.toHaveBeenCalled();
 
     vi.restoreAllMocks();

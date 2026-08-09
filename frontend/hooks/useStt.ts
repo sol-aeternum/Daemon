@@ -1,7 +1,7 @@
-"use client";
+'use client';
 
-import { useRef, useCallback, useState, useEffect } from "react";
-import { getAuthHeader, refreshIfNeeded } from "@/lib/auth";
+import { useRef, useCallback, useState, useEffect } from 'react';
+import { getAuthHeader, refreshIfNeeded } from '@/lib/auth';
 
 interface UseSttOptions {
   onTranscript?: (text: string) => void;
@@ -19,21 +19,21 @@ interface UseSttState {
 }
 
 export function useStt(options: UseSttOptions = {}) {
-  const { 
-    onTranscript, 
-    onPartialTranscript, 
-    onError, 
-    language = "en",
+  const {
+    onTranscript,
+    onPartialTranscript,
+    onError,
+    language = 'en',
     enablePartials = true,
-    debounceMs = 200
+    debounceMs = 200,
   } = options;
-  
+
   const [state, setState] = useState<UseSttState>({
     isRecording: false,
     isConnecting: false,
     error: null,
   });
-  
+
   const wsRef = useRef<WebSocket | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -51,155 +51,180 @@ export function useStt(options: UseSttOptions = {}) {
     }
 
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        message_type: "input_audio_chunk",
-        audio_base_64: "",
-        sample_rate: 16000,
-        commit: true,
-      }));
+      wsRef.current.send(
+        JSON.stringify({
+          message_type: 'input_audio_chunk',
+          audio_base_64: '',
+          sample_rate: 16000,
+          commit: true,
+        }),
+      );
     }
-    
+
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.close();
     }
     wsRef.current = null;
-    
+
     mediaRecorderRef.current?.stop();
     mediaRecorderRef.current = null;
-    
-    streamRef.current?.getTracks().forEach(track => track.stop());
+
+    streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
-    
+
     audioContextRef.current?.close();
     audioContextRef.current = null;
-    
+
     setState({ isRecording: false, isConnecting: false, error: null });
   }, []);
 
   const start = useCallback(async () => {
     stop();
-    
+
     setState({ isRecording: false, isConnecting: true, error: null });
     abortControllerRef.current = new AbortController();
-    
+
     try {
       // Get mic permission
-      const stream = await navigator.mediaDevices.getUserMedia({ 
+      const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           sampleRate: 16000,
           channelCount: 1,
           echoCancellation: true,
           noiseSuppression: true,
-        }
+        },
       });
       streamRef.current = stream;
-      
+
       let authHeader = getAuthHeader();
       if (!authHeader) {
         await refreshIfNeeded();
         authHeader = getAuthHeader();
       }
-      const tokenResponse = await fetch("/api/audio/scribe-token", {
+      const tokenResponse = await fetch('/api/audio/scribe-token', {
         headers: authHeader ? { Authorization: authHeader } : {},
       });
-      if (!tokenResponse.ok) throw new Error("Failed to get Scribe token");
+      if (!tokenResponse.ok) throw new Error('Failed to get Scribe token');
       const { token } = await tokenResponse.json();
-      
+
       // Connect to ElevenLabs Scribe
-      const wsUrl = new URL("wss://api.elevenlabs.io/v1/speech-to-text/realtime");
-      wsUrl.searchParams.set("model_id", "scribe_v2_realtime");
-      wsUrl.searchParams.set("token", token);
-      wsUrl.searchParams.set("audio_format", "pcm_16000");
-      wsUrl.searchParams.set("sample_rate", "16000");
-      wsUrl.searchParams.set("language_code", language);
-      wsUrl.searchParams.set("commit_strategy", "manual");
+      const wsUrl = new URL(
+        'wss://api.elevenlabs.io/v1/speech-to-text/realtime',
+      );
+      wsUrl.searchParams.set('model_id', 'scribe_v2_realtime');
+      wsUrl.searchParams.set('token', token);
+      wsUrl.searchParams.set('audio_format', 'pcm_16000');
+      wsUrl.searchParams.set('sample_rate', '16000');
+      wsUrl.searchParams.set('language_code', language);
+      wsUrl.searchParams.set('commit_strategy', 'manual');
 
       const ws = new WebSocket(wsUrl.toString());
       wsRef.current = ws;
-      
+
       await new Promise<void>((resolve, reject) => {
         ws.onopen = () => resolve();
-        ws.onerror = () => reject(new Error("WebSocket connection failed"));
-        setTimeout(() => reject(new Error("Connection timeout")), 10000);
+        ws.onerror = () => reject(new Error('WebSocket connection failed'));
+        setTimeout(() => reject(new Error('Connection timeout')), 10000);
       });
-      
+
       ws.onmessage = (event) => {
         const message = JSON.parse(event.data);
         const msgType = message.message_type || message.type;
         const text = message.text || message.transcript;
 
-        if (msgType === "partial_transcript" && text) {
+        if (msgType === 'partial_transcript' && text) {
           if (enablePartials) {
-            if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+            if (debounceTimerRef.current)
+              clearTimeout(debounceTimerRef.current);
             debounceTimerRef.current = setTimeout(() => {
               onPartialTranscript?.(text);
             }, debounceMs);
           }
-        } else if (msgType === "committed_transcript" && text) {
+        } else if (msgType === 'committed_transcript' && text) {
           if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
           onTranscript?.(text);
         } else if (message.error) {
           const error = new Error(message.error);
-          setState(prev => ({ ...prev, error }));
+          setState((prev) => ({ ...prev, error }));
           onError?.(error);
         }
       };
-      
+
       ws.onerror = () => {
-        const error = new Error("STT WebSocket error");
-        setState(prev => ({ ...prev, error, isRecording: false, isConnecting: false }));
+        const error = new Error('STT WebSocket error');
+        setState((prev) => ({
+          ...prev,
+          error,
+          isRecording: false,
+          isConnecting: false,
+        }));
         onError?.(error);
       };
 
       ws.onclose = () => {
-        setState(prev => ({ ...prev, isRecording: false, isConnecting: false }));
+        setState((prev) => ({
+          ...prev,
+          isRecording: false,
+          isConnecting: false,
+        }));
       };
-      
+
       // Setup audio recording
       const audioContext = new AudioContext({ sampleRate: 16000 });
-      if (audioContext.state === "suspended") {
+      if (audioContext.state === 'suspended') {
         await audioContext.resume();
       }
       audioContextRef.current = audioContext;
-      
+
       const source = audioContext.createMediaStreamSource(stream);
       const processor = audioContext.createScriptProcessor(4096, 1, 1);
-      
+
       processor.onaudioprocess = (e) => {
         if (ws.readyState !== WebSocket.OPEN) return;
-        
+
         const inputData = e.inputBuffer.getChannelData(0);
         const pcmData = new Int16Array(inputData.length);
-        
+
         // Convert float32 to int16 PCM
         for (let i = 0; i < inputData.length; i++) {
           const s = Math.max(-1, Math.min(1, inputData[i]));
-          pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+          pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
         }
-        
+
         // Base64 encode
-        const base64 = btoa(String.fromCharCode(...new Uint8Array(pcmData.buffer)));
-        
-        ws.send(JSON.stringify({
-          message_type: "input_audio_chunk",
-          audio_base_64: base64,
-          sample_rate: 16000,
-          commit: false,
-        }));
+        const base64 = btoa(
+          String.fromCharCode(...new Uint8Array(pcmData.buffer)),
+        );
+
+        ws.send(
+          JSON.stringify({
+            message_type: 'input_audio_chunk',
+            audio_base_64: base64,
+            sample_rate: 16000,
+            commit: false,
+          }),
+        );
       };
-      
+
       source.connect(processor);
       processor.connect(audioContext.destination);
-      
+
       setState({ isRecording: true, isConnecting: false, error: null });
-      
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       setState({ isRecording: false, isConnecting: false, error: err });
       onError?.(err);
       stop();
     }
-  }, [language, onTranscript, onPartialTranscript, onError, stop, enablePartials, debounceMs]);
+  }, [
+    language,
+    onTranscript,
+    onPartialTranscript,
+    onError,
+    stop,
+    enablePartials,
+    debounceMs,
+  ]);
 
   useEffect(() => {
     return () => stop();

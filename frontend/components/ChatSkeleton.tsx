@@ -6,18 +6,21 @@ export default function ChatSkeleton() {
         <div className="h-8 bg-[var(--color-bg-secondary)] rounded animate-pulse" />
         <div className="space-y-2">
           {[...Array(5)].map((_, i) => (
-            <div key={i} className="h-10 bg-[var(--color-bg-tertiary)] rounded animate-pulse" />
+            <div
+              key={i}
+              className="h-10 bg-[var(--color-bg-tertiary)] rounded animate-pulse"
+            />
           ))}
         </div>
       </div>
-      
+
       {/* Main area skeleton */}
       <div className="flex-1 flex flex-col">
         {/* Header skeleton */}
         <div className="h-14 border-b border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-4 flex items-center">
           <div className="h-6 w-32 bg-[var(--color-bg-secondary)] rounded animate-pulse" />
         </div>
-        
+
         {/* Messages skeleton */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {[...Array(4)].map((_, i) => (
@@ -38,7 +41,7 @@ export default function ChatSkeleton() {
             </div>
           ))}
         </div>
-        
+
         {/* Input skeleton */}
         <div className="p-4 border-t border-[var(--color-border-primary)]">
           <div className="h-12 bg-[var(--color-bg-tertiary)] rounded-lg animate-pulse" />

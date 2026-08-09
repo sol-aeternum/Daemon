@@ -1,13 +1,13 @@
-"use client";
+'use client';
 
-import { useState } from "react";
-import { Brain, Play, Check, Settings } from "lucide-react";
-import { isCouncilInterviewEvent } from "../../lib/events";
-import type { ChatEvent } from "../../lib/events";
-import { ROSTER_CONFIG } from "./constants";
+import { useState } from 'react';
+import { Brain, Play, Check, Settings } from 'lucide-react';
+import { isCouncilInterviewEvent } from '../../lib/events';
+import type { ChatEvent } from '../../lib/events';
+import { ROSTER_CONFIG } from './constants';
 
 export interface CouncilInterviewEvent {
-  type: "council_interview";
+  type: 'council_interview';
   roster: Record<string, { name: string; role: string; description: string }>;
   presets: string[];
   rounds_options: number[];
@@ -25,16 +25,26 @@ interface CouncilInterviewCardProps {
   onSendConfig: (config: CouncilConfig) => void;
 }
 
-export function CouncilInterviewCard({ event, onSendConfig }: CouncilInterviewCardProps) {
-  if (!isCouncilInterviewEvent(event)) {
+export function CouncilInterviewCard({
+  event,
+  onSendConfig,
+}: CouncilInterviewCardProps) {
+  const councilEvent = isCouncilInterviewEvent(event) ? event : null;
+  const [selectedPreset, setSelectedPreset] = useState(
+    councilEvent?.presets[0] || 'Default',
+  );
+  const [selectedRounds, setSelectedRounds] = useState(
+    councilEvent?.rounds_options[0] || 1,
+  );
+  const [auditEnabled, setAuditEnabled] = useState(
+    councilEvent?.audit_default ?? false,
+  );
+
+  if (!councilEvent) {
     return null;
   }
 
-  const { roster, presets, rounds_options, audit_default } = event;
-
-  const [selectedPreset, setSelectedPreset] = useState(presets[0] || "Default");
-  const [selectedRounds, setSelectedRounds] = useState(rounds_options[0] || 1);
-  const [auditEnabled, setAuditEnabled] = useState(audit_default);
+  const { roster, presets, rounds_options } = councilEvent;
 
   const handleRunCouncil = () => {
     onSendConfig({
@@ -46,7 +56,7 @@ export function CouncilInterviewCard({ event, onSendConfig }: CouncilInterviewCa
 
   const handleUseDefaults = () => {
     onSendConfig({
-      preset: "Default",
+      preset: 'Default',
       rounds: 1,
       audit: false,
     });
@@ -106,8 +116,8 @@ export function CouncilInterviewCard({ event, onSendConfig }: CouncilInterviewCa
                 onClick={() => setSelectedPreset(preset)}
                 className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
                   selectedPreset === preset
-                    ? "bg-[var(--color-accent-primary)] text-white"
-                    : "bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] border border-[var(--color-border-primary)] hover:border-[var(--color-border-secondary)]"
+                    ? 'bg-[var(--color-accent-primary)] text-white'
+                    : 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] border border-[var(--color-border-primary)] hover:border-[var(--color-border-secondary)]'
                 }`}
               >
                 {preset}
@@ -127,8 +137,8 @@ export function CouncilInterviewCard({ event, onSendConfig }: CouncilInterviewCa
                 onClick={() => setSelectedRounds(rounds)}
                 className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
                   selectedRounds === rounds
-                    ? "bg-[var(--color-accent-primary)] text-white"
-                    : "bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] border border-[var(--color-border-primary)] hover:border-[var(--color-border-secondary)]"
+                    ? 'bg-[var(--color-accent-primary)] text-white'
+                    : 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] border border-[var(--color-border-primary)] hover:border-[var(--color-border-secondary)]'
                 }`}
               >
                 {rounds}
@@ -140,17 +150,21 @@ export function CouncilInterviewCard({ event, onSendConfig }: CouncilInterviewCa
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Settings className="w-4 h-4 text-[var(--color-text-muted)]" />
-            <span className="text-sm text-[var(--color-text-secondary)]">Enable audit trail</span>
+            <span className="text-sm text-[var(--color-text-secondary)]">
+              Enable audit trail
+            </span>
           </div>
           <button
             onClick={() => setAuditEnabled(!auditEnabled)}
             className={`relative w-10 h-5 rounded-full transition-colors ${
-              auditEnabled ? "bg-[var(--color-accent-primary)]" : "bg-[var(--color-bg-tertiary)] border border-[var(--color-border-primary)]"
+              auditEnabled
+                ? 'bg-[var(--color-accent-primary)]'
+                : 'bg-[var(--color-bg-tertiary)] border border-[var(--color-border-primary)]'
             }`}
           >
             <span
               className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
-                auditEnabled ? "translate-x-5" : "translate-x-0"
+                auditEnabled ? 'translate-x-5' : 'translate-x-0'
               }`}
             />
           </button>

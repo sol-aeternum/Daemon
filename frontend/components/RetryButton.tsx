@@ -1,4 +1,4 @@
-import { RefreshCw } from "lucide-react";
+import { RefreshCw } from 'lucide-react';
 
 interface RetryButtonProps {
   onRetry: () => void;
@@ -14,7 +14,7 @@ export function RetryButton({ onRetry, isLoading }: RetryButtonProps) {
       title="Retry sending message"
       type="button"
     >
-      <RefreshCw className={`w-4 h-4 ${isLoading ? "animate-spin" : ""}`} />
+      <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
     </button>
   );
 }

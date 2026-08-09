@@ -1,7 +1,7 @@
-"use client";
+'use client';
 
-import { useState, useEffect, useRef, useCallback } from "react";
-import { ChatEvent, isChatEvent } from "../lib/events";
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { ChatEvent, isChatEvent } from '../lib/events';
 
 export type { ChatEvent };
 
@@ -13,22 +13,22 @@ interface ArchivedEventData {
 
 /**
  * useEventArchive - Manages event archival for chat messages
- * 
+ *
  * ## Invariants
- * 
- * 1. **request_id tracking**: The `request_id` field in events identifies which events belong to 
+ *
+ * 1. **request_id tracking**: The `request_id` field in events identifies which events belong to
  *    the current request. This is used to filter events when archiving them.
- * 
- * 2. **Event key deduplication**: When there's no `request_id` (e.g., first message), we use 
- *    `lastArchivedEventKeysRef` to deduplicate events. This prevents the same event from being 
+ *
+ * 2. **Event key deduplication**: When there's no `request_id` (e.g., first message), we use
+ *    `lastArchivedEventKeysRef` to deduplicate events. This prevents the same event from being
  *    included in both the current stream and archived messages.
- * 
+ *
  * 3. **Lifecycle**:
  *    - Events arrive via `data` from useChat
- *    - Tracked in `eventsRef` 
+ *    - Tracked in `eventsRef`
  *    - On `onFinish`, filtered and stored in `archivedEvents` keyed by message ID
  *    - Subsequent renders read from archive
- * 
+ *
  * 4. **Multi-message handling**: When `data` accumulates across multiple messages in one session,
  *    the event-key deduplication ensures events aren't duplicated across message boundaries.
  */
@@ -53,27 +53,32 @@ function eventKey(event: ChatEvent): string {
   return `json:${JSON.stringify(event)}`;
 }
 
-export function useEventArchive({ data, isLoading }: UseEventArchiveOptions): UseEventArchiveReturn {
-  const [archivedEvents, setArchivedEvents] = useState<Record<string, ArchivedEventData>>({});
-  
+export function useEventArchive({
+  data,
+  isLoading,
+}: UseEventArchiveOptions): UseEventArchiveReturn {
+  const [archivedEvents, setArchivedEvents] = useState<
+    Record<string, ArchivedEventData>
+  >({});
+
   const eventsRef = useRef<ChatEvent[]>([]);
   const thinkingDurationRef = useRef(0);
   const lastArchivedEventKeysRef = useRef<Set<string>>(new Set());
   const currentRequestIdRef = useRef<string | null>(null);
-  
+
   const flattenedData: unknown[] = Array.isArray(data)
     ? data.flatMap((entry) => (Array.isArray(entry) ? entry : [entry]))
     : [];
 
   // Extract and filter events from data
-  const events: ChatEvent[] = flattenedData.filter(
-    (x): x is ChatEvent => isChatEvent(x)
+  const events: ChatEvent[] = flattenedData.filter((x): x is ChatEvent =>
+    isChatEvent(x),
   );
 
   // Sync events to ref and track request_id
   useEffect(() => {
     eventsRef.current = events;
-    
+
     // Find latest request_id
     let latestRequestId: string | null = null;
     for (let i = events.length - 1; i >= 0; i -= 1) {
@@ -83,7 +88,7 @@ export function useEventArchive({ data, isLoading }: UseEventArchiveOptions): Us
         break;
       }
     }
-    
+
     // Only update if we have a request_id or no events
     if (latestRequestId || events.length === 0) {
       currentRequestIdRef.current = latestRequestId;
@@ -108,8 +113,10 @@ export function useEventArchive({ data, isLoading }: UseEventArchiveOptions): Us
     const requestId = currentRequestIdRef.current;
     const eventsToArchive = requestId
       ? eventsRef.current.filter((event) => event.request_id === requestId)
-      : eventsRef.current.filter((event) => !lastArchivedEventKeysRef.current.has(eventKey(event)));
-    
+      : eventsRef.current.filter(
+          (event) => !lastArchivedEventKeysRef.current.has(eventKey(event)),
+        );
+
     setArchivedEvents((prev) => ({
       ...prev,
       [messageId]: {
@@ -118,7 +125,7 @@ export function useEventArchive({ data, isLoading }: UseEventArchiveOptions): Us
         requestId,
       },
     }));
-    
+
     // Reset for next message
     thinkingDurationRef.current = 0;
   }, []);
@@ -136,7 +143,7 @@ export function useEventArchive({ data, isLoading }: UseEventArchiveOptions): Us
       if (archivedEvents[messageId]) {
         return archivedEvents[messageId].events;
       }
-      
+
       if (isLast) {
         const requestId = currentRequestIdRef.current;
         if (requestId) {
@@ -145,17 +152,17 @@ export function useEventArchive({ data, isLoading }: UseEventArchiveOptions): Us
         const lastArchivedKeys = lastArchivedEventKeysRef.current;
         return events.filter((event) => !lastArchivedKeys.has(eventKey(event)));
       }
-      
+
       return [];
     },
-    [archivedEvents, events]
+    [archivedEvents, events],
   );
 
   const getDurationForMessage = useCallback(
     (messageId: string): number => {
       return archivedEvents[messageId]?.duration || 0;
     },
-    [archivedEvents]
+    [archivedEvents],
   );
 
   return {

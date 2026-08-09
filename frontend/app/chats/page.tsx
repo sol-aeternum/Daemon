@@ -1,13 +1,13 @@
-"use client";
+'use client';
 
-import { Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
-import { Plus, Search, Trash2, CheckSquare, Square } from "lucide-react";
-import { SidebarShell } from "@/components/SidebarShell";
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { Plus, Search, Trash2, CheckSquare, Square } from 'lucide-react';
+import { SidebarShell } from '@/components/SidebarShell';
 import {
   ConversationHistoryProvider,
   useConversationHistoryContext,
-} from "@/components/ConversationHistoryProvider";
+} from '@/components/ConversationHistoryProvider';
 
 function ChatsView() {
   const router = useRouter();
@@ -21,7 +21,9 @@ function ChatsView() {
   } = useConversationHistoryContext();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
-  const [contentMatchedIds, setContentMatchedIds] = useState<Set<string>>(new Set());
+  const [contentMatchedIds, setContentMatchedIds] = useState<Set<string>>(
+    new Set(),
+  );
   const [isSearchingContent, setIsSearchingContent] = useState(false);
   const contentIndexCacheRef = useRef<Map<string, string>>(new Map());
 
@@ -31,7 +33,8 @@ function ChatsView() {
 
   const sortedConversations = useMemo(() => {
     return [...conversations].sort(
-      (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+      (a, b) =>
+        new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
     );
   }, [conversations]);
 
@@ -42,7 +45,9 @@ function ChatsView() {
 
     return new Set(
       sortedConversations
-        .filter((conversation) => (conversation.title || "").toLowerCase().includes(normalizedQuery))
+        .filter((conversation) =>
+          (conversation.title || '').toLowerCase().includes(normalizedQuery),
+        )
         .map((conversation) => conversation.id),
     );
   }, [normalizedQuery, sortedConversations]);
@@ -51,8 +56,12 @@ function ChatsView() {
     let isCancelled = false;
 
     if (!normalizedQuery) {
-      setContentMatchedIds(new Set());
-      setIsSearchingContent(false);
+      queueMicrotask(() => {
+        if (!isCancelled) {
+          setContentMatchedIds(new Set());
+          setIsSearchingContent(false);
+        }
+      });
       return;
     }
 
@@ -84,9 +93,11 @@ function ChatsView() {
             const details = await fetchConversationById(conversation.id);
             const searchableText = (details?.messages || [])
               .map((message) =>
-                typeof message.content === "string" ? message.content.toLowerCase() : "",
+                typeof message.content === 'string'
+                  ? message.content.toLowerCase()
+                  : '',
               )
-              .join("\n");
+              .join('\n');
 
             contentIndexCacheRef.current.set(conversation.id, searchableText);
             return { id: conversation.id, searchableText };
@@ -115,7 +126,12 @@ function ChatsView() {
     return () => {
       isCancelled = true;
     };
-  }, [fetchConversationById, normalizedQuery, sortedConversations, titleMatchedIds]);
+  }, [
+    fetchConversationById,
+    normalizedQuery,
+    sortedConversations,
+    titleMatchedIds,
+  ]);
 
   const filteredConversations = useMemo(() => {
     if (!normalizedQuery) {
@@ -124,13 +140,21 @@ function ChatsView() {
 
     return sortedConversations.filter(
       (conversation) =>
-        titleMatchedIds.has(conversation.id) || contentMatchedIds.has(conversation.id),
+        titleMatchedIds.has(conversation.id) ||
+        contentMatchedIds.has(conversation.id),
     );
-  }, [contentMatchedIds, normalizedQuery, sortedConversations, titleMatchedIds]);
+  }, [
+    contentMatchedIds,
+    normalizedQuery,
+    sortedConversations,
+    titleMatchedIds,
+  ]);
 
   const allSelected =
     filteredConversations.length > 0 &&
-    filteredConversations.every((conversation) => selectedIds.has(conversation.id));
+    filteredConversations.every((conversation) =>
+      selectedIds.has(conversation.id),
+    );
 
   const toggleSelection = (id: string) => {
     setSelectedIds((prev) => {
@@ -149,7 +173,9 @@ function ChatsView() {
       setSelectedIds(new Set());
       return;
     }
-    setSelectedIds(new Set(filteredConversations.map((conversation) => conversation.id)));
+    setSelectedIds(
+      new Set(filteredConversations.map((conversation) => conversation.id)),
+    );
   };
 
   const handleDeleteSelected = async () => {
@@ -202,8 +228,8 @@ function ChatsView() {
         {normalizedQuery && (
           <p className="text-xs text-[var(--color-text-muted)]">
             {isSearchingContent
-              ? "Searching conversation titles and message content..."
-              : "Showing matches from titles and message content."}
+              ? 'Searching conversation titles and message content...'
+              : 'Showing matches from titles and message content.'}
           </p>
         )}
 
@@ -212,19 +238,25 @@ function ChatsView() {
             onClick={toggleSelectAll}
             className="inline-flex items-center gap-2 text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
           >
-            {allSelected ? <CheckSquare className="h-4 w-4" /> : <Square className="h-4 w-4" />}
-            {allSelected ? "Clear selection" : "Select all"}
+            {allSelected ? (
+              <CheckSquare className="h-4 w-4" />
+            ) : (
+              <Square className="h-4 w-4" />
+            )}
+            {allSelected ? 'Clear selection' : 'Select all'}
           </button>
 
           <div className="inline-flex items-center gap-3">
-            <span className="text-sm text-[var(--color-text-secondary)]">{selectedCount} selected</span>
+            <span className="text-sm text-[var(--color-text-secondary)]">
+              {selectedCount} selected
+            </span>
             <button
               onClick={handleDeleteSelected}
               disabled={selectedCount === 0 || isDeleting}
               className="inline-flex items-center gap-2 rounded-lg border border-[var(--color-status-error)]/40 px-3 py-2 text-sm text-[var(--color-status-error)] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[var(--color-status-error-bg)]"
             >
               <Trash2 className="h-4 w-4" />
-              {isDeleting ? "Deleting..." : "Delete"}
+              {isDeleting ? 'Deleting...' : 'Delete'}
             </button>
           </div>
         </div>
@@ -237,15 +269,21 @@ function ChatsView() {
               <div
                 key={conversation.id}
                 className={`flex items-start gap-3 p-4 transition-colors ${
-                  selected ? "bg-[var(--color-accent-subtle)]" : "bg-[var(--color-bg-secondary)]"
+                  selected
+                    ? 'bg-[var(--color-accent-subtle)]'
+                    : 'bg-[var(--color-bg-secondary)]'
                 }`}
               >
                 <button
                   onClick={() => toggleSelection(conversation.id)}
                   className="mt-0.5 text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
-                  aria-label={selected ? "Deselect chat" : "Select chat"}
+                  aria-label={selected ? 'Deselect chat' : 'Select chat'}
                 >
-                  {selected ? <CheckSquare className="h-5 w-5" /> : <Square className="h-5 w-5" />}
+                  {selected ? (
+                    <CheckSquare className="h-5 w-5" />
+                  ) : (
+                    <Square className="h-5 w-5" />
+                  )}
                 </button>
 
                 <button
@@ -253,10 +291,11 @@ function ChatsView() {
                   className="flex-1 min-w-0 text-left"
                 >
                   <p className="truncate text-base font-medium text-[var(--color-text-primary)]">
-                    {conversation.title || "New conversation"}
+                    {conversation.title || 'New conversation'}
                   </p>
                   <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
-                    Last message {new Date(conversation.updatedAt).toLocaleString()}
+                    Last message{' '}
+                    {new Date(conversation.updatedAt).toLocaleString()}
                   </p>
                   <p className="mt-1 text-xs text-[var(--color-text-muted)]">
                     {conversation.messageCount ?? 0} messages
@@ -267,7 +306,9 @@ function ChatsView() {
           })}
 
           {filteredConversations.length === 0 && (
-            <div className="p-6 text-sm text-[var(--color-text-muted)]">No chats match this search.</div>
+            <div className="p-6 text-sm text-[var(--color-text-muted)]">
+              No chats match this search.
+            </div>
           )}
         </div>
       </div>
@@ -277,7 +318,13 @@ function ChatsView() {
 
 export default function ChatsPage() {
   return (
-    <Suspense fallback={<div className="flex h-screen items-center justify-center">Loading chats...</div>}>
+    <Suspense
+      fallback={
+        <div className="flex h-screen items-center justify-center">
+          Loading chats...
+        </div>
+      }
+    >
       <ConversationHistoryProvider>
         <ChatsView />
       </ConversationHistoryProvider>

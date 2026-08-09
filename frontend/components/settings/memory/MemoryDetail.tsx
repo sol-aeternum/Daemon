@@ -1,10 +1,10 @@
-"use client";
+'use client';
 
-import { useState } from "react";
-import Link from "next/link";
-import { Memory } from "@/hooks/useMemories";
-import { TrailView } from "./TrailView";
-import { formatRelativeTime } from "@/lib/format";
+import { useState } from 'react';
+import Link from 'next/link';
+import { Memory } from '@/hooks/useMemories';
+import { TrailView } from './TrailView';
+import { formatRelativeTime } from '@/lib/format';
 import {
   ArrowLeft,
   Pencil,
@@ -19,7 +19,7 @@ import {
   XCircle,
   Clock,
   AlertTriangle,
-} from "lucide-react";
+} from 'lucide-react';
 
 interface MemoryDetailProps {
   memory: Memory;
@@ -36,32 +36,32 @@ const sourceIcons = {
 
 const statusConfig = {
   active: {
-    label: "Active",
+    label: 'Active',
     icon: CheckCircle2,
-    color: "text-status-success",
-    bgColor: "bg-status-success-bg",
-    borderColor: "border-status-success/30",
+    color: 'text-status-success',
+    bgColor: 'bg-status-success-bg',
+    borderColor: 'border-status-success/30',
   },
   superseded: {
-    label: "Superseded",
+    label: 'Superseded',
     icon: Clock,
-    color: "text-text-muted",
-    bgColor: "bg-bg-tertiary",
-    borderColor: "border-border-primary",
+    color: 'text-text-muted',
+    bgColor: 'bg-bg-tertiary',
+    borderColor: 'border-border-primary',
   },
   rejected: {
-    label: "Rejected",
+    label: 'Rejected',
     icon: XCircle,
-    color: "text-status-error",
-    bgColor: "bg-status-error-bg",
-    borderColor: "border-status-error/30",
+    color: 'text-status-error',
+    bgColor: 'bg-status-error-bg',
+    borderColor: 'border-status-error/30',
   },
   deleted: {
-    label: "Deleted",
+    label: 'Deleted',
     icon: Trash2,
-    color: "text-status-error",
-    bgColor: "bg-status-error-bg",
-    borderColor: "border-status-error/30",
+    color: 'text-status-error',
+    bgColor: 'bg-status-error-bg',
+    borderColor: 'border-status-error/30',
   },
 } as const;
 
@@ -74,9 +74,9 @@ function getStatusConfig(status: string) {
     statusConfig[status as keyof typeof statusConfig] || {
       label: status,
       icon: CheckCircle2,
-      color: "text-text-primary",
-      bgColor: "bg-bg-tertiary",
-      borderColor: "border-border-primary",
+      color: 'text-text-primary',
+      bgColor: 'bg-bg-tertiary',
+      borderColor: 'border-border-primary',
     }
   );
 }
@@ -293,10 +293,10 @@ export function MemoryDetail({
                   <div
                     className={`h-full rounded-full ${
                       confidence >= 0.8
-                        ? "bg-status-success"
+                        ? 'bg-status-success'
                         : confidence >= 0.5
-                          ? "bg-status-warning"
-                          : "bg-status-error"
+                          ? 'bg-status-warning'
+                          : 'bg-status-error'
                     }`}
                     style={{ width: `${confidence * 100}%` }}
                   />
@@ -309,7 +309,8 @@ export function MemoryDetail({
           )}
 
           {/* Memory Slot */}
-          {(memory.metadata?.memory_slot as number | undefined) !== undefined && (
+          {(memory.metadata?.memory_slot as number | undefined) !==
+            undefined && (
             <div>
               <label className="block text-xs font-medium text-text-muted mb-1">
                 Memory Slot
@@ -321,28 +322,30 @@ export function MemoryDetail({
           )}
 
           {/* Valid From */}
-          {memory.metadata && (memory.metadata.valid_from as string | undefined) && (
-            <div>
-              <label className="block text-xs font-medium text-text-muted mb-1">
-                Valid From
-              </label>
-              <span className="text-sm text-text-primary">
-                {formatRelativeTime(memory.metadata?.valid_from as string)}
-              </span>
-            </div>
-          )}
+          {memory.metadata &&
+            (memory.metadata.valid_from as string | undefined) && (
+              <div>
+                <label className="block text-xs font-medium text-text-muted mb-1">
+                  Valid From
+                </label>
+                <span className="text-sm text-text-primary">
+                  {formatRelativeTime(memory.metadata?.valid_from as string)}
+                </span>
+              </div>
+            )}
 
           {/* Valid To */}
-          {memory.metadata && (memory.metadata.valid_to as string | undefined) && (
-            <div>
-              <label className="block text-xs font-medium text-text-muted mb-1">
-                Valid To
-              </label>
-              <span className="text-sm text-text-primary">
-                {formatRelativeTime(memory.metadata?.valid_to as string)}
-              </span>
-            </div>
-          )}
+          {memory.metadata &&
+            (memory.metadata.valid_to as string | undefined) && (
+              <div>
+                <label className="block text-xs font-medium text-text-muted mb-1">
+                  Valid To
+                </label>
+                <span className="text-sm text-text-primary">
+                  {formatRelativeTime(memory.metadata?.valid_to as string)}
+                </span>
+              </div>
+            )}
 
           {/* Created */}
           <div>
@@ -370,7 +373,7 @@ export function MemoryDetail({
               Confirmed
             </label>
             <span className="text-sm text-text-primary">
-              {memory.confirmed ? "Yes" : "No"}
+              {memory.confirmed ? 'Yes' : 'No'}
             </span>
           </div>
         </div>
