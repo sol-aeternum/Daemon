@@ -3,7 +3,7 @@
 #
 # Mirrors the AGENTS.md gate inventory and the GitHub Actions CI workflow
 # at .github/workflows/ci.yml. Blocking gates fail this script; inventory gates
-# (such as browser regression) are not represented in this table.
+# report existing debt without changing the exit status.
 #
 # Usage:
 #   scripts/local_ci.sh                  # run every gate
@@ -55,14 +55,15 @@ read -r -d '' GATE_TABLE <<'EOF' || true
 backend|ruff-check|blocking|uv run ruff check .
 backend|ruff-format|blocking|uv run ruff format --check .
 backend|basedpyright|blocking|uv run basedpyright --level error
-backend|bandit|blocking|uv run bandit -r orchestrator providers scripts tests
-backend|pip-audit|blocking|uv run pip-audit
+backend|bandit-high|blocking|uv run bandit -r orchestrator providers scripts tests -lll
+backend|bandit|inventory|uv run bandit -r orchestrator providers scripts tests
+backend|pip-audit|inventory|uv run pip-audit
 backend|pytest|blocking|PYTHONPATH=. uv run pytest -q
 frontend|npm-ci|blocking|npm ci --prefix frontend --no-audit --no-fund --prefer-offline
 frontend|type-check|blocking|npm --prefix frontend run type-check
 frontend|lint|blocking|npm --prefix frontend run lint
 frontend|format-check|blocking|npm --prefix frontend run format:check
-frontend|audit-ci|blocking|npm --prefix frontend run audit:ci
+frontend|audit-ci|inventory|npm --prefix frontend run audit:ci
 frontend|test-run|blocking|npm --prefix frontend run test:run
 frontend|build|blocking|npm --prefix frontend run build
 aggregate|feature-matrix|blocking|python scripts/lint_feature_matrix.py

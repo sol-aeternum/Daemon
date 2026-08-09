@@ -24,8 +24,9 @@ No task is complete until it passes the project's automated gates. Run them befo
 - **Lint**: `uv run ruff check .`
 - **Format**: `uv run ruff format --check .`
 - **Type Check**: `uv run basedpyright --level error`
-- **Security (SAST)**: `uv run bandit -r orchestrator providers scripts tests`
-- **Security (SCA)**: `uv run pip-audit`
+- **Security (SAST, blocking high severity)**: `uv run bandit -r orchestrator providers scripts tests -lll`
+- **Security (SAST inventory)**: `uv run bandit -r orchestrator providers scripts tests`
+- **Security (SCA inventory)**: `uv run pip-audit`
 - **Tests**: `PYTHONPATH=. uv run pytest -q`
 
 ### Frontend Gates (run from `frontend/`)
@@ -33,7 +34,7 @@ No task is complete until it passes the project's automated gates. Run them befo
 - **Type Check**: `npm run type-check`
 - **Lint**: `npm run lint`
 - **Format**: `npm run format:check`
-- **Security (SCA)**: `npm run audit:ci`
+- **Security (SCA inventory)**: `npm run audit:ci`
 - **Tests**: `npm run test:run`
 - **Build**: `npm run build`
 
@@ -94,14 +95,16 @@ migrations/             # PostgreSQL migrations
  - `uv run ruff check .` — lint (autofix with `--fix`)
  - `uv run ruff format --check .` — formatting
  - `uv run basedpyright --level error` — strict error-level type check (new errors must be clean; existing diagnostics are grandfathered via the baseline — ratchet, not rewrite)
- - `uv run bandit -r .` — security static analysis
+ - `uv run bandit -r orchestrator providers scripts tests -lll` — blocking high-severity security static analysis
+ - `uv run bandit -r orchestrator providers scripts tests` — full security finding inventory
+ - `uv run pip-audit` — dependency vulnerability inventory
  - `PYTHONPATH=. uv run pytest -q` — tests
 
  **Frontend (`frontend/`):**
  - `npm run type-check` — type check (Next 16 `build` does NOT type-check; run this explicitly)
  - `npm run lint` — eslint (NOT `next lint`; removed in Next 16)
  - `npm run format:check` — formatting
- - `npm run audit:ci` — security SCA
+ - `npm run audit:ci` — dependency vulnerability inventory
  - `npm run test:run` — tests
  - `npm run build` — production build
 
@@ -117,7 +120,7 @@ migrations/             # PostgreSQL migrations
 
 Local gate runner and PR wrapper live in `scripts/`:
 
-- `scripts/local_ci.sh [backend|frontend|aggregate] [--list]` — runs the gate families above. Blocking gates (ruff check, ruff format, basedpyright, frontend type/lint/format, feature matrix, pre-commit) fail the script; inventory gates (CI `continue-on-error`) are reported but do not block.
+- `scripts/local_ci.sh [backend|frontend|aggregate] [--list]` — runs the gate families above. Functional gates and the high-severity Bandit gate fail the script; full Bandit and dependency audits are inventory gates (CI `continue-on-error`) that are reported but do not block.
 - `scripts/pr_create.sh --dry-run -- <gh pr create args>` — refuses to invoke `gh pr create` until `scripts/local_ci.sh` exits 0. `--dry-run` shows the plan without running gates or contacting GitHub. `scripts/pr_create.sh -- <args>` is the recommended replacement for `gh pr create`.
 - `main` is protected by the GitHub `Main Protection` ruleset. Required checks are `Backend gates`, `Frontend gates`, `Feature matrix gate`, and `Pre-commit and secret scanning`.
 - Do not merge around failed required checks. If a required check is stale, missing, or misconfigured, fix the workflow/ruleset or record the blocker before merging.

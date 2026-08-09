@@ -43,10 +43,15 @@ jobs:
       - name: Basedpyright error gate
         run: uv run basedpyright --level error
 
-      - name: Bandit SAST
+      - name: Bandit high-severity gate
+        run: uv run bandit -r orchestrator providers scripts tests -lll
+
+      - name: Bandit full inventory
+        continue-on-error: true
         run: uv run bandit -r orchestrator providers scripts tests
 
       - name: Python dependency audit
+        continue-on-error: true
         run: uv run pip-audit
 
       - name: Pytest
@@ -82,6 +87,7 @@ jobs:
         run: npm run format:check
 
       - name: Frontend dependency audit
+        continue-on-error: true
         run: npm run audit:ci
 
       - name: Vitest

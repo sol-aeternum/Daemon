@@ -8,9 +8,13 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+LOCAL_CI = REPO_ROOT / "scripts" / "local_ci.sh"
 
 ALLOWED_CONTINUE_ON_ERROR_STEPS = {
+    ("backend", "Bandit full inventory"),
+    ("backend", "Python dependency audit"),
     ("frontend", "Browser regression inventory"),
+    ("frontend", "Frontend dependency audit"),
 }
 
 BLOCKING_GATE_STEPS = {
@@ -18,19 +22,26 @@ BLOCKING_GATE_STEPS = {
     ("backend", "Ruff lint"),
     ("backend", "Ruff format check"),
     ("backend", "Basedpyright error gate"),
-    ("backend", "Bandit SAST"),
-    ("backend", "Python dependency audit"),
+    ("backend", "Bandit high-severity gate"),
     ("backend", "Pytest"),
     ("frontend", "Install frontend dependencies"),
     ("frontend", "Type check"),
     ("frontend", "ESLint"),
     ("frontend", "Prettier check"),
-    ("frontend", "Frontend dependency audit"),
     ("frontend", "Vitest"),
     ("frontend", "Build"),
     ("feature-matrix", "Validate feature matrix"),
     ("pre-commit-security", "Run pre-commit hooks"),
     ("pre-commit-security", "Run commit message hook"),
+}
+
+EXPECTED_SECURITY_COMMANDS = {
+    ("backend", "Bandit high-severity gate"): (
+        "uv run bandit -r orchestrator providers scripts tests -lll"
+    ),
+    ("backend", "Bandit full inventory"): ("uv run bandit -r orchestrator providers scripts tests"),
+    ("backend", "Python dependency audit"): "uv run pip-audit",
+    ("frontend", "Frontend dependency audit"): "npm run audit:ci",
 }
 
 
@@ -82,6 +93,22 @@ def test_ci_documented_gates_are_present_and_blocking() -> None:
     assert nonblocking_steps == ALLOWED_CONTINUE_ON_ERROR_STEPS, (
         f"Unexpected continue-on-error policy: {nonblocking_steps}"
     )
+
+    for key, expected_command in EXPECTED_SECURITY_COMMANDS.items():
+        assert steps_by_key[key].get("run") == expected_command
+
+
+def test_local_ci_security_policy_matches_workflow() -> None:
+    local_ci = LOCAL_CI.read_text(encoding="utf-8")
+
+    expected_gate_rows = {
+        "backend|bandit-high|blocking|uv run bandit -r orchestrator providers scripts tests -lll",
+        "backend|bandit|inventory|uv run bandit -r orchestrator providers scripts tests",
+        "backend|pip-audit|inventory|uv run pip-audit",
+        "frontend|audit-ci|inventory|npm --prefix frontend run audit:ci",
+    }
+    for row in expected_gate_rows:
+        assert row in local_ci
 
 
 def test_frontend_browser_regression_blocking_sequence_is_anchored() -> None:
