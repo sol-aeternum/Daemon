@@ -466,6 +466,11 @@ class MemoryStore:
         # ``created_at`` change) would otherwise insert before already-summarized
         # rows and replay the same messages on the next iteration (Codex P2 on
         # PR #165, ``store.py:464``).
+        #
+        # The ``ranked`` CTE must include ALL conversation rows (not just the
+        # finalized ones) so the ``cutoff`` CTE can find the first non-finalized
+        # row and stop the contiguous prefix before it. The outer SELECT then
+        # filters to finalized-only rows within that contiguous prefix.
         base_filter = "conversation_id = $1 AND (status IS NULL OR status = 'complete')"
         if snapshot_at is not None:
             rows = await self._pool.fetch(
@@ -475,7 +480,7 @@ class MemoryStore:
                         ORDER BY created_at ASC, id ASC
                     ) AS rn
                     FROM messages
-                    WHERE {base_filter}
+                    WHERE conversation_id = $1
                       AND created_at <= $4
                 ),
                 cutoff AS (
@@ -490,7 +495,8 @@ class MemoryStore:
                 )
                 SELECT m.* FROM messages m
                 JOIN ranked r ON m.id = r.id
-                WHERE r.rn > $3
+                WHERE {base_filter}
+                  AND r.rn > $3
                   AND r.rn <= (SELECT contiguous_rn FROM cutoff)
                 ORDER BY r.rn ASC
                 LIMIT $2
@@ -509,7 +515,7 @@ class MemoryStore:
                                ORDER BY created_at ASC, id ASC
                            ) AS rn
                     FROM messages
-                    WHERE {base_filter}
+                    WHERE conversation_id = $1
                 ),
                 cutoff AS (
                     SELECT COALESCE(
@@ -521,7 +527,8 @@ class MemoryStore:
                 )
                 SELECT m.* FROM messages m
                 JOIN ranked r ON m.id = r.id
-                WHERE r.rn > $3
+                WHERE {base_filter}
+                  AND r.rn > $3
                   AND r.rn <= (SELECT contiguous_rn FROM cutoff)
                 ORDER BY r.rn ASC
                 LIMIT $2
@@ -639,14 +646,49 @@ class MemoryStore:
         )
         return int(row["count"]) if row else 0
 
+    async def consume_summary_continuation_pending(
+        self,
+        conversation_id: uuid.UUID,
+    ) -> bool:
+        """Atomically clear the ``summary_continuation_pending`` flag
+        and return its prior value.
+
+        Used by the extraction job's retry-recovery path: if a previous
+        attempt committed the summary + continuation-pending flag but
+        failed to enqueue the forced-summary continuation (e.g. Redis
+        transient error -> ``Retry``), the retry may find ``no_messages``
+        after the watermark advances — so we need a separate signal that
+        survives the watermark (Codex P2 on PR #165,
+        ``worker/jobs.py:295``).
+        """
+        row = await self._pool.fetchrow(
+            """
+            UPDATE conversations
+            SET metadata = COALESCE(metadata, '{}'::jsonb)
+                || jsonb_build_object(
+                    'summary_continuation_pending',
+                    false
+                )
+            WHERE id = $1
+              AND COALESCE(
+                  (metadata ->> 'summary_continuation_pending')::boolean,
+                  false
+              ) = true
+            RETURNING id
+            """,
+            conversation_id,
+        )
+        return row is not None
+
     async def update_conversation_summary(
         self,
         conversation_id: uuid.UUID,
-        *,
         summary: str,
+        *,
         expected_summary_updated_at: datetime | None,
         summarized_message_count: int,
         summary_snapshot_at: datetime | None = None,
+        summary_continuation_pending: bool = False,
     ) -> bool:
         """Atomically persist a summary and its finalized-message baseline.
 
@@ -656,6 +698,12 @@ class MemoryStore:
         list ordering, and stores ``last_summarized_at_time`` so the next
         summary batch can pin its row set to the moment this cursor was
         captured.
+
+        ``summary_continuation_pending`` is persisted as a metadata flag
+        atomically with the summary update so a retry of the extraction
+        job (which may find ``no_messages`` after the watermark advances)
+        can still recover and enqueue the forced-summary continuation
+        (Codex P2 on PR #165, ``worker/jobs.py:295``).
         """
         snapshot_iso: str | None = None
         if summary_snapshot_at is not None:
@@ -672,6 +720,10 @@ class MemoryStore:
                         'last_summarized_msg_count',
                         $4::bigint
                     )
+                    || jsonb_build_object(
+                        'summary_continuation_pending',
+                        $6::boolean
+                    )
                     || CASE
                         WHEN $5::text IS NULL THEN '{}'::jsonb
                         ELSE jsonb_build_object(
@@ -687,6 +739,7 @@ class MemoryStore:
             expected_summary_updated_at,
             summarized_message_count,
             snapshot_iso,
+            summary_continuation_pending,
         )
         return row is not None
 

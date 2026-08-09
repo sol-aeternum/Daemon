@@ -257,12 +257,19 @@ async def _generate_or_update_summary_result(
             summary = ". ".join(sentences[:3]) + "."
 
         # Persist the summary and finalized-message baseline atomically.
+        # When ``continuation_needed`` will be True, persist the
+        # ``summary_continuation_pending`` flag atomically with the
+        # summary update so a retry of the extraction job (which may
+        # find ``no_messages`` after the watermark advances) can still
+        # recover and enqueue the forced-summary continuation
+        # (Codex P2 on PR #165, ``worker/jobs.py:295``).
         updated = await store.update_conversation_summary(
             conversation_id,
             summary=summary,
             expected_summary_updated_at=summary_updated_at,
             summarized_message_count=claimed_message_count,
             summary_snapshot_at=iteration_snapshot,
+            summary_continuation_pending=pre_persist_continuation,
         )
         if not updated:
             # Optimistic-concurrency conflict: another summary invocation

@@ -44,6 +44,12 @@ async def test_summary_batch_stops_at_first_non_finalized_row() -> None:
     streaming or failed row must not be returned in the same batch;
     the SQL must stop at the contiguous-prefix boundary rather than
     merely filtering the gap row out.
+
+    Regression: prior implementation applied the ``base_filter`` (status
+    IS NULL OR status = 'complete') inside the ``ranked`` CTE, which
+    excluded non-finalized rows before the ``cutoff`` CTE could find
+    them — so ``MIN(rn) - 1`` was always NULL and the COALESCE fell back
+    to ``MAX(rn)``, returning finalized rows past a streaming gap.
     """
     conversation_id = uuid4()
     snapshot = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
@@ -73,6 +79,50 @@ async def test_summary_batch_stops_at_first_non_finalized_row() -> None:
     # (offset) and ``r.rn <= contiguous_rn`` (the boundary).
     assert "r.rn > $3" in normalized
     assert "r.rn <= (SELECT contiguous_rn FROM cutoff)" in normalized
+
+    # Regression guard for the ranked-CTE bug: the ``ranked`` CTE must
+    # rank ALL conversation rows at-or-before the snapshot (regardless
+    # of status), so the ``cutoff`` CTE can find non-finalized rows
+    # that would otherwise be hidden by ``base_filter``. The outer
+    # SELECT then filters to finalized rows within the contiguous
+    # prefix.
+    #
+    # The fix is verified by inspecting the CTE structure: the ``ranked``
+    # CTE must reference ``messages`` with only the conversation-id and
+    # snapshot filter, NOT the finalized-status filter; the
+    # finalized-only filter (``status IS NULL OR status = 'complete'``)
+    # must appear only in the outer SELECT.
+    ranked_section, outer_section = _split_ctes(normalized)
+    assert "messages" in ranked_section
+    # base_filter MUST NOT appear inside the ranked CTE
+    assert "status IS NULL OR status = 'complete'" not in ranked_section, (
+        "ranked CTE must include ALL rows so cutoff can find non-finalized gap rows"
+    )
+    # base_filter MUST appear in the outer SELECT (filter finalized-only)
+    assert "status IS NULL OR status = 'complete'" in outer_section, (
+        "outer SELECT must filter to finalized-only rows"
+    )
+
+
+def _split_ctes(normalized_query: str) -> tuple[str, str]:
+    """Split a normalized SQL query into (ranked_section, after_ranked_section).
+
+    The CTE list is everything between the outermost WITH and its matching
+    SELECT. We split between the end of the ``ranked`` CTE definition and the
+    next CTE (``cutoff``) or the outer SELECT. This is a deliberately
+    permissive parser — we only care that ``ranked`` is a well-bounded
+    substring we can search.
+    """
+    upper = normalized_query.upper()
+    with_idx = upper.find("WITH ")
+    ranked_idx = upper.find("RANKED AS")
+    cutoff_idx = upper.find("CUTOFF AS", ranked_idx)
+    if with_idx == -1 or ranked_idx == -1:
+        raise AssertionError(f"Could not locate WITH/ranked in query: {normalized_query!r}")
+    if cutoff_idx == -1:
+        # No cutoff CTE — the entire body after ranked is the outer SELECT.
+        return normalized_query[with_idx:ranked_idx], normalized_query[ranked_idx:]
+    return normalized_query[with_idx:cutoff_idx], normalized_query[cutoff_idx:]
 
 
 @pytest.mark.asyncio
@@ -142,13 +192,16 @@ async def test_update_conversation_summary_persists_baseline_atomically() -> Non
     )
 
     assert updated is True
-    query, actual_id, summary, actual_time, baseline, snapshot = pool.fetchrow.await_args.args
+    query, actual_id, summary, actual_time, baseline, snapshot, continuation_pending = (
+        pool.fetchrow.await_args.args
+    )
     normalized_query = " ".join(query.split())
     assert actual_id == conversation_id
     assert summary == "summary"
     assert actual_time == summary_time
     assert baseline == 42
     assert snapshot is None
+    assert continuation_pending is False
     assert "last_summarized_msg_count" in normalized_query
     assert "summary_updated_at IS NOT DISTINCT FROM $3" in normalized_query
     assert "updated_at = NOW()" in normalized_query
@@ -174,7 +227,9 @@ async def test_update_conversation_summary_persists_snapshot_timestamp() -> None
     )
 
     assert updated is True
-    query, _actual_id, _summary, _time, _baseline, snapshot_arg = pool.fetchrow.await_args.args
+    query, _actual_id, _summary, _time, _baseline, snapshot_arg, _continuation_pending = (
+        pool.fetchrow.await_args.args
+    )
     assert snapshot_arg == "2026-08-08T12:00:00+00:00"
     assert "last_summarized_at_time" in " ".join(query.split())
 
