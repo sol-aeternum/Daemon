@@ -493,22 +493,14 @@ class TestApplyDeleteAction:
                     {"action_id": action_id, "status": status, "reason": reason}
                 )
 
-        class FailingProjectionStore:
-            def __init__(self, pool: object) -> None:
-                self.pool = pool
-
-            async def delete_projection(self, skill_id: str) -> bool:
+            async def delete_skill_projection(self, skill_id: str) -> bool:
                 raise RuntimeError(f"projection unavailable for {skill_id}")
 
         with patch("orchestrator.skills_store.delete_skill") as mock_delete:
-            with patch(
-                "orchestrator.skills_projection.SkillProjectionStore",
-                return_value=FailingProjectionStore(object()),
-            ):
-                store = FakeMemoryStore()
-                result = await _apply_delete_action(
-                    "skill-to-delete", cast(MemoryStore, store), user_id
-                )
+            store = FakeMemoryStore()
+            result = await _apply_delete_action(
+                "skill-to-delete", cast(MemoryStore, store), user_id
+            )
 
         assert result["deleted"] is False
         assert result["reason"] == "projection unavailable for skill-to-delete"
