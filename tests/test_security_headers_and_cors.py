@@ -166,6 +166,9 @@ def test_frontend_proxy_emits_matching_security_headers() -> None:
     assert "blob:" in source
     assert re.search(r"media-src[^;]*blob:", source) is not None
 
+    # ToolCallBlock and VideoPlayer explicitly accept inline data: videos.
+    assert re.search(r"const mediaSrc = \[[^\]]*'data:'", source) is not None
+
     # connect-src must include the configured backend origin
     # (NEXT_PUBLIC_API_URL) so direct browser hooks
     # (useConversationHistory etc.) can reach the backend without going
@@ -320,16 +323,36 @@ def test_proxy_csp_permits_local_api_fallback_in_connect_src() -> None:
     )
 
 
-def test_proxy_csp_permits_docx_preview_inline_styles() -> None:
-    """``docx-preview`` (frontend/src/components/previews/DocxPreview.tsx)
-    injects dynamically generated ``<style>`` elements without a nonce,
-    and the generated CSS is what makes the DOCX preview render
-    correctly. ``style-src`` must include ``'unsafe-inline'`` so those
-    styles are not blocked (Codex P2 on PR #163).
+def test_docx_preview_nonces_styles_before_attaching_them() -> None:
+    """A nonce makes ``'unsafe-inline'`` ineffective in the same
+    ``style-src`` directive. DocxPreview must therefore render generated
+    styles into a detached container, nonce them, and only then attach them
+    to the live document.
     """
-    source = (ROOT / "frontend" / "proxy.ts").read_text()
-    # style-src must include 'unsafe-inline' alongside 'self' and 'nonce-'.
-    assert re.search(r"style-src[^;]*'unsafe-inline'", source) is not None
+    proxy_source = (ROOT / "frontend" / "proxy.ts").read_text()
+    preview_source = (
+        ROOT / "frontend" / "src" / "components" / "previews" / "DocxPreview.tsx"
+    ).read_text()
+
+    assert "`style-src 'self' 'nonce-${nonce}'`" in proxy_source
+    assert "`style-src 'self' 'nonce-${nonce}' 'unsafe-inline'`" not in proxy_source
+    create_style_container = re.search(r"document\.createElement\((['\"])div\1\)", preview_source)
+    set_style_nonce = re.search(r"style\.setAttribute\((['\"])nonce\1, nonce\)", preview_source)
+    assert create_style_container is not None
+    assert set_style_nonce is not None
+    assert set_style_nonce.start() < preview_source.index("containerRef.current.prepend")
+
+
+def test_html_preview_uses_an_isolated_frame_policy() -> None:
+    proxy_source = (ROOT / "frontend" / "proxy.ts").read_text()
+    preview_source = (
+        ROOT / "frontend" / "src" / "components" / "previews" / "HtmlPreview.tsx"
+    ).read_text()
+
+    assert "HTML_PREVIEW_FRAME_PATH" in preview_source
+    assert "srcDoc={content}" not in preview_source
+    assert "HTML_PREVIEW_CONTENT_SECURITY_POLICY" in proxy_source
+    assert "response.headers.set('X-Frame-Options', 'SAMEORIGIN')" in proxy_source
 
 
 @pytest.mark.asyncio

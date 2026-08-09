@@ -95,6 +95,13 @@ jobs:
         continue-on-error: true
         run: npm run test:run
 
+      - name: Install Chromium for browser regressions
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser regression inventory
+        continue-on-error: true
+        run: npm run test:browser
+
       - name: Build inventory
         continue-on-error: true
         run: npm run build
