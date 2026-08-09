@@ -12,13 +12,10 @@ type UseStopGenerationOptions = {
   stop: () => void;
   archiveEvents: (messageId: string) => void;
   /**
-   * Conversation ID for the messages currently rendered. The set of stopped
-   * message IDs is scoped per-conversation so that clearing the in-memory
-   * set on `handleNewChat` does not silently erase `(stopped)` markers for
-   * the conversation the user navigates back to later. When the
-   * conversation ID changes (e.g. switchConversation), the hook drops the
-   * markers for the previous conversation but the caller can still pull
-   * them out via `stoppedMessageIds` for the active ID.
+   * Conversation ID for the messages currently rendered. Stopped message IDs
+   * are scoped per conversation so navigating away does not erase the marker
+   * shown when the user returns. A newly started stream can temporarily use
+   * the ID-less key until `assignConversationId` receives the backend ID.
    */
   conversationId: string | null;
 };
