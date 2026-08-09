@@ -160,6 +160,28 @@ export function ConversationList({
     onNavigate?.(section);
   };
 
+  // Dismiss open menus / the delete-confirmation dialog with Escape so the
+  // global Stop shortcut is not left inert. Without this, the
+  // `data-stop-shortcut-block` attribute makes Escape do nothing while an
+  // overlay is open.
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (deleteConfirmId) {
+        setDeleteConfirmId(null);
+        event.stopPropagation();
+        return;
+      }
+      if (menuOpenId) {
+        setMenuOpenId(null);
+        setMenuPosition(null);
+        event.stopPropagation();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [deleteConfirmId, menuOpenId]);
+
   const togglePin = (
     e: React.MouseEvent,
     id: string,
