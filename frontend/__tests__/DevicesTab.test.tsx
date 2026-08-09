@@ -37,15 +37,13 @@ beforeEach(() => {
 });
 
 function mockWindowLocation() {
-  const assignedHref: { value: string | null } = { value: null };
+  const replace = vi.fn();
   const originalLocation = window.location;
   const locationSpy = vi.spyOn(window, 'location', 'get').mockReturnValue({
     ...originalLocation,
-    set href(value: string) {
-      assignedHref.value = value;
-    },
+    replace,
   } as unknown as Location);
-  return { assignedHref, locationSpy };
+  return { replace, locationSpy };
 }
 
 function getConfirmRevokeButton() {
@@ -222,7 +220,7 @@ describe('DevicesTab', () => {
   });
 
   it('revoking current device clears auth and redirects to /setup', async () => {
-    const { assignedHref, locationSpy } = mockWindowLocation();
+    const { replace, locationSpy } = mockWindowLocation();
 
     const devices = [
       {
@@ -258,7 +256,7 @@ describe('DevicesTab', () => {
       expect(mockRevokeDevice).toHaveBeenCalledWith('dev-current');
     });
     expect(mockClearAuthState).toHaveBeenCalled();
-    expect(assignedHref.value).toBe('/setup');
+    expect(replace).toHaveBeenCalledWith('/setup');
 
     locationSpy.mockRestore();
   });

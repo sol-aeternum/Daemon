@@ -112,7 +112,7 @@ export default function DevicesTab() {
         if (device.current) {
           clearAuthState();
           if (typeof window !== 'undefined') {
-            window.location.href = '/setup';
+            window.location.replace('/setup');
           }
           return;
         }

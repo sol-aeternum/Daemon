@@ -1279,13 +1279,11 @@ describe('attemptPageLoadRefresh identity-session restore', () => {
     );
     globalThis.fetch = mockFetch;
 
-    const assignedHref: { value: string | null } = { value: null };
+    const replace = vi.fn();
     const originalLocation = window.location;
     const locationSpy = vi.spyOn(window, 'location', 'get').mockReturnValue({
       ...originalLocation,
-      set href(value: string) {
-        assignedHref.value = value;
-      },
+      replace,
     } as unknown as Location);
 
     const { attemptPageLoadRefresh, getAccessToken } =
@@ -1294,7 +1292,7 @@ describe('attemptPageLoadRefresh identity-session restore', () => {
     const ok = await attemptPageLoadRefresh();
     expect(ok).toBe(false);
     expect(getAccessToken()).toBeNull();
-    expect(assignedHref.value).toBe('/setup');
+    expect(replace).toHaveBeenCalledWith('/setup');
 
     locationSpy.mockRestore();
     vi.restoreAllMocks();
@@ -1315,13 +1313,11 @@ describe('attemptPageLoadRefresh identity-session restore', () => {
     );
     globalThis.fetch = mockFetch;
 
-    const assignedHref: { value: string | null } = { value: null };
+    const replace = vi.fn();
     const originalLocation = window.location;
     const locationSpy = vi.spyOn(window, 'location', 'get').mockReturnValue({
       ...originalLocation,
-      set href(value: string) {
-        assignedHref.value = value;
-      },
+      replace,
     } as unknown as Location);
 
     const { attemptPageLoadRefresh, getAccessToken } =
@@ -1332,7 +1328,7 @@ describe('attemptPageLoadRefresh identity-session restore', () => {
     });
     expect(ok).toBe(false);
     expect(getAccessToken()).toBeNull();
-    expect(assignedHref.value).toBeNull();
+    expect(replace).not.toHaveBeenCalled();
 
     locationSpy.mockRestore();
     vi.restoreAllMocks();
