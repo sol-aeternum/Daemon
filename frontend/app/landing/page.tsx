@@ -15,13 +15,13 @@ export default function LandingPage() {
             </div>
             <div className="flex items-center gap-4">
               <Link
-                href="/login"
+                href="/auth"
                 className="text-sm font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
               >
                 Log in
               </Link>
               <Link
-                href="/signup"
+                href="/auth"
                 className="text-sm font-medium bg-daemon-accent hover:bg-opacity-90 text-white px-4 py-2 rounded-md transition-all"
               >
                 Sign up
@@ -48,13 +48,13 @@ export default function LandingPage() {
                 style={{ animationDelay: '100ms' }}
               >
                 <Link
-                  href="/signup"
+                  href="/auth"
                   className="w-full sm:w-auto px-8 py-4 bg-daemon-accent hover:bg-opacity-90 text-white rounded-lg font-semibold text-lg transition-all transform hover:scale-105 flex items-center justify-center gap-2 shadow-lg shadow-daemon-accent/20"
                 >
                   Sign Up <ArrowRight className="w-5 h-5" />
                 </Link>
                 <Link
-                  href="/login"
+                  href="/auth"
                   className="w-full sm:w-auto px-8 py-4 bg-[var(--color-bg-hover)] text-[var(--color-text-primary)] rounded-lg font-semibold text-lg transition-all border border-[var(--color-border-primary)] hover:border-[var(--color-border-secondary)] flex items-center justify-center"
                 >
                   Login
