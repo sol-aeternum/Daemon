@@ -7,13 +7,14 @@ This test asserts:
 1. The constant is importable from `orchestrator.prompts`.
 2. The text matches the verbatim text from the archived Oracle disposition.
 3. ``DAEMON_PROMPT_VERSION`` was bumped from 3 to 4 in the same change.
-4. The ``_apply_guardrail`` helper logic (a stand-in re-implementation)
-   inserts the guardrail before the ``\\n\\nAnswer:`` marker and is idempotent
-   when the guardrail is already present.
+4. The shared ``apply_guardrail`` helper (used by both the benchmark sweep and
+   this test) inserts the guardrail before the ``\\n\\nAnswer:`` marker and is
+   idempotent when the guardrail is already present.
 
-(Note: the abstention_sweep module has a separate dependency on
-``orchestrator.eval.fact_harness.build_answer_prompt`` that is not in scope
-for issue #10 — the import error from that path is a different failure mode.)
+The helper lives in ``tests/benchmark_longmemeval/_guardrail.py`` so that this
+test can import it without dragging the rest of the abstention_sweep dependency
+graph (which includes ``tests.longmemeval.evaluate`` and
+``orchestrator.eval.fact_harness``) into the test process.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from orchestrator.prompts import (
     DAEMON_PROMPT_VERSION,
     MEMORY_EVIDENCE_ABSTENTION_GUARDRAIL,
 )
+from tests.benchmark_longmemeval._guardrail import apply_guardrail
 
 
 def test_guardrail_constant_is_importable() -> None:
@@ -50,36 +52,25 @@ def test_daemon_prompt_version_was_bumped() -> None:
     assert DAEMON_PROMPT_VERSION >= 4
 
 
-def test_apply_guardrail_logic() -> None:
-    """The helper logic: append before ``\\n\\nAnswer:``, idempotent otherwise."""
-    # The helper is internal to abstention_sweep which has other import-time
-    # dependencies. Reformulate the same logic here so the test stays focused
-    # on the constant's contract rather than the sweep's dependency graph.
-
-    def _apply_guardrail(base_prompt: str) -> str:
-        guardrail = MEMORY_EVIDENCE_ABSTENTION_GUARDRAIL.strip()
-        if guardrail in base_prompt:
-            return base_prompt
-        answer_marker = "\n\nAnswer:"
-        if answer_marker not in base_prompt:
-            return base_prompt + "\n\n" + guardrail
-        prefix, suffix = base_prompt.rsplit(answer_marker, 1)
-        return prefix + "\n\n" + guardrail + answer_marker + suffix
-
-    # Case 1: appends before the Answer marker.
+def test_apply_guardrail_inserts_before_answer_marker() -> None:
+    """The helper inserts the guardrail before the final Answer marker."""
     base = "Some prior system prompt.\n\nAnswer: the model's response"
-    result = _apply_guardrail(base)
+    result = apply_guardrail(base)
     assert MEMORY_EVIDENCE_ABSTENTION_GUARDRAIL.strip() in result
     assert result.startswith("Some prior system prompt.\n\n")
     assert result.endswith("the model's response")
 
-    # Case 2: idempotent when guardrail already present.
-    base_with = "Some prior prompt.\n\n" + MEMORY_EVIDENCE_ABSTENTION_GUARDRAIL + "\n\nAnswer: text"
-    assert _apply_guardrail(base_with) == base_with
 
-    # Case 3: appended at the end when no Answer marker.
+def test_apply_guardrail_is_idempotent() -> None:
+    """The helper is idempotent when the guardrail is already present."""
+    base_with = "Some prior prompt.\n\n" + MEMORY_EVIDENCE_ABSTENTION_GUARDRAIL + "\n\nAnswer: text"
+    assert apply_guardrail(base_with) == base_with
+
+
+def test_apply_guardrail_appends_when_no_answer_marker() -> None:
+    """The helper appends the guardrail at the end when no Answer marker is present."""
     base_no_marker = "Some prior prompt with no answer marker."
     assert (
-        _apply_guardrail(base_no_marker)
+        apply_guardrail(base_no_marker)
         == base_no_marker + "\n\n" + MEMORY_EVIDENCE_ABSTENTION_GUARDRAIL
     )
