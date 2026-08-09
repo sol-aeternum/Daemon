@@ -1,7 +1,12 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
-import { Loader2, AlertCircle, Code2 } from "lucide-react";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { AlertCircle, Code2 } from "lucide-react";
+import {
+  HTML_PREVIEW_FRAME_PATH,
+  HTML_PREVIEW_MESSAGE_TYPE,
+  type HtmlPreviewMessage,
+} from "@/lib/htmlPreviewFrame";
 
 interface HtmlPreviewProps {
   content: string;
@@ -9,32 +14,39 @@ interface HtmlPreviewProps {
 }
 
 export function HtmlPreview({ content, title }: HtmlPreviewProps) {
-  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const isFrameReadyRef = useRef(false);
+
+  const postPreviewContent = useCallback(() => {
+    const target = iframeRef.current?.contentWindow;
+    if (!target || !isFrameReadyRef.current) return;
+
+    const message: HtmlPreviewMessage = {
+      type: HTML_PREVIEW_MESSAGE_TYPE,
+      content,
+      title: title || "HTML Preview",
+    };
+    // The outer frame is intentionally sandboxed without allow-same-origin,
+    // so its effective origin is opaque and postMessage requires "*". The
+    // message is still sent directly to that frame's contentWindow, and the
+    // receiver accepts messages only from window.parent.
+    target.postMessage(message, "*");
+  }, [content, title]);
 
   useEffect(() => {
-    // Simulate brief loading state for iframe initialization
-    const timer = setTimeout(() => {
-      setIsLoading(false);
-    }, 300);
+    postPreviewContent();
+  }, [postPreviewContent]);
 
-    return () => clearTimeout(timer);
-  }, []);
+  const handleIframeLoad = () => {
+    isFrameReadyRef.current = true;
+    postPreviewContent();
+  };
 
   // Handle iframe load errors
   const handleIframeError = () => {
     setError("Failed to load HTML preview");
   };
-
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center gap-3 p-8 bg-[var(--color-bg-tertiary)] rounded-xl border border-[var(--color-border-primary)] max-h-[400px]">
-        <Loader2 className="w-5 h-5 animate-spin text-[var(--color-accent-primary)]" />
-        <span className="text-sm text-[var(--color-text-muted)]">Loading HTML...</span>
-      </div>
-    );
-  }
 
   if (error) {
     return (
@@ -67,10 +79,11 @@ export function HtmlPreview({ content, title }: HtmlPreviewProps) {
       <div className="overflow-auto max-h-[340px]">
         <iframe
           ref={iframeRef}
-          srcDoc={content}
+          src={HTML_PREVIEW_FRAME_PATH}
           sandbox="allow-scripts"
           title={title || "HTML Preview"}
           className="w-full min-h-[300px] bg-white"
+          onLoad={handleIframeLoad}
           onError={handleIframeError}
         />
       </div>

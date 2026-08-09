@@ -13,7 +13,7 @@ import litellm
 from orchestrator.config import get_settings
 from orchestrator.memory.embedding import (
     embed_documents_with_metadata,
-    get_configured_embedding_providers,
+    get_configured_embedding_fallback_storage_models,
 )
 from orchestrator.memory.store import MemoryStore
 
@@ -40,11 +40,11 @@ def _document_model() -> str:
 
 
 def _is_fallback_storage_model(model: str) -> bool:
-    return model.startswith("openai:")
+    return model != _document_model()
 
 
 def _has_configured_fallback_storage_spaces() -> bool:
-    return "openai" in get_configured_embedding_providers()
+    return bool(get_configured_embedding_fallback_storage_models())
 
 
 def _normalize_lexical_content(value: object) -> str:
@@ -305,6 +305,9 @@ async def _close_active_family_memories(
         SELECT id
         FROM memories
         WHERE user_id = $1
+          AND status != 'deleted'
+          AND tier != 'l0'
+          AND source_type != 'dream'
           AND valid_to IS NULL
           AND memory_slot IS NOT NULL
           AND split_part(lower(memory_slot), '.', 1) = $2
@@ -416,12 +419,21 @@ async def deduplicate_facts(
             embedding_model=document_model,
         )
         if _is_fallback_storage_model(document_model) or _has_configured_fallback_storage_spaces():
+            enabled_storage_models = sorted(
+                {
+                    _document_model(),
+                    document_model,
+                    *get_configured_embedding_fallback_storage_models(),
+                }
+            )
             raw_lexical_candidates = await store.search_memories_bm25(
                 user_id=user_id,
                 query=fact.content,
                 limit=50,
                 include_historical=True,
                 memory_slot=None,
+                embedding_models=enabled_storage_models,
+                include_l0=False,
             )
             lexical_candidates = (
                 raw_lexical_candidates if isinstance(raw_lexical_candidates, list) else []
@@ -761,6 +773,9 @@ async def deduplicate_facts(
             SET valid_to = NOW(),
                 updated_at = NOW()
             WHERE user_id = $1
+              AND status != 'deleted'
+              AND tier != 'l0'
+              AND source_type != 'dream'
               AND valid_to IS NULL
               AND memory_slot IS NOT NULL
               AND split_part(lower(memory_slot), '.', 1) = $2

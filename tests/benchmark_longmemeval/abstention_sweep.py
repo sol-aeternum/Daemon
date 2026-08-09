@@ -13,7 +13,8 @@ import tests.longmemeval.evaluate as evaluate_module
 import orchestrator.eval.fact_harness as runner_module
 from orchestrator.eval.fact_harness import LongMemEvalFactRunner
 from orchestrator.eval.substrate import SubstrateMismatchError, load_tagged_score
-from orchestrator.prompts import MEMORY_EVIDENCE_ABSTENTION_GUARDRAIL
+from orchestrator.prompts import MEMORY_EVIDENCE_ABSTENTION_GUARDRAIL  # noqa: F401  # re-exported for backwards-compatible imports
+from tests.benchmark_longmemeval._guardrail import apply_guardrail as _apply_guardrail
 from tests.benchmark_longmemeval.dev_subset import load_fixture
 from tests.benchmark_longmemeval.taxonomy import build_taxonomy_entries, load_failure_rows
 from tests.benchmark_longmemeval.top_k_sweep import (
@@ -92,17 +93,6 @@ SECONDARY_TEMPORAL_GENERATION_ERROR_IDS = tuple(
     for entry in _taxonomy_entries()
     if str(entry["stage"]) == "generation-error" and str(entry["category"]) == "temporal-reasoning"
 )
-
-
-def _apply_guardrail(base_prompt: str) -> str:
-    guardrail = MEMORY_EVIDENCE_ABSTENTION_GUARDRAIL.strip()
-    if guardrail in base_prompt:
-        return base_prompt
-    answer_marker = "\n\nAnswer:"
-    if answer_marker not in base_prompt:
-        return base_prompt + "\n\n" + guardrail
-    prefix, suffix = base_prompt.rsplit(answer_marker, 1)
-    return prefix + "\n\n" + guardrail + answer_marker + suffix
 
 
 def _guarded_build_answer_prompt(question: str, memories: list[dict[str, Any]]) -> str:

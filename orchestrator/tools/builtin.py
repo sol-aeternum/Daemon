@@ -288,6 +288,18 @@ def create_default_registry(
     return registry
 
 
+def create_council_readonly_registry(brave_api_key: str | None = None):
+    """Create the read-only tool registry available inside council deliberations."""
+    from orchestrator.tools.registry import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.register(GetTimeTool())
+    registry.register(CalculateTool())
+    registry.register(WebSearchTool(api_key=brave_api_key))
+    registry.register(WebFetchTool())
+    return registry
+
+
 def create_advisor_registry():
     """Create the constrained tool registry available inside advisor calls."""
     from orchestrator.tools.registry import ToolRegistry

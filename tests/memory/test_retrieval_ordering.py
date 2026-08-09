@@ -79,7 +79,9 @@ async def test_vector_tied_similarity_returns_id_asc_order():
     mock_store.search_memories = AsyncMock(return_value=[cand_b, cand_a])
     mock_store.search_memories_bm25 = AsyncMock(return_value=[])
 
-    with patch.object(retrieval_module, "embed_query", new_callable=AsyncMock) as mock_embed:
+    with patch.object(
+        retrieval_module, "embed_query_for_configured_storage_models", new_callable=AsyncMock
+    ) as mock_embed:
         mock_embed.return_value = query_emb
         # Patch bulk_touch_memories and log_retrieval to be no-ops
         mock_store.bulk_touch_memories = AsyncMock()
@@ -125,7 +127,9 @@ async def test_bm25_tied_score_returns_id_asc_order():
     mock_store.search_memories = AsyncMock(return_value=[])
     mock_store.search_memories_bm25 = AsyncMock(return_value=[cand_b, cand_a])
 
-    with patch.object(retrieval_module, "embed_query", new_callable=AsyncMock) as mock_embed:
+    with patch.object(
+        retrieval_module, "embed_query_for_configured_storage_models", new_callable=AsyncMock
+    ) as mock_embed:
         mock_embed.return_value = query_emb
         mock_store.bulk_touch_memories = AsyncMock()
         mock_store.log_retrieval = AsyncMock()
@@ -175,7 +179,9 @@ async def test_python_final_sort_tied_score_is_deterministic_by_id():
     mock_store.search_memories = AsyncMock(return_value=[cand_b, cand_a])
     mock_store.search_memories_bm25 = AsyncMock(return_value=[])
 
-    with patch.object(retrieval_module, "embed_query", new_callable=AsyncMock) as mock_embed:
+    with patch.object(
+        retrieval_module, "embed_query_for_configured_storage_models", new_callable=AsyncMock
+    ) as mock_embed:
         mock_embed.return_value = query_emb
         mock_store.bulk_touch_memories = AsyncMock()
         mock_store.log_retrieval = AsyncMock()
@@ -230,7 +236,9 @@ async def test_non_tied_ranking_unchanged_higher_score_first():
     mock_store.search_memories = AsyncMock(return_value=[cand_a, cand_b])
     mock_store.search_memories_bm25 = AsyncMock(return_value=[])
 
-    with patch.object(retrieval_module, "embed_query", new_callable=AsyncMock) as mock_embed:
+    with patch.object(
+        retrieval_module, "embed_query_for_configured_storage_models", new_callable=AsyncMock
+    ) as mock_embed:
         mock_embed.return_value = query_emb
         mock_store.bulk_touch_memories = AsyncMock()
         mock_store.log_retrieval = AsyncMock()
@@ -279,7 +287,9 @@ async def test_tied_score_ordering_stable_over_10_calls():
     mock_store.search_memories = AsyncMock(return_value=reversed_candidates)
     mock_store.search_memories_bm25 = AsyncMock(return_value=[])
 
-    with patch.object(retrieval_module, "embed_query", new_callable=AsyncMock) as mock_embed:
+    with patch.object(
+        retrieval_module, "embed_query_for_configured_storage_models", new_callable=AsyncMock
+    ) as mock_embed:
         mock_embed.return_value = query_emb
         mock_store.bulk_touch_memories = AsyncMock()
         mock_store.log_retrieval = AsyncMock()
@@ -368,7 +378,9 @@ async def test_final_sort_uuid_id_tie_break():
     mock_store.search_memories = AsyncMock(return_value=[cand_b, cand_a])
     mock_store.search_memories_bm25 = AsyncMock(return_value=[])
 
-    with patch.object(retrieval_module, "embed_query", new_callable=AsyncMock) as mock_embed:
+    with patch.object(
+        retrieval_module, "embed_query_for_configured_storage_models", new_callable=AsyncMock
+    ) as mock_embed:
         mock_embed.return_value = query_emb
         mock_store.bulk_touch_memories = AsyncMock()
         mock_store.log_retrieval = AsyncMock()
@@ -422,7 +434,9 @@ async def test_vector_and_bm25_both_tied_final_sort_tie_break():
     mock_store.search_memories = AsyncMock(return_value=[cand_b, cand_a])
     mock_store.search_memories_bm25 = AsyncMock(return_value=[cand_b, cand_a])
 
-    with patch.object(retrieval_module, "embed_query", new_callable=AsyncMock) as mock_embed:
+    with patch.object(
+        retrieval_module, "embed_query_for_configured_storage_models", new_callable=AsyncMock
+    ) as mock_embed:
         mock_embed.return_value = query_emb
         mock_store.bulk_touch_memories = AsyncMock()
         mock_store.log_retrieval = AsyncMock()

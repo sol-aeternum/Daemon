@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -131,7 +132,8 @@ async def test_build_memory_context_l0_at_top() -> None:
     result = await build_memory_context(store, conversation_id)
     assert "[FROZEN MEMORIES]" in result
     assert "Python developer" in result
-    assert result.startswith("[FROZEN MEMORIES]")
+    assert result.startswith('<memory_records trust="user_data">')
+    assert result.rstrip().endswith("</memory_records>")
 
 
 @pytest.mark.asyncio
@@ -211,11 +213,32 @@ async def test_build_memory_context_l0_and_l1_separate() -> None:
             }
         ]
 
-    with (
-        patch("orchestrator.memory.injection.embed_query", new=AsyncMock(return_value=[0.1])),
-        patch("orchestrator.memory.injection.retrieve_memories_for_text", mock_retrieve),
-    ):
-        result = await build_memory_context(store, conversation_id)
+    with patch.object(store, "search_memories", new_callable=AsyncMock) as mock_search:
+        mock_search.return_value = [
+            {
+                "id": "retrieved-memory",
+                "content": "Retrieved fact about Python",
+                "category": "fact",
+                "similarity": 0.9,
+            }
+        ]
+        with (
+            patch(
+                "orchestrator.memory.injection.embed_query_with_metadata",
+                AsyncMock(
+                    return_value=SimpleNamespace(
+                        embedding=[0.0] * 8,
+                        model="voyage-4-lite",
+                        storage_model="voyage-4-large",
+                    )
+                ),
+            ),
+            patch(
+                "orchestrator.memory.injection.retrieve_memories_for_text",
+                mock_retrieve,
+            ),
+        ):
+            result = await build_memory_context(store, conversation_id)
 
     assert "[FROZEN MEMORIES]" in result
     assert "Frozen fact" in result

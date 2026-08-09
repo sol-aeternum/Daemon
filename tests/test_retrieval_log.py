@@ -22,6 +22,8 @@ def mock_store() -> MemoryStore:
     store.get_l0_memories = AsyncMock(return_value=[])
     store.bulk_touch_memories = AsyncMock()
     store.has_memories_with_embedding_model = AsyncMock(return_value=False)
+    store.find_entities_by_alias = AsyncMock(return_value=[])
+    store.get_entity_by_lookup_key = AsyncMock(return_value=None)
     return store  # type: ignore[return-value]
 
 
@@ -398,6 +400,9 @@ async def test_retrieve_memories_for_text_filters_vector_model(mock_store):
     assert mock_store.search_memories.call_args.kwargs["embedding_model"] == (
         "openai:text-embedding-3-small"
     )
+    assert mock_store.search_memories_bm25.call_args.kwargs["embedding_models"] == [
+        "openai:text-embedding-3-small"
+    ]
 
 
 @pytest.mark.asyncio
@@ -556,6 +561,135 @@ async def test_retrieve_memories_for_text_logs_combined_fallback_results(mock_st
     mock_store.log_retrieval.assert_called_once()
     candidate_scores = mock_store.log_retrieval.await_args.kwargs["candidate_scores"]
     assert set(candidate_scores) == {str(voyage_id), str(openai_id)}
+
+
+@pytest.mark.asyncio
+async def test_retrieve_memories_for_text_logs_unselected_scored_candidates(mock_store):
+    user_id = uuid.uuid4()
+    selected_id = uuid.uuid4()
+    unselected_id = uuid.uuid4()
+    mock_store.search_memories.return_value = [
+        {
+            "id": selected_id,
+            "content": "strong memory",
+            "similarity": 0.9,
+            "confidence": 0.9,
+            "category": "fact",
+            "source_type": "extracted",
+        },
+        {
+            "id": unselected_id,
+            "content": "weaker memory",
+            "similarity": 0.6,
+            "confidence": 0.9,
+            "category": "fact",
+            "source_type": "extracted",
+        },
+    ]
+
+    with patch(
+        "orchestrator.memory.retrieval.embed_query_for_configured_storage_models",
+        new=AsyncMock(return_value=[_embedding_result("voyage-4-large")]),
+    ):
+        result = await retrieve_memories_for_text(
+            mock_store,
+            "test query",
+            user_id=user_id,
+            limit=1,
+            log_retrieval=True,
+        )
+    await _allow_background_tasks()
+
+    assert [memory["id"] for memory in result] == [selected_id]
+    log_kwargs = mock_store.log_retrieval.await_args.kwargs
+    assert set(log_kwargs["candidate_scores"]) == {str(selected_id), str(unselected_id)}
+    assert log_kwargs["selected_memory_ids"] == [selected_id]
+
+
+@pytest.mark.asyncio
+async def test_retrieve_memories_for_text_touches_only_final_cross_space_results(mock_store):
+    user_id = uuid.uuid4()
+    voyage_id = uuid.uuid4()
+    openai_id = uuid.uuid4()
+    mock_store.search_memories.side_effect = [
+        [
+            {
+                "id": voyage_id,
+                "content": "lower-ranked voyage memory",
+                "similarity": 0.6,
+                "confidence": 0.9,
+                "category": "fact",
+                "source_type": "extracted",
+            }
+        ],
+        [
+            {
+                "id": openai_id,
+                "content": "higher-ranked fallback memory",
+                "similarity": 0.9,
+                "confidence": 0.9,
+                "category": "fact",
+                "source_type": "extracted",
+            }
+        ],
+    ]
+    mock_store.has_memories_with_embedding_model.return_value = True
+
+    with (
+        patch(
+            "orchestrator.memory.retrieval.get_configured_embedding_fallback_storage_models",
+            return_value=("openai:text-embedding-3-small",),
+        ),
+        patch(
+            "orchestrator.memory.retrieval.embed_query_for_configured_storage_models",
+            new=AsyncMock(
+                return_value=[
+                    _embedding_result("voyage-4-large"),
+                    _embedding_result("openai:text-embedding-3-small"),
+                ]
+            ),
+        ),
+    ):
+        result = await retrieve_memories_for_text(
+            mock_store,
+            "test query",
+            user_id=user_id,
+            limit=1,
+        )
+    await _allow_background_tasks()
+
+    assert [memory["id"] for memory in result] == [openai_id]
+    mock_store.bulk_touch_memories.assert_awaited_once_with([openai_id])
+
+
+@pytest.mark.asyncio
+async def test_temporal_text_retrieval_checks_historical_fallback_rows(mock_store):
+    user_id = uuid.uuid4()
+    mock_store.has_memories_with_embedding_model.return_value = True
+
+    with (
+        patch(
+            "orchestrator.memory.retrieval.get_configured_embedding_fallback_storage_models",
+            return_value=("openai:text-embedding-3-small",),
+        ),
+        patch(
+            "orchestrator.memory.retrieval.embed_query_for_configured_storage_models",
+            new=AsyncMock(return_value=[_embedding_result("voyage-4-large")]),
+        ),
+    ):
+        await retrieve_memories_for_text(
+            mock_store,
+            "What was my address in March?",
+            user_id=user_id,
+            query_reference_time=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        )
+
+    mock_store.has_memories_with_embedding_model.assert_awaited_once_with(
+        user_id,
+        "openai:text-embedding-3-small",
+        include_local=False,
+        include_historical=True,
+    )
 
 
 @pytest.mark.asyncio

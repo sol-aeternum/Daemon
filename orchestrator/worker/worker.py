@@ -9,12 +9,18 @@ from typing import Any, cast
 import asyncpg
 from arq.connections import RedisSettings
 from arq.cron import cron
-from arq.worker import Worker, func
+from arq.worker import func
 
 from orchestrator.config import get_settings
-from orchestrator.memory.encryption import ContentEncryption
+from orchestrator.auth_pepper import initialize_development_pepper
+from orchestrator.memory.encryption import (
+    ContentEncryption,
+    SharedEncryptionFailureCounter,
+    set_shared_encryption_failure_counter,
+)
 from orchestrator.memory.store import MemoryStore
 
+from orchestrator.worker.audit import AuditedWorker
 from orchestrator.worker.jobs import (
     cleanup_generated_files,
     cleanup_generated_images,
@@ -37,9 +43,40 @@ logger = logging.getLogger(__name__)
 WorkerContext = dict[str, object]
 
 
+def _unsupported_consolidation_interval_error(interval: int) -> ValueError:
+    return ValueError(f"consolidation_interval_days must be one of 1, 7; got {interval}")
+
+
+def _build_consolidation_cron_job(interval: int) -> Any:
+    if interval == 1:
+        # Daily at 2 AM UTC
+        return cron(
+            consolidate_memories,
+            hour=2,
+            minute=0,
+            keep_result=3600,
+        )
+    if interval == 7:
+        # Weekly at 2 AM UTC on Sundays
+        return cron(
+            consolidate_memories,
+            hour=2,
+            minute=0,
+            weekday=6,  # Sunday (arq: 0=Monday, 6=Sunday)
+            keep_result=3600,
+        )
+    raise _unsupported_consolidation_interval_error(interval)
+
+
 async def on_startup(ctx: WorkerContext) -> None:
     app_settings = get_settings()
     ctx["settings"] = app_settings
+    shared_counter = ctx.get("redis")
+    set_shared_encryption_failure_counter(
+        cast(SharedEncryptionFailureCounter, shared_counter)
+        if hasattr(shared_counter, "incr")
+        else None
+    )
     ctx["encryption"] = ContentEncryption(app_settings.daemon_encryption_key)
     ctx["store"] = None
 
@@ -47,16 +84,19 @@ async def on_startup(ctx: WorkerContext) -> None:
         logger.info("DATABASE_URL not configured; worker memory jobs degraded")
         return
 
-    ctx["db_pool"] = await asyncpg.create_pool(
+    db_pool = await asyncpg.create_pool(
         dsn=app_settings.database_url,
         min_size=2,
         max_size=10,
     )
-    ctx["store"] = MemoryStore(ctx["db_pool"], ctx["encryption"])
+    ctx["db_pool"] = db_pool
+    await initialize_development_pepper(app_settings, db_pool)
+    ctx["store"] = MemoryStore(db_pool, ctx["encryption"])
     logger.info("Worker DB pool created")
 
 
 async def on_shutdown(ctx: WorkerContext) -> None:
+    set_shared_encryption_failure_counter(None)
     db_pool = cast(asyncpg.Pool | None, ctx.get("db_pool"))
     if db_pool is not None:
         await db_pool.close()
@@ -71,52 +111,29 @@ except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
 # Build cron jobs based on settings
+# All cron jobs register keep_result=3600 so the AuditedWorker can capture
+# raised failures via the standard finish_job result_data path. arq's
+# cron() default of keep_result=0 drops the result_data before the audit
+# path sees it, making critical-job failures invisible.
 cron_jobs: list[Any] = []
 if _worker_settings.consolidation_enabled:
     interval = _worker_settings.consolidation_interval_days
+    cron_jobs.append(_build_consolidation_cron_job(interval))
     if interval == 1:
-        # Daily at 2 AM UTC
-        cron_jobs.append(
-            cron(
-                consolidate_memories,
-                hour=2,
-                minute=0,
-            )
-        )
         logger.info(f"Memory consolidation scheduled: daily at 2 AM UTC (interval={interval} days)")
     elif interval == 7:
-        # Weekly at 2 AM UTC on Sundays
-        cron_jobs.append(
-            cron(
-                consolidate_memories,
-                hour=2,
-                minute=0,
-                weekday=6,  # Sunday (arq: 0=Monday, 6=Sunday)
-            )
-        )
         logger.info(
             f"Memory consolidation scheduled: weekly on Sunday at 2 AM UTC (interval={interval} days)"
         )
     else:
-        # For other values, use daily with a warning
-        cron_jobs.append(
-            cron(
-                consolidate_memories,
-                hour=2,
-                minute=0,
-            )
-        )
-        logger.warning(
-            f"Memory consolidation scheduled: daily at 2 AM UTC (interval={interval} days). "
-            f"Note: Only 1 (daily) and 7 (weekly) are explicitly supported. "
-            f"Using daily as best-effort fallback."
-        )
+        raise _unsupported_consolidation_interval_error(interval)
 
 if _worker_settings.dreaming_enabled:
     cron_jobs.append(
         cron(
             run_scheduled_dreaming_job,
             minute=0,
+            keep_result=3600,
         )
     )
     logger.info(
@@ -129,6 +146,7 @@ if _worker_settings.consolidation_nudge_enabled:
         cron(
             run_consolidation_nudge_job,
             minute=0,
+            keep_result=3600,
         )
     )
     logger.info(
@@ -136,9 +154,33 @@ if _worker_settings.consolidation_nudge_enabled:
         _worker_settings.consolidation_nudge_conversation_interval,
     )
 
-worker = Worker(
+cron_jobs.extend(
+    [
+        cron(
+            garbage_collect,
+            hour=3,
+            minute=0,
+            keep_result=3600,
+        ),
+        cron(
+            cleanup_generated_files,
+            hour=3,
+            minute=15,
+            keep_result=3600,
+        ),
+        cron(
+            cleanup_generated_images,
+            hour=3,
+            minute=30,
+            keep_result=3600,
+        ),
+    ]
+)
+logger.info("Memory and generated artifact cleanup scheduled: daily at 03:00-03:30 UTC")
+
+worker = AuditedWorker(
     functions=[
-        func(extract_memories, max_tries=_worker_settings.retry_attempts),
+        func(extract_memories, max_tries=_worker_settings.retry_attempts, keep_result=0),
         func(generate_title, max_tries=_worker_settings.retry_attempts),
         func(generate_conversation_title_job, max_tries=_worker_settings.retry_attempts),
         func(generate_summary_job, max_tries=_worker_settings.retry_attempts),

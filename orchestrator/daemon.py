@@ -3,12 +3,13 @@ from __future__ import annotations
 # pyright: reportMissingImports=false
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 import json
 import logging
 import uuid
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 from orchestrator.config import ProviderConfig, Settings
@@ -37,6 +38,8 @@ def _lazy_import_trust_signals():
 
 logger = logging.getLogger(__name__)
 
+SSE_KEEPALIVE_FRAME = ": keepalive\n\n"
+
 
 def create_chat_registry(**kwargs: Any) -> Any:
     return create_default_registry(**kwargs)
@@ -64,6 +67,50 @@ _spawn_session_by_conversation: dict[str, str] = {}
 def sse(event_type: str, payload: dict[str, Any]) -> str:
     data = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
     return f"event: {event_type}\ndata: {data}\n\n"
+
+
+async def stream_with_keepalives(
+    frames: AsyncIterator[str],
+    ping_interval_s: float,
+) -> AsyncIterator[str]:
+    if ping_interval_s <= 0:
+        async for frame in frames:
+            yield frame
+        return
+
+    iterator = frames.__aiter__()
+    pending = asyncio.ensure_future(anext(iterator))
+    try:
+        while True:
+            done, _ = await asyncio.wait({pending}, timeout=ping_interval_s)
+            if pending not in done:
+                yield SSE_KEEPALIVE_FRAME
+                continue
+
+            try:
+                frame = pending.result()
+            except StopAsyncIteration:
+                break
+            except Exception as exc:
+                # The wrapped iterator raised instead of yielding an endpoint-
+                # level error event. Log the traceback server-side for triage
+                # and re-raise as a sanitized user-visible error so FastAPI's
+                # exception handler returns a 500 with the generic error body
+                # (never the stack trace) instead of an apparently clean EOF
+                # that misleads clients into thinking the stream succeeded.
+                logger.exception("SSE upstream generator raised: %s", exc)
+                raise RuntimeError("SSE upstream generator failed") from exc
+
+            yield frame
+            pending = asyncio.ensure_future(anext(iterator))
+    finally:
+        if not pending.done():
+            pending.cancel()
+            with suppress(asyncio.CancelledError):
+                await pending
+        aclose = getattr(iterator, "aclose", None)
+        if callable(aclose):
+            await cast(Callable[[], Awaitable[None]], aclose)()
 
 
 def build_openai_messages(
@@ -860,18 +907,49 @@ async def stream_sse_chat(
                     logger.debug(f"Trust signal application skipped: {trust_error}")
 
                 if queue is not None:
+                    extract_job_id = f"extract:{conversation_uuid}"
                     try:
-                        import time
-
-                        await queue.enqueue_job(
+                        # arq records failed results under Worker-level keep_result_s
+                        # (default 3600s); clearing any stale result key here lets
+                        # future enqueues proceed once the worker has had a chance
+                        # to mark the failure permanently logged.
+                        await queue.delete(f"arq:result:{extract_job_id}")
+                    except Exception as clear_error:
+                        logger.debug("Could not clear stale extract result key: %s", clear_error)
+                    try:
+                        enqueued = await queue.enqueue_job(
                             "extract_memories",
                             str(user_id),
                             str(conversation_uuid),
-                            _job_id=f"extract:{conversation_uuid}:{int(time.time())}",
+                            _job_id=extract_job_id,
                             _defer_by=timedelta(seconds=30),
                         )
                     except Exception as extract_error:
                         logger.warning("Failed to enqueue memory extraction: %s", extract_error)
+                    else:
+                        if enqueued is None:
+                            # Another extract job is already pending or running for
+                            # this conversation; arq silently dropped the enqueue. The
+                            # watermark (last_message_observed_at) will only advance
+                            # to messages the in-flight run actually saw, so we need
+                            # a follow-up that runs after it finishes to pick up any
+                            # turns that arrived during the run. Use a deterministic
+                            # follow-up _job_id so rapid-fire duplicate enqueues while
+                            # the original is still in-flight collapse into one
+                            # trailing extraction instead of one per duplicate turn.
+                            follow_up_id = f"{extract_job_id}:followup"
+                            try:
+                                await queue.enqueue_job(
+                                    "extract_memories",
+                                    str(user_id),
+                                    str(conversation_uuid),
+                                    _job_id=follow_up_id,
+                                    _defer_by=timedelta(seconds=60),
+                                )
+                            except Exception as follow_up_error:
+                                logger.debug(
+                                    "Could not schedule extract follow-up: %s", follow_up_error
+                                )
 
                 tool_call_count = len(persisted_tool_calls)
                 if queue is not None and assistant_message_id is not None and tool_call_count >= 5:

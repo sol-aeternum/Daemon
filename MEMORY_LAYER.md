@@ -26,7 +26,7 @@ memories.content          → encrypted
 extraction_log.input_snippet → encrypted
 ```
 
-If `DAEMON_ENCRYPTION_KEY` is not set, content falls back to plaintext (logged as a warning on startup).
+If `DAEMON_ENCRYPTION_KEY` is missing or invalid when memory storage is initialized, startup fails closed instead of writing plaintext. Encryption init, encrypt, and decrypt failures increment the `encryption_operations_failed_total` status metric and raise to the caller.
 
 ### Tables
 
@@ -74,6 +74,7 @@ created_at TIMESTAMPTZ DEFAULT NOW()
 id UUID PRIMARY KEY
 user_id UUID REFERENCES users(id)
 content TEXT NOT NULL  -- Fernet-encrypted
+content_hash TEXT  -- HMAC-SHA256(normalized plaintext, DAEMON_AUTH_PEPPER)
 embedding VECTOR(1024)  -- plaintext; Voyage 4-large document vectors
 category TEXT CHECK (category IN ('fact', 'preference', 'project', 'summary', 'correction'))
 source_type TEXT CHECK (source_type IN ('conversation', 'manual', 'import', 'extracted', 'user_created'))
@@ -214,10 +215,11 @@ L0 memories bypass embedding-based retrieval entirely. They are always prepended
 
 `summary.py` — `generate_or_update_summary()`:
 
-- Triggered after each successful extraction (best-effort)
-- **Incremental:** fetches only messages since `summary_updated_at`
-- Uses `auto_fast_model` from tier config
-- Updates `conversations.summary` and `summary_updated_at`
+- Triggered after each successful extraction (best-effort) and periodically by `generate_summary_job` (arq worker)
+- **Cursor model:** persists `last_summarized_msg_count` in `conversations.metadata` JSONB and a per-iteration `snapshot_at` timestamp. The batch is read at `offset = persisted_baseline` and bounded by the contiguous-finalized prefix at the snapshot (the rank of the first non-finalized row, in `created_at ASC, id ASC` order, minus 1). The persisted baseline advances only by the rows actually incorporated in this iteration, capped at `contiguous_baseline` (matches the inline path on `summary.py:225`).
+- **Atomic write:** `update_conversation_summary` advances `summary`, `summary_updated_at`, `summarized_message_count`, `last_summarized_msg_count`, and `summary_continuation_pending` in a single SQL row, with optimistic concurrency; on conflict the inline path surfaces continuation to the extraction caller which re-enqueues `generate_summary_job(force=True)`.
+- **Continuation:** a full batch (100 rows in the worker, 20 in the inline path) sets `summary_continuation_pending` and the worker enqueues a forced summary continuation. The flag survives extraction retries via `consume_summary_continuation_pending` at the top of `extract_memories`.
+- Uses `auto_fast_model` from tier config.
 
 ### 9. Injection
 
@@ -240,11 +242,12 @@ L0 memories bypass embedding-based retrieval entirely. They are always prepended
 |---|---|---|---|
 | Document (memory writes) | `voyage-4-large` | `input_type="document"` | 1024 |
 | Query (retrieval) | `voyage-4-lite` | `input_type="query"` | 1024 |
+| Optional fallback | `voyageai/voyage-4-large` / `voyageai/voyage-4-lite` via OpenRouter | matching `document` / `query` input type | configured `EMBEDDING_DIMENSIONS` (default 1024) |
 | Optional fallback | `text-embedding-3-small` via OpenAI | OpenAI embeddings API | configured `EMBEDDING_DIMENSIONS` (default 1024) |
 
 Retry logic: 3 attempts with exponential backoff (1s → 2s → 4s). Counters `_retry_count` and `_last_retry_at` are exposed via `/status` as `embedding_retry_activations` and `embedding_last_retry_at`.
 
-Fallback logic: Voyage remains primary. If `EMBEDDING_FALLBACK_PROVIDERS=openai` is explicitly configured and Voyage fails, the embedding layer tries OpenAI. After 5 Voyage failures within 60 seconds, a circuit breaker skips Voyage and goes directly to configured fallback until the failure window clears. OpenAI fallback vectors are stored with an `openai:<model>` embedding identity and vector search filters by that identity so Voyage and OpenAI vector spaces are not mixed. Retrieval embeds queries for configured fallback storage identities only when a user already has memories in that storage space, and dedup falls back to lexical/slot matching when an outage write uses the OpenAI vector space. OpenAI fallback inputs are truncated to the provider's per-input limit before request. `/status` exposes `embedding_failures_total` and `embedding_provider_used` counters.
+Fallback logic: Voyage remains primary. `EMBEDDING_FALLBACK_PROVIDERS` is empty by default; operators can explicitly configure an ordered `openrouter,openai` chain (or either provider alone). After 5 Voyage failures within 60 seconds, a circuit breaker skips Voyage and tries that chain until the failure window clears. OpenRouter reuses `OPENROUTER_API_KEY` and sends native `input_type="document"` / `input_type="query"` requests, but routed-vector parity with direct Voyage has not been demonstrated, so those vectors use a distinct `openrouter:<model>` storage identity. OpenAI vectors likewise use `openai:<model>`. Vector and BM25 search filter by enabled storage identity; retrieval embeds fallback queries only when that user has rows in the corresponding active or inferred historical space. Dedup reconciles enabled spaces lexically and by slot without cross-provider vector comparison, while excluding L0 and dream observations. OpenAI inputs are truncated to its smaller per-input limit. `/status` exposes `embedding_failures_total` and per-provider `embedding_provider_used` counters.
 
 ---
 
@@ -255,6 +258,10 @@ Handled by the arq worker (`orchestrator/worker/`):
 1. **Extraction** — `process_extraction()` after each conversation turn
 2. **Summary update** — `generate_or_update_summary()` post-extraction (best-effort)
 3. **Consolidation** — `run_consolidation()` on configurable interval (default 7 days, enabled by `consolidation_enabled`)
+
+Worker failures are persisted to `job_failures` before arq result TTL cleanup. Critical memory
+jobs can send a best-effort alert through the existing mail sender when
+`DAEMON_WORKER_FAILURE_ALERT_EMAIL` is configured.
 
 ---
 

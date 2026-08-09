@@ -8,9 +8,10 @@ import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, cast, TypedDict
+from typing import Any, cast, NotRequired, TypedDict
 from zoneinfo import ZoneInfo
 
+from arq import Retry
 from arq.connections import ArqRedis
 from arq.jobs import Job
 
@@ -206,6 +207,54 @@ async def extract_memories(
     if not isinstance(store_obj, MemoryStore):
         return {"status": "skipped", "reason": "store_unavailable"}
 
+    # Retry-recovery: if a previous attempt committed a summary with
+    # ``summary_continuation_pending=true`` but failed to enqueue the
+    # forced-summary continuation (e.g. Redis transient error -> Retry),
+    # the watermark will have advanced past the messages, so this retry
+    # may find ``no_messages`` and exit before reaching the continuation
+    # enqueue block. Consume the flag first: if it was set, enqueue the
+    # continuation immediately (Codex P2 on PR #165, ``worker/jobs.py:295``).
+    continuation_pending = False
+    if hasattr(store_obj, "consume_summary_continuation_pending"):
+        try:
+            continuation_pending = await store_obj.consume_summary_continuation_pending(
+                _as_uuid(conversation_id)
+            )
+        except Exception:
+            logger.warning(
+                "Failed to consume summary_continuation_pending for conversation %s",
+                conversation_id,
+            )
+
+    if continuation_pending:
+        queue = ctx.get("redis")
+        if queue is not None and hasattr(queue, "enqueue_job"):
+            try:
+                await enqueue_with_debounce(
+                    queue,
+                    "generate_summary_job",
+                    job_id=(
+                        f"summary_continuation_recovery:{_as_uuid(conversation_id)}:"
+                        f"{int(datetime.now(timezone.utc).timestamp())}"
+                    ),
+                    defer_by=timedelta(seconds=1),
+                    args=(str(_as_uuid(conversation_id)), True),
+                )
+            except Exception:
+                # ``generate_summary_job`` is the only periodic caller of
+                # the forced-continuation path; if Redis transiently
+                # rejects the enqueue, surface it as an arq ``Retry`` so
+                # the extraction job is retried rather than silently
+                # leaving the remaining summary backlog unscheduled.
+                logger.warning(
+                    "Failed to enqueue recovered summary continuation for "
+                    "conversation %s; raising arq Retry",
+                    conversation_id,
+                )
+                raise Retry(defer=5) from None
+        # Whether the enqueue succeeded or not, the flag is already
+        # consumed. Continue with the normal extraction flow.
+
     raw_messages: list[dict[str, Any]]
     if messages_json is None:
         # Get the last extraction time for this conversation
@@ -237,11 +286,17 @@ async def extract_memories(
     if not text:
         return {"status": "skipped", "reason": "no_messages"}
 
-    extraction_success, new_memories = await process_extraction(
+    last_message_observed_at = max(
+        (msg["created_at"] for msg in filtered_raw_messages if msg.get("created_at")),
+        default=None,
+    )
+
+    extraction_success, new_memories, summary_continuation_needed = await process_extraction(
         store=store_obj,
         user_id=_as_uuid(user_id),
         conversation_id=_as_uuid(conversation_id),
         text=text,
+        last_message_observed_at=last_message_observed_at,
     )
 
     if extraction_success and new_memories:
@@ -266,6 +321,40 @@ async def extract_memories(
                     user_id,
                     conversation_id,
                 )
+
+    if extraction_success and summary_continuation_needed:
+        try:
+            queue = ctx.get("redis")
+            if queue is not None and hasattr(queue, "enqueue_job"):
+                await enqueue_with_debounce(
+                    queue,
+                    "generate_summary_job",
+                    job_id=(
+                        f"summary_continuation:{_as_uuid(conversation_id)}:"
+                        f"{int(datetime.now(timezone.utc).timestamp())}"
+                    ),
+                    defer_by=timedelta(seconds=1),
+                    args=(str(_as_uuid(conversation_id)), True),
+                )
+        except Retry:
+            # Let arq's Retry signal propagate so the extraction job is
+            # retried; the inline summary was already committed by
+            # ``process_extraction`` and the required continuation must
+            # not be lost (Codex P2 on PR #165, ``worker/jobs.py:295``).
+            raise
+        except Exception:
+            # ``generate_summary_job`` is the only periodic caller of
+            # the forced-continuation path; if Redis transiently rejects
+            # the enqueue, surface it as an arq ``Retry`` so the
+            # extraction job is retried rather than silently leaving the
+            # remaining summary backlog unscheduled (Codex P2 on PR
+            # #165, ``worker/jobs.py:295``).
+            logger.warning(
+                "Failed to enqueue summary continuation for conversation %s; "
+                "raising arq Retry to reschedule extraction",
+                conversation_id,
+            )
+            raise Retry(defer=5) from None
 
     return {"status": "ok", "processed_messages": len(messages)}
 
@@ -352,9 +441,14 @@ async def generate_conversation_title_job(
 async def generate_summary_job(
     ctx: WorkerContext,
     conversation_id: str,
+    force: bool = False,
 ) -> dict[str, Any]:
-    """Generate and store conversation summary."""
-    from orchestrator.memory.summarization import should_summarize, generate_summary
+    """Generate and store one bounded conversation-summary batch."""
+    from orchestrator.memory.summarization import (
+        generate_summary,
+        should_summarize,
+        validated_summary_baseline,
+    )
 
     store_obj = ctx.get("store")
     if not isinstance(store_obj, MemoryStore):
@@ -368,18 +462,112 @@ async def generate_summary_job(
         return {"status": "not_found"}
 
     last_summary_time = conversation.get("summary_updated_at")
-    settings = {}
+    previous_summary = conversation.get("summary")
+    current_message_count = await store.count_summary_messages(conv_id)
+    persisted_baseline = validated_summary_baseline(
+        conversation,
+        current_message_count,
+    )
+    # Pin the iteration to the moment we started, so concurrent status
+    # flips from ``streaming`` to ``complete`` (which do not change
+    # ``created_at``) cannot reorder the row set under an in-flight
+    # cursor. The next iteration captures a fresh ``now()`` itself.
+    iteration_snapshot = datetime.now(timezone.utc)
 
-    if not await should_summarize(conv_id, last_summary_time, store, settings):
+    # Advance only through the contiguous-finalized prefix at the snapshot.
+    # A row that was streaming at fetch time but is now finalized with an
+    # earlier ``created_at`` would otherwise insert before the prior
+    # finalized rows and replay messages already counted toward the
+    # baseline (Codex P2 on PR #165). ``persisted_baseline`` is the prior
+    # cursor (lower bound); ``contiguous_baseline`` is the current
+    # contiguous-prefix count, which is only larger when the streaming
+    # tail shrank.
+    contiguous_baseline = await store.count_contiguous_finalized_messages_at(
+        conv_id,
+        snapshot_at=iteration_snapshot,
+    )
+    # ``last_summarized_msg_count`` is the count used by ``should_summarize``
+    # to compute delta against the current finalized-message count. It is
+    # not the offset — those are two distinct concepts (matches the inline
+    # path on PR #165).
+    last_summarized_msg_count = max(persisted_baseline, contiguous_baseline)
+    settings: dict[str, Any] = {}
+
+    if not force and not await should_summarize(
+        conv_id,
+        last_summary_time,
+        last_summarized_msg_count,
+        store,
+        settings,
+    ):
         return {"status": "skipped", "reason": "thresholds_not_met"}
 
-    messages = await store.get_messages(conv_id, limit=100)
-    previous_summary = conversation.get("summary")
+    # The cursor advances only through rows actually included in past
+    # summaries (``persisted_baseline``). ``contiguous_baseline`` is
+    # used solely to bound how far this iteration may claim — never as
+    # an offset. The prior ``max(...)`` offset skipped finalized rows
+    # that were contiguous-but-not-yet-summarized (e.g. baseline 0 with
+    # rows ``complete m1, streaming m2, complete m3``: offset became 1,
+    # so m1 was skipped). Using ``persisted_baseline`` directly produces
+    # the rows that need summarization (Codex P2 on PR #165,
+    # ``worker/jobs.py:441``).
+    messages = await store.get_summary_message_batch(
+        conv_id,
+        offset=persisted_baseline,
+        limit=100,
+        snapshot_at=iteration_snapshot,
+    )
+    if not messages:
+        return {"status": "skipped", "reason": "up_to_date"}
 
     summary = await generate_summary(messages, previous_summary, settings)
-    await store.update_conversation(conv_id, summary=summary)
+    if not summary.strip():
+        raise Retry(defer=5)
 
-    return {"status": "success", "summary_length": len(summary)}
+    # Advance the persisted baseline by ONLY the rows actually
+    # incorporated in this iteration (``persisted_baseline + len(messages)``),
+    # capped at the contiguous-prefix boundary so a later
+    # ``streaming -> complete`` transition cannot pull already-claimed
+    # rows back into the next batch. Matches the inline path on PR
+    # #165 (``summary.py:225``). Prior implementation derived the
+    # advance from ``last_summarized_msg_count`` (the inflated
+    # ``max(persisted_baseline, contiguous_baseline)``), which caused
+    # the persisted baseline to skip finalized rows that were
+    # contiguous-but-not-yet-summarized (Codex P2 on PR #165,
+    # ``worker/jobs.py:445``).
+    summarized_message_count = min(
+        persisted_baseline + len(messages),
+        contiguous_baseline,
+    )
+    updated = await store.update_conversation_summary(
+        conv_id,
+        summary=summary,
+        expected_summary_updated_at=last_summary_time,
+        summarized_message_count=summarized_message_count,
+        summary_snapshot_at=iteration_snapshot,
+    )
+    if not updated:
+        raise Retry(defer=5)
+
+    continuation_enqueued = False
+    if len(messages) == 100:
+        queue = ctx.get("redis")
+        if queue is not None:
+            follow_up = await enqueue_with_debounce(
+                cast(ArqRedis, queue),
+                "generate_summary_job",
+                job_id=f"summary:{conv_id}:{summarized_message_count}",
+                defer_by=timedelta(seconds=1),
+                args=(str(conv_id), True),
+            )
+            continuation_enqueued = follow_up is not None
+
+    return {
+        "status": "success",
+        "summary_length": len(summary),
+        "summarized_message_count": summarized_message_count,
+        "continuation_enqueued": continuation_enqueued,
+    }
 
 
 async def garbage_collect(ctx: WorkerContext) -> dict[str, int]:
@@ -387,30 +575,7 @@ async def garbage_collect(ctx: WorkerContext) -> dict[str, int]:
     if not isinstance(store_obj, MemoryStore):
         return {"scanned": 0, "deleted": 0}
 
-    async with store_obj._pool.acquire() as conn:
-        scanned = await conn.fetchval(
-            """
-            SELECT COUNT(*)
-            FROM memories
-            WHERE (status = 'inactive' AND updated_at < NOW() - INTERVAL '90 days')
-               OR (status = 'rejected' AND updated_at < NOW() - INTERVAL '30 days')
-               OR (status = 'pending' AND updated_at < NOW() - INTERVAL '30 days')
-               OR (status = 'deleted' AND updated_at < NOW() - INTERVAL '30 days')
-            """
-        )
-
-        result = await conn.execute(
-            """
-            DELETE FROM memories
-            WHERE (status = 'inactive' AND updated_at < NOW() - INTERVAL '90 days')
-               OR (status = 'rejected' AND updated_at < NOW() - INTERVAL '30 days')
-               OR (status = 'pending' AND updated_at < NOW() - INTERVAL '30 days')
-               OR (status = 'deleted' AND updated_at < NOW() - INTERVAL '30 days')
-            """
-        )
-
-    deleted = int(result.split()[-1]) if result else 0
-    return {"scanned": int(scanned or 0), "deleted": deleted}
+    return await store_obj.run_garbage_collect()
 
 
 async def cleanup_generated_files(ctx: WorkerContext) -> dict[str, int]:
@@ -418,7 +583,7 @@ async def cleanup_generated_files(ctx: WorkerContext) -> dict[str, int]:
     from orchestrator.config import get_settings
 
     settings = get_settings()  # noqa: F841
-    generated_files_dir = Path(__file__).resolve().parent.parent / "data" / "generated_files"
+    generated_files_dir = Path(__file__).resolve().parent.parent.parent / "data" / "generated_files"
 
     if not generated_files_dir.exists():
         return {"scanned": 0, "deleted": 0}
@@ -679,16 +844,7 @@ async def consolidate_memories(
             results["error_count"] = 1
     else:
         # Periodic job - find all users with eligible L1 memories
-        rows = await store._pool.fetch(
-            """
-            SELECT DISTINCT user_id
-            FROM memories
-            WHERE status = 'active'
-              AND tier = 'l1'
-              AND embedding IS NOT NULL
-            """
-        )
-        user_ids = [row["user_id"] for row in rows]
+        user_ids = await store.list_users_with_eligible_l1_memories()
         logger.info(f"Found {len(user_ids)} users with eligible memories for consolidation")
 
     # Process each user
@@ -955,6 +1111,7 @@ class ConsolidationNudgeAction(TypedDict):
     reason: str
     similarity: float | None
     status: str
+    audit_id: NotRequired[uuid.UUID]
 
 
 class ConsolidationNudgeResults(TypedDict):
@@ -1185,16 +1342,24 @@ async def _process_user_consolidation_nudge(
 
         elif action_type == "delete":
             if skill_id in autonomous_skill_ids:
-                delete_result = await _apply_delete_action(skill_id, store, user_id)
+                delete_result = await _apply_delete_action(
+                    skill_id,
+                    store,
+                    user_id,
+                    reason=action.get("reason", "model-driven delete"),
+                )
+                audit_id: uuid.UUID | None = delete_result.get("audit_id")
                 if delete_result["deleted"]:
                     actions.append(
                         ConsolidationNudgeAction(
                             action_type="delete",
                             skill_id=skill_id,
                             target_skill_id=None,
-                            reason=action.get("reason", "model-driven delete"),
+                            reason=delete_result.get("reason")
+                            or action.get("reason", "model-driven delete"),
                             similarity=None,
                             status="applied",
+                            audit_id=audit_id,
                         )
                     )
                 else:
@@ -1206,6 +1371,7 @@ async def _process_user_consolidation_nudge(
                             reason=delete_result.get("reason", "delete failed"),
                             similarity=None,
                             status="skipped",
+                            audit_id=audit_id,
                         )
                     )
 
@@ -1238,6 +1404,15 @@ async def _process_user_consolidation_nudge(
                 skill_use_count = s.get("use_count")
                 skill_last_used = s.get("last_used_at")
                 break
+        existing_audit_id = action.get("audit_id")
+        if existing_audit_id is not None:
+            # _apply_delete_action pre-wrote the pending audit row and has
+            # already finalized its status (applied on success, failed with
+            # reason on failure). Re-touching the row here would either
+            # duplicate the work or overwrite the `failed` status with the
+            # outer loop's `skipped`. Skip persistence; the action is kept
+            # in the returned list for caller visibility.
+            continue
         await store.log_consolidation_nudge_action(
             user_id=user_id,
             run_id=run_id,
@@ -1347,28 +1522,44 @@ async def _apply_delete_action(
     skill_id: str,
     store: MemoryStore,
     user_id: uuid.UUID,
+    *,
+    reason: str = "model-driven delete",
 ) -> dict[str, Any]:
+    run_id = uuid.uuid4()
     try:
-        from orchestrator.skills_store import delete_skill
-        from orchestrator.skills_projection import SkillProjectionStore
-
-        delete_skill(skill_id)
-        if store._pool:
-            projection_store = SkillProjectionStore(store._pool)
-            await projection_store.delete_projection(skill_id)
-        await store.log_consolidation_nudge_action(
+        audit_id = await store.log_consolidation_nudge_action(
             user_id=user_id,
-            run_id=uuid.uuid4(),
+            run_id=run_id,
             action_type="delete",
             skill_id=skill_id,
             target_skill_id=None,
-            reason="model-driven delete",
+            reason=reason,
             similarity=None,
+            status="pending",
+        )
+    except Exception as e:
+        return {"deleted": False, "reason": f"audit log failed before delete: {e}"}
+
+    try:
+        from orchestrator.skills_store import delete_skill
+
+        delete_skill(skill_id)
+        await store.delete_skill_projection(skill_id)
+        await store.update_consolidation_nudge_action_status(
+            audit_id,
             status="applied",
         )
-        return {"deleted": True, "reason": "ok"}
+        return {"deleted": True, "reason": "ok", "audit_id": audit_id}
     except Exception as e:
-        return {"deleted": False, "reason": str(e)}
+        try:
+            await store.update_consolidation_nudge_action_status(
+                audit_id,
+                status="failed",
+                reason=f"delete failed: {e}",
+            )
+        except Exception:
+            logger.warning("Failed to mark consolidation delete audit row failed", exc_info=True)
+        return {"deleted": False, "reason": str(e), "audit_id": audit_id}
 
 
 async def _find_duplicate_autonomous_skills(

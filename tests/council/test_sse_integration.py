@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from typing import Any
 import uuid
 from unittest.mock import AsyncMock
 
@@ -12,6 +13,23 @@ from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.config import get_settings
 from orchestrator.db import AppState, get_app_state
 from orchestrator.main import app
+
+
+def _single_output_result() -> dict[str, Any]:
+    return {
+        "type": "council_output",
+        "session_id": "ses_single_output",
+        "output": {
+            "consensus": "Consensus section",
+            "perspectives_summary": "",
+            "findings": [],
+            "metadata": {
+                "total_tokens": 123,
+                "total_cost": 0.12,
+                "models_used": ["model-a"],
+            },
+        },
+    }
 
 
 @pytest_asyncio.fixture
@@ -91,6 +109,42 @@ async def test_council_default_stream_emits_sse_flow(
     assert "event: council_done" in body
     assert "event: done" in body
     assert body.index("event: council_progress") < body.index("event: council_done")
+
+
+@pytest.mark.asyncio
+async def test_stream_council_invokes_output_emitter_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from orchestrator.council import sse as council_sse
+
+    emitter_calls: list[dict[str, Any]] = []
+
+    async def mock_emit_council_output_events(**kwargs: Any) -> AsyncGenerator[str, None]:
+        emitter_calls.append(kwargs)
+        yield "event: council_output\ndata: {}\n\n"
+
+    monkeypatch.setattr(
+        council_sse,
+        "handle_council_command",
+        AsyncMock(return_value=_single_output_result()),
+    )
+    monkeypatch.setattr(
+        council_sse,
+        "_emit_council_output_events",
+        mock_emit_council_output_events,
+    )
+
+    frames = [
+        frame
+        async for frame in council_sse.stream_council(
+            "/council --default Should I sell?",
+            conversation_id="conv_single_output",
+            request_id="req_single_output",
+        )
+    ]
+
+    assert len(emitter_calls) == 1
+    assert frames == ["event: council_output\ndata: {}\n\n"]
 
 
 @pytest.mark.asyncio

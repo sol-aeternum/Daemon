@@ -10,8 +10,31 @@ from orchestrator.memory.embedding import (
     get_embedding_failures_total,
     get_embedding_provider_used_counts,
 )
+from orchestrator.memory.encryption import (
+    ENCRYPTION_OPERATIONS_FAILED_TOTAL_KEY,
+    get_encryption_operations_failed_total,
+)
 
 router = APIRouter(prefix="/status", tags=["system"])
+
+
+async def _get_shared_encryption_failures(app_state: AppState) -> int:
+    if app_state.redis is None:
+        return 0
+
+    try:
+        raw_value = await app_state.redis.get(ENCRYPTION_OPERATIONS_FAILED_TOTAL_KEY)
+    except Exception:
+        return 0
+
+    if raw_value is None:
+        return 0
+    if isinstance(raw_value, bytes):
+        raw_value = raw_value.decode()
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        return 0
 
 
 @router.get("")
@@ -25,6 +48,9 @@ async def get_status(
 
     # Check Redis health
     redis_healthy = app_state.redis is not None
+    encryption_failures = (
+        get_encryption_operations_failed_total() + await _get_shared_encryption_failures(app_state)
+    )
 
     return {
         "status": "healthy" if db_healthy else "degraded",
@@ -35,4 +61,6 @@ async def get_status(
         "embedding_last_retry_at": _last_retry_at,
         "embedding_failures_total": get_embedding_failures_total(),
         "embedding_provider_used": get_embedding_provider_used_counts(),
+        "encryption_operations_failed_total": encryption_failures,
+        "encryption_failure_alert": encryption_failures > 0,
     }

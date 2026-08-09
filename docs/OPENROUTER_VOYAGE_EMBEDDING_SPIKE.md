@@ -1,6 +1,6 @@
 # OpenRouter Voyage Embedding Compatibility Spike
 
-> Status: research complete; implementation intentionally deferred
+> Status: option B implemented; direct/routed parity remains unverified
 > Date: 2026-08-09
 
 ## Decision context
@@ -23,6 +23,7 @@ OpenRouter's embeddings API uses the OpenAI-compatible envelope:
 {
   "model": "<OpenRouter embedding model id>",
   "input": ["text to embed"],
+  "input_type": "document",
   "encoding_format": "float",
   "dimensions": 1024
 }
@@ -32,10 +33,11 @@ The response is the familiar indexed `data[].embedding` shape with token usage
 metadata. That response is compatible with Daemon's existing
 `_parse_embedding_payload()` implementation.
 
-OpenRouter's published embeddings request schema documents `model`, `input`,
-`encoding_format`, `dimensions`, and `user`. It does **not** document Voyage's
-`input_type` field. OpenRouter's provider-routing prompt transforms also do not
-establish that arbitrary Voyage-only request fields are forwarded unchanged.
+OpenRouter's current embeddings request schema documents Voyage-compatible
+`input_type` values. An authenticated live probe on 2026-08-09 confirmed that
+`voyageai/voyage-4-large` accepted `document` and
+`voyageai/voyage-4-lite` accepted `query`, both returning 1024-dimensional
+vectors. The probe used fixed synthetic text and no personal memory content.
 
 References:
 
@@ -46,33 +48,24 @@ References:
 
 ## Compatibility finding
 
-The response shape is compatible, but prompt-shape compatibility is
-**unproven**. Omitting or losing `input_type` could produce vectors with
-different retrieval characteristics from the direct Voyage document/query
-pair. Equal model names and equal vector dimensions are not sufficient evidence
-that the resulting vectors share Daemon's calibrated storage space.
+The request and response shapes are compatible. Direct/routed vector parity is
+still **unproven** because no direct `VOYAGE_API_KEY` was available for the live
+comparison. Equal model names and dimensions are not sufficient evidence that
+the vectors share Daemon's calibrated storage space, so the implementation uses
+the approved separate `openrouter:<model-id>` identity.
 
-Accordingly, do not wire OpenRouter Voyage as a fallback yet. In particular, do
-not label OpenRouter-produced vectors with the existing direct-Voyage storage
-identity until parity has been demonstrated.
-
-## Required live verification
+## Remaining parity verification
 
 Run the following probe with non-sensitive fixture text before implementation:
 
-1. Resolve the exact OpenRouter model IDs from the authenticated model catalog;
-   do not infer the namespace from the display name.
-2. Submit document and query requests through OpenRouter with `input_type` and
-   confirm whether the endpoint accepts and forwards the field rather than
-   ignoring it.
-3. Submit the same fixtures directly to Voyage and through OpenRouter, then
+1. Submit the same fixtures directly to Voyage and through OpenRouter, then
    compare returned dimensions, finite-value validation, and cosine similarity.
-4. Repeat without `input_type`. The result must differ in the way documented by
+2. Repeat without `input_type`. The result must differ in the way documented by
    Voyage, proving the routed parameter is effective rather than silently
    discarded.
-5. Verify batch ordering, maximum input size, `dimensions=1024`, error bodies,
+3. Verify batch ordering, maximum input size, `dimensions=1024`, error bodies,
    rate-limit headers, retryable status codes, and usage fields.
-6. Run the existing similarity calibration corpus and retrieval/dedup regression
+4. Run the existing similarity calibration corpus and retrieval/dedup regression
    suite. Thresholds must not be reused if score distributions materially move.
 
 No personal memory content should be used for this probe.
@@ -97,8 +90,9 @@ Keep direct Voyage as the sole Voyage transport if `input_type` is rejected,
 ignored, or cannot be verified. An OpenAI-compatible response alone does not
 satisfy the memory pipeline's asymmetric embedding contract.
 
-## Recommended gate
+## Implemented decision
 
-Proceed with option A only after the live probe and calibration suite pass.
-Otherwise require an explicit architecture decision between options B and C.
-This spike makes no configuration, provider, storage, or API-contract changes.
+Option B is implemented as an explicit fallback provider. OpenRouter calls use
+the existing `OPENROUTER_API_KEY`, native `document` / `query` input types, and a
+separate storage identity. Option A remains gated on the direct/routed parity and
+calibration work above; no storage identities may be collapsed before it passes.

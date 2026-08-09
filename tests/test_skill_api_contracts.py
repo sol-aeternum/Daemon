@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1115,6 +1115,104 @@ class TestSkillsPendingUpdateContract:
             )
             assert response.status_code == 400
             assert "Invalid action" in response.json()["detail"]
+
+
+class TestAdminConsolidationAuditRoute:
+    def test_admin_consolidation_audit_queries_time_range(
+        self,
+        app_with_mock_db: FastAPI,
+        fake_authenticated_device: AuthenticatedDevice,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("DAEMON_ADMIN_API_KEY", "test-secret-key")
+        get_settings.cache_clear()
+
+        async def override_admin_auth() -> AdminOrDeviceAuth:
+            return AdminOrDeviceAuth(
+                authenticated_device=fake_authenticated_device,
+                is_admin=True,
+            )
+
+        app_with_mock_db.dependency_overrides[skills_router.require_admin_or_device_auth] = (
+            override_admin_auth
+        )
+
+        user_id = uuid.uuid4()
+        row_id = uuid.uuid4()
+        memory_store = MagicMock()
+        memory_store.list_consolidation_nudge_actions = AsyncMock(
+            return_value=[
+                {
+                    "id": row_id,
+                    "user_id": user_id,
+                    "action_type": "delete",
+                    "status": "failed",
+                    "reason": "delete failed: projection unavailable",
+                    "run_at": datetime(2026, 1, 3, 4, 5, tzinfo=timezone.utc),
+                }
+            ]
+        )
+        cast(Any, app_with_mock_db).state.app_state.memory_store = memory_store
+
+        test_client = ASGISyncClient(app_with_mock_db)
+        response = test_client.get(
+            "/skills/admin/consolidation-audit",
+            params={
+                "user_id": str(user_id),
+                "action_type": "delete",
+                "status": "failed",
+                "since": "2026-01-01T00:00:00+00:00",
+                "until": "2026-02-01T00:00:00+00:00",
+                "limit": "25",
+            },
+            headers={"Authorization": "Bearer test-secret-key"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["actions"] == [
+            {
+                "id": str(row_id),
+                "user_id": str(user_id),
+                "action_type": "delete",
+                "status": "failed",
+                "reason": "delete failed: projection unavailable",
+                "run_at": "2026-01-03T04:05:00Z",
+            }
+        ]
+        memory_store.list_consolidation_nudge_actions.assert_awaited_once_with(
+            user_id=user_id,
+            action_type="delete",
+            status="failed",
+            since=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            until=datetime(2026, 2, 1, tzinfo=timezone.utc),
+            limit=25,
+        )
+
+    def test_admin_consolidation_audit_rejects_non_admin_device(
+        self,
+        app_with_mock_db: FastAPI,
+        fake_authenticated_device: AuthenticatedDevice,
+    ) -> None:
+        non_admin_auth = AdminOrDeviceAuth(
+            authenticated_device=fake_authenticated_device,
+            is_admin=False,
+        )
+
+        async def override_non_admin_auth() -> AdminOrDeviceAuth:
+            return non_admin_auth
+
+        app_with_mock_db.dependency_overrides[skills_router.require_admin_or_device_auth] = (
+            override_non_admin_auth
+        )
+
+        test_client = ASGISyncClient(app_with_mock_db)
+        response = test_client.get(
+            "/skills/admin/consolidation-audit",
+            headers={"Authorization": "Bearer valid-device-token"},
+        )
+
+        assert response.status_code == 403
+        assert "Admin access required" in response.json()["detail"]
 
 
 class TestAdminSyncRoute:

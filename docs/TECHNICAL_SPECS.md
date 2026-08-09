@@ -6,7 +6,7 @@ Upstream Sources: orchestrator/config.py, migrations/, docker-compose.yml, MEMOR
 
 ## Daemon System Prompt (Actual)
 
-Daemon is a personal AI assistant orchestration layer. The system prompt (v3) defines its identity, tool access, and subagent dispatch logic.
+Daemon is a personal AI assistant orchestration layer. The system prompt (v4) defines its identity, tool access, and subagent dispatch logic.
 
 **Core Identity:**
 - "I'm Daemon, a personal AI assistant."
@@ -74,7 +74,7 @@ The `/chat` endpoint streams Server-Sent Events with typed frames:
 
 ## Database Schema
 
-PostgreSQL 16 with pgvector extension. 35 migrations in the `migrations/` directory.
+PostgreSQL 16 with pgvector extension. 39 migrations in the `migrations/` directory.
 
 ### Core Tables
 - **`users`**: Settings and profile data.
@@ -87,8 +87,7 @@ PostgreSQL 16 with pgvector extension. 35 migrations in the `migrations/` direct
 - **`dream_log`**: Logs for background consolidation and dreaming jobs.
 - **`skill_projections`**: Mapping of skills to conversation context.
 
-Latest migration: `035_refresh_rotation_grace.sql`.
-
+Latest migration: `038_extraction_watermark.sql`.
 ---
 
 ## Memory Pipeline
@@ -97,7 +96,7 @@ Daemon uses a multi-stage pipeline for durable fact management. See [MEMORY_LAYE
 
 ### Extraction & Dedup
 - **Extraction**: GPT-4o-mini extracts facts from conversation turns.
-- **Embeddings**: `voyage-4-large` (1024d) for documents, `voyage-4-lite` (1024d) for queries, with optional OpenAI `text-embedding-3-small` fallback using the configured 1024d output when `EMBEDDING_FALLBACK_PROVIDERS=openai` is set. Fallback vectors keep an `openai:<model>` storage identity; retrieval queries configured fallback identities with matching vectors only for users that already have memories in that storage space, and dedup uses lexical/slot fallback during outage writes to avoid cross-provider vector comparisons.
+- **Embeddings**: Direct Voyage `voyage-4-large` (1024d) for documents, and `voyage-4-lite` (1024d) for queries, with an explicit ordered fallback chain configured by `EMBEDDING_FALLBACK_PROVIDERS`. Supported fallbacks are the corresponding Voyage models through OpenRouter (reusing `OPENROUTER_API_KEY`) and OpenAI `text-embedding-3-small`. Routed Voyage parity is unproven, so fallback vectors retain distinct `openrouter:<model>` or `openai:<model>` storage identities. Vector/BM25 retrieval only searches enabled identities with stored rows for that user, including inferred historical windows; dedup reconciles spaces lexically/by slot without cross-provider vector comparisons and excludes L0/dream rows.
 - **Dedup Thresholds**:
   - Merge: ≥ 0.90
   - Supersede (generic): ≥ 0.82
@@ -142,10 +141,13 @@ Hybrid search combining:
 ### Key Environment Variables
 - `OPENROUTER_API_KEY`, `VOYAGE_API_KEY`, `XAI_API_KEY`, `FAL_KEY`, `BRAVE_API_KEY`, `ELEVENLABS_API_KEY`.
 - `DATABASE_URL`, `REDIS_URL`, `DAEMON_ENCRYPTION_KEY`.
+- `DAEMON_WORKER_FAILURE_ALERT_EMAIL` enables best-effort email alerts for critical worker failures.
 - **EMBEDDING_DOCUMENT_MODEL**: voyage-4-large
 - **EMBEDDING_QUERY_MODEL**: voyage-4-lite
 - **EMBEDDING_DIMENSIONS**: 1024
-- **EMBEDDING_FALLBACK_PROVIDERS**: unset by default; set to `openai` to opt in to OpenAI fallback
+- **EMBEDDING_FALLBACK_PROVIDERS**: unset by default; ordered comma-separated opt-in (`openrouter`, `openai`, or `openrouter,openai`)
+- **EMBEDDING_OPENROUTER_DOCUMENT_MODEL**: voyageai/voyage-4-large
+- **EMBEDDING_OPENROUTER_QUERY_MODEL**: voyageai/voyage-4-lite
 - **EMBEDDING_OPENAI_FALLBACK_MODEL**: text-embedding-3-small
 
 ---

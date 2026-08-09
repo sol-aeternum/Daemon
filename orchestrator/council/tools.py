@@ -8,6 +8,8 @@ from typing import Protocol, TypedDict, cast
 
 import litellm
 
+from orchestrator.tools.completion import _wrap_tool_result_untrusted
+
 
 MessagePayload = dict[str, object]
 ToolExecutorCallable = Callable[[str, str | dict[str, object]], Awaitable[str] | str]
@@ -379,7 +381,7 @@ async def council_completion_with_tools(
                     "tool_call_id": tool_call["id"],
                     "role": "tool",
                     "name": func_name,
-                    "content": result,
+                    "content": _wrap_tool_result_untrusted(func_name, result),
                 }
             )
 

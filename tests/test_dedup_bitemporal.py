@@ -254,6 +254,12 @@ async def test_dedup_fallback_embedding_uses_lexical_existing_memory() -> None:
         )
 
     assert len(result.merged) == 1
+    lexical_kwargs = store.search_memories_bm25.await_args.kwargs
+    assert lexical_kwargs["include_l0"] is False
+    assert lexical_kwargs["embedding_models"] == [
+        "openai:text-embedding-3-small",
+        "voyage-4-large",
+    ]
     store.touch_memory.assert_awaited_once_with(existing_id)
     store.insert_memory.assert_not_awaited()
 
@@ -281,8 +287,8 @@ async def test_dedup_primary_embedding_checks_lexical_fallback_memories() -> Non
             storage_model="voyage-4-large",
         )
         with patch(
-            "orchestrator.memory.dedup.get_configured_embedding_providers",
-            return_value=("voyage", "openai"),
+            "orchestrator.memory.dedup.get_configured_embedding_fallback_storage_models",
+            return_value=("openai:text-embedding-3-small",),
         ):
             result = await deduplicate_facts(
                 store,

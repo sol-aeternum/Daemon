@@ -28,6 +28,7 @@ from orchestrator.db import AppState
 from orchestrator.auth import AuthenticatedDevice
 from orchestrator.memory.embedding import EmbeddingBatchResult
 from orchestrator.routes import memories as memories_router
+from orchestrator.memory.store import MemoryContentConflictError
 
 
 @pytest_asyncio.fixture
@@ -320,6 +321,31 @@ async def test_update_memory(auth_client, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_memory_content_conflict_returns_409(auth_client, monkeypatch) -> None:
+    """Test that duplicate memory edits return a controlled conflict."""
+    memory_id = uuid.uuid4()
+    mock_store = AsyncMock()
+    mock_memory = create_mock_memory(memory_id=memory_id)
+    mock_store.get_memory = AsyncMock(return_value=mock_memory)
+    mock_store.update_memory = AsyncMock(
+        side_effect=MemoryContentConflictError(
+            "Memory content duplicates an existing active memory"
+        )
+    )
+
+    mock_app_state = create_mock_app_state(mock_store)
+    set_app_state(mock_app_state)
+
+    response = await auth_client.patch(
+        f"/memories/{memory_id}",
+        json={"content": "Updated content"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Memory content duplicates an existing active memory"
+
+
+@pytest.mark.asyncio
 async def test_delete_memory(auth_client, monkeypatch) -> None:
     """Test that DELETE /memories/{id} deletes memory."""
     memory_id = uuid.uuid4()
@@ -360,6 +386,31 @@ async def test_confirm_memory(auth_client, monkeypatch) -> None:
     data = response.json()
     assert data["status"] == "confirmed"
     mock_store.confirm_memory.assert_called_once_with(memory_id, confirmed=True)
+
+
+@pytest.mark.asyncio
+async def test_confirm_memory_content_conflict_returns_409(auth_client, monkeypatch) -> None:
+    """Test that confirming a duplicate legacy memory returns a controlled conflict."""
+    memory_id = uuid.uuid4()
+    mock_store = AsyncMock()
+    mock_memory = create_mock_memory(memory_id=memory_id)
+    mock_store.get_memory = AsyncMock(return_value=mock_memory)
+    mock_store.confirm_memory = AsyncMock(
+        side_effect=MemoryContentConflictError(
+            "Memory content duplicates an existing active memory"
+        )
+    )
+
+    mock_app_state = create_mock_app_state(mock_store)
+    set_app_state(mock_app_state)
+
+    response = await auth_client.post(
+        f"/memories/{memory_id}/confirm",
+        json={"status": "confirmed"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Memory content duplicates an existing active memory"
 
 
 @pytest.mark.asyncio
