@@ -1,6 +1,6 @@
-"use client";
+'use client';
 
-import { useCallback, useState } from "react";
+import { useCallback, useState } from 'react';
 
 type StoppableMessage = {
   id?: string;
@@ -13,13 +13,19 @@ type UseStopGenerationOptions = {
   archiveEvents: (messageId: string) => void;
 };
 
-export function useStopGeneration({ messages, stop, archiveEvents }: UseStopGenerationOptions) {
-  const [stoppedMessageIds, setStoppedMessageIds] = useState<Set<string>>(() => new Set());
+export function useStopGeneration({
+  messages,
+  stop,
+  archiveEvents,
+}: UseStopGenerationOptions) {
+  const [stoppedMessageIds, setStoppedMessageIds] = useState<Set<string>>(
+    () => new Set(),
+  );
 
   const stopGeneration = useCallback(() => {
     const latestMessage = messages[messages.length - 1];
     const latestMessageId = latestMessage?.id;
-    if (latestMessage?.role === "assistant" && latestMessageId) {
+    if (latestMessage?.role === 'assistant' && latestMessageId) {
       setStoppedMessageIds((current) => {
         const next = new Set(current);
         next.add(latestMessageId);
@@ -31,7 +37,10 @@ export function useStopGeneration({ messages, stop, archiveEvents }: UseStopGene
     stop();
   }, [archiveEvents, messages, stop]);
 
-  const resetStoppedMessages = useCallback(() => setStoppedMessageIds(new Set()), []);
+  const resetStoppedMessages = useCallback(
+    () => setStoppedMessageIds(new Set()),
+    [],
+  );
 
   return { stoppedMessageIds, stopGeneration, resetStoppedMessages };
 }

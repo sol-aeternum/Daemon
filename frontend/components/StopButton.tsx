@@ -1,6 +1,6 @@
-"use client";
+'use client';
 
-import { Square } from "lucide-react";
+import { Square } from 'lucide-react';
 
 type StopButtonProps = {
   onStop: () => void;
