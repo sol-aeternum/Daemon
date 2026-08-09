@@ -873,7 +873,7 @@ export async function attemptPageLoadRefresh(options?: {
       (options?.redirectOnExpiredSession ?? true) &&
       typeof window !== 'undefined'
     ) {
-      window.location.href = '/setup';
+      window.location.replace('/setup');
     }
     return false;
   }
