@@ -1700,6 +1700,7 @@
 - **Seen again**: 2026-06-07 during PR follow-up for failing CI; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`.
 - **Seen again**: 2026-06-07 during PR hosted-identity follow-up for failing backend gates; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` passed.
 - **Seen again**: 2026-06-08 during PR #20 benchmark replay follow-up verification; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`. `SKIP=gitleaks uv run pre-commit run --all-files` passed.
+- **Seen again**: 2026-08-09 during OpenRouter Voyage embedding compatibility research; `uv run pre-commit run --all-files` again failed while installing the remote gitleaks environment with `URLError: <urlopen error Tunnel connection failed: 403 Forbidden>`.
 
 ## 2026-05-31T10:24:30Z — BasedPyright config consolidation surfaced benchmark harness typing debt
 - **Severity**: warning
@@ -2077,3 +2078,25 @@
 - **Evidence**: `PYTHONPATH=. uv run pytest -q tests/test_chat_history.py` passed with `8 passed, 33 warnings`; representative warnings include `RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited` from `orchestrator/memory/injection.py:134`, `orchestrator/memory/injection.py:136`, and `orchestrator/main.py:1804`.
 - **Likely cause**: The test file's generic `AsyncMock` store exposes async mock attributes for user-settings reads that are consumed as dict-like values by preference formatting (confidence 85%).
 - **Suggested action**: Normalize chat-history mock stores with explicit `get_user_settings = AsyncMock(return_value={})` in a separate warning cleanup if warning-free focused runs become required.
+
+## 2026-08-09 00:00 UTC — OpenRouter research endpoints inaccessible from task environment
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: OpenRouter Voyage embedding compatibility research
+- **Category**: config
+- **Blocked current task**: no
+- **What happened**: The configured web research tool rejected searches, and direct requests to OpenRouter documentation and public API routes were denied. The compatibility spike therefore records the documented schema analysis and explicitly requires an authenticated live probe before implementation.
+- **Evidence**: `web__run` returned `http 401 Unauthorized`; `curl -LfsS https://openrouter.ai/docs/api-reference/embeddings` and `curl -LfsS https://openrouter.ai/api/v1/models` returned `curl: (22) The requested URL returned error: 403`.
+- **Likely cause**: The task environment lacks authorization for the web research service and its outbound proxy denies OpenRouter (confidence 95%).
+- **Suggested action**: Run the documented non-sensitive compatibility probe from an authenticated environment with `OPENROUTER_API_KEY` before wiring the fallback.
+
+## 2026-08-09 00:00 UTC — Pull request creation unavailable
+- **Severity**: warning
+- **Scope**: tooling
+- **Encountered during**: OpenRouter Voyage embedding compatibility research
+- **Category**: config
+- **Blocked current task**: yes
+- **What happened**: The required `make_pr` integration is not exposed in this environment, the repository has no configured Git remote, and GitHub CLI is unauthenticated. The committed research change could not be submitted as a pull request from this task environment.
+- **Evidence**: The available tool inventory contains no `make_pr`; `git remote -v` returned no remotes; `gh pr create ...` returned `To get started with GitHub CLI, please run: gh auth login`.
+- **Likely cause**: This workspace was provisioned without the PR integration or repository credentials (confidence 99%).
+- **Suggested action**: Configure a Git remote and authenticated PR tool, then create the PR from commit `6885ea3d` plus this triage follow-up.
