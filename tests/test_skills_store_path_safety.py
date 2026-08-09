@@ -91,12 +91,12 @@ def test_skill_path_resolves_inside_skills_directory(
     assert path.relative_to(skills_dir.resolve())
 
 
-def test_skill_path_containment_guard_rejects_resolved_escape(
+def test_skill_path_containment_guard_rejects_path_components(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     skills_dir = tmp_path / "skills"
     monkeypatch.setattr(skills_store, "SKILLS_DIR", skills_dir)
 
-    with pytest.raises(ValueError, match="escapes the skills directory"):
-        skills_store._assert_within_skills_dir(skills_dir / ".." / "escape.md")
+    with pytest.raises(ValueError, match="must not contain path components"):
+        skills_store._assert_within_skills_dir("../escape.md")
