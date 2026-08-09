@@ -66,7 +66,7 @@ def test_tts_request_rejects_invalid_formats(bad_format: str) -> None:
         TtsRequest(text="hello", format=bad_format)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("filename", ["", "../secret.mp3", "nested/file.mp3", "/tmp/file.mp3"])
+@pytest.mark.parametrize("filename", ["", "../secret.mp3", "nested/file.mp3", "/absolute/file.mp3"])
 def test_safe_file_path_rejects_non_basename_paths(tmp_path: Path, filename: str) -> None:
     assert _resolve_safe_file_path(tmp_path, filename) is None
 

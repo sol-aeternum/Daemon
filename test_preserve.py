@@ -3,11 +3,13 @@ import asyncio, sys, json, uuid, os
 from pathlib import Path
 
 sys.path.insert(0, '.')
-os.environ['BENCHMARK_MODE'] = '1'
+if __name__ == "__main__":
+    os.environ['BENCHMARK_MODE'] = '1'
 
-import dotenv
-dotenv.load_dotenv()
-os.environ['DATABASE_URL'] = 'postgresql://daemon:daemon@127.0.0.1:5432/daemon'
+    import dotenv
+
+    dotenv.load_dotenv()
+    os.environ['DATABASE_URL'] = 'postgresql://daemon:daemon@127.0.0.1:5432/daemon'
 
 from orchestrator.eval.fact_harness import LongMemEvalFactRunner
 from orchestrator.memory.encryption import ContentEncryption
