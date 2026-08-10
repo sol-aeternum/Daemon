@@ -144,7 +144,9 @@ class ArchiveOrgStrategy:
                 # policy for attacker-controlled hosts.
                 archive_url = _upgrade_legacy_wayback_url(archive_url)
                 try:
-                    validated_url = await asyncio.to_thread(validate_url, archive_url)
+                    validated_url = await asyncio.wait_for(
+                        asyncio.to_thread(validate_url, archive_url), timeout=10.0
+                    )
                 except SsrfViolation as exc:
                     logger.warning(
                         "Archive snapshot URL %s violates SSRF policy: %s; refusing to fetch",

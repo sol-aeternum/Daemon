@@ -244,6 +244,10 @@ class TestArchiveOrgStrategy:
         with (
             patch("httpx.AsyncClient.get") as mock_get,
             patch(
+                "orchestrator.services.fetch.strategies.archive.validate_url",
+                side_effect=lambda url: url,
+            ),
+            patch(
                 "orchestrator.services.fetch.strategies.archive.html_to_markdown",
                 return_value=markdown_content,
             ),
@@ -361,6 +365,10 @@ class TestArchiveOrgStrategy:
         with (
             patch("httpx.AsyncClient.get") as mock_get,
             patch(
+                "orchestrator.services.fetch.strategies.archive.validate_url",
+                side_effect=lambda url: url,
+            ),
+            patch(
                 "orchestrator.services.fetch.strategies.archive.html_to_markdown",
                 return_value="sufficiently long archived content for testing the wayback http→https upgrade.",
             ),
@@ -404,6 +412,10 @@ class TestArchiveOrgStrategy:
 
         with (
             patch("httpx.AsyncClient.get") as mock_get,
+            patch(
+                "orchestrator.services.fetch.strategies.archive.validate_url",
+                side_effect=lambda url: url,
+            ),
             patch(
                 "orchestrator.services.fetch.strategies.archive.socket_guard",
                 return_value=mock_socket_guard,
