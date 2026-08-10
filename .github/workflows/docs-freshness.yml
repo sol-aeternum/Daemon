@@ -17,7 +17,6 @@ on:
       - orchestrator/council/**
       - orchestrator/commands/council.py
       - orchestrator/services/fetch/**
-      - backend/image_gen/**
       - orchestrator/main.py
       - orchestrator/daemon.py
       - orchestrator/router.py
@@ -43,7 +42,6 @@ on:
       - orchestrator/council/**
       - orchestrator/commands/council.py
       - orchestrator/services/fetch/**
-      - backend/image_gen/**
       - orchestrator/main.py
       - orchestrator/daemon.py
       - orchestrator/router.py

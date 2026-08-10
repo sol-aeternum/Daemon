@@ -4,6 +4,15 @@ import pathlib
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 ORCHESTRATOR_MAIN = REPO_ROOT / "orchestrator" / "main.py"
+LEGACY_IMAGE_GEN_DIR = REPO_ROOT / "backend" / "image_gen"
+
+
+def test_legacy_backend_image_gen_package_is_removed():
+    assert not LEGACY_IMAGE_GEN_DIR.exists(), (
+        "The unsupported backend.image_gen package was removed because it is not "
+        "packaged or copied into runtime images. Do not restore it; build supported "
+        "image APIs under orchestrator/routes instead."
+    )
 
 
 def test_orchestrator_does_not_importlib_load_legacy_backend_image_gen():
