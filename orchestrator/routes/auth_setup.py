@@ -1577,9 +1577,12 @@ async def enroll_complete_endpoint(
         except CookiePolicyError as e:
             # Log the full exception server-side; the client receives a
             # fixed error code so we do not echo raw Python exception text
-            # in the response body. The refresh endpoint is a runtime
-            # endpoint (not the operator setup flow), so the trade-off
-            # here is to keep the failure mode opaque to the caller.
+            # in the response body. This is the enrollment-completion
+            # endpoint (``/v1/auth/enroll/complete``); the runtime
+            # /v1/auth/refresh handler is a separate function. Operators
+            # searching logs by endpoint should find this entry under
+            # "enroll/complete" and not be directed toward /refresh
+            # (round-2 Codex finding on PR #219).
             logger.exception(
                 "Cookie policy validation failed during /v1/auth/enroll/complete (request_id=%s, client_request_id=%s): %s",
                 _get_request_id_safe(request),
