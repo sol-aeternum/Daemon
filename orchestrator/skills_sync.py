@@ -9,7 +9,13 @@ from orchestrator.skills_projection import (
     compute_content_hash,
     embed_skill_content,
 )
-from orchestrator.skills_store import SKILLS_DIR, get_skill, list_skills
+from orchestrator.skills_store import (
+    SKILLS_DIR,
+    get_skill,
+    list_skills,
+    normalize_skill_id,
+    resolve_skill_path,
+)
 from orchestrator.skills_upgrade import load_manifest
 
 logger = logging.getLogger(__name__)
@@ -82,7 +88,7 @@ class SkillSyncService:
         return results
 
     async def sync_skill(self, skill_id: str, source_type: str = "manual") -> SyncResult:
-        path = SKILLS_DIR / f"{skill_id}.md"
+        path = resolve_skill_path(skill_id, skills_dir=SKILLS_DIR)
         if not path.exists():
             return SyncResult(
                 skill_id=skill_id,
@@ -135,7 +141,15 @@ class SkillSyncService:
         )
 
     async def reconcile(self) -> ReconcileResult:
-        file_ids = {p.stem for p in SKILLS_DIR.glob("*.md")}
+        file_ids: set[str] = set()
+        for path in SKILLS_DIR.glob("*.md"):
+            try:
+                skill_id = normalize_skill_id(path.stem)
+                resolve_skill_path(skill_id, skills_dir=SKILLS_DIR)
+            except ValueError as exc:
+                logger.warning("Skipping unsafe skill path %s: %s", path, exc)
+                continue
+            file_ids.add(skill_id)
         db_ids = set(await self._store.get_all_skill_ids())
         orphaned = list(db_ids - file_ids)
         missing = list(file_ids - db_ids)
@@ -153,7 +167,7 @@ class SkillSyncService:
         )
 
     async def detect_drift(self, skill_id: str) -> bool:
-        path = SKILLS_DIR / f"{skill_id}.md"
+        path = resolve_skill_path(skill_id, skills_dir=SKILLS_DIR)
         if not path.exists():
             return False
         current_hash = compute_content_hash(path.read_text(encoding="utf-8"))

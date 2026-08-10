@@ -378,6 +378,38 @@ class TestSkillSyncService:
         assert result.error is not None and "not found" in result.error
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("skill_id", ["../escape", "/outside/escape", "unsafe\\name"])
+    async def test_sync_skill_rejects_unsafe_ids_before_database_access(
+        self,
+        mock_db_pool: AsyncMock,
+        tmp_path: Path,
+        skill_id: str,
+    ) -> None:
+        store = SkillProjectionStore(mock_db_pool)
+        with patch("orchestrator.skills_sync.SKILLS_DIR", tmp_path):
+            service = SkillSyncService(store)
+            with pytest.raises(ValueError):
+                await service.sync_skill(skill_id)
+
+        mock_db_pool.fetchrow.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sync_skill_rejects_symlink_escape(
+        self, mock_db_pool: AsyncMock, tmp_path: Path
+    ) -> None:
+        outside_file = tmp_path.parent / "outside-skill.md"
+        outside_file.write_text("outside", encoding="utf-8")
+        (tmp_path / "linked-skill.md").symlink_to(outside_file)
+
+        store = SkillProjectionStore(mock_db_pool)
+        with patch("orchestrator.skills_sync.SKILLS_DIR", tmp_path):
+            service = SkillSyncService(store)
+            with pytest.raises(ValueError, match="escapes the skills directory"):
+                await service.sync_skill("linked-skill")
+
+        mock_db_pool.fetchrow.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_delete_skill_projection_removes_row(self, mock_db_pool: AsyncMock) -> None:
         store = SkillProjectionStore(mock_db_pool)
         mock_db_pool.execute.return_value = "DELETE 1"
@@ -400,6 +432,18 @@ class TestSkillSyncService:
             service = SkillSyncService(store)
             drifted = await service.detect_drift("drifted-skill")
         assert drifted is True
+
+    @pytest.mark.asyncio
+    async def test_detect_drift_rejects_unsafe_id_before_database_access(
+        self, mock_db_pool: AsyncMock, tmp_path: Path
+    ) -> None:
+        store = SkillProjectionStore(mock_db_pool)
+        with patch("orchestrator.skills_sync.SKILLS_DIR", tmp_path):
+            service = SkillSyncService(store)
+            with pytest.raises(ValueError):
+                await service.detect_drift("../escape")
+
+        mock_db_pool.fetchval.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_detect_drift_returns_false_when_hash_matches(

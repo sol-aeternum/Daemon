@@ -27,6 +27,8 @@ from orchestrator.skills_upgrade import (
     SkillManifestEntry,
     SkillUpgradeService,
     _now_iso,
+    _snapshot_path,
+    _write_skill_file,
     load_manifest,
     save_manifest,
 )
@@ -113,6 +115,62 @@ class TestManifestLoadSave:
             manifest = load_manifest()
         assert manifest.version == 1
         assert manifest.skills == {}
+
+
+class TestUpgradePathSafety:
+    @pytest.mark.parametrize("skill_id", ["../escape", "/outside/escape", "unsafe\\name"])
+    def test_snapshot_path_rejects_unsafe_ids(self, tmp_path: Path, skill_id: str) -> None:
+        with patch("orchestrator.skills_upgrade.SKILLS_DIR", tmp_path):
+            with pytest.raises(ValueError):
+                _snapshot_path(skill_id)
+
+    def test_snapshot_path_rejects_symlink_escape(self, tmp_path: Path) -> None:
+        outside_dir = tmp_path.parent / "outside-snapshots"
+        outside_dir.mkdir(exist_ok=True)
+        (tmp_path / SNAPSHOT_DIRNAME).symlink_to(outside_dir, target_is_directory=True)
+
+        with patch("orchestrator.skills_upgrade.SKILLS_DIR", tmp_path):
+            with pytest.raises(ValueError, match="escapes the skills directory"):
+                _snapshot_path("safe-skill")
+
+    def test_write_skill_file_rejects_unsafe_id(self, tmp_path: Path) -> None:
+        with patch("orchestrator.skills_upgrade.SKILLS_DIR", tmp_path):
+            with pytest.raises(ValueError):
+                _write_skill_file("../escape", "content")
+
+        assert not (tmp_path.parent / "escape.md").exists()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method_name", ["apply_pending_update", "dismiss_pending_update"])
+    async def test_pending_update_action_rejects_unsafe_id_before_database_access(
+        self, tmp_path: Path, method_name: str
+    ) -> None:
+        pool = _make_mock_db_pool()
+
+        from orchestrator.skills_projection import SkillProjectionStore
+
+        service = SkillUpgradeService(SkillProjectionStore(pool))
+        with patch("orchestrator.skills_upgrade.SKILLS_DIR", tmp_path):
+            action = await getattr(service, method_name)("../escape")
+
+        assert action.success is False
+        assert action.action == "error"
+        pool.fetchrow.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sync_repo_skills_skips_unsafe_external_id(self, tmp_path: Path) -> None:
+        pool = _make_mock_db_pool()
+
+        from orchestrator.skills_projection import SkillProjectionStore
+
+        service = SkillUpgradeService(SkillProjectionStore(pool))
+        with patch("orchestrator.skills_upgrade.SKILLS_DIR", tmp_path):
+            result = await service.sync_repo_skills({"../escape": "---\n---\ncontent"})
+
+        assert result.total_errors == 1
+        assert result.actions[0].skill_id == "../escape"
+        assert not (tmp_path.parent / "escape.md").exists()
+        pool.fetchrow.assert_not_called()
 
 
 class TestUpgradeServiceNewSkill:
@@ -719,3 +777,18 @@ class TestLoadRepoContents:
             result = load_repo_contents()
         assert "valid-skill" in result
         assert "invalid-skill" not in result
+
+    def test_load_repo_contents_skips_unsafe_filename(self, tmp_path: Path) -> None:
+        repo_dir = tmp_path / "repo_skills"
+        repo_dir.mkdir()
+        (repo_dir / "Unsafe Skill.md").write_text(
+            "---\nname: Unsafe\ndescription: d\nenabled: true\n---\ncontent",
+            encoding="utf-8",
+        )
+
+        with patch("orchestrator.skills_upgrade.REPO_SKILLS_DIR", repo_dir):
+            from orchestrator.skills_upgrade import load_repo_contents
+
+            result = load_repo_contents()
+
+        assert result == {}

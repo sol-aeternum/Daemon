@@ -247,4 +247,5 @@ class FetchService:
         return False
 
     def _is_youtube_url(self, url: str) -> bool:
-        return "youtube.com" in url or "youtu.be" in url
+        hostname = (urlparse(url).hostname or "").lower().rstrip(".")
+        return hostname in {"youtube.com", "youtu.be"} or hostname.endswith(".youtube.com")
