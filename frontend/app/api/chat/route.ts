@@ -1,3 +1,6 @@
+import type { ChatEvent } from '@/lib/events';
+import type { DaemonMessage } from '@/lib/chatMessages';
+
 const API_URLS = [
   process.env.DAEMON_INTERNAL_API_URL,
   process.env.NEXT_PUBLIC_API_URL,
@@ -68,12 +71,12 @@ export async function POST(req: Request) {
   const { messages, id, model, attachments, metadata, provider } =
     await req.json();
 
-  const { createDataStreamResponse } = await import('ai');
-  const { formatDataStreamPart } = await import('@ai-sdk/ui-utils');
+  const { createUIMessageStream, createUIMessageStreamResponse } =
+    await import('ai');
 
   const normalizedMessages = (messages || []).map((m: any) => ({
     role: m.role,
-    content: m.content,
+    content: extractTextContent(m.content ?? m.parts),
   }));
 
   const lastUserMessage = [...normalizedMessages]
@@ -121,112 +124,113 @@ export async function POST(req: Request) {
     });
   }
 
-  return createDataStreamResponse({
-    headers: responseHeaders,
-    execute: async (dataStream) => {
-      if (!backendRes) {
-        dataStream.write(
-          formatDataStreamPart(
-            'text',
-            `Backend error (network): ${lastError?.message || 'unknown error'}.`,
-          ),
-        );
-        return;
-      }
+  const stream = createUIMessageStream<DaemonMessage>({
+    execute: async ({ writer }) => {
+      const textPartId = 'assistant-text';
+      let textPartStarted = false;
+      let streamFailed = false;
 
-      if (!backendRes.ok || !backendRes.body) {
-        dataStream.write(
-          formatDataStreamPart(
-            'text',
-            `Backend error (${backendRes.status}): unable to stream response.`,
-          ),
-        );
-        return;
-      }
-
-      const reader = backendRes.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let assistantMessageStarted = false;
-      let sawToken = false;
-
-      const ensureAssistantMessageStarted = () => {
-        if (!assistantMessageStarted) {
-          assistantMessageStarted = true;
-          dataStream.write(formatDataStreamPart('text', ''));
+      const writeText = (delta: string) => {
+        if (!textPartStarted) {
+          textPartStarted = true;
+          writer.write({ type: 'text-start', id: textPartId });
         }
+        writer.write({ type: 'text-delta', id: textPartId, delta });
       };
 
-      // Stop-button abort: when the browser-side `req.signal` fires (the user
-      // clicked Stop), release the backend reader so the connection drops,
-      // emit a finish dataStreamPart so AI SDK flushes, and exit. Without this
-      // hook the read loop keeps draining backend tokens until the stream
-      // closes naturally, which means FastAPI keeps executing the request
-      // even though the UI has already stopped.
-      const onAbort = () => {
-        try {
-          reader.cancel().catch(() => undefined);
-        } catch {
-          // reader may already be released; ignore.
+      const writeData = (events: ChatEvent[]) => {
+        for (const event of events) {
+          writer.write({ type: 'data-event', data: event });
         }
       };
-
-      if (req.signal.aborted) {
-        onAbort();
-        return;
-      }
-      req.signal.addEventListener('abort', onAbort, { once: true });
 
       try {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
+        if (!backendRes) {
+          writeText(
+            `Backend error (network): ${lastError?.message || 'unknown error'}.`,
+          );
+          return;
+        }
 
+        if (!backendRes.ok || !backendRes.body) {
+          writeText(
+            `Backend error (${backendRes.status}): unable to stream response.`,
+          );
+          return;
+        }
+
+        const reader = backendRes.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let sawToken = false;
+
+        // Stop-button abort: when the browser-side `req.signal` fires (the user
+        // clicked Stop), release the backend reader so the connection drops and
+        // emit an abort chunk. Without this hook the read loop keeps draining
+        // backend tokens until the stream closes naturally, which means FastAPI
+        // keeps executing the request even though the UI has already stopped.
+        const onAbort = () => {
+          try {
+            reader.cancel().catch(() => undefined);
+          } catch {
+            // reader may already be released; ignore.
+          }
+        };
+
+        if (req.signal.aborted) {
+          onAbort();
+          return;
+        }
+        req.signal.addEventListener('abort', onAbort, { once: true });
+
+        try {
           while (true) {
-            const sepIdx = buffer.indexOf('\n\n');
-            if (sepIdx === -1) break;
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
 
-            const frame = buffer.slice(0, sepIdx);
-            buffer = buffer.slice(sepIdx + 2);
+            while (true) {
+              const sepIdx = buffer.indexOf('\n\n');
+              if (sepIdx === -1) break;
 
-            const lines = frame.split('\n');
-            let eventType = 'message';
-            let dataText = '';
+              const frame = buffer.slice(0, sepIdx);
+              buffer = buffer.slice(sepIdx + 2);
 
-            for (const line of lines) {
-              if (line.startsWith('event:')) {
-                eventType = line.slice(6).trim();
-              } else if (line.startsWith('data:')) {
-                dataText += line.slice(5).trim();
+              const lines = frame.split('\n');
+              let eventType = 'message';
+              let dataText = '';
+
+              for (const line of lines) {
+                if (line.startsWith('event:')) {
+                  eventType = line.slice(6).trim();
+                } else if (line.startsWith('data:')) {
+                  dataText += line.slice(5).trim();
+                }
               }
-            }
 
-            if (!dataText) continue;
+              if (!dataText) continue;
 
-            let payload: any;
-            try {
-              payload = JSON.parse(dataText);
-            } catch {
-              continue;
-            }
-
-            if (eventType === 'token') {
-              const delta =
-                payload?.data?.text ??
-                payload?.data?.delta ??
-                payload?.text ??
-                payload?.delta;
-              if (typeof delta === 'string' && delta.length > 0) {
-                assistantMessageStarted = true;
-                sawToken = true;
-                dataStream.write(formatDataStreamPart('text', delta));
+              let payload: any;
+              try {
+                payload = JSON.parse(dataText);
+              } catch {
+                continue;
               }
-            } else if (eventType === 'thinking') {
-              const content = payload?.data?.content ?? payload?.content;
-              if (typeof content === 'string' && content.length > 0) {
-                dataStream.write(
-                  formatDataStreamPart('data', [
+
+              if (eventType === 'token') {
+                const delta =
+                  payload?.data?.text ??
+                  payload?.data?.delta ??
+                  payload?.text ??
+                  payload?.delta;
+                if (typeof delta === 'string' && delta.length > 0) {
+                  sawToken = true;
+                  writeText(delta);
+                }
+              } else if (eventType === 'thinking') {
+                const content = payload?.data?.content ?? payload?.content;
+                if (typeof content === 'string' && content.length > 0) {
+                  writeData([
                     {
                       type: 'thinking',
                       content: content,
@@ -234,14 +238,12 @@ export async function POST(req: Request) {
                       request_id:
                         payload?.request_id ?? payload?.data?.request_id,
                     },
-                  ]),
-                );
-              }
-            } else if (eventType === 'routing') {
-              const modelId = payload?.data?.model;
-              if (typeof modelId === 'string' && modelId.length > 0) {
-                dataStream.write(
-                  formatDataStreamPart('data', [
+                  ]);
+                }
+              } else if (eventType === 'routing') {
+                const modelId = payload?.data?.model;
+                if (typeof modelId === 'string' && modelId.length > 0) {
+                  writeData([
                     {
                       type: 'routing',
                       model: modelId,
@@ -251,29 +253,25 @@ export async function POST(req: Request) {
                       request_id:
                         payload?.request_id ?? payload?.data?.request_id,
                     },
-                  ]),
-                );
-              }
-            } else if (eventType === 'conversation') {
-              const conversationId =
-                payload?.data?.conversation_id || payload?.conversation_id;
-              if (conversationId) {
-                dataStream.write(
-                  formatDataStreamPart('data', [
+                  ]);
+                }
+              } else if (eventType === 'conversation') {
+                const conversationId =
+                  payload?.data?.conversation_id || payload?.conversation_id;
+                if (conversationId) {
+                  writeData([
                     {
                       type: 'conversation',
                       conversation_id: conversationId,
                     },
-                  ]),
-                );
-              }
-            } else if (eventType === 'tool_call') {
-              const data =
-                payload?.data && typeof payload.data === 'object'
-                  ? payload.data
-                  : {};
-              dataStream.write(
-                formatDataStreamPart('data', [
+                  ]);
+                }
+              } else if (eventType === 'tool_call') {
+                const data =
+                  payload?.data && typeof payload.data === 'object'
+                    ? payload.data
+                    : {};
+                writeData([
                   {
                     ...data,
                     type: 'tool_call',
@@ -283,15 +281,13 @@ export async function POST(req: Request) {
                     request_id:
                       payload?.request_id ?? payload?.data?.request_id,
                   },
-                ]),
-              );
-            } else if (eventType === 'tool_result') {
-              const data =
-                payload?.data && typeof payload.data === 'object'
-                  ? payload.data
-                  : {};
-              dataStream.write(
-                formatDataStreamPart('data', [
+                ]);
+              } else if (eventType === 'tool_result') {
+                const data =
+                  payload?.data && typeof payload.data === 'object'
+                    ? payload.data
+                    : {};
+                writeData([
                   {
                     ...data,
                     type: 'tool_result',
@@ -301,27 +297,24 @@ export async function POST(req: Request) {
                     request_id:
                       payload?.request_id ?? payload?.data?.request_id,
                   },
-                ]),
-              );
-            } else if (
-              eventType === 'advisor_start' ||
-              eventType === 'advisor_text_delta' ||
-              eventType === 'advisor_text_done' ||
-              eventType === 'advisor_error' ||
-              eventType === 'advisor_end'
-            ) {
-              const data =
-                payload?.data && typeof payload.data === 'object'
-                  ? payload.data
-                  : {};
-              const content =
-                payload?.data?.content ??
-                payload?.data?.text ??
-                payload?.content ??
-                payload?.text;
-              ensureAssistantMessageStarted();
-              dataStream.write(
-                formatDataStreamPart('data', [
+                ]);
+              } else if (
+                eventType === 'advisor_start' ||
+                eventType === 'advisor_text_delta' ||
+                eventType === 'advisor_text_done' ||
+                eventType === 'advisor_error' ||
+                eventType === 'advisor_end'
+              ) {
+                const data =
+                  payload?.data && typeof payload.data === 'object'
+                    ? payload.data
+                    : {};
+                const content =
+                  payload?.data?.content ??
+                  payload?.data?.text ??
+                  payload?.content ??
+                  payload?.text;
+                writeData([
                   {
                     ...data,
                     type: eventType,
@@ -329,17 +322,16 @@ export async function POST(req: Request) {
                     id: payload?.id ?? payload?.data?.id,
                     request_id:
                       payload?.request_id ?? payload?.data?.request_id,
-                  },
-                ]),
-              );
-            } else if (eventType === 'video_generating') {
-              const requestId =
-                payload?.data?.request_id ?? payload?.request_id;
-              const estimatedSeconds =
-                payload?.data?.estimated_seconds ?? payload?.estimated_seconds;
-              if (requestId) {
-                dataStream.write(
-                  formatDataStreamPart('data', [
+                  } as ChatEvent,
+                ]);
+              } else if (eventType === 'video_generating') {
+                const requestId =
+                  payload?.data?.request_id ?? payload?.request_id;
+                const estimatedSeconds =
+                  payload?.data?.estimated_seconds ??
+                  payload?.estimated_seconds;
+                if (requestId) {
+                  writeData([
                     {
                       type: 'video_generating',
                       request_id: requestId,
@@ -349,16 +341,14 @@ export async function POST(req: Request) {
                           : 0,
                       id: payload?.id ?? payload?.data?.id,
                     },
-                  ]),
-                );
-              }
-            } else if (eventType === 'video_complete') {
-              const requestId =
-                payload?.data?.request_id ?? payload?.request_id;
-              const url = payload?.data?.url ?? payload?.url;
-              if (requestId && url) {
-                dataStream.write(
-                  formatDataStreamPart('data', [
+                  ]);
+                }
+              } else if (eventType === 'video_complete') {
+                const requestId =
+                  payload?.data?.request_id ?? payload?.request_id;
+                const url = payload?.data?.url ?? payload?.url;
+                if (requestId && url) {
+                  writeData([
                     {
                       type: 'video_complete',
                       request_id: requestId,
@@ -368,16 +358,14 @@ export async function POST(req: Request) {
                         payload?.data?.resolution ?? payload?.resolution,
                       id: payload?.id ?? payload?.data?.id,
                     },
-                  ]),
-                );
-              }
-            } else if (eventType === 'video_failed') {
-              const requestId =
-                payload?.data?.request_id ?? payload?.request_id;
-              const error = payload?.data?.error ?? payload?.error;
-              if (requestId) {
-                dataStream.write(
-                  formatDataStreamPart('data', [
+                  ]);
+                }
+              } else if (eventType === 'video_failed') {
+                const requestId =
+                  payload?.data?.request_id ?? payload?.request_id;
+                const error = payload?.data?.error ?? payload?.error;
+                if (requestId) {
+                  writeData([
                     {
                       type: 'video_failed',
                       request_id: requestId,
@@ -386,13 +374,10 @@ export async function POST(req: Request) {
                         payload?.data?.refunded ?? payload?.refunded ?? false,
                       id: payload?.id ?? payload?.data?.id,
                     },
-                  ]),
-                );
-              }
-            } else if (eventType === 'council_interview') {
-              ensureAssistantMessageStarted();
-              dataStream.write(
-                formatDataStreamPart('data', [
+                  ]);
+                }
+              } else if (eventType === 'council_interview') {
+                writeData([
                   {
                     type: 'council_interview',
                     ...payload?.data,
@@ -400,12 +385,9 @@ export async function POST(req: Request) {
                     request_id:
                       payload?.request_id ?? payload?.data?.request_id,
                   },
-                ]),
-              );
-            } else if (eventType === 'council_progress') {
-              ensureAssistantMessageStarted();
-              dataStream.write(
-                formatDataStreamPart('data', [
+                ]);
+              } else if (eventType === 'council_progress') {
+                writeData([
                   {
                     type: 'council_progress',
                     ...payload?.data,
@@ -413,12 +395,9 @@ export async function POST(req: Request) {
                     request_id:
                       payload?.request_id ?? payload?.data?.request_id,
                   },
-                ]),
-              );
-            } else if (eventType === 'council_output') {
-              ensureAssistantMessageStarted();
-              dataStream.write(
-                formatDataStreamPart('data', [
+                ]);
+              } else if (eventType === 'council_output') {
+                writeData([
                   {
                     type: 'council_output',
                     ...payload?.data,
@@ -426,12 +405,9 @@ export async function POST(req: Request) {
                     request_id:
                       payload?.request_id ?? payload?.data?.request_id,
                   },
-                ]),
-              );
-            } else if (eventType === 'council_done') {
-              ensureAssistantMessageStarted();
-              dataStream.write(
-                formatDataStreamPart('data', [
+                ]);
+              } else if (eventType === 'council_done') {
+                writeData([
                   {
                     type: 'council_done',
                     ...payload?.data,
@@ -439,12 +415,9 @@ export async function POST(req: Request) {
                     request_id:
                       payload?.request_id ?? payload?.data?.request_id,
                   },
-                ]),
-              );
-            } else if (eventType === 'council_error') {
-              ensureAssistantMessageStarted();
-              dataStream.write(
-                formatDataStreamPart('data', [
+                ]);
+              } else if (eventType === 'council_error') {
+                writeData([
                   {
                     type: 'council_error',
                     ...payload?.data,
@@ -452,23 +425,46 @@ export async function POST(req: Request) {
                     request_id:
                       payload?.request_id ?? payload?.data?.request_id,
                   },
-                ]),
-              );
-            } else if (eventType === 'final' && !sawToken) {
-              const content =
-                payload?.data?.text ??
-                payload?.data?.message?.content ??
-                payload?.text ??
-                payload?.message?.content;
-              if (typeof content === 'string' && content.length > 0) {
-                dataStream.write(formatDataStreamPart('text', content));
+                ]);
+              } else if (eventType === 'final' && !sawToken) {
+                const content =
+                  payload?.data?.text ??
+                  payload?.data?.message?.content ??
+                  payload?.text ??
+                  payload?.message?.content;
+                if (typeof content === 'string' && content.length > 0) {
+                  writeText(content);
+                }
               }
             }
           }
+        } finally {
+          req.signal.removeEventListener('abort', onAbort);
+        }
+      } catch {
+        if (!req.signal.aborted) {
+          streamFailed = true;
         }
       } finally {
-        req.signal.removeEventListener('abort', onAbort);
+        if (textPartStarted) {
+          writer.write({ type: 'text-end', id: textPartId });
+        }
+        if (req.signal.aborted) {
+          writer.write({ type: 'abort', reason: 'request-aborted' });
+        } else if (streamFailed) {
+          writer.write({
+            type: 'error',
+            errorText: 'Backend stream ended unexpectedly.',
+          });
+        } else {
+          writer.write({ type: 'finish', finishReason: 'stop' });
+        }
       }
     },
+  });
+
+  return createUIMessageStreamResponse({
+    headers: responseHeaders,
+    stream,
   });
 }

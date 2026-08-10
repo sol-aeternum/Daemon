@@ -1,37 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-let capturedWrites: Array<{ partType: string; value: unknown }> = [];
-
-vi.mock('ai', () => ({
-  createDataStreamResponse: async ({
-    execute,
-  }: {
-    execute: (dataStream: {
-      write: (part: { partType: string; value: unknown }) => void;
-    }) => Promise<void>;
-  }) => {
-    capturedWrites = [];
-    await execute({
-      write: (part) => {
-        capturedWrites.push(part);
-      },
-    });
-
-    return new Response(JSON.stringify(capturedWrites), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  },
-}));
-
-vi.mock('@ai-sdk/ui-utils', () => ({
-  formatDataStreamPart: (partType: string, value: unknown) => ({
-    partType,
-    value,
-  }),
-}));
-
 import { POST } from '../app/api/chat/route';
+
+type UIMessageChunk = Record<string, unknown> & { type: string };
+
+async function readUIMessageChunks(response: Response) {
+  const body = await response.text();
+  return body
+    .split('\n')
+    .filter((line) => line.startsWith('data: '))
+    .map((line) => line.slice('data: '.length))
+    .filter((payload) => payload !== '[DONE]')
+    .map((payload) => JSON.parse(payload) as UIMessageChunk);
+}
 
 function buildSseResponse(frames: string[]): Response {
   return new Response(`${frames.join('\n\n')}\n\n`, {
@@ -46,7 +27,6 @@ function encodeFrame(eventType: string, data: Record<string, unknown>): string {
 
 describe('chat route advisor event bridge', () => {
   beforeEach(() => {
-    capturedWrites = [];
     vi.restoreAllMocks();
   });
 
@@ -128,19 +108,26 @@ describe('chat route advisor event bridge', () => {
       }),
     );
 
-    const writes = (await response.json()) as Array<{
-      partType: string;
-      value: unknown;
-    }>;
+    expect(response.headers.get('x-vercel-ai-ui-message-stream')).toBe('v1');
+    const writes = await readUIMessageChunks(response);
     const textParts = writes
-      .filter((part) => part.partType === 'text')
-      .map((part) => part.value);
+      .filter((part) => part.type === 'text-delta')
+      .map((part) => part.delta);
     const dataEvents = writes
-      .filter((part) => part.partType === 'data')
-      .flatMap((part) => part.value as Array<Record<string, unknown>>);
+      .filter((part) => part.type === 'data-event')
+      .map((part) => part.data as Record<string, unknown>);
 
-    expect(textParts).toEqual(['', 'Main reply.']);
+    expect(textParts).toEqual(['Main reply.']);
     expect(textParts).not.toContain('Nested advisor text.');
+    expect(writes.map((part) => part.type)).toEqual(
+      expect.arrayContaining([
+        'data-event',
+        'text-start',
+        'text-delta',
+        'text-end',
+        'finish',
+      ]),
+    );
 
     expect(dataEvents).toEqual(
       expect.arrayContaining([
@@ -215,16 +202,13 @@ describe('chat route advisor event bridge', () => {
       }),
     );
 
-    const writes = (await response.json()) as Array<{
-      partType: string;
-      value: unknown;
-    }>;
+    const writes = await readUIMessageChunks(response);
     const textParts = writes
-      .filter((part) => part.partType === 'text')
-      .map((part) => part.value);
+      .filter((part) => part.type === 'text-delta')
+      .map((part) => part.delta);
     const dataEvents = writes
-      .filter((part) => part.partType === 'data')
-      .flatMap((part) => part.value as Array<Record<string, unknown>>);
+      .filter((part) => part.type === 'data-event')
+      .map((part) => part.data as Record<string, unknown>);
 
     expect(textParts).toEqual(['Top-level reply.']);
     expect(
@@ -235,6 +219,53 @@ describe('chat route advisor event bridge', () => {
         expect.objectContaining({ type: 'tool_call', name: 'web_search' }),
         expect.objectContaining({ type: 'tool_result', name: 'web_search' }),
       ]),
+    );
+  });
+
+  it('creates an assistant message from a data-only council stream', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        buildSseResponse([
+          encodeFrame('council_interview', {
+            id: 'evt_council_interview_1',
+            request_id: 'req_council',
+            data: {
+              roster: { architect: 'model-a' },
+              presets: ['lean'],
+              rounds_options: [1, 2],
+              audit_default: false,
+            },
+          }),
+        ]),
+      ),
+    );
+
+    const response = await POST(
+      new Request('http://test/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [
+            {
+              id: 'user_council',
+              role: 'user',
+              parts: [{ type: 'text', text: '/council' }],
+            },
+          ],
+          id: 'conv_council',
+        }),
+      }),
+    );
+
+    const chunks = await readUIMessageChunks(response);
+    expect(chunks.map((chunk) => chunk.type)).toEqual(['data-event', 'finish']);
+    expect(chunks[0]?.data).toEqual(
+      expect.objectContaining({
+        type: 'council_interview',
+        request_id: 'req_council',
+        presets: ['lean'],
+      }),
     );
   });
 
@@ -261,7 +292,13 @@ describe('chat route advisor event bridge', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        messages: [{ role: 'user', content: 'hi' }],
+        messages: [
+          {
+            id: 'user_1',
+            role: 'user',
+            parts: [{ type: 'text', text: 'hi' }],
+          },
+        ],
         id: 'conv_signal',
       }),
     });
@@ -280,5 +317,8 @@ describe('chat route advisor event bridge', () => {
     // so the FastAPI connection is torn down when the user clicks Stop.
     expect(capturedInit?.signal).toBe(controller.signal);
     expect(capturedInit?.signal?.aborted).toBe(true);
+    const forwardedBody = JSON.parse(String(capturedInit?.body));
+    expect(forwardedBody.message).toBe('hi');
+    expect(forwardedBody.messages).toEqual([{ role: 'user', content: 'hi' }]);
   });
 });
