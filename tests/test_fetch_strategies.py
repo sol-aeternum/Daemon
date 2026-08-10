@@ -777,11 +777,11 @@ class TestFetchService:
     async def test_cache_hit_served_without_dns_resolution(self, fetch_service):
         """A cached hit must be served even when DNS resolution fails.
 
-        Mirrors Codex finding #4: cache lookups happen before the DNS-based
-        ``validate_url_and_resolve_async`` call so a temporary DNS outage
-        does not invalidate a still-valid cached entry. The static gate
-        (``_is_supported_url``) still rejects obviously-unsafe URLs up front,
-        so private IP literals are not served from cache.
+        Mirrors Codex finding #4: cache lookups happen before any DNS-based
+        validator runs, so a temporary DNS outage does not invalidate a
+        still-valid cached entry. The static gate (``_is_supported_url``)
+        still rejects obviously-unsafe URLs up front, so private IP literals
+        are not served from cache.
         """
         cached_result = FetchResult(
             url="https://example.com",
@@ -794,13 +794,14 @@ class TestFetchService:
         )
         fetch_service.cache.get = AsyncMock(return_value=cached_result)
 
-        # Patch the DNS validator to simulate a saturated resolver; a cache
-        # hit must return before this coroutine is awaited.
-        from orchestrator.services.fetch import service as _service_module
+        # Patch the DNS validator on the strategy module (where it is now
+        # invoked) to simulate a saturated resolver; a cache hit must return
+        # before this coroutine is awaited.
+        from orchestrator.services.fetch.strategies import direct as _direct_module
 
         dns_validator = AsyncMock(side_effect=SsrfViolation("DNS validation timed out"))
 
-        with patch.object(_service_module, "validate_url_and_resolve_async", dns_validator):
+        with patch.object(_direct_module, "validate_url_and_resolve_async", dns_validator):
             result = await fetch_service.fetch("https://example.com")
 
         assert result is not None
@@ -829,3 +830,226 @@ class TestFetchService:
         fetch_service.cache.get.assert_not_called()
         for strategy in strategies:
             strategy.fetch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_idn_blocked_domain_is_rejected_in_both_forms(self, fetch_service):
+        """IDNA-equivalent blocked domains must reject both Unicode and Punycode."""
+        fetch_service.policy = FetchPolicy(blocked_domains=["bücher.example"])
+        strategies = [
+            fetch_service.direct_strategy,
+            fetch_service.jina_strategy,
+            fetch_service.crawl4ai_strategy,
+            fetch_service.archive_strategy,
+        ]
+        for strategy in strategies:
+            assert strategy is not None
+            strategy.fetch = AsyncMock(return_value=None)
+        fetch_service.cache.get = AsyncMock(return_value=None)
+
+        # Unicode form
+        unicode_result = await fetch_service.fetch("https://bücher.example/")
+        assert unicode_result is None
+        # Punycode form (DNS-equivalent of the Unicode form)
+        punycode_result = await fetch_service.fetch("https://xn--bcher-kva.example/")
+        assert punycode_result is None
+
+        fetch_service.cache.get.assert_not_called()
+        for strategy in strategies:
+            strategy.fetch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_punycode_blocked_domain_rejects_unicode_request(self, fetch_service):
+        """Punycode-form configured domain must reject a Unicode request.
+
+        Mirrors Codex finding #1 — without IDNA canonicalization in both
+        directions, ``bücher.example`` in the request escapes a
+        ``xn--bcher-kva.example`` blocked-domain entry.
+        """
+        fetch_service.policy = FetchPolicy(blocked_domains=["xn--bcher-kva.example"])
+        for strategy in (
+            fetch_service.direct_strategy,
+            fetch_service.jina_strategy,
+            fetch_service.crawl4ai_strategy,
+            fetch_service.archive_strategy,
+        ):
+            assert strategy is not None
+            strategy.fetch = AsyncMock(return_value=None)
+        fetch_service.cache.get = AsyncMock(return_value=None)
+
+        result = await fetch_service.fetch("https://bücher.example/")
+
+        assert result is None
+        fetch_service.cache.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_legacy_numeric_ip_loopback_rejected_before_cache(self, fetch_service):
+        """Legacy numeric IPv4 forms like ``2130706433`` must be rejected.
+
+        Mirrors Codex finding #3 — libc resolves ``2130706433``, ``127.1``,
+        and ``0xA9FEA9FE`` as IPv4 literals even though ``ipaddress``
+        rejects them. Without canonicalization those forms slip past the
+        IP-literal validator and reach the cache layer.
+        """
+        for host in ("2130706433", "127.1", "0xA9FEA9FE"):
+            fetch_service.cache.get = AsyncMock(return_value=None)
+            for strategy in (
+                fetch_service.direct_strategy,
+                fetch_service.jina_strategy,
+                fetch_service.crawl4ai_strategy,
+                fetch_service.archive_strategy,
+            ):
+                assert strategy is not None
+                strategy.fetch = AsyncMock(return_value=None)
+            url = f"http://{host}/"
+            result = await fetch_service.fetch(url)
+            assert result is None, f"legacy IP literal {host} should be rejected"
+            fetch_service.cache.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_archive_fallback_used_when_direct_dns_unavailable(self, fetch_service):
+        """Jina/Archive fallbacks must run when the direct strategy's DNS fails.
+
+        Mirrors Codex finding #2 — Archive.org can recover a recent snapshot
+        even when the target host is temporarily unresolvable. Failing the
+        whole fetch on direct DNS failure prevents those external fallbacks
+        from running.
+        """
+        from orchestrator.services.fetch.strategies import direct as _direct_module
+
+        # The real direct strategy is in play here. We patch only its DNS
+        # validator to simulate a target-host DNS failure; the strategy's
+        # own fetch method then distinguishes DNS unavailability from a
+        # safety violation and returns ``None`` instead of propagating
+        # SsrfViolation, so the chain proceeds to Jina and Archive.
+        archive_strategy = fetch_service.archive_strategy
+        assert archive_strategy is not None
+        archive_strategy.fetch = AsyncMock(
+            return_value=FetchResult(
+                url="https://example.com",
+                content=(
+                    "This is a sufficiently long archive snapshot recovered "
+                    "despite target DNS unavailability for testing"
+                ),
+                title="archive",
+                strategy_used="archive",
+                cached=False,
+                fetch_time_ms=10.0,
+                content_length=80,
+            )
+        )
+
+        jina_strategy = fetch_service.jina_strategy
+        assert jina_strategy is not None
+        jina_strategy.fetch = AsyncMock(return_value=None)
+
+        fetch_service.cache.get = AsyncMock(return_value=None)
+        fetch_service.cache.set = AsyncMock(return_value=True)
+
+        with patch.object(
+            _direct_module,
+            "validate_url_and_resolve_async",
+            new=AsyncMock(side_effect=SsrfViolation("DNS validation timed out")),
+        ):
+            result = await fetch_service.fetch("https://example.com/")
+
+        assert result is not None
+        assert result.strategy_used == "archive"
+        # Direct tried (and failed via DNS unavailability) before Jina and
+        # Archive were attempted.
+        fetch_service.jina_strategy.fetch.assert_awaited_once()
+        fetch_service.archive_strategy.fetch.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_address_retry_bounded_by_shared_deadline(self, fetch_policy):
+        """Many silently-dropping addresses must not multiply past one deadline.
+
+        Mirrors Codex finding #4 — the direct strategy must share one
+        per-fetch budget across all address attempts instead of granting each
+        address its own ``timeout`` × ``addresses`` × ``hops`` budget.
+        """
+        import asyncio as _asyncio
+        import time as _time
+
+        strategy = DirectFetchStrategy(fetch_policy)
+
+        # Five addresses; with the old per-address 10s timeout this would
+        # be 50s of connect attempts. With the shared budget it should
+        # finish in well under that.
+        addresses = tuple(f"93.184.216.{i}" for i in range(2, 7))
+
+        async def slow_connect(*args, **kwargs):
+            # httpx will apply the per-attempt timeout to the connect call.
+            # With the shared deadline the budget is ~15s and the per-attempt
+            # cap is 5s, so we observe a bounded number of attempts instead
+            # of all five.
+            await _asyncio.sleep(0.05)
+            raise httpx.ConnectError("simulated silent drop")
+
+        started = _time.monotonic()
+        with (
+            patch(
+                "orchestrator.tools.ssrf_guard._resolve_and_check",
+                return_value=addresses,
+            ),
+            patch(
+                "httpx.AsyncClient.get",
+                new_callable=AsyncMock,
+                side_effect=slow_connect,
+            ) as mock_get,
+        ):
+            result = await strategy.fetch("https://example.com/article")
+        elapsed = _time.monotonic() - started
+
+        assert result is None
+        # The shared deadline must cap total attempts at most
+        # ``ceil(_PER_FETCH_DEADLINE_SECONDS / _PER_ADDRESS_TIMEOUT_SECONDS)``
+        # plus one final attempt that observes the deadline already exhausted.
+        from orchestrator.services.fetch.strategies.direct import (
+            _PER_FETCH_DEADLINE_SECONDS,
+            _MAX_ADDRESS_ATTEMPTS,
+        )
+
+        # Bound on attempts: at most the address cap, or fewer if the
+        # budget runs out before reaching it. Either way, well below the
+        # naive ``len(addresses)`` that the bug allowed.
+        assert mock_get.await_count <= _MAX_ADDRESS_ATTEMPTS
+        # Wallclock must be less than ``_PER_FETCH_DEADLINE_SECONDS + slack``
+        # rather than ``len(addresses) * timeout``.
+        assert elapsed < _PER_FETCH_DEADLINE_SECONDS + 1.0
+
+    @pytest.mark.asyncio
+    async def test_address_retry_skips_remaining_when_deadline_already_past(self, fetch_policy):
+        """Once the deadline is exhausted, no further address is attempted."""
+        import asyncio as _asyncio
+        import time as _time
+
+        strategy = DirectFetchStrategy(fetch_policy)
+
+        async def slow_connect(*args, **kwargs):
+            await _asyncio.sleep(2.0)
+            raise httpx.ConnectError("simulated slow drop")
+
+        started = _time.monotonic()
+        with (
+            patch(
+                "orchestrator.tools.ssrf_guard._resolve_and_check",
+                return_value=("93.184.216.34", "93.184.216.35"),
+            ),
+            patch(
+                "httpx.AsyncClient.get",
+                new_callable=AsyncMock,
+                side_effect=slow_connect,
+            ) as mock_get,
+        ):
+            result = await strategy.fetch("https://example.com/article")
+        elapsed = _time.monotonic() - started
+
+        assert result is None
+        # The first attempt consumes the budget; the second short-circuits.
+        assert mock_get.await_count <= 2
+        # Wallclock bounded by per-attempt cap, not by ``2 × timeout``.
+        from orchestrator.services.fetch.strategies.direct import (
+            _PER_ADDRESS_TIMEOUT_SECONDS,
+        )
+
+        assert elapsed < _PER_ADDRESS_TIMEOUT_SECONDS + 2.0

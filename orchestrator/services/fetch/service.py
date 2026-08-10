@@ -22,13 +22,72 @@ from orchestrator.tools.ssrf_guard import (
     MAX_URL_LENGTH,
     SsrfViolation,
     is_disallowed_ip,
-    validate_url_and_resolve_async,
 )
 
 logger = logging.getLogger(__name__)
 
 _FETCH_SCHEMES = frozenset({"http", "https"})
 _FETCH_PORTS = frozenset({80, 443})
+
+
+def _canonicalize_hostname(hostname: str) -> str:
+    """Return a lowercase, trailing-dot-stripped IDNA form of ``hostname``.
+
+    Both Unicode (``bücher.example``) and Punycode (``xn--bcher-kva.example``)
+    forms resolve to the same ASCII IDNA representation, so blocked-domain and
+    IP-literal checks agree regardless of how the operator or the request
+    spelled the name. DNS-equivalent trailing dots are also removed so that
+    DNS-equivalent forms cannot bypass policy.
+
+    Raises ``UnicodeError`` if the hostname cannot be encoded as IDNA; the
+    caller is expected to treat that as a hostname rejection.
+    """
+    if not hostname:
+        return ""
+    lowered = hostname.lower().rstrip(".")
+    if not lowered:
+        return ""
+    if lowered.isascii():
+        return lowered
+    return lowered.encode("idna").decode("ascii").rstrip(".")
+
+
+def _resolve_numeric_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """Return the canonical IP for legacy numeric forms ``getaddrinfo`` accepts.
+
+    ``ipaddress.ip_address`` rejects decimal/hex/octal integer forms such as
+    ``2130706433`` (127.0.0.1), ``127.1``, and ``0xA9FEA9FE``
+    (169.254.169.254), but ``socket.getaddrinfo`` accepts them as numeric IPs.
+    Without this canonicalization those forms slip past the IP-literal
+    validator and into the cache layer, where a poisoned or stale entry can
+    later be served. Returns ``None`` if ``host`` is not a numeric form.
+    """
+    if not host or not host.isascii():
+        return None
+
+    # Decimal / hex / octal integer forms are accepted by libc as IPv4.
+    # libc also accepts a 1/2/3-part dotted form whose missing trailing parts
+    # default to zero (e.g. ``127.1`` -> ``127.0.0.1``).
+    if all(c in "0123456789abcdefABCDEFxX" for c in host) and (
+        host[0].isdigit() or host[:2] in ("0x", "0X")
+    ):
+        try:
+            return ipaddress.IPv4Address(int(host, 0))
+        except (ValueError, ipaddress.AddressValueError):
+            pass
+
+    # Short-form dotted IPv4: 1-3 decimal parts, missing parts default to 0.
+    parts = host.split(".")
+    if 1 <= len(parts) <= 3 and all(p.isdigit() and p for p in parts):
+        try:
+            numeric = [int(p) for p in parts]
+            while len(numeric) < 4:
+                numeric.append(0)
+            return ipaddress.IPv4Address(".".join(str(n) for n in numeric))
+        except (ValueError, ipaddress.AddressValueError):
+            return None
+
+    return None
 
 
 class FetchStrategy(Protocol):
@@ -63,10 +122,12 @@ class FetchService:
 
         # Static (non-DNS) policy checks run before cache access so that a valid
         # cached result is still served when DNS is temporarily unavailable.
-        # These checks enforce scheme/port and the operator's blocked-domain
-        # list against the normalized URL hostname alone — they do not require
-        # resolving the host. DNS-based validation runs only when we actually
-        # need to issue an outbound request.
+        # These checks enforce scheme/port, the operator's blocked-domain list,
+        # and disallowed IP literals against the normalized URL alone — they
+        # do not require resolving the host. Live DNS-based validation runs
+        # only inside the direct strategy when an outbound request is about
+        # to be issued, so Jina/Archive fallbacks remain available when the
+        # target host is temporarily unresolvable.
         if not self._is_supported_url(fetch_url):
             logger.info("FetchService blocked unsupported URL %s", fetch_url)
             return None
@@ -111,18 +172,12 @@ class FetchService:
         elif not force_refresh:
             logger.info("FetchService cache miss for %s", normalized_url)
 
-        # DNS resolution / IP-range validation runs only when a real outbound
-        # fetch is about to be attempted. A cache hit short-circuits above.
-        try:
-            await validate_url_and_resolve_async(
-                fetch_url,
-                allowed_schemes=_FETCH_SCHEMES,
-                allowed_ports=_FETCH_PORTS,
-            )
-        except SsrfViolation as exc:
-            logger.info("FetchService blocked unsafe URL %s: %s", fetch_url, exc)
-            return None
-
+        # If the URL targets YouTube, short-circuit to the YouTube strategy.
+        # Otherwise run the default direct -> Jina -> Archive.org chain. Live
+        # DNS validation of the *target* host lives inside the direct strategy
+        # so that DNS failure of the target does not prevent external
+        # strategies (which contact r.jina.ai / archive.org, not the target)
+        # from succeeding.
         strategies: Sequence[tuple[str, FetchStrategy | None]]
         if self._is_youtube_url(normalized_url):
             logger.info(
@@ -185,7 +240,12 @@ class FetchService:
         rejecting obviously-unsafe URLs up front.
 
         A hostname URL passes this check; the DNS-based IP-range validation
-        runs later in ``fetch`` immediately before the strategy chain.
+        runs later inside the direct strategy, immediately before any
+        outbound HTTP request.
+
+        Legacy numeric IP forms (``2130706433``, ``127.1``, ``0xA9FEA9FE``) are
+        accepted by libc as numeric IPv4 but rejected by ``ip_address``; they
+        are canonicalized here so disallowed-range checks catch them.
         """
         if not url or not isinstance(url, str):
             return False
@@ -212,14 +272,19 @@ class FetchService:
         # validator. In particular this rejects CGNAT, documentation, mapped
         # IPv6, and transition ranges that the stdlib's individual
         # ``is_private`` / ``is_reserved`` flags do not cover consistently.
+        # Legacy numeric IPv4 forms (``2130706433`` etc.) are also rejected
+        # before they can reach the cache layer.
         try:
             literal = ipaddress.ip_address(host)
         except ValueError:
+            legacy_literal = _resolve_numeric_ip_literal(host)
+            if legacy_literal is not None and is_disallowed_ip(legacy_literal):
+                return False
             # IDNA validation is local and deterministic: it rejects malformed
             # host labels without issuing a DNS query, while valid hostnames
             # remain eligible for a cache hit during a resolver outage.
             try:
-                host.encode("idna")
+                _canonicalize_hostname(host)
             except UnicodeError:
                 return False
             return True
@@ -320,16 +385,23 @@ class FetchService:
         return result
 
     def _is_blocked_domain(self, url: str) -> bool:
-        hostname = (urlparse(url).hostname or "").lower().rstrip(".")
-        if not hostname:
+        hostname = urlparse(url).hostname or ""
+        try:
+            normalized_host = _canonicalize_hostname(hostname)
+        except UnicodeError:
+            return False
+        if not normalized_host:
             return False
 
         for blocked_domain in self.policy.blocked_domains:
-            normalized_blocked_domain = blocked_domain.lower().strip().rstrip(".")
+            try:
+                normalized_blocked_domain = _canonicalize_hostname(blocked_domain)
+            except UnicodeError:
+                continue
             if not normalized_blocked_domain:
                 continue
 
-            if hostname == normalized_blocked_domain or hostname.endswith(
+            if normalized_host == normalized_blocked_domain or normalized_host.endswith(
                 f".{normalized_blocked_domain}"
             ):
                 return True

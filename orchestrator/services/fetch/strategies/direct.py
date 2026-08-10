@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import random
+import time
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
@@ -20,6 +21,20 @@ _FETCH_SCHEMES = frozenset({"http", "https"})
 _FETCH_PORTS = frozenset({80, 443})
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _MAX_REDIRECTS = 5
+
+# Per-address socket timeout. Stays modest so a single silent drop cannot
+# consume the entire per-fetch budget on its own.
+_PER_ADDRESS_TIMEOUT_SECONDS = 5.0
+
+# Hard upper bound on the total time spent iterating across addresses for one
+# hop, including connect + read. Prevents an attacker-controlled DNS answer
+# with many silently-dropping addresses from keeping a fetch alive for
+# ``timeout × address_count × hops``.
+_PER_FETCH_DEADLINE_SECONDS = 15.0
+
+# Maximum number of distinct validated addresses to attempt per hop. Caps the
+# work a hostile DNS response with thousands of entries could otherwise force.
+_MAX_ADDRESS_ATTEMPTS = 4
 
 
 def _encode_idna(host: str) -> str:
@@ -53,17 +68,47 @@ def _pin_url_to_address(url: str, address: str) -> str:
 def _is_blocked_domain(url: str, blocked_domains: list[str]) -> bool:
     """Return whether URL host exactly matches or is below a blocked domain.
 
-    Hostnames are canonicalized by stripping a trailing dot before comparison so
-    that DNS-equivalent forms (e.g. ``example.com.``) cannot bypass the policy.
+    Both the requested URL host and the configured ``blocked_domains`` entries
+    are canonicalized via IDNA + lowercase + trailing-dot stripping before
+    comparison. This prevents DNS-equivalent forms (``example.com.``) and
+    Unicode/Punycode variants (``bücher.example`` vs
+    ``xn--bcher-kva.example``) from bypassing the operator's policy.
     """
-    hostname = (urlsplit(url).hostname or "").lower().rstrip(".")
+    hostname = urlsplit(url).hostname or ""
+    try:
+        normalized_host = _canonicalize_hostname(hostname)
+    except UnicodeError:
+        return False
+    if not normalized_host:
+        return False
     for blocked in blocked_domains:
-        normalized = blocked.lower().strip().rstrip(".")
+        try:
+            normalized = _canonicalize_hostname(blocked)
+        except UnicodeError:
+            continue
         if not normalized:
             continue
-        if hostname == normalized or hostname.endswith(f".{normalized}"):
+        if normalized_host == normalized or normalized_host.endswith(f".{normalized}"):
             return True
     return False
+
+
+def _canonicalize_hostname(hostname: str) -> str:
+    """Return a lowercase, trailing-dot-stripped IDNA form of ``hostname``.
+
+    Unicode (``bücher.example``) and Punycode (``xn--bcher-kva.example``) both
+    collapse to the same ASCII IDNA representation so policy comparisons
+    agree regardless of how the operator or the request spelled the name.
+    Raises ``UnicodeError`` if the hostname cannot be encoded as IDNA.
+    """
+    if not hostname:
+        return ""
+    lowered = hostname.lower().rstrip(".")
+    if not lowered:
+        return ""
+    if lowered.isascii():
+        return lowered
+    return lowered.encode("idna").decode("ascii").rstrip(".")
 
 
 # Common browser user agents for rotation
@@ -108,15 +153,48 @@ class DirectFetchStrategy:
             for redirect_count in range(_MAX_REDIRECTS + 1):
                 if _is_blocked_domain(current_url, self.policy.blocked_domains):
                     raise SsrfViolation(f"hostname is blocked by fetch policy: {current_url}")
-                validated = await validate_url_and_resolve_async(
-                    current_url,
-                    allowed_schemes=_FETCH_SCHEMES,
-                    allowed_ports=_FETCH_PORTS,
-                )
-                if not validated.addresses:
-                    raise SsrfViolation(
-                        f"DNS resolution returned no usable results for {validated.host!r}"
+                try:
+                    validated = await validate_url_and_resolve_async(
+                        current_url,
+                        allowed_schemes=_FETCH_SCHEMES,
+                        allowed_ports=_FETCH_PORTS,
                     )
+                except SsrfViolation as exc:
+                    # Distinguish unsafe destinations from DNS unavailability:
+                    # an unsafe URL (blocked IP, blocked host, disallowed
+                    # scheme/port, malformed host) must propagate so the
+                    # strategy chain terminates per Codex finding #2. A DNS
+                    # timeout / gaierror / unresolved hostname, however, only
+                    # means the *direct* path could not connect; it does not
+                    # forbid the caller from trying the Jina/Archive fallbacks
+                    # that contact r.jina.ai / archive.org instead of the
+                    # target host. Swallow those as a plain failure and let
+                    # the chain continue.
+                    message = str(exc).lower()
+                    if (
+                        "blocked" in message
+                        or "is not allowed" in message
+                        or "malformed" in message
+                        or "scheme" in message
+                        or "userinfo" in message
+                    ):
+                        raise
+                    logger.info(
+                        "Direct fetch unavailable for %s: %s; "
+                        "fallback strategies may still succeed",
+                        url,
+                        exc,
+                    )
+                    return None
+                if not validated.addresses:
+                    # No validated addresses is a target unavailability, not
+                    # a safety violation — same treatment as DNS failure.
+                    logger.info(
+                        "Direct fetch no validated addresses for %s; "
+                        "fallback strategies may still succeed",
+                        url,
+                    )
+                    return None
                 # httpx requires ASCII header values; convert IDN hosts to IDNA
                 # so Unicode hostnames (e.g. bücher.example) don't raise
                 # UnicodeEncodeError when constructing the request. Preserve an
@@ -195,12 +273,40 @@ class DirectFetchStrategy:
         A fresh ``httpx.AsyncClient`` is used per address so the pinned-IP
         connection pool is never reused across distinct addresses (which would
         otherwise reuse a connection keyed to the wrong host).
+
+        All address attempts share one ``_PER_FETCH_DEADLINE_SECONDS`` budget so
+        an attacker-controlled hostname that returns many silently-dropping
+        public addresses cannot keep one fetch alive for
+        ``timeout × address_count × hops``.
         """
         last_error: Exception | None = None
-        for address in addresses:
+        # Cap the address list so a hostile DNS response with thousands of
+        # distinct addresses cannot exhaust the per-fetch deadline budget.
+        capped_addresses = addresses[:_MAX_ADDRESS_ATTEMPTS]
+        if len(capped_addresses) < len(addresses):
+            logger.info(
+                "Direct fetch capped address list at %d of %d for %s",
+                len(capped_addresses),
+                len(addresses),
+                current_url,
+            )
+
+        deadline_at = time.monotonic() + _PER_FETCH_DEADLINE_SECONDS
+        for address in capped_addresses:
+            remaining = deadline_at - time.monotonic()
+            if remaining <= 0:
+                logger.info(
+                    "Direct fetch abandoned %s after exhausting %.2fs budget",
+                    current_url,
+                    _PER_FETCH_DEADLINE_SECONDS,
+                )
+                break
+            # Per-attempt timeout is bounded by the remaining budget so one
+            # fetch can never outlive ``_PER_FETCH_DEADLINE_SECONDS``.
+            attempt_timeout = min(_PER_ADDRESS_TIMEOUT_SECONDS, remaining)
             try:
                 async with httpx.AsyncClient(
-                    timeout=10.0, follow_redirects=False, trust_env=False
+                    timeout=attempt_timeout, follow_redirects=False, trust_env=False
                 ) as client:
                     response = await client.get(
                         _pin_url_to_address(current_url, address),
@@ -215,7 +321,7 @@ class DirectFetchStrategy:
         if last_error is not None:
             logger.info(
                 "Direct fetch exhausted %d addresses for %s; last error: %s",
-                len(addresses),
+                len(capped_addresses),
                 current_url,
                 last_error,
             )
