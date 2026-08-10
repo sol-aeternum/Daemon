@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+import httpx
+
 # Conditional import to allow tests to run without optional dependency
 try:
     from youtube_transcript_api import YouTubeTranscriptApi
@@ -666,6 +668,10 @@ class TestArchiveOrgStrategy:
         with (
             patch("httpx.AsyncClient.get") as mock_get,
             patch(
+                "orchestrator.services.fetch.strategies.archive.validate_url",
+                side_effect=lambda url: url,
+            ),
+            patch(
                 "orchestrator.services.fetch.strategies.archive.html_to_markdown",
                 return_value=markdown_content,
             ),
@@ -692,6 +698,255 @@ class TestArchiveOrgStrategy:
             result = await strategy.fetch("https://example.com")
 
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_ssrf_policy_violation_blocks_chain(self, fetch_policy):
+        """An archive URL whose host resolves to a disallowed IP must be
+        rejected with SsrfViolation, not silently fetched. The exception
+        propagates so the strategy chain cannot fall back to a strategy
+        that bypasses policy.
+        """
+        from orchestrator.tools.ssrf_guard import SsrfViolation
+
+        strategy = ArchiveOrgStrategy(fetch_policy)
+
+        # Mock availability response whose ``closest.url`` points at a
+        # link-local metadata IP. The URL uses ``https://`` so the
+        # pre-flight reaches the IP-range branch instead of failing
+        # earlier on scheme — without ``https``, ``validate_url``
+        # rejects the scheme before examining the resolved IP, and the
+        # test would only verify the scheme-rejection path (already
+        # covered by ``test_fetch_ssrf_non_https_url_rejected``).
+        # Archive.org itself does not return such a URL, but a
+        # poisoned/relayed JSON response could.
+        #
+        # Round-3 Codex review (P2, 2026-08-10T17:02:16Z, on
+        # ``tests/test_fetch_strategies.py:298``) flagged the
+        # scheme-stopped-before-IP shape and asked for the IP-range
+        # branch to be exercised directly.
+        mock_availability_response = MagicMock()
+        mock_availability_response.json.return_value = {
+            "archived_snapshots": {
+                "closest": {
+                    "available": True,
+                    "url": "https://169.254.169.254/latest/meta-data/iam/security-credentials/",
+                    "timestamp": datetime.now(UTC).strftime("%Y%m%d%H%M%S"),
+                }
+            }
+        }
+        mock_availability_response.raise_for_status = MagicMock()
+
+        with patch("httpx.AsyncClient.get", return_value=mock_availability_response):
+            with pytest.raises(SsrfViolation):
+                await strategy.fetch("https://example.com")
+
+    @pytest.mark.asyncio
+    async def test_fetch_ssrf_non_https_url_rejected(self, fetch_policy):
+        """Plain http:// archive URLs are rejected by the SSRF policy
+        (only ``https`` is in ALLOWED_SCHEMES). This covers a poison
+        vector where the archive URL is downgraded to plaintext http
+        pointing at a non-Wayback host — Wayback ``http://`` URLs are
+        upgraded to ``https://web.archive.org`` before validation (see
+        ``_upgrade_legacy_wayback_url``).
+        """
+        from orchestrator.tools.ssrf_guard import SsrfViolation
+
+        strategy = ArchiveOrgStrategy(fetch_policy)
+
+        mock_availability_response = MagicMock()
+        mock_availability_response.json.return_value = {
+            "archived_snapshots": {
+                "closest": {
+                    "available": True,
+                    "url": "http://evil.example.com/web/20230101000000/https://example.com",
+                    "timestamp": datetime.now(UTC).strftime("%Y%m%d%H%M%S"),
+                }
+            }
+        }
+        mock_availability_response.raise_for_status = MagicMock()
+
+        with patch("httpx.AsyncClient.get", return_value=mock_availability_response):
+            with pytest.raises(SsrfViolation):
+                await strategy.fetch("https://example.com")
+
+    @pytest.mark.asyncio
+    async def test_fetch_wayback_legacy_http_upgraded_to_https(self, fetch_policy):
+        """Wayback availability commonly returns ``closest.url`` in
+        ``http://web.archive.org/...`` form. The strategy upgrades the
+        scheme→https before SSRF validation so a legitimate legacy URL
+        is not falsely rejected by the https-only ``ALLOWED_SCHEMES``
+        policy. Without the upgrade, every Archive.org snapshot would
+        fail pre-flight because the Wayback API serves http.
+        """
+        strategy = ArchiveOrgStrategy(fetch_policy)
+
+        mock_availability_response = MagicMock()
+        mock_availability_response.json.return_value = {
+            "archived_snapshots": {
+                "closest": {
+                    "available": True,
+                    "url": "http://web.archive.org/web/20230101000000/https://example.com",
+                    "timestamp": datetime.now(UTC).strftime("%Y%m%d%H%M%S"),
+                }
+            }
+        }
+        mock_availability_response.raise_for_status = MagicMock()
+        mock_content_response = MagicMock()
+        mock_content_response.text = "<html><body>sufficiently long archived content for testing the wayback http→https upgrade. We need to make sure this content is long enough to pass content validation across the chain.</body></html>"
+        mock_content_response.headers = {"content-type": "text/html"}
+        mock_content_response.raise_for_status = MagicMock()
+
+        with (
+            patch("httpx.AsyncClient.get") as mock_get,
+            patch(
+                "orchestrator.services.fetch.strategies.archive.validate_url",
+                side_effect=lambda url: url,
+            ),
+            patch(
+                "orchestrator.services.fetch.strategies.archive.html_to_markdown",
+                return_value="sufficiently long archived content for testing the wayback http→https upgrade.",
+            ),
+        ):
+            mock_get.side_effect = [mock_availability_response, mock_content_response]
+            result = await strategy.fetch("https://example.com")
+
+        # Confirm the second-hop GET was issued against the upgraded
+        # https URL, not the http URL returned by the availability API.
+        assert result is not None
+        second_hop_url = mock_get.call_args_list[1].args[0]
+        assert second_hop_url.startswith("https://web.archive.org/")
+
+    @pytest.mark.asyncio
+    async def test_fetch_uses_socket_guard_around_httpx_get(self, fetch_policy):
+        """The second-hop httpx call must run under ``socket_guard`` so
+        a DNS-rebinding response between pre-flight ``validate_url`` and
+        the connect-time ``getaddrinfo`` cannot bypass the policy.
+        """
+        strategy = ArchiveOrgStrategy(fetch_policy)
+
+        mock_availability_response = MagicMock()
+        mock_availability_response.json.return_value = {
+            "archived_snapshots": {
+                "closest": {
+                    "available": True,
+                    "url": "https://web.archive.org/web/20230101000000/https://example.com",
+                    "timestamp": datetime.now(UTC).strftime("%Y%m%d%H%M%S"),
+                }
+            }
+        }
+        mock_availability_response.raise_for_status = MagicMock()
+        mock_content_response = MagicMock()
+        mock_content_response.text = "<html><body>sufficiently long archived content for testing the socket guard wrap. We need to make sure this content is long enough to pass content validation across the chain.</body></html>"
+        mock_content_response.headers = {"content-type": "text/html"}
+        mock_content_response.raise_for_status = MagicMock()
+
+        mock_socket_guard = MagicMock()
+        mock_socket_guard.__enter__ = MagicMock(return_value=None)
+        mock_socket_guard.__exit__ = MagicMock(return_value=None)
+
+        with (
+            patch("httpx.AsyncClient.get") as mock_get,
+            patch(
+                "orchestrator.services.fetch.strategies.archive.validate_url",
+                side_effect=lambda url: url,
+            ),
+            patch(
+                "orchestrator.services.fetch.strategies.archive.socket_guard",
+                return_value=mock_socket_guard,
+            ),
+            patch(
+                "orchestrator.services.fetch.strategies.archive.html_to_markdown",
+                return_value="sufficiently long archived content for testing the socket guard wrap.",
+            ),
+        ):
+            mock_get.side_effect = [mock_availability_response, mock_content_response]
+            result = await strategy.fetch("https://example.com")
+
+        assert result is not None
+        # Confirm the socket_guard context manager was entered exactly once
+        # (one guard wrap around the second-hop fetch).
+        assert mock_socket_guard.__enter__.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_fetch_uses_separate_clients_for_availability_and_guarded_get(self, fetch_policy):
+        """The Wayback availability lookup and the SSRF-guarded
+        ``closest.url`` GET must use SEPARATE ``httpx.AsyncClient``
+        instances so the operator-proxy-friendly ``trust_env=True``
+        default of the availability client does not leak through to
+        the SSRF-guarded fetch (which must explicitly disable
+        ``trust_env`` so an operator proxy cannot route the request
+        around the connect-time DNS guard).
+
+        Round-4 Codex review on ``orchestrator/services/fetch/strategies/archive.py``
+        (P2, 2026-08-10T18:07Z on head ``9afaecb2``) flagged that the
+        single-client approach disabled the operator proxy for the
+        availability lookup, breaking deployments that need outbound
+        proxy access. The fix is two clients — one per trust_env value.
+        """
+        strategy = ArchiveOrgStrategy(fetch_policy)
+
+        mock_availability_response = MagicMock()
+        mock_availability_response.json.return_value = {
+            "archived_snapshots": {
+                "closest": {
+                    "available": True,
+                    "url": "https://web.archive.org/web/20230101000000/https://example.com",
+                    "timestamp": datetime.now(UTC).strftime("%Y%m%d%H%M%S"),
+                }
+            }
+        }
+        mock_availability_response.raise_for_status = MagicMock()
+        mock_content_response = MagicMock()
+        mock_content_response.text = "<html><body>sufficiently long archived content for testing the per-client trust_env split. We need to make sure this content is long enough to pass content validation across the chain.</body></html>"
+        mock_content_response.headers = {"content-type": "text/html"}
+        mock_content_response.raise_for_status = MagicMock()
+
+        # Capture every ``httpx.AsyncClient`` construction so we can
+        # inspect the ``trust_env`` kwarg applied to each. The
+        # strategy must build exactly two clients — one for
+        # availability (default trust_env=True) and one for the
+        # SSRF-guarded second-hop fetch (trust_env=False).
+        client_calls: list[dict[str, object]] = []
+
+        real_async_client = httpx.AsyncClient
+
+        class _RecordingAsyncClient(real_async_client):  # type: ignore[misc, valid-type]
+            def __init__(self, *args, **kwargs):
+                client_calls.append(kwargs)
+                super().__init__(*args, **kwargs)
+
+        with (
+            patch("httpx.AsyncClient", _RecordingAsyncClient),
+            patch("httpx.AsyncClient.get") as mock_get,
+            patch(
+                "orchestrator.services.fetch.strategies.archive.validate_url",
+                side_effect=lambda url: url,
+            ),
+            patch(
+                "orchestrator.services.fetch.strategies.archive.html_to_markdown",
+                return_value="sufficiently long archived content for testing the per-client trust_env split.",
+            ),
+        ):
+            mock_get.side_effect = [mock_availability_response, mock_content_response]
+            result = await strategy.fetch("https://example.com")
+
+        assert result is not None
+        # Two clients total: availability + guarded.
+        assert len(client_calls) == 2, (
+            f"expected exactly two AsyncClient constructions, got {len(client_calls)}: "
+            f"{client_calls!r}"
+        )
+        # Availability client uses httpx defaults — trust_env=True
+        # (i.e. ``trust_env`` is not overridden to False) so the
+        # operator's HTTPS_PROXY is honoured.
+        assert "trust_env" not in client_calls[0] or client_calls[0]["trust_env"] is not False, (
+            f"availability client must honour trust_env=True; got {client_calls[0]!r}"
+        )
+        # Guarded client explicitly disables trust_env so the proxy
+        # cannot route the SSRF-guarded fetch.
+        assert client_calls[1].get("trust_env") is False, (
+            f"guarded client must pass trust_env=False; got {client_calls[1]!r}"
+        )
 
 
 class TestUrlExtraction:
