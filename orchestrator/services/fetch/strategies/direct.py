@@ -115,6 +115,110 @@ def _canonicalize_hostname(hostname: str) -> str:
     return lowered.encode("idna").decode("ascii").rstrip(".")
 
 
+def _build_cookie_header(jar: httpx.Cookies, logical_url: str) -> str | None:
+    """Build a ``Cookie:`` header from ``jar`` scoped to ``logical_url``.
+
+    ``httpx.Cookies`` wraps an ``http.cookiejar.CookieJar``, which uses
+    ``urllib.request``-style duck typing (``.get_full_url()``,
+    ``.get_host()``, ``.add_unredirected_header()``) rather than
+    ``httpx.Request``. We synthesize a tiny adapter so the jar scopes
+    its cookie-header construction to the logical hostname rather than
+    the transport URL's pinned-IP host.
+    """
+    adapter = _CookieJarRequestAdapter(logical_url)
+    # ``http.cookiejar.add_cookie_header`` takes an ``urllib.request``
+    # duck-typed request object; our adapter satisfies that surface
+    # without subclassing ``urllib.request.Request``. The type checker
+    # flags the structural mismatch because ``add_cookie_header`` is
+    # annotated with the formal ``Request`` class.
+    jar.jar.add_cookie_header(adapter)  # type: ignore[arg-type]
+    return getattr(adapter, "_cookie_header_value", None)
+
+
+def _extract_cookies_for_logical_url(
+    jar: httpx.Cookies, response: httpx.Response, logical_url: str
+) -> None:
+    """Mirror ``response`` cookies into ``jar`` keyed to ``logical_url``.
+
+    ``httpx.Cookies.extract_cookies(response)`` would scope cookies to
+    the response's request URL — the pinned-IP URL. We temporarily swap
+    the response's request URL to the logical hostname so host-only
+    cookies ride with subsequent hops (including same-host redirects
+    whose pinned address changes).
+
+    The function is a no-op when ``response`` carries no ``Set-Cookie``
+    headers — that's the common case, and avoids touching the
+    ``_request`` attribute of mock responses used in unit tests.
+    """
+    if "set-cookie" not in response.headers:
+        return
+    saved_request = response._request
+    if saved_request is None:
+        # Some response constructions (notably ``httpx.Response(...)``
+        # without a request) leave ``_request`` as ``None``; fall back
+        # to a synthetic logical-URL request so cookie extraction still
+        # works.
+        response._request = httpx.Request("GET", logical_url)
+        try:
+            jar.extract_cookies(response)
+        finally:
+            response._request = saved_request
+        return
+    saved_url = saved_request.url
+    try:
+        saved_request.url = httpx.URL(logical_url)
+        jar.extract_cookies(response)
+    finally:
+        saved_request.url = saved_url
+
+
+class _CookieJarRequestAdapter:
+    """Minimal ``urllib.request``-style adapter for ``http.cookiejar``.
+
+    ``http.cookiejar.CookieJar.add_cookie_header`` writes the
+    synthesized ``Cookie`` header through ``add_unredirected_header``;
+    this adapter captures that value into ``_cookie_header_value`` so
+    callers can read it back. The adapter is single-use per call.
+    """
+
+    __slots__ = (
+        "url",
+        "_parsed",
+        "unverifiable",
+        "_cookie_header_value",
+    )
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+        self._parsed = urlsplit(url)
+        # ``http.cookiejar`` reads ``request.unverifiable`` directly
+        # (not as a property); set it as a plain attribute so the
+        # third-party cookie policy check sees a known value.
+        self.unverifiable = False
+        self._cookie_header_value: str | None = None
+
+    def get_full_url(self) -> str:
+        return self.url
+
+    def get_host(self) -> str:
+        return self._parsed.hostname or ""
+
+    def get_type(self) -> str:
+        return self._parsed.scheme.lower()
+
+    def get_origin_req_host(self) -> str:
+        return self._parsed.hostname or ""
+
+    def add_unredirected_header(self, name: str, value: str) -> None:
+        self._cookie_header_value = f"{name}: {value}"
+
+    def has_header(self, name: str) -> bool:
+        return False
+
+    def get_header(self, name: str, default: Any = None) -> Any:
+        return default
+
+
 # Common browser user agents for rotation
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -350,28 +454,54 @@ class DirectFetchStrategy:
                     "follow_redirects": False,
                     "trust_env": False,
                 }
+                # Cookies must be scoped to the *logical* URL
+                # (``current_url``), not the pinned-IP URL the request is
+                # actually issued against. Passing the shared jar to
+                # ``httpx.AsyncClient`` would scope cookies by the
+                # transport URL's host — the pinned IP — which causes
+                # three failure modes Codex identified:
+                #   * host-only cookies leak across cross-host
+                #     redirects whose hosts resolve to the same IP
+                #     (both share a jar scope of the pinned IP);
+                #   * a ``Domain=example.com`` cookie may be rejected
+                #     because the response URL host is the pinned IP;
+                #   * a same-host redirect that uses a different
+                #     validated address loses host-only cookies because
+                #     the jar sees a different IP origin.
+                # Build a manual ``Cookie:`` header from the jar scoped
+                # to the logical URL and inject it via ``headers=``;
+                # after the response, extract cookies back into the jar
+                # keyed to the logical hostname so the next attempt /
+                # next redirect hop sees the cookies keyed to the
+                # logical hostname.
+                request_headers: dict[str, str] = {
+                    "User-Agent": user_agent,
+                    "Host": host_header,
+                }
                 if cookies is not None:
-                    # Seed every per-address client with the shared jar so
-                    # cookies set on prior attempts (this hop or a prior
-                    # redirect hop) ride along with the next attempt.
-                    client_kwargs["cookies"] = cookies
+                    cookie_header = _build_cookie_header(cookies, current_url)
+                    if cookie_header is not None:
+                        # ``cookie_header`` includes the literal
+                        # ``"Cookie: "`` prefix from
+                        # ``add_unredirected_header``; strip it so
+                        # httpx's headers dict sees just the value.
+                        _, _, value = cookie_header.partition(": ")
+                        if value:
+                            request_headers["Cookie"] = value
                 async with httpx.AsyncClient(**client_kwargs) as client:
                     response = await asyncio.wait_for(
                         client.get(
                             _pin_url_to_address(current_url, address),
-                            headers={"User-Agent": user_agent, "Host": host_header},
+                            headers=request_headers,
                             extensions={"sni_hostname": sni_hostname},
                         ),
                         timeout=remaining,
                     )
                     if cookies is not None:
-                        # ``httpx.AsyncClient`` copies the cookies argument
-                        # into its own internal jar, so the shared jar is
-                        # only updated *after* the response arrives. Mirror
-                        # every jar mutation back so subsequent attempts
-                        # (this hop or the next redirect hop) see cookies
-                        # set by this attempt.
-                        cookies.update(client.cookies)
+                        # Re-scope the response's Set-Cookie entries to
+                        # the logical hostname before mirroring them
+                        # into the shared jar.
+                        _extract_cookies_for_logical_url(cookies, response, current_url)
                 return response
             except (httpx.RequestError, asyncio.TimeoutError) as exc:
                 last_error = exc

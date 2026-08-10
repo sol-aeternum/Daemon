@@ -120,6 +120,41 @@ class TestValidateUrlAsync:
             await validate_url_and_resolve_async("https://example.com", timeout=0.01)
 
     @pytest.mark.asyncio
+    async def test_literal_ip_blocked_under_resolver_slot_saturation(self) -> None:
+        """P1 — Codex round-7 finding: literal-IP check rejects synchronously,
+        even when ``_RESOLVER_SLOTS.acquire()`` is saturated.
+
+        The earlier round-6 regression test covered a private literal that
+        was already rejected by the scheme check; it never actually
+        exercised the IP-literal policy path. To prove the static
+        preflight closes the ordering gap, this test (1) uses an
+        ``https://`` URL whose host is a known private IP literal so it
+        passes the scheme/port/userinfo gates, and (2) patches
+        ``_RESOLVER_SLOTS.acquire`` to block past the caller's timeout.
+        If the literal-IP check still ran inside ``_resolve_and_check``
+        (post-slot-acquire), the slot timeout would fire first and
+        ``SsrfUnreachable`` would be raised — promoting a statically
+        unsafe URL to a fallback-eligible result. The correct behavior
+        is ``SsrfPolicyViolation`` with no resolver activity.
+        """
+        from orchestrator.tools import ssrf_guard
+
+        original_acquire = ssrf_guard._RESOLVER_SLOTS.acquire
+
+        async def saturated_acquire() -> None:
+            # Block long enough to exhaust the caller's timeout.
+            await asyncio.sleep(1.0)
+            await original_acquire()
+
+        with (
+            patch.object(ssrf_guard._RESOLVER_SLOTS, "acquire", side_effect=saturated_acquire),
+            pytest.raises(SsrfPolicyViolation, match="literal IP"),
+        ):
+            await validate_url_and_resolve_async(
+                "https://169.254.169.254/latest/meta-data/", timeout=0.05
+            )
+
+    @pytest.mark.asyncio
     async def test_static_policy_rejected_before_resolver_slot_wait(self) -> None:
         """P1 — Codex round-6 finding: static policy check runs before slot wait.
 

@@ -381,6 +381,109 @@ class TestDirectStrategy:
         assert cookie_header is not None
         assert "session=secret" in cookie_header
 
+    @pytest.mark.asyncio
+    async def test_cookies_scoped_to_logical_host_across_addresses(self, fetch_policy) -> None:
+        """P1 — Codex round-7 finding: cookies are scoped to the logical
+        hostname, not the pinned-IP URL of the per-address request.
+
+        Codex's reproduction: each per-address ``httpx.AsyncClient`` issues
+        ``GET`` against a pinned-IP URL (e.g. ``http://203.0.113.1/...``),
+        but the original cookie was set on the *logical* host. With the
+        prior ``cookies=`` jar injection, ``httpx.Cookies`` evaluated
+        cookie acceptance against the response URL host (the pinned IP),
+        so:
+
+        * a host-only cookie leaked across cross-host redirects whose
+          hosts resolved to the same pinned IP;
+        * a ``Domain=example.com`` cookie was rejected because the
+          response URL host was the pinned IP, not ``example.com``;
+        * a same-host redirect that used a different validated address
+          lost host-only cookies because the jar saw a different IP
+          origin.
+
+        This test exercises the third failure mode: two same-host
+        redirects whose pinned addresses differ, with a host-only cookie
+        set on the first hop. The cookie must ride with the second hop
+        even though the second hop's request URL is a *different* pinned
+        IP for the same logical hostname.
+        """
+        from orchestrator.tools.ssrf_guard import ValidatedUrl
+
+        request_log: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            request_log.append(request)
+            # First hop: 302 with host-only Set-Cookie on logical host.
+            if len(request_log) == 1:
+                return httpx.Response(
+                    302,
+                    headers={
+                        "location": "https://example.com/dest",
+                        "set-cookie": "session=secret; Path=/",
+                    },
+                    request=request,
+                )
+            # Second hop: 200 OK.
+            return httpx.Response(
+                200,
+                text="final content body",
+                headers={"content-type": "text/html"},
+                request=request,
+            )
+
+        transport = httpx.MockTransport(handler)
+
+        # Two different pinned IPs for the same logical hostname. The
+        # ``_resolve_and_check`` mock returns a different IP per
+        # invocation so each redirect hop resolves to a distinct address
+        # and ``_pin_url_to_address`` rewrites the request URL host.
+        pinned_addresses = iter(("93.184.216.34", "140.82.114.3"))
+
+        async def validate(url, *args, **kwargs):
+            return ValidatedUrl(
+                url=url,
+                host="example.com",
+                port=443,
+                addresses=(next(pinned_addresses),),
+            )
+
+        original_async_client = httpx.AsyncClient
+
+        def patched_async_client(*args, **kwargs):
+            kwargs["transport"] = transport
+            return original_async_client(*args, **kwargs)
+
+        with (
+            patch(
+                "orchestrator.services.fetch.strategies.direct.validate_url_and_resolve_async",
+                new_callable=AsyncMock,
+                side_effect=validate,
+            ),
+            patch(
+                "httpx.AsyncClient",
+                side_effect=patched_async_client,
+            ),
+        ):
+            result = await DirectFetchStrategy(fetch_policy).fetch("https://example.com/start")
+
+        assert result is not None
+        assert result.content == "final content body"
+        # Two HTTP calls: 302 -> 200.
+        assert len(request_log) == 2
+        second_request = request_log[1]
+        # The second hop's request URL must be the *other* pinned IP
+        # (proving the test actually exercises the per-address pin).
+        assert "93.184.216.34" not in str(second_request.url)
+        assert "140.82.114.3" in str(second_request.url)
+        # And the host-only cookie must ride with it because the jar is
+        # scoped to ``example.com``, not the pinned-IP URL.
+        cookie_header = second_request.headers.get("cookie")
+        assert cookie_header is not None, (
+            "host-only cookie should ride with the second hop because "
+            "the jar is scoped to the logical host, not the pinned IP"
+        )
+        assert "session=secret" in cookie_header
+
 
 class TestYouTubeStrategy:
     @pytest.mark.asyncio

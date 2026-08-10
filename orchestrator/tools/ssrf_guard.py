@@ -242,7 +242,23 @@ def _validate_url_static(
     # ``parsed.hostname`` already lowercases and IDNA-encodes Unicode; strip a
     # trailing dot so exact/subdomain blocked-host matching is consistent
     # with the dynamic validation path in ``_resolve_and_check``.
-    return host.rstrip("."), port
+    normalized_host = host.rstrip(".")
+    # Reject literal-IP URLs synchronously, before any resolver activity.
+    # Without this check, a URL like ``http://169.254.169.254/latest`` is
+    # only flagged by ``_resolve_and_check()`` (which is reached AFTER
+    # ``_RESOLVER_SLOTS.acquire()`` in the async path). When the resolver
+    # pool is saturated, the slot-acquire times out and the URL is reported
+    # as ``SsrfUnreachable`` (fallback-eligible) instead of the
+    # ``SsrfPolicyViolation`` (chain-terminating) that the SSRF contract
+    # requires. Parsing the host as an IP literal here and applying
+    # ``is_disallowed_ip`` closes that ordering gap.
+    try:
+        literal = ipaddress.ip_address(normalized_host)
+    except ValueError:
+        literal = None
+    if literal is not None and is_disallowed_ip(literal):
+        raise SsrfPolicyViolation(f"literal IP {literal} is a blocked IP (in disallowed range)")
+    return normalized_host, port
 
 
 def validate_url_and_resolve(
