@@ -86,17 +86,19 @@ async def check_db_health(state: AppState) -> dict[str, str]:
             async with state.db_pool.acquire() as conn:
                 await conn.fetchval("SELECT 1")
             result["postgres"] = "ok"
-        except Exception as exc:
-            result["postgres"] = f"error: {exc}"
+        except Exception:
+            logger.warning("PostgreSQL health check failed", exc_info=True)
+            result["postgres"] = "error"
     else:
         result["postgres"] = "not_configured"
 
     if state.redis is not None:
         try:
             pong = await state.redis.ping()
-            result["redis"] = "ok" if pong else "error: no pong"
-        except Exception as exc:
-            result["redis"] = f"error: {exc}"
+            result["redis"] = "ok" if pong else "error"
+        except Exception:
+            logger.warning("Redis health check failed", exc_info=True)
+            result["redis"] = "error"
     else:
         result["redis"] = "not_configured"
 

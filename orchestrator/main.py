@@ -954,10 +954,10 @@ async def health(request: Request) -> dict[str, Any]:
     try:
         state = get_app_state(request)
         base["services"] = await check_db_health(state)
-    except Exception as e:
-        logger.warning("Health check failed: %s", e)
+    except Exception:
+        logger.warning("Health check failed", exc_info=True)
         base["status"] = "degraded"
-        base["error"] = str(e)
+        base["error"] = "Health check unavailable"
     return base
 
 
