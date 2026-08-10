@@ -1283,7 +1283,17 @@ async def setup_endpoint(
             environment=settings.daemon_environment,
         )
     except CookiePolicyError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Log the full exception server-side; the operator receives a
+        # fixed error code so we do not echo raw Python exception text
+        # in the response body. The setup endpoint is operator-only
+        # (consumed during initial provisioning), so the trade-off here
+        # favors the operator-friendly "cookie_policy_invalid" token
+        # over the generic message used for runtime errors.
+        logger.exception("Cookie policy validation failed during setup: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail="cookie_policy_invalid",
+        )
 
     async with app_state.db_pool.acquire() as conn:
         async with conn.transaction():
@@ -1497,7 +1507,16 @@ async def enroll_complete_endpoint(
                 environment=settings.daemon_environment,
             )
         except CookiePolicyError as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            # Log the full exception server-side; the client receives a
+            # fixed error code so we do not echo raw Python exception text
+            # in the response body. The refresh endpoint is a runtime
+            # endpoint (not the operator setup flow), so the trade-off
+            # here is to keep the failure mode opaque to the caller.
+            logger.exception("Cookie policy validation failed during refresh: %s", e)
+            raise HTTPException(
+                status_code=500,
+                detail="cookie_policy_invalid",
+            )
 
     async with app_state.db_pool.acquire() as conn:
         exc_to_raise: HTTPException | None = None
