@@ -55,6 +55,10 @@ from orchestrator.auth_tokens import (
     verify_token,
 )
 from orchestrator.config import get_settings
+from orchestrator.request_id import (
+    get_client_request_id as _get_client_request_id_impl,
+    get_request_id as _get_request_id_impl,
+)
 from orchestrator.db import get_app_state
 from orchestrator.session_cleanup import lock_session_cleanup
 from orchestrator.setup_token_delivery import delete_setup_token_file
@@ -107,6 +111,29 @@ from orchestrator.services.identity.session_issuance import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _get_request_id_safe(request: Request) -> str:
+    """Return the current request id, falling back to ``"-"`` if missing.
+
+    Used in error log entries so the operator can correlate the
+    sanitized response with the full server-side traceback. Never raises
+    — request-id plumbing is best-effort for observability.
+    """
+
+    try:
+        return _get_request_id_impl(request) or "-"
+    except Exception:
+        return "-"
+
+
+def _get_client_request_id_safe(request: Request) -> str:
+    """Return the inbound client request id (or ``"-"`` if absent)."""
+
+    try:
+        return _get_client_request_id_impl(request) or "-"
+    except Exception:
+        return "-"
 
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
@@ -613,7 +640,20 @@ async def email_complete_endpoint(
                 environment=settings.daemon_environment,
             )
         except CookiePolicyError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+            # Log the full exception server-side; return the fixed error
+            # code (issue #79 round-1 finding). The complete endpoint is
+            # reachable by any client, so we never echo Python exception
+            # text in the response body.
+            logger.exception(
+                "Cookie policy validation failed during /v1/auth/email/complete (request_id=%s, client_request_id=%s): %s",
+                _get_request_id_safe(request),
+                _get_client_request_id_safe(request),
+                exc,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="cookie_policy_invalid",
+            ) from exc
 
     async with app_state.db_pool.acquire() as conn:
         await enforce_rate_limit(
@@ -1064,7 +1104,20 @@ async def google_complete_endpoint(
                 environment=settings.daemon_environment,
             )
         except CookiePolicyError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+            # Log the full exception server-side; return the fixed error
+            # code (issue #79 round-1 finding). The complete endpoint is
+            # reachable by any client, so we never echo Python exception
+            # text in the response body.
+            logger.exception(
+                "Cookie policy validation failed during /v1/auth/google/complete (request_id=%s, client_request_id=%s): %s",
+                _get_request_id_safe(request),
+                _get_client_request_id_safe(request),
+                exc,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="cookie_policy_invalid",
+            ) from exc
 
     async with app_state.db_pool.acquire() as conn:
         await enforce_rate_limit(
@@ -1289,7 +1342,12 @@ async def setup_endpoint(
         # (consumed during initial provisioning), so the trade-off here
         # favors the operator-friendly "cookie_policy_invalid" token
         # over the generic message used for runtime errors.
-        logger.exception("Cookie policy validation failed during setup: %s", e)
+        logger.exception(
+            "Cookie policy validation failed during setup (request_id=%s, client_request_id=%s): %s",
+            _get_request_id_safe(request),
+            _get_client_request_id_safe(request),
+            e,
+        )
         raise HTTPException(
             status_code=500,
             detail="cookie_policy_invalid",
@@ -1512,7 +1570,12 @@ async def enroll_complete_endpoint(
             # in the response body. The refresh endpoint is a runtime
             # endpoint (not the operator setup flow), so the trade-off
             # here is to keep the failure mode opaque to the caller.
-            logger.exception("Cookie policy validation failed during refresh: %s", e)
+            logger.exception(
+                "Cookie policy validation failed during refresh (request_id=%s, client_request_id=%s): %s",
+                _get_request_id_safe(request),
+                _get_client_request_id_safe(request),
+                e,
+            )
             raise HTTPException(
                 status_code=500,
                 detail="cookie_policy_invalid",

@@ -38,6 +38,15 @@ def _lazy_import_trust_signals():
 
 logger = logging.getLogger(__name__)
 
+# Stable SSE error token used by the streaming path in this module.
+# Mirrors ``orchestrator.main._SSE_INTERNAL_ERROR_TOKEN`` — kept as a
+# module-level constant here to avoid importing from ``orchestrator.main``
+# (which would be a circular import at module load). Both tokens must
+# stay in lockstep when changed; see round-1 Codex finding on PR #218.
+_SSE_INTERNAL_ERROR_TOKEN = (
+    "An internal error occurred. Please retry or contact support with the request id."
+)
+
 SSE_KEEPALIVE_FRAME = ": keepalive\n\n"
 
 
@@ -794,11 +803,23 @@ async def stream_sse_chat(
             raise
         except Exception as e:
             forced_terminal_status = "error"
-            terminal_reason = str(e)
-            logger.error("Streaming error: %s", e, exc_info=True)
+            # Sanitized SSE error — never emit `str(e)` to the client
+            # (issue #79 round-1 finding). Server-side gets the full
+            # exception with the request id; the SSE error envelope
+            # carries the stable token plus the correlation handle.
+            terminal_reason = _SSE_INTERNAL_ERROR_TOKEN
+            logger.exception(
+                "Streaming error (request_id=%s): %s",
+                request_id,
+                e,
+            )
             yield sse(
                 "error",
-                make_envelope("error", {"message": str(e)}, evt_id="evt_error"),
+                make_envelope(
+                    "error",
+                    {"message": f"{_SSE_INTERNAL_ERROR_TOKEN} (request_id={request_id})"},
+                    evt_id="evt_error",
+                ),
             )
             return
 

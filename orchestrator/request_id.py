@@ -20,7 +20,15 @@ from starlette.requests import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 REQUEST_ID_HEADER = "X-Request-ID"
+# Optional inbound header propagated from upstream proxies/load-test
+# harnesses so the inbound value is preserved without being the
+# primary correlation handle (round-1 Codex finding on PR #218).
+# When an inbound ``X-Request-ID`` is present, it is recorded under
+# this key in the structured log; the response always carries a
+# server-generated correlation id.
+CLIENT_REQUEST_ID_HEADER = "X-Client-Request-ID"
 _STATE_REQUEST_ID = "request_id"
+_STATE_CLIENT_REQUEST_ID = "client_request_id"
 
 # Bound to a reasonable printable length so a malicious inbound value
 # cannot be reflected into a log file or response header with unbounded
@@ -50,13 +58,20 @@ def _new_request_id() -> str:
     return f"req_{secrets.token_urlsafe(16)}"
 
 
-def _resolve_request_id(scope: Scope) -> str:
-    """Pick the request id for this scope: client's if valid, else new."""
+def _resolve_request_id(scope: Scope) -> tuple[str, str | None]:
+    """Build the (server_correlation_id, inbound_client_request_id) pair.
+
+    The correlation id is always server-generated — using it as the
+    primary log / response header prevents an attacker from pre-staging
+    a known id to pollute correlation searches. The inbound value
+    (sanitized) is preserved as the *client* request id and recorded
+    alongside the correlation id for proxy/load-test propagation.
+    """
 
     headers = MutableHeaders(scope=scope)
-    inbound = headers.get(REQUEST_ID_HEADER)
-    sanitized = _sanitize_inbound(inbound) if inbound else None
-    return sanitized or _new_request_id()
+    inbound_raw = headers.get(REQUEST_ID_HEADER)
+    sanitized = _sanitize_inbound(inbound_raw) if inbound_raw else None
+    return _new_request_id(), sanitized
 
 
 def _has_header(headers: MutableHeaders, name: str) -> bool:
@@ -67,10 +82,12 @@ def _has_header(headers: MutableHeaders, name: str) -> bool:
 class RequestIdMiddleware:
     """Add an X-Request-ID header to every response.
 
-    Inbound requests may set ``X-Request-ID``; the value is sanitized
-    and reused. Otherwise a fresh ``req_<urlsafe>`` id is generated.
-    The id is also attached to ``request.scope["state"]`` so handlers
-    and exception handlers can read it without re-parsing the header.
+    The response id is always server-generated; an inbound
+    ``X-Request-ID`` (e.g. from a trusted proxy or load-test harness)
+    is preserved as ``X-Client-Request-ID`` on the response and
+    attached to ``request.scope["state"]`` so handlers can include it
+    in structured log entries without it being the primary correlation
+    handle.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -81,14 +98,21 @@ class RequestIdMiddleware:
             await self.app(scope, receive, send)
             return
 
-        request_id = _resolve_request_id(scope)
-        scope.setdefault("state", {})[_STATE_REQUEST_ID] = request_id
+        request_id, client_request_id = _resolve_request_id(scope)
+        scope_state = scope.setdefault("state", {})
+        scope_state[_STATE_REQUEST_ID] = request_id
+        if client_request_id is not None:
+            scope_state[_STATE_CLIENT_REQUEST_ID] = client_request_id
 
         async def send_with_request_id(message: Message) -> None:
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(scope=message)
                 if not _has_header(headers, REQUEST_ID_HEADER):
                     headers[REQUEST_ID_HEADER] = request_id
+                if client_request_id is not None and not _has_header(
+                    headers, CLIENT_REQUEST_ID_HEADER
+                ):
+                    headers[CLIENT_REQUEST_ID_HEADER] = client_request_id
             await send(message)
 
         await self.app(scope, receive, send_with_request_id)
@@ -113,17 +137,73 @@ class _OuterRequestIdMiddleware:
             await self.app(scope, receive, send)
             return
 
-        request_id = _resolve_request_id(scope)
-        scope.setdefault("state", {})[_STATE_REQUEST_ID] = request_id
+        request_id, client_request_id = _resolve_request_id(scope)
+        scope_state = scope.setdefault("state", {})
+        scope_state[_STATE_REQUEST_ID] = request_id
+        if client_request_id is not None:
+            scope_state[_STATE_CLIENT_REQUEST_ID] = client_request_id
 
         async def send_with_outer_request_id(message: Message) -> None:
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(scope=message)
                 if not _has_header(headers, REQUEST_ID_HEADER):
                     headers[REQUEST_ID_HEADER] = request_id
+                if client_request_id is not None and not _has_header(
+                    headers, CLIENT_REQUEST_ID_HEADER
+                ):
+                    headers[CLIENT_REQUEST_ID_HEADER] = client_request_id
             await send(message)
 
         await self.app(scope, receive, send_with_outer_request_id)
+
+
+class _OuterCORSMiddleware:
+    """Outer CORS pass for unhandled-500 responses.
+
+    Starlette places user middleware inside ``ServerErrorMiddleware``,
+    so an unhandled exception that the inner ``CORSMiddleware`` did not
+    see reaches the client without ``Access-Control-Allow-Origin``.
+    Allowed-origin browser code cannot then read the sanitized body or
+    its ``X-Request-ID`` correlation handle.
+
+    This outer pass mirrors ``Access-Control-Allow-Origin`` /
+    ``Access-Control-Allow-Credentials`` onto the 500 response when the
+    request ``Origin`` is in the allowed-origins set, so the browser can
+    read the body on the unhandled path too.
+    """
+
+    def __init__(self, app: ASGIApp, *, allowed_origins: tuple[str, ...]) -> None:
+        self.app = app
+        self._allowed = tuple(o for o in allowed_origins if o)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request_origin: str | None = None
+        for raw_name, raw_value in scope.get("headers", []):
+            if raw_name.lower() == b"origin":
+                try:
+                    request_origin = raw_value.decode("latin-1")
+                except UnicodeDecodeError:
+                    request_origin = None
+                break
+
+        echoed_origin = request_origin if request_origin in self._allowed else None
+
+        async def send_with_outer_cors(message: Message) -> None:
+            if message["type"] == "http.response.start" and echoed_origin is not None:
+                headers = MutableHeaders(scope=message)
+                if not _has_header(headers, "Access-Control-Allow-Origin"):
+                    headers["Access-Control-Allow-Origin"] = echoed_origin
+                if not _has_header(headers, "Access-Control-Allow-Credentials"):
+                    headers["Access-Control-Allow-Credentials"] = "true"
+                if not _has_header(headers, "Access-Control-Expose-Headers"):
+                    headers["Access-Control-Expose-Headers"] = REQUEST_ID_HEADER
+            await send(message)
+
+        await self.app(scope, receive, send_with_outer_cors)
 
 
 def get_request_id(request: Request) -> str | None:
@@ -136,3 +216,18 @@ def get_request_id(request: Request) -> str | None:
     state = request.scope.get("state") or {}
     rid = state.get(_STATE_REQUEST_ID)
     return rid if isinstance(rid, str) and rid else None
+
+
+def get_client_request_id(request: Request) -> str | None:
+    """Read the inbound client request id (separate from the server-generated
+    correlation id).
+
+    Returns ``None`` if no inbound ``X-Request-ID`` was supplied (or it
+    sanitized to empty). Use this in structured log entries alongside
+    :func:`get_request_id` so the inbound value is preserved without
+    becoming the primary correlation handle.
+    """
+
+    state = request.scope.get("state") or {}
+    cid = state.get(_STATE_CLIENT_REQUEST_ID)
+    return cid if isinstance(cid, str) and cid else None
