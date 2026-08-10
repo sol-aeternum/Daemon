@@ -43,7 +43,7 @@ Daemon is a multi-provider LLM orchestration platform with intelligent routing, 
 - **Frontend**: Next.js 16 with Vercel AI SDK and React 19.
 - **Memory**: PostgreSQL with `pgvector` for semantic search and Fernet encryption for content at rest.
 - **Worker**: Redis + `arq` for background jobs (memory extraction, consolidation, dreaming).
-- **Fetch**: `crawl4ai` service for robust web scraping.
+- **Fetch**: Public HTTP(S) `direct` strategy with Jina and Archive.org fallbacks. (Crawl4AI is no longer in the fetch strategy chain; the `crawl4ai` docker service remains running but unused by `web_fetch`.)
 
 ## Tier System
 
