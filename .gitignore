@@ -76,7 +76,10 @@ agent-output/
 .triage.local.md
 
 # Next.js PWA build artifacts
-frontend/public/workbox-*.js
+frontend/public/sw.js
+frontend/public/sw.js.map
+frontend/public/swe-worker-*.js
+frontend/public/swe-worker-*.js.map
 
 # Wave 4 bitemporal benchmark research
 tests/benchmark_results/w4_*.md
