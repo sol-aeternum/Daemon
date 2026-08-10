@@ -125,7 +125,7 @@ def _build_cookie_header(jar: httpx.Cookies, logical_url: str) -> str | None:
     its cookie-header construction to the logical hostname rather than
     the transport URL's pinned-IP host.
     """
-    adapter = _CookieJarRequestAdapter(logical_url)
+    adapter = _CookieJarRequestAdapter(_canonicalize_logical_url(logical_url))
     # ``http.cookiejar.add_cookie_header`` takes an ``urllib.request``
     # duck-typed request object; our adapter satisfies that surface
     # without subclassing ``urllib.request.Request``. The type checker
@@ -152,13 +152,14 @@ def _extract_cookies_for_logical_url(
     """
     if "set-cookie" not in response.headers:
         return
+    canonical_url = _canonicalize_logical_url(logical_url)
     saved_request = response._request
     if saved_request is None:
         # Some response constructions (notably ``httpx.Response(...)``
         # without a request) leave ``_request`` as ``None``; fall back
         # to a synthetic logical-URL request so cookie extraction still
         # works.
-        response._request = httpx.Request("GET", logical_url)
+        response._request = httpx.Request("GET", canonical_url)
         try:
             jar.extract_cookies(response)
         finally:
@@ -166,10 +167,15 @@ def _extract_cookies_for_logical_url(
         return
     saved_url = saved_request.url
     try:
-        saved_request.url = httpx.URL(logical_url)
+        saved_request.url = httpx.URL(canonical_url)
         jar.extract_cookies(response)
     finally:
         saved_request.url = saved_url
+
+
+def _canonicalize_logical_url(logical_url: str) -> str:
+    """Return the logical cookie URL with an ASCII IDNA hostname."""
+    return str(httpx.URL(logical_url))
 
 
 class _CookieJarRequestAdapter:
@@ -184,6 +190,7 @@ class _CookieJarRequestAdapter:
     __slots__ = (
         "url",
         "_parsed",
+        "type",
         "unverifiable",
         "_cookie_header_value",
     )
@@ -191,6 +198,7 @@ class _CookieJarRequestAdapter:
     def __init__(self, url: str) -> None:
         self.url = url
         self._parsed = urlsplit(url)
+        self.type = self._parsed.scheme.lower()
         # ``http.cookiejar`` reads ``request.unverifiable`` directly
         # (not as a property); set it as a plain attribute so the
         # third-party cookie policy check sees a known value.
@@ -204,7 +212,7 @@ class _CookieJarRequestAdapter:
         return self._parsed.hostname or ""
 
     def get_type(self) -> str:
-        return self._parsed.scheme.lower()
+        return self.type
 
     def get_origin_req_host(self) -> str:
         return self._parsed.hostname or ""

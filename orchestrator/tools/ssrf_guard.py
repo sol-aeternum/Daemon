@@ -147,6 +147,63 @@ def is_disallowed_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return any(ip in net for net in networks)
 
 
+def _bases_for_numeric_ip_token(token: str) -> tuple[int, ...]:
+    """Return the integer bases accepted by libc for an IPv4 component."""
+    if token[:2] in ("0x", "0X"):
+        return (16,)
+    if token.startswith("0"):
+        return (8, 10)
+    return (10,)
+
+
+def resolve_numeric_ip_literal(
+    host: str,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """Canonicalize standard and legacy libc numeric IP spellings."""
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        pass
+
+    if not host or not host.isascii():
+        return None
+    parts = host.split(".")
+    if not 1 <= len(parts) <= 4 or any(not part for part in parts):
+        return None
+
+    values: list[int] = []
+    for part in parts:
+        if not all(character in "0123456789abcdefABCDEFxX" for character in part):
+            return None
+        value: int | None = None
+        for base in _bases_for_numeric_ip_token(part):
+            try:
+                value = int(part, base)
+                break
+            except ValueError:
+                continue
+        if value is None:
+            return None
+        values.append(value)
+
+    if any(value > 0xFF for value in values[:-1]):
+        return None
+    remaining_bits = 8 * (5 - len(values))
+    if values[-1] >= 1 << remaining_bits:
+        return None
+    shifts = {
+        1: (0,),
+        2: (24, 0),
+        3: (24, 16, 0),
+        4: (24, 16, 8, 0),
+    }[len(values)]
+    packed = sum(value << shift for value, shift in zip(values, shifts, strict=True))
+    try:
+        return ipaddress.IPv4Address(packed)
+    except ipaddress.AddressValueError:
+        return None
+
+
 def _resolve_and_check(host: str, port: int) -> tuple[str, ...]:
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
@@ -242,7 +299,10 @@ def _validate_url_static(
     # ``parsed.hostname`` already lowercases and IDNA-encodes Unicode; strip a
     # trailing dot so exact/subdomain blocked-host matching is consistent
     # with the dynamic validation path in ``_resolve_and_check``.
-    normalized_host = host.rstrip(".")
+    try:
+        normalized_host = host.rstrip(".").encode("idna").decode("ascii").lower()
+    except UnicodeError as exc:
+        raise SsrfPolicyViolation(f"hostname {host!r} is not a valid DNS name: {exc}") from exc
     # Reject literal-IP URLs synchronously, before any resolver activity.
     # Without this check, a URL like ``http://169.254.169.254/latest`` is
     # only flagged by ``_resolve_and_check()`` (which is reached AFTER
@@ -252,10 +312,7 @@ def _validate_url_static(
     # ``SsrfPolicyViolation`` (chain-terminating) that the SSRF contract
     # requires. Parsing the host as an IP literal here and applying
     # ``is_disallowed_ip`` closes that ordering gap.
-    try:
-        literal = ipaddress.ip_address(normalized_host)
-    except ValueError:
-        literal = None
+    literal = resolve_numeric_ip_literal(normalized_host)
     if literal is not None and is_disallowed_ip(literal):
         raise SsrfPolicyViolation(f"literal IP {literal} is a blocked IP (in disallowed range)")
     return normalized_host, port

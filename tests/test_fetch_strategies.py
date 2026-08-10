@@ -18,6 +18,10 @@ from orchestrator.services.fetch.service import FetchService
 from orchestrator.services.fetch.strategies.archive import ArchiveOrgStrategy
 from orchestrator.services.fetch.strategies.crawl4ai import Crawl4AIStrategy
 from orchestrator.services.fetch.strategies.direct import DirectFetchStrategy
+from orchestrator.services.fetch.strategies.direct import (
+    _build_cookie_header,
+    _extract_cookies_for_logical_url,
+)
 from orchestrator.services.fetch.strategies.jina import JinaReaderStrategy
 from orchestrator.services.fetch.strategies.youtube import YouTubeTranscriptStrategy
 from orchestrator.services.fetch.url_extract import extract_urls
@@ -419,7 +423,7 @@ class TestDirectStrategy:
                     302,
                     headers={
                         "location": "https://example.com/dest",
-                        "set-cookie": "session=secret; Path=/",
+                        "set-cookie": "session=secret; Path=/; Secure",
                     },
                     request=request,
                 )
@@ -483,6 +487,22 @@ class TestDirectStrategy:
             "the jar is scoped to the logical host, not the pinned IP"
         )
         assert "session=secret" in cookie_header
+
+    def test_idn_cookie_uses_canonical_logical_url(self) -> None:
+        """Host-only cookies use the same IDNA host for extraction and sending."""
+        jar = httpx.Cookies()
+        response = httpx.Response(
+            302,
+            headers={"set-cookie": "session=secret; Path=/; Secure"},
+            request=httpx.Request("GET", "https://93.184.216.34/start"),
+        )
+
+        _extract_cookies_for_logical_url(jar, response, "https://bücher.example/start")
+
+        assert (
+            _build_cookie_header(jar, "https://bücher.example/destination")
+            == "Cookie: session=secret"
+        )
 
 
 class TestYouTubeStrategy:

@@ -120,7 +120,19 @@ class TestValidateUrlAsync:
             await validate_url_and_resolve_async("https://example.com", timeout=0.01)
 
     @pytest.mark.asyncio
-    async def test_literal_ip_blocked_under_resolver_slot_saturation(self) -> None:
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "169.254.169.254",
+            "2130706433",
+            "127.1",
+            "0x7f.1",
+            "0177.0.0.1",
+            "0251.0376.0251.0376",
+            "１２７。０。０。１",
+        ],
+    )
+    async def test_literal_ip_blocked_under_resolver_slot_saturation(self, host: str) -> None:
         """P1 — Codex round-7 finding: literal-IP check rejects synchronously,
         even when ``_RESOLVER_SLOTS.acquire()`` is saturated.
 
@@ -150,9 +162,7 @@ class TestValidateUrlAsync:
             patch.object(ssrf_guard._RESOLVER_SLOTS, "acquire", side_effect=saturated_acquire),
             pytest.raises(SsrfPolicyViolation, match="literal IP"),
         ):
-            await validate_url_and_resolve_async(
-                "https://169.254.169.254/latest/meta-data/", timeout=0.05
-            )
+            await validate_url_and_resolve_async(f"https://{host}/latest/meta-data/", timeout=0.05)
 
     @pytest.mark.asyncio
     async def test_static_policy_rejected_before_resolver_slot_wait(self) -> None:
