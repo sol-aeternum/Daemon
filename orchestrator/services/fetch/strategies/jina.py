@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from urllib.parse import quote
 
@@ -25,6 +26,11 @@ logger = logging.getLogger(__name__)
 # ``validate_url`` and ``socket_guard``.
 _JINA_USER_URL_SCHEMES: frozenset[str] = frozenset({"http", "https"})
 _JINA_USER_URL_PORTS: frozenset[int] = frozenset({80, 443})
+
+# Upstream origin is hardcoded; ``validate_url`` is run on the fixed origin
+# string only (NOT on the encoded composed URL) so URL-encoding expansion
+# past ``MAX_URL_LENGTH`` cannot falsely reject a previously-valid user URL.
+_JINA_UPSTREAM_ORIGIN = "https://r.jina.ai/"
 
 
 class JinaReaderStrategy:
@@ -50,8 +56,14 @@ class JinaReaderStrategy:
         # service. ``validate_url`` rejects disallowed schemes/ports,
         # userinfo, oversized URLs, malformed hosts, and resolves the
         # hostname to verify it is not in a disallowed IP range.
+        #
+        # ``asyncio.to_thread`` offloads the synchronous ``socket.getaddrinfo``
+        # inside ``validate_url`` so a slow or unavailable resolver cannot
+        # stall the FastAPI event loop on unrelated requests. Same pattern
+        # used by ``HttpRequestTool`` and the Archive strategy.
         try:
-            validate_url(
+            await asyncio.to_thread(
+                validate_url,
                 url,
                 allowed_schemes=_JINA_USER_URL_SCHEMES,
                 allowed_ports=_JINA_USER_URL_PORTS,
@@ -67,36 +79,59 @@ class JinaReaderStrategy:
         settings = get_settings()
         jina_api_key = settings.jina_api_key
 
-        encoded_url = quote(url, safe="")
-        jina_url = f"https://r.jina.ai/{encoded_url}"
-
-        # Validate the upstream jina.ai URL with the strict allowlist
-        # (https-only on 443). The upstream is a hardcoded operator-trusted
-        # destination, but the same pre-flight pattern protects against a
-        # future override of the base URL pointing at a private IP.
+        # Validate the fixed upstream origin (https://r.jina.ai/) against
+        # the strict allowlist. The upstream is hardcoded today, but the
+        # pre-flight pattern protects against a future override of the
+        # base URL pointing at a private IP. The validation runs on the
+        # fixed origin string only — NOT on the URL-encoded composed
+        # ``jina_url`` — because URL-encoding a long query string can
+        # expand past ``MAX_URL_LENGTH`` and falsely reject a previously
+        # valid user URL (e.g. a 1,521-char query of 500 ``&a=`` pairs
+        # expands to ~3,549 chars). The origin is operator-controlled and
+        # constant; the user-input length gate already ran on the user
+        # URL above.
         try:
-            validate_url(jina_url)
+            await asyncio.to_thread(validate_url, _JINA_UPSTREAM_ORIGIN)
         except SsrfViolation as exc:
             logger.error(
                 "Configured Jina upstream %s violates SSRF policy: %s; refusing to fetch",
-                jina_url,
+                _JINA_UPSTREAM_ORIGIN,
                 exc,
             )
             raise
+
+        encoded_url = quote(url, safe="")
+        jina_url = f"{_JINA_UPSTREAM_ORIGIN}{encoded_url}"
 
         headers: dict[str, str] = {}
         if jina_api_key:
             headers["Authorization"] = f"Bearer {jina_api_key}"
 
         try:
-            # socket_guard patches socket.getaddrinfo at process scope to
-            # re-validate the resolved IP at connect time. This closes the
-            # DNS-rebinding window between validate_url's pre-flight
-            # resolution and httpx's actual TCP connect: a hostile DNS
-            # response that returns a public IP for pre-flight and a
-            # private IP for connect cannot bypass the IP blocklist.
+            # ``socket_guard`` patches process-global state for the full
+            # duration of the awaited request. That is intentional: every
+            # DNS lookup during the second-hop HTTP call (initial
+            # validation, connect-time resolution, retries) must be forced
+            # through the public-IP policy or the rebinding window between
+            # pre-flight and connect opens. The guard is reference-counted
+            # under a lock so concurrent callers are safe, but overlapping
+            # coroutines that issue unrelated DNS lookups during this
+            # window will inherit the policy. That is acceptable because
+            # the SSRF policy is a whole-process invariant — unrelated
+            # callers that needed private-IP resolution would be a
+            # separate configuration bug, not a side effect of this
+            # strategy. Scoping the patch to a single ``httpx.AsyncClient``
+            # would not close the rebinding window for retries/redirects
+            # inside that call and is therefore rejected on the merits.
             with socket_guard():
-                async with httpx.AsyncClient(timeout=15.0) as client:
+                # ``trust_env=False`` disables honouring of
+                # ``HTTPS_PROXY`` / ``ALL_PROXY`` and the ``no_proxy``
+                # bypass list from the process environment, so the SSRF
+                # guard cannot be bypassed by an operator-configured
+                # proxy that resolves only the public hostname but
+                # routes traffic elsewhere. Same treatment as the
+                # guarded ``HttpRequestTool`` and the Archive strategy.
+                async with httpx.AsyncClient(timeout=15.0, trust_env=False) as client:
                     response = await client.get(jina_url, headers=headers)
 
                     if response.status_code >= 400:
@@ -122,7 +157,11 @@ class JinaReaderStrategy:
 
         except SsrfViolation:
             # SSRF violations must propagate so the strategy chain cannot
-            # fall back to a strategy that bypasses policy.
+            # fall back to a strategy that bypasses policy. The
+            # ``FetchService._attempt_strategy`` exception handler is
+            # intentionally narrow — it does NOT catch ``SsrfViolation``,
+            # so a violation here short-circuits the chain (see
+            # ``service.py``).
             raise
         except Exception as e:
             logger.warning(f"Jina Reader fetch failed for {url}: {e}")

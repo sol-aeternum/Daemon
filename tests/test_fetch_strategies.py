@@ -573,7 +573,16 @@ class TestJinaStrategy:
         mock_response.headers = {"content-type": "text/plain"}
         mock_response.status_code = 200
 
-        with patch("httpx.AsyncClient.get", return_value=mock_response):
+        # Stub DNS so DNS-isolated CI runners don't fail before the
+        # ``validate_url`` pre-flight. ``validate_url`` performs a literal
+        # IP / hostname check; for ``example.com`` we return a public IPv4.
+        def fake_getaddrinfo(host, port, *args, **kwargs):  # type: ignore[no-untyped-def]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+        with (
+            patch("httpx.AsyncClient.get", return_value=mock_response),
+            patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
+        ):
             result = await strategy.fetch("https://example.com")
 
         assert result is not None
@@ -590,7 +599,13 @@ class TestJinaStrategy:
         mock_response = MagicMock()
         mock_response.status_code = 404
 
-        with patch("httpx.AsyncClient.get", return_value=mock_response):
+        def fake_getaddrinfo(host, port, *args, **kwargs):  # type: ignore[no-untyped-def]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+        with (
+            patch("httpx.AsyncClient.get", return_value=mock_response),
+            patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
+        ):
             result = await strategy.fetch("https://example.com")
 
         assert result is None
@@ -667,12 +682,16 @@ class TestJinaStrategy:
         mock_socket_guard.__enter__ = MagicMock(return_value=None)
         mock_socket_guard.__exit__ = MagicMock(return_value=None)
 
+        def fake_getaddrinfo(host, port, *args, **kwargs):  # type: ignore[no-untyped-def]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
         with (
             patch("httpx.AsyncClient.get", return_value=mock_response),
             patch(
                 "orchestrator.services.fetch.strategies.jina.socket_guard",
                 return_value=mock_socket_guard,
             ),
+            patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
         ):
             result = await strategy.fetch("https://example.com")
 
@@ -680,6 +699,53 @@ class TestJinaStrategy:
         # Confirm socket_guard was entered exactly once around the upstream
         # GET — the rebinding-protection gate is wired up, not just imported.
         assert mock_socket_guard.__enter__.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_fetch_accepts_url_that_grows_during_encoding(self, fetch_policy):
+        """A user URL that exceeds ``MAX_URL_LENGTH`` after URL-encoding
+        must still be accepted: the upstream ``validate_url`` runs only
+        on the fixed origin string, not the composed encoded URL.
+        Regression for Codex P2 finding: a user URL just under
+        ``MAX_URL_LENGTH`` whose query contains many ``&`` / ``=``
+        characters expands past 2,048 chars after ``quote(..., safe="")``
+        and a previous implementation rejected it as ``URL exceeds
+        2048 characters`` even though the user URL was within the limit.
+        """
+        strategy = JinaReaderStrategy(fetch_policy)
+
+        # Build a user URL whose unencoded length is < 2048 but whose
+        # encoded length is > 2048. Each ``&`` becomes ``%26`` (1 → 3
+        # chars). With a 23-char base plus a 2,021-char filler of 1010
+        # ``a`` chars separated by 1010 ``&``s we land at 2,044
+        # unencoded and 5,064 encoded — comfortably on the right side
+        # of 2,048 after ``quote(..., safe="")``.
+        base = "https://example.com/?q="
+        filler = "&".join("a" for _ in range(1010))
+        long_user_url = base + filler
+        assert len(long_user_url) < 2048
+        from urllib.parse import quote
+
+        assert len(quote(long_user_url, safe="")) > 2048
+
+        mock_response = MagicMock()
+        mock_response.text = "Title: Example\n\nURL Source: https://example.com/\n\nThis is sufficiently long content from Jina Reader for testing purposes"
+        mock_response.headers = {"content-type": "text/plain"}
+        mock_response.status_code = 200
+
+        def fake_getaddrinfo(host, port, *args, **kwargs):  # type: ignore[no-untyped-def]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+        with (
+            patch("httpx.AsyncClient.get", return_value=mock_response),
+            patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
+        ):
+            result = await strategy.fetch(long_user_url)
+
+        # The strategy must succeed despite the composed encoded URL
+        # exceeding ``MAX_URL_LENGTH`` — only the user URL length gate
+        # applies, on the user URL.
+        assert result is not None
+        assert result.strategy_used == "jina"
 
 
 class TestCrawl4AIStrategy:
