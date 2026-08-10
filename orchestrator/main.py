@@ -1785,7 +1785,14 @@ async def chat(
             "No conversation_id provided — creating new conversation. "
             "This should not happen in normal frontend flow."
         )
-    request_id = new_request_id()
+    # Reuse the HTTP correlation id that the request-id middleware already
+    # assigned to ``request.scope`` so the SSE error envelope, the
+    # streaming-error log, and the ``X-Request-ID`` response header all
+    # advertise the same handle to the browser (round-2 Codex finding on
+    # PR #219; mirrors the OpenAI-compatible chat completion fix at line
+    # 1340). Fall back to a fresh id when the middleware has not run
+    # (e.g. background tests that bypass the ASGI stack).
+    request_id = get_request_id(request) or new_request_id()
 
     # Get provider configuration from request or default
     provider_config = settings.get_provider_config(payload.provider)

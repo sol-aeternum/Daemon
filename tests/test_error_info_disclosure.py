@@ -607,3 +607,56 @@ def test_enroll_complete_log_labels_event_as_enrollment_failure() -> None:
     # enroll endpoint (it would mislead operators searching the
     # /v1/auth/refresh log channel).
     assert "Cookie policy validation failed during refresh" not in body
+
+
+def test_native_chat_reuses_http_correlation_id() -> None:
+    """Round-2 finding: the native ``/chat`` SSE error envelope and
+    streaming-error log previously used a route-local id created by
+    ``new_request_id()`` at the top of the handler, while the new
+    request-id middleware independently generated the exposed
+    ``X-Request-ID`` response header. The result was that a browser
+    reporting the header value gave support an id that did not appear
+    in the traceback log or SSE error message. The fix initializes the
+    route-local id from ``get_request_id(request)`` so the advertised
+    correlation handle is consistent end-to-end.
+    """
+
+    main_source = (ROOT / "orchestrator" / "main.py").read_text()
+    chat_match = re.search(
+        r"^async def chat\([\s\S]*?\)\s*->\s*StreamingResponse:",
+        main_source,
+        flags=re.MULTILINE,
+    )
+    assert chat_match is not None, "chat() body not found"
+    end = main_source.find("\nasync def ", chat_match.end())
+    if end == -1:
+        end = len(main_source)
+    body = main_source[chat_match.start() : end]
+    # The first assignment to ``request_id`` inside chat() must read the
+    # middleware-attached value rather than mint a fresh one.
+    first_assign = re.search(r"request_id\s*=\s*[^\n]+", body)
+    assert first_assign is not None
+    assert "get_request_id(request)" in first_assign.group(0), (
+        "chat() must initialize its SSE error correlation id from "
+        "get_request_id(request) so the SSE error envelope, streaming "
+        "log, and X-Request-ID response header all advertise the same "
+        "handle. Got: " + first_assign.group(0)
+    )
+
+
+def test_outer_cors_middleware_handles_wildcard_origins() -> None:
+    """Round-2 finding: when the operator configured
+    ``DAEMON_ALLOWED_ORIGINS=*``, the outer middleware's literal
+    ``request_origin in self._allowed`` check never matched, disabling
+    CORS headers on every unhandled 500. The fix treats ``"*"`` as a
+    wildcard that echoes the request origin, mirroring the inner
+    middleware's permissive semantics for that single configuration.
+    """
+
+    from orchestrator.request_id import _OuterCORSMiddleware
+
+    async def _no_op_app(scope, receive, send):  # pragma: no cover - never invoked
+        return None
+
+    middleware = _OuterCORSMiddleware(_no_op_app, allowed_origins=("*",))
+    assert getattr(middleware, "_allow_all", False) is True

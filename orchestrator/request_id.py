@@ -197,6 +197,14 @@ class _OuterCORSMiddleware:
     def __init__(self, app: ASGIApp, *, allowed_origins: tuple[str, ...]) -> None:
         self.app = app
         self._allowed = tuple(o for o in allowed_origins if o)
+        # Starlette's inner ``CORSMiddleware`` rejects ``allow_origins=["*"]``
+        # when ``allow_credentials=True``, so in practice ``self._allowed``
+        # never contains a bare ``"*"``. Still, treat the wildcard
+        # explicitly so the outer pass mirrors the inner semantics if the
+        # operator ever wires the daemon with credentials disabled or
+        # otherwise relaxes the inner middleware (round-2 Codex finding on
+        # PR #219).
+        self._allow_all = "*" in self._allowed
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -212,7 +220,10 @@ class _OuterCORSMiddleware:
                     request_origin = None
                 break
 
-        echoed_origin = request_origin if request_origin in self._allowed else None
+        if self._allow_all:
+            echoed_origin = request_origin
+        else:
+            echoed_origin = request_origin if request_origin in self._allowed else None
 
         async def send_with_outer_cors(message: Message) -> None:
             if message["type"] == "http.response.start" and echoed_origin is not None:
