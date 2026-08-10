@@ -961,3 +961,147 @@ async def test_memory_write_update_at_cap_with_active_target_is_net_neutral(monk
         assert "cap" not in result.lower()
         store.close_memory.assert_called_once()
         mock_dedup.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_memory_write_rate_refusal_survives_cap_query_failure(monkeypatch):
+    """Round-5 P1: a cap-query failure must not override a rate-limit refusal.
+
+    Codex review (chatgpt-codex-connector[bot] @2026-08-10T10:43:07Z,
+    P1 on `orchestrator/memory/tools.py:360`): when
+    `count_active_memories()` raises after the rate counter was
+    already at the limit, the previous code returned `None`,
+    allowing `execute()` to invoke `dedup_and_store` and trigger a
+    billed embedding request. The fix: honor the rate-limit
+    decision even on cap-query failure.
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 10)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
+
+    with (
+        patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup,
+        patch(
+            "orchestrator.memory.tools.embed_documents_with_metadata",
+            new_callable=AsyncMock,
+        ) as mock_embed,
+    ):
+        user_id = uuid.uuid4()
+        _seed_attempt_log(user_id, 10)  # rate limit already at the edge
+        store = AsyncMock()
+        # Cap query fails after the rate decision was already taken.
+        store.count_active_memories = AsyncMock(side_effect=RuntimeError("pool down"))
+        tool = MemoryWriteTool(store, user_id)
+
+        result = await tool.execute(action="create", content="fact", slot="a_slot")
+
+        assert "rate limit" in result.lower()
+        # Critically, the billed embedding path must not be reached.
+        mock_dedup.assert_not_called()
+        mock_embed.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_memory_write_cap_query_failure_below_rate_limit_fails_open(monkeypatch):
+    """Round-5 P1 sibling: cap-query failure still allows writes below the rate limit.
+
+    Pair to `test_memory_write_rate_refusal_survives_cap_query_failure`:
+    the cap-query fail-open behavior (the existing "fails open on
+    a counting error" rule from `test_memory_write_quota_fails_open_on_counter_error`)
+    only kicks in when the rate limit has not been reached. The
+    rate limit is the cost-amplification guard and is not
+    overridable by a transient database error.
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 10)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        mock_dedup.return_value = uuid.uuid4()
+        user_id = uuid.uuid4()
+        # No prior writes — rate limit is at 0.
+        store = AsyncMock()
+        store.count_active_memories = AsyncMock(side_effect=RuntimeError("pool down"))
+        tool = MemoryWriteTool(store, user_id)
+
+        result = await tool.execute(action="create", content="fact")
+
+        assert "Memory created" in result
+        mock_dedup.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_memory_write_attempt_log_evicts_inactive_users(monkeypatch):
+    """Round-5 P2: the user-keyed attempt log must not grow without bound.
+
+    Codex review (P2 on `orchestrator/memory/tools.py:335`): every
+    user who ever called `memory_write` left a UUID in
+    `_attempt_log` permanently. The fix: track `last_seen` per
+    user and run an eviction sweep on every Nth call when the
+    dict is over a watermark. Inactive users (no write in the
+    inactivity window) are dropped; their next write just
+    re-creates the deque.
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 10)
+    monkeypatch.setattr(tools_module, "_ATTEMPT_LOG_EVICTION_WATERMARK", 4)
+    monkeypatch.setattr(tools_module, "_ATTEMPT_LOG_INACTIVITY_SECONDS", 60)
+    monkeypatch.setattr(tools_module, "_attempt_log_call_count", 0)
+
+    # Reset module-level state for a deterministic count.
+    tools_module._attempt_log.clear()
+    tools_module._attempt_log_last_seen.clear()
+
+    old_time = datetime.now(timezone.utc) - timedelta(seconds=300)
+    fresh_time = datetime.now(timezone.utc)
+
+    # Three users whose last access is well past the inactivity
+    # threshold; one active user.
+    stale_ids = [uuid.uuid4() for _ in range(3)]
+    fresh_id = uuid.uuid4()
+    for uid in stale_ids:
+        tools_module._attempt_log[uid] = deque(maxlen=10)
+        tools_module._attempt_log_last_seen[uid] = old_time
+    tools_module._attempt_log[fresh_id] = deque(maxlen=10)
+    tools_module._attempt_log_last_seen[fresh_id] = fresh_time
+
+    # Drive 256 calls through `_maybe_sweep_attempt_log` so the
+    # sweep actually triggers. Only the last call needs the
+    # `current_user_id` to be the active one — but the function
+    # is called under the lock with a real `now` timestamp.
+    for i in range(256):
+        tools_module._maybe_sweep_attempt_log(fresh_time, current_user_id=fresh_id)
+
+    # Stale users are evicted; the fresh one is preserved.
+    for uid in stale_ids:
+        assert uid not in tools_module._attempt_log
+        assert uid not in tools_module._attempt_log_last_seen
+    assert tools_module._attempt_log[fresh_id] is not None
+    assert tools_module._attempt_log_last_seen[fresh_id] == fresh_time
+
+
+@pytest.mark.asyncio
+async def test_memory_write_attempt_log_sweep_does_not_fire_below_watermark(monkeypatch):
+    """Round-5 P2 sibling: small-host case is sweep-free.
+
+    The sweep is only triggered when the dict is at or above
+    `_ATTEMPT_LOG_EVICTION_WATERMARK`. Below that, the function
+    only increments its call counter and returns.
+    """
+    monkeypatch.setattr(tools_module, "_ATTEMPT_LOG_EVICTION_WATERMARK", 1024)
+    monkeypatch.setattr(tools_module, "_attempt_log_call_count", 0)
+    tools_module._attempt_log.clear()
+    tools_module._attempt_log_last_seen.clear()
+
+    # 5 stale users, well below the 1024 watermark.
+    stale_ids = [uuid.uuid4() for _ in range(5)]
+    old_time = datetime.now(timezone.utc) - timedelta(seconds=600)
+    for uid in stale_ids:
+        tools_module._attempt_log[uid] = deque(maxlen=10)
+        tools_module._attempt_log_last_seen[uid] = old_time
+
+    for i in range(300):
+        tools_module._maybe_sweep_attempt_log(
+            datetime.now(timezone.utc), current_user_id=stale_ids[0]
+        )
+
+    # None evicted — sweep short-circuited.
+    for uid in stale_ids:
+        assert uid in tools_module._attempt_log

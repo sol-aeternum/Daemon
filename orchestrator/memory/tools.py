@@ -73,9 +73,62 @@ MEMORY_WRITE_MAX_ACTIVE_ROWS: int = 1000
 # append + length check, so the critical section is sub-millisecond.
 #
 # Memory: `deque(maxlen=MEMORY_WRITE_MAX_PER_WINDOW)` is bounded;
-# entries older than the window are evicted on every check.
+# entries older than the window are evicted on every check. The
+# dict mapping user_id -> deque is unbounded by itself — round-5
+# Codex review (P2, 2026-08-10T10:43:07Z) flagged that long-running
+# hosted processes would accumulate UUIDs forever. The eviction
+# sweep below bounds the dict without a background task.
 _attempt_log: dict[uuid.UUID, Deque[datetime]] = {}
+# Last-seen timestamp per user. Tagged inside the same lock that
+# guards `_attempt_log` so a sweep sees a consistent view.
+_attempt_log_last_seen: dict[uuid.UUID, datetime] = {}
 _attempt_log_lock: asyncio.Lock | None = None
+
+# Eviction parameters. The sweep only fires when the dict has at
+# least this many users — smaller hosts run sweep-free. The
+# inactivity threshold is set well past the rate window (60s) so
+# an active user is never evicted mid-window.
+_ATTEMPT_LOG_EVICTION_WATERMARK: int = 1024
+_ATTEMPT_LOG_INACTIVITY_SECONDS: int = 600
+# Counter for triggering the sweep every Nth call (so the dict
+# growth is bounded even if the watermark is set high).
+_attempt_log_call_count: int = 0
+
+
+def _maybe_sweep_attempt_log(now: datetime, *, current_user_id: uuid.UUID) -> None:
+    """Periodically evict inactive users from the rate-limit dicts.
+
+    Round-5 Codex review (P2, 2026-08-10T10:43:07Z) flagged that
+    every user who ever called `memory_write` left a UUID in
+    `_attempt_log` and `_attempt_log_last_seen` permanently. Stale
+    timestamps were pruned only when the same user called again,
+    so the dict mapping grew without bound. A background task
+    would be the textbook answer, but this resolver tick prefers
+    a sweep-on-write approach: tagged counter `_attempt_log_call_count`
+    triggers a sweep every `_ATTEMPT_LOG_SWEEP_EVERY_N` calls, and
+    the sweep only iterates the dict when the watermark is met.
+    Evicted users' next write just re-creates their deque — the
+    worst case is one extra `dict` insertion per inactive user
+    per eviction interval, well below the rate window.
+
+    Must be called under `_attempt_log_lock` so the eviction is
+    consistent with the tag-write for the current user.
+    """
+    global _attempt_log_call_count
+    _attempt_log_call_count += 1
+    if _attempt_log_call_count % 256 != 0:
+        return
+    if len(_attempt_log) < _ATTEMPT_LOG_EVICTION_WATERMARK:
+        return
+    cutoff = now - timedelta(seconds=_ATTEMPT_LOG_INACTIVITY_SECONDS)
+    stale_users = [
+        user_id
+        for user_id, last_seen in _attempt_log_last_seen.items()
+        if last_seen < cutoff and user_id != current_user_id
+    ]
+    for user_id in stale_users:
+        _attempt_log.pop(user_id, None)
+        _attempt_log_last_seen.pop(user_id, None)
 
 
 class MemoryReadTool(Tool):
@@ -347,6 +400,21 @@ class MemoryWriteTool(Tool):
                 recent_writes = len(log)
                 if recent_writes < MEMORY_WRITE_MAX_PER_WINDOW:
                     log.append(now)
+                # Track last_seen for the eviction sweep below. The
+                # eviction P2 finding (round-5 Codex review, see
+                # `Status: WORKING` comment on PR #207) is that the
+                # dict grows unbounded with users; the per-user deque
+                # is bounded, but the dict mapping user_id -> deque
+                # is not. Tagging each access lets the sweep drop
+                # users whose most recent activity is well past the
+                # rate window.
+                _attempt_log_last_seen[self.user_id] = now
+                # Periodic sweep — keep the dict bounded without a
+                # background task. Trigger on every ~256th call to
+                # bound sweep cost under load. The sweep only runs
+                # when the dict is at or above the watermark, so the
+                # common case (small host) is sweep-free.
+                _maybe_sweep_attempt_log(now, current_user_id=self.user_id)
             try:
                 active_rows = int(await self.store.count_active_memories(self.user_id))
             except Exception as active_error:
@@ -357,6 +425,34 @@ class MemoryWriteTool(Tool):
                     action,
                     type(active_error).__name__,
                 )
+                # Round-5 Codex review (P1, 2026-08-10T10:43:07Z,
+                # `orchestrator/memory/tools.py:360`): when the cap
+                # query fails after the rate counter is already at
+                # the limit, the previous code fell through to
+                # `return None`, allowing `execute()` to invoke
+                # `dedup_and_store` and trigger a billed embedding
+                # request. Honor a rate-limit decision already taken
+                # even when the independent active-row cap query
+                # fails — the rate limit is the cost-amplification
+                # guard, and a transient cap-query failure must not
+                # override it.
+                if recent_writes >= MEMORY_WRITE_MAX_PER_WINDOW:
+                    logger.warning(
+                        "memory_write_rate_limited user_id=%s action=%s "
+                        "window_seconds=%s writes_in_window=%s limit=%s "
+                        "cap_query_failed=true",
+                        self.user_id,
+                        action,
+                        MEMORY_WRITE_WINDOW_SECONDS,
+                        recent_writes,
+                        MEMORY_WRITE_MAX_PER_WINDOW,
+                    )
+                    return (
+                        f"Memory write rate limit reached "
+                        f"({MEMORY_WRITE_MAX_PER_WINDOW} writes per "
+                        f"{MEMORY_WRITE_WINDOW_SECONDS}s). Wait before writing again, "
+                        f"or summarise several facts into a single memory."
+                    )
                 return None
         except Exception as error:
             logger.warning(
