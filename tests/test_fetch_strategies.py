@@ -595,6 +595,92 @@ class TestJinaStrategy:
 
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_fetch_rejects_user_url_pointing_at_link_local(self, fetch_policy):
+        """An attacker-supplied URL whose host resolves to link-local
+        (cloud metadata) must be rejected with SsrfViolation before any
+        upstream request is issued.
+        """
+        from orchestrator.tools.ssrf_guard import SsrfViolation
+
+        strategy = JinaReaderStrategy(fetch_policy)
+
+        with (
+            patch("httpx.AsyncClient.get") as mock_get,
+            pytest.raises(SsrfViolation),
+        ):
+            await strategy.fetch("http://169.254.169.254/latest/meta-data/")
+
+        # Confirm no upstream GET was attempted; the user URL failed the
+        # pre-flight before any HTTP work was done.
+        assert mock_get.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_fetch_rejects_user_url_pointing_at_rfc1918(self, fetch_policy):
+        """RFC1918 destinations (10.0.0.0/8) must be rejected with
+        SsrfViolation. The validator catches the literal IP before
+        forwarding to Jina.
+        """
+        from orchestrator.tools.ssrf_guard import SsrfViolation
+
+        strategy = JinaReaderStrategy(fetch_policy)
+
+        with (
+            patch("httpx.AsyncClient.get") as mock_get,
+            pytest.raises(SsrfViolation),
+        ):
+            await strategy.fetch("https://10.0.0.5/internal-admin")
+
+        assert mock_get.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_fetch_rejects_user_url_with_userinfo(self, fetch_policy):
+        """URLs containing ``user:pass@`` must be rejected (userinfo can
+        smuggle a real host after a parser misread).
+        """
+        from orchestrator.tools.ssrf_guard import SsrfViolation
+
+        strategy = JinaReaderStrategy(fetch_policy)
+
+        with (
+            patch("httpx.AsyncClient.get") as mock_get,
+            pytest.raises(SsrfViolation),
+        ):
+            await strategy.fetch("https://attacker:pwn@example.com/")
+
+        assert mock_get.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_fetch_uses_socket_guard_around_upstream_get(self, fetch_policy):
+        """The upstream ``r.jina.ai`` GET must run under ``socket_guard``
+        so a DNS-rebinding response between pre-flight ``validate_url``
+        and the connect-time ``getaddrinfo`` cannot bypass the policy.
+        """
+        strategy = JinaReaderStrategy(fetch_policy)
+
+        mock_response = MagicMock()
+        mock_response.text = "Title: Example\n\nURL Source: https://example.com/\n\nThis is sufficiently long content from Jina Reader for testing purposes"
+        mock_response.headers = {"content-type": "text/plain"}
+        mock_response.status_code = 200
+
+        mock_socket_guard = MagicMock()
+        mock_socket_guard.__enter__ = MagicMock(return_value=None)
+        mock_socket_guard.__exit__ = MagicMock(return_value=None)
+
+        with (
+            patch("httpx.AsyncClient.get", return_value=mock_response),
+            patch(
+                "orchestrator.services.fetch.strategies.jina.socket_guard",
+                return_value=mock_socket_guard,
+            ),
+        ):
+            result = await strategy.fetch("https://example.com")
+
+        assert result is not None
+        # Confirm socket_guard was entered exactly once around the upstream
+        # GET — the rebinding-protection gate is wired up, not just imported.
+        assert mock_socket_guard.__enter__.call_count == 1
+
 
 class TestCrawl4AIStrategy:
     @pytest.mark.asyncio
