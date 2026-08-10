@@ -185,8 +185,10 @@ class TestValidateUrlIpChecks:
         ],
     )
     def test_literal_private_ip_rejected(self, ip: str) -> None:
-        with pytest.raises(SsrfViolation):
-            validate_url(f"https://{ip}/")
+        with patch("socket.getaddrinfo") as resolver:
+            with pytest.raises(SsrfViolation, match="literal IP"):
+                validate_url(f"https://{ip}/")
+        resolver.assert_not_called()
 
     @pytest.mark.parametrize(
         "ip",
@@ -200,8 +202,17 @@ class TestValidateUrlIpChecks:
         ],
     )
     def test_ipv6_special_use_literal_rejected(self, ip: str) -> None:
-        with pytest.raises(SsrfViolation):
-            validate_url(f"https://[{ip}]/")
+        with patch("socket.getaddrinfo") as resolver:
+            with pytest.raises(SsrfViolation, match="literal IP"):
+                validate_url(f"https://[{ip}]/")
+        resolver.assert_not_called()
+
+    def test_public_ip_literal_skips_dns_resolution(self) -> None:
+        with patch("socket.getaddrinfo") as resolver:
+            result = validate_url("https://8.8.8.8/")
+
+        assert result == "https://8.8.8.8/"
+        resolver.assert_not_called()
 
     def test_ipv6_global_unicast_allowed(self) -> None:
         from orchestrator.tools.ssrf_guard import is_disallowed_ip

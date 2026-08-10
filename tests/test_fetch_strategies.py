@@ -412,6 +412,36 @@ class TestFetchService:
 
         assert result is None
 
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://youtube.com/watch?v=abc123",
+            "https://www.youtube.com/watch?v=abc123",
+            "https://m.youtube.com/watch?v=abc123",
+            "https://youtube.com./watch?v=abc123",
+            "https://youtu.be/abc123",
+        ],
+    )
+    def test_youtube_host_detection_accepts_only_youtube_hosts(
+        self, fetch_service, url: str
+    ) -> None:
+        assert fetch_service._is_youtube_url(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://notyoutube.com/watch?v=abc123",
+            "https://youtube.com.evil.example/watch?v=abc123",
+            "https://youtube.com@evil.example/watch?v=abc123",
+            "https://evil.example/?next=https://youtube.com/watch?v=abc123",
+            "https://subdomain.youtu.be/abc123",
+        ],
+    )
+    def test_youtube_host_detection_rejects_substring_matches(
+        self, fetch_service, url: str
+    ) -> None:
+        assert fetch_service._is_youtube_url(url) is False
+
     @pytest.mark.asyncio
     async def test_youtube_url_shortcircuit(self, fetch_service):
         # Mock YouTube strategy to succeed

@@ -102,6 +102,16 @@ def is_disallowed_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 
 def _resolve_and_check(host: str, port: int) -> None:
     try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+
+    if literal is not None:
+        if is_disallowed_ip(literal):
+            raise SsrfViolation(f"literal IP {literal} is not allowed")
+        return
+
+    try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
         raise SsrfViolation(f"DNS resolution failed for {host!r}: {exc}") from exc

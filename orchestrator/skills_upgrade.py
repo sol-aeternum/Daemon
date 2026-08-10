@@ -31,7 +31,11 @@ from orchestrator.skills_projection import (
     compute_content_hash,
     embed_skill_content,
 )
-from orchestrator.skills_store import SKILLS_DIR
+from orchestrator.skills_store import (
+    SKILLS_DIR,
+    normalize_skill_id,
+    resolve_skill_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +58,10 @@ def load_repo_contents() -> dict[str, str]:
         return {}
     contents: dict[str, str] = {}
     for path in REPO_SKILLS_DIR.glob("*.md"):
-        skill_id = path.stem
-        if not skill_id:
+        try:
+            skill_id = normalize_skill_id(path.stem)
+        except ValueError as exc:
+            logger.warning("Skipping repo skill with unsafe id %s: %s", path.stem, exc)
             continue
         try:
             raw = path.read_text(encoding="utf-8")
@@ -78,7 +84,11 @@ def _snapshot_dir() -> Path:
 
 
 def _snapshot_path(skill_id: str) -> Path:
-    return _snapshot_dir() / f"{skill_id}.md"
+    expected_snapshot_dir = SKILLS_DIR.resolve() / SNAPSHOT_DIRNAME
+    resolved_snapshot_dir = _snapshot_dir().resolve(strict=False)
+    if resolved_snapshot_dir != expected_snapshot_dir:
+        raise ValueError("Resolved snapshot path escapes the skills directory")
+    return resolve_skill_path(skill_id, skills_dir=resolved_snapshot_dir)
 
 
 def _now_iso() -> str:
@@ -110,7 +120,7 @@ def _read_skill_versions(content: str) -> tuple[str, str]:
 
 
 def _write_skill_file(skill_id: str, content: str) -> None:
-    path = SKILLS_DIR / f"{skill_id}.md"
+    path = resolve_skill_path(skill_id, skills_dir=SKILLS_DIR)
     if not path.exists():
         raise FileNotFoundError(f"Skill file not found: {path}")
     metadata, body = _parse_frontmatter(content)
@@ -229,21 +239,64 @@ class SkillUpgradeService:
         if not repo_contents:
             return UpgradeResult(actions=[])
 
+        actions: list[UpgradeAction] = []
+        validated_repo_contents: dict[str, str] = {}
+        for skill_id, content in repo_contents.items():
+            try:
+                safe_skill_id = normalize_skill_id(skill_id)
+            except ValueError as exc:
+                logger.warning("Skipping repo content with unsafe skill id %s: %s", skill_id, exc)
+                actions.append(
+                    UpgradeAction(
+                        skill_id=skill_id,
+                        action="error",
+                        success=False,
+                        error=str(exc),
+                    )
+                )
+                continue
+            validated_repo_contents[safe_skill_id] = content
+
+        if not validated_repo_contents:
+            return UpgradeResult(actions=actions, total_errors=len(actions))
+
+        repo_contents = validated_repo_contents
         manifest = load_manifest()
-        current_files = {
-            p.stem: p
-            for p in SKILLS_DIR.glob("*.md")
-            if p.stem
-            not in (
-                MANIFEST_FILENAME.lstrip("."),
-                SNAPSHOT_DIRNAME.lstrip("."),
-            )
-        }
-        manifest_skill_ids = set(manifest.skills.keys())
+        current_files: dict[str, Path] = {}
+        for path in SKILLS_DIR.glob("*.md"):
+            try:
+                skill_id = normalize_skill_id(path.stem)
+                current_files[skill_id] = resolve_skill_path(
+                    skill_id,
+                    skills_dir=SKILLS_DIR,
+                )
+            except ValueError as exc:
+                logger.warning("Skipping unsafe local skill path %s: %s", path, exc)
+                actions.append(
+                    UpgradeAction(
+                        skill_id=path.stem,
+                        action="error",
+                        success=False,
+                        error=str(exc),
+                    )
+                )
+
+        manifest_skill_ids: set[str] = set()
+        for skill_id in manifest.skills:
+            try:
+                manifest_skill_ids.add(normalize_skill_id(skill_id))
+            except ValueError as exc:
+                logger.warning("Skipping manifest entry with unsafe skill id %s: %s", skill_id, exc)
+                actions.append(
+                    UpgradeAction(
+                        skill_id=skill_id,
+                        action="error",
+                        success=False,
+                        error=str(exc),
+                    )
+                )
         current_skill_ids = set(current_files.keys())
         repo_skill_ids = set(repo_contents.keys())
-
-        actions: list[UpgradeAction] = []
 
         for skill_id, path in current_files.items():
             try:
@@ -358,7 +411,7 @@ class SkillUpgradeService:
             skill_id=skill_id,
             name=name,
             description=description,
-            source_file_path=str(SKILLS_DIR / f"{skill_id}.md"),
+            source_file_path=str(resolve_skill_path(skill_id, skills_dir=SKILLS_DIR)),
             source_hash=local_hash,
             enabled=enabled,
             source_type="system",
@@ -413,7 +466,7 @@ class SkillUpgradeService:
             skill_id=skill_id,
             name=name,
             description=description,
-            source_file_path=str(SKILLS_DIR / f"{skill_id}.md"),
+            source_file_path=str(resolve_skill_path(skill_id, skills_dir=SKILLS_DIR)),
             source_hash=repo_hash,
             enabled=enabled,
             source_type=existing.get("source_type", "system") if existing else "system",
@@ -482,7 +535,7 @@ class SkillUpgradeService:
             skill_id=skill_id,
             name=name,
             description=description,
-            source_file_path=str(SKILLS_DIR / f"{skill_id}.md"),
+            source_file_path=str(resolve_skill_path(skill_id, skills_dir=SKILLS_DIR)),
             source_hash=local_hash,
             enabled=enabled,
             source_type=existing.get("source_type", "system") if existing else "system",
@@ -563,6 +616,16 @@ class SkillUpgradeService:
         )
 
     async def apply_pending_update(self, skill_id: str) -> UpgradeAction:
+        try:
+            skill_id = normalize_skill_id(skill_id)
+        except ValueError as exc:
+            return UpgradeAction(
+                skill_id=skill_id,
+                action="error",
+                success=False,
+                error=str(exc),
+            )
+
         projection = await self._store.get_projection(skill_id)
         if projection is None:
             return UpgradeAction(
@@ -598,7 +661,7 @@ class SkillUpgradeService:
                 error="Pending update has no repo_content",
             )
 
-        path = SKILLS_DIR / f"{skill_id}.md"
+        path = resolve_skill_path(skill_id, skills_dir=SKILLS_DIR)
         path.write_text(repo_content, encoding="utf-8")
         _save_snapshot(skill_id, repo_content)
 
@@ -648,6 +711,16 @@ class SkillUpgradeService:
         )
 
     async def dismiss_pending_update(self, skill_id: str) -> UpgradeAction:
+        try:
+            skill_id = normalize_skill_id(skill_id)
+        except ValueError as exc:
+            return UpgradeAction(
+                skill_id=skill_id,
+                action="error",
+                success=False,
+                error=str(exc),
+            )
+
         projection = await self._store.get_projection(skill_id)
         if projection is None:
             return UpgradeAction(
@@ -673,7 +746,7 @@ class SkillUpgradeService:
             skill_id=skill_id,
             name=projection.get("name", skill_id),
             description=projection.get("description", ""),
-            source_file_path=projection.get("source_file_path", str(SKILLS_DIR / f"{skill_id}.md")),
+            source_file_path=str(resolve_skill_path(skill_id, skills_dir=SKILLS_DIR)),
             source_hash=current_hash,
             enabled=projection.get("enabled", True),
             source_type=projection.get("source_type", "system"),

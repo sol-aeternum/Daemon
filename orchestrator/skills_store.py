@@ -101,22 +101,38 @@ def normalize_skill_id(name: str) -> str:
     return candidate
 
 
-def _assert_within_skills_dir(path: Path) -> Path:
-    skills_dir = SKILLS_DIR.resolve()
+def _assert_within_directory(path: Path, directory: Path) -> Path:
+    resolved_directory = directory.resolve()
     resolved_path = path.resolve(strict=False)
     try:
-        resolved_path.relative_to(skills_dir)
+        resolved_path.relative_to(resolved_directory)
     except ValueError as exc:
         raise ValueError("Resolved skill path escapes the skills directory") from exc
     return resolved_path
 
 
-def _skill_path(skill_id: str) -> Path:
+def _assert_within_skills_dir(path: Path) -> Path:
+    return _assert_within_directory(
+        path,
+        SKILLS_DIR,
+    )
+
+
+def resolve_skill_path(skill_id: str, *, skills_dir: Path | None = None) -> Path:
+    """Return the contained canonical path for an already-formed skill ID."""
     safe_skill_id = normalize_skill_id(skill_id)
+    root = SKILLS_DIR if skills_dir is None else skills_dir
     # The strict allowlist above and resolved-path containment below make this
     # construction safe. CodeQL does not model those application sanitizers.
-    path = SKILLS_DIR / f"{safe_skill_id}.md"  # lgtm[py/path-injection]
-    return _assert_within_skills_dir(path)
+    path = root / f"{safe_skill_id}.md"  # lgtm[py/path-injection]
+    return _assert_within_directory(
+        path,
+        root,
+    )
+
+
+def _skill_path(skill_id: str) -> Path:
+    return resolve_skill_path(skill_id)
 
 
 def _format_timestamp(path: Path) -> str:
