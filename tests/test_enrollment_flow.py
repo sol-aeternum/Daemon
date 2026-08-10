@@ -1550,10 +1550,14 @@ class TestWebEnrollCookiePolicyErrorBeforeDbMutation:
 
                     # Must return 500 before device/session creation and pending consumption
                     assert complete_response.status_code == 500, complete_response.text
-                    assert (
-                        "daemon_cookie_secure=false is not allowed in production"
-                        in complete_response.text
-                    )
+                    # The response body uses the fixed ``cookie_policy_invalid``
+                    # token; the underlying exception text is logged server-side
+                    # but no longer echoed in the response per the issue #79
+                    # error-info-disclosure fix. The status code + the stable
+                    # token are the externally observable contract here.
+                    body = complete_response.json()
+                    assert body["detail"] == "cookie_policy_invalid"
+                    assert "daemon_cookie_secure=false" not in complete_response.text
 
                     # Verify NO device was created
                     assert mock_pool._device_created is False
