@@ -644,6 +644,41 @@ def test_native_chat_reuses_http_correlation_id() -> None:
     )
 
 
+def test_openai_chat_completions_reuses_http_correlation_id() -> None:
+    """Round-3 finding: the OpenAI ``/v1/chat/completions`` route passed
+    a route-local id created by ``new_request_id()`` to ``stream_sse_chat``.
+    When ``stream_sse_chat`` itself logged an internal exception, the
+    traceback used that route-local id while the response's X-Request-ID
+    contained the independently-generated middleware id, so a user
+    reporting the header value could not be matched to the traceback.
+    The fix initializes the route-local id from ``get_request_id(request)``
+    so the daemon iterator's logger and the response header advertise
+    the same handle.
+    """
+
+    main_source = (ROOT / "orchestrator" / "main.py").read_text()
+    chat_match = re.search(
+        r"^async def openai_chat_completions\([\s\S]*?\)\s*->\s*StreamingResponse:",
+        main_source,
+        flags=re.MULTILINE,
+    )
+    assert chat_match is not None, "openai_chat_completions() body not found"
+    end = main_source.find("\nasync def ", chat_match.end())
+    if end == -1:
+        end = len(main_source)
+    body = main_source[chat_match.start() : end]
+    # The first assignment to ``request_id`` inside
+    # openai_chat_completions must read the middleware-attached value.
+    first_assign = re.search(r"request_id\s*=\s*[^\n]+", body)
+    assert first_assign is not None
+    assert "get_request_id(request)" in first_assign.group(0), (
+        "openai_chat_completions() must initialize its streaming "
+        "correlation id from get_request_id(request) so the daemon "
+        "iterator's traceback log and the X-Request-ID response header "
+        "advertise the same handle. Got: " + first_assign.group(0)
+    )
+
+
 def test_outer_cors_middleware_handles_wildcard_origins() -> None:
     """Round-2 finding: when the operator configured
     ``DAEMON_ALLOWED_ORIGINS=*``, the outer middleware's literal

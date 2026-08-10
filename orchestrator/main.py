@@ -1223,7 +1223,14 @@ async def openai_chat_completions(
     if not last_message:
         last_message = "Please help with the attached input."
     conversation_id = new_conversation_id()
-    request_id = new_request_id()
+    # Reuse the HTTP correlation id that the request-id middleware already
+    # assigned to ``request.scope`` so the OpenAI streaming error log, the
+    # SSE error chunk, and the ``X-Request-ID`` response header all
+    # advertise the same handle (round-3 Codex finding on PR #219;
+    # mirrors the native ``/chat`` fix at line 1788). The value is
+    # forwarded to ``stream_sse_chat`` so daemon.py's internal
+    # exception handler logs with the same id.
+    request_id = get_request_id(request) or new_request_id()
 
     # Determine provider from model ID
     provider_name = settings.default_provider
