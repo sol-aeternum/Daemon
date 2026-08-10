@@ -11,6 +11,8 @@ import httpx
 
 from orchestrator.services.fetch.models import FetchResult, FetchPolicy
 from orchestrator.tools.ssrf_guard import (
+    SsrfPolicyViolation,
+    SsrfUnreachable,
     SsrfViolation,
     validate_url_and_resolve_async,
 )
@@ -150,42 +152,41 @@ class DirectFetchStrategy:
         try:
             current_url = url
             response: httpx.Response | None = None
+            # One shared deadline spans every redirect hop. Without this,
+            # each hop would reset the budget and a server with six hops
+            # could consume ``_PER_FETCH_DEADLINE_SECONDS × hops`` of
+            # wall time on silently-dropping addresses.
+            deadline_at = time.monotonic() + _PER_FETCH_DEADLINE_SECONDS
             for redirect_count in range(_MAX_REDIRECTS + 1):
                 if _is_blocked_domain(current_url, self.policy.blocked_domains):
-                    raise SsrfViolation(f"hostname is blocked by fetch policy: {current_url}")
+                    raise SsrfPolicyViolation(f"hostname is blocked by fetch policy: {current_url}")
                 try:
                     validated = await validate_url_and_resolve_async(
                         current_url,
                         allowed_schemes=_FETCH_SCHEMES,
                         allowed_ports=_FETCH_PORTS,
                     )
-                except SsrfViolation as exc:
-                    # Distinguish unsafe destinations from DNS unavailability:
-                    # an unsafe URL (blocked IP, blocked host, disallowed
-                    # scheme/port, malformed host) must propagate so the
-                    # strategy chain terminates per Codex finding #2. A DNS
-                    # timeout / gaierror / unresolved hostname, however, only
-                    # means the *direct* path could not connect; it does not
-                    # forbid the caller from trying the Jina/Archive fallbacks
-                    # that contact r.jina.ai / archive.org instead of the
-                    # target host. Swallow those as a plain failure and let
-                    # the chain continue.
-                    message = str(exc).lower()
-                    if (
-                        "blocked" in message
-                        or "is not allowed" in message
-                        or "malformed" in message
-                        or "scheme" in message
-                        or "userinfo" in message
-                    ):
-                        raise
+                except SsrfUnreachable as exc:
+                    # Target unreachable (DNS timeout / gaierror / no
+                    # results / bounded resolver exhaustion). The direct
+                    # path could not connect, but fallbacks that contact
+                    # r.jina.ai / archive.org instead of the target host
+                    # may still succeed. Swallow and let the chain
+                    # continue.
                     logger.info(
                         "Direct fetch unavailable for %s: %s; "
                         "fallback strategies may still succeed",
-                        url,
+                        current_url,
                         exc,
                     )
                     return None
+                except SsrfPolicyViolation:
+                    # URL is unsafe by policy (blocked IP, blocked host,
+                    # disallowed scheme/port, userinfo, malformed host,
+                    # undecodable hostname). The strategy chain must
+                    # terminate so the caller does not try a fallback
+                    # that may itself bypass policy.
+                    raise
                 if not validated.addresses:
                     # No validated addresses is a target unavailability, not
                     # a safety violation — same treatment as DNS failure.
@@ -214,6 +215,7 @@ class DirectFetchStrategy:
                     host_header=host_header,
                     sni_hostname=sni_hostname,
                     user_agent=user_agent,
+                    deadline_at=deadline_at,
                 )
                 if response is None:
                     # Every validated address was unreachable. Return ``None``
@@ -262,6 +264,7 @@ class DirectFetchStrategy:
         host_header: str,
         sni_hostname: str,
         user_agent: str,
+        deadline_at: float,
     ) -> httpx.Response | None:
         """Issue ``GET current_url`` against each validated address in turn.
 
@@ -274,10 +277,11 @@ class DirectFetchStrategy:
         connection pool is never reused across distinct addresses (which would
         otherwise reuse a connection keyed to the wrong host).
 
-        All address attempts share one ``_PER_FETCH_DEADLINE_SECONDS`` budget so
-        an attacker-controlled hostname that returns many silently-dropping
-        public addresses cannot keep one fetch alive for
-        ``timeout × address_count × hops``.
+        ``deadline_at`` (a ``time.monotonic()`` absolute timestamp from the
+        caller's redirect loop) bounds the cumulative wall time of every
+        address attempt in *this hop*. The caller is responsible for
+        sharing one deadline across all hops so a multi-hop redirect chain
+        cannot extend the per-fetch budget by ``addresses × hops``.
         """
         last_error: Exception | None = None
         # Cap the address list so a hostile DNS response with thousands of
@@ -291,12 +295,11 @@ class DirectFetchStrategy:
                 current_url,
             )
 
-        deadline_at = time.monotonic() + _PER_FETCH_DEADLINE_SECONDS
         for address in capped_addresses:
             remaining = deadline_at - time.monotonic()
             if remaining <= 0:
                 logger.info(
-                    "Direct fetch abandoned %s after exhausting %.2fs budget",
+                    "Direct fetch abandoned %s after exhausting remaining %.2fs of shared per-fetch budget",
                     current_url,
                     _PER_FETCH_DEADLINE_SECONDS,
                 )

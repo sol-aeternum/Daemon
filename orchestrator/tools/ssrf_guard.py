@@ -82,7 +82,32 @@ _IPV6_GLOBAL_UNICAST = ipaddress.ip_network("2000::/3")
 
 
 class SsrfViolation(Exception):
-    """Raised when a URL fails SSRF validation."""
+    """Raised when a URL fails SSRF validation.
+
+    Subclasses carry typed failure categories so callers can distinguish
+    policy violations (must propagate; chain terminates) from reachability
+    failures (target unavailability; fallbacks may still succeed) without
+    scanning the exception message text. See ``SsrfPolicyViolation`` and
+    ``SsrfUnreachable``.
+    """
+
+
+class SsrfPolicyViolation(SsrfViolation):
+    """Raised when the URL is *unsafe* by policy.
+
+    Covers blocked IPs, blocked hostnames, disallowed schemes or ports,
+    userinfo, malformed URLs, and undecodable hostnames. Must propagate
+    so the strategy chain terminates per the SSRF contract.
+    """
+
+
+class SsrfUnreachable(SsrfViolation):
+    """Raised when the target is *unreachable* but not policy-blocked.
+
+    Covers DNS timeouts, gaierrors, no-results, and bounded-resolver
+    exhaustion. Callers may swallow this and continue to fallback
+    strategies that contact a different host.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,24 +151,27 @@ def _resolve_and_check(host: str, port: int) -> tuple[str, ...]:
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
-        raise SsrfViolation(f"DNS resolution failed for {host!r}: {exc}") from exc
+        # gaierror = the target *could not be resolved*. This is target
+        # unavailability, not a policy violation — the strategy chain
+        # should swallow it so fallbacks (Jina/Archive) can still try.
+        raise SsrfUnreachable(f"DNS resolution failed for {host!r}: {exc}") from exc
     except UnicodeError as exc:
         # IDNA encoding rejects URL-valid but DNS-invalid names (e.g. a
         # 64-char label) with UnicodeError, not gaierror. Fail closed.
-        raise SsrfViolation(f"hostname {host!r} is not a valid DNS name: {exc}") from exc
+        raise SsrfPolicyViolation(f"hostname {host!r} is not a valid DNS name: {exc}") from exc
     if not infos:
-        raise SsrfViolation(f"DNS resolution returned no results for {host!r}")
+        raise SsrfUnreachable(f"DNS resolution returned no results for {host!r}")
     addresses: list[str] = []
     for _family, _stype, _proto, _canon, sockaddr in infos:
         ip_str = sockaddr[0]
         try:
             ip = ipaddress.ip_address(ip_str)
         except ValueError as exc:
-            raise SsrfViolation(
+            raise SsrfPolicyViolation(
                 f"DNS resolver returned unparseable IP {ip_str!r} for {host!r}"
             ) from exc
         if is_disallowed_ip(ip):
-            raise SsrfViolation(f"hostname {host!r} resolves to blocked IP {ip}")
+            raise SsrfPolicyViolation(f"hostname {host!r} resolves to blocked IP {ip}")
         normalized = str(ip)
         if normalized not in addresses:
             addresses.append(normalized)
@@ -177,28 +205,28 @@ def validate_url_and_resolve(
     This closes the DNS-rebinding window without mutating process-global DNS.
     """
     if not url or not isinstance(url, str):
-        raise SsrfViolation("URL is required")
+        raise SsrfPolicyViolation("URL is required")
     if len(url) > MAX_URL_LENGTH:
-        raise SsrfViolation(f"URL exceeds {MAX_URL_LENGTH} characters")
+        raise SsrfPolicyViolation(f"URL exceeds {MAX_URL_LENGTH} characters")
     parsed = urlparse(url)
     if parsed.scheme not in allowed_schemes:
-        raise SsrfViolation(
+        raise SsrfPolicyViolation(
             f"scheme {parsed.scheme or '<empty>'!r} is not allowed "
             f"(allowed: {sorted(allowed_schemes)})"
         )
     if parsed.username is not None or parsed.password is not None:
-        raise SsrfViolation("URLs containing userinfo (user:pass@) are not allowed")
+        raise SsrfPolicyViolation("URLs containing userinfo (user:pass@) are not allowed")
     try:
         host = parsed.hostname
         explicit_port = parsed.port
     except ValueError as exc:
         # urlparse defers netloc validation: malformed ports (e.g. :99999) and
         # invalid IPv6 brackets raise here, not at parse time. Fail closed.
-        raise SsrfViolation(f"malformed host/port in URL: {exc}") from exc
+        raise SsrfPolicyViolation(f"malformed host/port in URL: {exc}") from exc
     if not host:
-        raise SsrfViolation("URL is missing a hostname")
+        raise SsrfPolicyViolation("URL is missing a hostname")
     if explicit_port is not None and explicit_port not in allowed_ports:
-        raise SsrfViolation(
+        raise SsrfPolicyViolation(
             f"port {explicit_port} is not allowed (allowed: {sorted(allowed_ports)})"
         )
     default_port = 80 if parsed.scheme == "http" else 443
@@ -225,7 +253,7 @@ async def validate_url_and_resolve_async(
     try:
         await asyncio.wait_for(_RESOLVER_SLOTS.acquire(), timeout=timeout)
     except TimeoutError as exc:
-        raise SsrfViolation(f"DNS validation timed out for {url}") from exc
+        raise SsrfUnreachable(f"DNS validation timed out for {url}") from exc
 
     try:
         future = loop.run_in_executor(_RESOLVER_EXECUTOR, validation)
@@ -239,7 +267,7 @@ async def validate_url_and_resolve_async(
     try:
         return await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
     except TimeoutError as exc:
-        raise SsrfViolation(f"DNS validation timed out for {url}") from exc
+        raise SsrfUnreachable(f"DNS validation timed out for {url}") from exc
 
 
 def _load_allowed_domains() -> frozenset[str]:
@@ -272,7 +300,7 @@ def check_egress_allowlist(host: str) -> None:
     for pattern in allowed:
         if _domain_matches(host, pattern):
             return
-    raise SsrfViolation(f"hostname {host!r} is not in the egress allowlist")
+    raise SsrfPolicyViolation(f"hostname {host!r} is not in the egress allowlist")
 
 
 # socket_guard() patches process-global state, so overlapping requests must
@@ -296,20 +324,20 @@ def _guarded_getaddrinfo(host, *args, **kwargs):  # type: ignore[no-untyped-def]
         try:
             lookup = lookup.decode("ascii")
         except UnicodeDecodeError as exc:
-            raise SsrfViolation(f"undecodable hostname {host!r}") from exc
+            raise SsrfPolicyViolation(f"undecodable hostname {host!r}") from exc
     if isinstance(lookup, str):
         try:
             literal = ipaddress.ip_address(lookup)
         except ValueError:
             literal = None
         if literal is not None and is_disallowed_ip(literal):
-            raise SsrfViolation(f"literal IP {literal} is not allowed")
+            raise SsrfPolicyViolation(f"literal IP {literal} is not allowed")
         if literal is None:
             infos = real(host, *args, **kwargs)
             for _family, _stype, _proto, _canon, sockaddr in infos:
                 resolved = ipaddress.ip_address(sockaddr[0])
                 if is_disallowed_ip(resolved):
-                    raise SsrfViolation(
+                    raise SsrfPolicyViolation(
                         f"hostname {host!r} resolves to blocked IP {resolved} "
                         f"on connect (DNS-rebinding protection)"
                     )

@@ -21,7 +21,11 @@ from orchestrator.services.fetch.strategies.direct import DirectFetchStrategy
 from orchestrator.services.fetch.strategies.jina import JinaReaderStrategy
 from orchestrator.services.fetch.strategies.youtube import YouTubeTranscriptStrategy
 from orchestrator.services.fetch.url_extract import extract_urls
-from orchestrator.tools.ssrf_guard import SsrfViolation
+from orchestrator.tools.ssrf_guard import (
+    SsrfPolicyViolation,
+    SsrfUnreachable,
+    SsrfViolation,
+)
 
 
 @pytest.fixture
@@ -906,6 +910,117 @@ class TestFetchService:
             fetch_service.cache.get.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_libc_numeric_ip_grammar_rejected_before_cache(self, fetch_service):
+        """The full ``inet_aton`` grammar must be rejected before cache access.
+
+        Mirrors Codex round-4 finding #5 — the prior parser missed libc
+        numeric forms ``017700000001``, ``0x7f.1``, ``127.16777215``, and
+        ``0xA9.0xFE.0xA9.0xFE``. All four resolve to loopback /
+        link-local addresses on Linux and must be classified as disallowed
+        so a retained or concurrently-written pre-hardening cache entry
+        cannot be served.
+        """
+        # (host string, expected IP it resolves to under inet_aton).
+        cases = (
+            ("017700000001", "127.0.0.1"),
+            ("0x7f.1", "127.0.0.1"),
+            ("127.16777215", "127.255.255.255"),
+            ("0xA9.0xFE.0xA9.0xFE", "169.254.169.254"),
+        )
+        for host, expected_ip in cases:
+            fetch_service.cache.get = AsyncMock(return_value=None)
+            for strategy in (
+                fetch_service.direct_strategy,
+                fetch_service.jina_strategy,
+                fetch_service.crawl4ai_strategy,
+                fetch_service.archive_strategy,
+            ):
+                assert strategy is not None
+                strategy.fetch = AsyncMock(return_value=None)
+            url = f"http://{host}/"
+            result = await fetch_service.fetch(url)
+            assert result is None, (
+                f"libc numeric literal {host} (resolves to {expected_ip}) "
+                f"should be rejected as disallowed"
+            )
+            fetch_service.cache.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dns_unreachable_is_typed_separately_from_policy_violation(self, fetch_service):
+        """``SsrfUnreachable`` must be caught and let fallbacks run.
+
+        Mirrors Codex round-4 finding #1 — the prior keyword-scan approach
+        scanned attacker-controlled exception text. The new typed
+        ``SsrfUnreachable`` exception is the unambiguous signal that the
+        target was *unreachable*, not *unsafe*, so the direct strategy
+        returns ``None`` and the strategy chain proceeds to Jina/Archive.
+        """
+        from orchestrator.services.fetch.strategies import direct as _direct_module
+
+        # Drive the same scenario as test_archive_fallback_used_when_direct_dns_unavailable
+        # but assert the new typed exception is what unblocks the chain.
+        archive_strategy = fetch_service.archive_strategy
+        assert archive_strategy is not None
+        archive_strategy.fetch = AsyncMock(
+            return_value=FetchResult(
+                url="https://example.com",
+                content=(
+                    "This is a sufficiently long archive snapshot recovered "
+                    "despite target DNS unavailability for testing"
+                ),
+                title="archive",
+                strategy_used="archive",
+                cached=False,
+                fetch_time_ms=10.0,
+                content_length=80,
+            )
+        )
+        fetch_service.jina_strategy.fetch = AsyncMock(return_value=None)
+        fetch_service.cache.get = AsyncMock(return_value=None)
+        fetch_service.cache.set = AsyncMock(return_value=True)
+
+        with patch.object(
+            _direct_module,
+            "validate_url_and_resolve_async",
+            new=AsyncMock(side_effect=SsrfUnreachable("gaierror: Name or service not known")),
+        ):
+            result = await fetch_service.fetch("https://example.com/")
+
+        assert result is not None
+        assert result.strategy_used == "archive"
+        fetch_service.archive_strategy.fetch.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_policy_violation_does_not_trigger_fallback(self, fetch_service):
+        """``SsrfPolicyViolation`` must terminate the chain, not fall back.
+
+        Counterpart to the previous test — a blocked-IP / disallowed-port /
+        malformed URL is a *policy* violation and the chain must not try
+        Jina or Archive (which themselves contact external hosts). The
+        ``FetchService.fetch`` caller does not see the exception
+        propagated — the service catches ``SsrfViolation`` and returns
+        ``None`` — but the fallback strategies must not be called.
+        """
+        from orchestrator.services.fetch.strategies import direct as _direct_module
+
+        fetch_service.jina_strategy.fetch = AsyncMock(return_value=None)
+        fetch_service.archive_strategy.fetch = AsyncMock(return_value=None)
+        fetch_service.cache.get = AsyncMock(return_value=None)
+
+        with patch.object(
+            _direct_module,
+            "validate_url_and_resolve_async",
+            new=AsyncMock(side_effect=SsrfPolicyViolation("port 8443 is not allowed")),
+        ):
+            result = await fetch_service.fetch("https://example.com/")
+
+        # The service catches the policy violation, logs it, and returns
+        # ``None`` — fallbacks are skipped.
+        assert result is None
+        fetch_service.jina_strategy.fetch.assert_not_awaited()
+        fetch_service.archive_strategy.fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_archive_fallback_used_when_direct_dns_unavailable(self, fetch_service):
         """Jina/Archive fallbacks must run when the direct strategy's DNS fails.
 
@@ -948,7 +1063,7 @@ class TestFetchService:
         with patch.object(
             _direct_module,
             "validate_url_and_resolve_async",
-            new=AsyncMock(side_effect=SsrfViolation("DNS validation timed out")),
+            new=AsyncMock(side_effect=SsrfUnreachable("DNS validation timed out")),
         ):
             result = await fetch_service.fetch("https://example.com/")
 
@@ -1053,3 +1168,101 @@ class TestFetchService:
         )
 
         assert elapsed < _PER_ADDRESS_TIMEOUT_SECONDS + 2.0
+
+    @pytest.mark.asyncio
+    async def test_redirect_loop_shares_one_deadline_across_hops(self, fetch_policy):
+        """One ``_PER_FETCH_DEADLINE_SECONDS`` budget spans every redirect hop.
+
+        Mirrors Codex round-4 finding #3 — the prior implementation created
+        a fresh deadline inside ``_request_with_address_fallback`` for every
+        hop, so a server with six permitted hops could consume
+        ``addresses × hops × timeout`` of wall time on silently-dropping
+        addresses. The deadline must now be created once at ``fetch`` entry
+        and carried through every hop.
+
+        The bug manifests when a hop's address attempt consumes the
+        budget, then the next hop is reached. With a per-hop reset, the
+        next hop grants a *fresh* budget. With the fix, the next hop
+        short-circuits because the shared deadline is already past.
+
+        We patch the redirect loop to synthesize a chain of redirects so
+        that hop 2 is actually reached; then assert that the wall time
+        stays bounded by one shared deadline (not two).
+        """
+        import asyncio as _asyncio
+        import time as _time
+        from unittest.mock import MagicMock
+
+        from orchestrator.services.fetch.strategies import direct as _direct_module
+
+        # Use a very short shared deadline for the test by monkey-patching
+        # the constant. This lets the test observe the cross-hop sharing
+        # without waiting ``_PER_FETCH_DEADLINE_SECONDS`` (15s) wall time.
+        original_deadline = _direct_module._PER_FETCH_DEADLINE_SECONDS
+        original_attempt = _direct_module._PER_ADDRESS_TIMEOUT_SECONDS
+        try:
+            _direct_module._PER_FETCH_DEADLINE_SECONDS = 0.3
+            _direct_module._PER_ADDRESS_TIMEOUT_SECONDS = 0.15
+
+            call_log: list[tuple[str, str]] = []
+
+            async def slow_redirect_then_fail(*args, **kwargs):
+                # The first call sleeps past the deadline so the shared
+                # budget is exhausted; we then return a synthetic 302
+                # response that triggers the redirect loop's next
+                # iteration. The second iteration's address attempt
+                # should short-circuit because the shared budget is
+                # already past.
+                n = len(call_log) + 1
+                call_log.append(("hop", str(n)))
+                if n == 1:
+                    await _asyncio.sleep(0.5)  # exceeds 0.3s deadline
+                    # Synthetic 302 response — gets the redirect loop
+                    # to a second iteration.
+                    response = MagicMock()
+                    response.status_code = 302
+                    response.headers = {"location": "/hop2"}
+                    response.raise_for_status = MagicMock()
+                    return response
+                # Subsequent calls: short sleep (the budget should
+                # already be exhausted).
+                await _asyncio.sleep(0.05)
+                raise httpx.ConnectError("hop 2 silent drop")
+
+            started = _time.monotonic()
+            with (
+                patch(
+                    "orchestrator.tools.ssrf_guard._resolve_and_check",
+                    return_value=("93.184.216.34",),
+                ),
+                patch(
+                    "httpx.AsyncClient.get",
+                    new_callable=AsyncMock,
+                    side_effect=slow_redirect_then_fail,
+                ),
+            ):
+                result = await strategy_fetch_with_short_deadline(
+                    fetch_policy=fetch_policy,
+                )
+            elapsed = _time.monotonic() - started
+
+            assert result is None
+            # First call slept ~0.5s; under the fix the second hop's
+            # address attempt short-circuits before sleeping. Under the
+            # bug, the second hop would grant a fresh 0.3s budget,
+            # adding another ~0.3s of wall time. The fix keeps elapsed
+            # bounded by one deadline.
+            assert elapsed < 0.8, (
+                f"shared deadline failed: {elapsed:.2f}s exceeds one deadline "
+                f"+ the first-hop 0.5s sleep"
+            )
+        finally:
+            _direct_module._PER_FETCH_DEADLINE_SECONDS = original_deadline
+            _direct_module._PER_ADDRESS_TIMEOUT_SECONDS = original_attempt
+
+
+async def strategy_fetch_with_short_deadline(*, fetch_policy):
+    """Helper that runs DirectFetchStrategy.fetch on a real policy."""
+    from orchestrator.services.fetch.strategies.direct import DirectFetchStrategy
+
+    return await DirectFetchStrategy(fetch_policy).fetch("https://example.com/article")
