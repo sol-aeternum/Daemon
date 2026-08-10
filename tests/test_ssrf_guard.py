@@ -10,6 +10,7 @@ no real network traffic is generated, and the guard tests run in-process.
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import socket
@@ -24,6 +25,8 @@ from orchestrator.tools.ssrf_guard import (
     ALLOWED_PORTS,
     ALLOWED_SCHEMES,
     MAX_URL_LENGTH,
+    SsrfPolicyViolation,
+    SsrfUnreachable,
     SsrfViolation,
     _domain_matches,
     _load_allowed_domains,
@@ -115,6 +118,98 @@ class TestValidateUrlAsync:
             pytest.raises(SsrfViolation, match="DNS validation timed out"),
         ):
             await validate_url_and_resolve_async("https://example.com", timeout=0.01)
+
+    @pytest.mark.asyncio
+    async def test_static_policy_rejected_before_resolver_slot_wait(self) -> None:
+        """P1 — Codex round-6 finding: static policy check runs before slot wait.
+
+        Resolver saturation can no longer promote a policy-violating URL
+        to a fallback-eligible ``SsrfUnreachable`` result. Every static
+        check (scheme, port, userinfo, malformed host) is performed
+        synchronously, so an unsafe URL fails closed with
+        ``SsrfPolicyViolation`` before ``_RESOLVER_SLOTS.acquire()`` is
+        ever called. The blocked-IP literal case uses a known-private
+        address so the test is robust against ``getaddrinfo`` returning
+        a public result on the test host.
+        """
+        # Block IP literal — fails the literal-IP check synchronously.
+        with pytest.raises(SsrfPolicyViolation, match="is not allowed"):
+            await validate_url_and_resolve_async(
+                "http://169.254.169.254/latest/meta-data/", timeout=10.0
+            )
+        # Disallowed port — fails before any resolver activity.
+        with pytest.raises(SsrfPolicyViolation, match="not allowed"):
+            await validate_url_and_resolve_async("https://example.com:8080/", timeout=10.0)
+        # Userinfo URL — fails synchronously, no slot acquired.
+        with pytest.raises(SsrfPolicyViolation, match="userinfo"):
+            await validate_url_and_resolve_async("https://user:pass@example.com/", timeout=10.0)
+
+    @pytest.mark.asyncio
+    async def test_resolver_and_slot_share_one_deadline(self) -> None:
+        """P2 — Codex round-6 finding: one shared deadline across slot+resolver.
+
+        The full ``timeout`` budget is consumed exactly once per call:
+        a single absolute deadline is computed at entry and the remaining
+        time is passed to the DNS future wait. Verifies that a slow
+        slot-acquire consumes some of the budget, and the resolver future
+        receives only the remaining time — not the full ``timeout`` again.
+        """
+        from orchestrator.tools import ssrf_guard
+        from orchestrator.tools.ssrf_guard import ValidatedUrl
+
+        acquire_delay = 0.3
+        resolver_delay = 0.3
+        total_timeout = 0.5
+
+        original_acquire = ssrf_guard._RESOLVER_SLOTS.acquire
+
+        async def slow_acquire() -> None:
+            await asyncio.sleep(acquire_delay)
+            await original_acquire()
+
+        # The resolver future sleeps ``resolver_delay`` to consume its budget.
+        def slow_validation(*_args: object, **_kwargs: object) -> ValidatedUrl:
+            time.sleep(resolver_delay)
+            return ValidatedUrl(
+                url="https://example.com",
+                host="example.com",
+                port=443,
+                addresses=("93.184.216.34",),
+            )
+
+        with (
+            patch.object(ssrf_guard._RESOLVER_SLOTS, "acquire", side_effect=slow_acquire),
+            patch(
+                "orchestrator.tools.ssrf_guard.validate_url_and_resolve",
+                side_effect=slow_validation,
+            ),
+        ):
+            # Slot acquire takes 0.3s; remaining budget is 0.2s; resolver
+            # future needs 0.3s — should time out.
+            with pytest.raises(SsrfUnreachable, match="DNS validation timed out"):
+                await validate_url_and_resolve_async("https://example.com", timeout=total_timeout)
+
+        # Now repeat with shorter slot delay so resolver future gets enough
+        # remaining budget to succeed.
+        fast_acquire_delay = 0.05
+
+        async def fast_acquire() -> None:
+            await asyncio.sleep(fast_acquire_delay)
+            await original_acquire()
+
+        with (
+            patch.object(ssrf_guard._RESOLVER_SLOTS, "acquire", side_effect=fast_acquire),
+            patch(
+                "orchestrator.tools.ssrf_guard.validate_url_and_resolve",
+                side_effect=slow_validation,
+            ),
+        ):
+            # Slot acquire 0.05s, remaining 0.45s, resolver needs 0.3s — should succeed.
+            result = await validate_url_and_resolve_async(
+                "https://example.com", timeout=total_timeout
+            )
+            assert result.host == "example.com"
+            assert "93.184.216.34" in result.addresses
 
 
 class TestValidateUrlScheme:

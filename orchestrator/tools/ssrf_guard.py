@@ -192,17 +192,25 @@ def validate_url(
     ).url
 
 
-def validate_url_and_resolve(
+def _validate_url_static(
     url: str,
     *,
     allowed_schemes: frozenset[str] = ALLOWED_SCHEMES,
     allowed_ports: frozenset[int] = ALLOWED_PORTS,
-) -> ValidatedUrl:
-    """Validate a URL and return the exact public IPs approved for connecting.
+) -> tuple[str, int]:
+    """Run every non-DNS SSRF policy check and return ``(host, port)``.
 
-    Callers that make the connection should connect to one of ``addresses``
-    directly while preserving ``host`` for the HTTP Host header and TLS SNI.
-    This closes the DNS-rebinding window without mutating process-global DNS.
+    Covers scheme/port/userinfo/host parsing, the literal-IP check, and the
+    canonical disallowed-range check — every check that does not require a
+    network lookup. The function fails closed by raising ``SsrfPolicyViolation``
+    on any policy failure so callers can run it before any blocking or
+    capacity-limited operation.
+
+    ``(host, port)`` are the resolved connection coordinates: ``host`` is
+    normalized through ``_canonicalize_hostname`` (lowercase + trailing-dot
+    strip + IDNA encoding); ``port`` is the explicit port or the scheme's
+    default. Returns a tuple the caller can pass to ``_resolve_and_check``
+    to perform the DNS-only portion.
     """
     if not url or not isinstance(url, str):
         raise SsrfPolicyViolation("URL is required")
@@ -231,6 +239,29 @@ def validate_url_and_resolve(
         )
     default_port = 80 if parsed.scheme == "http" else 443
     port = explicit_port if explicit_port is not None else default_port
+    # ``parsed.hostname`` already lowercases and IDNA-encodes Unicode; strip a
+    # trailing dot so exact/subdomain blocked-host matching is consistent
+    # with the dynamic validation path in ``_resolve_and_check``.
+    return host.rstrip("."), port
+
+
+def validate_url_and_resolve(
+    url: str,
+    *,
+    allowed_schemes: frozenset[str] = ALLOWED_SCHEMES,
+    allowed_ports: frozenset[int] = ALLOWED_PORTS,
+) -> ValidatedUrl:
+    """Validate a URL and return the exact public IPs approved for connecting.
+
+    Callers that make the connection should connect to one of ``addresses``
+    directly while preserving ``host`` for the HTTP Host header and TLS SNI.
+    This closes the DNS-rebinding window without mutating process-global DNS.
+    """
+    host, port = _validate_url_static(
+        url,
+        allowed_schemes=allowed_schemes,
+        allowed_ports=allowed_ports,
+    )
     addresses = _resolve_and_check(host, port)
     return ValidatedUrl(url=url, host=host, port=port, addresses=addresses)
 
@@ -242,7 +273,23 @@ async def validate_url_and_resolve_async(
     allowed_ports: frozenset[int] = ALLOWED_PORTS,
     timeout: float = 10.0,
 ) -> ValidatedUrl:
-    """Validate through the bounded resolver pool without blocking the event loop."""
+    """Validate through the bounded resolver pool without blocking the event loop.
+
+    Every non-DNS SSRF policy check runs *before* the resolver-slot acquisition
+    so that an unsafe URL (blocked IP literal, disallowed port, userinfo,
+    malformed host) cannot be promoted to a fallback-eligible result by a
+    resolver-slot timeout. The full ``timeout`` budget is consumed exactly
+    once per call: a single absolute deadline is computed at entry and the
+    remaining time is passed to every subsequent wait, so resolver saturation
+    and DNS lookup share one budget instead of stacking two ``timeout``
+    budgets on top of each other.
+    """
+    # Fail closed on every static policy check before consuming any capacity.
+    _validate_url_static(
+        url,
+        allowed_schemes=allowed_schemes,
+        allowed_ports=allowed_ports,
+    )
     validation = functools.partial(
         validate_url_and_resolve,
         url,
@@ -250,6 +297,11 @@ async def validate_url_and_resolve_async(
         allowed_ports=allowed_ports,
     )
     loop = asyncio.get_running_loop()
+    # One absolute deadline for both the slot acquisition and the resolver
+    # future. The caller may supply a ``timeout`` that already reflects a
+    # shared budget; if slot acquisition consumes most of it, the DNS lookup
+    # receives only the remaining time.
+    deadline = loop.time() + timeout
     try:
         await asyncio.wait_for(_RESOLVER_SLOTS.acquire(), timeout=timeout)
     except TimeoutError as exc:
@@ -264,8 +316,9 @@ async def validate_url_and_resolve_async(
     # Shield the resolver future so a caller timeout does not cancel the only
     # completion signal that releases capacity after the blocking lookup ends.
     future.add_done_callback(lambda _future: _RESOLVER_SLOTS.release())
+    remaining = max(0.0, deadline - loop.time())
     try:
-        return await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
+        return await asyncio.wait_for(asyncio.shield(future), timeout=remaining)
     except TimeoutError as exc:
         raise SsrfUnreachable(f"DNS validation timed out for {url}") from exc
 
