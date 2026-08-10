@@ -286,16 +286,26 @@ class TestArchiveOrgStrategy:
 
         strategy = ArchiveOrgStrategy(fetch_policy)
 
-        # Mock availability response whose ``closest.url`` points to a
-        # literal IP in the link-local metadata range. Archive.org itself
-        # does not return such URLs, but a poisoned/relayed JSON
-        # response could.
+        # Mock availability response whose ``closest.url`` points at a
+        # link-local metadata IP. The URL uses ``https://`` so the
+        # pre-flight reaches the IP-range branch instead of failing
+        # earlier on scheme — without ``https``, ``validate_url``
+        # rejects the scheme before examining the resolved IP, and the
+        # test would only verify the scheme-rejection path (already
+        # covered by ``test_fetch_ssrf_non_https_url_rejected``).
+        # Archive.org itself does not return such a URL, but a
+        # poisoned/relayed JSON response could.
+        #
+        # Round-3 Codex review (P2, 2026-08-10T17:02:16Z, on
+        # ``tests/test_fetch_strategies.py:298``) flagged the
+        # scheme-stopped-before-IP shape and asked for the IP-range
+        # branch to be exercised directly.
         mock_availability_response = MagicMock()
         mock_availability_response.json.return_value = {
             "archived_snapshots": {
                 "closest": {
                     "available": True,
-                    "url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+                    "url": "https://169.254.169.254/latest/meta-data/iam/security-credentials/",
                     "timestamp": datetime.now(UTC).strftime("%Y%m%d%H%M%S"),
                 }
             }
