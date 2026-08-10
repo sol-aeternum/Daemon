@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import httpx
+
 # Conditional import to allow tests to run without optional dependency
 try:
     from youtube_transcript_api import YouTubeTranscriptApi
@@ -442,6 +444,87 @@ class TestArchiveOrgStrategy:
         # Confirm the socket_guard context manager was entered exactly once
         # (one guard wrap around the second-hop fetch).
         assert mock_socket_guard.__enter__.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_fetch_uses_separate_clients_for_availability_and_guarded_get(self, fetch_policy):
+        """The Wayback availability lookup and the SSRF-guarded
+        ``closest.url`` GET must use SEPARATE ``httpx.AsyncClient``
+        instances so the operator-proxy-friendly ``trust_env=True``
+        default of the availability client does not leak through to
+        the SSRF-guarded fetch (which must explicitly disable
+        ``trust_env`` so an operator proxy cannot route the request
+        around the connect-time DNS guard).
+
+        Round-4 Codex review on ``orchestrator/services/fetch/strategies/archive.py``
+        (P2, 2026-08-10T18:07Z on head ``9afaecb2``) flagged that the
+        single-client approach disabled the operator proxy for the
+        availability lookup, breaking deployments that need outbound
+        proxy access. The fix is two clients — one per trust_env value.
+        """
+        strategy = ArchiveOrgStrategy(fetch_policy)
+
+        mock_availability_response = MagicMock()
+        mock_availability_response.json.return_value = {
+            "archived_snapshots": {
+                "closest": {
+                    "available": True,
+                    "url": "https://web.archive.org/web/20230101000000/https://example.com",
+                    "timestamp": datetime.now(UTC).strftime("%Y%m%d%H%M%S"),
+                }
+            }
+        }
+        mock_availability_response.raise_for_status = MagicMock()
+        mock_content_response = MagicMock()
+        mock_content_response.text = "<html><body>sufficiently long archived content for testing the per-client trust_env split. We need to make sure this content is long enough to pass content validation across the chain.</body></html>"
+        mock_content_response.headers = {"content-type": "text/html"}
+        mock_content_response.raise_for_status = MagicMock()
+
+        # Capture every ``httpx.AsyncClient`` construction so we can
+        # inspect the ``trust_env`` kwarg applied to each. The
+        # strategy must build exactly two clients — one for
+        # availability (default trust_env=True) and one for the
+        # SSRF-guarded second-hop fetch (trust_env=False).
+        client_calls: list[dict[str, object]] = []
+
+        real_async_client = httpx.AsyncClient
+
+        class _RecordingAsyncClient(real_async_client):  # type: ignore[misc, valid-type]
+            def __init__(self, *args, **kwargs):
+                client_calls.append(kwargs)
+                super().__init__(*args, **kwargs)
+
+        with (
+            patch("httpx.AsyncClient", _RecordingAsyncClient),
+            patch("httpx.AsyncClient.get") as mock_get,
+            patch(
+                "orchestrator.services.fetch.strategies.archive.validate_url",
+                side_effect=lambda url: url,
+            ),
+            patch(
+                "orchestrator.services.fetch.strategies.archive.html_to_markdown",
+                return_value="sufficiently long archived content for testing the per-client trust_env split.",
+            ),
+        ):
+            mock_get.side_effect = [mock_availability_response, mock_content_response]
+            result = await strategy.fetch("https://example.com")
+
+        assert result is not None
+        # Two clients total: availability + guarded.
+        assert len(client_calls) == 2, (
+            f"expected exactly two AsyncClient constructions, got {len(client_calls)}: "
+            f"{client_calls!r}"
+        )
+        # Availability client uses httpx defaults — trust_env=True
+        # (i.e. ``trust_env`` is not overridden to False) so the
+        # operator's HTTPS_PROXY is honoured.
+        assert "trust_env" not in client_calls[0] or client_calls[0]["trust_env"] is not False, (
+            f"availability client must honour trust_env=True; got {client_calls[0]!r}"
+        )
+        # Guarded client explicitly disables trust_env so the proxy
+        # cannot route the SSRF-guarded fetch.
+        assert client_calls[1].get("trust_env") is False, (
+            f"guarded client must pass trust_env=False; got {client_calls[1]!r}"
+        )
 
 
 class TestUrlExtraction:

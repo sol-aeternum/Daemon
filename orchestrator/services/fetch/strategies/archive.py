@@ -64,15 +64,20 @@ class ArchiveOrgStrategy:
             FetchResult with archived content or None if no suitable snapshot found
         """
         try:
-            # Check Wayback availability API
+            # Check Wayback availability API. This client honours
+            # ``HTTPS_PROXY``/``ALL_PROXY`` (i.e. ``trust_env=True``, the
+            # ``httpx`` default) so a deployment that needs an operator
+            # proxy for outbound internet access — whether for compliance
+            # routing or for outbound firewall reasons — can still reach
+            # the fixed, trusted ``availability_url``. The
+            # ``archive.org/wayback/available`` URL itself is a hard-coded
+            # configuration value (not user-controlled) and so does not
+            # need the SSRF guard; the second-hop ``closest.url`` it
+            # returns, by contrast, IS attacker-influenceable through
+            # response poisoning and is fetched through a separate client
+            # below with ``trust_env=False``.
             availability_url = f"https://archive.org/wayback/available?url={url}"
-
-            # ``trust_env=False`` disables honouring of HTTPS_PROXY/ALL_PROXY
-            # and the no_proxy bypass list from the process environment, so
-            # the SSRF guard cannot be bypassed by an operator-configured
-            # proxy that resolves only the public hostname but routes
-            # traffic elsewhere.
-            async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
+            async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(availability_url)
                 _ = response.raise_for_status()
 
@@ -168,8 +173,20 @@ class ArchiveOrgStrategy:
                 # whole-process invariant — unrelated callers that needed
                 # private-IP resolution would be a separate configuration
                 # bug, not a side effect of this strategy.
+                #
+                # The guarded fetch uses a SEPARATE ``httpx.AsyncClient``
+                # with ``trust_env=False`` so ``HTTPS_PROXY`` / ``ALL_PROXY``
+                # cannot route the SSRF-guarded request through an
+                # operator proxy that resolves only the public hostname
+                # but forwards traffic elsewhere (defeating the
+                # connect-time DNS guard). The availability lookup above
+                # uses the default ``trust_env=True`` client so a
+                # deployment that needs an operator proxy for outbound
+                # internet access can still reach the hard-coded
+                # ``https://archive.org/wayback/available`` URL.
                 with socket_guard():
-                    html_response = await client.get(validated_url)
+                    async with httpx.AsyncClient(timeout=10.0, trust_env=False) as guarded_client:
+                        html_response = await guarded_client.get(validated_url)
                 _ = html_response.raise_for_status()
 
                 html_content = html_response.text
