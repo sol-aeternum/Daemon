@@ -300,6 +300,87 @@ class TestDirectStrategy:
 
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_cookies_preserved_across_redirect_hops(self, fetch_policy):
+        """P2 — Codex round-6 finding: cookies carry across redirect hops.
+
+        Public sites commonly set a cookie on a redirect response and
+        require it at the destination (session/consent/anti-bot flows).
+        The fix threads a single ``httpx.Cookies()`` jar through every
+        per-address client and every redirect hop so Set-Cookie responses
+        drive the Cookie header of the next hop. This test fakes a
+        redirect chain via ``httpx.MockTransport`` that issues
+        ``Set-Cookie: session=secret`` on the first hop and asserts the
+        second hop's request includes that cookie in its Cookie header.
+        """
+        from orchestrator.tools.ssrf_guard import ValidatedUrl
+
+        request_log: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            request_log.append(request)
+            # First hop: 302 with Set-Cookie header.
+            if len(request_log) == 1:
+                return httpx.Response(
+                    302,
+                    headers={
+                        "location": "https://example.com/dest",
+                        "set-cookie": "session=secret",
+                    },
+                    request=request,
+                )
+            # Second hop: 200 OK.
+            return httpx.Response(
+                200,
+                text="final content body",
+                headers={"content-type": "text/html"},
+                request=request,
+            )
+
+        transport = httpx.MockTransport(handler)
+
+        async def validate(url, *args, **kwargs):
+            return ValidatedUrl(
+                url=url,
+                host="example.com",
+                port=443,
+                addresses=("93.184.216.34",),
+            )
+
+        # Patch ``httpx.AsyncClient`` to inject our MockTransport while
+        # still using the real ``cookies`` jar semantics.
+        original_async_client = httpx.AsyncClient
+
+        def patched_async_client(*args, **kwargs):
+            kwargs["transport"] = transport
+            return original_async_client(*args, **kwargs)
+
+        with (
+            patch(
+                "orchestrator.services.fetch.strategies.direct.validate_url_and_resolve_async",
+                new_callable=AsyncMock,
+                side_effect=validate,
+            ),
+            patch(
+                "httpx.AsyncClient",
+                side_effect=patched_async_client,
+            ),
+        ):
+            result = await DirectFetchStrategy(fetch_policy).fetch("https://example.com/start")
+
+        assert result is not None
+        assert result.content == "final content body"
+        # Two HTTP calls: 302 -> 200.
+        assert len(request_log) == 2
+        first_request = request_log[0]
+        second_request = request_log[1]
+        # First hop sent no Cookie header.
+        assert first_request.headers.get("cookie") is None
+        # Second hop includes the cookie set on the first hop's redirect.
+        cookie_header = second_request.headers.get("cookie")
+        assert cookie_header is not None
+        assert "session=secret" in cookie_header
+
 
 class TestYouTubeStrategy:
     @pytest.mark.asyncio

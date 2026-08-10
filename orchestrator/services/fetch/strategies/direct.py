@@ -6,6 +6,7 @@ import asyncio
 import logging
 import random
 import time
+from typing import Any
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
@@ -158,6 +159,15 @@ class DirectFetchStrategy:
             # could consume ``_PER_FETCH_DEADLINE_SECONDS × hops`` of
             # wall time on silently-dropping addresses.
             deadline_at = time.monotonic() + _PER_FETCH_DEADLINE_SECONDS
+            # Shared across every per-address ``AsyncClient`` *and* every
+            # redirect hop so Set-Cookie responses from one hop can drive
+            # the Cookie header of the next hop. Per-address clients are
+            # still created fresh — only the cookie jar is shared, not the
+            # connection pool. (P2 finding from Codex review: sites that
+            # set a cookie on a redirect and require it at the destination
+            # were losing the cookie when the per-address client was
+            # destroyed after each hop.)
+            shared_cookies = httpx.Cookies()
             for redirect_count in range(_MAX_REDIRECTS + 1):
                 # ``remaining`` is recomputed at the top of every hop and
                 # passed down to both DNS validation and the address
@@ -231,6 +241,7 @@ class DirectFetchStrategy:
                     sni_hostname=sni_hostname,
                     user_agent=user_agent,
                     deadline_at=deadline_at,
+                    cookies=shared_cookies,
                 )
                 if response is None:
                     # Every validated address was unreachable. Return ``None``
@@ -280,6 +291,7 @@ class DirectFetchStrategy:
         sni_hostname: str,
         user_agent: str,
         deadline_at: float,
+        cookies: httpx.Cookies | None = None,
     ) -> httpx.Response | None:
         """Issue ``GET current_url`` against each validated address in turn.
 
@@ -290,7 +302,12 @@ class DirectFetchStrategy:
 
         A fresh ``httpx.AsyncClient`` is used per address so the pinned-IP
         connection pool is never reused across distinct addresses (which would
-        otherwise reuse a connection keyed to the wrong host).
+        otherwise reuse a connection keyed to the wrong host). When ``cookies``
+        is provided, that jar is shared across every per-address client in
+        this hop so Set-Cookie responses from one attempt can drive the
+        Cookie header of the next attempt; the caller is responsible for
+        keeping the same jar alive across redirect hops so cookies set on
+        a redirect response are available at the destination.
 
         ``deadline_at`` (a ``time.monotonic()`` absolute timestamp from the
         caller's redirect loop) bounds the cumulative wall time of every
@@ -328,9 +345,17 @@ class DirectFetchStrategy:
             # without ever tripping the inactivity timeout.
             attempt_timeout = min(_PER_ADDRESS_TIMEOUT_SECONDS, remaining)
             try:
-                async with httpx.AsyncClient(
-                    timeout=attempt_timeout, follow_redirects=False, trust_env=False
-                ) as client:
+                client_kwargs: dict[str, Any] = {
+                    "timeout": attempt_timeout,
+                    "follow_redirects": False,
+                    "trust_env": False,
+                }
+                if cookies is not None:
+                    # Seed every per-address client with the shared jar so
+                    # cookies set on prior attempts (this hop or a prior
+                    # redirect hop) ride along with the next attempt.
+                    client_kwargs["cookies"] = cookies
+                async with httpx.AsyncClient(**client_kwargs) as client:
                     response = await asyncio.wait_for(
                         client.get(
                             _pin_url_to_address(current_url, address),
@@ -339,6 +364,14 @@ class DirectFetchStrategy:
                         ),
                         timeout=remaining,
                     )
+                    if cookies is not None:
+                        # ``httpx.AsyncClient`` copies the cookies argument
+                        # into its own internal jar, so the shared jar is
+                        # only updated *after* the response arrives. Mirror
+                        # every jar mutation back so subsequent attempts
+                        # (this hop or the next redirect hop) see cookies
+                        # set by this attempt.
+                        cookies.update(client.cookies)
                 return response
             except (httpx.RequestError, asyncio.TimeoutError) as exc:
                 last_error = exc
