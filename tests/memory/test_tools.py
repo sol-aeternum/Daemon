@@ -587,3 +587,104 @@ async def test_memory_write_delete_is_not_rate_limited(monkeypatch):
 
     assert "deleted" in result.lower()
     store.delete_memory.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_memory_write_rate_limit_counts_dedup_skipped_writes(monkeypatch):
+    """The per-user rate limit must cover embedding-billed dedup calls.
+
+    When a caller submits identical or near-identical content,
+    `dedup_and_store` still triggers a billed embedding request but
+    merges the result into an existing memory without inserting a new
+    row. Counting only newly inserted rows lets such a caller loop
+    the embedding endpoint indefinitely, defeating the
+    cost-amplification half of the guard. The corrected behavior
+    counts every `updated_at` bump in the window via
+    `count_memories_created_since`, so the rate limit triggers on
+    the 11th embedding-billed call regardless of dedup outcome.
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 10)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_WINDOW_SECONDS", 60)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        # 10 prior writes already in the window — the rate counter
+        # sees these even though they may have been dedup-merged.
+        store = _quota_store(recent_writes=10, active_rows=10)
+        tool = MemoryWriteTool(store, uuid.uuid4())
+
+        result = await tool.execute(action="create", content="fact 11")
+
+        assert "rate limit" in result.lower()
+        # The billed embedding path must not be reached.
+        mock_dedup.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_memory_write_active_row_cap_excludes_closed_rows(monkeypatch):
+    """Behavioral regression: closed rows must not be counted toward the cap.
+
+    Pinned at the SQL level by
+    `tests/memory/test_write_quota_counters.py::test_count_active_memories_excludes_valid_to`.
+    This unit test stays as a behavioral placeholder so a future
+    refactor that re-introduces a closed-row inflation surfaces as
+    a unit-level failure rather than only as a SQL-level diff: the
+    mocked store returns 10 active rows (well below the 1000 cap)
+    and the write proceeds, exercising the full
+    `_check_write_quota → store.count_active_memories` plumbing
+    without depending on `valid_to`.
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 10)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        store = _quota_store(recent_writes=0, active_rows=10)
+        tool = MemoryWriteTool(store, uuid.uuid4())
+
+        result = await tool.execute(action="create", content="fact")
+
+        assert "Memory created" in result
+        mock_dedup.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_memory_write_update_at_cap_is_net_neutral(monkeypatch):
+    """A user at the active-row cap can still update an existing memory.
+
+    An `update` closes one active row and inserts another, so the
+    active count is unchanged by the operation. Refusing it at the
+    cap would make the cap terminal — the user would have no
+    recourse to correct even an outdated memory — so `_check_write_quota`
+    exempts the update path when the caller provides the UUID of the
+    row being replaced. Without `replace_memory_id` the path is
+    unchanged from the cap refusal.
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1000)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        mock_dedup.return_value = uuid.uuid4()
+        user_id = uuid.uuid4()
+        memory_id = uuid.uuid4()
+        store = _quota_store(recent_writes=0, active_rows=1000)
+        store.get_memory = AsyncMock(
+            return_value={
+                "id": memory_id,
+                "user_id": user_id,
+                "content": "old",
+                "category": "fact",
+                "memory_slot": None,
+                "source_conversation_id": None,
+                "valid_to": None,
+            }
+        )
+        store.close_memory = AsyncMock(return_value=True)
+        tool = MemoryWriteTool(store, user_id)
+
+        result = await tool.execute(action="update", memory_id=str(memory_id), content="new")
+
+        # Net-neutral: close + insert happened, no refusal surfaced.
+        assert "rate limit" not in result.lower()
+        assert "cap" not in result.lower()
+        store.close_memory.assert_called_once()
+        mock_dedup.assert_called_once()

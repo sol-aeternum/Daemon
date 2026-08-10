@@ -918,22 +918,30 @@ class MemoryStore:
         *,
         since: datetime,
     ) -> int:
-        """Count rows this user inserted into `memories` at or after `since`.
+        """Count rows this user wrote to `memories` at or after `since`.
 
         Used by the `memory_write` tool's per-user write-rate guard
-        (issue #62). Every status is counted, including `superseded` and
-        `deleted`: an `update` closes one row and inserts another, and a
-        soft `delete` leaves the row in place, so a status filter here
-        would let a caller launder unlimited writes through the
-        update/delete path. `idx_memories_created_at` plus the
-        `user_id` predicate keeps the scan bounded.
+        (issue #62). Counts every row whose `updated_at` falls in the
+        window, not just newly inserted rows: a dedup call that merges
+        the new content into an existing memory still triggers a billed
+        embedding request, and `dedup.py` advances `updated_at` on the
+        matching row. Counting only `created_at` would let an attacker
+        that submits identical content loop the embedding endpoint
+        without ever bumping the counter, defeating the
+        cost-amplification half of the guard. `idx_memories_updated_at`
+        plus the `user_id` predicate keeps the scan bounded.
+
+        Status is intentionally **not** filtered: an `update` closes one
+        row and inserts another, and a soft `delete` leaves the row in
+        place, so a status filter would let a caller launder unlimited
+        writes through the update/delete path.
         """
         row = await self._pool.fetchrow(
             """
             SELECT COUNT(*) AS count
             FROM memories
             WHERE user_id = $1
-              AND created_at >= $2
+              AND updated_at >= $2
             """,
             user_id,
             since,
@@ -941,14 +949,19 @@ class MemoryStore:
         return int(row["count"]) if row else 0
 
     async def count_active_memories(self, user_id: uuid.UUID) -> int:
-        """Count this user's active (non-superseded, non-deleted) memories.
+        """Count this user's currently-open active memories.
 
         Used by the `memory_write` tool's per-user storage cap (issue
-        #62). Only `status = 'active'` is counted, so consolidating or
-        deleting memories genuinely frees quota — that is what makes the
-        cap-exceeded message ("consolidate or delete") actionable rather
-        than terminal. Served by the partial index
-        `idx_memories_user_status`.
+        #62). Filters on `status = 'active' AND valid_to IS NULL`: rows
+        that have been superseded or closed (`close_memory`,
+        `supersede_memory`) leave `status = 'active'` set but flip
+        `valid_to = NOW()`, so without the `valid_to` predicate a
+        user's historical revisions would inflate the count past the
+        cap. Consolidating or deleting a memory genuinely frees quota,
+        which is what makes the cap-exceeded message ("consolidate or
+        delete") actionable rather than terminal. Served by the partial
+        index `idx_memories_user_status` plus the `valid_to` predicate
+        pushed into the same scan.
         """
         row = await self._pool.fetchrow(
             """
@@ -956,6 +969,7 @@ class MemoryStore:
             FROM memories
             WHERE user_id = $1
               AND status = 'active'
+              AND valid_to IS NULL
             """,
             user_id,
         )

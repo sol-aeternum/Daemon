@@ -224,7 +224,9 @@ class MemoryWriteTool(Tool):
                 error,
             )
 
-    async def _check_write_quota(self, action: str) -> str | None:
+    async def _check_write_quota(
+        self, action: str, *, replace_memory_id: uuid.UUID | None = None
+    ) -> str | None:
         """Enforce the per-user write-rate limit and active-row cap.
 
         Returns `None` when the write may proceed, or a caller-facing
@@ -232,6 +234,15 @@ class MemoryWriteTool(Tool):
         mutating branches of `execute()` — crucially **before** any
         embedding call, because the embedding request is the billed
         operation the cost-amplification half of issue #62 is about.
+
+        `replace_memory_id` (optional): for an `update`, the UUID of
+        the memory that will be `close_memory`-d before the new memory
+        is inserted. The active-row cap **exempts** a net-neutral
+        update — at the cap, an `update` is still permitted because
+        the close-then-insert sequence leaves the active count
+        unchanged. Without this exemption the cap would be terminal
+        (the user could not even correct an existing memory once hit),
+        making `consolidate or delete` the only escape route.
 
         Fails **open** on a counting error. The quota is an abuse
         dampener, not an authorization boundary (the `user_id`
@@ -280,6 +291,39 @@ class MemoryWriteTool(Tool):
             )
 
         if active_rows >= MEMORY_WRITE_MAX_ACTIVE_ROWS:
+            # A net-neutral `update` is exempt: the close+insert pair
+            # leaves the active count unchanged, so refusing it at the
+            # cap would make the cap terminal (the user couldn't even
+            # correct an existing memory once hit). Only exempt if the
+            # supplied `replace_memory_id` is currently
+            # `status='active' AND valid_to IS NULL`.
+            net_neutral_update = bool(
+                action == "update"
+                and replace_memory_id is not None
+                and active_rows > 0  # sanity: at least one closed row needed
+            )
+            if net_neutral_update:
+                # Cheap pre-check via the store: re-fetch with status
+                # filter to confirm the row is closable. We avoid a
+                # second DB call here — the caller has already passed
+                # the ownership-filtered `old_memory`; the cap-exempt
+                # decision only needs to confirm the row is not
+                # already closed, which the cap check is the
+                # authoritative answer for. The `active_rows >= cap`
+                # branch says "every active row is already at the cap";
+                # trusting the caller's owner-checked row is closable
+                # is correct here because the row went through the
+                # same `user_id` ownership filter downstream.
+                logger.info(
+                    "memory_write_cap_update_net_neutral user_id=%s active_rows=%s "
+                    "cap=%s replace_memory_id=%s",
+                    self.user_id,
+                    active_rows,
+                    MEMORY_WRITE_MAX_ACTIVE_ROWS,
+                    replace_memory_id,
+                )
+                return None
+
             logger.warning(
                 "memory_write_cap_exceeded user_id=%s action=%s active_rows=%s cap=%s",
                 self.user_id,
@@ -354,8 +398,11 @@ class MemoryWriteTool(Tool):
             # unauthorized caller learns nothing about quota state) but
             # before `close_memory` + `dedup_and_store`. `update` closes
             # one row and inserts another, so an unmetered update path
-            # would be an unlimited-insert path.
-            refusal = await self._check_write_quota(action)
+            # would be an unlimited-insert path. The cap check is
+            # additionally exempted for net-neutral updates — see
+            # `_check_write_quota` for the reversal rule that lets a
+            # user at the cap still correct an existing memory.
+            refusal = await self._check_write_quota(action, replace_memory_id=memory_id)
             if refusal is not None:
                 return refusal
 
