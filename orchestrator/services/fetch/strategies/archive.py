@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import cast
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 
@@ -13,6 +15,36 @@ from orchestrator.services.fetch.models import FetchResult, FetchPolicy
 from orchestrator.tools.ssrf_guard import SsrfViolation, socket_guard, validate_url
 
 logger = logging.getLogger(__name__)
+
+
+# Wayback Machine hosts that legitimately serve snapshot content. The
+# availability API sometimes returns ``closest.url`` in legacy ``http://``
+# form even though the canonical URL is ``https://``. We upgrade the
+# scheme→https and host→web.archive.org (collapsing ``www.web.archive.org``
+# to its apex) before the SSRF pre-flight so legitimate snapshot URLs are
+# not falsely rejected by the https-only ``ALLOWED_SCHEMES`` policy. The
+# upgrade is host-scoped — it cannot widen the SSRF policy for any other
+# host.
+_LEGACY_WAYBACK_HOSTS = frozenset({"web.archive.org", "www.web.archive.org"})
+
+
+def _upgrade_legacy_wayback_url(url: str) -> str:
+    """Return ``url`` with the Wayback host normalised to ``https://web.archive.org``.
+
+    Pass-through for any URL whose host is not a known Wayback host — the
+    SSRF pre-flight is the authoritative gate, not this helper.
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return url
+    if parsed.hostname is None or parsed.hostname.lower() not in _LEGACY_WAYBACK_HOSTS:
+        return url
+    host = "web.archive.org"
+    netloc = host
+    if parsed.port is not None:
+        netloc = f"{host}:{parsed.port}"
+    return urlunparse(parsed._replace(scheme="https", netloc=netloc))
 
 
 class ArchiveOrgStrategy:
@@ -35,7 +67,12 @@ class ArchiveOrgStrategy:
             # Check Wayback availability API
             availability_url = f"https://archive.org/wayback/available?url={url}"
 
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            # ``trust_env=False`` disables honouring of HTTPS_PROXY/ALL_PROXY
+            # and the no_proxy bypass list from the process environment, so
+            # the SSRF guard cannot be bypassed by an operator-configured
+            # proxy that resolves only the public hostname but routes
+            # traffic elsewhere.
+            async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
                 response = await client.get(availability_url)
                 _ = response.raise_for_status()
 
@@ -95,8 +132,19 @@ class ArchiveOrgStrategy:
                 # actual HTTP call to re-validate at connect time (so a
                 # DNS-rebinding response between pre-flight and connect
                 # cannot bypass the policy).
+                #
+                # Wayback availability commonly returns ``closest.url`` in
+                # ``http://web.archive.org/...`` form even though the
+                # ``https://`` form is canonical. Upgrade scheme→https and
+                # host→web.archive.org before the SSRF pre-flight so a
+                # legitimate legacy URL is not falsely rejected by the
+                # https-only ``ALLOWED_SCHEMES`` policy. The upgrade is
+                # host-scoped to ``web.archive.org`` (and the explicit
+                # ``www.web.archive.org`` alias) so it cannot widen the
+                # policy for attacker-controlled hosts.
+                archive_url = _upgrade_legacy_wayback_url(archive_url)
                 try:
-                    validated_url = validate_url(archive_url)
+                    validated_url = await asyncio.to_thread(validate_url, archive_url)
                 except SsrfViolation as exc:
                     logger.warning(
                         "Archive snapshot URL %s violates SSRF policy: %s; refusing to fetch",
@@ -105,6 +153,19 @@ class ArchiveOrgStrategy:
                     )
                     raise
 
+                # ``socket_guard`` is intentionally process-global for the
+                # duration of the awaited request — that's the design: every
+                # DNS lookup during the second-hop HTTP call (initial
+                # validation, connect-time resolution, retries) must be
+                # forced through the public-IP policy or the rebinding
+                # window between pre-flight and connect opens. The guard is
+                # reference-counted under a lock so concurrent callers are
+                # safe, but overlapping coroutines that issue unrelated DNS
+                # lookups during this window will inherit the policy. That
+                # is acceptable because the SSRF policy is a
+                # whole-process invariant — unrelated callers that needed
+                # private-IP resolution would be a separate configuration
+                # bug, not a side effect of this strategy.
                 with socket_guard():
                     html_response = await client.get(validated_url)
                 _ = html_response.raise_for_status()

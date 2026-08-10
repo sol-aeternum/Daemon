@@ -306,10 +306,40 @@ class TestArchiveOrgStrategy:
     async def test_fetch_ssrf_non_https_url_rejected(self, fetch_policy):
         """Plain http:// archive URLs are rejected by the SSRF policy
         (only ``https`` is in ALLOWED_SCHEMES). This covers a poison
-        vector where the archive URL is downgraded to plaintext http.
+        vector where the archive URL is downgraded to plaintext http
+        pointing at a non-Wayback host — Wayback ``http://`` URLs are
+        upgraded to ``https://web.archive.org`` before validation (see
+        ``_upgrade_legacy_wayback_url``).
         """
         from orchestrator.tools.ssrf_guard import SsrfViolation
 
+        strategy = ArchiveOrgStrategy(fetch_policy)
+
+        mock_availability_response = MagicMock()
+        mock_availability_response.json.return_value = {
+            "archived_snapshots": {
+                "closest": {
+                    "available": True,
+                    "url": "http://evil.example.com/web/20230101000000/https://example.com",
+                    "timestamp": datetime.now(UTC).strftime("%Y%m%d%H%M%S"),
+                }
+            }
+        }
+        mock_availability_response.raise_for_status = MagicMock()
+
+        with patch("httpx.AsyncClient.get", return_value=mock_availability_response):
+            with pytest.raises(SsrfViolation):
+                await strategy.fetch("https://example.com")
+
+    @pytest.mark.asyncio
+    async def test_fetch_wayback_legacy_http_upgraded_to_https(self, fetch_policy):
+        """Wayback availability commonly returns ``closest.url`` in
+        ``http://web.archive.org/...`` form. The strategy upgrades the
+        scheme→https before SSRF validation so a legitimate legacy URL
+        is not falsely rejected by the https-only ``ALLOWED_SCHEMES``
+        policy. Without the upgrade, every Archive.org snapshot would
+        fail pre-flight because the Wayback API serves http.
+        """
         strategy = ArchiveOrgStrategy(fetch_policy)
 
         mock_availability_response = MagicMock()
@@ -323,10 +353,26 @@ class TestArchiveOrgStrategy:
             }
         }
         mock_availability_response.raise_for_status = MagicMock()
+        mock_content_response = MagicMock()
+        mock_content_response.text = "<html><body>sufficiently long archived content for testing the wayback http→https upgrade. We need to make sure this content is long enough to pass content validation across the chain.</body></html>"
+        mock_content_response.headers = {"content-type": "text/html"}
+        mock_content_response.raise_for_status = MagicMock()
 
-        with patch("httpx.AsyncClient.get", return_value=mock_availability_response):
-            with pytest.raises(SsrfViolation):
-                await strategy.fetch("https://example.com")
+        with (
+            patch("httpx.AsyncClient.get") as mock_get,
+            patch(
+                "orchestrator.services.fetch.strategies.archive.html_to_markdown",
+                return_value="sufficiently long archived content for testing the wayback http→https upgrade.",
+            ),
+        ):
+            mock_get.side_effect = [mock_availability_response, mock_content_response]
+            result = await strategy.fetch("https://example.com")
+
+        # Confirm the second-hop GET was issued against the upgraded
+        # https URL, not the http URL returned by the availability API.
+        assert result is not None
+        second_hop_url = mock_get.call_args_list[1].args[0]
+        assert second_hop_url.startswith("https://web.archive.org/")
 
     @pytest.mark.asyncio
     async def test_fetch_uses_socket_guard_around_httpx_get(self, fetch_policy):
