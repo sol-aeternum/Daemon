@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 import time
@@ -158,6 +159,19 @@ class DirectFetchStrategy:
             # wall time on silently-dropping addresses.
             deadline_at = time.monotonic() + _PER_FETCH_DEADLINE_SECONDS
             for redirect_count in range(_MAX_REDIRECTS + 1):
+                # ``remaining`` is recomputed at the top of every hop and
+                # passed down to both DNS validation and the address
+                # fallback. Without this, ``validate_url_and_resolve_async``
+                # would grant each redirect hop its own independent
+                # ``timeout`` budget and the shared deadline would not
+                # actually bound total wall time.
+                remaining = deadline_at - time.monotonic()
+                if remaining <= 0:
+                    logger.info(
+                        "Direct fetch abandoning %s: shared per-fetch deadline already exhausted",
+                        current_url,
+                    )
+                    return None
                 if _is_blocked_domain(current_url, self.policy.blocked_domains):
                     raise SsrfPolicyViolation(f"hostname is blocked by fetch policy: {current_url}")
                 try:
@@ -165,6 +179,7 @@ class DirectFetchStrategy:
                         current_url,
                         allowed_schemes=_FETCH_SCHEMES,
                         allowed_ports=_FETCH_PORTS,
+                        timeout=remaining,
                     )
                 except SsrfUnreachable as exc:
                     # Target unreachable (DNS timeout / gaierror / no
@@ -304,20 +319,28 @@ class DirectFetchStrategy:
                     _PER_FETCH_DEADLINE_SECONDS,
                 )
                 break
-            # Per-attempt timeout is bounded by the remaining budget so one
-            # fetch can never outlive ``_PER_FETCH_DEADLINE_SECONDS``.
+            # Per-attempt httpx timeout bounds inactivity for individual
+            # network operations (connect, read, write). The wall-clock
+            # ``asyncio.wait_for`` below is what actually bounds the
+            # entire ``client.get()`` against the shared deadline — a
+            # slow-drip server could otherwise send a byte every few
+            # seconds and keep ``client.get()`` alive indefinitely
+            # without ever tripping the inactivity timeout.
             attempt_timeout = min(_PER_ADDRESS_TIMEOUT_SECONDS, remaining)
             try:
                 async with httpx.AsyncClient(
                     timeout=attempt_timeout, follow_redirects=False, trust_env=False
                 ) as client:
-                    response = await client.get(
-                        _pin_url_to_address(current_url, address),
-                        headers={"User-Agent": user_agent, "Host": host_header},
-                        extensions={"sni_hostname": sni_hostname},
+                    response = await asyncio.wait_for(
+                        client.get(
+                            _pin_url_to_address(current_url, address),
+                            headers={"User-Agent": user_agent, "Host": host_header},
+                            extensions={"sni_hostname": sni_hostname},
+                        ),
+                        timeout=remaining,
                     )
                 return response
-            except httpx.RequestError as exc:
+            except (httpx.RequestError, asyncio.TimeoutError) as exc:
                 last_error = exc
                 logger.debug("Direct fetch address %s for %s failed: %s", address, current_url, exc)
                 continue

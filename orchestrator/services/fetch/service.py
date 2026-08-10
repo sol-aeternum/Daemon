@@ -52,6 +52,22 @@ def _canonicalize_hostname(hostname: str) -> str:
     return lowered.encode("idna").decode("ascii").rstrip(".")
 
 
+def _bases_for(token: str) -> tuple[int, ...]:
+    """Return the ``int`` bases libc will try for a numeric token.
+
+    Used by both the single-integer and dotted-form paths in
+    ``_resolve_numeric_ip_literal``. ``0x``/``0X`` prefixes indicate hex;
+    a leading ``0`` (with the rest being digits) indicates octal, with a
+    base-10 fallback for tokens like ``08`` that are not valid octal; all
+    other numeric tokens are decimal.
+    """
+    if token[:2] in ("0x", "0X"):
+        return (16,)
+    if token.startswith("0") and token != "":
+        return (8, 10)
+    return (10,)
+
+
 def _resolve_numeric_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
     """Return the canonical IP for legacy numeric forms ``getaddrinfo`` accepts.
 
@@ -78,6 +94,11 @@ def _resolve_numeric_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.
       ``0xA9.0xFE.0xA9.0xFE`` → ``169.254.169.254``. Parts are right-justified
       into the four-octet IPv4 layout: the final part fills the remaining
       octets, with overflow rolling into lower-order octets.
+    - Per-component octal grammar: dotted parts starting with ``0`` are
+      octal (with a base-10 fallback for parts like ``08`` that aren't valid
+      octal). Examples: ``0177.0.0.1`` → ``127.0.0.1``,
+      ``0177.1`` → ``127.0.0.1``, ``0251.0376.0251.0376`` →
+      ``169.254.169.254``.
 
     This parser does NOT accept the obsolete ``inet_aton`` forms that libc
     documents as accepting whitespace and leading signs (``+127``, `` 127``) —
@@ -92,26 +113,20 @@ def _resolve_numeric_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.
     # the same convention for compatibility — ``int(s, 0)`` rejects a bare
     # leading-zero decimal/octal ambiguity, so we explicitly try ``base=8``
     # for all-digit hosts that start with ``0``.
-    if host[:2] in ("0x", "0X"):
-        bases_to_try: tuple[int, ...] = (16,)
-    elif host.startswith("0"):
-        bases_to_try = (8, 10)
-    else:
-        bases_to_try = (10,)
     if all(c in "0123456789abcdefABCDEFxX" for c in host) and (
         host[0].isdigit() or host[:2] in ("0x", "0X")
     ):
-        for base in bases_to_try:
+        for base in _bases_for(host):
             try:
                 return ipaddress.IPv4Address(int(host, base))
             except (ValueError, ipaddress.AddressValueError):
                 continue
 
-    # Dotted form: 1-4 parts, each decimal or hex (``0x…``). libc packs
-    # them with parts[0] anchored at the highest-order byte and parts[-1]
-    # anchored at the lowest-order byte; intermediate parts fill the
-    # bytes in between. The shift pattern therefore depends on the number
-    # of parts:
+    # Dotted form: 1-4 parts, each independently decimal / hex (``0x…``) /
+    # octal (leading ``0``). libc packs them with parts[0] anchored at the
+    # highest-order byte and parts[-1] anchored at the lowest-order byte;
+    # intermediate parts fill the bytes in between. The shift pattern
+    # therefore depends on the number of parts:
     #
     #   1 part:  ``[0]``                                  (``127`` → ``0.0.0.127``)
     #   2 parts: ``[24, 0]``                              (``127.1`` → ``127.0.0.1``)
@@ -124,19 +139,37 @@ def _resolve_numeric_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.
     # rejects ``0xFF.0xFF.0xFF.0x100`` because parts[3] > 255. Overflow on
     # the rightmost part is preserved as the 32-bit integer naturally
     # truncates into the available octet slots.
+    #
+    # Each part's grammar follows the same rule as the single-integer path:
+    # ``0x``/``0X`` → hex, otherwise a leading ``0`` indicates octal (with
+    # base-10 fallback for parts like ``08`` that aren't valid octal),
+    # otherwise decimal. ``int(part, 0)`` would also work for the hex and
+    # decimal cases but rejects bare-octal forms like ``0177`` (which libc
+    # accepts), so we apply the same ``int(part, base)`` loop the
+    # single-integer path already uses.
     parts = host.split(".")
     if 1 <= len(parts) <= 4:
         values: list[int] = []
         ok = True
         for part in parts:
-            if not part:
+            if (
+                not part
+                or not part.isascii()
+                or not all(c in "0123456789abcdefABCDEFxX" for c in part)
+            ):
                 ok = False
                 break
-            try:
-                values.append(int(part, 0))
-            except ValueError:
+            parsed: int | None = None
+            for base in _bases_for(part):
+                try:
+                    parsed = int(part, base)
+                    break
+                except ValueError:
+                    continue
+            if parsed is None:
                 ok = False
                 break
+            values.append(parsed)
         # Non-final parts must each fit in a single octet.
         if ok:
             for v in values[:-1]:

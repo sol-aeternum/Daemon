@@ -946,6 +946,202 @@ class TestFetchService:
             fetch_service.cache.get.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_octal_component_ipv4_literals_rejected_before_cache(self, fetch_service):
+        """Per-component octal IPv4 forms must be rejected before cache access.
+
+        Mirrors Codex round-5 finding #4 — ``int(part, 0)`` rejects bare
+        octal forms like ``0177`` while libc accepts them. Without
+        per-component octal grammar support, ``0177.0.0.1`` resolves to
+        ``127.0.0.1`` under libc but slips past the parser and reaches the
+        cache layer. All four forms below must be classified as disallowed
+        before any cache lookup runs.
+        """
+        # (host string, expected IP it resolves to under inet_aton).
+        cases = (
+            ("0177.0.0.1", "127.0.0.1"),
+            ("0177.1", "127.0.0.1"),
+            ("0251.0376.0251.0376", "169.254.169.254"),
+        )
+        for host, expected_ip in cases:
+            fetch_service.cache.get = AsyncMock(return_value=None)
+            for strategy in (
+                fetch_service.direct_strategy,
+                fetch_service.jina_strategy,
+                fetch_service.crawl4ai_strategy,
+                fetch_service.archive_strategy,
+            ):
+                assert strategy is not None
+                strategy.fetch = AsyncMock(return_value=None)
+            url = f"http://{host}/"
+            result = await fetch_service.fetch(url)
+            assert result is None, (
+                f"per-component octal literal {host} (resolves to "
+                f"{expected_ip}) should be rejected as disallowed"
+            )
+            fetch_service.cache.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_redirect_dns_validation_uses_shared_deadline(self, fetch_policy):
+        """Each redirect hop's DNS validation must consume the shared budget.
+
+        Mirrors Codex round-5 finding #5 — ``validate_url_and_resolve_async``
+        previously granted each hop its own independent timeout, so a
+        chain of redirects could keep resolver workers occupied past the
+        shared ``_PER_FETCH_DEADLINE_SECONDS`` budget. The fix passes
+        ``timeout=remaining`` from the shared ``deadline_at`` into every
+        DNS-validation call, so subsequent hops see a strictly smaller
+        (or equal) timeout than the first hop.
+        """
+        from unittest.mock import MagicMock
+
+        from orchestrator.services.fetch.strategies import direct as _direct_module
+        from orchestrator.tools.ssrf_guard import ValidatedUrl
+
+        original_deadline = _direct_module._PER_FETCH_DEADLINE_SECONDS
+        original_attempt = _direct_module._PER_ADDRESS_TIMEOUT_SECONDS
+        try:
+            # Short deadline so the test is fast.
+            _direct_module._PER_FETCH_DEADLINE_SECONDS = 0.5
+            _direct_module._PER_ADDRESS_TIMEOUT_SECONDS = 0.2
+
+            validate_calls: list[float] = []
+
+            async def fast_validate(url, *args, **kwargs):
+                # Record the ``timeout`` argument so we can verify it
+                # shrinks across redirect hops.
+                timeout = kwargs.get("timeout")
+                validate_calls.append(timeout if timeout is not None else -1.0)
+                # Tiny sleep so the deadline actually shrinks between hops.
+                import asyncio as _asyncio
+
+                await _asyncio.sleep(0.05)
+                return ValidatedUrl(
+                    url=url, host="example.com", port=443, addresses=("93.184.216.34",)
+                )
+
+            def _redirect_response():
+                response = MagicMock()
+                response.status_code = 302
+                response.headers = {"location": "/hop_next"}
+                response.raise_for_status = MagicMock()
+                return response
+
+            with (
+                patch(
+                    "orchestrator.services.fetch.strategies.direct.validate_url_and_resolve_async",
+                    new_callable=AsyncMock,
+                    side_effect=fast_validate,
+                ) as mock_validate,
+                patch(
+                    "httpx.AsyncClient.get",
+                    new_callable=AsyncMock,
+                    return_value=_redirect_response(),
+                ),
+            ):
+                # Redirect chain will hit ``_MAX_REDIRECTS`` (5) and
+                # then return None.
+                result = await DirectFetchStrategy(fetch_policy).fetch(
+                    "https://example.com/article"
+                )
+
+            assert result is None
+            # Multiple hops reached — at least 3 (loop visits 6 total,
+            # minus the early termination once the deadline is gone).
+            assert mock_validate.await_count >= 3, (
+                f"expected >=3 redirect hops, got {mock_validate.await_count}"
+            )
+            # Each subsequent hop's timeout must be <= the previous one —
+            # if not, the shared deadline isn't actually being threaded
+            # into ``validate_url_and_resolve_async``. The first timeout
+            # is the full 0.5s budget; later timeouts shrink as the
+            # deadline ticks down.
+            first_timeout = validate_calls[0]
+            assert first_timeout > 0
+            for i, t in enumerate(validate_calls):
+                assert t <= first_timeout, (
+                    f"hop {i + 1} timeout {t} exceeds first-hop timeout "
+                    f"{first_timeout}: shared deadline is not being "
+                    f"threaded through"
+                )
+            # And the final timeout must be strictly smaller than the
+            # first — the budget shrinks across hops.
+            assert validate_calls[-1] < first_timeout, (
+                f"final timeout {validate_calls[-1]} did not shrink from "
+                f"first timeout {first_timeout}"
+            )
+        finally:
+            _direct_module._PER_FETCH_DEADLINE_SECONDS = original_deadline
+            _direct_module._PER_ADDRESS_TIMEOUT_SECONDS = original_attempt
+
+    @pytest.mark.asyncio
+    async def test_slow_drip_response_cannot_outlive_shared_deadline(self, fetch_policy):
+        """A slow-drip response is bounded by the shared wall-clock deadline.
+
+        Mirrors Codex round-5 finding #6 — ``httpx.Timeout`` is an
+        inactivity timeout, not an overall wall-clock bound. A server
+        that sends a byte every few seconds could keep ``client.get()``
+        alive indefinitely without tripping the per-attempt timeout.
+        The fix wraps ``client.get()`` in ``asyncio.wait_for`` with the
+        remaining budget, so the shared deadline actually bounds total
+        wall time even against an actively-streaming slow-drip response.
+        """
+        import asyncio as _asyncio
+        import time as _time
+        from unittest.mock import MagicMock
+
+        from orchestrator.services.fetch.strategies import direct as _direct_module
+
+        original_deadline = _direct_module._PER_FETCH_DEADLINE_SECONDS
+        original_attempt = _direct_module._PER_ADDRESS_TIMEOUT_SECONDS
+        try:
+            _direct_module._PER_FETCH_DEADLINE_SECONDS = 0.3
+            _direct_module._PER_ADDRESS_TIMEOUT_SECONDS = 2.0  # very generous
+
+            async def slow_drip_get(*args, **kwargs):
+                # Simulate a server that sends a byte every 100ms but
+                # never completes. The inactivity timeout (2s) is large
+                # enough that it never trips; the wall-clock deadline
+                # (0.3s) must kick in and abort the request.
+                start = _time.monotonic()
+                while _time.monotonic() - start < 5.0:
+                    await _asyncio.sleep(0.1)
+                # Should never reach here — ``asyncio.wait_for`` cancels us.
+                response = MagicMock()
+                response.status_code = 200
+                response.headers = {"content-type": "text/plain"}
+                response.text = "should not be returned"
+                return response
+
+            with (
+                patch(
+                    "orchestrator.tools.ssrf_guard._resolve_and_check",
+                    return_value=("93.184.216.34",),
+                ),
+                patch(
+                    "httpx.AsyncClient.get",
+                    new_callable=AsyncMock,
+                    side_effect=slow_drip_get,
+                ),
+            ):
+                started = _time.monotonic()
+                result = await DirectFetchStrategy(fetch_policy).fetch(
+                    "https://example.com/article"
+                )
+                elapsed = _time.monotonic() - started
+
+            assert result is None
+            # Slow-drip response was bounded by the shared deadline
+            # (~0.3s) rather than the inactivity timeout (2s) or the
+            # 5s self-loop the mock would otherwise run.
+            assert elapsed < 0.8, (
+                f"slow-drip response outlived shared deadline: {elapsed:.2f}s "
+                f"exceeds one deadline + slack"
+            )
+        finally:
+            _direct_module._PER_FETCH_DEADLINE_SECONDS = original_deadline
+            _direct_module._PER_ADDRESS_TIMEOUT_SECONDS = original_attempt
+
+    @pytest.mark.asyncio
     async def test_dns_unreachable_is_typed_separately_from_policy_violation(self, fetch_service):
         """``SsrfUnreachable`` must be caught and let fallbacks run.
 
