@@ -632,6 +632,21 @@ async def email_complete_endpoint(
 
     pepper = validate_and_get_pepper(settings)
     limiter = get_rate_limiter(request)
+    # Enforce the IP rate limit BEFORE cookie-policy validation so an
+    # unauthenticated caller cannot reach ``logger.exception`` and
+    # generate unbounded full tracebacks by repeatedly POSTing to
+    # ``/v1/auth/email/complete`` with bad cookies. CSRF and origin
+    # checks above already pass for minimally valid request bodies
+    # (round-1 Codex finding on PR #219).
+    await enforce_rate_limit(
+        request=request,
+        limiter=limiter,
+        endpoint="auth:email:complete",
+        policies=_email_complete_ip_rate_limit_policies(
+            request,
+            settings=settings,
+        ),
+    )
     cookie_config: RefreshCookieConfig | None = None
     if body.client_kind == "web":
         try:
@@ -656,16 +671,6 @@ async def email_complete_endpoint(
             ) from exc
 
     async with app_state.db_pool.acquire() as conn:
-        await enforce_rate_limit(
-            request=request,
-            limiter=limiter,
-            endpoint="auth:email:complete",
-            policies=_email_complete_ip_rate_limit_policies(
-                request,
-                settings=settings,
-            ),
-        )
-
         challenge_lookup = await _load_email_challenge_lookup(conn, challenge_uuid)
         challenge_scope = body.challenge_id
         if challenge_lookup is not None and challenge_lookup["normalized_email"]:
@@ -1096,6 +1101,17 @@ async def google_complete_endpoint(
 
     pepper = validate_and_get_pepper(settings)
     limiter = get_rate_limiter(request)
+    # Enforce the IP rate limit BEFORE cookie-policy validation so an
+    # unauthenticated caller cannot reach ``logger.exception`` and
+    # generate unbounded full tracebacks by repeatedly POSTing to
+    # ``/v1/auth/google/complete`` with bad cookies (round-1 Codex
+    # finding on PR #219; mirrors the email-complete fix).
+    await enforce_rate_limit(
+        request=request,
+        limiter=limiter,
+        endpoint="auth:google:complete",
+        policies=_google_complete_rate_limit_policies(request),
+    )
     cookie_config: RefreshCookieConfig | None = None
     if body.client_kind == "web":
         try:
@@ -1120,12 +1136,6 @@ async def google_complete_endpoint(
             ) from exc
 
     async with app_state.db_pool.acquire() as conn:
-        await enforce_rate_limit(
-            request=request,
-            limiter=limiter,
-            endpoint="auth:google:complete",
-            policies=_google_complete_rate_limit_policies(request),
-        )
         await enforce_rate_limit(
             request=request,
             limiter=limiter,
@@ -1571,7 +1581,7 @@ async def enroll_complete_endpoint(
             # endpoint (not the operator setup flow), so the trade-off
             # here is to keep the failure mode opaque to the caller.
             logger.exception(
-                "Cookie policy validation failed during refresh (request_id=%s, client_request_id=%s): %s",
+                "Cookie policy validation failed during /v1/auth/enroll/complete (request_id=%s, client_request_id=%s): %s",
                 _get_request_id_safe(request),
                 _get_client_request_id_safe(request),
                 e,

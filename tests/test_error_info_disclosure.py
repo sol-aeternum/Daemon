@@ -488,3 +488,122 @@ def test_handled_error_logs_include_request_id() -> None:
     )
     assert chat_match is not None
     assert "request_id=%s" in chat_match.group(0)
+
+
+def test_outer_cors_middleware_merges_vary_origin() -> None:
+    """Round-2 finding: when the outer middleware reflects the request
+    ``Origin`` into ``Access-Control-Allow-Origin``, the response must
+    carry ``Vary: Origin`` so intermediaries don't cache the response
+    and replay it for a different origin. The merge must be idempotent
+    and preserve any pre-existing ``Vary`` values.
+    """
+
+    from starlette.datastructures import MutableHeaders
+
+    from orchestrator.request_id import _merge_vary_origin
+
+    # No existing Vary header → adds one with Origin.
+    headers = MutableHeaders()
+    _merge_vary_origin(headers)
+    assert headers.get("Vary") == "Origin"
+
+    # Existing Vary with a different field → merges.
+    headers = MutableHeaders()
+    headers["Vary"] = "Accept-Encoding"
+    _merge_vary_origin(headers)
+    assert (headers.get("Vary") or "").lower() == "accept-encoding, origin"
+
+    # Already contains Origin (case-insensitive) → no duplicate.
+    headers = MutableHeaders()
+    headers["Vary"] = "origin, Accept-Encoding"
+    _merge_vary_origin(headers)
+    vary = headers.get("Vary") or ""
+    assert vary.lower().count("origin") == 1
+
+
+def test_outer_cors_middleware_calls_merge_vary_origin() -> None:
+    """Static check: ``_OuterCORSMiddleware`` calls the Vary-Origin
+    merge helper so the response cannot be cached cross-origin
+    (round-2 finding on PR #219).
+    """
+
+    request_id_source = (ROOT / "orchestrator" / "request_id.py").read_text()
+    assert "_merge_vary_origin" in request_id_source
+    assert "def _merge_vary_origin" in request_id_source
+    # The merge must be wired into the outer CORS send wrapper.
+    outer_block = re.search(
+        r"class _OuterCORSMiddleware.*?async def send_with_outer_cors.*?await send\(message\)",
+        request_id_source,
+        flags=re.DOTALL,
+    )
+    assert outer_block is not None
+    assert "_merge_vary_origin(headers)" in outer_block.group(0)
+
+
+def test_email_and_google_complete_rate_limit_runs_before_cookie_policy() -> None:
+    """Round-2 finding: ``logger.exception`` on a CookiePolicyError was
+    reachable BEFORE the IP rate limit fired, allowing an unauthenticated
+    caller to generate unbounded full tracebacks. The IP rate limit
+    must now run before cookie-policy validation in both
+    ``/v1/auth/email/complete`` and ``/v1/auth/google/complete``.
+    """
+
+    auth_source = (ROOT / "orchestrator" / "routes" / "auth_setup.py").read_text()
+
+    cases = [
+        # (function name, rate-limit call to look for, cookie-config call to look for)
+        (
+            "email_complete_endpoint",
+            "_email_complete_ip_rate_limit_policies",
+            "make_refresh_cookie_config(",
+        ),
+        (
+            "google_complete_endpoint",
+            "_google_complete_rate_limit_policies",
+            "make_refresh_cookie_config(",
+        ),
+    ]
+    for fn_name, rl_marker, cookie_marker in cases:
+        # Slice the function body from its ``async def`` to the next
+        # ``async def`` (or end of file).
+        fn_pattern = re.compile(
+            rf"async def {fn_name}\(.*?(?=^async def |\Z)",
+            flags=re.DOTALL | re.MULTILINE,
+        )
+        fn_match = fn_pattern.search(auth_source)
+        assert fn_match is not None, f"{fn_name} body not found"
+        body = fn_match.group(0)
+        # The IP rate-limit call must come BEFORE the cookie-policy
+        # validation block (which is the call to
+        # ``make_refresh_cookie_config``).
+        rl_idx = body.find(rl_marker)
+        cookie_idx = body.find(cookie_marker)
+        assert rl_idx >= 0, f"rate-limit marker {rl_marker!r} not found in {fn_name}"
+        assert cookie_idx >= 0, f"cookie marker {cookie_marker!r} not found in {fn_name}"
+        assert rl_idx < cookie_idx, (
+            f"in {fn_name}, rate limit (idx {rl_idx}) must run BEFORE "
+            f"cookie policy validation (idx {cookie_idx})"
+        )
+
+
+def test_enroll_complete_log_labels_event_as_enrollment_failure() -> None:
+    """Round-2 finding: the cookie-policy log entry inside
+    ``enroll_complete_endpoint`` previously said "during refresh",
+    sending operators searching by endpoint toward the wrong flow.
+    The log message must identify the enrollment endpoint.
+    """
+
+    auth_source = (ROOT / "orchestrator" / "routes" / "auth_setup.py").read_text()
+    enroll_match = re.search(
+        r"async def enroll_complete_endpoint\(.*?^async def ",
+        auth_source,
+        flags=re.DOTALL | re.MULTILINE,
+    )
+    assert enroll_match is not None
+    body = enroll_match.group(0)
+    # The fixed log message must be present in the enroll endpoint.
+    assert "during /v1/auth/enroll/complete" in body
+    # The old "during refresh" wording must NOT be present in the
+    # enroll endpoint (it would mislead operators searching the
+    # /v1/auth/refresh log channel).
+    assert "Cookie policy validation failed during refresh" not in body

@@ -79,6 +79,28 @@ def _has_header(headers: MutableHeaders, name: str) -> bool:
     return any(k.lower() == lowered for k in headers.keys())
 
 
+def _merge_vary_origin(headers: MutableHeaders) -> None:
+    """Ensure ``Origin`` is present in the response ``Vary`` header.
+
+    Required when an outer middleware reflects the request ``Origin`` in
+    ``Access-Control-Allow-Origin``: without ``Vary: Origin``, an
+    intermediary that caches the response for one origin can replay it
+    for a different origin, causing a same-origin policy violation in
+    the second origin's browser (round-1 Codex finding on PR #219).
+
+    Idempotent — merges into an existing ``Vary`` header rather than
+    overwriting it.
+    """
+
+    existing: list[str] = []
+    for key, value in headers.items():
+        if key.lower() == "vary":
+            existing.extend(part.strip() for part in value.split(",") if part.strip())
+    if "origin" not in {part.lower() for part in existing}:
+        existing.append("Origin")
+    headers["Vary"] = ", ".join(existing)
+
+
 class RequestIdMiddleware:
     """Add an X-Request-ID header to every response.
 
@@ -201,6 +223,12 @@ class _OuterCORSMiddleware:
                     headers["Access-Control-Allow-Credentials"] = "true"
                 if not _has_header(headers, "Access-Control-Expose-Headers"):
                     headers["Access-Control-Expose-Headers"] = REQUEST_ID_HEADER
+                # When the outer middleware reflects the request ``Origin``
+                # (round-1 Codex finding on PR #219), intermediaries can cache
+                # the response and replay it for a different origin. Append
+                # ``Origin`` to ``Vary`` so the response is not shared across
+                # origins.
+                _merge_vary_origin(headers)
             await send(message)
 
         await self.app(scope, receive, send_with_outer_cors)
