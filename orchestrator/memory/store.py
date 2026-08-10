@@ -912,6 +912,55 @@ class MemoryStore:
             raise
         return self._memory_row_to_dict(row)
 
+    async def count_memories_created_since(
+        self,
+        user_id: uuid.UUID,
+        *,
+        since: datetime,
+    ) -> int:
+        """Count rows this user inserted into `memories` at or after `since`.
+
+        Used by the `memory_write` tool's per-user write-rate guard
+        (issue #62). Every status is counted, including `superseded` and
+        `deleted`: an `update` closes one row and inserts another, and a
+        soft `delete` leaves the row in place, so a status filter here
+        would let a caller launder unlimited writes through the
+        update/delete path. `idx_memories_created_at` plus the
+        `user_id` predicate keeps the scan bounded.
+        """
+        row = await self._pool.fetchrow(
+            """
+            SELECT COUNT(*) AS count
+            FROM memories
+            WHERE user_id = $1
+              AND created_at >= $2
+            """,
+            user_id,
+            since,
+        )
+        return int(row["count"]) if row else 0
+
+    async def count_active_memories(self, user_id: uuid.UUID) -> int:
+        """Count this user's active (non-superseded, non-deleted) memories.
+
+        Used by the `memory_write` tool's per-user storage cap (issue
+        #62). Only `status = 'active'` is counted, so consolidating or
+        deleting memories genuinely frees quota — that is what makes the
+        cap-exceeded message ("consolidate or delete") actionable rather
+        than terminal. Served by the partial index
+        `idx_memories_user_status`.
+        """
+        row = await self._pool.fetchrow(
+            """
+            SELECT COUNT(*) AS count
+            FROM memories
+            WHERE user_id = $1
+              AND status = 'active'
+            """,
+            user_id,
+        )
+        return int(row["count"]) if row else 0
+
     async def get_memory(self, memory_id: uuid.UUID) -> dict[str, Any] | None:
         row = await self._pool.fetchrow(
             "SELECT * FROM memories WHERE id = $1",

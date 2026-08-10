@@ -5,6 +5,7 @@ import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import orchestrator.memory.tools as tools_module
 from orchestrator.memory.tools import MemoryReadTool, MemoryWriteTool
 
 
@@ -401,3 +402,188 @@ async def test_memory_write_invalid_category_returns_error():
 
     assert "Invalid category 'invalid_category'" in result
     assert "Use one of:" in result
+
+
+# ---------------------------------------------------------------------------
+# memory_write per-user quotas (issue #62)
+#
+# The tool is LLM-callable, so a prompt-injected model can loop on it.
+# Every call inserts a row AND issues a billed embedding request, so the
+# guard must refuse *before* `dedup_and_store` is reached. These tests
+# monkeypatch the module-level quota constants so they do not have to
+# simulate a thousand rows.
+# ---------------------------------------------------------------------------
+
+
+def _quota_store(*, recent_writes: int, active_rows: int) -> AsyncMock:
+    """An AsyncMock store whose quota counters return fixed values."""
+    store = AsyncMock()
+    store.count_memories_created_since = AsyncMock(return_value=recent_writes)
+    store.count_active_memories = AsyncMock(return_value=active_rows)
+    return store
+
+
+@pytest.mark.asyncio
+async def test_memory_write_allows_write_below_rate_limit(monkeypatch):
+    """The 10th write in the window still proceeds (limit is 10)."""
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 10)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        mock_dedup.return_value = uuid.uuid4()
+        store = _quota_store(recent_writes=9, active_rows=10)
+        tool = MemoryWriteTool(store, uuid.uuid4())
+
+        result = await tool.execute(action="create", content="fact 10")
+
+        assert "Memory created" in result
+        mock_dedup.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_memory_write_eleventh_write_in_window_is_refused(monkeypatch):
+    """Rate test from the issue: the 11th write in 60s returns an error."""
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 10)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_WINDOW_SECONDS", 60)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        store = _quota_store(recent_writes=10, active_rows=10)
+        tool = MemoryWriteTool(store, uuid.uuid4())
+
+        result = await tool.execute(action="create", content="fact 11")
+
+        assert "rate limit" in result.lower()
+        # The billed embedding path must not be reached.
+        mock_dedup.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_memory_write_rate_limit_refusal_precedes_embedding_call(monkeypatch):
+    """Cost-amplification guard: no embedding request on a refused write."""
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 3)
+
+    with (
+        patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup,
+        patch(
+            "orchestrator.memory.tools.embed_documents_with_metadata",
+            new_callable=AsyncMock,
+        ) as mock_embed,
+    ):
+        store = _quota_store(recent_writes=3, active_rows=0)
+        tool = MemoryWriteTool(store, uuid.uuid4())
+
+        result = await tool.execute(action="create", content="fact", slot="a_slot")
+
+        assert "rate limit" in result.lower()
+        mock_dedup.assert_not_called()
+        mock_embed.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_memory_write_active_row_cap_is_enforced(monkeypatch):
+    """Cap test from the issue: the 1001st active row is refused."""
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 10)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        store = _quota_store(recent_writes=0, active_rows=1000)
+        tool = MemoryWriteTool(store, uuid.uuid4())
+
+        result = await tool.execute(action="create", content="one too many")
+
+        assert "cap" in result.lower()
+        assert "consolidate" in result.lower()
+        mock_dedup.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_memory_write_update_is_also_rate_limited(monkeypatch):
+    """`update` closes one row and inserts another — it must be metered too."""
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 10)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        user_id = uuid.uuid4()
+        memory_id = uuid.uuid4()
+        store = _quota_store(recent_writes=10, active_rows=5)
+        store.get_memory = AsyncMock(
+            return_value={
+                "id": memory_id,
+                "user_id": user_id,
+                "content": "old",
+                "category": "fact",
+                "memory_slot": None,
+                "source_conversation_id": None,
+            }
+        )
+        tool = MemoryWriteTool(store, user_id)
+
+        result = await tool.execute(action="update", memory_id=str(memory_id), content="new")
+
+        assert "rate limit" in result.lower()
+        # No row is closed and no new row inserted on a refused update.
+        store.close_memory.assert_not_called()
+        mock_dedup.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_memory_write_quota_is_scoped_per_user(monkeypatch):
+    """The counters are queried with the calling user's id, not globally."""
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 10)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        mock_dedup.return_value = uuid.uuid4()
+        user_id = uuid.uuid4()
+        store = _quota_store(recent_writes=0, active_rows=0)
+        tool = MemoryWriteTool(store, user_id)
+
+        await tool.execute(action="create", content="fact")
+
+        rate_call = store.count_memories_created_since.await_args
+        assert rate_call is not None
+        assert rate_call.args[0] == user_id
+        assert rate_call.kwargs["since"].tzinfo is not None
+
+        cap_call = store.count_active_memories.await_args
+        assert cap_call is not None
+        assert cap_call.args[0] == user_id
+
+
+@pytest.mark.asyncio
+async def test_memory_write_quota_fails_open_on_counter_error(monkeypatch):
+    """A transient counting failure must not disable the user's memory.
+
+    The quota is an abuse dampener, not an authorization boundary — the
+    `user_id` ownership checks are the security control — so a database
+    error fails open rather than silently dropping writes.
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 10)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        mock_dedup.return_value = uuid.uuid4()
+        store = AsyncMock()
+        store.count_memories_created_since = AsyncMock(side_effect=RuntimeError("pool down"))
+        store.count_active_memories = AsyncMock(return_value=0)
+        tool = MemoryWriteTool(store, uuid.uuid4())
+
+        result = await tool.execute(action="create", content="fact")
+
+        assert "Memory created" in result
+        mock_dedup.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_memory_write_delete_is_not_rate_limited(monkeypatch):
+    """`delete` frees quota rather than consuming it, so it stays unmetered."""
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1)
+
+    user_id = uuid.uuid4()
+    memory_id = uuid.uuid4()
+    store = _quota_store(recent_writes=99, active_rows=99999)
+    store.get_memory = AsyncMock(return_value={"id": memory_id, "user_id": user_id})
+    tool = MemoryWriteTool(store, user_id)
+
+    result = await tool.execute(action="delete", memory_id=str(memory_id))
+
+    assert "deleted" in result.lower()
+    store.delete_memory.assert_called_once()
