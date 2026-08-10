@@ -1,3 +1,5 @@
+import time
+
 from orchestrator.services.fetch.url_extract import extract_urls
 
 
@@ -148,3 +150,13 @@ class TestExtractUrls:
         text = "Use api.example.com for the API"
         result = extract_urls(text)
         assert "api.example.com" in result
+
+    def test_adversarial_domain_input_is_linear_time(self):
+        text = "0." * 8000
+
+        started_at = time.perf_counter()
+        result = extract_urls(text)
+        elapsed = time.perf_counter() - started_at
+
+        assert result == []
+        assert elapsed < 0.5
