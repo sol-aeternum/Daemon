@@ -10,6 +10,7 @@ import httpx
 
 from orchestrator.services.fetch.extract import html_to_markdown
 from orchestrator.services.fetch.models import FetchResult, FetchPolicy
+from orchestrator.tools.ssrf_guard import SsrfViolation, socket_guard, validate_url
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,30 @@ class ArchiveOrgStrategy:
                     logger.warning(f"No archive URL in response for {url}")
                     return None
 
-                html_response = await client.get(archive_url)
+                # SSRF guard the second-hop URL before fetching. archive.org
+                # is trusted as a query source but the ``closest.url`` field
+                # it returns is attacker-influenceable through poisoning of
+                # the JSON response (e.g. a Jina-style proxy that forwards
+                # unverified upstream data, or a compromised intermediate
+                # cache). Mirror the SSRF contract documented in
+                # ``orchestrator/tools/ssrf_guard.py``: a pre-flight
+                # ``validate_url`` rejects disallowed schemes, ports,
+                # userinfo, and resolved IPs, and ``socket_guard`` wraps the
+                # actual HTTP call to re-validate at connect time (so a
+                # DNS-rebinding response between pre-flight and connect
+                # cannot bypass the policy).
+                try:
+                    validated_url = validate_url(archive_url)
+                except SsrfViolation as exc:
+                    logger.warning(
+                        "Archive snapshot URL %s violates SSRF policy: %s; refusing to fetch",
+                        archive_url,
+                        exc,
+                    )
+                    raise
+
+                with socket_guard():
+                    html_response = await client.get(validated_url)
                 _ = html_response.raise_for_status()
 
                 html_content = html_response.text
@@ -109,6 +133,14 @@ class ArchiveOrgStrategy:
                     content_length=len(markdown_content),
                 )
 
+        except SsrfViolation:
+            # SSRF violations must propagate so the strategy chain cannot
+            # fall back to a strategy that bypasses policy. The inner
+            # ``raise`` already logged the violation with the URL; here
+            # we only re-raise after not also logging it as a generic
+            # Archive.org fetch failure (which would confuse the
+            # operator's audit trail).
+            raise
         except Exception as e:
             logger.warning(f"Archive.org fetch failed for {url}: {e}")
             return None

@@ -271,6 +271,110 @@ class TestArchiveOrgStrategy:
 
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_fetch_ssrf_policy_violation_blocks_chain(self, fetch_policy):
+        """An archive URL whose host resolves to a disallowed IP must be
+        rejected with SsrfViolation, not silently fetched. The exception
+        propagates so the strategy chain cannot fall back to a strategy
+        that bypasses policy.
+        """
+        from orchestrator.tools.ssrf_guard import SsrfViolation
+
+        strategy = ArchiveOrgStrategy(fetch_policy)
+
+        # Mock availability response whose ``closest.url`` points to a
+        # literal IP in the link-local metadata range. Archive.org itself
+        # does not return such URLs, but a poisoned/relayed JSON
+        # response could.
+        mock_availability_response = MagicMock()
+        mock_availability_response.json.return_value = {
+            "archived_snapshots": {
+                "closest": {
+                    "available": True,
+                    "url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+                    "timestamp": datetime.now(UTC).strftime("%Y%m%d%H%M%S"),
+                }
+            }
+        }
+        mock_availability_response.raise_for_status = MagicMock()
+
+        with patch("httpx.AsyncClient.get", return_value=mock_availability_response):
+            with pytest.raises(SsrfViolation):
+                await strategy.fetch("https://example.com")
+
+    @pytest.mark.asyncio
+    async def test_fetch_ssrf_non_https_url_rejected(self, fetch_policy):
+        """Plain http:// archive URLs are rejected by the SSRF policy
+        (only ``https`` is in ALLOWED_SCHEMES). This covers a poison
+        vector where the archive URL is downgraded to plaintext http.
+        """
+        from orchestrator.tools.ssrf_guard import SsrfViolation
+
+        strategy = ArchiveOrgStrategy(fetch_policy)
+
+        mock_availability_response = MagicMock()
+        mock_availability_response.json.return_value = {
+            "archived_snapshots": {
+                "closest": {
+                    "available": True,
+                    "url": "http://web.archive.org/web/20230101000000/https://example.com",
+                    "timestamp": datetime.now(UTC).strftime("%Y%m%d%H%M%S"),
+                }
+            }
+        }
+        mock_availability_response.raise_for_status = MagicMock()
+
+        with patch("httpx.AsyncClient.get", return_value=mock_availability_response):
+            with pytest.raises(SsrfViolation):
+                await strategy.fetch("https://example.com")
+
+    @pytest.mark.asyncio
+    async def test_fetch_uses_socket_guard_around_httpx_get(self, fetch_policy):
+        """The second-hop httpx call must run under ``socket_guard`` so
+        a DNS-rebinding response between pre-flight ``validate_url`` and
+        the connect-time ``getaddrinfo`` cannot bypass the policy.
+        """
+        strategy = ArchiveOrgStrategy(fetch_policy)
+
+        mock_availability_response = MagicMock()
+        mock_availability_response.json.return_value = {
+            "archived_snapshots": {
+                "closest": {
+                    "available": True,
+                    "url": "https://web.archive.org/web/20230101000000/https://example.com",
+                    "timestamp": datetime.now(UTC).strftime("%Y%m%d%H%M%S"),
+                }
+            }
+        }
+        mock_availability_response.raise_for_status = MagicMock()
+        mock_content_response = MagicMock()
+        mock_content_response.text = "<html><body>sufficiently long archived content for testing the socket guard wrap. We need to make sure this content is long enough to pass content validation across the chain.</body></html>"
+        mock_content_response.headers = {"content-type": "text/html"}
+        mock_content_response.raise_for_status = MagicMock()
+
+        mock_socket_guard = MagicMock()
+        mock_socket_guard.__enter__ = MagicMock(return_value=None)
+        mock_socket_guard.__exit__ = MagicMock(return_value=None)
+
+        with (
+            patch("httpx.AsyncClient.get") as mock_get,
+            patch(
+                "orchestrator.services.fetch.strategies.archive.socket_guard",
+                return_value=mock_socket_guard,
+            ),
+            patch(
+                "orchestrator.services.fetch.strategies.archive.html_to_markdown",
+                return_value="sufficiently long archived content for testing the socket guard wrap.",
+            ),
+        ):
+            mock_get.side_effect = [mock_availability_response, mock_content_response]
+            result = await strategy.fetch("https://example.com")
+
+        assert result is not None
+        # Confirm the socket_guard context manager was entered exactly once
+        # (one guard wrap around the second-hop fetch).
+        assert mock_socket_guard.__enter__.call_count == 1
+
 
 class TestUrlExtraction:
     def test_url_extraction_accuracy(self):
