@@ -1,18 +1,23 @@
 # PWA Setup & Icon Generation
 
-This project is configured as a PWA. The manifest and metadata are set up.
+This project uses Serwist for service-worker generation and registration. The
+source worker lives at `app/sw.ts`; `npm run build` generates the ignored
+`public/sw.js` artifact for deployment and may emit supporting
+`public/swe-worker-*.js` chunks. The manifest, metadata, and app icons are
+committed.
 
 ## Icon Generation
 
-The source icon is located at `public/icons/icon.svg`.
-You need to generate the PNG icons for the PWA to work correctly on all devices.
+The source icon is located at `public/icons/icon.svg`. Regenerate the committed
+PNG variants only when that source icon changes.
 
 ### Using `sharp` (Recommended)
 
-1.  Install `sharp` (if not already installed, or use `npx`):
+1.  Install the locked frontend dependencies, which include `sharp` through
+    Next.js:
 
     ```bash
-    npm install sharp
+    npm ci
     ```
 
 2.  Create a script `generate-icons.js`:

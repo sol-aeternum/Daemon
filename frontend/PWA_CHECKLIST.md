@@ -1,5 +1,8 @@
 # PWA Checklist & Build Report
 
+> Historical audit snapshot. See `PWA_SETUP.md` and `IMPLEMENTATION.md` for the
+> current Serwist-based implementation.
+
 ## Build Status
 
 - **Result**: ❌ Failed
