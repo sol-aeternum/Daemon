@@ -125,7 +125,9 @@ from orchestrator.security_headers import (
 from orchestrator.request_id import (
     REQUEST_ID_HEADER,
     RequestIdMiddleware,
+    _OuterCORSMiddleware,
     _OuterRequestIdMiddleware,
+    get_client_request_id,
     get_request_id,
 )
 
@@ -137,7 +139,14 @@ CORS_ALLOW_HEADERS = (
     "Content-Type",
     "X-Daemon-Client-IP",
     "X-CSRF-Token",
+    "X-Request-ID",
 )
+
+# Headers the browser is allowed to read on a CORS response. Exposing
+# ``X-Request-ID`` lets browser code correlate its errors with server-side
+# logs; the value is server-generated (round-1 Codex finding on PR #218)
+# so an attacker cannot pre-stage collisions.
+CORS_EXPOSE_HEADERS = ("X-Request-ID",)
 
 
 def warn_on_unsafe_cors_wildcards(
@@ -394,6 +403,27 @@ _GENERIC_INTERNAL_ERROR = (
     "An internal error occurred. Please retry or contact support with the request id."
 )
 
+# Stable SSE error token for streaming error paths. Replaces `str(e)` in the
+# `delta.content` / SSE error envelope so provider, HTTP, and Python exception
+# text never reaches the client on the stream surface (issue #79 round-1
+# finding: streaming chat branches still leaked str(e) via the SSE error
+# payload). The token carries the request_id correlation handle; the full
+# exception is logged server-side.
+_SSE_INTERNAL_ERROR_TOKEN = (
+    "An internal error occurred. Please retry or contact support with the request id."
+)
+
+
+def _sse_error_message(request_id: str | None) -> str:
+    """Stable, sanitized error message for SSE error envelopes.
+
+    Returns the SSE token plus the request id so support has a correlation
+    handle. Never returns the original exception text.
+    """
+
+    rid = request_id or "-"
+    return f"{_SSE_INTERNAL_ERROR_TOKEN} (request_id={rid})"
+
 
 async def _generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Return a sanitized 500 response for any unhandled exception.
@@ -408,9 +438,11 @@ async def _generic_exception_handler(request: Request, exc: Exception) -> JSONRe
     """
 
     request_id = get_request_id(request) or "-"
+    client_request_id = get_client_request_id(request)
     logger.exception(
-        "Unhandled exception (request_id=%s): %s",
+        "Unhandled exception (request_id=%s, client_request_id=%s): %s",
         request_id,
+        client_request_id or "-",
         exc,
     )
     return JSONResponse(
@@ -436,6 +468,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=list(CORS_ALLOW_METHODS),
     allow_headers=list(CORS_ALLOW_HEADERS),
+    expose_headers=list(CORS_EXPOSE_HEADERS),
 )
 app.add_middleware(SecurityHeadersMiddleware)
 # Request ID middleware: assigns or reuses an X-Request-ID for every
@@ -1300,7 +1333,16 @@ async def openai_chat_completions(
                         yield "data: [DONE]\n\n"
 
             except Exception as e:
-                # Error in streaming
+                # Streaming error — never emit `str(e)` to the client
+                # (issue #79 round-1 finding). Server-side gets the full
+                # exception with the request id; the SSE error chunk
+                # carries the stable token plus the correlation handle.
+                request_id_local = get_request_id(request)
+                logger.exception(
+                    "Streaming chat completion error (request_id=%s): %s",
+                    request_id_local,
+                    e,
+                )
                 error_chunk = OpenAIChatStreamChunk(
                     id=f"chatcmpl-{new_request_id()}",
                     created=int(time.time()),
@@ -1308,7 +1350,9 @@ async def openai_chat_completions(
                     choices=[
                         OpenAIChoice(
                             index=0,
-                            delta=OpenAIDeltaMessage(content=f"Error: {str(e)}"),
+                            delta=OpenAIDeltaMessage(
+                                content=_sse_error_message(request_id_local),
+                            ),
                             finish_reason="stop",
                         )
                     ],
@@ -1389,7 +1433,9 @@ async def openai_chat_completions(
             # generic message so we do not leak Python exception text,
             # file paths, or asyncpg / httpx error details to the caller.
             logger.exception(
-                "OpenAI-compatible chat completion failed: %s",
+                "OpenAI-compatible chat completion failed (request_id=%s, client_request_id=%s): %s",
+                get_request_id(request),
+                get_client_request_id(request),
                 e,
             )
             raise HTTPException(status_code=500, detail=_GENERIC_INTERNAL_ERROR)
@@ -2177,6 +2223,14 @@ async def chat(
             ts = now_rfc3339()
             provider, model = effective_provider_and_model(settings, provider_config)
             model_for_events = selected_model or actual_model or model
+            # Sanitize the SSE error payload — never emit `str(e)` to the
+            # client (issue #79 round-1 finding). The request id is the
+            # correlation handle; the full exception is logged server-side.
+            logger.exception(
+                "Native /chat streaming error (request_id=%s): %s",
+                request_id,
+                e,
+            )
             # Emit a minimal `final` + `error` + `done` sequence to keep the SSE contract stable.
             yield sse(
                 "final",
@@ -2214,7 +2268,7 @@ async def chat(
                     "request_id": request_id,
                     "data": {
                         "code": "internal_error",
-                        "message": str(e),
+                        "message": _sse_error_message(request_id),
                         "retryable": False,
                     },
                 },
@@ -2273,3 +2327,15 @@ app.middleware_stack = _OuterSecurityHeadersMiddleware(_built_stack)
 # global exception handler attaches to its sanitized body.
 _id_built_stack = app.middleware_stack
 app.middleware_stack = _OuterRequestIdMiddleware(_id_built_stack)
+
+# Wrap once more with the outer CORS middleware so unhandled-500
+# responses reach the browser at an allowed origin (round-1 Codex
+# finding on PR #218). Starlette's ``ServerErrorMiddleware`` is
+# outermost, so the inner ``CORSMiddleware`` does not see unhandled
+# exceptions and the browser cannot read the sanitized body without
+# the response carrying ``Access-Control-Allow-Origin``.
+_cors_built_stack = app.middleware_stack
+app.middleware_stack = _OuterCORSMiddleware(
+    _cors_built_stack,
+    allowed_origins=tuple(_cors_allowed),
+)

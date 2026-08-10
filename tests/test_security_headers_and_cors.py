@@ -89,6 +89,11 @@ def test_cors_credentials_config_uses_explicit_methods_and_headers() -> None:
         "Content-Type",
         "X-CSRF-Token",
         "X-Daemon-Client-IP",
+        # X-Request-ID is now permitted on cross-origin requests so a
+        # trusted upstream proxy / load-test harness can propagate its
+        # own correlation handle. The response always carries a
+        # server-generated X-Request-ID regardless (PR #218 round-1).
+        "X-Request-ID",
     }
 
 

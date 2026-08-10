@@ -121,7 +121,14 @@ async def test_request_id_is_generated_when_no_header_provided() -> None:
 
 
 @pytest.mark.asyncio
-async def test_request_id_is_reused_when_inbound_header_valid() -> None:
+async def test_request_id_is_always_server_generated_when_inbound_provided() -> None:
+    """Round-1 fix: the inbound ``X-Request-ID`` is no longer reused as
+    the correlation handle (the response ``X-Request-ID`` is always
+    server-generated). The inbound value is preserved as
+    ``X-Client-Request-ID`` so upstream proxies / load-test harnesses
+    still have a handle.
+    """
+
     test_app = FastAPI()
 
     @test_app.get("/ok")
@@ -133,7 +140,12 @@ async def test_request_id_is_reused_when_inbound_header_valid() -> None:
     async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
         response = await client.get("/ok", headers={REQUEST_ID_HEADER_CONST: "req_existing_123"})
 
-    assert response.headers[REQUEST_ID_HEADER_CONST] == "req_existing_123"
+    # The correlation header is always server-generated.
+    rid = response.headers[REQUEST_ID_HEADER_CONST]
+    assert rid.startswith("req_")
+    assert rid != "req_existing_123"
+    # The inbound value is preserved as X-Client-Request-ID.
+    assert response.headers.get("X-Client-Request-ID") == "req_existing_123"
 
 
 @pytest.mark.asyncio
@@ -155,19 +167,25 @@ async def test_request_id_middleware_sanitizes_unsafe_inbound() -> None:
             headers={REQUEST_ID_HEADER_CONST: "evil\r\nSet-Cookie: pwn=1"},
         )
 
+    # The correlation header is the sanitized inbound (when it survives
+    # sanitization) under X-Client-Request-ID; X-Request-ID itself is
+    # always a fresh server-generated id.
     rid = response.headers[REQUEST_ID_HEADER_CONST]
-    assert "\r" not in rid
-    assert "\n" not in rid
-    # The middle should be replaced with underscores.
-    assert "evil" in rid
-    assert "Set-Cookie" in rid or "Set-Cookie: pwn=1" not in rid
+    assert rid.startswith("req_")
+    # The inbound is sanitized — CRLF replaced with underscores.
+    client_id = response.headers.get("X-Client-Request-ID", "")
+    assert "\r" not in client_id
+    assert "\n" not in client_id
+    assert "evil" in client_id
+    assert "Set-Cookie" in client_id or "Set-Cookie: pwn=1" not in client_id
 
 
 @pytest.mark.asyncio
 async def test_request_id_persisted_on_500_via_outer_wrap() -> None:
     """Unhandled exceptions are caught by Starlette's ``ServerErrorMiddleware``
     *outside* the user-added middleware. The outer wrap must still attach
-    the request id to the 500 response."""
+    the request id to the 500 response.
+    """
 
     crash_app = _build_crash_app_with_handler()
 
@@ -182,7 +200,13 @@ async def test_request_id_persisted_on_500_via_outer_wrap() -> None:
         response = await client.get("/boom", headers={REQUEST_ID_HEADER_CONST: "req_crash_42"})
 
     assert response.status_code == 500
-    assert response.headers[REQUEST_ID_HEADER_CONST] == "req_crash_42"
+    # The 500 carries a server-generated X-Request-ID (round-1 fix: the
+    # correlation id is always server-generated) and the inbound value
+    # under X-Client-Request-ID.
+    rid = response.headers[REQUEST_ID_HEADER_CONST]
+    assert rid.startswith("req_")
+    assert rid != "req_crash_42"
+    assert response.headers.get("X-Client-Request-ID") == "req_crash_42"
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +260,13 @@ async def test_unhandled_exception_includes_request_id_in_body() -> None:
 
     assert response.status_code == 500
     body = response.json()
-    assert body["request_id"] == "req_correlation_xyz"
+    # The body carries the server-generated correlation id (round-1 fix:
+    # the correlation handle is always server-generated to prevent an
+    # attacker from pre-staging a known id to pollute log searches).
+    assert body["request_id"].startswith("req_")
+    assert body["request_id"] != "req_correlation_xyz"
+    # The inbound value is preserved as the X-Client-Request-ID header.
+    assert response.headers.get("X-Client-Request-ID") == "req_correlation_xyz"
     assert body["detail"] == _GENERIC_INTERNAL_ERROR
 
 
@@ -334,3 +364,127 @@ def test_main_py_no_new_detail_str_e_in_runtime_error_branches() -> None:
         f"Expected detail=_GENERIC_INTERNAL_ERROR, got {detail_value!r}"
     )
     assert "str(e)" not in match.group(0)
+
+
+# ---------------------------------------------------------------------------
+# Round-1 (PR #218): additional regressions for the 5 Codex findings on
+# head fb5202f4 (review posted 2026-08-10T20:14Z).
+# ---------------------------------------------------------------------------
+
+
+def test_streaming_chat_branches_do_not_leak_str_e() -> None:
+    """Round-1 finding: streaming error branches in ``orchestrator/main.py``
+    (OpenAI-compatible chat at line 1302 and native ``/chat`` at line
+    2176) and ``orchestrator/daemon.py`` ``stream_sse_chat`` (line 795)
+    used to emit ``str(e)`` to the client on the SSE error payload.
+    Static gate: no ``f\"...{str(e)}\"`` literal in any of those branches.
+    """
+
+    main_source = (ROOT / "orchestrator" / "main.py").read_text()
+    daemon_source = (ROOT / "orchestrator" / "daemon.py").read_text()
+
+    # The streaming chat completion branch and the native /chat SSE
+    # error branch both used to contain `f"... {str(e)}"`. After the
+    # round-1 fix, they call _sse_error_message(...) which never takes
+    # the exception.
+    assert 'delta=OpenAIDeltaMessage(content=f"Error: {str(e)}")' not in main_source
+    assert '"message": str(e),' not in main_source
+    assert 'make_envelope("error", {"message": str(e)}' not in daemon_source
+    assert "terminal_reason = str(e)" not in daemon_source
+
+
+def test_cookie_policy_invalid_appears_in_all_four_endpoints() -> None:
+    """Round-1 finding: two ``detail=str(exc)`` callsites in
+    ``orchestrator/routes/auth_setup.py`` (lines 616 and 1067) leaked
+    ``daemon_cookie_secure=false is not allowed in production``. After
+    the fix, all four cookie-policy failure callsites use the stable
+    ``cookie_policy_invalid`` token.
+    """
+
+    auth_source = (ROOT / "orchestrator" / "routes" / "auth_setup.py").read_text()
+    assert auth_source.count("cookie_policy_invalid") >= 4, (
+        "Expected cookie_policy_invalid in all 4 cookie-policy failure "
+        "callsites (setup, refresh, /v1/auth/email/complete, "
+        "/v1/auth/google/complete); found "
+        f"{auth_source.count('cookie_policy_invalid')} occurrences."
+    )
+    # No detail=str(e) or detail=str(exc) leaks anywhere in auth_setup.
+    assert "detail=str(e)" not in auth_source
+    assert "detail=str(exc)" not in auth_source
+
+
+def test_request_id_is_always_server_generated() -> None:
+    """Round-1 finding: the inbound ``X-Request-ID`` was reused as the
+    sole correlation handle, allowing an attacker to pre-stage a known
+    id and pollute log searches. After the fix, every request gets a
+    server-generated ``req_`` prefix regardless of the inbound header.
+    """
+
+    request_id_module = (ROOT / "orchestrator" / "request_id.py").read_text()
+    # The fix introduced _resolve_request_id returning a tuple
+    # (server_id, inbound_id); the server id is always from _new_request_id().
+    assert "_new_request_id()" in request_id_module
+    assert "return sanitized or _new_request_id()" not in request_id_module, (
+        "Inbound X-Request-ID must not be reused as the correlation handle"
+    )
+
+
+def test_inbound_request_id_is_preserved_separately() -> None:
+    """Round-1 finding: with the new design, an inbound ``X-Request-ID``
+    must be surfaced as ``X-Client-Request-ID`` on the response so the
+    upstream proxy / load-test harness still has its correlation handle.
+    """
+
+    request_id_module = (ROOT / "orchestrator" / "request_id.py").read_text()
+    assert "CLIENT_REQUEST_ID_HEADER" in request_id_module
+    assert "X-Client-Request-ID" in request_id_module
+    assert "get_client_request_id" in request_id_module
+
+
+def test_cors_exposes_request_id_header() -> None:
+    """Round-1 finding: the CORS configuration did not expose
+    ``X-Request-ID``, so browser code at an allowed origin could not
+    read the correlation handle on cross-origin responses.
+    """
+
+    main_source = (ROOT / "orchestrator" / "main.py").read_text()
+    assert "CORS_EXPOSE_HEADERS" in main_source
+    assert "expose_headers=list(CORS_EXPOSE_HEADERS)" in main_source
+    assert "X-Request-ID" in main_source
+
+
+def test_outer_cors_middleware_is_wired() -> None:
+    """Round-1 finding: an unhandled 500 path bypasses the inner
+    ``CORSMiddleware`` (Starlette's ``ServerErrorMiddleware`` is
+    outermost), so browser code at an allowed origin cannot read the
+    sanitized body. The fix wraps the built stack with a new
+    ``_OuterCORSMiddleware`` that mirrors the CORS response headers
+    onto the unhandled-500 response.
+    """
+
+    main_source = (ROOT / "orchestrator" / "main.py").read_text()
+    assert "_OuterCORSMiddleware(" in main_source
+    request_id_module = (ROOT / "orchestrator" / "request_id.py").read_text()
+    assert "class _OuterCORSMiddleware" in request_id_module
+
+
+def test_handled_error_logs_include_request_id() -> None:
+    """Round-1 finding: handled-error log entries (cookie policy and
+    OpenAI-compatible chat completion) omitted the request id so
+    support could not correlate the sanitized response with the
+    server-side traceback.
+    """
+
+    auth_source = (ROOT / "orchestrator" / "routes" / "auth_setup.py").read_text()
+    main_source = (ROOT / "orchestrator" / "main.py").read_text()
+
+    # All four cookie policy log entries carry request_id.
+    assert auth_source.count("request_id=%s") >= 4
+    # The OpenAI-compatible chat completion log entry carries request_id.
+    chat_match = re.search(
+        r"OpenAI-compatible chat completion failed.*?raise HTTPException\(\s*status_code=500",
+        main_source,
+        flags=re.DOTALL,
+    )
+    assert chat_match is not None
+    assert "request_id=%s" in chat_match.group(0)
