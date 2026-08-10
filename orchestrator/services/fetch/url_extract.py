@@ -10,13 +10,10 @@ _URL_PATTERN: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 
-# Matches bare domains (e.g., example.com, sub.example.com)
-# Must be a valid domain with TLD, not an IP, not a file path
-_BARE_DOMAIN_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"(?<![a-zA-Z0-9/])"  # Negative lookbehind: not preceded by alphanumeric or slash
-    r"([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+"  # Subdomains
-    r"[a-zA-Z]{2,}"  # TLD (at least 2 chars)
-    r"(?![a-zA-Z0-9/-])",  # Negative lookahead: not followed by alphanumeric or dash/slash
+# Finds domain-shaped tokens without nested quantifiers. Structural validation
+# happens in ``_is_valid_bare_domain`` so adversarial chat text remains linear.
+_BARE_DOMAIN_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"[a-zA-Z0-9][a-zA-Z0-9.-]*",
 )
 
 # Punctuation characters to strip from URLs
@@ -56,7 +53,7 @@ def extract_urls(text: str) -> list[str]:
             urls.add(url)
 
     # Extract bare domains
-    for match in _BARE_DOMAIN_PATTERN.finditer(text):
+    for match in _BARE_DOMAIN_TOKEN_PATTERN.finditer(text):
         domain = match.group(0)
         # Strip trailing punctuation
         domain = domain.rstrip(_TRAILING_PUNCTUATION)
@@ -109,11 +106,18 @@ def _is_valid_bare_domain(domain: str, text: str, start_pos: int) -> bool:
     if not domain:
         return False
 
-    # Check if preceded by @ (email address)
+    # Reject email addresses and path/URL fragments.
     if start_pos > 0:
         preceding_char = text[start_pos - 1]
-        if preceding_char == "@":
+        if preceding_char in {"@", "/"}:
             return False
+
+    end_pos = start_pos + len(domain)
+    if end_pos < len(text) and text[end_pos] == "/":
+        return False
+
+    if len(domain) > 253:
+        return False
 
     # Reject if it looks like a version number (e.g., v1.2.3)
     if domain.startswith("v") and re.match(r"^v\d+\.", domain):
@@ -123,6 +127,17 @@ def _is_valid_bare_domain(domain: str, text: str, start_pos: int) -> bool:
     segments = domain.split(".")
     if len(segments) < 2:
         return False
+
+    if len(segments[-1]) < 2 or not segments[-1].isalpha():
+        return False
+
+    for segment in segments:
+        if not segment or len(segment) > 63:
+            return False
+        if not segment[0].isalnum() or not segment[-1].isalnum():
+            return False
+        if any(not (char.isalnum() or char == "-") for char in segment):
+            return False
 
     # Reject if any segment is a common Unix path component
     common_paths = {"bin", "usr", "lib", "var", "etc", "tmp", "home", "opt"}
