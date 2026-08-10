@@ -10,9 +10,11 @@ no real network traffic is generated, and the guard tests run in-process.
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import socket
+import time
 from unittest.mock import patch
 
 import httpx
@@ -23,6 +25,8 @@ from orchestrator.tools.ssrf_guard import (
     ALLOWED_PORTS,
     ALLOWED_SCHEMES,
     MAX_URL_LENGTH,
+    SsrfPolicyViolation,
+    SsrfUnreachable,
     SsrfViolation,
     _domain_matches,
     _load_allowed_domains,
@@ -30,6 +34,8 @@ from orchestrator.tools.ssrf_guard import (
     is_disallowed_ip,
     socket_guard,
     validate_url,
+    validate_url_and_resolve,
+    validate_url_and_resolve_async,
 )
 
 
@@ -97,6 +103,159 @@ class TestIsDisallowedIp:
     def test_ipv4_mapped_public_ipv6_is_allowed(self) -> None:
         mapped = ipaddress.IPv6Address("::ffff:8.8.8.8")
         assert is_disallowed_ip(mapped) is False
+
+
+class TestValidateUrlAsync:
+    @pytest.mark.asyncio
+    async def test_timeout_is_reported_as_ssrf_violation(self) -> None:
+        def slow_validation(*_args: object, **_kwargs: object) -> None:
+            time.sleep(0.2)
+
+        with (
+            patch(
+                "orchestrator.tools.ssrf_guard.validate_url_and_resolve",
+                side_effect=slow_validation,
+            ),
+            pytest.raises(SsrfViolation, match="DNS validation timed out"),
+        ):
+            await validate_url_and_resolve_async("https://example.com", timeout=0.01)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "169.254.169.254",
+            "2130706433",
+            "127.1",
+            "0x7f.1",
+            "0177.0.0.1",
+            "0251.0376.0251.0376",
+            "１２７。０。０。１",
+        ],
+    )
+    async def test_literal_ip_blocked_under_resolver_slot_saturation(self, host: str) -> None:
+        """P1 — Codex round-7 finding: literal-IP check rejects synchronously,
+        even when ``_RESOLVER_SLOTS.acquire()`` is saturated.
+
+        The earlier round-6 regression test covered a private literal that
+        was already rejected by the scheme check; it never actually
+        exercised the IP-literal policy path. To prove the static
+        preflight closes the ordering gap, this test (1) uses an
+        ``https://`` URL whose host is a known private IP literal so it
+        passes the scheme/port/userinfo gates, and (2) patches
+        ``_RESOLVER_SLOTS.acquire`` to block past the caller's timeout.
+        If the literal-IP check still ran inside ``_resolve_and_check``
+        (post-slot-acquire), the slot timeout would fire first and
+        ``SsrfUnreachable`` would be raised — promoting a statically
+        unsafe URL to a fallback-eligible result. The correct behavior
+        is ``SsrfPolicyViolation`` with no resolver activity.
+        """
+        from orchestrator.tools import ssrf_guard
+
+        original_acquire = ssrf_guard._RESOLVER_SLOTS.acquire
+
+        async def saturated_acquire() -> None:
+            # Block long enough to exhaust the caller's timeout.
+            await asyncio.sleep(1.0)
+            await original_acquire()
+
+        with (
+            patch.object(ssrf_guard._RESOLVER_SLOTS, "acquire", side_effect=saturated_acquire),
+            pytest.raises(SsrfPolicyViolation, match="literal IP"),
+        ):
+            await validate_url_and_resolve_async(f"https://{host}/latest/meta-data/", timeout=0.05)
+
+    @pytest.mark.asyncio
+    async def test_static_policy_rejected_before_resolver_slot_wait(self) -> None:
+        """P1 — Codex round-6 finding: static policy check runs before slot wait.
+
+        Resolver saturation can no longer promote a policy-violating URL
+        to a fallback-eligible ``SsrfUnreachable`` result. Every static
+        check (scheme, port, userinfo, malformed host) is performed
+        synchronously, so an unsafe URL fails closed with
+        ``SsrfPolicyViolation`` before ``_RESOLVER_SLOTS.acquire()`` is
+        ever called. The blocked-IP literal case uses a known-private
+        address so the test is robust against ``getaddrinfo`` returning
+        a public result on the test host.
+        """
+        # Block IP literal — fails the literal-IP check synchronously.
+        with pytest.raises(SsrfPolicyViolation, match="is not allowed"):
+            await validate_url_and_resolve_async(
+                "http://169.254.169.254/latest/meta-data/", timeout=10.0
+            )
+        # Disallowed port — fails before any resolver activity.
+        with pytest.raises(SsrfPolicyViolation, match="not allowed"):
+            await validate_url_and_resolve_async("https://example.com:8080/", timeout=10.0)
+        # Userinfo URL — fails synchronously, no slot acquired.
+        with pytest.raises(SsrfPolicyViolation, match="userinfo"):
+            await validate_url_and_resolve_async("https://user:pass@example.com/", timeout=10.0)
+
+    @pytest.mark.asyncio
+    async def test_resolver_and_slot_share_one_deadline(self) -> None:
+        """P2 — Codex round-6 finding: one shared deadline across slot+resolver.
+
+        The full ``timeout`` budget is consumed exactly once per call:
+        a single absolute deadline is computed at entry and the remaining
+        time is passed to the DNS future wait. Verifies that a slow
+        slot-acquire consumes some of the budget, and the resolver future
+        receives only the remaining time — not the full ``timeout`` again.
+        """
+        from orchestrator.tools import ssrf_guard
+        from orchestrator.tools.ssrf_guard import ValidatedUrl
+
+        acquire_delay = 0.3
+        resolver_delay = 0.3
+        total_timeout = 0.5
+
+        original_acquire = ssrf_guard._RESOLVER_SLOTS.acquire
+
+        async def slow_acquire() -> None:
+            await asyncio.sleep(acquire_delay)
+            await original_acquire()
+
+        # The resolver future sleeps ``resolver_delay`` to consume its budget.
+        def slow_validation(*_args: object, **_kwargs: object) -> ValidatedUrl:
+            time.sleep(resolver_delay)
+            return ValidatedUrl(
+                url="https://example.com",
+                host="example.com",
+                port=443,
+                addresses=("93.184.216.34",),
+            )
+
+        with (
+            patch.object(ssrf_guard._RESOLVER_SLOTS, "acquire", side_effect=slow_acquire),
+            patch(
+                "orchestrator.tools.ssrf_guard.validate_url_and_resolve",
+                side_effect=slow_validation,
+            ),
+        ):
+            # Slot acquire takes 0.3s; remaining budget is 0.2s; resolver
+            # future needs 0.3s — should time out.
+            with pytest.raises(SsrfUnreachable, match="DNS validation timed out"):
+                await validate_url_and_resolve_async("https://example.com", timeout=total_timeout)
+
+        # Now repeat with shorter slot delay so resolver future gets enough
+        # remaining budget to succeed.
+        fast_acquire_delay = 0.05
+
+        async def fast_acquire() -> None:
+            await asyncio.sleep(fast_acquire_delay)
+            await original_acquire()
+
+        with (
+            patch.object(ssrf_guard._RESOLVER_SLOTS, "acquire", side_effect=fast_acquire),
+            patch(
+                "orchestrator.tools.ssrf_guard.validate_url_and_resolve",
+                side_effect=slow_validation,
+            ),
+        ):
+            # Slot acquire 0.05s, remaining 0.45s, resolver needs 0.3s — should succeed.
+            result = await validate_url_and_resolve_async(
+                "https://example.com", timeout=total_timeout
+            )
+            assert result.host == "example.com"
+            assert "93.184.216.34" in result.addresses
 
 
 class TestValidateUrlScheme:
@@ -212,6 +371,13 @@ class TestValidateUrlIpChecks:
             result = validate_url("https://8.8.8.8/")
 
         assert result == "https://8.8.8.8/"
+        resolver.assert_not_called()
+
+    def test_public_ip_literal_returns_pinned_address(self) -> None:
+        with patch("socket.getaddrinfo") as resolver:
+            validated = validate_url_and_resolve("https://8.8.8.8/")
+
+        assert validated.addresses == ("8.8.8.8",)
         resolver.assert_not_called()
 
     def test_ipv6_global_unicast_allowed(self) -> None:
