@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
+from collections import deque
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Deque
 
 from orchestrator.memory.retrieval import retrieve_memories_for_text
 from orchestrator.memory.store import MemoryStore
@@ -35,6 +37,45 @@ logger = logging.getLogger(__name__)
 MEMORY_WRITE_MAX_PER_WINDOW: int = 10
 MEMORY_WRITE_WINDOW_SECONDS: int = 60
 MEMORY_WRITE_MAX_ACTIVE_ROWS: int = 1000
+
+
+# Module-level per-user sliding-window counter for the `memory_write`
+# rate limit (issue #62). Why an in-process counter rather than a DB
+# row-count predicate:
+#
+#   - The cost model is *embedding calls*, not rows inserted. A loop of
+#     identical-content writes calls `embed_documents_with_metadata`
+#     each time (the billed step in `deduplicate_facts`), even when
+#     `touch_memory` merges the result without inserting a new row.
+#     Counting rows therefore under-bounds identical-content loops.
+#     Round-3 Codex review (chatgpt-codex-connector[bot]
+#     @2026-08-10T09:57:29Z, P1 on orchestrator/memory/store.py:951)
+#     surfaced this; the fix increments the counter on every call
+#     into `_check_write_quota`, so the 11th embedding-billed attempt
+#     is refused regardless of dedup outcome.
+#
+#   - Per-process state survives only as long as the worker process.
+#     That is acceptable for an abuse dampener: a process restart
+#     effectively clears the window, not a security regression (the
+#     user-scoping checks remain the authorization boundary).
+#
+#   - Redis is intentionally not introduced here. The codebase ships
+#     a Redis-backed `RateLimiter` helper
+#     (`orchestrator/services/identity/rate_limiter.py`) that is the
+#     atomic-upgrade path when the host has Redis wired; self-hosted
+#     memory setups run without Redis, so the in-process counter is
+#     the path that works for both modes.
+#
+# Concurrency: a single `asyncio.Lock` guards the dict + each user's
+# deque. asyncio is cooperative, so a long blocking call between
+# acquire/release is the only thing that would stall concurrent
+# callers; the only operations under the lock are deque prune +
+# append + length check, so the critical section is sub-millisecond.
+#
+# Memory: `deque(maxlen=MEMORY_WRITE_MAX_PER_WINDOW)` is bounded;
+# entries older than the window are evicted on every check.
+_attempt_log: dict[uuid.UUID, Deque[datetime]] = {}
+_attempt_log_lock: asyncio.Lock | None = None
 
 
 class MemoryReadTool(Tool):
@@ -270,16 +311,53 @@ class MemoryWriteTool(Tool):
         transient database error must not silently disable the user's
         memory. The failure is logged at warning level so operators can
         see it.
+
+        The **rate limit** (issue #62's per-user writes-per-minute
+        guard) is enforced via an in-process per-user sliding-window
+        counter — see `_attempt_log` above for the design rationale.
+        The active-row cap remains a row-count predicate via
+        `count_active_memories`; that one counts rows correctly
+        because it does not need to track billed embedding calls.
         """
-        window_start = datetime.now(timezone.utc) - timedelta(seconds=MEMORY_WRITE_WINDOW_SECONDS)
+        # Lazy init: the module-level lock must be created inside a
+        # running event loop, so it is allocated on first use.
+        global _attempt_log_lock
+        if _attempt_log_lock is None:
+            _attempt_log_lock = asyncio.Lock()
+
+        now = datetime.now(timezone.utc)
+        window_start = now - timedelta(seconds=MEMORY_WRITE_WINDOW_SECONDS)
         try:
-            recent_writes = int(
-                await self.store.count_memories_created_since(
+            async with _attempt_log_lock:
+                log = _attempt_log.get(self.user_id)
+                if log is None:
+                    log = deque(maxlen=MEMORY_WRITE_MAX_PER_WINDOW)
+                    _attempt_log[self.user_id] = log
+                # Prune entries older than the window. `deque` is
+                # ordered; the oldest entry is on the left.
+                while log and log[0] < window_start:
+                    log.popleft()
+                # `recent_writes` is the count BEFORE this call is
+                # added. The outer check refuses when this count has
+                # reached the limit — so the (N+1)th call against a
+                # limit of N is refused. The current attempt is not
+                # appended when refused — otherwise repeated
+                # refusals would lock the user out for a full
+                # window even if no real writes happened.
+                recent_writes = len(log)
+                if recent_writes < MEMORY_WRITE_MAX_PER_WINDOW:
+                    log.append(now)
+            try:
+                active_rows = int(await self.store.count_active_memories(self.user_id))
+            except Exception as active_error:
+                logger.warning(
+                    "memory_write active-row count failed; allowing write user_id=%s "
+                    "action=%s error=%s",
                     self.user_id,
-                    since=window_start,
+                    action,
+                    type(active_error).__name__,
                 )
-            )
-            active_rows = int(await self.store.count_active_memories(self.user_id))
+                return None
         except Exception as error:
             logger.warning(
                 "memory_write quota check failed; allowing write user_id=%s action=%s error=%s",

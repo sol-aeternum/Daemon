@@ -2,7 +2,8 @@
 
 import pytest
 import uuid
-from datetime import datetime, timezone
+from collections import deque
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -419,9 +420,29 @@ async def test_memory_write_invalid_category_returns_error():
 def _quota_store(*, recent_writes: int, active_rows: int) -> AsyncMock:
     """An AsyncMock store whose quota counters return fixed values."""
     store = AsyncMock()
-    store.count_memories_created_since = AsyncMock(return_value=recent_writes)
     store.count_active_memories = AsyncMock(return_value=active_rows)
     return store
+
+
+def _seed_attempt_log(user_id: uuid.UUID, count: int) -> None:
+    """Pre-populate the in-process rate-limit counter for `user_id`.
+
+    The `memory_write` rate limit (issue #62) is now an in-process
+    per-user sliding-window deque (`tools_module._attempt_log`). Tests
+    that want to assert behaviour at a specific window position pre-seed
+    `count` entries at `now` so the next `_check_write_quota` call
+    observes that counter value. Each entry is a tz-aware UTC datetime.
+
+    `deque.maxlen` is read-only; if the production `maxlen` is smaller
+    than `count + 1` we replace the deque with one large enough that
+    the rate-limit edge is not masked by `maxlen` truncation.
+    """
+    maxlen = max(tools_module.MEMORY_WRITE_MAX_PER_WINDOW, count + 1)
+    log: deque[datetime] = deque(maxlen=maxlen)
+    now = datetime.now(timezone.utc)
+    for _ in range(count):
+        log.append(now)
+    tools_module._attempt_log[user_id] = log
 
 
 @pytest.mark.asyncio
@@ -432,8 +453,10 @@ async def test_memory_write_allows_write_below_rate_limit(monkeypatch):
 
     with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
         mock_dedup.return_value = uuid.uuid4()
-        store = _quota_store(recent_writes=9, active_rows=10)
-        tool = MemoryWriteTool(store, uuid.uuid4())
+        user_id = uuid.uuid4()
+        _seed_attempt_log(user_id, 9)
+        store = _quota_store(recent_writes=0, active_rows=10)
+        tool = MemoryWriteTool(store, user_id)
 
         result = await tool.execute(action="create", content="fact 10")
 
@@ -449,8 +472,10 @@ async def test_memory_write_eleventh_write_in_window_is_refused(monkeypatch):
     monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
 
     with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
-        store = _quota_store(recent_writes=10, active_rows=10)
-        tool = MemoryWriteTool(store, uuid.uuid4())
+        user_id = uuid.uuid4()
+        _seed_attempt_log(user_id, 10)
+        store = _quota_store(recent_writes=0, active_rows=10)
+        tool = MemoryWriteTool(store, user_id)
 
         result = await tool.execute(action="create", content="fact 11")
 
@@ -471,8 +496,10 @@ async def test_memory_write_rate_limit_refusal_precedes_embedding_call(monkeypat
             new_callable=AsyncMock,
         ) as mock_embed,
     ):
-        store = _quota_store(recent_writes=3, active_rows=0)
-        tool = MemoryWriteTool(store, uuid.uuid4())
+        user_id = uuid.uuid4()
+        _seed_attempt_log(user_id, 3)
+        store = _quota_store(recent_writes=0, active_rows=0)
+        tool = MemoryWriteTool(store, user_id)
 
         result = await tool.execute(action="create", content="fact", slot="a_slot")
 
@@ -506,7 +533,8 @@ async def test_memory_write_update_is_also_rate_limited(monkeypatch):
     with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
         user_id = uuid.uuid4()
         memory_id = uuid.uuid4()
-        store = _quota_store(recent_writes=10, active_rows=5)
+        _seed_attempt_log(user_id, 10)
+        store = _quota_store(recent_writes=0, active_rows=5)
         store.get_memory = AsyncMock(
             return_value={
                 "id": memory_id,
@@ -540,11 +568,6 @@ async def test_memory_write_quota_is_scoped_per_user(monkeypatch):
 
         await tool.execute(action="create", content="fact")
 
-        rate_call = store.count_memories_created_since.await_args
-        assert rate_call is not None
-        assert rate_call.args[0] == user_id
-        assert rate_call.kwargs["since"].tzinfo is not None
-
         cap_call = store.count_active_memories.await_args
         assert cap_call is not None
         assert cap_call.args[0] == user_id
@@ -563,8 +586,7 @@ async def test_memory_write_quota_fails_open_on_counter_error(monkeypatch):
     with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
         mock_dedup.return_value = uuid.uuid4()
         store = AsyncMock()
-        store.count_memories_created_since = AsyncMock(side_effect=RuntimeError("pool down"))
-        store.count_active_memories = AsyncMock(return_value=0)
+        store.count_active_memories = AsyncMock(side_effect=RuntimeError("pool down"))
         tool = MemoryWriteTool(store, uuid.uuid4())
 
         result = await tool.execute(action="create", content="fact")
@@ -580,7 +602,7 @@ async def test_memory_write_delete_is_not_rate_limited(monkeypatch):
 
     user_id = uuid.uuid4()
     memory_id = uuid.uuid4()
-    store = _quota_store(recent_writes=99, active_rows=99999)
+    store = _quota_store(recent_writes=0, active_rows=99999)
     store.get_memory = AsyncMock(return_value={"id": memory_id, "user_id": user_id})
     tool = MemoryWriteTool(store, user_id)
 
@@ -599,26 +621,108 @@ async def test_memory_write_rate_limit_counts_dedup_skipped_writes(monkeypatch):
     merges the result into an existing memory without inserting a new
     row. Counting only newly inserted rows lets such a caller loop
     the embedding endpoint indefinitely, defeating the
-    cost-amplification half of the guard. The corrected behavior
-    counts every `updated_at` bump in the window via
-    `count_memories_created_since`, so the rate limit triggers on
-    the 11th embedding-billed call regardless of dedup outcome.
+    cost-amplification half of the guard. The corrected behavior is
+    an in-process per-user attempt counter
+    (`tools_module._attempt_log`): every `_check_write_quota` call
+    appends a timestamp, so the rate limit triggers on the 11th
+    embedding-billed attempt regardless of dedup outcome. This test
+    pre-seeds 10 in-window attempts and asserts the 11th call is
+    refused without `dedup_and_store` (and therefore the embedding
+    path) ever being reached.
     """
     monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 10)
     monkeypatch.setattr(tools_module, "MEMORY_WRITE_WINDOW_SECONDS", 60)
     monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
 
     with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
-        # 10 prior writes already in the window — the rate counter
-        # sees these even though they may have been dedup-merged.
-        store = _quota_store(recent_writes=10, active_rows=10)
-        tool = MemoryWriteTool(store, uuid.uuid4())
+        user_id = uuid.uuid4()
+        _seed_attempt_log(user_id, 10)
+        store = _quota_store(recent_writes=0, active_rows=10)
+        tool = MemoryWriteTool(store, user_id)
 
         result = await tool.execute(action="create", content="fact 11")
 
         assert "rate limit" in result.lower()
         # The billed embedding path must not be reached.
         mock_dedup.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_memory_write_rate_limit_refuses_identical_content_loop(monkeypatch):
+    """Round-3 Codex review finding: identical-content write loop bypassed the rate limit.
+
+    Round-2 of the counter bumped rows by `updated_at` AND `last_accessed_at`,
+    so the prior `count_memories_created_since` predicate saw the merged
+    row each time. But `dedup_and_store` collapses a run of identical
+    writes onto a single row, so `COUNT(*)` stayed at 1 while the
+    embedding endpoint was billed on every call. The round-3 fix
+    switches the rate counter to an in-process per-user attempt log
+    (`tools_module._attempt_log`): every `_check_write_quota` call
+    appends a timestamp, regardless of dedup outcome. This test asserts
+    the loop is bounded at exactly `MEMORY_WRITE_MAX_PER_WINDOW`
+    identical writes, with `dedup_and_store` (and therefore the billed
+    embedding path) called at most `MAX` times and the (MAX+1)th
+    attempt refused without ever reaching `dedup_and_store`.
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 10)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_WINDOW_SECONDS", 60)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        mock_dedup.return_value = uuid.uuid4()
+        store = _quota_store(recent_writes=0, active_rows=0)
+        user_id = uuid.uuid4()
+        tool = MemoryWriteTool(store, user_id)
+
+        results: list[str] = []
+        for _ in range(11):
+            results.append(await tool.execute(action="create", content="identical fact"))
+
+        # First 10 identical writes succeed.
+        created_count = sum(1 for r in results[:10] if "Memory created" in r)
+        assert created_count == 10, results
+        # 11th identical write is refused on rate limit, NOT on a
+        # dedup error.
+        assert "rate limit" in results[10].lower(), results[10]
+        # The billed embedding path was reached exactly MAX times —
+        # once per allowed write. The 11th refusal short-circuited
+        # before any embedding work.
+        assert mock_dedup.await_count == 10, mock_dedup.await_count
+
+
+@pytest.mark.asyncio
+async def test_memory_write_rate_limit_window_slides(monkeypatch):
+    """Old attempts must fall out of the window so a user is not locked out.
+
+    The in-process counter (round-3 fix) is a sliding-window deque.
+    Entries older than `MEMORY_WRITE_WINDOW_SECONDS` are evicted on
+    every `_check_write_quota` call. This test pre-seeds the deque
+    with entries just outside the window and asserts the next call is
+    allowed (no false lockout).
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 10)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_WINDOW_SECONDS", 60)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        mock_dedup.return_value = uuid.uuid4()
+        user_id = uuid.uuid4()
+        # 10 entries dated 2 * window_seconds ago — they should all
+        # fall out of the window on the next call.
+        stale = tools_module._attempt_log.setdefault(
+            user_id,
+            deque(maxlen=tools_module.MEMORY_WRITE_MAX_PER_WINDOW),
+        )
+        long_ago = datetime.now(timezone.utc) - timedelta(seconds=120)
+        for _ in range(10):
+            stale.append(long_ago)
+        store = _quota_store(recent_writes=0, active_rows=0)
+        tool = MemoryWriteTool(store, user_id)
+
+        result = await tool.execute(action="create", content="fresh fact")
+
+        assert "Memory created" in result
+        mock_dedup.assert_called_once()
 
 
 @pytest.mark.asyncio
