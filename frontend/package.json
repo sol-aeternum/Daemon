@@ -15,11 +15,10 @@
     "test:browser": "playwright test"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^1.0.0",
-    "@ai-sdk/react": "^1.0.0",
+    "@ai-sdk/react": "^4.0.61",
     "@serwist/next": "^9.5.12",
     "@tailwindcss/typography": "^0.5.19",
-    "ai": "^4.0.0",
+    "ai": "^7.0.58",
     "docx-preview": "^0.3.7",
     "dompurify": "^3.4.13",
     "highlight.js": "^11.11.1",

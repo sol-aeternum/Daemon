@@ -13,7 +13,7 @@ Daemon is a multi-provider LLM orchestration platform with intelligent routing, 
 ```
 ┌─────────────────────────────────────────────────────┐
 │           Next.js 16 Frontend (PWA)                  │
-│           Vercel AI SDK 4 + React 19                  │
+│           Vercel AI SDK + React 19                    │
 └──────────────────────┬──────────────────────────────┘
                        │ /api/chat (SSE bridge)
 ┌──────────────────────▼──────────────────────────────┐
@@ -40,7 +40,7 @@ Daemon is a multi-provider LLM orchestration platform with intelligent routing, 
 ```
 
 - **Backend**: FastAPI (Python 3.11+) orchestrates LLM calls, memory, and subagents.
-- **Frontend**: Next.js 16 with Vercel AI SDK 4 and React 19.
+- **Frontend**: Next.js 16 with Vercel AI SDK and React 19.
 - **Memory**: PostgreSQL with `pgvector` for semantic search and Fernet encryption for content at rest.
 - **Worker**: Redis + `arq` for background jobs (memory extraction, consolidation, dreaming).
 - **Fetch**: `crawl4ai` service for robust web scraping.

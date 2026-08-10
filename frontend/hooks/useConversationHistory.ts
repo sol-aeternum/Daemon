@@ -1,14 +1,17 @@
 'use client';
 
-import { Message } from 'ai';
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getAuthHeader, refreshIfNeeded } from '@/lib/auth';
+import {
+  type DaemonMessage,
+  normalizeDaemonMessages,
+} from '@/lib/chatMessages';
 
 export interface Conversation {
   id: string;
   title: string;
-  messages: Message[];
+  messages: DaemonMessage[];
   selectedModel?: string;
   createdAt: string;
   updatedAt: string;
@@ -205,7 +208,7 @@ export function useConversationHistory() {
   const updateConversation = useCallback(
     async (
       id: string,
-      updates: Partial<Conversation> & { messages?: Message[] },
+      updates: Partial<Conversation> & { messages?: DaemonMessage[] },
     ) => {
       // Optimistic update
       setConversations((prev) =>
@@ -293,7 +296,7 @@ export function useConversationHistory() {
         const formattedConv: Conversation = {
           id: data.id,
           title: data.title,
-          messages: data.messages || [],
+          messages: normalizeDaemonMessages(data.messages),
           selectedModel: data.metadata?.model || 'auto',
           createdAt: data.created_at,
           updatedAt: data.updated_at,

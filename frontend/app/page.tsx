@@ -2,6 +2,7 @@
 
 import { ChatInputBar } from '../components/ChatInputBar';
 import { useChat } from '@ai-sdk/react';
+import { DefaultChatTransport } from 'ai';
 import { useState, useRef, useEffect, Suspense, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Group, Panel, Separator } from 'react-resizable-panels';
@@ -64,9 +65,13 @@ import {
 import { CouncilInterviewCard } from '../components/council/CouncilInterviewCard';
 import { CouncilProgress } from '../components/council/CouncilProgress';
 import { CouncilOutputViewer } from '../components/council/CouncilOutputViewer';
-import { Message } from 'ai';
+import {
+  type DaemonMessage,
+  getDaemonDataEvents,
+  getDaemonMessageText,
+} from '../lib/chatMessages';
 
-type ReasoningMessage = Message & {
+type ReasoningMessage = DaemonMessage & {
   reasoning_text?: string;
   reasoning_duration_secs?: number;
   reasoning_model?: string;
@@ -123,8 +128,8 @@ const toRecord = (value: unknown): Record<string, unknown> | undefined => {
   return value as Record<string, unknown>;
 };
 
-const getPersistedToolEvents = (message: Message): ChatEvent[] => {
-  const messageWithTools = message as Message & {
+const getPersistedToolEvents = (message: DaemonMessage): ChatEvent[] => {
+  const messageWithTools = message as DaemonMessage & {
     tool_calls?: unknown;
     tool_results?: unknown;
     metadata?: unknown;
@@ -205,41 +210,6 @@ const getPersistedToolEvents = (message: Message): ChatEvent[] => {
   }
 
   return events;
-};
-
-const getPartContent = (part: unknown): string => {
-  if (typeof part !== 'object' || part === null) {
-    return '';
-  }
-
-  const textValue = (part as { text?: unknown }).text;
-  if (typeof textValue === 'string') {
-    return textValue;
-  }
-
-  const contentValue = (part as { content?: unknown }).content;
-  if (typeof contentValue === 'string') {
-    return contentValue;
-  }
-
-  return '';
-};
-
-const getMessageContent = (message: Message): string => {
-  const rawContent = message.content;
-  if (typeof rawContent === 'string' && rawContent.trim().length > 0) {
-    return rawContent;
-  }
-
-  const messageWithParts = message as Message & { parts?: unknown };
-  if (Array.isArray(messageWithParts.parts)) {
-    const combinedParts = messageWithParts.parts.map(getPartContent).join('');
-    if (combinedParts.trim().length > 0) {
-      return combinedParts;
-    }
-  }
-
-  return typeof rawContent === 'string' ? rawContent : '';
 };
 
 const parseToolResultRecord = (
@@ -519,6 +489,11 @@ function WelcomeScreen({ setInput, onSubmit }: WelcomeScreenProps) {
 // =============================================================================
 
 function ChatContent() {
+  const [input, setInput] = useState('');
+  const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInput(event.target.value);
+  };
+
   const { value: ttsSettings } = useLocalStorage<TtsSettings>(
     'tts_settings',
     DEFAULT_TTS_SETTINGS,
@@ -614,6 +589,7 @@ function ChatContent() {
   const lastArchivedEventKeysRef = useRef<Set<string>>(new Set());
   const currentRequestIdRef = useRef<string | null>(null);
   const latestConversationIdRef = useRef<string | null>(currentId);
+  const renderedConversationIdRef = useRef<string | null>(currentId);
   const autoOpenedPreviewFileUrlsRef = useRef<Set<string>>(new Set());
   const titleRefreshTimeoutsRef = useRef<number[]>([]);
   const scheduledTitleRefreshConversationIdsRef = useRef<Set<string>>(
@@ -673,42 +649,49 @@ function ChatContent() {
     return normalizeThinkingText(rawContent);
   };
 
+  const chatTransport = useMemo(
+    () =>
+      new DefaultChatTransport<DaemonMessage>({
+        api: '/api/chat',
+        fetch: async (requestInput, init) => {
+          await refreshIfNeeded();
+          const body: Record<string, unknown> =
+            typeof init?.body === 'string' ? JSON.parse(init.body) : {};
+          body.model = activeModel;
+          body.id = currentId || null;
+
+          const headers = new Headers(init?.headers);
+          const authHeader = getAuthHeader();
+          if (authHeader) {
+            headers.set('Authorization', authHeader);
+          }
+
+          return fetch(requestInput, {
+            ...init,
+            headers,
+            body: JSON.stringify(body),
+          });
+        },
+      }),
+    [activeModel, currentId],
+  );
+
+  // Keep the SDK chat instance stable while the backend promotes a new chat
+  // from a null ID to its persisted conversation ID mid-stream. Conversation
+  // switches are synchronized explicitly below once their history is loaded.
   const {
     messages,
-    input,
-    setInput,
-    handleInputChange,
-    append,
     setMessages,
-    isLoading,
+    status,
     error,
-    reload,
-    data,
+    regenerate,
+    sendMessage,
     stop: stopChat,
-  } = useChat({
-    api: '/api/chat',
-    body: { id: currentId || null },
-    id: currentId || undefined,
-    initialMessages: currentConversation?.messages || [],
-    fetch: async (input, init) => {
-      await refreshIfNeeded();
-      const body = init?.body ? JSON.parse(init.body as string) : {};
-      body.model = activeModel;
-      if (body.id === undefined || body.id === null) {
-        body.id = currentId || latestConversationIdRef.current || null;
-      }
-      const headers = new Headers(init?.headers);
-      const authHeader = getAuthHeader();
-      if (authHeader) {
-        headers.set('Authorization', authHeader);
-      }
-      return fetch(input, {
-        ...init,
-        headers,
-        body: JSON.stringify(body),
-      });
-    },
-    onFinish: (message) => {
+  } = useChat<DaemonMessage>({
+    transport: chatTransport,
+    messages:
+      currentConversation?.id === currentId ? currentConversation.messages : [],
+    onFinish: ({ message }) => {
       setConnectionStatus('connected');
       const thoughtAtFinish = getThinkingContent(eventsRef.current);
       if (thoughtAtFinish.trim().length > 0) {
@@ -728,26 +711,55 @@ function ChatContent() {
     },
   });
 
+  const isLoading = status === 'submitted' || status === 'streaming';
+  const data = useMemo(() => getDaemonDataEvents(messages), [messages]);
+  const reload = () => {
+    void regenerate({
+      body: {
+        id: currentId || latestConversationIdRef.current || null,
+        model: activeModel,
+      },
+    });
+  };
+
   useEffect(() => {
     if (isLoading) {
       return;
     }
+
+    if (!currentId) {
+      if (renderedConversationIdRef.current !== null) {
+        renderedConversationIdRef.current = null;
+        setMessages([]);
+      }
+      return;
+    }
+
+    if (currentConversation?.id !== currentId) {
+      return;
+    }
+
+    const conversationChanged = renderedConversationIdRef.current !== currentId;
     if (
-      !currentConversation?.messages ||
-      currentConversation.messages.length === 0
+      conversationChanged ||
+      (messages.length === 0 && currentConversation.messages.length > 0)
     ) {
-      return;
+      renderedConversationIdRef.current = currentId;
+      setMessages(currentConversation.messages);
     }
-    if (messages.length !== 0) {
-      return;
-    }
-    setMessages(currentConversation.messages);
-  }, [currentConversation?.messages, isLoading, messages.length, setMessages]);
+  }, [
+    currentConversation?.id,
+    currentConversation?.messages,
+    currentId,
+    isLoading,
+    messages.length,
+    setMessages,
+  ]);
 
   // Refs mirroring composer state so async `submitChat` can compare the
   // submitted snapshot against the *current* (post-edit) values. The
   // closure-scoped `input` / `pendingAttachments` variables are stale by the
-  // time `append()` resolves (React rerenders do not update the captured
+  // time `sendMessage()` resolves (React rerenders do not update the captured
   // locals), so without these refs the comparison always matches and
   // composer edits made during streaming are silently cleared.
   const inputRef = useRef(input);
@@ -893,24 +905,23 @@ function ChatContent() {
 
     // Snapshot the values we are about to submit so we can preserve any
     // newer edits the user typed or picked while the request was in flight.
-    // Without this snapshot, clicking Stop (which resolves `append()`) would
+    // Without this snapshot, clicking Stop (which resolves `sendMessage()`)
+    // would
     // unconditionally `setInput("")` and `setPendingAttachments([])`, erasing
     // drafts the user composed while waiting for the partial response.
     //
     // Important: the closure-scoped `input` and `pendingAttachments`
-    // variables do not reflect rerenders, so the comparison after `append()`
-    // resolves must read from refs (`inputRef` / `pendingAttachmentsRef`)
+    // variables do not reflect rerenders, so the comparison after
+    // `sendMessage()` resolves must read from refs (`inputRef` /
+    // `pendingAttachmentsRef`)
     // that are kept in sync by an effect. Comparing the closure values
     // directly would always match the snapshot and silently drop edits.
     const submittedInput = input;
     const submittedAttachments = pendingAttachments;
 
     try {
-      await append(
-        {
-          role: 'user',
-          content,
-        },
+      await sendMessage(
+        { text: content },
         {
           body: {
             id: currentId || latestConversationIdRef.current || null,
@@ -1170,6 +1181,7 @@ function ChatContent() {
 
     const conversationId = conversationEvent.conversation_id;
     latestConversationIdRef.current = conversationId;
+    renderedConversationIdRef.current = conversationId;
     if (!currentId) {
       // A fast Stop can be recorded before the URL has the backend-assigned
       // conversation ID. Promote those provisional markers immediately so
@@ -1420,7 +1432,7 @@ function ChatContent() {
                     const documentDownloadForMessage =
                       getDocumentDownloadFromEvents(msgEvents);
                     const liveThoughtContent = getThinkingContent(liveEvents);
-                    const messageContent = getMessageContent(message);
+                    const messageContent = getDaemonMessageText(message);
                     const formattedMessageContent =
                       formatMessageContent(messageContent);
                     const showTts =
@@ -1516,10 +1528,9 @@ function ChatContent() {
                               <CouncilInterviewCard
                                 event={councilInterviewEvent}
                                 onSendConfig={(config) => {
-                                  append(
+                                  void sendMessage(
                                     {
-                                      role: 'user',
-                                      content: `/council config: preset=${config.preset}, rounds=${config.rounds}, audit=${config.audit}`,
+                                      text: `/council config: preset=${config.preset}, rounds=${config.rounds}, audit=${config.audit}`,
                                     },
                                     {
                                       body: {

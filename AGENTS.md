@@ -44,7 +44,7 @@ No task is complete until it passes the project's automated gates. Run them befo
 
 ## Tech Stack
 - **Backend:** Python 3.11+, FastAPI, LiteLLM, asyncpg, arq, cryptography (Fernet)
-- **Frontend:** Next.js 16, React 19, Vercel AI SDK 4, Tailwind CSS 3, lucide-react
+- **Frontend:** Next.js 16, React 19, Vercel AI SDK, Tailwind CSS 3, lucide-react
 - **Infra:** Docker Compose — backend, worker, frontend, postgres (pgvector), redis
 - **External:** OpenRouter (LLMs), Voyage AI (embeddings), OpenAI (Sora), Brave Search, ElevenLabs, ntfy.sh
 

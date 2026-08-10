@@ -13,7 +13,7 @@ Commercial LLM products lock you into a single provider, a single model, and the
 ```
 ┌─────────────────────────────────────────────────────┐
 │           Next.js 16 Frontend (PWA)                  │
-│           Vercel AI SDK 4 + React 19                  │
+│           Vercel AI SDK + React 19                    │
 └──────────────────────┬──────────────────────────────┘
                        │ /api/chat (SSE bridge)
 ┌──────────────────────▼──────────────────────────────┐
