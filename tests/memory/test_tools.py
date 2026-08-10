@@ -2,8 +2,9 @@
 
 import pytest
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import orchestrator.memory.tools as tools_module
 from orchestrator.memory.tools import MemoryReadTool, MemoryWriteTool
@@ -655,9 +656,22 @@ async def test_memory_write_update_at_cap_is_net_neutral(monkeypatch):
     active count is unchanged by the operation. Refusing it at the
     cap would make the cap terminal — the user would have no
     recourse to correct even an outdated memory — so `_check_write_quota`
-    exempts the update path when the caller provides the UUID of the
-    row being replaced. Without `replace_memory_id` the path is
-    unchanged from the cap refusal.
+    exempts the update path when the caller provides the UUID of
+    the row being replaced AND the row is still actively closable
+    (`status='active' AND valid_to IS NULL`). Without `replace_memory_id`
+    the path is unchanged from the cap refusal.
+
+    Round-3 Codex review: the prior version exempted the cap based
+    only on `replace_memory_id is not None`. `close_memory()` returns
+    `True` for an already-closed row (it physically exists) but
+    updates zero rows, so a caller at the cap could pass any UUID
+    and silently raise the active count above the cap. The fixture
+    below now provides `status='active'` to represent the realistic
+    data shape (the old fixture omitted `status`, which masked the
+    bug). The complementary refusal tests
+    `test_memory_write_update_at_cap_with_closed_target_is_refused`
+    and `test_memory_write_update_at_cap_with_deleted_target_is_refused`
+    pin the closed/deleted cases.
     """
     monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1000)
     monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
@@ -676,6 +690,7 @@ async def test_memory_write_update_at_cap_is_net_neutral(monkeypatch):
                 "memory_slot": None,
                 "source_conversation_id": None,
                 "valid_to": None,
+                "status": "active",
             }
         )
         store.close_memory = AsyncMock(return_value=True)
@@ -684,6 +699,160 @@ async def test_memory_write_update_at_cap_is_net_neutral(monkeypatch):
         result = await tool.execute(action="update", memory_id=str(memory_id), content="new")
 
         # Net-neutral: close + insert happened, no refusal surfaced.
+        assert "rate limit" not in result.lower()
+        assert "cap" not in result.lower()
+        store.close_memory.assert_called_once()
+        mock_dedup.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_memory_write_rate_counter_counts_dedup_merged_rows(monkeypatch):
+    """Rate counter catches `touch_memory()` rows (last_accessed_at update).
+
+    Round-3 Codex review: `dedup_and_store` merges identical content
+    via `touch_memory()`, which bumps only `last_accessed_at` and
+    `access_count`. Each merge still issues a billed embedding
+    request, so the previous counter (which only saw `updated_at`)
+    let an attacker loop the embedding endpoint without tripping
+    the rate counter. The corrected counter ORs `last_accessed_at`
+    into the window predicate so the dedup-merge path is metered.
+    Pins the SQL so a future regression that reverts to
+    `updated_at` only fails the test.
+    """
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value={"count": 3})
+    from orchestrator.memory.encryption import ContentEncryption
+
+    enc = MagicMock(spec=ContentEncryption)
+    enc.encrypt = MagicMock(side_effect=lambda value: value)
+    enc.decrypt = MagicMock(side_effect=lambda value: value)
+    from orchestrator.memory.store import MemoryStore
+
+    store = MemoryStore(db_pool=pool, encryption=enc)
+
+    user_id = uuid.uuid4()
+    result = await store.count_memories_created_since(user_id, since=datetime.now(timezone.utc))
+    assert result == 3
+    sql = pool.fetchrow.await_args.args[0]
+    assert "created_at" not in sql
+    assert "updated_at" in sql
+    assert "last_accessed_at" in sql
+    assert "user_id = $1" in sql
+
+
+@pytest.mark.asyncio
+async def test_memory_write_update_at_cap_with_closed_target_is_refused(monkeypatch):
+    """Update at the cap with an already-closed target is refused.
+
+    Round-3 Codex review: `close_memory()` returns `True` for an
+    already-closed row (it physically exists) but updates zero rows.
+    If `_check_write_quota` granted the net-neutral cap exemption
+    solely on `replace_memory_id is not None`, a caller at the cap
+    could pass any UUID, the close would be a no-op, `dedup_and_store`
+    would insert a new memory, and the active count would silently
+    exceed the cap. The fix requires the replace target to actually
+    be `status='active' AND valid_to IS NULL` — `replace_memory_active`
+    must be `True`.
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1000)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        user_id = uuid.uuid4()
+        memory_id = uuid.uuid4()
+        store = _quota_store(recent_writes=0, active_rows=1000)
+        # The fetched row is already closed (valid_to is set).
+        store.get_memory = AsyncMock(
+            return_value={
+                "id": memory_id,
+                "user_id": user_id,
+                "content": "old",
+                "category": "fact",
+                "memory_slot": None,
+                "source_conversation_id": None,
+                "valid_to": datetime.now(timezone.utc),
+                "status": "active",
+            }
+        )
+        store.close_memory = AsyncMock(return_value=True)
+        tool = MemoryWriteTool(store, user_id)
+
+        result = await tool.execute(action="update", memory_id=str(memory_id), content="new")
+
+        assert "cap" in result.lower()
+        mock_dedup.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_memory_write_update_at_cap_with_deleted_target_is_refused(monkeypatch):
+    """Update at the cap with a `status='deleted'` target is refused.
+
+    Same fix as the closed-row test, but covers the
+    `status != 'active'` branch — a soft-deleted row should also
+    not be eligible for the net-neutral exemption because the close
+    call would be a no-op.
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1000)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        user_id = uuid.uuid4()
+        memory_id = uuid.uuid4()
+        store = _quota_store(recent_writes=0, active_rows=1000)
+        store.get_memory = AsyncMock(
+            return_value={
+                "id": memory_id,
+                "user_id": user_id,
+                "content": "old",
+                "category": "fact",
+                "memory_slot": None,
+                "source_conversation_id": None,
+                "valid_to": None,
+                "status": "deleted",
+            }
+        )
+        store.close_memory = AsyncMock(return_value=True)
+        tool = MemoryWriteTool(store, user_id)
+
+        result = await tool.execute(action="update", memory_id=str(memory_id), content="new")
+
+        assert "cap" in result.lower()
+        mock_dedup.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_memory_write_update_at_cap_with_active_target_is_net_neutral(monkeypatch):
+    """Update at the cap with an actively-closable target is net-neutral.
+
+    Pairs with the two refused-target tests above to confirm the
+    exemption still triggers for the genuine net-neutral case
+    (status='active' AND valid_to IS NULL).
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1000)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        mock_dedup.return_value = uuid.uuid4()
+        user_id = uuid.uuid4()
+        memory_id = uuid.uuid4()
+        store = _quota_store(recent_writes=0, active_rows=1000)
+        store.get_memory = AsyncMock(
+            return_value={
+                "id": memory_id,
+                "user_id": user_id,
+                "content": "old",
+                "category": "fact",
+                "memory_slot": None,
+                "source_conversation_id": None,
+                "valid_to": None,
+                "status": "active",
+            }
+        )
+        store.close_memory = AsyncMock(return_value=True)
+        tool = MemoryWriteTool(store, user_id)
+
+        result = await tool.execute(action="update", memory_id=str(memory_id), content="new")
+
         assert "rate limit" not in result.lower()
         assert "cap" not in result.lower()
         store.close_memory.assert_called_once()

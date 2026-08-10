@@ -918,18 +918,20 @@ class MemoryStore:
         *,
         since: datetime,
     ) -> int:
-        """Count rows this user wrote to `memories` at or after `since`.
+        """Count billed-write attempts this user made at or after `since`.
 
         Used by the `memory_write` tool's per-user write-rate guard
-        (issue #62). Counts every row whose `updated_at` falls in the
-        window, not just newly inserted rows: a dedup call that merges
-        the new content into an existing memory still triggers a billed
-        embedding request, and `dedup.py` advances `updated_at` on the
-        matching row. Counting only `created_at` would let an attacker
-        that submits identical content loop the embedding endpoint
-        without ever bumping the counter, defeating the
-        cost-amplification half of the guard. `idx_memories_updated_at`
-        plus the `user_id` predicate keeps the scan bounded.
+        (issue #62). Counts every row whose `updated_at` *or*
+        `last_accessed_at` falls in the window — `dedup_and_store`
+        merges identical content into an existing row via
+        `touch_memory()`, which bumps `last_accessed_at` and
+        `access_count` but **not** `updated_at`. Each of those merges
+        still issues a billed embedding request, so excluding them
+        would let an attacker loop the embedding endpoint without
+        tripping the rate counter (the original cost-amplification
+        guard). Counting only `created_at` was the initial fix; this
+        version catches the dedup-bypass path. `idx_memories_updated_at`
+        plus the `user_id` predicate bounds the scan.
 
         Status is intentionally **not** filtered: an `update` closes one
         row and inserts another, and a soft `delete` leaves the row in
@@ -941,7 +943,13 @@ class MemoryStore:
             SELECT COUNT(*) AS count
             FROM memories
             WHERE user_id = $1
-              AND updated_at >= $2
+              AND (
+                updated_at >= $2
+                OR (
+                  last_accessed_at IS NOT NULL
+                  AND last_accessed_at >= $2
+                )
+              )
             """,
             user_id,
             since,

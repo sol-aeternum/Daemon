@@ -225,7 +225,11 @@ class MemoryWriteTool(Tool):
             )
 
     async def _check_write_quota(
-        self, action: str, *, replace_memory_id: uuid.UUID | None = None
+        self,
+        action: str,
+        *,
+        replace_memory_id: uuid.UUID | None = None,
+        replace_memory_active: bool = False,
     ) -> str | None:
         """Enforce the per-user write-rate limit and active-row cap.
 
@@ -243,6 +247,22 @@ class MemoryWriteTool(Tool):
         unchanged. Without this exemption the cap would be terminal
         (the user could not even correct an existing memory once hit),
         making `consolidate or delete` the only escape route.
+
+        `replace_memory_active` (optional, default `False`): whether
+        the row identified by `replace_memory_id` is currently
+        `status='active' AND valid_to IS NULL`. The `update`
+        caller-passed path already fetches the row through
+        `get_memory()`; rather than issue another DB round-trip here,
+        the caller passes that fact in. **The cap exemption only
+        triggers when the replace target is actually closable.**
+        `close_memory()` silently updates zero rows for an
+        already-closed target (it returns `True` because the row
+        physically exists), so without this check a caller at the cap
+        could bypass the cap by passing any UUID — the close would be
+        a no-op, the dedup/insert would add a row, and the active
+        count would silently exceed the cap. Round-3 Codex review
+        flagged exactly this path; the fix restricts the exemption to
+        rows the close call will actually close.
 
         Fails **open** on a counting error. The quota is an abuse
         dampener, not an authorization boundary (the `user_id`
@@ -294,26 +314,23 @@ class MemoryWriteTool(Tool):
             # A net-neutral `update` is exempt: the close+insert pair
             # leaves the active count unchanged, so refusing it at the
             # cap would make the cap terminal (the user couldn't even
-            # correct an existing memory once hit). Only exempt if the
-            # supplied `replace_memory_id` is currently
-            # `status='active' AND valid_to IS NULL`.
+            # correct an existing memory once hit). Only exempt when
+            # `replace_memory_active` is True — that is, the row the
+            # caller named is actually closable (status='active' AND
+            # valid_to IS NULL). Without this check, a caller at the
+            # cap can pass any UUID: `close_memory` returns True for an
+            # already-closed row (it physically exists) but updates 0
+            # rows, then `dedup_and_store` inserts a new memory and
+            # the active count silently exceeds the cap. Round-3
+            # Codex review surfaced this path; the fix restricts the
+            # exemption to rows the close call will actually close.
             net_neutral_update = bool(
                 action == "update"
                 and replace_memory_id is not None
-                and active_rows > 0  # sanity: at least one closed row needed
+                and replace_memory_active
+                and active_rows > 0  # sanity: at least one row to close
             )
             if net_neutral_update:
-                # Cheap pre-check via the store: re-fetch with status
-                # filter to confirm the row is closable. We avoid a
-                # second DB call here — the caller has already passed
-                # the ownership-filtered `old_memory`; the cap-exempt
-                # decision only needs to confirm the row is not
-                # already closed, which the cap check is the
-                # authoritative answer for. The `active_rows >= cap`
-                # branch says "every active row is already at the cap";
-                # trusting the caller's owner-checked row is closable
-                # is correct here because the row went through the
-                # same `user_id` ownership filter downstream.
                 logger.info(
                     "memory_write_cap_update_net_neutral user_id=%s active_rows=%s "
                     "cap=%s replace_memory_id=%s",
@@ -402,7 +419,26 @@ class MemoryWriteTool(Tool):
             # additionally exempted for net-neutral updates — see
             # `_check_write_quota` for the reversal rule that lets a
             # user at the cap still correct an existing memory.
-            refusal = await self._check_write_quota(action, replace_memory_id=memory_id)
+            #
+            # `replace_memory_active=True` requires the existing row
+            # to be `status='active' AND valid_to IS NULL` — that is,
+            # the row the close call will actually close.
+            # `close_memory()` silently updates zero rows for an
+            # already-closed row (it physically exists), so without
+            # this check a caller at the cap could pass any UUID,
+            # the close would be a no-op, and the dedup/insert would
+            # silently raise the active count above the cap. Round-3
+            # Codex review surfaced this path; `old_memory` is the
+            # row we already fetched and authorized, so its
+            # `valid_to` is the authoritative signal.
+            replace_active = (
+                old_memory.get("status") == "active" and old_memory.get("valid_to") is None
+            )
+            refusal = await self._check_write_quota(
+                action,
+                replace_memory_id=memory_id,
+                replace_memory_active=replace_active,
+            )
             if refusal is not None:
                 return refusal
 
