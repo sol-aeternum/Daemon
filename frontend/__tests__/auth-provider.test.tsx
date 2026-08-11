@@ -16,6 +16,7 @@ const mockAuthConfig = vi.hoisted(() => ({
     | undefined,
   inflight: undefined as Promise<unknown> | undefined,
   fetchCalls: 0,
+  refreshCalls: 0,
   listeners: new Set<(s: unknown) => void>(),
 }));
 
@@ -49,9 +50,18 @@ function makeFetchMock(): () => Promise<unknown> {
   };
 }
 
+function makeRefreshMock(): () => Promise<unknown> {
+  const fetchConfig = makeFetchMock();
+  return () => {
+    mockAuthConfig.refreshCalls += 1;
+    return fetchConfig();
+  };
+}
+
 vi.mock('../lib/auth-config', () => ({
   AUTH_CONFIG_CACHE_TTL_MS: 60_000,
   fetchAuthConfig: vi.fn(makeFetchMock()),
+  refreshAuthConfig: vi.fn(makeRefreshMock()),
   subscribeAuthConfig: vi.fn((cb: (s: unknown) => void) => {
     mockAuthConfig.listeners.add(cb);
     return () => {
@@ -96,6 +106,7 @@ afterEach(() => {
   mockAuthConfig.trigger = undefined;
   mockAuthConfig.inflight = undefined;
   mockAuthConfig.fetchCalls = 0;
+  mockAuthConfig.refreshCalls = 0;
   mockAuthConfig.listeners.clear();
   mockRefresh.mockClear();
   mockClearAuthState.mockClear();
@@ -182,10 +193,12 @@ describe('AuthProvider mode-aware redirects', () => {
       await vi.advanceTimersByTimeAsync(59_999);
     });
     expect(mockAuthConfig.fetchCalls).toBe(0);
+    expect(mockAuthConfig.refreshCalls).toBe(0);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1);
     });
+    expect(mockAuthConfig.refreshCalls).toBe(1);
     expect(mockAuthConfig.fetchCalls).toBe(1);
   });
 
