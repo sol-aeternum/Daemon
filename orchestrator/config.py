@@ -450,6 +450,18 @@ class Settings(BaseSettings):
     # Per-IP limit for /email/complete.
     daemon_rate_limit_email_complete_per_ip_per_hour: int = Field(default=20, ge=1)
 
+    # ----- Chat endpoint rate limits (issue #38) -----
+    # Per-user limit on /chat and /v1/chat/completions (defends the
+    # operator's LLM budget against compromised tokens or runaway clients).
+    daemon_rate_limit_chat_per_user_per_minute: int = Field(default=60, ge=1)
+    # Per-token limit (defense in depth against token rotation abuse and
+    # multi-device bursts from a single leaked token).
+    daemon_rate_limit_chat_per_token_per_minute: int = Field(default=30, ge=1)
+    # Per-IP limit on authenticated chat requests (defense in depth — a
+    # single IP should never burn more than this regardless of which user
+    # is "logged in" from it).
+    daemon_rate_limit_chat_per_ip_per_minute: int = Field(default=120, ge=1)
+
     # ----- Mail sender config (TODO 10 consumes this) -----
     # console is dev-only and is rejected in production by
     # validate_hosted_identity_config(). smtp uses daemon_mail_smtp_*.

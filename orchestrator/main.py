@@ -45,6 +45,13 @@ from orchestrator.auth_runtime_state import (
     lock_auth_runtime_state,
     replace_setup_token,
 )
+from orchestrator.services.identity import (
+    RateLimitPolicy,
+    ScopeKind,
+    client_ip_for_key,
+    enforce_rate_limit,
+    get_rate_limiter,
+)
 from orchestrator.council.sse import stream_council, stream_council_interview_response
 from orchestrator.config import (
     HostSecurityConfigError,
@@ -1239,6 +1246,16 @@ async def openai_chat_completions(
 ) -> StreamingResponse | OpenAIChatResponse:
     """OpenAI-compatible chat completions endpoint for Open WebUI integration."""
 
+    # Per-issue-#38 rate limit must run before payload validation so
+    # abusive clients cannot flood the validation path while a
+    # legitimate user's budget is being drained.
+    await _enforce_chat_rate_limit(
+        request=request,
+        auth=auth,
+        settings=settings,
+        endpoint="chat:openai",
+    )
+
     # Extract the last user message
     user_messages = [m for m in payload.messages if m.role == "user"]
     if not user_messages:
@@ -1802,6 +1819,93 @@ async def generate_sound_effect(
 # ============== Legacy Daemon Endpoint ==============
 
 
+def _chat_rate_limit_policies(
+    request: Request,
+    *,
+    auth: AuthenticatedDevice,
+    settings: Settings,
+) -> list[tuple[ScopeKind, str, RateLimitPolicy, str]]:
+    """Return rate-limit policies for ``/chat`` and ``/v1/chat/completions``.
+
+    Three scopes are layered so a single compromised token cannot drain
+    the operator's LLM budget regardless of which user or device the
+    attacker is masquerading as (issue #38):
+
+    * Per-user — primary defence against compromised-token abuse. The
+      operator's LLM bill is bounded per account regardless of how
+      many devices/tokens that account owns.
+    * Per-token — defence in depth against multi-device bursts from a
+      single leaked token before the user notices.
+    * Per-IP — bound on authenticated chat traffic from a single
+      network. Helps when an attacker cycles through credentials on a
+      botnet.
+
+    All three checks share the same 60-second window. The per-IP policy
+    is intentionally higher than per-user because legitimate users
+    share CGNAT IPs more often than they share a user account.
+
+    The ``endpoint`` suffix distinguishes the policies in Redis key
+    derivation so the limits stay independent across the three scopes.
+    """
+    client_ip = client_ip_for_key(request)
+    return [
+        (
+            "user_id",
+            str(auth.user_id),
+            RateLimitPolicy(
+                limit=settings.daemon_rate_limit_chat_per_user_per_minute,
+                window_seconds=60,
+            ),
+            "chat:user:minute",
+        ),
+        (
+            "session_id",
+            str(auth.session_id),
+            RateLimitPolicy(
+                limit=settings.daemon_rate_limit_chat_per_token_per_minute,
+                window_seconds=60,
+            ),
+            "chat:session:minute",
+        ),
+        (
+            "ip",
+            client_ip,
+            RateLimitPolicy(
+                limit=settings.daemon_rate_limit_chat_per_ip_per_minute,
+                window_seconds=60,
+            ),
+            "chat:ip:minute",
+        ),
+    ]
+
+
+async def _enforce_chat_rate_limit(
+    *,
+    request: Request,
+    auth: AuthenticatedDevice,
+    settings: Settings,
+    endpoint: str,
+) -> None:
+    """Enforce ``_chat_rate_limit_policies`` for the named chat endpoint.
+
+    Helper exists so ``/chat`` and ``/v1/chat/completions`` (and the
+    ``/chat/completions`` alias) can share the same policy wiring. The
+    endpoint tag is the only difference so logs and Redis keys stay
+    per-route.
+    """
+    limiter = get_rate_limiter(request)
+    await enforce_rate_limit(
+        request=request,
+        limiter=limiter,
+        endpoint=endpoint,
+        policies=_chat_rate_limit_policies(
+            request,
+            auth=auth,
+            settings=settings,
+        ),
+    )
+
+
 @app.post("/chat", responses=REQUEST_BODY_TOO_LARGE_RESPONSES)
 async def chat(
     payload: ChatRequest,
@@ -1810,6 +1914,16 @@ async def chat(
     app_state: AppState = Depends(get_app_state),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> StreamingResponse:
+    # Per-issue-#38 rate limit runs after auth so user/session scope
+    # values are populated, but before any LLM-backed work so the
+    # operator's budget is bounded even when the request would have
+    # succeeded.
+    await _enforce_chat_rate_limit(
+        request=request,
+        auth=auth,
+        settings=settings,
+        endpoint="chat:daemon",
+    )
     conversation_id = payload.conversation_id or new_conversation_id()
     # Warn if no conversation_id was provided - should not happen in normal frontend flow
     if not payload.conversation_id:

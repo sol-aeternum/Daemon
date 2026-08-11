@@ -44,7 +44,7 @@ from orchestrator.services.identity.rate_limiter import (
 logger = logging.getLogger(__name__)
 
 
-ScopeKind = Literal["ip", "email"]
+ScopeKind = Literal["ip", "email", "user_id", "session_id"]
 PolicySpec = tuple[ScopeKind, str, RateLimitPolicy] | tuple[ScopeKind, str, RateLimitPolicy, str]
 
 
