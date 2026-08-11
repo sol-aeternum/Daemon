@@ -230,6 +230,11 @@ async def create_memory(
         raise HTTPException(status_code=503, detail="Memory store unavailable")
     from orchestrator.memory.dedup import dedup_and_store
 
+    # Intentional cap semantics: this authenticated administrative HTTP
+    # endpoint predates and is outside the LLM tool's per-window/active-row
+    # abuse quota. It retains deduplication but does not participate in the
+    # tool-only cap lock; bulk import below is likewise an explicit admin
+    # operation. Issue #221's atomic cap applies to MemoryWriteTool writes.
     memory_id = await dedup_and_store(
         store=store,
         user_id=auth.user_id,

@@ -392,6 +392,9 @@ async def run_dreaming(
                         uuid.UUID(source_memory_id)
                         for source_memory_id in observation_payload["source_memory_ids"]
                     ]
+                    # Dream observations are bounded internal lifecycle
+                    # output, not user-invoked tool writes; they intentionally
+                    # remain outside the MemoryWriteTool abuse quota.
                     observation = await active_store.insert_memory(
                         user_id=user_id,
                         content=observation_text,

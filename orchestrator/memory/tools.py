@@ -13,7 +13,11 @@ from typing import Any
 
 from orchestrator.memory.retrieval import retrieve_memories_for_text
 from orchestrator.memory.store import MemoryStore
-from orchestrator.memory.dedup import dedup_and_store, check_contradiction
+from orchestrator.memory.dedup import (
+    check_contradiction,
+    dedup_and_store,
+    prepare_memory_embedding,
+)
 from orchestrator.memory.embedding import embed_documents_with_metadata, embed_query_with_metadata
 from orchestrator.tools.registry import Tool
 
@@ -558,15 +562,95 @@ class MemoryWriteTool(Tool):
             if quota.refusal is not None:
                 return quota.refusal
             effective_slot = slot if isinstance(slot, str) else None
-            memory_id = await dedup_and_store(
-                store=self.store,
-                user_id=self.user_id,
-                content=content,
-                source_type="user_created",
-                category=category,
-                conversation_id=None,
-                slot=effective_slot,
-            )
+            # External embedding work must complete before BEGIN/advisory
+            # lock so a slow provider cannot hold a database transaction.
+            embedding_result = await prepare_memory_embedding(content, effective_slot)
+            # Issue #221 — atomic active-row cap enforcement.
+            #
+            # `_check_write_quota` does a non-locked count + a
+            # rate-window check on the per-process deque. Two parallel
+            # tool calls (e.g. an LLM making two `memory_write` calls
+            # concurrently in the same response) could both pass that
+            # count and both insert, silently raising the active count
+            # above the cap. Acquire the per-user advisory lock, do
+            # the cap re-check inside the same transaction, and run
+            # `dedup_and_store` on the lock connection so the insert
+            # is part of the same transaction as the cap check. The
+            # embedding is computed before the lock is acquired (the
+            # issue explicitly forbids holding the transaction open
+            # across the external embedding call).
+            cap_conn: Any | None = None
+            try:
+                cap_conn, _ = await self.store.acquire_user_cap_lock(self.user_id)
+                # Re-check the cap inside the lock transaction. The
+                # rate-window check above is still authoritative for
+                # the cost-amplification half; this gate is the
+                # authoritative storage-amplification half. A
+                # concurrent writer is forced to wait at the
+                # advisory-lock acquire, so by the time this
+                # `count_active_memories_for_user_within_lock` runs
+                # the table reflects their commit (or vice-versa).
+                active_rows = await self.store.count_active_memories_for_user_within_lock(
+                    cap_conn, self.user_id
+                )
+                if active_rows >= MEMORY_WRITE_MAX_ACTIVE_ROWS:
+                    logger.warning(
+                        "memory_write_cap_exceeded_atomic user_id=%s action=%s "
+                        "active_rows=%s cap=%s",
+                        self.user_id,
+                        action,
+                        active_rows,
+                        MEMORY_WRITE_MAX_ACTIVE_ROWS,
+                    )
+                    _release_attempt_reservation(self.user_id, quota.reservation)
+                    # The advisory lock is transaction-scoped. The
+                    # refusal path must end the transaction and return
+                    # the connection to the pool before returning, or
+                    # every later writer for this user would block
+                    # forever on the leaked lock.
+                    try:
+                        await cap_conn.execute("ROLLBACK")
+                    finally:
+                        await self.store._pool.release(cap_conn)
+                        cap_conn = None
+                    return (
+                        f"Memory storage cap reached ({MEMORY_WRITE_MAX_ACTIVE_ROWS} "
+                        f"active memories). Delete an existing memory before writing "
+                        f"a new one."
+                    )
+                memory_id = await dedup_and_store(
+                    store=self.store,
+                    user_id=self.user_id,
+                    content=content,
+                    source_type="user_created",
+                    category=category,
+                    conversation_id=None,
+                    slot=effective_slot,
+                    lock_conn=cap_conn,
+                    embedding_result=embedding_result,
+                )
+                # Commit the cap-locked transaction so the advisory
+                # lock is released (it is transaction-scoped). The
+                # actual insert happened on this connection inside
+                # `dedup_and_store`; releasing without committing
+                # would roll back the insert.
+                await cap_conn.execute("COMMIT")
+                await self.store._pool.release(cap_conn)
+                cap_conn = None
+            except BaseException:
+                if cap_conn is not None:
+                    try:
+                        await cap_conn.execute("ROLLBACK")
+                    except Exception:
+                        pass
+                    try:
+                        await self.store._pool.release(cap_conn)
+                    except Exception:
+                        pass
+                # Cancellation or store failure before commit must not
+                # consume a billed-attempt reservation.
+                _release_attempt_reservation(self.user_id, quota.reservation)
+                raise
             await self._check_and_set_contradiction(memory_id, content, effective_slot)
             return f"Memory created (ID: {memory_id})."
 
@@ -629,86 +713,67 @@ class MemoryWriteTool(Tool):
             category = kwargs.get("category", old_memory.get("category", "fact"))
             slot = kwargs.get("slot", old_memory.get("memory_slot"))
 
-            # Close the old memory (defense-in-depth: store-layer
-            # `user_id` filter also constrains the UPDATE).
-            #
-            # Round-9 Codex review (P1, 2026-08-11T02:47:31Z on
-            # head `d34984620a`,
-            # `orchestrator/memory/tools.py:603`): the round-8 fix
-            # (post-close `get_memory` re-fetch) catches the single-update
-            # TOCTOU but NOT the concurrent close race. Two at-cap
-            # updates targeting the same active memory can both pass the
-            # pre-flight exemption (the row is open); the first
-            # `close_memory` sets `valid_to`, the second's UPDATE affects
-            # zero rows, and BOTH callers' post-close `get_memory` then
-            # returns the row with `valid_to IS NOT NULL` (because the
-            # first commit is visible). Both reach the dedup/insert
-            # path and silently raise the active count above the cap.
-            #
-            # Fix: have `close_memory()` report whether its UPDATE
-            # actually affected a row (via `RETURNING id`). When the
-            # close was a no-op, refuse the write here. The post-close
-            # `get_memory` is kept as defense-in-depth for the case
-            # where the row's status changes between close and re-fetch.
+            # Compute the external embedding before opening the database
+            # transaction, then serialize the authoritative count, close,
+            # and replacement insert under one per-user advisory lock.
+            embedding_result = await prepare_memory_embedding(content, slot)
+            cap_conn = None
             try:
-                close_took_effect = await self.store.close_memory(memory_id, user_id=self.user_id)
-                if not close_took_effect:
-                    # Round-10 Codex review (P2, 2026-08-11T04:02:59Z,
-                    # `orchestrator/memory/tools.py:641`): the
-                    # unconditional refusal regressed below-cap updates
-                    # of owned historical memories whose `valid_to` is
-                    # already set. `close_memory()` filters on
-                    # `valid_to IS NULL`, so the close was a no-op for a
-                    # historical target by construction — not a
-                    # concurrent close race. Reserve the refusal for the
-                    # case the preflight said the row was active and the
-                    # close lost a race to another transaction. A
-                    # below-cap historical update is a net-active-row
-                    # +1 operation and is legitimate.
-                    if replace_active:
-                        _release_attempt_reservation(self.user_id, quota.reservation)
-                        return (
-                            "Memory was modified concurrently and could not be replaced. "
-                            "Retry the update."
-                        )
-                    logger.info(
-                        "memory_write_update_historical_close_noop user_id=%s "
-                        "memory_id=%s — proceeding to insert replacement",
-                        self.user_id,
-                        memory_id,
+                cap_conn, _ = await self.store.acquire_user_cap_lock(self.user_id)
+                active_rows = await self.store.count_active_memories_for_user_within_lock(
+                    cap_conn, self.user_id
+                )
+                if active_rows >= MEMORY_WRITE_MAX_ACTIVE_ROWS and not replace_active:
+                    _release_attempt_reservation(self.user_id, quota.reservation)
+                    await cap_conn.execute("ROLLBACK")
+                    await self.store._pool.release(cap_conn)
+                    cap_conn = None
+                    return (
+                        f"Memory storage cap reached ({MEMORY_WRITE_MAX_ACTIVE_ROWS} "
+                        "active memories). Delete an existing memory before writing "
+                        "a new one."
                     )
 
-                # Round-8 Codex review (P1, 2026-08-11T02:01:09Z,
-                # `orchestrator/memory/tools.py:454`): between
-                # `get_memory` (which established `old_memory.valid_to IS
-                # NULL` and unlocked the net-neutral cap exemption) and
-                # the `close_memory` UPDATE, another transaction can
-                # close the same row. Re-fetch the row and refuse the
-                # write if `valid_to` is still NULL. The full atomic
-                # close+insert is the larger follow-up tracked in #221.
-                post_close = await self.store.get_memory(memory_id)
-                if not post_close or post_close.get("valid_to") is None:
+                close_took_effect = await self.store.close_memory(
+                    memory_id, user_id=self.user_id, conn=cap_conn
+                )
+                if replace_active and not close_took_effect:
                     _release_attempt_reservation(self.user_id, quota.reservation)
+                    await cap_conn.execute("ROLLBACK")
+                    await self.store._pool.release(cap_conn)
+                    cap_conn = None
                     return (
                         "Memory was modified concurrently and could not be replaced. "
                         "Retry the update."
                     )
+
+                new_memory_id = await dedup_and_store(
+                    store=self.store,
+                    user_id=self.user_id,
+                    content=content,
+                    source_type="user_created",
+                    category=category,
+                    conversation_id=old_memory.get("source_conversation_id"),
+                    slot=slot,
+                    lock_conn=cap_conn,
+                    embedding_result=embedding_result,
+                )
+                await cap_conn.execute("COMMIT")
+                await self.store._pool.release(cap_conn)
+                cap_conn = None
             except BaseException:
-                # Cancellation or a store failure before the embedding
-                # path must not consume a billed-attempt reservation.
+                if cap_conn is not None:
+                    try:
+                        await cap_conn.execute("ROLLBACK")
+                    except Exception:
+                        pass
+                    try:
+                        await self.store._pool.release(cap_conn)
+                    except Exception:
+                        pass
                 _release_attempt_reservation(self.user_id, quota.reservation)
                 raise
 
-            # Insert new memory with fresh embedding
-            new_memory_id = await dedup_and_store(
-                store=self.store,
-                user_id=self.user_id,
-                content=content,
-                source_type="user_created",
-                category=category,
-                conversation_id=old_memory.get("source_conversation_id"),
-                slot=slot,
-            )
             await self._check_and_set_contradiction(new_memory_id, content, slot)
             return f"Memory updated. Old ID: {memory_id}, New ID: {new_memory_id}."
 

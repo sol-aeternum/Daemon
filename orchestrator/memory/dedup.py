@@ -293,14 +293,42 @@ async def check_contradiction(
         return False, ""
 
 
+async def _touch_memory(store: MemoryStore, memory_id: uuid.UUID, conn: Any | None) -> None:
+    if conn is None:
+        await store.touch_memory(memory_id)
+    else:
+        await store.touch_memory(memory_id, conn=conn)
+
+
+async def _close_memory(
+    store: MemoryStore,
+    memory_id: uuid.UUID,
+    conn: Any | None,
+    *,
+    user_id: uuid.UUID | None = None,
+) -> bool:
+    kwargs: dict[str, Any] = {}
+    if conn is not None:
+        kwargs["conn"] = conn
+    if user_id is not None:
+        kwargs["user_id"] = user_id
+    return await store.close_memory(memory_id, **kwargs)
+
+
 async def _close_active_family_memories(
     store: MemoryStore,
     user_id: uuid.UUID,
     slot_family: str,
     keep_id: uuid.UUID | None,
     excluded_ids: set[uuid.UUID] | None = None,
+    conn: Any | None = None,
 ) -> None:
-    rows = await store._pool.fetch(
+    # Issue #221: when the caller holds the per-user cap lock, route
+    # the SELECT onto ``conn`` so the close participates in the same
+    # transaction. When called outside a cap-locked path (extraction
+    # without the lock), fall back to the pool.
+    executor = conn if conn is not None else store._pool
+    rows = await executor.fetch(
         """
         SELECT id
         FROM memories
@@ -323,7 +351,7 @@ async def _close_active_family_memories(
             continue
         if excluded_ids is not None and memory_id in excluded_ids:
             continue
-        await store.close_memory(memory_id)
+        await _close_memory(store, memory_id, conn)
 
 
 async def _find_slot_family_candidates(
@@ -355,6 +383,7 @@ async def _close_current_related_candidates(
     similar: list[dict[str, Any]],
     slot_family: str,
     keep_id: uuid.UUID | None,
+    conn: Any | None = None,
 ) -> set[uuid.UUID]:
     closed_ids: set[uuid.UUID] = set()
     for candidate in similar:
@@ -368,13 +397,13 @@ async def _close_current_related_candidates(
 
         candidate_family = _slot_family(candidate.get("memory_slot"))
         if candidate_family == slot_family:
-            await store.close_memory(candidate_id)
+            await _close_memory(store, candidate_id, conn)
             closed_ids.add(candidate_id)
             continue
 
         similarity = float(candidate.get("similarity") or 0.0)
         if candidate_family is None and similarity >= _get_supersede_same_slot_threshold():
-            await store.close_memory(candidate_id)
+            await _close_memory(store, candidate_id, conn)
             closed_ids.add(candidate_id)
     return closed_ids
 
@@ -387,20 +416,37 @@ async def deduplicate_facts(
     *,
     source_type: str = "extracted",
     status: str = "active",
+    lock_conn: Any | None = None,
+    prepared_embeddings: list[Any] | None = None,
 ) -> DedupResult:
-    """Deduplicate extracted facts against existing memories."""
+    """Deduplicate extracted facts against existing memories.
+
+    ``lock_conn`` (issue #221): when supplied, all WRITE paths route
+    onto ``lock_conn`` so the dedup insert participates in the
+    cap-protected transaction that the caller has already opened. The
+    dedup SEARCH continues to run on the pool — the search reads the
+    pre-insert committed state, which is the correct dedup decision
+    input; the unique constraint on ``content_hash`` catches any
+    duplicate that races against us between search and insert.
+    """
     result = DedupResult()
     current_slot_families: set[str] = set()
     current_family_keep_ids: dict[str, uuid.UUID] = {}
+    if prepared_embeddings is not None and len(prepared_embeddings) != len(facts):
+        raise ValueError("prepared_embeddings must match facts length")
 
-    for fact in facts:
+    for fact_index, fact in enumerate(facts):
         fact_slot = getattr(fact, "slot", None)
         fact_slot_family = _slot_family(fact_slot)
         current_like_slot = _is_current_like_slot(fact_slot)
         if current_like_slot and fact_slot_family:
             current_slot_families.add(fact_slot_family)
         embedding_input = _embedding_text(fact.content, fact_slot)
-        embedding_result = await embed_documents_with_metadata([embedding_input])
+        embedding_result = (
+            prepared_embeddings[fact_index]
+            if prepared_embeddings is not None
+            else await embed_documents_with_metadata([embedding_input])
+        )
         embedding = embedding_result.embeddings[0]
         document_model = embedding_result.storage_model
 
@@ -532,6 +578,7 @@ async def deduplicate_facts(
                 confidence=fact.confidence,
                 status=status,
                 memory_slot=fact_slot,
+                conn=lock_conn,
             )
             result.new.append(memory)
             if current_like_slot and fact_slot_family:
@@ -541,6 +588,7 @@ async def deduplicate_facts(
                     similar,
                     fact_slot_family,
                     _as_uuid_or_none(new_id),
+                    conn=lock_conn,
                 )
                 await _close_active_family_memories(
                     store,
@@ -548,6 +596,7 @@ async def deduplicate_facts(
                     fact_slot_family,
                     _as_uuid_or_none(new_id),
                     excluded_ids=closed_ids,
+                    conn=lock_conn,
                 )
                 normalized_new_id = _as_uuid_or_none(new_id)
                 if normalized_new_id is not None:
@@ -571,7 +620,7 @@ async def deduplicate_facts(
                 incoming_source_type=source_type,
                 conversation_id=conversation_id,
             ):
-                await store.touch_memory(best_match_id)
+                await _touch_memory(store, best_match_id, lock_conn)
                 result.merged.append(best_match)
                 continue
 
@@ -600,10 +649,11 @@ async def deduplicate_facts(
                         confidence=fact.confidence,
                         status=status,
                         memory_slot=fact_slot,
+                        conn=lock_conn,
                     )
                     result.new.append(memory)
                 else:
-                    await store.touch_memory(best_match_id)
+                    await _touch_memory(store, best_match_id, lock_conn)
                     result.merged.append(best_match)
                     if current_like_slot and fact_slot_family:
                         closed_ids = await _close_current_related_candidates(
@@ -611,6 +661,7 @@ async def deduplicate_facts(
                             similar,
                             fact_slot_family,
                             best_match_id,
+                            conn=lock_conn,
                         )
                         await _close_active_family_memories(
                             store,
@@ -618,6 +669,7 @@ async def deduplicate_facts(
                             fact_slot_family,
                             best_match_id,
                             excluded_ids=closed_ids,
+                            conn=lock_conn,
                         )
                         current_family_keep_ids[fact_slot_family] = best_match_id
             elif similarity >= supersede_threshold:
@@ -647,6 +699,7 @@ async def deduplicate_facts(
                         confidence=fact.confidence,
                         status=status,
                         memory_slot=fact_slot,
+                        conn=lock_conn,
                     )
                     result.new.append(memory)
                 else:
@@ -674,23 +727,50 @@ async def deduplicate_facts(
                         "memory_slot": fact_slot or best_match.get("memory_slot"),
                     }
 
-                    try:
-                        new_memory = await store.supersede_memory(
-                            **supersede_kwargs,
+                    if lock_conn is not None:
+                        new_memory = await store.insert_memory(
+                            user_id=user_id,
+                            content=fact.content,
+                            category=fact.category,
+                            source_type=source_type,
+                            embedding=embedding,
+                            embedding_model=document_model,
+                            source_conversation_id=conversation_id,
+                            confidence=fact.confidence,
+                            status=status,
+                            memory_slot=fact_slot or best_match.get("memory_slot"),
                             metadata=metadata,
+                            conn=lock_conn,
                         )
-                    except asyncpg.UndefinedColumnError as error:
-                        if metadata is None:
-                            raise
-                        logger.warning(
-                            "Dedup contradiction metadata unavailable; retrying supersede without metadata (%s)",
-                            error,
-                        )
-                        contradiction_detected, explanation = False, ""
-                        new_memory = await store.supersede_memory(
-                            **supersede_kwargs,
-                            metadata=None,
-                        )
+                        if new_memory.get("id") != best_match_id:
+                            closed = await _close_memory(
+                                store,
+                                best_match_id,
+                                lock_conn,
+                                user_id=user_id,
+                            )
+                            if not closed:
+                                raise RuntimeError(
+                                    "Supersede failed to close source memory in active state"
+                                )
+                    else:
+                        try:
+                            new_memory = await store.supersede_memory(
+                                **supersede_kwargs,
+                                metadata=metadata,
+                            )
+                        except asyncpg.UndefinedColumnError as error:
+                            if metadata is None:
+                                raise
+                            logger.warning(
+                                "Dedup contradiction metadata unavailable; retrying supersede without metadata (%s)",
+                                error,
+                            )
+                            contradiction_detected, explanation = False, ""
+                            new_memory = await store.supersede_memory(
+                                **supersede_kwargs,
+                                metadata=None,
+                            )
                     result.superseded.append(new_memory)
 
                     # Apply explicit negative trust signal for superseded memory
@@ -712,6 +792,7 @@ async def deduplicate_facts(
                             similar,
                             fact_slot_family,
                             _as_uuid_or_none(new_id),
+                            conn=lock_conn,
                         )
                         await _close_active_family_memories(
                             store,
@@ -719,6 +800,7 @@ async def deduplicate_facts(
                             fact_slot_family,
                             _as_uuid_or_none(new_id),
                             excluded_ids=closed_ids,
+                            conn=lock_conn,
                         )
                         normalized_new_id = _as_uuid_or_none(new_id)
                         if normalized_new_id is not None:
@@ -735,6 +817,7 @@ async def deduplicate_facts(
                     confidence=fact.confidence,
                     status=status,
                     memory_slot=fact_slot,
+                    conn=lock_conn,
                 )
                 result.new.append(memory)
 
@@ -745,6 +828,7 @@ async def deduplicate_facts(
                         similar,
                         fact_slot_family,
                         _as_uuid_or_none(new_id),
+                        conn=lock_conn,
                     )
                     await _close_active_family_memories(
                         store,
@@ -752,6 +836,7 @@ async def deduplicate_facts(
                         fact_slot_family,
                         _as_uuid_or_none(new_id),
                         excluded_ids=closed_ids,
+                        conn=lock_conn,
                     )
                     normalized_new_id = _as_uuid_or_none(new_id)
                     if normalized_new_id is not None:
@@ -767,7 +852,8 @@ async def deduplicate_facts(
             slot_family,
             keep_id,
         )
-        await store._pool.execute(
+        executor = lock_conn if lock_conn is not None else store._pool
+        await executor.execute(
             """
             UPDATE memories
             SET valid_to = NOW(),
@@ -799,10 +885,24 @@ async def dedup_and_store(
     *,
     status: str = "active",
     slot: str | None = None,
+    lock_conn: Any | None = None,
+    embedding_result: Any | None = None,
 ) -> uuid.UUID:
     """Store a single memory with deduplication.
 
     Returns the memory ID (existing if merged/superseded, new if created).
+
+    ``lock_conn`` (issue #221): when supplied, the caller has already
+    acquired the per-user active-row cap advisory lock on this
+    connection (see ``MemoryStore.acquire_user_cap_lock``). The
+    function routes the WRITE paths (insert_memory, touch_memory,
+    close_memory) onto ``lock_conn`` so the cap check + insert happen
+    inside the same transaction. The dedup search continues to run on
+    the pool — the search reads the pre-insert committed state of the
+    table, which is exactly what the dedup decision needs (a separate
+    transaction can race against us, but the unique constraint on
+    ``content_hash`` catches the duplicate at insert time and
+    ``insert_memory`` resolves it into a merged return).
     """
     from dataclasses import dataclass
 
@@ -821,6 +921,8 @@ async def dedup_and_store(
         conversation_id=conversation_id,
         source_type=source_type,
         status=status,
+        lock_conn=lock_conn,
+        prepared_embeddings=[embedding_result] if embedding_result is not None else None,
     )
 
     if result.merged:
@@ -830,19 +932,28 @@ async def dedup_and_store(
     elif result.new:
         return result.new[0]["id"]
     else:
-        # Fallback - create directly
+        # Fallback - create directly on the lock conn so the insert is
+        # part of the cap-protected transaction.
         embedding_input = _embedding_text(content, slot)
-        embedding_result = await embed_documents_with_metadata([embedding_input])
-        embedding = embedding_result.embeddings[0]
+        effective_embedding_result = embedding_result or await embed_documents_with_metadata(
+            [embedding_input]
+        )
+        embedding = effective_embedding_result.embeddings[0]
         memory = await store.insert_memory(
             user_id=user_id,
             content=content,
             category=category,
             source_type=source_type,
             embedding=embedding,
-            embedding_model=embedding_result.storage_model,
+            embedding_model=effective_embedding_result.storage_model,
             source_conversation_id=conversation_id,
             status=status,
             memory_slot=slot,
+            conn=lock_conn,
         )
         return memory["id"]
+
+
+async def prepare_memory_embedding(content: str, slot: str | None = None) -> Any:
+    """Compute a write embedding before opening a cap transaction."""
+    return await embed_documents_with_metadata([_embedding_text(content, slot)])

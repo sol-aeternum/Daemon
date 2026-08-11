@@ -639,6 +639,10 @@ async def process_extraction(
     if not outcome.facts:
         return True, [], False
 
+    # Extraction is an internal lifecycle writer, intentionally
+    # outside the user-invoked MemoryWriteTool abuse quota. Its
+    # batch dedup/close behavior may be net-negative and is governed
+    # by extraction limits rather than the tool active-row cap.
     result = await deduplicate_facts(
         store,
         user_id,
