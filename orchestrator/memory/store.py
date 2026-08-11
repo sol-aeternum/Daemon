@@ -912,50 +912,6 @@ class MemoryStore:
             raise
         return self._memory_row_to_dict(row)
 
-    async def count_memories_created_since(
-        self,
-        user_id: uuid.UUID,
-        *,
-        since: datetime,
-    ) -> int:
-        """Count billed-write attempts this user made at or after `since`.
-
-        Used by the `memory_write` tool's per-user write-rate guard
-        (issue #62). Counts every row whose `updated_at` *or*
-        `last_accessed_at` falls in the window — `dedup_and_store`
-        merges identical content into an existing row via
-        `touch_memory()`, which bumps `last_accessed_at` and
-        `access_count` but **not** `updated_at`. Each of those merges
-        still issues a billed embedding request, so excluding them
-        would let an attacker loop the embedding endpoint without
-        tripping the rate counter (the original cost-amplification
-        guard). Counting only `created_at` was the initial fix; this
-        version catches the dedup-bypass path. `idx_memories_updated_at`
-        plus the `user_id` predicate bounds the scan.
-
-        Status is intentionally **not** filtered: an `update` closes one
-        row and inserts another, and a soft `delete` leaves the row in
-        place, so a status filter would let a caller launder unlimited
-        writes through the update/delete path.
-        """
-        row = await self._pool.fetchrow(
-            """
-            SELECT COUNT(*) AS count
-            FROM memories
-            WHERE user_id = $1
-              AND (
-                updated_at >= $2
-                OR (
-                  last_accessed_at IS NOT NULL
-                  AND last_accessed_at >= $2
-                )
-              )
-            """,
-            user_id,
-            since,
-        )
-        return int(row["count"]) if row else 0
-
     async def count_active_memories(self, user_id: uuid.UUID) -> int:
         """Count this user's currently-open active memories.
 
@@ -965,11 +921,9 @@ class MemoryStore:
         `supersede_memory`) leave `status = 'active'` set but flip
         `valid_to = NOW()`, so without the `valid_to` predicate a
         user's historical revisions would inflate the count past the
-        cap. Consolidating or deleting a memory genuinely frees quota,
-        which is what makes the cap-exceeded message ("consolidate or
-        delete") actionable rather than terminal. Served by the partial
-        index `idx_memories_user_status` plus the `valid_to` predicate
-        pushed into the same scan.
+        cap. Closing or deleting an active memory frees quota. Served by
+        the partial index `idx_memories_user_status` plus the `valid_to`
+        predicate pushed into the same scan.
         """
         row = await self._pool.fetchrow(
             """

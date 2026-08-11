@@ -5,7 +5,7 @@ import uuid
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import orchestrator.memory.tools as tools_module
 from orchestrator.memory.tools import MemoryReadTool, MemoryWriteTool
@@ -521,7 +521,8 @@ async def test_memory_write_active_row_cap_is_enforced(monkeypatch):
         result = await tool.execute(action="create", content="one too many")
 
         assert "cap" in result.lower()
-        assert "consolidate" in result.lower()
+        assert "delete" in result.lower()
+        assert "consolidate" not in result.lower()
         mock_dedup.assert_not_called()
 
 
@@ -652,7 +653,7 @@ async def test_memory_write_rate_limit_refuses_identical_content_loop(monkeypatc
     """Round-3 Codex review finding: identical-content write loop bypassed the rate limit.
 
     Round-2 of the counter bumped rows by `updated_at` AND `last_accessed_at`,
-    so the prior `count_memories_created_since` predicate saw the merged
+    so the prior row-count predicate saw the merged
     row each time. But `dedup_and_store` collapses a run of identical
     writes onto a single row, so `COUNT(*)` stayed at 1 while the
     embedding endpoint was billed on every call. The round-3 fix
@@ -807,41 +808,6 @@ async def test_memory_write_update_at_cap_is_net_neutral(monkeypatch):
         assert "cap" not in result.lower()
         store.close_memory.assert_called_once()
         mock_dedup.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_memory_write_rate_counter_counts_dedup_merged_rows(monkeypatch):
-    """Rate counter catches `touch_memory()` rows (last_accessed_at update).
-
-    Round-3 Codex review: `dedup_and_store` merges identical content
-    via `touch_memory()`, which bumps only `last_accessed_at` and
-    `access_count`. Each merge still issues a billed embedding
-    request, so the previous counter (which only saw `updated_at`)
-    let an attacker loop the embedding endpoint without tripping
-    the rate counter. The corrected counter ORs `last_accessed_at`
-    into the window predicate so the dedup-merge path is metered.
-    Pins the SQL so a future regression that reverts to
-    `updated_at` only fails the test.
-    """
-    pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value={"count": 3})
-    from orchestrator.memory.encryption import ContentEncryption
-
-    enc = MagicMock(spec=ContentEncryption)
-    enc.encrypt = MagicMock(side_effect=lambda value: value)
-    enc.decrypt = MagicMock(side_effect=lambda value: value)
-    from orchestrator.memory.store import MemoryStore
-
-    store = MemoryStore(db_pool=pool, encryption=enc)
-
-    user_id = uuid.uuid4()
-    result = await store.count_memories_created_since(user_id, since=datetime.now(timezone.utc))
-    assert result == 3
-    sql = pool.fetchrow.await_args.args[0]
-    assert "created_at" not in sql
-    assert "updated_at" in sql
-    assert "last_accessed_at" in sql
-    assert "user_id = $1" in sql
 
 
 @pytest.mark.asyncio
@@ -1041,8 +1007,9 @@ async def test_memory_write_attempt_log_evicts_inactive_users(monkeypatch):
     re-creates the deque.
     """
     monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 10)
-    monkeypatch.setattr(tools_module, "_ATTEMPT_LOG_EVICTION_WATERMARK", 4)
+    monkeypatch.setattr(tools_module, "_ATTEMPT_LOG_MAX_USERS", 4)
     monkeypatch.setattr(tools_module, "_ATTEMPT_LOG_INACTIVITY_SECONDS", 60)
+    monkeypatch.setattr(tools_module, "_ATTEMPT_LOG_SWEEP_EVERY_N", 256)
     monkeypatch.setattr(tools_module, "_attempt_log_call_count", 0)
 
     # Reset module-level state for a deterministic count.
@@ -1078,14 +1045,15 @@ async def test_memory_write_attempt_log_evicts_inactive_users(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_memory_write_attempt_log_sweep_does_not_fire_below_watermark(monkeypatch):
+async def test_memory_write_attempt_log_sweep_does_not_fire_below_max_users(monkeypatch):
     """Round-5 P2 sibling: small-host case is sweep-free.
 
     The sweep is only triggered when the dict is at or above
-    `_ATTEMPT_LOG_EVICTION_WATERMARK`. Below that, the function
+    `_ATTEMPT_LOG_MAX_USERS`. Below that, the function
     only increments its call counter and returns.
     """
-    monkeypatch.setattr(tools_module, "_ATTEMPT_LOG_EVICTION_WATERMARK", 1024)
+    monkeypatch.setattr(tools_module, "_ATTEMPT_LOG_MAX_USERS", 1024)
+    monkeypatch.setattr(tools_module, "_ATTEMPT_LOG_SWEEP_EVERY_N", 256)
     monkeypatch.setattr(tools_module, "_attempt_log_call_count", 0)
     tools_module._attempt_log.clear()
     tools_module._attempt_log_last_seen.clear()
@@ -1105,3 +1073,25 @@ async def test_memory_write_attempt_log_sweep_does_not_fire_below_watermark(monk
     # None evicted — sweep short-circuited.
     for uid in stale_ids:
         assert uid in tools_module._attempt_log
+
+
+def test_memory_write_attempt_log_caps_fresh_user_burst(monkeypatch):
+    """The process ledger stays bounded when every user is fresh."""
+    monkeypatch.setattr(tools_module, "_ATTEMPT_LOG_MAX_USERS", 1024)
+    monkeypatch.setattr(tools_module, "_ATTEMPT_LOG_SWEEP_EVERY_N", 256)
+    monkeypatch.setattr(tools_module, "_attempt_log_call_count", 0)
+    tools_module._attempt_log.clear()
+    tools_module._attempt_log_last_seen.clear()
+
+    now = datetime.now(timezone.utc)
+    user_ids = [uuid.uuid4() for _ in range(1025)]
+    for user_id in user_ids:
+        tools_module._attempt_log[user_id] = deque([now], maxlen=10)
+        tools_module._attempt_log_last_seen[user_id] = now
+
+    tools_module._maybe_sweep_attempt_log(now, current_user_id=user_ids[-1])
+
+    assert len(tools_module._attempt_log) == 1024
+    assert len(tools_module._attempt_log_last_seen) == 1024
+    assert user_ids[0] not in tools_module._attempt_log
+    assert user_ids[-1] in tools_module._attempt_log

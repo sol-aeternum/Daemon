@@ -6,9 +6,9 @@ import asyncio
 import json
 import logging
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from datetime import datetime, timedelta, timezone
-from typing import Any, Deque
+from typing import Any
 
 from orchestrator.memory.retrieval import retrieve_memories_for_text
 from orchestrator.memory.store import MemoryStore
@@ -39,96 +39,57 @@ MEMORY_WRITE_WINDOW_SECONDS: int = 60
 MEMORY_WRITE_MAX_ACTIVE_ROWS: int = 1000
 
 
-# Module-level per-user sliding-window counter for the `memory_write`
-# rate limit (issue #62). Why an in-process counter rather than a DB
-# row-count predicate:
-#
-#   - The cost model is *embedding calls*, not rows inserted. A loop of
-#     identical-content writes calls `embed_documents_with_metadata`
-#     each time (the billed step in `deduplicate_facts`), even when
-#     `touch_memory` merges the result without inserting a new row.
-#     Counting rows therefore under-bounds identical-content loops.
-#     Round-3 Codex review (chatgpt-codex-connector[bot]
-#     @2026-08-10T09:57:29Z, P1 on orchestrator/memory/store.py:951)
-#     surfaced this; the fix increments the counter on every call
-#     into `_check_write_quota`, so the 11th embedding-billed attempt
-#     is refused regardless of dedup outcome.
-#
-#   - Per-process state survives only as long as the worker process.
-#     That is acceptable for an abuse dampener: a process restart
-#     effectively clears the window, not a security regression (the
-#     user-scoping checks remain the authorization boundary).
-#
-#   - Redis is intentionally not introduced here. The codebase ships
-#     a Redis-backed `RateLimiter` helper
-#     (`orchestrator/services/identity/rate_limiter.py`) that is the
-#     atomic-upgrade path when the host has Redis wired; self-hosted
-#     memory setups run without Redis, so the in-process counter is
-#     the path that works for both modes.
-#
-# Concurrency: a single `asyncio.Lock` guards the dict + each user's
-# deque. asyncio is cooperative, so a long blocking call between
-# acquire/release is the only thing that would stall concurrent
-# callers; the only operations under the lock are deque prune +
-# append + length check, so the critical section is sub-millisecond.
-#
-# Memory: `deque(maxlen=MEMORY_WRITE_MAX_PER_WINDOW)` is bounded;
-# entries older than the window are evicted on every check. The
-# dict mapping user_id -> deque is unbounded by itself — round-5
-# Codex review (P2, 2026-08-10T10:43:07Z) flagged that long-running
-# hosted processes would accumulate UUIDs forever. The eviction
-# sweep below bounds the dict without a background task.
-_attempt_log: dict[uuid.UUID, Deque[datetime]] = {}
-# Last-seen timestamp per user. Tagged inside the same lock that
-# guards `_attempt_log` so a sweep sees a consistent view.
+# Per-process, per-user sliding-window counter for the LLM-callable
+# `memory_write` tool. The counter tracks attempted embedding-billed
+# writes rather than inserted rows, because deduplication can merge many
+# billed attempts into one database row. An OrderedDict provides LRU
+# order so total process memory remains bounded even during a burst of
+# entirely fresh users.
+_attempt_log: OrderedDict[uuid.UUID, deque[datetime]] = OrderedDict()
 _attempt_log_last_seen: dict[uuid.UUID, datetime] = {}
 _attempt_log_lock: asyncio.Lock | None = None
 
-# Eviction parameters. The sweep only fires when the dict has at
-# least this many users — smaller hosts run sweep-free. The
-# inactivity threshold is set well past the rate window (60s) so
-# an active user is never evicted mid-window.
-_ATTEMPT_LOG_EVICTION_WATERMARK: int = 1024
+# Bound the per-process ledger independently of timestamp freshness.
+# LRU eviction is an abuse-dampener tradeoff: an evicted user's next
+# write starts a new local window. Exact cross-process enforcement is a
+# separate shared-store concern.
+_ATTEMPT_LOG_MAX_USERS: int = 1024
 _ATTEMPT_LOG_INACTIVITY_SECONDS: int = 600
-# Counter for triggering the sweep every Nth call (so the dict
-# growth is bounded even if the watermark is set high).
+_ATTEMPT_LOG_SWEEP_EVERY_N: int = 256
 _attempt_log_call_count: int = 0
 
 
 def _maybe_sweep_attempt_log(now: datetime, *, current_user_id: uuid.UUID) -> None:
-    """Periodically evict inactive users from the rate-limit dicts.
+    """Evict stale users periodically and enforce the hard LRU bound.
 
-    Round-5 Codex review (P2, 2026-08-10T10:43:07Z) flagged that
-    every user who ever called `memory_write` left a UUID in
-    `_attempt_log` and `_attempt_log_last_seen` permanently. Stale
-    timestamps were pruned only when the same user called again,
-    so the dict mapping grew without bound. A background task
-    would be the textbook answer, but this resolver tick prefers
-    a sweep-on-write approach: tagged counter `_attempt_log_call_count`
-    triggers a sweep every `_ATTEMPT_LOG_SWEEP_EVERY_N` calls, and
-    the sweep only iterates the dict when the watermark is met.
-    Evicted users' next write just re-creates their deque — the
-    worst case is one extra `dict` insertion per inactive user
-    per eviction interval, well below the rate window.
-
-    Must be called under `_attempt_log_lock` so the eviction is
-    consistent with the tag-write for the current user.
+    Must be called under `_attempt_log_lock`.
     """
     global _attempt_log_call_count
     _attempt_log_call_count += 1
-    if _attempt_log_call_count % 256 != 0:
-        return
-    if len(_attempt_log) < _ATTEMPT_LOG_EVICTION_WATERMARK:
-        return
-    cutoff = now - timedelta(seconds=_ATTEMPT_LOG_INACTIVITY_SECONDS)
-    stale_users = [
-        user_id
-        for user_id, last_seen in _attempt_log_last_seen.items()
-        if last_seen < cutoff and user_id != current_user_id
-    ]
-    for user_id in stale_users:
-        _attempt_log.pop(user_id, None)
-        _attempt_log_last_seen.pop(user_id, None)
+
+    # The current user must be most-recent before any size eviction.
+    if current_user_id in _attempt_log:
+        _attempt_log.move_to_end(current_user_id)
+
+    if (
+        _attempt_log_call_count % _ATTEMPT_LOG_SWEEP_EVERY_N == 0
+        and len(_attempt_log) >= _ATTEMPT_LOG_MAX_USERS
+    ):
+        cutoff = now - timedelta(seconds=_ATTEMPT_LOG_INACTIVITY_SECONDS)
+        stale_users = [
+            user_id
+            for user_id, last_seen in _attempt_log_last_seen.items()
+            if last_seen < cutoff and user_id != current_user_id
+        ]
+        for user_id in stale_users:
+            _attempt_log.pop(user_id, None)
+            _attempt_log_last_seen.pop(user_id, None)
+
+    # TTL eviction alone cannot bound a burst where every user is fresh.
+    # Drop least-recent users until the fixed cardinality is restored.
+    while len(_attempt_log) > _ATTEMPT_LOG_MAX_USERS:
+        evicted_user_id, _ = _attempt_log.popitem(last=False)
+        _attempt_log_last_seen.pop(evicted_user_id, None)
 
 
 class MemoryReadTool(Tool):
@@ -340,7 +301,7 @@ class MemoryWriteTool(Tool):
         the close-then-insert sequence leaves the active count
         unchanged. Without this exemption the cap would be terminal
         (the user could not even correct an existing memory once hit),
-        making `consolidate or delete` the only escape route.
+        making deletion the only escape route.
 
         `replace_memory_active` (optional, default `False`): whether
         the row identified by `replace_memory_id` is currently
@@ -400,20 +361,7 @@ class MemoryWriteTool(Tool):
                 recent_writes = len(log)
                 if recent_writes < MEMORY_WRITE_MAX_PER_WINDOW:
                     log.append(now)
-                # Track last_seen for the eviction sweep below. The
-                # eviction P2 finding (round-5 Codex review, see
-                # `Status: WORKING` comment on PR #207) is that the
-                # dict grows unbounded with users; the per-user deque
-                # is bounded, but the dict mapping user_id -> deque
-                # is not. Tagging each access lets the sweep drop
-                # users whose most recent activity is well past the
-                # rate window.
                 _attempt_log_last_seen[self.user_id] = now
-                # Periodic sweep — keep the dict bounded without a
-                # background task. Trigger on every ~256th call to
-                # bound sweep cost under load. The sweep only runs
-                # when the dict is at or above the watermark, so the
-                # common case (small host) is sweep-free.
                 _maybe_sweep_attempt_log(now, current_user_id=self.user_id)
             try:
                 active_rows = int(await self.store.count_active_memories(self.user_id))
@@ -524,8 +472,8 @@ class MemoryWriteTool(Tool):
             )
             return (
                 f"Memory storage cap reached ({MEMORY_WRITE_MAX_ACTIVE_ROWS} "
-                f"active memories). Consolidate or delete existing memories "
-                f"before writing new ones."
+                f"active memories). Delete an existing memory before writing "
+                f"a new one."
             )
 
         return None
