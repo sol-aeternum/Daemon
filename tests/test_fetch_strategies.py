@@ -6,8 +6,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-import httpx
-
 # Conditional import to allow tests to run without optional dependency
 try:
     from youtube_transcript_api import YouTubeTranscriptApi
