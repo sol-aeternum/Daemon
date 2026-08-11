@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import cast
@@ -12,7 +11,8 @@ import httpx
 
 from orchestrator.services.fetch.extract import html_to_markdown
 from orchestrator.services.fetch.models import FetchResult, FetchPolicy
-from orchestrator.tools.ssrf_guard import SsrfViolation, socket_guard, validate_url
+from orchestrator.services.fetch.pinned_http import pinned_get
+from orchestrator.tools.ssrf_guard import SsrfViolation
 
 logger = logging.getLogger(__name__)
 
@@ -131,12 +131,11 @@ class ArchiveOrgStrategy:
                 # the JSON response (e.g. a Jina-style proxy that forwards
                 # unverified upstream data, or a compromised intermediate
                 # cache). Mirror the SSRF contract documented in
-                # ``orchestrator/tools/ssrf_guard.py``: a pre-flight
-                # ``validate_url`` rejects disallowed schemes, ports,
-                # userinfo, and resolved IPs, and ``socket_guard`` wraps the
-                # actual HTTP call to re-validate at connect time (so a
-                # DNS-rebinding response between pre-flight and connect
-                # cannot bypass the policy).
+                # ``orchestrator/tools/ssrf_guard.py``: the URL is resolved
+                # through the bounded validator, then the request connects
+                # directly to one approved address while retaining the
+                # logical Host header and TLS SNI. This closes the DNS-rebind
+                # window without changing process-global resolver state.
                 #
                 # Wayback availability commonly returns ``closest.url`` in
                 # ``http://web.archive.org/...`` form even though the
@@ -149,9 +148,7 @@ class ArchiveOrgStrategy:
                 # policy for attacker-controlled hosts.
                 archive_url = _upgrade_legacy_wayback_url(archive_url)
                 try:
-                    validated_url = await asyncio.wait_for(
-                        asyncio.to_thread(validate_url, archive_url), timeout=10.0
-                    )
+                    html_response = await pinned_get(archive_url, timeout=10.0)
                 except SsrfViolation as exc:
                     logger.warning(
                         "Archive snapshot URL %s violates SSRF policy: %s; refusing to fetch",
@@ -160,33 +157,8 @@ class ArchiveOrgStrategy:
                     )
                     raise
 
-                # ``socket_guard`` is intentionally process-global for the
-                # duration of the awaited request — that's the design: every
-                # DNS lookup during the second-hop HTTP call (initial
-                # validation, connect-time resolution, retries) must be
-                # forced through the public-IP policy or the rebinding
-                # window between pre-flight and connect opens. The guard is
-                # reference-counted under a lock so concurrent callers are
-                # safe, but overlapping coroutines that issue unrelated DNS
-                # lookups during this window will inherit the policy. That
-                # is acceptable because the SSRF policy is a
-                # whole-process invariant — unrelated callers that needed
-                # private-IP resolution would be a separate configuration
-                # bug, not a side effect of this strategy.
-                #
-                # The guarded fetch uses a SEPARATE ``httpx.AsyncClient``
-                # with ``trust_env=False`` so ``HTTPS_PROXY`` / ``ALL_PROXY``
-                # cannot route the SSRF-guarded request through an
-                # operator proxy that resolves only the public hostname
-                # but forwards traffic elsewhere (defeating the
-                # connect-time DNS guard). The availability lookup above
-                # uses the default ``trust_env=True`` client so a
-                # deployment that needs an operator proxy for outbound
-                # internet access can still reach the hard-coded
-                # ``https://archive.org/wayback/available`` URL.
-                with socket_guard():
-                    async with httpx.AsyncClient(timeout=10.0, trust_env=False) as guarded_client:
-                        html_response = await guarded_client.get(validated_url)
+                if html_response is None:
+                    return None
                 _ = html_response.raise_for_status()
 
                 html_content = html_response.text
