@@ -581,22 +581,50 @@ class MemoryWriteTool(Tool):
 
             # Close the old memory (defense-in-depth: store-layer
             # `user_id` filter also constrains the UPDATE).
-            await self.store.close_memory(memory_id, user_id=self.user_id)
+            #
+            # Round-9 Codex review (P1, 2026-08-11T02:47:31Z on
+            # head `d34984620a`,
+            # `orchestrator/memory/tools.py:603`): the round-8 fix
+            # (post-close `get_memory` re-fetch) catches the single-update
+            # TOCTOU but NOT the concurrent close race. Two at-cap
+            # updates targeting the same active memory can both pass the
+            # pre-flight exemption (the row is open); the first
+            # `close_memory` sets `valid_to`, the second's UPDATE affects
+            # zero rows, and BOTH callers' post-close `get_memory` then
+            # returns the row with `valid_to IS NOT NULL` (because the
+            # first commit is visible). Both reach the dedup/insert
+            # path and silently raise the active count above the cap.
+            #
+            # Fix: have `close_memory()` report whether its UPDATE
+            # actually affected a row (via `RETURNING id`). When the
+            # close was a no-op, refuse the write here. The post-close
+            # `get_memory` is kept as defense-in-depth for the case
+            # where the row's status changes between close and re-fetch.
+            close_took_effect = await self.store.close_memory(memory_id, user_id=self.user_id)
+            if not close_took_effect:
+                # Either the row does not exist, it is owned by a
+                # different user (the store-layer `user_id` filter
+                # excluded it), or it was already closed by a
+                # concurrent transaction. All three are "the row is
+                # not currently closable by *this* caller" — refuse
+                # the write rather than silently inserting and
+                # breaching the cap.
+                return (
+                    "Memory was modified concurrently and could not be replaced. Retry the update."
+                )
 
             # Round-8 Codex review (P1, 2026-08-11T02:01:09Z,
             # `orchestrator/memory/tools.py:454`): between
             # `get_memory` (which established `old_memory.valid_to IS
             # NULL` and unlocked the net-neutral cap exemption) and
             # the `close_memory` UPDATE, another transaction can
-            # close the same row. `close_memory()` returns `True`
-            # for an already-closed target (the EXISTS check matches
-            # the row, even though the UPDATE affects zero rows),
-            # so without a post-close verification the dedup/insert
-            # would silently raise the active count above the cap.
-            # Re-fetch the row and refuse the write if the close was
-            # a TOCTOU no-op. This is intentionally narrow: it only
-            # blocks the cap-exempt update path; non-exempt writes
-            # at the cap are still refused by `_check_write_quota`
+            # close the same row. Re-fetch the row and refuse the
+            # write if `valid_to` is still NULL — meaning the close
+            # was a TOCTOU no-op that the store-layer fix above did
+            # not catch (e.g. the row was reverted or the close was
+            # rolled back). This is intentionally narrow: it only
+            # blocks the cap-exempt update path; non-exempt writes at
+            # the cap are still refused by `_check_write_quota`
             # upstream. The full atomic close+insert is the larger
             # follow-up tracked in #221.
             post_close = await self.store.get_memory(memory_id)

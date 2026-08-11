@@ -1324,33 +1324,36 @@ class MemoryStore:
         *,
         user_id: uuid.UUID | None = None,
     ) -> bool:
-        # When `user_id` is provided, the existence check and the UPDATE
-        # both filter on it. This is defense-in-depth for the
-        # `MemoryWriteTool` IDOR: callers that already enforce
-        # user-scoping at the tool/route layer should pass `user_id` so
-        # the SQL itself rejects any future caller that forgets the
-        # application-layer guard. Callers that operate on
-        # already-user-scoped rows (e.g. `dedup.py`, which queries a
-        # user's own memory rows before closing) may omit `user_id`.
-        exists_query = (
-            "SELECT EXISTS(SELECT 1 FROM memories WHERE id = $1)"
-            if user_id is None
-            else "SELECT EXISTS(SELECT 1 FROM memories WHERE id = $1 AND user_id = $2)"
-        )
-        exists_args: tuple[Any, ...] = (memory_id,) if user_id is None else (memory_id, user_id)
-        exists = await self._pool.fetchval(exists_query, *exists_args)
-        if not bool(exists):
-            return False
-
-        update_query = """
-            UPDATE memories
-            SET valid_to = NOW(),
-                updated_at = NOW()
-            WHERE id = $1
-              AND valid_to IS NULL
-            """
-        update_args: tuple[Any, ...] = (memory_id,)
-        if user_id is not None:
+        # When `user_id` is provided, the UPDATE filters on it for
+        # defense-in-depth against the `MemoryWriteTool` IDOR: callers
+        # that already enforce user-scoping at the tool/route layer
+        # should pass `user_id` so the SQL itself rejects any future
+        # caller that forgets the application-layer guard. Callers that
+        # operate on already-user-scoped rows (e.g. `dedup.py`, which
+        # queries a user's own memory rows before closing) may omit
+        # `user_id`.
+        #
+        # Returns `True` iff the UPDATE affected exactly one row. The
+        # earlier implementation returned `True` for any existing row,
+        # even when the `valid_to IS NULL` filter matched zero rows —
+        # that let a concurrent close race silently raise the active-row
+        # cap above its limit because the second caller's UPDATE was a
+        # no-op but still reported success. The `RETURNING id` clause
+        # makes the close's success an explicit signal of the
+        # `valid_to IS NULL` predicate matching, which is what callers
+        # care about (whether the row was actually closed by *this*
+        # call, not whether it existed before).
+        if user_id is None:
+            update_query = """
+                UPDATE memories
+                SET valid_to = NOW(),
+                    updated_at = NOW()
+                WHERE id = $1
+                  AND valid_to IS NULL
+                RETURNING id
+                """
+            update_args: tuple[Any, ...] = (memory_id,)
+        else:
             update_query = """
                 UPDATE memories
                 SET valid_to = NOW(),
@@ -1358,10 +1361,11 @@ class MemoryStore:
                 WHERE id = $1
                   AND user_id = $2
                   AND valid_to IS NULL
+                RETURNING id
                 """
             update_args = (memory_id, user_id)
-        await self._pool.execute(update_query, *update_args)
-        return True
+        result = await self._pool.fetchval(update_query, *update_args)
+        return result is not None
 
     async def delete_memory(
         self,

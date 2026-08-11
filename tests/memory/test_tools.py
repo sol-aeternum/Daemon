@@ -1112,6 +1112,106 @@ async def test_memory_write_update_post_close_success_proceeds(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_memory_write_update_close_no_op_is_refused(monkeypatch):
+    """Round-9 P1: `close_memory()` returning False must refuse the write.
+
+    Codex review (chatgpt-codex-connector[bot] @2026-08-11T02:47:31Z,
+    P1 on `orchestrator/memory/tools.py:603` for head `d34984620a`):
+    the round-8 post-close `get_memory` re-fetch catches the
+    single-update TOCTOU but NOT the concurrent close race. Two
+    at-cap updates targeting the same active memory can both pass
+    the pre-flight exemption (the row is open); the first
+    `close_memory` sets `valid_to`, the second's UPDATE affects zero
+    rows, and BOTH callers' post-close `get_memory` then returns the
+    row with `valid_to IS NOT NULL` (because the first commit is
+    visible). Both reach the dedup/insert path and silently raise the
+    active count above the cap.
+
+    Fix: `close_memory()` now uses `RETURNING id` so it returns
+    `True` only when the UPDATE actually affected a row. When it
+    returns `False` (close was a no-op), the tool refuses the write
+    *before* the post-close re-fetch. The post-close `get_memory` is
+    kept as defense-in-depth for the case where the row's status
+    changes between close and re-fetch.
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1000)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        user_id = uuid.uuid4()
+        memory_id = uuid.uuid4()
+        store = _quota_store(recent_writes=0, active_rows=1000)
+        # First `get_memory` (ownership check): row is closable.
+        # `close_memory` returns False — another concurrent transaction
+        # already closed the row (this is the round-9 concurrent close
+        # race). The post-close `get_memory` is NOT called because the
+        # tool refuses the write as soon as it sees the no-op close.
+        store.get_memory = AsyncMock(
+            return_value={
+                "id": memory_id,
+                "user_id": user_id,
+                "content": "old",
+                "category": "fact",
+                "memory_slot": None,
+                "source_conversation_id": None,
+                "valid_to": None,
+                "status": "active",
+            }
+        )
+        store.close_memory = AsyncMock(return_value=False)
+        tool = MemoryWriteTool(store, user_id)
+
+        result = await tool.execute(action="update", memory_id=str(memory_id), content="new")
+
+        # Refusal contract: same message as the round-8 sibling so the
+        # LLM caller sees a uniform "concurrent modification" surface.
+        assert "concurrently" in result.lower()
+        # Critically, the dedup/insert must not be reached when the
+        # close was a no-op (the round-9 concurrent race scenario).
+        mock_dedup.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_memory_write_update_close_already_closed_is_refused(monkeypatch):
+    """Round-9 P1 sibling: row not in the open set is refused.
+
+    Pair to `test_memory_write_update_close_no_op_is_refused`: the
+    pre-flight `old_memory` shape says the row is open and active
+    (so the net-neutral cap exemption unlocks), but the actual
+    `close_memory()` UPDATE finds zero matching rows because a
+    concurrent transaction already set `valid_to`. Same refusal as
+    the round-9 race test.
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1000)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        user_id = uuid.uuid4()
+        memory_id = uuid.uuid4()
+        store = _quota_store(recent_writes=0, active_rows=1000)
+        store.get_memory = AsyncMock(
+            return_value={
+                "id": memory_id,
+                "user_id": user_id,
+                "content": "old",
+                "category": "fact",
+                "memory_slot": None,
+                "source_conversation_id": None,
+                "valid_to": None,
+                "status": "active",
+            }
+        )
+        # `close_memory` returns False (UPDATE matched zero rows).
+        store.close_memory = AsyncMock(return_value=False)
+        tool = MemoryWriteTool(store, user_id)
+
+        result = await tool.execute(action="update", memory_id=str(memory_id), content="new")
+
+        assert "concurrently" in result.lower()
+        mock_dedup.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_memory_write_rate_refusal_survives_cap_query_failure(monkeypatch):
     """Round-5 P1: a cap-query failure must not override a rate-limit refusal.
 
