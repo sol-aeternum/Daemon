@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
+import threading
 import uuid
 from collections import OrderedDict, deque
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -40,14 +41,21 @@ MEMORY_WRITE_MAX_ACTIVE_ROWS: int = 1000
 
 
 # Per-process, per-user sliding-window counter for the LLM-callable
-# `memory_write` tool. The counter tracks attempted embedding-billed
-# writes rather than inserted rows, because deduplication can merge many
-# billed attempts into one database row. An OrderedDict provides LRU
-# order so total process memory remains bounded even during a burst of
-# entirely fresh users.
+# `memory_write` tool. The counter reserves prospective embedding-billed
+# writes rather than counting inserted rows, because deduplication can
+# merge many billed attempts into one database row. Reservations are
+# released when a request exits before the embedding path. An OrderedDict
+# provides LRU order so total process memory remains bounded even during
+# a burst of entirely fresh users.
 _attempt_log: OrderedDict[uuid.UUID, deque[datetime]] = OrderedDict()
 _attempt_log_last_seen: dict[uuid.UUID, datetime] = {}
-_attempt_log_lock: asyncio.Lock | None = None
+
+# The ledger critical sections contain no awaits, so a process-wide
+# thread lock keeps the shared dictionaries safe across event loops and
+# threads without ever blocking on I/O. An asyncio.Lock would remain
+# bound to the first event loop that contended for it; recreating an
+# embedded ASGI lifecycle could then make quota checks fail open.
+_attempt_log_lock = threading.Lock()
 
 # Bound the per-process ledger independently of timestamp freshness.
 # LRU eviction is an abuse-dampener tradeoff: an evicted user's next
@@ -57,6 +65,14 @@ _ATTEMPT_LOG_MAX_USERS: int = 1024
 _ATTEMPT_LOG_INACTIVITY_SECONDS: int = 600
 _ATTEMPT_LOG_SWEEP_EVERY_N: int = 256
 _attempt_log_call_count: int = 0
+
+
+@dataclass(frozen=True)
+class _WriteQuotaDecision:
+    """Result of reserving one prospective embedding-billed write."""
+
+    refusal: str | None
+    reservation: datetime | None
 
 
 def _maybe_sweep_attempt_log(now: datetime, *, current_user_id: uuid.UUID) -> None:
@@ -90,6 +106,28 @@ def _maybe_sweep_attempt_log(now: datetime, *, current_user_id: uuid.UUID) -> No
     while len(_attempt_log) > _ATTEMPT_LOG_MAX_USERS:
         evicted_user_id, _ = _attempt_log.popitem(last=False)
         _attempt_log_last_seen.pop(evicted_user_id, None)
+
+
+def _release_attempt_reservation(user_id: uuid.UUID, reservation: datetime | None) -> None:
+    """Remove a reservation when a write exits before the embedding path."""
+    if reservation is None:
+        return
+
+    with _attempt_log_lock:
+        log = _attempt_log.get(user_id)
+        if log is None:
+            return
+        try:
+            log.remove(reservation)
+        except ValueError:
+            # A later sweep or window prune may already have removed it.
+            return
+
+        if log:
+            _attempt_log_last_seen[user_id] = log[-1]
+        else:
+            _attempt_log.pop(user_id, None)
+            _attempt_log_last_seen.pop(user_id, None)
 
 
 class MemoryReadTool(Tool):
@@ -285,14 +323,14 @@ class MemoryWriteTool(Tool):
         *,
         replace_memory_id: uuid.UUID | None = None,
         replace_memory_active: bool = False,
-    ) -> str | None:
+    ) -> _WriteQuotaDecision:
         """Enforce the per-user write-rate limit and active-row cap.
 
-        Returns `None` when the write may proceed, or a caller-facing
-        refusal string when it may not. Called at the top of the
-        mutating branches of `execute()` — crucially **before** any
-        embedding call, because the embedding request is the billed
-        operation the cost-amplification half of issue #62 is about.
+        Returns a decision containing an optional caller-facing refusal
+        and the timestamp reserved for an allowed write. The reservation
+        is created before the asynchronous cap query so concurrent calls
+        cannot overrun the rate limit. Callers must release it whenever
+        they exit before reaching the embedding path.
 
         `replace_memory_id` (optional): for an `update`, the UUID of
         the memory that will be `close_memory`-d before the new memory
@@ -310,14 +348,11 @@ class MemoryWriteTool(Tool):
         `get_memory()`; rather than issue another DB round-trip here,
         the caller passes that fact in. **The cap exemption only
         triggers when the replace target is actually closable.**
-        `close_memory()` silently updates zero rows for an
-        already-closed target (it returns `True` because the row
-        physically exists), so without this check a caller at the cap
-        could bypass the cap by passing any UUID — the close would be
-        a no-op, the dedup/insert would add a row, and the active
-        count would silently exceed the cap. Round-3 Codex review
-        flagged exactly this path; the fix restricts the exemption to
-        rows the close call will actually close.
+        Without this check a caller at the cap could name an already
+        closed row and incorrectly obtain the net-neutral exemption.
+        `close_memory()` now also reports whether its UPDATE affected a
+        row, but this preflight check avoids granting the exemption in
+        the first place.
 
         Fails **open** on a counting error for the active-row cap. The
         rate-limit decision is never overridable — see
@@ -343,16 +378,11 @@ class MemoryWriteTool(Tool):
         `count_active_memories`; that one counts rows correctly
         because it does not need to track billed embedding calls.
         """
-        # Lazy init: the module-level lock must be created inside a
-        # running event loop, so it is allocated on first use.
-        global _attempt_log_lock
-        if _attempt_log_lock is None:
-            _attempt_log_lock = asyncio.Lock()
-
         now = datetime.now(timezone.utc)
         window_start = now - timedelta(seconds=MEMORY_WRITE_WINDOW_SECONDS)
+        reservation: datetime | None = None
         try:
-            async with _attempt_log_lock:
+            with _attempt_log_lock:
                 log = _attempt_log.get(self.user_id)
                 if log is None:
                     log = deque(maxlen=MEMORY_WRITE_MAX_PER_WINDOW)
@@ -371,6 +401,7 @@ class MemoryWriteTool(Tool):
                 recent_writes = len(log)
                 if recent_writes < MEMORY_WRITE_MAX_PER_WINDOW:
                     log.append(now)
+                    reservation = now
                 _attempt_log_last_seen[self.user_id] = now
                 _maybe_sweep_attempt_log(now, current_user_id=self.user_id)
             try:
@@ -405,13 +436,16 @@ class MemoryWriteTool(Tool):
                         recent_writes,
                         MEMORY_WRITE_MAX_PER_WINDOW,
                     )
-                    return (
-                        f"Memory write rate limit reached "
-                        f"({MEMORY_WRITE_MAX_PER_WINDOW} writes per "
-                        f"{MEMORY_WRITE_WINDOW_SECONDS}s). Wait before writing again, "
-                        f"or summarise several facts into a single memory."
+                    return _WriteQuotaDecision(
+                        refusal=(
+                            f"Memory write rate limit reached "
+                            f"({MEMORY_WRITE_MAX_PER_WINDOW} writes per "
+                            f"{MEMORY_WRITE_WINDOW_SECONDS}s). Wait before writing again, "
+                            f"or summarise several facts into a single memory."
+                        ),
+                        reservation=None,
                     )
-                return None
+                return _WriteQuotaDecision(refusal=None, reservation=reservation)
         except Exception as error:
             logger.warning(
                 "memory_write quota check failed; allowing write user_id=%s action=%s error=%s",
@@ -419,7 +453,7 @@ class MemoryWriteTool(Tool):
                 action,
                 type(error).__name__,
             )
-            return None
+            return _WriteQuotaDecision(refusal=None, reservation=reservation)
 
         if recent_writes >= MEMORY_WRITE_MAX_PER_WINDOW:
             # Structured refusal log line — this is the
@@ -435,11 +469,14 @@ class MemoryWriteTool(Tool):
                 recent_writes,
                 MEMORY_WRITE_MAX_PER_WINDOW,
             )
-            return (
-                f"Memory write rate limit reached "
-                f"({MEMORY_WRITE_MAX_PER_WINDOW} writes per "
-                f"{MEMORY_WRITE_WINDOW_SECONDS}s). Wait before writing again, "
-                f"or summarise several facts into a single memory."
+            return _WriteQuotaDecision(
+                refusal=(
+                    f"Memory write rate limit reached "
+                    f"({MEMORY_WRITE_MAX_PER_WINDOW} writes per "
+                    f"{MEMORY_WRITE_WINDOW_SECONDS}s). Wait before writing again, "
+                    f"or summarise several facts into a single memory."
+                ),
+                reservation=None,
             )
 
         if active_rows >= MEMORY_WRITE_MAX_ACTIVE_ROWS:
@@ -450,12 +487,10 @@ class MemoryWriteTool(Tool):
             # `replace_memory_active` is True — that is, the row the
             # caller named is actually closable (status='active' AND
             # valid_to IS NULL). Without this check, a caller at the
-            # cap can pass any UUID: `close_memory` returns True for an
-            # already-closed row (it physically exists) but updates 0
-            # rows, then `dedup_and_store` inserts a new memory and
-            # the active count silently exceeds the cap. Round-3
-            # Codex review surfaced this path; the fix restricts the
-            # exemption to rows the close call will actually close.
+            # cap could otherwise name an already-closed row and obtain
+            # an exemption for an operation that increases the active
+            # count. The store's affected-row result is a second guard
+            # against a close race after this preflight check.
             net_neutral_update = bool(
                 action == "update"
                 and replace_memory_id is not None
@@ -471,7 +506,7 @@ class MemoryWriteTool(Tool):
                     MEMORY_WRITE_MAX_ACTIVE_ROWS,
                     replace_memory_id,
                 )
-                return None
+                return _WriteQuotaDecision(refusal=None, reservation=reservation)
 
             logger.warning(
                 "memory_write_cap_exceeded user_id=%s action=%s active_rows=%s cap=%s",
@@ -480,13 +515,17 @@ class MemoryWriteTool(Tool):
                 active_rows,
                 MEMORY_WRITE_MAX_ACTIVE_ROWS,
             )
-            return (
-                f"Memory storage cap reached ({MEMORY_WRITE_MAX_ACTIVE_ROWS} "
-                f"active memories). Delete an existing memory before writing "
-                f"a new one."
+            _release_attempt_reservation(self.user_id, reservation)
+            return _WriteQuotaDecision(
+                refusal=(
+                    f"Memory storage cap reached ({MEMORY_WRITE_MAX_ACTIVE_ROWS} "
+                    f"active memories). Delete an existing memory before writing "
+                    f"a new one."
+                ),
+                reservation=None,
             )
 
-        return None
+        return _WriteQuotaDecision(refusal=None, reservation=reservation)
 
     async def execute(self, **kwargs: Any) -> str:
         action = kwargs.get("action")
@@ -501,9 +540,9 @@ class MemoryWriteTool(Tool):
             # Quota check runs after cheap input validation and before
             # `dedup_and_store`, which is what issues the billed
             # embedding request.
-            refusal = await self._check_write_quota(action)
-            if refusal is not None:
-                return refusal
+            quota = await self._check_write_quota(action)
+            if quota.refusal is not None:
+                return quota.refusal
             effective_slot = slot if isinstance(slot, str) else None
             memory_id = await dedup_and_store(
                 store=self.store,
@@ -555,24 +594,21 @@ class MemoryWriteTool(Tool):
             # `replace_memory_active=True` requires the existing row
             # to be `status='active' AND valid_to IS NULL` — that is,
             # the row the close call will actually close.
-            # `close_memory()` silently updates zero rows for an
-            # already-closed row (it physically exists), so without
-            # this check a caller at the cap could pass any UUID,
-            # the close would be a no-op, and the dedup/insert would
-            # silently raise the active count above the cap. Round-3
-            # Codex review surfaced this path; `old_memory` is the
-            # row we already fetched and authorized, so its
-            # `valid_to` is the authoritative signal.
+            # Without this check a caller at the cap could name an
+            # already-closed row and obtain an exemption for a write
+            # that increases the active count. `close_memory()` now
+            # reports affected-row success as a second guard against a
+            # concurrent close after this authorized preflight read.
             replace_active = (
                 old_memory.get("status") == "active" and old_memory.get("valid_to") is None
             )
-            refusal = await self._check_write_quota(
+            quota = await self._check_write_quota(
                 action,
                 replace_memory_id=memory_id,
                 replace_memory_active=replace_active,
             )
-            if refusal is not None:
-                return refusal
+            if quota.refusal is not None:
+                return quota.refusal
 
             # Inherit category and slot if not provided
             content = kwargs.get("content", old_memory.get("content", ""))
@@ -600,38 +636,40 @@ class MemoryWriteTool(Tool):
             # close was a no-op, refuse the write here. The post-close
             # `get_memory` is kept as defense-in-depth for the case
             # where the row's status changes between close and re-fetch.
-            close_took_effect = await self.store.close_memory(memory_id, user_id=self.user_id)
-            if not close_took_effect:
-                # Either the row does not exist, it is owned by a
-                # different user (the store-layer `user_id` filter
-                # excluded it), or it was already closed by a
-                # concurrent transaction. All three are "the row is
-                # not currently closable by *this* caller" — refuse
-                # the write rather than silently inserting and
-                # breaching the cap.
-                return (
-                    "Memory was modified concurrently and could not be replaced. Retry the update."
-                )
+            try:
+                close_took_effect = await self.store.close_memory(memory_id, user_id=self.user_id)
+                if not close_took_effect:
+                    # Either the row does not exist, it is owned by a
+                    # different user (the store-layer `user_id` filter
+                    # excluded it), or it was already closed by a
+                    # concurrent transaction. None reached the billed
+                    # embedding path, so release the rate reservation.
+                    _release_attempt_reservation(self.user_id, quota.reservation)
+                    return (
+                        "Memory was modified concurrently and could not be replaced. "
+                        "Retry the update."
+                    )
 
-            # Round-8 Codex review (P1, 2026-08-11T02:01:09Z,
-            # `orchestrator/memory/tools.py:454`): between
-            # `get_memory` (which established `old_memory.valid_to IS
-            # NULL` and unlocked the net-neutral cap exemption) and
-            # the `close_memory` UPDATE, another transaction can
-            # close the same row. Re-fetch the row and refuse the
-            # write if `valid_to` is still NULL — meaning the close
-            # was a TOCTOU no-op that the store-layer fix above did
-            # not catch (e.g. the row was reverted or the close was
-            # rolled back). This is intentionally narrow: it only
-            # blocks the cap-exempt update path; non-exempt writes at
-            # the cap are still refused by `_check_write_quota`
-            # upstream. The full atomic close+insert is the larger
-            # follow-up tracked in #221.
-            post_close = await self.store.get_memory(memory_id)
-            if not post_close or post_close.get("valid_to") is None:
-                return (
-                    "Memory was modified concurrently and could not be replaced. Retry the update."
-                )
+                # Round-8 Codex review (P1, 2026-08-11T02:01:09Z,
+                # `orchestrator/memory/tools.py:454`): between
+                # `get_memory` (which established `old_memory.valid_to IS
+                # NULL` and unlocked the net-neutral cap exemption) and
+                # the `close_memory` UPDATE, another transaction can
+                # close the same row. Re-fetch the row and refuse the
+                # write if `valid_to` is still NULL. The full atomic
+                # close+insert is the larger follow-up tracked in #221.
+                post_close = await self.store.get_memory(memory_id)
+                if not post_close or post_close.get("valid_to") is None:
+                    _release_attempt_reservation(self.user_id, quota.reservation)
+                    return (
+                        "Memory was modified concurrently and could not be replaced. "
+                        "Retry the update."
+                    )
+            except BaseException:
+                # Cancellation or a store failure before the embedding
+                # path must not consume a billed-attempt reservation.
+                _release_attempt_reservation(self.user_id, quota.reservation)
+                raise
 
             # Insert new memory with fresh embedding
             new_memory_id = await dedup_and_store(

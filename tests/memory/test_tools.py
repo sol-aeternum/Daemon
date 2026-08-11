@@ -1,11 +1,13 @@
 """Tests for memory tools."""
 
-import pytest
+import threading
 import uuid
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+
+import pytest
 
 import orchestrator.memory.tools as tools_module
 from orchestrator.memory.tools import MemoryReadTool, MemoryWriteTool
@@ -563,6 +565,34 @@ async def test_memory_write_active_row_cap_is_enforced(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_memory_write_cap_refusal_releases_rate_reservation(monkeypatch):
+    """A cap-refused write must not consume the next billed-attempt slot."""
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        mock_dedup.return_value = uuid.uuid4()
+        user_id = uuid.uuid4()
+        store = _quota_store(recent_writes=0, active_rows=1)
+        tool = MemoryWriteTool(store, user_id)
+
+        refused = await tool.execute(action="create", content="at cap")
+
+        assert "cap" in refused.lower()
+        assert user_id not in tools_module._attempt_log
+        mock_dedup.assert_not_called()
+
+        # Once the user follows the recovery instruction and frees a
+        # row, the next write must proceed immediately rather than being
+        # rate-limited by the earlier non-billed refusal.
+        store.count_active_memories.return_value = 0
+        allowed = await tool.execute(action="create", content="after delete")
+
+        assert "Memory created" in allowed
+        mock_dedup.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_memory_write_update_is_also_rate_limited(monkeypatch):
     """`update` closes one row and inserts another — it must be metered too."""
     monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 10)
@@ -1056,6 +1086,7 @@ async def test_memory_write_update_post_close_toctou_is_refused(monkeypatch):
         # Critically, the dedup/insert must not be reached when the
         # post-close re-fetch shows the row is still active.
         mock_dedup.assert_not_called()
+        assert user_id not in tools_module._attempt_log
 
 
 @pytest.mark.asyncio
@@ -1109,6 +1140,7 @@ async def test_memory_write_update_post_close_success_proceeds(monkeypatch):
         assert "cap" not in result.lower()
         store.close_memory.assert_called_once()
         mock_dedup.assert_called_once()
+        assert len(tools_module._attempt_log[user_id]) == 1
 
 
 @pytest.mark.asyncio
@@ -1169,6 +1201,7 @@ async def test_memory_write_update_close_no_op_is_refused(monkeypatch):
         # Critically, the dedup/insert must not be reached when the
         # close was a no-op (the round-9 concurrent race scenario).
         mock_dedup.assert_not_called()
+        assert user_id not in tools_module._attempt_log
 
 
 @pytest.mark.asyncio
@@ -1208,6 +1241,39 @@ async def test_memory_write_update_close_already_closed_is_refused(monkeypatch):
         result = await tool.execute(action="update", memory_id=str(memory_id), content="new")
 
         assert "concurrently" in result.lower()
+        mock_dedup.assert_not_called()
+        assert user_id not in tools_module._attempt_log
+
+
+@pytest.mark.asyncio
+async def test_memory_write_update_store_error_releases_rate_reservation(monkeypatch):
+    """A pre-embedding store error must not consume the user's rate quota."""
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        user_id = uuid.uuid4()
+        memory_id = uuid.uuid4()
+        store = _quota_store(recent_writes=0, active_rows=1)
+        store.get_memory = AsyncMock(
+            return_value={
+                "id": memory_id,
+                "user_id": user_id,
+                "content": "old",
+                "category": "fact",
+                "memory_slot": None,
+                "source_conversation_id": None,
+                "valid_to": None,
+                "status": "active",
+            }
+        )
+        store.close_memory = AsyncMock(side_effect=RuntimeError("database unavailable"))
+        tool = MemoryWriteTool(store, user_id)
+
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await tool.execute(action="update", memory_id=str(memory_id), content="new")
+
+        assert user_id not in tools_module._attempt_log
         mock_dedup.assert_not_called()
 
 
@@ -1377,3 +1443,8 @@ def test_memory_write_attempt_log_caps_fresh_user_burst(monkeypatch):
     assert len(tools_module._attempt_log_last_seen) == 1024
     assert user_ids[0] not in tools_module._attempt_log
     assert user_ids[-1] in tools_module._attempt_log
+
+
+def test_memory_write_attempt_log_lock_is_event_loop_independent() -> None:
+    """The process ledger must not retain affinity to a closed asyncio loop."""
+    assert isinstance(tools_module._attempt_log_lock, type(threading.Lock()))

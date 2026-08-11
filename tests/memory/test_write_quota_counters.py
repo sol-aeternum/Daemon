@@ -52,3 +52,44 @@ async def test_count_active_memories_excludes_valid_to() -> None:
     assert "status = 'active'" in sql
     assert "valid_to IS NULL" in sql
     assert "FROM memories" in sql
+
+
+@pytest.mark.asyncio
+async def test_close_memory_returns_affected_row_result_without_user_scope() -> None:
+    """Unscoped trusted callers receive True only for an actual close."""
+    pool = AsyncMock()
+    memory_id = uuid.uuid4()
+    pool.fetchval = AsyncMock(side_effect=[memory_id, None])
+    store = _memory_store(pool)
+
+    assert await store.close_memory(memory_id) is True
+    assert await store.close_memory(memory_id) is False
+
+    for call in pool.fetchval.await_args_list:
+        sql = call.args[0]
+        assert "UPDATE memories" in sql
+        assert "valid_to IS NULL" in sql
+        assert "RETURNING id" in sql
+        assert "user_id" not in sql
+        assert call.args[1:] == (memory_id,)
+
+
+@pytest.mark.asyncio
+async def test_close_memory_returns_affected_row_result_with_user_scope() -> None:
+    """Tool callers close only an open row owned by the supplied user."""
+    pool = AsyncMock()
+    memory_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    pool.fetchval = AsyncMock(side_effect=[memory_id, None])
+    store = _memory_store(pool)
+
+    assert await store.close_memory(memory_id, user_id=user_id) is True
+    assert await store.close_memory(memory_id, user_id=user_id) is False
+
+    for call in pool.fetchval.await_args_list:
+        sql = call.args[0]
+        assert "UPDATE memories" in sql
+        assert "user_id = $2" in sql
+        assert "valid_to IS NULL" in sql
+        assert "RETURNING id" in sql
+        assert call.args[1:] == (memory_id, user_id)
