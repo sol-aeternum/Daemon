@@ -103,6 +103,18 @@ export function getCachedAuthConfig(): AuthConfig | undefined {
   return _cached;
 }
 
+/**
+ * Returns the age of the cached config in milliseconds, or `undefined` if
+ * no config is cached. Used by the periodic-refresh timer to schedule the
+ * first refresh at the cache's actual expiry rather than a full TTL after
+ * mount — otherwise remounting a 59-second-old cache would leave the runtime
+ * contract invisible for nearly 119 seconds.
+ */
+export function getCachedAuthConfigAgeMs(): number | undefined {
+  if (!_cached || _cachedAtMs === null) return undefined;
+  return Date.now() - _cachedAtMs;
+}
+
 export function subscribeAuthConfig(cb: Listener): () => void {
   _listeners.add(cb);
   return () => {

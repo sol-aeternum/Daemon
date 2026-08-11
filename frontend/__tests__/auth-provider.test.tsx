@@ -17,6 +17,7 @@ const mockAuthConfig = vi.hoisted(() => ({
   inflight: undefined as Promise<unknown> | undefined,
   fetchCalls: 0,
   refreshCalls: 0,
+  cacheAgeMs: undefined as number | undefined,
   listeners: new Set<(s: unknown) => void>(),
 }));
 
@@ -74,6 +75,7 @@ vi.mock('../lib/auth-config', () => ({
     }
     return undefined;
   }),
+  getCachedAuthConfigAgeMs: vi.fn(() => mockAuthConfig.cacheAgeMs),
 }));
 
 const mockRefresh = vi.hoisted(() => vi.fn(async () => false));
@@ -107,6 +109,7 @@ afterEach(() => {
   mockAuthConfig.inflight = undefined;
   mockAuthConfig.fetchCalls = 0;
   mockAuthConfig.refreshCalls = 0;
+  mockAuthConfig.cacheAgeMs = undefined;
   mockAuthConfig.listeners.clear();
   mockRefresh.mockClear();
   mockClearAuthState.mockClear();
@@ -194,6 +197,34 @@ describe('AuthProvider mode-aware redirects', () => {
     });
     expect(mockAuthConfig.fetchCalls).toBe(0);
     expect(mockAuthConfig.refreshCalls).toBe(0);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(mockAuthConfig.refreshCalls).toBe(1);
+    expect(mockAuthConfig.fetchCalls).toBe(1);
+  });
+
+  it('schedules the first refresh at the cached config remaining TTL (Codex P2)', async () => {
+    // Mount with a 50-second-old cache: the first refresh should fire at
+    // ~10s after mount (remaining TTL), not at the full 60s boundary.
+    vi.useFakeTimers();
+    setLocation('/auth');
+    mockAuthConfig.state = { status: 'resolved' };
+    mockAuthConfig.cacheAgeMs = 50_000;
+    mockAuthConfig.resolved = {
+      mode: 'hosted',
+      email: { enabled: true },
+      google: { enabled: false, clientId: '' },
+    };
+
+    renderProvider();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9_999);
+    });
+    expect(mockAuthConfig.refreshCalls).toBe(0);
+    expect(mockAuthConfig.fetchCalls).toBe(0);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1);

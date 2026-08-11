@@ -160,18 +160,31 @@ account, or approving unexpected sign-ins. Daemon mitigates this with nonce-boun
 challenges, single-use proofs, generic responses, short TTLs, new-device visibility, and
 revocation; these controls reduce but do not eliminate user-targeted deception risk.
 
-## Frontend Deployment Env Contract
+## Frontend Build-Time Defaults (fallback only)
 
-The hosted landing and Google sign-in button are gated by two `NEXT_PUBLIC_*` env vars that
-are baked at Next.js build time. They mirror the backend hosted-identity knobs and must be
-set in `.env.example` and the frontend `docker-compose.yml` environment block:
+> **Authoritative source of truth: the [`Runtime Config`](#runtime-config) endpoint
+> (`GET /v1/auth/config`).** The `NEXT_PUBLIC_*` vars described below are read
+> only as a first-paint default and as a fail-safe if the runtime endpoint is
+> unreachable; they are **no longer** the gating contract for the hosted landing
+> or Google button. Operators should change `DAEMON_HOSTED_IDENTITY_ENABLED` and
+> related backend settings at runtime — no rebuild required. This section is
+> kept only so existing `.env` entries and `docker-compose.yml` fragments
+> remain documented; new operators should ignore it and start at
+> [Runtime Config](#runtime-config).
 
-| Var                                  | Default                    | Effect                                                                                                                                                 |
-| ------------------------------------ | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE` | `self-hosted` (when unset) | `hosted` switches the landing to Google / email sign-in primary; `self-hosted` keeps the setup-first landing.                                          |
+When the Next.js frontend is built, two `NEXT_PUBLIC_*` env vars set the
+default mode and Google client ID baked into the JavaScript bundle. The
+runtime endpoint overrides them within 60 seconds of being reachable, so
+operators do not need to keep these in sync with the backend to switch
+hosted/self-hosted modes:
+
+| Var                                  | Default                    | Effect (first-paint / unreachable-fallback only)                                                                            |
+| ------------------------------------ | -------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE` | `self-hosted` (when unset) | `hosted` switches the landing to Google / email sign-in primary; `self-hosted` keeps the setup-first landing.               |
 | `NEXT_PUBLIC_GOOGLE_CLIENT_ID`       | empty (no Google button)   | Public Google OAuth web client ID. When set, the hosted landing renders the Google sign-in button. Must match the backend's `DAEMON_GOOGLE_CLIENT_ID`. |
 
-Required pairing:
+Pairing with the backend is informational only; the runtime endpoint is what
+matters at request time:
 
 - `DAEMON_HOSTED_IDENTITY_ENABLED=true` ↔ `NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE=hosted`
 - `DAEMON_GOOGLE_CLIENT_ID=<server client id>` ↔ `NEXT_PUBLIC_GOOGLE_CLIENT_ID=<same public client id>`

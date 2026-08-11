@@ -134,6 +134,26 @@ describe('auth-config runtime client', () => {
     expect(getCachedAuthConfig()?.mode).toBe('hosted');
   });
 
+  it('getCachedAuthConfigAgeMs returns the age in ms after a fetch', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    mockFetchResponse({
+      mode: 'hosted',
+      email: { enabled: true },
+      google: { enabled: true, clientId: 'cid' },
+    });
+
+    const { fetchAuthConfig, getCachedAuthConfigAgeMs } =
+      await import('../lib/auth-config');
+
+    expect(getCachedAuthConfigAgeMs()).toBeUndefined();
+
+    await fetchAuthConfig();
+    expect(getCachedAuthConfigAgeMs()).toBe(0);
+
+    vi.spyOn(Date, 'now').mockReturnValue(45_000);
+    expect(getCachedAuthConfigAgeMs()).toBe(44_000);
+  });
+
   it('re-fetches runtime config when the 60s TTL expires', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1_000);
     mockFetchResponse({
