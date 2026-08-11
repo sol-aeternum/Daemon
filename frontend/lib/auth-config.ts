@@ -37,7 +37,15 @@ function isAuthConfig(value: unknown): value is AuthConfig {
 }
 
 export function fetchAuthConfig(): Promise<AuthConfigResult> {
-  const cached = getCachedAuthConfig();
+  return requestAuthConfig(false);
+}
+
+export function refreshAuthConfig(): Promise<AuthConfigResult> {
+  return requestAuthConfig(true);
+}
+
+function requestAuthConfig(forceRefresh: boolean): Promise<AuthConfigResult> {
+  const cached = forceRefresh ? undefined : getCachedAuthConfig();
   if (cached) {
     return Promise.resolve({ status: 'resolved', config: cached });
   }

@@ -168,6 +168,39 @@ describe('auth-config runtime client', () => {
     expect(getCachedAuthConfig()?.mode).toBe('self_hosted');
   });
 
+  it('force-refreshes runtime config before the cache TTL expires', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    mockFetchResponse({
+      mode: 'hosted',
+      email: { enabled: true },
+      google: { enabled: true, clientId: 'first-client' },
+    });
+    mockFetchResponse({
+      mode: 'self_hosted',
+      email: { enabled: false },
+      google: { enabled: false, clientId: '' },
+    });
+
+    const { fetchAuthConfig, getCachedAuthConfig, refreshAuthConfig } =
+      await import('../lib/auth-config');
+    await fetchAuthConfig();
+
+    vi.spyOn(Date, 'now').mockReturnValue(60_999);
+    expect(getCachedAuthConfig()?.mode).toBe('hosted');
+
+    const refreshed = await refreshAuthConfig();
+
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(2);
+    expect(refreshed).toEqual({
+      status: 'resolved',
+      config: {
+        mode: 'self_hosted',
+        email: { enabled: false },
+        google: { enabled: false, clientId: '' },
+      },
+    });
+  });
+
   it('applies a 5s timeout via AbortController', async () => {
     vi.mocked(globalThis.fetch).mockImplementationOnce(
       (_input: RequestInfo | URL, init?: RequestInit) => {
