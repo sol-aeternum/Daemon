@@ -222,16 +222,34 @@ async def test_memory_write_update_calls_close_then_dedup():
         mock_store = AsyncMock()
         existing_memory_id = uuid.uuid4()
         user_id = uuid.uuid4()
-        mock_store.get_memory = AsyncMock()
-        mock_store.get_memory.return_value = {
-            "id": existing_memory_id,
-            "user_id": user_id,
-            "content": "old content",
-            "category": "fact",
-            "source_type": "user_created",
-            "conversation_id": None,
-            "memory_slot": None,
-        }
+        # First call (ownership check): open row. Second call
+        # (post-close verification): row is closed.
+        mock_store.get_memory = AsyncMock(
+            side_effect=[
+                {
+                    "id": existing_memory_id,
+                    "user_id": user_id,
+                    "content": "old content",
+                    "category": "fact",
+                    "source_type": "user_created",
+                    "conversation_id": None,
+                    "memory_slot": None,
+                    "valid_to": None,
+                    "status": "active",
+                },
+                {
+                    "id": existing_memory_id,
+                    "user_id": user_id,
+                    "content": "old content",
+                    "category": "fact",
+                    "source_type": "user_created",
+                    "conversation_id": None,
+                    "memory_slot": None,
+                    "valid_to": datetime.now(timezone.utc),
+                    "status": "closed",
+                },
+            ]
+        )
 
         tool = MemoryWriteTool(mock_store, user_id)
 
@@ -254,16 +272,34 @@ async def test_memory_write_update_inherits_category_and_slot():
         mock_store = AsyncMock()
         existing_memory_id = uuid.uuid4()
         user_id = uuid.uuid4()
-        mock_store.get_memory = AsyncMock()
-        mock_store.get_memory.return_value = {
-            "id": existing_memory_id,
-            "user_id": user_id,
-            "content": "old content",
-            "category": "preference",
-            "source_type": "user_created",
-            "conversation_id": None,
-            "memory_slot": "inherited_slot",
-        }
+        # First call (ownership check): open row. Second call
+        # (post-close verification): row is closed.
+        mock_store.get_memory = AsyncMock(
+            side_effect=[
+                {
+                    "id": existing_memory_id,
+                    "user_id": user_id,
+                    "content": "old content",
+                    "category": "preference",
+                    "source_type": "user_created",
+                    "conversation_id": None,
+                    "memory_slot": "inherited_slot",
+                    "valid_to": None,
+                    "status": "active",
+                },
+                {
+                    "id": existing_memory_id,
+                    "user_id": user_id,
+                    "content": "old content",
+                    "category": "preference",
+                    "source_type": "user_created",
+                    "conversation_id": None,
+                    "memory_slot": "inherited_slot",
+                    "valid_to": datetime.now(timezone.utc),
+                    "status": "closed",
+                },
+            ]
+        )
 
         tool = MemoryWriteTool(mock_store, user_id)
 
@@ -777,6 +813,10 @@ async def test_memory_write_update_at_cap_is_net_neutral(monkeypatch):
     `test_memory_write_update_at_cap_with_closed_target_is_refused`
     and `test_memory_write_update_at_cap_with_deleted_target_is_refused`
     pin the closed/deleted cases.
+
+    Round-8 update: the fixture now provides a `side_effect` so the
+    first `get_memory` returns the open row (ownership check) and
+    the second returns the closed row (post-close verification).
     """
     monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1000)
     monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
@@ -787,16 +827,28 @@ async def test_memory_write_update_at_cap_is_net_neutral(monkeypatch):
         memory_id = uuid.uuid4()
         store = _quota_store(recent_writes=0, active_rows=1000)
         store.get_memory = AsyncMock(
-            return_value={
-                "id": memory_id,
-                "user_id": user_id,
-                "content": "old",
-                "category": "fact",
-                "memory_slot": None,
-                "source_conversation_id": None,
-                "valid_to": None,
-                "status": "active",
-            }
+            side_effect=[
+                {
+                    "id": memory_id,
+                    "user_id": user_id,
+                    "content": "old",
+                    "category": "fact",
+                    "memory_slot": None,
+                    "source_conversation_id": None,
+                    "valid_to": None,
+                    "status": "active",
+                },
+                {
+                    "id": memory_id,
+                    "user_id": user_id,
+                    "content": "old",
+                    "category": "fact",
+                    "memory_slot": None,
+                    "source_conversation_id": None,
+                    "valid_to": datetime.now(timezone.utc),
+                    "status": "closed",
+                },
+            ]
         )
         store.close_memory = AsyncMock(return_value=True)
         tool = MemoryWriteTool(store, user_id)
@@ -897,6 +949,10 @@ async def test_memory_write_update_at_cap_with_active_target_is_net_neutral(monk
     Pairs with the two refused-target tests above to confirm the
     exemption still triggers for the genuine net-neutral case
     (status='active' AND valid_to IS NULL).
+
+    Round-8 update: the fixture now provides a `side_effect` so the
+    first `get_memory` returns the open row (ownership check) and
+    the second returns the closed row (post-close verification).
     """
     monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1000)
     monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
@@ -907,22 +963,148 @@ async def test_memory_write_update_at_cap_with_active_target_is_net_neutral(monk
         memory_id = uuid.uuid4()
         store = _quota_store(recent_writes=0, active_rows=1000)
         store.get_memory = AsyncMock(
-            return_value={
-                "id": memory_id,
-                "user_id": user_id,
-                "content": "old",
-                "category": "fact",
-                "memory_slot": None,
-                "source_conversation_id": None,
-                "valid_to": None,
-                "status": "active",
-            }
+            side_effect=[
+                {
+                    "id": memory_id,
+                    "user_id": user_id,
+                    "content": "old",
+                    "category": "fact",
+                    "memory_slot": None,
+                    "source_conversation_id": None,
+                    "valid_to": None,
+                    "status": "active",
+                },
+                {
+                    "id": memory_id,
+                    "user_id": user_id,
+                    "content": "old",
+                    "category": "fact",
+                    "memory_slot": None,
+                    "source_conversation_id": None,
+                    "valid_to": datetime.now(timezone.utc),
+                    "status": "closed",
+                },
+            ]
         )
         store.close_memory = AsyncMock(return_value=True)
         tool = MemoryWriteTool(store, user_id)
 
         result = await tool.execute(action="update", memory_id=str(memory_id), content="new")
 
+        assert "rate limit" not in result.lower()
+        assert "cap" not in result.lower()
+        store.close_memory.assert_called_once()
+        mock_dedup.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_memory_write_update_post_close_toctou_is_refused(monkeypatch):
+    """Round-8 P1: post-close re-fetch must catch the TOCTOU no-op.
+
+    Codex review (chatgpt-codex-connector[bot] @2026-08-11T02:01:09Z,
+    P1 on `orchestrator/memory/tools.py:454`): between the initial
+    `get_memory` (which established `valid_to IS NULL` and unlocked
+    the net-neutral cap exemption) and the `close_memory` UPDATE,
+    another transaction can close the same row. `close_memory()`
+    returns `True` for an already-closed target (the EXISTS check
+    matches the row, even though the UPDATE affects zero rows), so
+    without a post-close verification the dedup/insert would silently
+    raise the active count above the cap. The fix re-fetches the row
+    after `close_memory` and refuses the write if `valid_to` is
+    still NULL — meaning the close was a TOCTOU no-op.
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1000)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        user_id = uuid.uuid4()
+        memory_id = uuid.uuid4()
+        store = _quota_store(recent_writes=0, active_rows=1000)
+        # First `get_memory` (ownership check): row is closable.
+        # Second `get_memory` (post-close verification): row is
+        # STILL active — `close_memory` was a no-op (TOCTOU).
+        store.get_memory = AsyncMock(
+            side_effect=[
+                {
+                    "id": memory_id,
+                    "user_id": user_id,
+                    "content": "old",
+                    "category": "fact",
+                    "memory_slot": None,
+                    "source_conversation_id": None,
+                    "valid_to": None,
+                    "status": "active",
+                },
+                {
+                    "id": memory_id,
+                    "user_id": user_id,
+                    "content": "old",
+                    "category": "fact",
+                    "memory_slot": None,
+                    "source_conversation_id": None,
+                    "valid_to": None,
+                    "status": "active",
+                },
+            ]
+        )
+        store.close_memory = AsyncMock(return_value=True)
+        tool = MemoryWriteTool(store, user_id)
+
+        result = await tool.execute(action="update", memory_id=str(memory_id), content="new")
+
+        assert "concurrently" in result.lower()
+        # Critically, the dedup/insert must not be reached when the
+        # post-close re-fetch shows the row is still active.
+        mock_dedup.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_memory_write_update_post_close_success_proceeds(monkeypatch):
+    """Round-8 P1 sibling: post-close verification passes when the close took effect.
+
+    Pairs with `test_memory_write_update_post_close_toctou_is_refused`
+    to confirm the genuine net-neutral update path still inserts the
+    new memory when the close actually took effect.
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1000)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        mock_dedup.return_value = uuid.uuid4()
+        user_id = uuid.uuid4()
+        memory_id = uuid.uuid4()
+        store = _quota_store(recent_writes=0, active_rows=1000)
+        closed_at = datetime.now(timezone.utc)
+        store.get_memory = AsyncMock(
+            side_effect=[
+                {
+                    "id": memory_id,
+                    "user_id": user_id,
+                    "content": "old",
+                    "category": "fact",
+                    "memory_slot": None,
+                    "source_conversation_id": None,
+                    "valid_to": None,
+                    "status": "active",
+                },
+                {
+                    "id": memory_id,
+                    "user_id": user_id,
+                    "content": "old",
+                    "category": "fact",
+                    "memory_slot": None,
+                    "source_conversation_id": None,
+                    "valid_to": closed_at,
+                    "status": "closed",
+                },
+            ]
+        )
+        store.close_memory = AsyncMock(return_value=True)
+        tool = MemoryWriteTool(store, user_id)
+
+        result = await tool.execute(action="update", memory_id=str(memory_id), content="new")
+
+        assert "concurrently" not in result.lower()
         assert "rate limit" not in result.lower()
         assert "cap" not in result.lower()
         store.close_memory.assert_called_once()

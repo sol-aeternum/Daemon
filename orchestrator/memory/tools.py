@@ -319,12 +319,22 @@ class MemoryWriteTool(Tool):
         flagged exactly this path; the fix restricts the exemption to
         rows the close call will actually close.
 
-        Fails **open** on a counting error. The quota is an abuse
-        dampener, not an authorization boundary (the `user_id`
-        ownership checks below are the security control), so a
-        transient database error must not silently disable the user's
-        memory. The failure is logged at warning level so operators can
-        see it.
+        Fails **open** on a counting error for the active-row cap. The
+        rate-limit decision is never overridable — see
+        `test_memory_write_rate_refusal_survives_cap_query_failure` in
+        `tests/memory/test_tools.py`. The active-row cap is the
+        storage-amplification guard and is intentionally fail-open on
+        transient query errors because (a) the cap is a soft quota
+        rather than an authorization boundary, (b) the rate-limit
+        refusal already protects the cost-amplification half of issue
+        #62, and (c) a database hiccup must not silently disable the
+        user's memory. The cap-query fail-open is enforced by
+        `test_memory_write_cap_query_failure_below_rate_limit_fails_open`
+        so the design is locked under test. Round-8 Codex review
+        (P1, 2026-08-11T02:01:09Z,
+        `orchestrator/memory/tools.py:404`) re-flagged the fail-open
+        path; the resolver confirms the intent and rebuts with the
+        sibling test pair as evidence.
 
         The **rate limit** (issue #62's per-user writes-per-minute
         guard) is enforced via an in-process per-user sliding-window
@@ -572,6 +582,28 @@ class MemoryWriteTool(Tool):
             # Close the old memory (defense-in-depth: store-layer
             # `user_id` filter also constrains the UPDATE).
             await self.store.close_memory(memory_id, user_id=self.user_id)
+
+            # Round-8 Codex review (P1, 2026-08-11T02:01:09Z,
+            # `orchestrator/memory/tools.py:454`): between
+            # `get_memory` (which established `old_memory.valid_to IS
+            # NULL` and unlocked the net-neutral cap exemption) and
+            # the `close_memory` UPDATE, another transaction can
+            # close the same row. `close_memory()` returns `True`
+            # for an already-closed target (the EXISTS check matches
+            # the row, even though the UPDATE affects zero rows),
+            # so without a post-close verification the dedup/insert
+            # would silently raise the active count above the cap.
+            # Re-fetch the row and refuse the write if the close was
+            # a TOCTOU no-op. This is intentionally narrow: it only
+            # blocks the cap-exempt update path; non-exempt writes
+            # at the cap are still refused by `_check_write_quota`
+            # upstream. The full atomic close+insert is the larger
+            # follow-up tracked in #221.
+            post_close = await self.store.get_memory(memory_id)
+            if not post_close or post_close.get("valid_to") is None:
+                return (
+                    "Memory was modified concurrently and could not be replaced. Retry the update."
+                )
 
             # Insert new memory with fresh embedding
             new_memory_id = await dedup_and_store(
