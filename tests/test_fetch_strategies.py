@@ -29,6 +29,7 @@ from orchestrator.tools.ssrf_guard import (
     SsrfPolicyViolation,
     SsrfUnreachable,
     SsrfViolation,
+    ValidatedUrl,
 )
 
 
@@ -573,15 +574,21 @@ class TestJinaStrategy:
         mock_response.headers = {"content-type": "text/plain"}
         mock_response.status_code = 200
 
-        # Stub DNS so DNS-isolated CI runners don't fail before the
-        # ``validate_url`` pre-flight. ``validate_url`` performs a literal
-        # IP / hostname check; for ``example.com`` we return a public IPv4.
-        def fake_getaddrinfo(host, port, *args, **kwargs):  # type: ignore[no-untyped-def]
-            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
-
+        user_validation = ValidatedUrl(
+            url="https://example.com",
+            host="example.com",
+            port=443,
+            addresses=("93.184.216.34",),
+        )
         with (
-            patch("httpx.AsyncClient.get", return_value=mock_response),
-            patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
+            patch(
+                "orchestrator.services.fetch.strategies.jina.validate_url_and_resolve_async",
+                new=AsyncMock(return_value=user_validation),
+            ) as validate_user_url,
+            patch(
+                "orchestrator.services.fetch.strategies.jina.pinned_get",
+                new=AsyncMock(return_value=mock_response),
+            ),
         ):
             result = await strategy.fetch("https://example.com")
 
@@ -590,6 +597,12 @@ class TestJinaStrategy:
         assert result.url == "https://example.com"
         assert "sufficiently long content" in result.content
         assert result.strategy_used == "jina"
+        validate_user_url.assert_awaited_once_with(
+            "https://example.com",
+            allowed_schemes=frozenset({"http", "https"}),
+            allowed_ports=frozenset({80, 443}),
+            timeout=15.0,
+        )
 
     @pytest.mark.asyncio
     async def test_fetch_failure(self, fetch_policy):
@@ -599,16 +612,55 @@ class TestJinaStrategy:
         mock_response = MagicMock()
         mock_response.status_code = 404
 
-        def fake_getaddrinfo(host, port, *args, **kwargs):  # type: ignore[no-untyped-def]
-            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
-
         with (
-            patch("httpx.AsyncClient.get", return_value=mock_response),
-            patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
+            patch(
+                "orchestrator.services.fetch.strategies.jina.validate_url_and_resolve_async",
+                new=AsyncMock(
+                    return_value=ValidatedUrl(
+                        url="https://example.com",
+                        host="example.com",
+                        port=443,
+                        addresses=("93.184.216.34",),
+                    )
+                ),
+            ),
+            patch(
+                "orchestrator.services.fetch.strategies.jina.pinned_get",
+                new=AsyncMock(return_value=mock_response),
+            ),
         ):
             result = await strategy.fetch("https://example.com")
 
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_uses_jina_when_user_url_is_locally_unreachable(self, fetch_policy):
+        """Local DNS failure retains the approved Jina public-URL boundary."""
+        strategy = JinaReaderStrategy(fetch_policy)
+
+        mock_response = MagicMock()
+        mock_response.text = (
+            "Title: Example\n\nThis is sufficiently long content returned "
+            "through Jina while local target DNS is unavailable"
+        )
+        mock_response.headers = {"content-type": "text/plain"}
+        mock_response.status_code = 200
+
+        with (
+            patch(
+                "orchestrator.services.fetch.strategies.jina.validate_url_and_resolve_async",
+                new=AsyncMock(side_effect=SsrfUnreachable("DNS timed out")),
+            ),
+            patch(
+                "orchestrator.services.fetch.strategies.jina.pinned_get",
+                new=AsyncMock(return_value=mock_response),
+            ) as mock_pinned_get,
+        ):
+            result = await strategy.fetch("https://temporarily-unresolvable.example")
+
+        assert result is not None
+        assert result.strategy_used == "jina"
+        mock_pinned_get.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_fetch_rejects_user_url_pointing_at_link_local(self, fetch_policy):
@@ -666,11 +718,8 @@ class TestJinaStrategy:
         assert mock_get.call_count == 0
 
     @pytest.mark.asyncio
-    async def test_fetch_uses_socket_guard_around_upstream_get(self, fetch_policy):
-        """The upstream ``r.jina.ai`` GET must run under ``socket_guard``
-        so a DNS-rebinding response between pre-flight ``validate_url``
-        and the connect-time ``getaddrinfo`` cannot bypass the policy.
-        """
+    async def test_fetch_pins_upstream_without_patching_process_dns(self, fetch_policy):
+        """The Jina request uses an approved IP while unrelated DNS stays local."""
         strategy = JinaReaderStrategy(fetch_policy)
 
         mock_response = MagicMock()
@@ -678,33 +727,70 @@ class TestJinaStrategy:
         mock_response.headers = {"content-type": "text/plain"}
         mock_response.status_code = 200
 
-        mock_socket_guard = MagicMock()
-        mock_socket_guard.__enter__ = MagicMock(return_value=None)
-        mock_socket_guard.__exit__ = MagicMock(return_value=None)
+        observed_internal_dns: list[str] = []
 
         def fake_getaddrinfo(host, port, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if host == "redis":
+                return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.8", port))]
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
 
+        async def fake_get(*args, **kwargs):  # type: ignore[no-untyped-def]
+            assert socket.getaddrinfo is fake_getaddrinfo
+            internal = socket.getaddrinfo("redis", 6379)
+            observed_internal_dns.append(str(internal[0][4][0]))
+            return mock_response
+
+        mock_client = MagicMock()
+        mock_client.get = AsyncMock(side_effect=fake_get)
+        mock_client_context = MagicMock()
+        mock_client_context.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client_context.__aexit__ = AsyncMock(return_value=None)
+
         with (
-            patch("httpx.AsyncClient.get", return_value=mock_response),
             patch(
-                "orchestrator.services.fetch.strategies.jina.socket_guard",
-                return_value=mock_socket_guard,
+                "orchestrator.services.fetch.strategies.jina.validate_url_and_resolve_async",
+                new=AsyncMock(
+                    return_value=ValidatedUrl(
+                        url="https://example.com",
+                        host="example.com",
+                        port=443,
+                        addresses=("93.184.216.34",),
+                    )
+                ),
             ),
-            patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
+            patch(
+                "orchestrator.services.fetch.pinned_http.validate_url_and_resolve_async",
+                new=AsyncMock(
+                    return_value=ValidatedUrl(
+                        url="https://r.jina.ai/",
+                        host="r.jina.ai",
+                        port=443,
+                        addresses=("93.184.216.34",),
+                    )
+                ),
+            ),
+            patch(
+                "orchestrator.services.fetch.pinned_http.httpx.AsyncClient",
+                return_value=mock_client_context,
+            ) as mock_client_class,
+            patch("socket.getaddrinfo", new=fake_getaddrinfo),
         ):
             result = await strategy.fetch("https://example.com")
 
         assert result is not None
-        # Confirm socket_guard was entered exactly once around the upstream
-        # GET — the rebinding-protection gate is wired up, not just imported.
-        assert mock_socket_guard.__enter__.call_count == 1
+        assert observed_internal_dns == ["10.0.0.8"]
+        assert mock_client_class.call_args.kwargs["trust_env"] is False
+        request_call = mock_client.get.await_args
+        assert request_call is not None
+        assert request_call.args[0].startswith("https://93.184.216.34/")
+        assert request_call.kwargs["headers"]["Host"] == "r.jina.ai"
+        assert request_call.kwargs["extensions"]["sni_hostname"] == "r.jina.ai"
 
     @pytest.mark.asyncio
     async def test_fetch_accepts_url_that_grows_during_encoding(self, fetch_policy):
         """A user URL that exceeds ``MAX_URL_LENGTH`` after URL-encoding
-        must still be accepted: the upstream ``validate_url`` runs only
-        on the fixed origin string, not the composed encoded URL.
+        must still be accepted: pinned transport validates only the fixed
+        upstream origin, not the composed encoded URL.
         Regression for Codex P2 finding: a user URL just under
         ``MAX_URL_LENGTH`` whose query contains many ``&`` / ``=``
         characters expands past 2,048 chars after ``quote(..., safe="")``
@@ -732,12 +818,22 @@ class TestJinaStrategy:
         mock_response.headers = {"content-type": "text/plain"}
         mock_response.status_code = 200
 
-        def fake_getaddrinfo(host, port, *args, **kwargs):  # type: ignore[no-untyped-def]
-            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
-
         with (
-            patch("httpx.AsyncClient.get", return_value=mock_response),
-            patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
+            patch(
+                "orchestrator.services.fetch.strategies.jina.validate_url_and_resolve_async",
+                new=AsyncMock(
+                    return_value=ValidatedUrl(
+                        url=long_user_url,
+                        host="example.com",
+                        port=443,
+                        addresses=("93.184.216.34",),
+                    )
+                ),
+            ),
+            patch(
+                "orchestrator.services.fetch.strategies.jina.pinned_get",
+                new=AsyncMock(return_value=mock_response),
+            ) as mock_pinned_get,
         ):
             result = await strategy.fetch(long_user_url)
 
@@ -746,6 +842,10 @@ class TestJinaStrategy:
         # applies, on the user URL.
         assert result is not None
         assert result.strategy_used == "jina"
+        pinned_call = mock_pinned_get.await_args
+        assert pinned_call is not None
+        assert len(pinned_call.args[0]) > 2048
+        assert pinned_call.kwargs["validation_url"] == "https://r.jina.ai/"
 
 
 class TestCrawl4AIStrategy:
@@ -816,17 +916,16 @@ class TestArchiveOrgStrategy:
         # Mock html_to_markdown to return expected content
         markdown_content = "This is sufficiently long archived content for testing purposes. This content needs to be long enough to pass validation. We need to make sure this content is long enough to satisfy the minimum content length requirements."
         with (
-            patch("httpx.AsyncClient.get") as mock_get,
+            patch("httpx.AsyncClient.get", return_value=mock_availability_response),
             patch(
-                "orchestrator.services.fetch.strategies.archive.validate_url",
-                side_effect=lambda url: url,
-            ),
+                "orchestrator.services.fetch.strategies.archive.pinned_get",
+                new=AsyncMock(return_value=mock_content_response),
+            ) as mock_pinned_get,
             patch(
                 "orchestrator.services.fetch.strategies.archive.html_to_markdown",
                 return_value=markdown_content,
             ),
         ):
-            mock_get.side_effect = [mock_availability_response, mock_content_response]
             result = await strategy.fetch("https://example.com")
 
         assert result is not None
@@ -834,6 +933,10 @@ class TestArchiveOrgStrategy:
         assert result.url == "https://example.com"
         assert "sufficiently long archived content" in result.content
         assert result.strategy_used == "archive"
+        mock_pinned_get.assert_awaited_once_with(
+            "https://web.archive.org/web/20230101000000/https://example.com",
+            timeout=10.0,
+        )
 
     @pytest.mark.asyncio
     async def test_fetch_no_snapshot(self, fetch_policy):
@@ -863,7 +966,7 @@ class TestArchiveOrgStrategy:
         # Mock availability response whose ``closest.url`` points at a
         # link-local metadata IP. The URL uses ``https://`` so the
         # pre-flight reaches the IP-range branch instead of failing
-        # earlier on scheme — without ``https``, ``validate_url``
+        # earlier on scheme — without ``https``, the SSRF validator
         # rejects the scheme before examining the resolved IP, and the
         # test would only verify the scheme-rejection path (already
         # covered by ``test_fetch_ssrf_non_https_url_rejected``).
@@ -947,31 +1050,27 @@ class TestArchiveOrgStrategy:
         mock_content_response.raise_for_status = MagicMock()
 
         with (
-            patch("httpx.AsyncClient.get") as mock_get,
+            patch("httpx.AsyncClient.get", return_value=mock_availability_response),
             patch(
-                "orchestrator.services.fetch.strategies.archive.validate_url",
-                side_effect=lambda url: url,
-            ),
+                "orchestrator.services.fetch.strategies.archive.pinned_get",
+                new=AsyncMock(return_value=mock_content_response),
+            ) as mock_pinned_get,
             patch(
                 "orchestrator.services.fetch.strategies.archive.html_to_markdown",
                 return_value="sufficiently long archived content for testing the wayback http→https upgrade.",
             ),
         ):
-            mock_get.side_effect = [mock_availability_response, mock_content_response]
             result = await strategy.fetch("https://example.com")
 
-        # Confirm the second-hop GET was issued against the upgraded
-        # https URL, not the http URL returned by the availability API.
         assert result is not None
-        second_hop_url = mock_get.call_args_list[1].args[0]
+        pinned_call = mock_pinned_get.await_args
+        assert pinned_call is not None
+        second_hop_url = pinned_call.args[0]
         assert second_hop_url.startswith("https://web.archive.org/")
 
     @pytest.mark.asyncio
-    async def test_fetch_uses_socket_guard_around_httpx_get(self, fetch_policy):
-        """The second-hop httpx call must run under ``socket_guard`` so
-        a DNS-rebinding response between pre-flight ``validate_url`` and
-        the connect-time ``getaddrinfo`` cannot bypass the policy.
-        """
+    async def test_fetch_uses_pinned_get_for_snapshot(self, fetch_policy):
+        """The attacker-influenceable snapshot URL goes through pinned transport."""
         strategy = ArchiveOrgStrategy(fetch_policy)
 
         mock_availability_response = MagicMock()
@@ -990,49 +1089,30 @@ class TestArchiveOrgStrategy:
         mock_content_response.headers = {"content-type": "text/html"}
         mock_content_response.raise_for_status = MagicMock()
 
-        mock_socket_guard = MagicMock()
-        mock_socket_guard.__enter__ = MagicMock(return_value=None)
-        mock_socket_guard.__exit__ = MagicMock(return_value=None)
-
         with (
-            patch("httpx.AsyncClient.get") as mock_get,
+            patch("httpx.AsyncClient.get", return_value=mock_availability_response),
             patch(
-                "orchestrator.services.fetch.strategies.archive.validate_url",
-                side_effect=lambda url: url,
-            ),
-            patch(
-                "orchestrator.services.fetch.strategies.archive.socket_guard",
-                return_value=mock_socket_guard,
-            ),
+                "orchestrator.services.fetch.strategies.archive.pinned_get",
+                new=AsyncMock(return_value=mock_content_response),
+            ) as mock_pinned_get,
             patch(
                 "orchestrator.services.fetch.strategies.archive.html_to_markdown",
-                return_value="sufficiently long archived content for testing the socket guard wrap.",
+                return_value="sufficiently long archived content for testing the pinned fetch.",
             ),
         ):
-            mock_get.side_effect = [mock_availability_response, mock_content_response]
             result = await strategy.fetch("https://example.com")
 
         assert result is not None
-        # Confirm the socket_guard context manager was entered exactly once
-        # (one guard wrap around the second-hop fetch).
-        assert mock_socket_guard.__enter__.call_count == 1
+        mock_pinned_get.assert_awaited_once_with(
+            "https://web.archive.org/web/20230101000000/https://example.com",
+            timeout=10.0,
+        )
 
     @pytest.mark.asyncio
-    async def test_fetch_uses_separate_clients_for_availability_and_guarded_get(self, fetch_policy):
-        """The Wayback availability lookup and the SSRF-guarded
-        ``closest.url`` GET must use SEPARATE ``httpx.AsyncClient``
-        instances so the operator-proxy-friendly ``trust_env=True``
-        default of the availability client does not leak through to
-        the SSRF-guarded fetch (which must explicitly disable
-        ``trust_env`` so an operator proxy cannot route the request
-        around the connect-time DNS guard).
-
-        Round-4 Codex review on ``orchestrator/services/fetch/strategies/archive.py``
-        (P2, 2026-08-10T18:07Z on head ``9afaecb2``) flagged that the
-        single-client approach disabled the operator proxy for the
-        availability lookup, breaking deployments that need outbound
-        proxy access. The fix is two clients — one per trust_env value.
-        """
+    async def test_availability_lookup_keeps_operator_proxy_while_snapshot_is_pinned(
+        self, fetch_policy
+    ):
+        """Only the fixed availability lookup may use environment proxies."""
         strategy = ArchiveOrgStrategy(fetch_policy)
 
         mock_availability_response = MagicMock()
@@ -1051,51 +1131,33 @@ class TestArchiveOrgStrategy:
         mock_content_response.headers = {"content-type": "text/html"}
         mock_content_response.raise_for_status = MagicMock()
 
-        # Capture every ``httpx.AsyncClient`` construction so we can
-        # inspect the ``trust_env`` kwarg applied to each. The
-        # strategy must build exactly two clients — one for
-        # availability (default trust_env=True) and one for the
-        # SSRF-guarded second-hop fetch (trust_env=False).
-        client_calls: list[dict[str, object]] = []
-
-        real_async_client = httpx.AsyncClient
-
-        class _RecordingAsyncClient(real_async_client):  # type: ignore[misc, valid-type]
-            def __init__(self, *args, **kwargs):
-                client_calls.append(kwargs)
-                super().__init__(*args, **kwargs)
+        availability_client = MagicMock()
+        availability_client.get = AsyncMock(return_value=mock_availability_response)
+        availability_context = MagicMock()
+        availability_context.__aenter__ = AsyncMock(return_value=availability_client)
+        availability_context.__aexit__ = AsyncMock(return_value=None)
 
         with (
-            patch("httpx.AsyncClient", _RecordingAsyncClient),
-            patch("httpx.AsyncClient.get") as mock_get,
             patch(
-                "orchestrator.services.fetch.strategies.archive.validate_url",
-                side_effect=lambda url: url,
-            ),
+                "orchestrator.services.fetch.strategies.archive.httpx.AsyncClient",
+                return_value=availability_context,
+            ) as mock_client_class,
+            patch(
+                "orchestrator.services.fetch.strategies.archive.pinned_get",
+                new=AsyncMock(return_value=mock_content_response),
+            ) as mock_pinned_get,
             patch(
                 "orchestrator.services.fetch.strategies.archive.html_to_markdown",
                 return_value="sufficiently long archived content for testing the per-client trust_env split.",
             ),
         ):
-            mock_get.side_effect = [mock_availability_response, mock_content_response]
             result = await strategy.fetch("https://example.com")
 
         assert result is not None
-        # Two clients total: availability + guarded.
-        assert len(client_calls) == 2, (
-            f"expected exactly two AsyncClient constructions, got {len(client_calls)}: "
-            f"{client_calls!r}"
-        )
-        # Availability client uses httpx defaults — trust_env=True
-        # (i.e. ``trust_env`` is not overridden to False) so the
-        # operator's HTTPS_PROXY is honoured.
-        assert "trust_env" not in client_calls[0] or client_calls[0]["trust_env"] is not False, (
-            f"availability client must honour trust_env=True; got {client_calls[0]!r}"
-        )
-        # Guarded client explicitly disables trust_env so the proxy
-        # cannot route the SSRF-guarded fetch.
-        assert client_calls[1].get("trust_env") is False, (
-            f"guarded client must pass trust_env=False; got {client_calls[1]!r}"
+        mock_client_class.assert_called_once_with(timeout=10.0)
+        mock_pinned_get.assert_awaited_once_with(
+            "https://web.archive.org/web/20230101000000/https://example.com",
+            timeout=10.0,
         )
 
 

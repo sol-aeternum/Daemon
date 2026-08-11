@@ -7,11 +7,16 @@ import logging
 import random
 import time
 from typing import Any
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
 from orchestrator.services.fetch.models import FetchResult, FetchPolicy
+from orchestrator.services.fetch.pinned_http import (
+    build_host_header,
+    encode_idna_hostname,
+    pin_url_to_address,
+)
 from orchestrator.tools.ssrf_guard import (
     SsrfPolicyViolation,
     SsrfUnreachable,
@@ -39,34 +44,6 @@ _PER_FETCH_DEADLINE_SECONDS = 15.0
 # Maximum number of distinct validated addresses to attempt per hop. Caps the
 # work a hostile DNS response with thousands of entries could otherwise force.
 _MAX_ADDRESS_ATTEMPTS = 4
-
-
-def _encode_idna(host: str) -> str:
-    """Convert a Unicode hostname to its ASCII (IDNA) form.
-
-    Returns ``host`` unchanged when it is already ASCII. Raises ``ValueError``
-    if the hostname cannot be encoded (httpx requires ASCII header values).
-    """
-    if host.isascii():
-        return host
-    return host.encode("idna").decode("ascii")
-
-
-def _host_header(url: str) -> str:
-    """Build an ASCII Host header while preserving brackets and an explicit port."""
-    parsed = urlsplit(url)
-    host = _encode_idna(parsed.hostname or "")
-    authority_host = f"[{host}]" if ":" in host else host
-    return f"{authority_host}:{parsed.port}" if parsed.port is not None else authority_host
-
-
-def _pin_url_to_address(url: str, address: str) -> str:
-    """Replace only the URL authority host with an already-validated IP."""
-    parsed = urlsplit(url)
-    address_authority = f"[{address}]" if ":" in address else address
-    if parsed.port is not None:
-        address_authority = f"{address_authority}:{parsed.port}"
-    return urlunsplit(parsed._replace(netloc=address_authority))
 
 
 def _is_blocked_domain(url: str, blocked_domains: list[str]) -> bool:
@@ -338,8 +315,8 @@ class DirectFetchStrategy:
                 # UnicodeEncodeError when constructing the request. Preserve an
                 # explicit default port and IPv6 brackets in the Host header.
                 try:
-                    host_header = _host_header(current_url)
-                    sni_hostname = _encode_idna(validated.host)
+                    host_header = build_host_header(current_url)
+                    sni_hostname = encode_idna_hostname(validated.host)
                 except (ValueError, UnicodeError) as exc:
                     logger.warning(f"Direct fetch cannot encode hostname for {url}: {exc}")
                     return None
@@ -499,7 +476,7 @@ class DirectFetchStrategy:
                 async with httpx.AsyncClient(**client_kwargs) as client:
                     response = await asyncio.wait_for(
                         client.get(
-                            _pin_url_to_address(current_url, address),
+                            pin_url_to_address(current_url, address),
                             headers=request_headers,
                             extensions={"sni_hostname": sni_hostname},
                         ),

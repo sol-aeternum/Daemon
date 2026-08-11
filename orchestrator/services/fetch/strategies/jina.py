@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from urllib.parse import quote
 
-import httpx
-
 from orchestrator.config import get_settings
 from orchestrator.services.fetch.models import FetchResult, FetchPolicy
+from orchestrator.services.fetch.pinned_http import pinned_get
 from orchestrator.tools.ssrf_guard import (
+    SsrfPolicyViolation,
+    SsrfUnreachable,
     SsrfViolation,
-    socket_guard,
-    validate_url,
+    validate_url_and_resolve_async,
 )
 
 logger = logging.getLogger(__name__)
@@ -22,12 +21,11 @@ logger = logging.getLogger(__name__)
 # port 80; the SSRF gate's job here is to reject URLs that resolve to
 # private / loopback / link-local / CGNAT destinations, not to refuse
 # plaintext http at the destination. The wider scheme/port range is still
-# subject to the IP-range / DNS-rebinding blocklist enforced by
-# ``validate_url`` and ``socket_guard``.
+# subject to the IP-range blocklist enforced by the bounded resolver.
 _JINA_USER_URL_SCHEMES: frozenset[str] = frozenset({"http", "https"})
 _JINA_USER_URL_PORTS: frozenset[int] = frozenset({80, 443})
 
-# Upstream origin is hardcoded; ``validate_url`` is run on the fixed origin
+# Upstream origin is hardcoded; SSRF validation runs on the fixed origin
 # string only (NOT on the encoded composed URL) so URL-encoding expansion
 # past ``MAX_URL_LENGTH`` cannot falsely reject a previously-valid user URL.
 _JINA_UPSTREAM_ORIGIN = "https://r.jina.ai/"
@@ -53,22 +51,34 @@ class JinaReaderStrategy:
         # target an LLM is asked about through this strategy; without a
         # pre-flight check, a prompt-injected or memory-poisoned URL can
         # redirect the upstream to a private / link-local / internal
-        # service. ``validate_url`` rejects disallowed schemes/ports,
-        # userinfo, oversized URLs, malformed hosts, and resolves the
-        # hostname to verify it is not in a disallowed IP range.
+        # service. ``validate_url_and_resolve_async`` rejects disallowed
+        # schemes/ports, userinfo, oversized URLs, malformed hosts, and
+        # resolves the hostname to verify it is not in a disallowed IP range.
         #
-        # ``asyncio.to_thread`` offloads the synchronous ``socket.getaddrinfo``
-        # inside ``validate_url`` so a slow or unavailable resolver cannot
-        # stall the FastAPI event loop on unrelated requests. Same pattern
-        # used by ``HttpRequestTool`` and the Archive strategy.
+        # Jina independently resolves this target after Daemon forwards it.
+        # Retaining the fallback therefore accepts Jina's documented
+        # public-URL enforcement as a third-party trust boundary; the local
+        # check prevents forwarding targets that are already unsafe from
+        # Daemon's view but cannot pin Jina's remote DNS result.
         try:
-            await asyncio.to_thread(
-                validate_url,
+            await validate_url_and_resolve_async(
                 url,
                 allowed_schemes=_JINA_USER_URL_SCHEMES,
                 allowed_ports=_JINA_USER_URL_PORTS,
+                timeout=15.0,
             )
-        except SsrfViolation as exc:
+        except SsrfUnreachable as exc:
+            # A local resolver outage is target unavailability, not evidence
+            # that the URL is unsafe. Static checks have already run before
+            # the bounded resolver was entered, so retain the documented
+            # Jina public-URL trust boundary approved for this fallback.
+            logger.info(
+                "Jina user URL %s could not be resolved locally: %s; "
+                "continuing under Jina public-URL policy",
+                url,
+                exc,
+            )
+        except SsrfPolicyViolation as exc:
             logger.warning(
                 "Jina user URL %s violates SSRF policy: %s; refusing to fetch",
                 url,
@@ -79,27 +89,6 @@ class JinaReaderStrategy:
         settings = get_settings()
         jina_api_key = settings.jina_api_key
 
-        # Validate the fixed upstream origin (https://r.jina.ai/) against
-        # the strict allowlist. The upstream is hardcoded today, but the
-        # pre-flight pattern protects against a future override of the
-        # base URL pointing at a private IP. The validation runs on the
-        # fixed origin string only — NOT on the URL-encoded composed
-        # ``jina_url`` — because URL-encoding a long query string can
-        # expand past ``MAX_URL_LENGTH`` and falsely reject a previously
-        # valid user URL (e.g. a 1,521-char query of 500 ``&a=`` pairs
-        # expands to ~3,549 chars). The origin is operator-controlled and
-        # constant; the user-input length gate already ran on the user
-        # URL above.
-        try:
-            await asyncio.to_thread(validate_url, _JINA_UPSTREAM_ORIGIN)
-        except SsrfViolation as exc:
-            logger.error(
-                "Configured Jina upstream %s violates SSRF policy: %s; refusing to fetch",
-                _JINA_UPSTREAM_ORIGIN,
-                exc,
-            )
-            raise
-
         encoded_url = quote(url, safe="")
         jina_url = f"{_JINA_UPSTREAM_ORIGIN}{encoded_url}"
 
@@ -108,60 +97,49 @@ class JinaReaderStrategy:
             headers["Authorization"] = f"Bearer {jina_api_key}"
 
         try:
-            # ``socket_guard`` patches process-global state for the full
-            # duration of the awaited request. That is intentional: every
-            # DNS lookup during the second-hop HTTP call (initial
-            # validation, connect-time resolution, retries) must be forced
-            # through the public-IP policy or the rebinding window between
-            # pre-flight and connect opens. The guard is reference-counted
-            # under a lock so concurrent callers are safe, but overlapping
-            # coroutines that issue unrelated DNS lookups during this
-            # window will inherit the policy. That is acceptable because
-            # the SSRF policy is a whole-process invariant — unrelated
-            # callers that needed private-IP resolution would be a
-            # separate configuration bug, not a side effect of this
-            # strategy. Scoping the patch to a single ``httpx.AsyncClient``
-            # would not close the rebinding window for retries/redirects
-            # inside that call and is therefore rejected on the merits.
-            with socket_guard():
-                # ``trust_env=False`` disables honouring of
-                # ``HTTPS_PROXY`` / ``ALL_PROXY`` and the ``no_proxy``
-                # bypass list from the process environment, so the SSRF
-                # guard cannot be bypassed by an operator-configured
-                # proxy that resolves only the public hostname but
-                # routes traffic elsewhere. Same treatment as the
-                # guarded ``HttpRequestTool`` and the Archive strategy.
-                async with httpx.AsyncClient(timeout=15.0, trust_env=False) as client:
-                    response = await client.get(jina_url, headers=headers)
+            # Resolve the fixed Jina origin once and connect directly to one
+            # of those approved IPs while preserving ``Host: r.jina.ai`` and
+            # TLS SNI. ``validation_url`` deliberately excludes the encoded
+            # path so encoding expansion cannot trip the validator's input
+            # length limit; the helper enforces that the request remains on
+            # exactly the validated scheme/host/port.
+            response = await pinned_get(
+                jina_url,
+                validation_url=_JINA_UPSTREAM_ORIGIN,
+                headers=headers,
+                timeout=15.0,
+            )
+            if response is None:
+                return None
+            if response.status_code >= 400:
+                logger.debug(f"Jina Reader returned {response.status_code} for {url}")
+                return None
 
-                    if response.status_code >= 400:
-                        logger.debug(f"Jina Reader returned {response.status_code} for {url}")
-                        return None
+            content = response.text
+            content_type: str = response.headers.get("content-type", "") or ""
 
-                    content = response.text
-                    content_type: str = response.headers.get("content-type", "") or ""
+            if not self.policy.content_is_valid(content, content_type):
+                logger.debug(f"Content validation failed for {url}")
+                return None
 
-                    if not self.policy.content_is_valid(content, content_type):
-                        logger.debug(f"Content validation failed for {url}")
-                        return None
+            return FetchResult(
+                url=url,
+                content=content,
+                title="",
+                strategy_used="jina",
+                cached=False,
+                fetch_time_ms=0.0,
+                content_length=len(content),
+            )
 
-                    return FetchResult(
-                        url=url,
-                        content=content,
-                        title="",
-                        strategy_used="jina",
-                        cached=False,
-                        fetch_time_ms=0.0,
-                        content_length=len(content),
-                    )
-
-        except SsrfViolation:
+        except SsrfViolation as exc:
             # SSRF violations must propagate so the strategy chain cannot
-            # fall back to a strategy that bypasses policy. The
-            # ``FetchService._attempt_strategy`` exception handler is
-            # intentionally narrow — it does NOT catch ``SsrfViolation``,
-            # so a violation here short-circuits the chain (see
-            # ``service.py``).
+            # fall back after the fixed Jina upstream fails policy.
+            logger.error(
+                "Configured Jina upstream %s violates SSRF policy: %s; refusing to fetch",
+                _JINA_UPSTREAM_ORIGIN,
+                exc,
+            )
             raise
         except Exception as e:
             logger.warning(f"Jina Reader fetch failed for {url}: {e}")
