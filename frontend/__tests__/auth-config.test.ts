@@ -114,7 +114,8 @@ describe('auth-config runtime client', () => {
     expect(result.status).toBe('error');
   });
 
-  it('caches the result across calls in the same session', async () => {
+  it('caches the result within the 60s TTL', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_000);
     mockFetchResponse({
       mode: 'hosted',
       email: { enabled: true },
@@ -124,12 +125,47 @@ describe('auth-config runtime client', () => {
     const { fetchAuthConfig, getCachedAuthConfig } =
       await import('../lib/auth-config');
     const r1 = await fetchAuthConfig();
+    vi.spyOn(Date, 'now').mockReturnValue(60_999);
     const r2 = await fetchAuthConfig();
 
     expect(r1.status).toBe('resolved');
     expect(r2.status).toBe('resolved');
     expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(1);
     expect(getCachedAuthConfig()?.mode).toBe('hosted');
+  });
+
+  it('re-fetches runtime config when the 60s TTL expires', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    mockFetchResponse({
+      mode: 'hosted',
+      email: { enabled: true },
+      google: { enabled: true, clientId: 'first-client' },
+    });
+    mockFetchResponse({
+      mode: 'self_hosted',
+      email: { enabled: false },
+      google: { enabled: false, clientId: '' },
+    });
+
+    const { fetchAuthConfig, getCachedAuthConfig } =
+      await import('../lib/auth-config');
+    await fetchAuthConfig();
+
+    vi.spyOn(Date, 'now').mockReturnValue(61_000);
+    expect(getCachedAuthConfig()).toBeUndefined();
+
+    const refreshed = await fetchAuthConfig();
+
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(2);
+    expect(refreshed).toEqual({
+      status: 'resolved',
+      config: {
+        mode: 'self_hosted',
+        email: { enabled: false },
+        google: { enabled: false, clientId: '' },
+      },
+    });
+    expect(getCachedAuthConfig()?.mode).toBe('self_hosted');
   });
 
   it('applies a 5s timeout via AbortController', async () => {

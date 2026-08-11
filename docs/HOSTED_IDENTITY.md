@@ -206,7 +206,9 @@ on a build-time `NEXT_PUBLIC_*` env:
 The endpoint returns only non-secret runtime data. It never serializes the
 audience allowlist, mail sender mode, refresh TTLs, pepper, or any other secret
 or secret-adjacent value. The `google.clientId` is the public OAuth client ID,
-not a secret.
+not a secret. The frontend caches a successful response for at most 60 seconds
+and refreshes it while the auth provider remains mounted. An unavailable or
+invalid response retains the fail-safe unresolved-mode behavior (`/setup`).
 
 `mode` is sourced from `DAEMON_DEPLOYMENT_MODE` (default `self_hosted`).
 `email.enabled` is true only when both `DAEMON_HOSTED_IDENTITY_ENABLED` and

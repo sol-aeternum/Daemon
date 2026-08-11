@@ -12,7 +12,10 @@ export type AuthConfigResult =
 
 type Listener = (result: AuthConfigResult) => void;
 
+export const AUTH_CONFIG_CACHE_TTL_MS = 60_000;
+
 let _cached: AuthConfig | null = null;
+let _cachedAtMs: number | null = null;
 let _inflight: Promise<AuthConfigResult> | null = null;
 const _listeners = new Set<Listener>();
 
@@ -34,14 +37,16 @@ function isAuthConfig(value: unknown): value is AuthConfig {
 }
 
 export function fetchAuthConfig(): Promise<AuthConfigResult> {
-  if (_cached) {
-    return Promise.resolve({ status: 'resolved', config: _cached });
+  const cached = getCachedAuthConfig();
+  if (cached) {
+    return Promise.resolve({ status: 'resolved', config: cached });
   }
   if (_inflight) return _inflight;
   _inflight = doFetch().then((result) => {
     _inflight = null;
     if (result.status === 'resolved') {
       _cached = result.config;
+      _cachedAtMs = Date.now();
       for (const cb of _listeners) cb(result);
     } else {
       for (const cb of _listeners) cb(result);
@@ -80,7 +85,14 @@ async function doFetch(): Promise<AuthConfigResult> {
 }
 
 export function getCachedAuthConfig(): AuthConfig | undefined {
-  return _cached ?? undefined;
+  if (
+    !_cached ||
+    _cachedAtMs === null ||
+    Date.now() - _cachedAtMs >= AUTH_CONFIG_CACHE_TTL_MS
+  ) {
+    return undefined;
+  }
+  return _cached;
 }
 
 export function subscribeAuthConfig(cb: Listener): () => void {
