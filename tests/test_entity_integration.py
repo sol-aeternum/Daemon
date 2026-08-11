@@ -25,6 +25,7 @@ class TestProcessExtractionReturnsTuple:
         mock_store.get_conversation = AsyncMock(return_value=None)
         mock_store.get_last_extraction_time = AsyncMock(return_value=None)
         mock_store.get_messages = AsyncMock(return_value=[])
+        mock_store.log_extraction = AsyncMock()
 
         with patch("orchestrator.memory.extraction.litellm.acompletion") as mock_llm:
             mock_response = MagicMock()

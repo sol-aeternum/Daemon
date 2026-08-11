@@ -7,7 +7,7 @@ import logging
 import uuid
 import hashlib
 import hmac
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
 import asyncpg
@@ -24,6 +24,7 @@ def is_explicit_memory(memory: dict[str, Any]) -> bool:
 
 
 logger = logging.getLogger(__name__)
+EXTRACTION_STREAMING_ABANDONED_AFTER = timedelta(minutes=15)
 
 
 def _default_embedding_model() -> str:
@@ -442,6 +443,91 @@ class MemoryStore:
                 d["advisor_traces"] = self._decrypt_advisor_traces(d["advisor_traces"])
             results.append(_normalize_message(d))
         return results
+
+    async def get_messages_after_cursor(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        created_at: datetime | None,
+        message_id: str | None,
+        limit: int = 250,
+    ) -> list[dict[str, Any]]:
+        """Load the oldest messages strictly after a stable extraction cursor."""
+        if created_at is None:
+            rows = await self._pool.fetch(
+                """
+                SELECT * FROM messages
+                WHERE conversation_id = $1
+                ORDER BY created_at ASC, id::text ASC
+                LIMIT $2
+                """,
+                conversation_id,
+                limit,
+            )
+        elif message_id is None:
+            rows = await self._pool.fetch(
+                """
+                SELECT * FROM messages
+                WHERE conversation_id = $1 AND created_at >= $2
+                ORDER BY created_at ASC, id::text ASC
+                LIMIT $3
+                """,
+                conversation_id,
+                created_at,
+                limit,
+            )
+        else:
+            rows = await self._pool.fetch(
+                """
+                SELECT * FROM messages
+                WHERE conversation_id = $1
+                  AND (created_at > $2 OR (created_at = $2 AND id::text > $3))
+                ORDER BY created_at ASC, id::text ASC
+                LIMIT $4
+                """,
+                conversation_id,
+                created_at,
+                message_id,
+                limit,
+            )
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            message = dict(row)
+            # Stop at the first mutable row. A streaming row older than the
+            # abandonment threshold cannot still be an ordinary provider
+            # request (the configured request timeout is 90 seconds), so skip
+            # it rather than pinning this conversation's extraction forever.
+            status = message.get("status")
+            if status not in (None, "complete"):
+                created_at = message.get("created_at")
+                if status == "streaming" and isinstance(created_at, datetime):
+                    if created_at.tzinfo is None:
+                        created_at = created_at.replace(tzinfo=timezone.utc)
+                    if (
+                        created_at
+                        <= datetime.now(timezone.utc) - EXTRACTION_STREAMING_ABANDONED_AFTER
+                    ):
+                        message["content"] = ""
+                        message["_extraction_skip"] = True
+                        results.append(_normalize_message(message))
+                        continue
+                break
+            message["content"] = self._enc.decrypt(message["content"])
+            if message.get("reasoning_text") is not None:
+                message["reasoning_text"] = self._enc.decrypt(message["reasoning_text"])
+            if message.get("advisor_traces") is not None:
+                message["advisor_traces"] = self._decrypt_advisor_traces(message["advisor_traces"])
+            results.append(_normalize_message(message))
+        return results
+
+    def encrypt_extraction_continuation(self, payload: str) -> str:
+        """Encrypt an extraction continuation before Redis persistence."""
+        return self._enc.encrypt(payload)
+
+    def decrypt_extraction_continuation(self, payload: str) -> str:
+        """Decrypt an extraction continuation loaded from Redis."""
+        return self._enc.decrypt(payload)
 
     async def get_summary_message_batch(
         self,
@@ -2221,26 +2307,41 @@ class MemoryStore:
         result["input_snippet"] = self._enc.decrypt(result["input_snippet"])
         return result
 
+    async def get_last_extraction_cursor(
+        self,
+        conversation_id: uuid.UUID,
+    ) -> tuple[datetime | None, str | None]:
+        """Return the latest durable ``(created_at, message_id)`` cursor.
+
+        Fragment logs marked ``cursor_checkpoint=false`` are audit records,
+        not progress markers. Legacy rows without that key remain eligible.
+        """
+        row = await self._pool.fetchrow(
+            """
+            SELECT
+                COALESCE(last_message_observed_at, created_at) AS watermark,
+                dedup_results->>'last_message_id' AS message_id
+            FROM memory_extraction_log
+            WHERE conversation_id = $1
+              AND dedup_results->>'cursor_checkpoint' IS DISTINCT FROM 'false'
+            ORDER BY COALESCE(last_message_observed_at, created_at) DESC,
+                     dedup_results->>'last_message_id' DESC NULLS LAST,
+                     created_at DESC
+            LIMIT 1
+            """,
+            conversation_id,
+        )
+        if not row:
+            return None, None
+        return row["watermark"], row["message_id"]
+
     async def get_last_extraction_time(
         self,
         conversation_id: uuid.UUID,
     ) -> datetime | None:
-        """Get the watermark for the next extraction.
-
-        Prefers last_message_observed_at over created_at so that a turn
-        which arrived while the previous extraction was in flight is not
-        skipped by the `created_at > last_extraction_time` filter.
-        """
-        row = await self._pool.fetchrow(
-            """
-            SELECT COALESCE(last_message_observed_at, created_at) AS watermark
-            FROM memory_extraction_log
-            WHERE conversation_id = $1
-            ORDER BY COALESCE(last_message_observed_at, created_at) DESC LIMIT 1
-            """,
-            conversation_id,
-        )
-        return row["watermark"] if row else None
+        """Get the timestamp component of the durable extraction cursor."""
+        watermark, _ = await self.get_last_extraction_cursor(conversation_id)
+        return watermark
 
     # ------------------------------------------------------------------
     # Retrieval log operations

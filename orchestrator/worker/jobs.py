@@ -22,6 +22,7 @@ from orchestrator.memory.entities import (
     persist_extraction_result,
 )
 from orchestrator.memory.extraction import (
+    MAX_EXTRACTION_INPUT_CHARS,
     process_extraction,
     messages_to_extraction_text,
 )
@@ -36,6 +37,9 @@ logger = logging.getLogger(__name__)
 
 
 WorkerContext = dict[str, object]
+# One chunk can perform two 90-second provider calls (initial + retry).
+# Keeping the cap at one leaves headroom inside arq's 300-second job timeout.
+MAX_EXTRACTION_CHUNKS_PER_JOB = 1
 
 
 class ConsolidationResults(TypedDict):
@@ -63,12 +67,22 @@ class DreamingResults(TypedDict):
 
 
 class EntityResolutionResults(TypedDict):
+    """Typed results dict for consolidate_memories job."""
+
     status: str
     memories_processed: int
     entities_created: int
     entities_updated: int
     errors: list[str]
     error_count: int
+
+
+class ExtractionChunk(TypedDict):
+    """A bounded extractor call plus whether it completes its last message."""
+
+    messages: list[ConversationMessage]
+    raw_messages: list[Mapping[str, Any]]
+    advances_cursor: bool
 
 
 def _parse_raw_messages(messages_json: object) -> list[dict[str, Any]]:
@@ -117,15 +131,37 @@ def _is_memory_write_artifact(message: dict[str, Any]) -> bool:
     return False
 
 
+def _parse_message(item: Mapping[str, Any]) -> ConversationMessage | None:
+    role = item.get("role")
+    content = item.get("content")
+    if role is None or content is None:
+        return None
+    return {"role": str(role), "content": str(content)}
+
+
 def _parse_messages(messages_json: object) -> list[ConversationMessage]:
     messages: list[ConversationMessage] = []
     for item in _parse_raw_messages(messages_json):
-        role = item.get("role")
-        content = item.get("content")
-        if role is None or content is None:
-            continue
-        messages.append({"role": str(role), "content": str(content)})
+        message = _parse_message(item)
+        if message is not None:
+            messages.append(message)
     return messages
+
+
+def _coerce_message_timestamp(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    return None
 
 
 async def enqueue_with_debounce(
@@ -197,6 +233,95 @@ async def _user_matches_dream_schedule_hour(
     return user_now.hour == target_hour
 
 
+def _chunk_messages_for_extraction(
+    parsed_messages: Sequence[ConversationMessage],
+    filtered_raw_messages: Sequence[Mapping[str, Any]],
+    *,
+    max_chars: int = MAX_EXTRACTION_INPUT_CHARS,
+) -> list[ExtractionChunk]:
+    """Split oldest-first messages into lossless, bounded extractor calls.
+
+    Normal messages are packed up to ``max_chars``. A single oversized
+    message is split into role-labeled fragments; only its final fragment
+    is allowed to advance the durable cursor. This guarantees the extractor
+    sees every selected character before the message falls behind the cursor.
+    """
+    if max_chars <= 0:
+        raise ValueError("max_chars must be positive")
+
+    parsed_list = list(parsed_messages)
+    raw_list = list(filtered_raw_messages)
+    if len(parsed_list) != len(raw_list):
+        raise AssertionError("parsed and raw message lists must be index-aligned")
+
+    chunks: list[ExtractionChunk] = []
+    current_parsed: list[ConversationMessage] = []
+    current_raw: list[Mapping[str, Any]] = []
+
+    def raw_advances_cursor(raw_message: Mapping[str, Any]) -> bool:
+        return raw_message.get("_extraction_cursor_checkpoint") is not False
+
+    def flush_current() -> None:
+        nonlocal current_parsed, current_raw
+        if current_parsed:
+            chunks.append(
+                {
+                    "messages": current_parsed,
+                    "raw_messages": current_raw,
+                    "advances_cursor": raw_advances_cursor(current_raw[-1]),
+                }
+            )
+            current_parsed = []
+            current_raw = []
+
+    for parsed_msg, raw_msg in zip(parsed_list, raw_list):
+        single_text = messages_to_extraction_text([parsed_msg])
+        if len(single_text) > max_chars:
+            flush_current()
+            content = str(parsed_msg.get("content") or "")
+            empty_message: ConversationMessage = {
+                "role": str(parsed_msg.get("role") or ""),
+                "content": "",
+            }
+            payload_budget = max_chars - len(messages_to_extraction_text([empty_message]))
+            if payload_budget <= 0:
+                raise ValueError("max_chars is too small for a role label")
+            fragments: list[str] = []
+            start = 0
+            overlap = min(200, max(1, payload_budget // 10))
+            while start < len(content):
+                end = min(len(content), start + payload_budget)
+                fragments.append(content[start:end])
+                if end == len(content):
+                    break
+                start = end - overlap
+            for index, fragment in enumerate(fragments):
+                fragment_message: ConversationMessage = {
+                    "role": str(parsed_msg.get("role") or ""),
+                    "content": fragment,
+                }
+                fragment_raw = dict(raw_msg)
+                fragment_raw["content"] = fragment
+                fragment_raw["_extraction_cursor_checkpoint"] = index == len(fragments) - 1
+                chunks.append(
+                    {
+                        "messages": [fragment_message],
+                        "raw_messages": [fragment_raw],
+                        "advances_cursor": index == len(fragments) - 1,
+                    }
+                )
+            continue
+
+        candidate = [*current_parsed, parsed_msg]
+        if current_parsed and len(messages_to_extraction_text(candidate)) > max_chars:
+            flush_current()
+        current_parsed.append(parsed_msg)
+        current_raw.append(raw_msg)
+
+    flush_current()
+    return chunks
+
+
 async def extract_memories(
     ctx: WorkerContext,
     user_id: str | uuid.UUID,
@@ -255,72 +380,201 @@ async def extract_memories(
         # Whether the enqueue succeeded or not, the flag is already
         # consumed. Continue with the normal extraction flow.
 
+    batch_limit = 250
     raw_messages: list[dict[str, Any]]
+    needs_extraction_continuation = False
     if messages_json is None:
-        # Get the last extraction time for this conversation
-        last_extraction_time = await store_obj.get_last_extraction_time(_as_uuid(conversation_id))
-
-        # If there was a previous extraction, only fetch messages newer than that
-        if last_extraction_time is not None:
-            # We need to fetch messages with created_at > last_extraction_time
-            # Since get_messages doesn't support this filter, we'll need to modify the approach
-            # For now, we'll fetch the last 250 messages and filter them
-            all_messages = await store_obj.get_messages(_as_uuid(conversation_id), limit=250)
-            messages = [
-                msg
-                for msg in all_messages
-                if msg.get("created_at") and msg["created_at"] > last_extraction_time
-            ]
-        else:
-            # No previous extraction, fetch all messages
-            messages = await store_obj.get_messages(_as_uuid(conversation_id), limit=250)
+        cursor_at, cursor_message_id = await store_obj.get_last_extraction_cursor(
+            _as_uuid(conversation_id)
+        )
+        messages = await store_obj.get_messages_after_cursor(
+            _as_uuid(conversation_id),
+            created_at=cursor_at,
+            message_id=cursor_message_id,
+            limit=batch_limit,
+        )
         raw_messages = [dict(message) for message in messages]
+        needs_extraction_continuation = len(raw_messages) == batch_limit
     else:
-        raw_messages = _parse_raw_messages(messages_json)
-    filtered_raw_messages = [
-        message for message in raw_messages if not _is_memory_write_artifact(message)
-    ]
-    parsed_messages = _parse_messages(filtered_raw_messages)
-    messages = parsed_messages
-    text = messages_to_extraction_text(messages)
-    if not text:
+        decoded_messages_json = messages_json
+        try:
+            envelope = (
+                json.loads(messages_json) if isinstance(messages_json, str) else messages_json
+            )
+        except (TypeError, json.JSONDecodeError):
+            envelope = None
+        if isinstance(envelope, Mapping) and isinstance(
+            envelope.get("_encrypted_extraction_continuation"), str
+        ):
+            decoded_messages_json = store_obj.decrypt_extraction_continuation(
+                str(envelope["_encrypted_extraction_continuation"])
+            )
+        raw_messages = _parse_raw_messages(decoded_messages_json)
+
+    aligned_pairs: list[tuple[ConversationMessage, dict[str, Any], int]] = []
+    for index, raw_message in enumerate(raw_messages):
+        if raw_message.get("_extraction_skip") or _is_memory_write_artifact(raw_message):
+            continue
+        parsed_message = _parse_message(raw_message)
+        if parsed_message is not None:
+            aligned_pairs.append((parsed_message, raw_message, index))
+    if not aligned_pairs and messages_json is not None:
         return {"status": "skipped", "reason": "no_messages"}
 
-    last_message_observed_at = max(
-        (msg["created_at"] for msg in filtered_raw_messages if msg.get("created_at")),
-        default=None,
-    )
+    def message_order_key(
+        pair: tuple[ConversationMessage, dict[str, Any], int],
+    ) -> tuple[datetime, str]:
+        _, raw_message, original_index = pair
+        timestamp = _coerce_message_timestamp(raw_message.get("created_at"))
+        if timestamp is None:
+            return datetime.min.replace(tzinfo=timezone.utc), f"{original_index:020d}"
+        return timestamp, str(raw_message.get("id") or f"{original_index:020d}")
 
-    extraction_success, new_memories, summary_continuation_needed = await process_extraction(
-        store=store_obj,
-        user_id=_as_uuid(user_id),
-        conversation_id=_as_uuid(conversation_id),
-        text=text,
-        last_message_observed_at=last_message_observed_at,
+    aligned_pairs.sort(key=message_order_key)
+    sorted_parsed = [pair[0] for pair in aligned_pairs]
+    sorted_raw = [pair[1] for pair in aligned_pairs]
+    chunks = _chunk_messages_for_extraction(sorted_parsed, sorted_raw) if aligned_pairs else []
+    queue = ctx.get("redis")
+    synchronous_direct_call = messages_json is not None and (
+        queue is None or not hasattr(queue, "enqueue_job")
     )
+    resume_database_after_payload = any(
+        bool(raw_message.get("_resume_database_extraction")) for raw_message in raw_messages
+    )
+    if messages_json is not None:
+        needs_extraction_continuation = resume_database_after_payload
+
+    chunk_count = (
+        len(chunks) if synchronous_direct_call else min(len(chunks), MAX_EXTRACTION_CHUNKS_PER_JOB)
+    )
+    chunks_to_process = chunks[:chunk_count]
+    needs_extraction_continuation = needs_extraction_continuation or chunk_count < len(chunks)
+    continuation_messages_json: str | None = None
+    if chunk_count < len(chunks):
+        remaining_raw: list[Mapping[str, Any]] = []
+        seen_raw_ids: set[int] = set()
+        for remaining_chunk in chunks[chunk_count:]:
+            for raw_message in remaining_chunk["raw_messages"]:
+                raw_identity = id(raw_message)
+                if raw_identity not in seen_raw_ids:
+                    seen_raw_ids.add(raw_identity)
+                    remaining_raw.append(raw_message)
+        if (messages_json is None or resume_database_after_payload) and remaining_raw:
+            first_remaining = dict(remaining_raw[0])
+            first_remaining["_resume_database_extraction"] = True
+            remaining_raw[0] = first_remaining
+        continuation_messages_json = json.dumps(remaining_raw, default=str)
+        if messages_json is None or resume_database_after_payload:
+            encrypted_payload = store_obj.encrypt_extraction_continuation(
+                continuation_messages_json
+            )
+            continuation_messages_json = json.dumps(
+                {"_encrypted_extraction_continuation": encrypted_payload}
+            )
+
+    new_memories: list[dict[str, Any]] = []
+    summary_continuation_needed = False
+    extraction_success = True
+    processed_message_count = 0
+    last_processed_message_id: str | None = None
+
+    async def enqueue_entity_resolution(memories: Sequence[Mapping[str, Any]]) -> None:
+        memory_ids = [str(memory.get("id")) for memory in memories if memory.get("id")]
+        if not memory_ids:
+            return
+        entity_queue = ctx.get("redis")
+        if not isinstance(entity_queue, ArqRedis):
+            return
+        await enqueue_with_debounce(
+            entity_queue,
+            "resolve_entities_job",
+            job_id=(
+                f"resolve_entities_{_as_uuid(user_id)}_{_as_uuid(conversation_id)}_{memory_ids[-1]}"
+            ),
+            args=(),
+            kwargs={
+                "user_id": str(_as_uuid(user_id)),
+                "memory_ids_json": json.dumps(memory_ids),
+            },
+        )
+
+    for chunk_index, chunk in enumerate(chunks_to_process):
+        chunk_parsed = chunk["messages"]
+        chunk_raw = chunk["raw_messages"]
+        chunk_text = messages_to_extraction_text(chunk_parsed)
+        if not chunk_text:
+            continue
+
+        advances_cursor = chunk["advances_cursor"]
+        cursor_message = chunk_raw[-1]
+        chunk_last_observed = (
+            _coerce_message_timestamp(cursor_message.get("created_at")) if advances_cursor else None
+        )
+        raw_message_id = cursor_message.get("id") if advances_cursor else None
+        chunk_last_message_id = str(raw_message_id) if raw_message_id is not None else None
+
+        chunk_success, chunk_new_memories, chunk_continuation = await process_extraction(
+            store=store_obj,
+            user_id=_as_uuid(user_id),
+            conversation_id=_as_uuid(conversation_id),
+            text=chunk_text,
+            last_message_observed_at=chunk_last_observed,
+            last_message_id=chunk_last_message_id,
+            chunk_index=chunk_index,
+            cursor_checkpoint=advances_cursor,
+        )
+        if not chunk_success:
+            # Earlier chunks may already have committed memories and cursor
+            # checkpoints. Queue their entity projection before retrying the
+            # failed suffix, because the retry will start after those chunks.
+            await enqueue_entity_resolution(new_memories)
+            raise Retry(defer=5)
+        if chunk_new_memories:
+            new_memories.extend(chunk_new_memories)
+        summary_continuation_needed = summary_continuation_needed or chunk_continuation
+        if advances_cursor:
+            processed_message_count += len(chunk_raw)
+            last_processed_message_id = chunk_last_message_id
+
+    # Intentionally filtered artifacts and malformed rows are not extractor
+    # inputs, but they must not pin pagination forever. Advance across a
+    # trailing skipped suffix only after every selected chunk in this page
+    # has completed successfully.
+    if messages_json is None and raw_messages and chunk_count == len(chunks):
+        page_last = raw_messages[-1]
+        page_last_id_raw = page_last.get("id")
+        page_last_id = str(page_last_id_raw) if page_last_id_raw is not None else None
+        if page_last_id != last_processed_message_id:
+            page_last_observed = _coerce_message_timestamp(page_last.get("created_at"))
+            if page_last_observed is None:
+                raise Retry(defer=5)
+            await store_obj.log_extraction(
+                user_id=_as_uuid(user_id),
+                conversation_id=_as_uuid(conversation_id),
+                input_snippet="",
+                extracted_facts=[],
+                dedup_results={
+                    "merged": 0,
+                    "superseded": 0,
+                    "new": 0,
+                    "last_message_id": page_last_id,
+                    "cursor_checkpoint": True,
+                    "filtered_page_checkpoint": True,
+                },
+                model_used="filter-only",
+                last_message_observed_at=page_last_observed,
+            )
+            last_processed_message_id = page_last_id
 
     if extraction_success and new_memories:
-        memory_ids = [str(m.get("id")) for m in new_memories if m.get("id")]
-        if memory_ids:
-            try:
-                queue = ctx.get("redis")
-                if isinstance(queue, ArqRedis):
-                    await enqueue_with_debounce(
-                        queue,
-                        "resolve_entities_job",
-                        job_id=f"resolve_entities_{_as_uuid(user_id)}_{_as_uuid(conversation_id)}",
-                        args=(),
-                        kwargs={
-                            "user_id": str(_as_uuid(user_id)),
-                            "memory_ids_json": json.dumps(memory_ids),
-                        },
-                    )
-            except Exception:
-                logger.warning(
-                    "Failed to enqueue entity resolution job for user %s conversation %s",
-                    user_id,
-                    conversation_id,
-                )
+        try:
+            await enqueue_entity_resolution(new_memories)
+        except Exception:
+            logger.warning(
+                "Failed to enqueue entity resolution job for user %s conversation %s",
+                user_id,
+                conversation_id,
+            )
 
     if extraction_success and summary_continuation_needed:
         try:
@@ -356,7 +610,46 @@ async def extract_memories(
             )
             raise Retry(defer=5) from None
 
-    return {"status": "ok", "processed_messages": len(messages)}
+    if needs_extraction_continuation:
+        queue = ctx.get("redis")
+        if queue is None or not hasattr(queue, "enqueue_job"):
+            raise Retry(defer=5)
+        try:
+            continuation_key = last_processed_message_id or (
+                uuid.uuid5(uuid.NAMESPACE_URL, continuation_messages_json).hex
+                if continuation_messages_json is not None
+                else "unknown"
+            )
+            continuation_args: tuple[str, str] | tuple[str, str, str] = (
+                (str(_as_uuid(user_id)), str(_as_uuid(conversation_id)), continuation_messages_json)
+                if continuation_messages_json is not None
+                else (str(_as_uuid(user_id)), str(_as_uuid(conversation_id)))
+            )
+            enqueued = await enqueue_with_debounce(
+                queue,
+                "extract_memories",
+                job_id=(f"extract_continuation:{_as_uuid(conversation_id)}:{continuation_key}"),
+                defer_by=timedelta(seconds=1),
+                args=continuation_args,
+            )
+        except Retry:
+            raise
+        except Exception:
+            logger.warning(
+                "Failed to enqueue extraction continuation for conversation %s",
+                conversation_id,
+                exc_info=True,
+            )
+            raise Retry(defer=5) from None
+        if enqueued is None:
+            raise Retry(defer=5)
+
+    return {
+        "status": "ok",
+        "processed_messages": processed_message_count,
+        "processed_chunks": len(chunks_to_process),
+        "last_processed_message_id": last_processed_message_id,
+    }
 
 
 async def generate_title(
