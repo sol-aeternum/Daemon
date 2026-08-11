@@ -476,20 +476,6 @@ async def deduplicate_facts(
             memory_slot=None,
             embedding_model=document_model,
         )
-        # Round-N+1 Codex P1 (Finding 1, 2026-08-12, tools.py:739): the
-        # caller may have closed one or more rows in the same transaction
-        # (e.g. the ``update`` path closes the target before
-        # ``dedup_and_store`` runs). The pool search cannot observe those
-        # uncommitted closes, so the closed row may surface here. Filter
-        # the candidate pool so the best-match decision sees a clean
-        # ``similar`` list and the supersede branch does not raise on
-        # ``_close_memory(best_match_id, lock_conn)`` returning False.
-        if excluded_memory_ids:
-            similar = [
-                m
-                for m in similar
-                if _as_uuid_or_none(m.get("id")) not in excluded_memory_ids
-            ]
         if _is_fallback_storage_model(document_model) or _has_configured_fallback_storage_spaces():
             enabled_storage_models = sorted(
                 {
@@ -560,6 +546,21 @@ async def deduplicate_facts(
                     )
                     similar.append(candidate_with_similarity)
                     seen_ids.add(candidate_id)
+        # Round-N+1 Codex P1 (Finding 1, 2026-08-12, tools.py:739):
+        # the caller may have closed one or more rows in the same
+        # transaction (e.g. the ``update`` path closes the target before
+        # ``dedup_and_store`` runs). The pool searches (vector, BM25,
+        # slot-family fallback) cannot observe those uncommitted closes,
+        # so the closed row may surface as ``best_match`` and the
+        # supersede branch raises ``RuntimeError`` on the second close.
+        # Apply the exclusion once, AFTER every candidate source has
+        # been appended (see Finding 6, 2026-08-11 round-2: filtering
+        # before the BM25/slot-family fallback loops let excluded IDs
+        # sneak back in via the fallback sources).
+        if excluded_memory_ids:
+            similar = [
+                m for m in similar if _as_uuid_or_none(m.get("id")) not in excluded_memory_ids
+            ]
         best_match: dict[str, Any] | None = None
         supersede_threshold = _get_supersede_threshold()
 

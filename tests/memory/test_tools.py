@@ -1354,15 +1354,11 @@ async def test_memory_write_update_close_target_excluded_from_dedup_search(monke
     )
     store.close_memory = AsyncMock(return_value=True)
 
-    with patch(
-        "orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock
-    ) as mock_dedup:
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
         mock_dedup.return_value = new_memory_id
         tool = MemoryWriteTool(store, user_id)
 
-        result = await tool.execute(
-            action="update", memory_id=str(old_memory_id), content="new"
-        )
+        result = await tool.execute(action="update", memory_id=str(old_memory_id), content="new")
 
         assert "updated" in result.lower()
         store.close_memory.assert_called_once()
@@ -1371,6 +1367,125 @@ async def test_memory_write_update_close_target_excluded_from_dedup_search(monke
         # pool is filtered before best-match selection.
         kwargs = mock_dedup.call_args.kwargs
         assert old_memory_id in kwargs.get("excluded_memory_ids", set())
+
+
+@pytest.mark.asyncio
+async def test_memory_dedup_excluded_ids_filter_fallback_candidate_sources(monkeypatch):
+    """Round-N+1 Codex P1 (Finding 6, 2026-08-11) regression: ``excluded_memory_ids`` must
+    filter the candidate pool AFTER every candidate source has been
+    appended.
+
+    The earlier round-N+1 fix (Finding 1) filtered ``similar`` BEFORE
+    the BM25 and slot-family fallback loops ran. Codex correctly
+    flagged that a closed-then-reopened-via-fallback candidate could
+    slip back in. This test exercises ``deduplicate_facts`` directly:
+
+    1. vector search returns no candidates for the excluded ID;
+    2. BM25 fallback search returns a candidate that IS the excluded
+       ID — would re-introduce it into ``similar`` if exclusion is
+       applied before the fallback loop;
+    3. slot-family fallback adds nothing new;
+    4. after exclusion, the candidate pool is empty, so ``deduplicate_facts``
+       takes the ``new`` branch and the closed target is NOT surfaced
+       as ``best_match``.
+    """
+    from dataclasses import dataclass
+    from unittest.mock import MagicMock
+
+    from orchestrator.memory.dedup import deduplicate_facts
+    from orchestrator.memory.store import MemoryStore
+
+    monkeypatch.setattr(
+        "orchestrator.memory.dedup.get_configured_embedding_fallback_storage_models",
+        lambda: ["voyage-4-large-fallback"],
+    )
+
+    user_id = uuid.uuid4()
+    excluded_id = uuid.uuid4()
+
+    @dataclass
+    class SimpleFact:
+        content: str
+        category: str
+        confidence: float = 0.8
+        slot: str | None = None
+
+    fact = SimpleFact(content="the thing happened", category="fact")
+
+    mock_store = MagicMock(spec=MemoryStore)
+
+    # Vector search returns nothing; the closed target's row would only
+    # come back through BM25 (because the close was uncommitted on
+    # ``cap_conn``, invisible to the pool).
+    mock_store.search_memories = AsyncMock(return_value=[])
+
+    # BM25 fallback returns the just-closed row's content match. The
+    # excluded_memory_ids filter MUST drop this candidate AFTER it is
+    # appended, not before — or the superseded/closed target resurfaces
+    # as ``best_match`` and the supersede branch would attempt to close
+    # the already-closed row again (P1 Finding 6).
+    mock_store.search_memories_bm25 = AsyncMock(
+        return_value=[
+            {
+                "id": str(excluded_id),
+                "content": "the thing happened",
+                "similarity": 0.0,
+                "valid_to": None,
+                "memory_slot": None,
+                "category": "fact",
+            }
+        ]
+    )
+    mock_store.touch_memory = AsyncMock()
+    mock_store.insert_memory = AsyncMock(
+        return_value={"id": str(uuid.uuid4()), "content": "the thing happened"}
+    )
+    mock_store.supersede_memory = AsyncMock(
+        return_value={"id": str(uuid.uuid4()), "content": "the thing happened"}
+    )
+
+    with (
+        patch(
+            "orchestrator.memory.dedup.embed_documents_with_metadata",
+            new_callable=AsyncMock,
+        ) as mock_embed,
+        patch(
+            "orchestrator.memory.dedup.check_contradiction",
+            new_callable=AsyncMock,
+            return_value=(False, ""),
+        ),
+        patch("orchestrator.memory.dedup.get_settings") as mock_settings,
+    ):
+        mock_settings.return_value.dedup_merge_threshold = 0.99
+        mock_settings.return_value.dedup_supersede_threshold = 0.95
+        mock_settings.return_value.dedup_supersede_same_slot_threshold = 0.95
+        mock_settings.return_value.background_reasoning_model = "gpt-4o-mini"
+        mock_settings.return_value.embedding_document_model = "voyage-4-large"
+        mock_embed.return_value = SimpleNamespace(
+            embeddings=[[0.1] * 1024],
+            storage_model="voyage-4-large",
+        )
+
+        result = await deduplicate_facts(
+            store=mock_store,
+            user_id=user_id,
+            facts=[fact],
+            conversation_id=None,
+            excluded_memory_ids={excluded_id},
+        )
+
+    # The BM25 candidate was the excluded ID; the post-fallback filter
+    # MUST drop it. ``best_match`` is therefore empty, dedup takes the
+    # ``new`` branch, and supersede_memory is never called on the
+    # already-closed row.
+    assert result.merged == []
+    assert result.superseded == []
+    assert len(result.new) == 1, (
+        "excluded_memory_ids must drop the BM25 fallback candidate; "
+        f"got merged={result.merged} superseded={result.superseded} new={result.new}"
+    )
+    mock_store.search_memories_bm25.assert_awaited_once()
+    mock_store.supersede_memory.assert_not_awaited()
 
 
 @pytest.mark.asyncio
