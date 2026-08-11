@@ -602,7 +602,14 @@ class MemoryWriteTool(Tool):
                         active_rows,
                         MEMORY_WRITE_MAX_ACTIVE_ROWS,
                     )
-                    _release_attempt_reservation(self.user_id, quota.reservation)
+                    # Round-N+1 Codex P1 (Finding 3, 2026-08-12,
+                    # tools.py:605): the embedding has already been
+                    # billed before this atomic-cap refusal, so the
+                    # rate-limit reservation must remain consumed —
+                    # releasing it would let a caller at ``cap - 1``
+                    # launch many concurrent creates, observe every
+                    # refusal here, and effectively bypass the rate
+                    # limit by retrying until the cap is freed.
                     # The advisory lock is transaction-scoped. The
                     # refusal path must end the transaction and return
                     # the connection to the pool before returning, or
@@ -647,9 +654,13 @@ class MemoryWriteTool(Tool):
                         await self.store._pool.release(cap_conn)
                     except Exception:
                         pass
-                # Cancellation or store failure before commit must not
-                # consume a billed-attempt reservation.
-                _release_attempt_reservation(self.user_id, quota.reservation)
+                # Round-N+1 Codex P1 (Finding 3, 2026-08-12,
+                # tools.py:652): once ``prepare_memory_embedding``
+                # returns, the embedding endpoint has already been
+                # billed. Failures after that point must consume the
+                # rate-limit reservation so a caller cannot convert a
+                # transient store fault into unlimited billed
+                # embeddings by retrying.
                 raise
             await self._check_and_set_contradiction(memory_id, content, effective_slot)
             return f"Memory created (ID: {memory_id})."
@@ -724,7 +735,10 @@ class MemoryWriteTool(Tool):
                     cap_conn, self.user_id
                 )
                 if active_rows >= MEMORY_WRITE_MAX_ACTIVE_ROWS and not replace_active:
-                    _release_attempt_reservation(self.user_id, quota.reservation)
+                    # Round-N+1 Codex P1 (Finding 3, 2026-08-12,
+                    # tools.py:727): embedding was billed before this
+                    # refusal, so the rate-limit reservation must
+                    # remain consumed.
                     await cap_conn.execute("ROLLBACK")
                     await self.store._pool.release(cap_conn)
                     cap_conn = None
@@ -738,7 +752,10 @@ class MemoryWriteTool(Tool):
                     memory_id, user_id=self.user_id, conn=cap_conn
                 )
                 if replace_active and not close_took_effect:
-                    _release_attempt_reservation(self.user_id, quota.reservation)
+                    # Round-N+1 Codex P1 (Finding 3, 2026-08-12,
+                    # tools.py:741): embedding was billed before this
+                    # refusal, so the rate-limit reservation must
+                    # remain consumed.
                     await cap_conn.execute("ROLLBACK")
                     await self.store._pool.release(cap_conn)
                     cap_conn = None
@@ -757,6 +774,15 @@ class MemoryWriteTool(Tool):
                     slot=slot,
                     lock_conn=cap_conn,
                     embedding_result=embedding_result,
+                    # Round-N+1 Codex P1 (Finding 1, 2026-08-12): the
+                    # pool-based dedup search cannot observe the
+                    # just-issued close on ``cap_conn`` (separate
+                    # transaction), so it can return the closed
+                    # target as ``best_match``. Passing the closed
+                    # ID set keeps the supersede branch from raising
+                    # ``RuntimeError`` on the second close attempt
+                    # and silently rolling back the entire update.
+                    excluded_memory_ids=({memory_id} if close_took_effect else None),
                 )
                 await cap_conn.execute("COMMIT")
                 await self.store._pool.release(cap_conn)
@@ -771,7 +797,11 @@ class MemoryWriteTool(Tool):
                         await self.store._pool.release(cap_conn)
                     except Exception:
                         pass
-                _release_attempt_reservation(self.user_id, quota.reservation)
+                # Round-N+1 Codex P1 (Finding 3, 2026-08-12,
+                # tools.py:774): the embedding has already been
+                # billed in the update path before this point, so a
+                # store fault must consume the rate-limit reservation
+                # to prevent unlimited billed-embedding retries.
                 raise
 
             await self._check_and_set_contradiction(new_memory_id, content, slot)

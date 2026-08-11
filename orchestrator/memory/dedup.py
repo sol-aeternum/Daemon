@@ -418,6 +418,7 @@ async def deduplicate_facts(
     status: str = "active",
     lock_conn: Any | None = None,
     prepared_embeddings: list[Any] | None = None,
+    excluded_memory_ids: set[uuid.UUID] | None = None,
 ) -> DedupResult:
     """Deduplicate extracted facts against existing memories.
 
@@ -428,6 +429,17 @@ async def deduplicate_facts(
     pre-insert committed state, which is the correct dedup decision
     input; the unique constraint on ``content_hash`` catches any
     duplicate that races against us between search and insert.
+
+    ``excluded_memory_ids`` (Codex P1 round-N+1, 2026-08-12): when
+    the caller has already closed one or more rows in the same
+    transaction (the ``update`` path closes the target before
+    ``dedup_and_store`` runs), the dedup search on the pool cannot
+    observe those uncommitted closes, so the closed row may surface
+    as ``best_match`` and the supersede branch raises ``RuntimeError``
+    when its second close attempt returns ``False``. Passing the set
+    of already-closed IDs filters them out of the candidate pool
+    before the best-match decision so the supersede path sees a clean
+    ``similar`` list.
     """
     result = DedupResult()
     current_slot_families: set[str] = set()
@@ -464,6 +476,20 @@ async def deduplicate_facts(
             memory_slot=None,
             embedding_model=document_model,
         )
+        # Round-N+1 Codex P1 (Finding 1, 2026-08-12, tools.py:739): the
+        # caller may have closed one or more rows in the same transaction
+        # (e.g. the ``update`` path closes the target before
+        # ``dedup_and_store`` runs). The pool search cannot observe those
+        # uncommitted closes, so the closed row may surface here. Filter
+        # the candidate pool so the best-match decision sees a clean
+        # ``similar`` list and the supersede branch does not raise on
+        # ``_close_memory(best_match_id, lock_conn)`` returning False.
+        if excluded_memory_ids:
+            similar = [
+                m
+                for m in similar
+                if _as_uuid_or_none(m.get("id")) not in excluded_memory_ids
+            ]
         if _is_fallback_storage_model(document_model) or _has_configured_fallback_storage_spaces():
             enabled_storage_models = sorted(
                 {
@@ -887,6 +913,7 @@ async def dedup_and_store(
     slot: str | None = None,
     lock_conn: Any | None = None,
     embedding_result: Any | None = None,
+    excluded_memory_ids: set[uuid.UUID] | None = None,
 ) -> uuid.UUID:
     """Store a single memory with deduplication.
 
@@ -923,6 +950,7 @@ async def dedup_and_store(
         status=status,
         lock_conn=lock_conn,
         prepared_embeddings=[embedding_result] if embedding_result is not None else None,
+        excluded_memory_ids=excluded_memory_ids,
     )
 
     if result.merged:

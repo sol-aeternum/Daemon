@@ -626,31 +626,47 @@ async def test_memory_write_active_row_cap_is_enforced(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_memory_write_cap_refusal_releases_rate_reservation(monkeypatch):
-    """A cap-refused write must not consume the next billed-attempt slot."""
-    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1)
+async def test_memory_write_cap_refusal_retains_rate_reservation_after_embedding(monkeypatch):
+    """Round-N+1 Codex P1 (Finding 3, 2026-08-12): the embedding is billed before the atomic-cap check.
+
+    The earlier ``test_memory_write_cap_refusal_releases_rate_reservation``
+    pinned the design that ``prepare_memory_embedding`` runs after the
+    cap check, so a cap refusal had no billing cost to recover. Issue
+    #221's atomic redesign moved the embedding BEFORE
+    ``acquire_user_cap_lock`` (the issue explicitly forbids holding the
+    transaction open across the external embedding call). With the new
+    order the embedding is already billed when the cap refuses, so the
+    rate-limit reservation must remain consumed — otherwise a caller at
+    ``cap - 1`` can launch many concurrent creates, let one insert,
+    observe every refusal here, and effectively bypass the rate limit
+    by retrying until the cap is freed (each retry still bills an
+    embedding).
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1000)
     monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1)
 
     with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
         mock_dedup.return_value = uuid.uuid4()
         user_id = uuid.uuid4()
-        store = _quota_store(recent_writes=0, active_rows=1)
+        store = _quota_store(recent_writes=0, active_rows=0)
+        # The pre-embedding ``count_active_memories`` reads zero (the
+        # reservation can be taken), then a concurrent writer inserts
+        # before the atomic check, so the locked recount observes
+        # ``active_rows=1`` and the cap refusal happens AFTER the
+        # embedding has been billed.
+        store.count_active_memories_for_user_within_lock = AsyncMock(return_value=1)
         tool = MemoryWriteTool(store, user_id)
 
         refused = await tool.execute(action="create", content="at cap")
 
         assert "cap" in refused.lower()
-        assert user_id not in tools_module._attempt_log
+        # The embedding has already been billed by the time the
+        # atomic-cap refusal fires, so the rate-limit reservation
+        # must remain consumed. The next write in the window is
+        # refused by the rate limit until the original timestamp
+        # slides out.
+        assert user_id in tools_module._attempt_log
         mock_dedup.assert_not_called()
-
-        # Once the user follows the recovery instruction and frees a
-        # row, the next write must proceed immediately rather than being
-        # rate-limited by the earlier non-billed refusal.
-        store.count_active_memories.return_value = 0
-        allowed = await tool.execute(action="create", content="after delete")
-
-        assert "Memory created" in allowed
-        mock_dedup.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1128,7 +1144,10 @@ async def test_memory_write_update_concurrent_close_is_refused(monkeypatch):
         # Critically, the dedup/insert must not be reached when the
         # post-close re-fetch shows the row is still active.
         mock_dedup.assert_not_called()
-        assert user_id not in tools_module._attempt_log
+        # Round-N+1 Codex P1 (Finding 3, 2026-08-12): the embedding
+        # was already billed before the concurrent close race was
+        # detected, so the rate-limit reservation must remain.
+        assert user_id in tools_module._attempt_log
 
 
 @pytest.mark.asyncio
@@ -1243,7 +1262,10 @@ async def test_memory_write_update_close_no_op_is_refused(monkeypatch):
         # Critically, the dedup/insert must not be reached when the
         # close was a no-op (the round-9 concurrent race scenario).
         mock_dedup.assert_not_called()
-        assert user_id not in tools_module._attempt_log
+        # Round-N+1 Codex P1 (Finding 3, 2026-08-12): the embedding
+        # was already billed before the close failed, so the
+        # rate-limit reservation must remain.
+        assert user_id in tools_module._attempt_log
 
 
 @pytest.mark.asyncio
@@ -1284,12 +1306,85 @@ async def test_memory_write_update_close_already_closed_is_refused(monkeypatch):
 
         assert "concurrently" in result.lower()
         mock_dedup.assert_not_called()
-        assert user_id not in tools_module._attempt_log
+        # Round-N+1 Codex P1 (Finding 3, 2026-08-12): the embedding
+        # was already billed before the close took effect check
+        # failed, so the rate-limit reservation must remain.
+        assert user_id in tools_module._attempt_log
 
 
 @pytest.mark.asyncio
-async def test_memory_write_update_store_error_releases_rate_reservation(monkeypatch):
-    """A pre-embedding store error must not consume the user's rate quota."""
+async def test_memory_write_update_close_target_excluded_from_dedup_search(monkeypatch):
+    """Round-N+1 Codex P1 (Finding 1, 2026-08-12, tools.py:739).
+
+    The update path closes the target row on ``cap_conn`` (uncommitted)
+    and then calls ``dedup_and_store``. ``deduplicate_facts`` searches
+    via ``store.search_memories`` which uses a separate pool
+    connection — that connection cannot observe the uncommitted
+    close. Without filtering, the search could return the just-closed
+    row as ``best_match``, the supersede branch would try to close it
+    again on ``cap_conn``, ``_close_memory`` would return ``False``
+    (valid_to already set), and the whole update would raise
+    ``RuntimeError`` and roll back. The fix threads the set of
+    closed-by-caller IDs through ``deduplicate_facts`` so the
+    candidate pool is filtered before best-match selection.
+
+    This test verifies the integration: ``dedup_and_store`` is
+    awaited with the closed memory ID passed through
+    ``excluded_memory_ids``, and the new memory is created (not the
+    update silently rolled back).
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1000)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
+
+    user_id = uuid.uuid4()
+    old_memory_id = uuid.uuid4()
+    new_memory_id = uuid.uuid4()
+    store = _quota_store(recent_writes=0, active_rows=1000)
+    store.get_memory = AsyncMock(
+        return_value={
+            "id": old_memory_id,
+            "user_id": user_id,
+            "content": "old",
+            "category": "fact",
+            "memory_slot": None,
+            "source_conversation_id": None,
+            "valid_to": None,
+            "status": "active",
+        }
+    )
+    store.close_memory = AsyncMock(return_value=True)
+
+    with patch(
+        "orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock
+    ) as mock_dedup:
+        mock_dedup.return_value = new_memory_id
+        tool = MemoryWriteTool(store, user_id)
+
+        result = await tool.execute(
+            action="update", memory_id=str(old_memory_id), content="new"
+        )
+
+        assert "updated" in result.lower()
+        store.close_memory.assert_called_once()
+        mock_dedup.assert_called_once()
+        # The closed ID must reach the dedup call so the candidate
+        # pool is filtered before best-match selection.
+        kwargs = mock_dedup.call_args.kwargs
+        assert old_memory_id in kwargs.get("excluded_memory_ids", set())
+
+
+@pytest.mark.asyncio
+async def test_memory_write_update_store_error_retains_rate_reservation(monkeypatch):
+    """Round-N+1 Codex P1 (Finding 3, 2026-08-12): the update path embeds before ``close_memory``.
+
+    The earlier ``test_memory_write_update_store_error_releases_rate_reservation``
+    pinned a release on ``close_memory`` failure. Issue #221's
+    atomic redesign moved ``prepare_memory_embedding`` BEFORE the
+    cap lock and close call, so any error after embedding must
+    retain the rate-limit reservation — the caller was billed for
+    the embedding, and a transient store fault must not let the
+    caller retry without rate-limit consequences.
+    """
     monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1)
     monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
 
@@ -1315,7 +1410,7 @@ async def test_memory_write_update_store_error_releases_rate_reservation(monkeyp
         with pytest.raises(RuntimeError, match="database unavailable"):
             await tool.execute(action="update", memory_id=str(memory_id), content="new")
 
-        assert user_id not in tools_module._attempt_log
+        assert user_id in tools_module._attempt_log
         mock_dedup.assert_not_called()
 
 
