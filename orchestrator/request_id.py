@@ -1,0 +1,272 @@
+"""Request ID middleware.
+
+Every HTTP request gets a stable identifier that is propagated to the
+response header and through structured logs. Inbound requests may supply
+their own ``X-Request-ID`` (e.g. an upstream proxy or load-test harness);
+otherwise we generate a fresh UUID4 prefixed with ``req_``.
+
+The identifier is also attached to the request state so route handlers
+and the global exception handler can include it in error responses and
+log lines without re-reading the header.
+"""
+
+from __future__ import annotations
+
+import re
+import secrets
+
+from starlette.datastructures import MutableHeaders
+from starlette.requests import Request
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+REQUEST_ID_HEADER = "X-Request-ID"
+# Optional inbound header propagated from upstream proxies/load-test
+# harnesses so the inbound value is preserved without being the
+# primary correlation handle (round-1 Codex finding on PR #218).
+# When an inbound ``X-Request-ID`` is present, it is recorded under
+# this key in the structured log; the response always carries a
+# server-generated correlation id.
+CLIENT_REQUEST_ID_HEADER = "X-Client-Request-ID"
+_STATE_REQUEST_ID = "request_id"
+_STATE_CLIENT_REQUEST_ID = "client_request_id"
+
+# Bound to a reasonable printable length so a malicious inbound value
+# cannot be reflected into a log file or response header with unbounded
+# size. 128 is plenty for a UUID4 hex + any operator prefix.
+_MAX_INBOUND_LEN = 128
+# Acceptable inbound characters: ASCII alphanumerics, dash, underscore,
+# dot, slash, colon, plus. Anything else is replaced with ``_``.
+_INBOUND_RE = re.compile(r"[^A-Za-z0-9._/:+\-]")
+
+
+def _sanitize_inbound(value: str) -> str | None:
+    """Sanitize a client-supplied request id.
+
+    Returns ``None`` when the value is empty or contains only
+    non-allowed characters. Truncated to :data:`_MAX_INBOUND_LEN` chars.
+    """
+
+    if not value:
+        return None
+    if len(value) > _MAX_INBOUND_LEN:
+        value = value[:_MAX_INBOUND_LEN]
+    cleaned = _INBOUND_RE.sub("_", value)
+    return cleaned or None
+
+
+def _new_request_id() -> str:
+    return f"req_{secrets.token_urlsafe(16)}"
+
+
+def _resolve_request_id(scope: Scope) -> tuple[str, str | None]:
+    """Build the (server_correlation_id, inbound_client_request_id) pair.
+
+    The correlation id is always server-generated — using it as the
+    primary log / response header prevents an attacker from pre-staging
+    a known id to pollute correlation searches. The inbound value
+    (sanitized) is preserved as the *client* request id and recorded
+    alongside the correlation id for proxy/load-test propagation.
+    """
+
+    headers = MutableHeaders(scope=scope)
+    inbound_raw = headers.get(REQUEST_ID_HEADER)
+    sanitized = _sanitize_inbound(inbound_raw) if inbound_raw else None
+    return _new_request_id(), sanitized
+
+
+def _has_header(headers: MutableHeaders, name: str) -> bool:
+    lowered = name.lower()
+    return any(k.lower() == lowered for k in headers.keys())
+
+
+def _merge_vary_origin(headers: MutableHeaders) -> None:
+    """Ensure ``Origin`` is present in the response ``Vary`` header.
+
+    Required when an outer middleware reflects the request ``Origin`` in
+    ``Access-Control-Allow-Origin``: without ``Vary: Origin``, an
+    intermediary that caches the response for one origin can replay it
+    for a different origin, causing a same-origin policy violation in
+    the second origin's browser (round-1 Codex finding on PR #219).
+
+    Idempotent — merges into an existing ``Vary`` header rather than
+    overwriting it.
+    """
+
+    existing: list[str] = []
+    for key, value in headers.items():
+        if key.lower() == "vary":
+            existing.extend(part.strip() for part in value.split(",") if part.strip())
+    if "origin" not in {part.lower() for part in existing}:
+        existing.append("Origin")
+    headers["Vary"] = ", ".join(existing)
+
+
+class RequestIdMiddleware:
+    """Add an X-Request-ID header to every response.
+
+    The response id is always server-generated; an inbound
+    ``X-Request-ID`` (e.g. from a trusted proxy or load-test harness)
+    is preserved as ``X-Client-Request-ID`` on the response and
+    attached to ``request.scope["state"]`` so handlers can include it
+    in structured log entries without it being the primary correlation
+    handle.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request_id, client_request_id = _resolve_request_id(scope)
+        scope_state = scope.setdefault("state", {})
+        scope_state[_STATE_REQUEST_ID] = request_id
+        if client_request_id is not None:
+            scope_state[_STATE_CLIENT_REQUEST_ID] = client_request_id
+
+        async def send_with_request_id(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                if not _has_header(headers, REQUEST_ID_HEADER):
+                    headers[REQUEST_ID_HEADER] = request_id
+                if client_request_id is not None and not _has_header(
+                    headers, CLIENT_REQUEST_ID_HEADER
+                ):
+                    headers[CLIENT_REQUEST_ID_HEADER] = client_request_id
+            await send(message)
+
+        await self.app(scope, receive, send_with_request_id)
+
+
+class _OuterRequestIdMiddleware:
+    """Wraps the FastAPI ASGI stack so 500 responses generated by
+    Starlette's outermost ``ServerErrorMiddleware`` also carry the
+    request id.
+
+    ``add_middleware`` only places middleware inside
+    ``ServerErrorMiddleware``, so unhandled exceptions bypass the inner
+    ``RequestIdMiddleware``. This outer wrap mirrors the same value into
+    the response header for 500s.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request_id, client_request_id = _resolve_request_id(scope)
+        scope_state = scope.setdefault("state", {})
+        scope_state[_STATE_REQUEST_ID] = request_id
+        if client_request_id is not None:
+            scope_state[_STATE_CLIENT_REQUEST_ID] = client_request_id
+
+        async def send_with_outer_request_id(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                if not _has_header(headers, REQUEST_ID_HEADER):
+                    headers[REQUEST_ID_HEADER] = request_id
+                if client_request_id is not None and not _has_header(
+                    headers, CLIENT_REQUEST_ID_HEADER
+                ):
+                    headers[CLIENT_REQUEST_ID_HEADER] = client_request_id
+            await send(message)
+
+        await self.app(scope, receive, send_with_outer_request_id)
+
+
+class _OuterCORSMiddleware:
+    """Outer CORS pass for unhandled-500 responses.
+
+    Starlette places user middleware inside ``ServerErrorMiddleware``,
+    so an unhandled exception that the inner ``CORSMiddleware`` did not
+    see reaches the client without ``Access-Control-Allow-Origin``.
+    Allowed-origin browser code cannot then read the sanitized body or
+    its ``X-Request-ID`` correlation handle.
+
+    This outer pass mirrors ``Access-Control-Allow-Origin`` /
+    ``Access-Control-Allow-Credentials`` onto the 500 response when the
+    request ``Origin`` is in the allowed-origins set, so the browser can
+    read the body on the unhandled path too.
+    """
+
+    def __init__(self, app: ASGIApp, *, allowed_origins: tuple[str, ...]) -> None:
+        self.app = app
+        self._allowed = tuple(o for o in allowed_origins if o)
+        # Starlette's inner ``CORSMiddleware`` rejects ``allow_origins=["*"]``
+        # when ``allow_credentials=True``, so in practice ``self._allowed``
+        # never contains a bare ``"*"``. Still, treat the wildcard
+        # explicitly so the outer pass mirrors the inner semantics if the
+        # operator ever wires the daemon with credentials disabled or
+        # otherwise relaxes the inner middleware (round-2 Codex finding on
+        # PR #219).
+        self._allow_all = "*" in self._allowed
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request_origin: str | None = None
+        for raw_name, raw_value in scope.get("headers", []):
+            if raw_name.lower() == b"origin":
+                try:
+                    request_origin = raw_value.decode("latin-1")
+                except UnicodeDecodeError:
+                    request_origin = None
+                break
+
+        if self._allow_all:
+            echoed_origin = request_origin
+        else:
+            echoed_origin = request_origin if request_origin in self._allowed else None
+
+        async def send_with_outer_cors(message: Message) -> None:
+            if message["type"] == "http.response.start" and echoed_origin is not None:
+                headers = MutableHeaders(scope=message)
+                if not _has_header(headers, "Access-Control-Allow-Origin"):
+                    headers["Access-Control-Allow-Origin"] = echoed_origin
+                if not _has_header(headers, "Access-Control-Allow-Credentials"):
+                    headers["Access-Control-Allow-Credentials"] = "true"
+                if not _has_header(headers, "Access-Control-Expose-Headers"):
+                    headers["Access-Control-Expose-Headers"] = REQUEST_ID_HEADER
+                # When the outer middleware reflects the request ``Origin``
+                # (round-1 Codex finding on PR #219), intermediaries can cache
+                # the response and replay it for a different origin. Append
+                # ``Origin`` to ``Vary`` so the response is not shared across
+                # origins.
+                _merge_vary_origin(headers)
+            await send(message)
+
+        await self.app(scope, receive, send_with_outer_cors)
+
+
+def get_request_id(request: Request) -> str | None:
+    """Read the request id attached to ``request.scope``.
+
+    Returns ``None`` if the middleware has not run (e.g. the request was
+    handled outside of the ASGI stack).
+    """
+
+    state = request.scope.get("state") or {}
+    rid = state.get(_STATE_REQUEST_ID)
+    return rid if isinstance(rid, str) and rid else None
+
+
+def get_client_request_id(request: Request) -> str | None:
+    """Read the inbound client request id (separate from the server-generated
+    correlation id).
+
+    Returns ``None`` if no inbound ``X-Request-ID`` was supplied (or it
+    sanitized to empty). Use this in structured log entries alongside
+    :func:`get_request_id` so the inbound value is preserved without
+    becoming the primary correlation handle.
+    """
+
+    state = request.scope.get("state") or {}
+    cid = state.get(_STATE_CLIENT_REQUEST_ID)
+    return cid if isinstance(cid, str) and cid else None

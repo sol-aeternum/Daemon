@@ -55,6 +55,10 @@ from orchestrator.auth_tokens import (
     verify_token,
 )
 from orchestrator.config import get_settings
+from orchestrator.request_id import (
+    get_client_request_id as _get_client_request_id_impl,
+    get_request_id as _get_request_id_impl,
+)
 from orchestrator.db import get_app_state
 from orchestrator.session_cleanup import lock_session_cleanup
 from orchestrator.setup_token_delivery import delete_setup_token_file
@@ -107,6 +111,29 @@ from orchestrator.services.identity.session_issuance import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _get_request_id_safe(request: Request) -> str:
+    """Return the current request id, falling back to ``"-"`` if missing.
+
+    Used in error log entries so the operator can correlate the
+    sanitized response with the full server-side traceback. Never raises
+    — request-id plumbing is best-effort for observability.
+    """
+
+    try:
+        return _get_request_id_impl(request) or "-"
+    except Exception:
+        return "-"
+
+
+def _get_client_request_id_safe(request: Request) -> str:
+    """Return the inbound client request id (or ``"-"`` if absent)."""
+
+    try:
+        return _get_client_request_id_impl(request) or "-"
+    except Exception:
+        return "-"
 
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
@@ -605,6 +632,21 @@ async def email_complete_endpoint(
 
     pepper = validate_and_get_pepper(settings)
     limiter = get_rate_limiter(request)
+    # Enforce the IP rate limit BEFORE cookie-policy validation so an
+    # unauthenticated caller cannot reach ``logger.exception`` and
+    # generate unbounded full tracebacks by repeatedly POSTing to
+    # ``/v1/auth/email/complete`` with bad cookies. CSRF and origin
+    # checks above already pass for minimally valid request bodies
+    # (round-1 Codex finding on PR #219).
+    await enforce_rate_limit(
+        request=request,
+        limiter=limiter,
+        endpoint="auth:email:complete",
+        policies=_email_complete_ip_rate_limit_policies(
+            request,
+            settings=settings,
+        ),
+    )
     cookie_config: RefreshCookieConfig | None = None
     if body.client_kind == "web":
         try:
@@ -613,19 +655,22 @@ async def email_complete_endpoint(
                 environment=settings.daemon_environment,
             )
         except CookiePolicyError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+            # Log the full exception server-side; return the fixed error
+            # code (issue #79 round-1 finding). The complete endpoint is
+            # reachable by any client, so we never echo Python exception
+            # text in the response body.
+            logger.exception(
+                "Cookie policy validation failed during /v1/auth/email/complete (request_id=%s, client_request_id=%s): %s",
+                _get_request_id_safe(request),
+                _get_client_request_id_safe(request),
+                exc,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="cookie_policy_invalid",
+            ) from exc
 
     async with app_state.db_pool.acquire() as conn:
-        await enforce_rate_limit(
-            request=request,
-            limiter=limiter,
-            endpoint="auth:email:complete",
-            policies=_email_complete_ip_rate_limit_policies(
-                request,
-                settings=settings,
-            ),
-        )
-
         challenge_lookup = await _load_email_challenge_lookup(conn, challenge_uuid)
         challenge_scope = body.challenge_id
         if challenge_lookup is not None and challenge_lookup["normalized_email"]:
@@ -1056,6 +1101,17 @@ async def google_complete_endpoint(
 
     pepper = validate_and_get_pepper(settings)
     limiter = get_rate_limiter(request)
+    # Enforce the IP rate limit BEFORE cookie-policy validation so an
+    # unauthenticated caller cannot reach ``logger.exception`` and
+    # generate unbounded full tracebacks by repeatedly POSTing to
+    # ``/v1/auth/google/complete`` with bad cookies (round-1 Codex
+    # finding on PR #219; mirrors the email-complete fix).
+    await enforce_rate_limit(
+        request=request,
+        limiter=limiter,
+        endpoint="auth:google:complete",
+        policies=_google_complete_rate_limit_policies(request),
+    )
     cookie_config: RefreshCookieConfig | None = None
     if body.client_kind == "web":
         try:
@@ -1064,15 +1120,22 @@ async def google_complete_endpoint(
                 environment=settings.daemon_environment,
             )
         except CookiePolicyError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+            # Log the full exception server-side; return the fixed error
+            # code (issue #79 round-1 finding). The complete endpoint is
+            # reachable by any client, so we never echo Python exception
+            # text in the response body.
+            logger.exception(
+                "Cookie policy validation failed during /v1/auth/google/complete (request_id=%s, client_request_id=%s): %s",
+                _get_request_id_safe(request),
+                _get_client_request_id_safe(request),
+                exc,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="cookie_policy_invalid",
+            ) from exc
 
     async with app_state.db_pool.acquire() as conn:
-        await enforce_rate_limit(
-            request=request,
-            limiter=limiter,
-            endpoint="auth:google:complete",
-            policies=_google_complete_rate_limit_policies(request),
-        )
         await enforce_rate_limit(
             request=request,
             limiter=limiter,
@@ -1283,7 +1346,22 @@ async def setup_endpoint(
             environment=settings.daemon_environment,
         )
     except CookiePolicyError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Log the full exception server-side; the operator receives a
+        # fixed error code so we do not echo raw Python exception text
+        # in the response body. The setup endpoint is operator-only
+        # (consumed during initial provisioning), so the trade-off here
+        # favors the operator-friendly "cookie_policy_invalid" token
+        # over the generic message used for runtime errors.
+        logger.exception(
+            "Cookie policy validation failed during setup (request_id=%s, client_request_id=%s): %s",
+            _get_request_id_safe(request),
+            _get_client_request_id_safe(request),
+            e,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="cookie_policy_invalid",
+        )
 
     async with app_state.db_pool.acquire() as conn:
         async with conn.transaction():
@@ -1497,7 +1575,24 @@ async def enroll_complete_endpoint(
                 environment=settings.daemon_environment,
             )
         except CookiePolicyError as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            # Log the full exception server-side; the client receives a
+            # fixed error code so we do not echo raw Python exception text
+            # in the response body. This is the enrollment-completion
+            # endpoint (``/v1/auth/enroll/complete``); the runtime
+            # /v1/auth/refresh handler is a separate function. Operators
+            # searching logs by endpoint should find this entry under
+            # "enroll/complete" and not be directed toward /refresh
+            # (round-2 Codex finding on PR #219).
+            logger.exception(
+                "Cookie policy validation failed during /v1/auth/enroll/complete (request_id=%s, client_request_id=%s): %s",
+                _get_request_id_safe(request),
+                _get_client_request_id_safe(request),
+                e,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="cookie_policy_invalid",
+            )
 
     async with app_state.db_pool.acquire() as conn:
         exc_to_raise: HTTPException | None = None
