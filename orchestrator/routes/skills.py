@@ -32,6 +32,7 @@ from orchestrator.skills_upgrade import (
     load_repo_contents,
     run_upgrade_sync,
 )
+from orchestrator.request_body_limit import REQUEST_BODY_TOO_LARGE_RESPONSES
 
 router = APIRouter(prefix="/skills", tags=["skills"])
 
@@ -181,7 +182,11 @@ async def create_skill(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.post("/upload", status_code=201)
+@router.post(
+    "/upload",
+    status_code=201,
+    responses=REQUEST_BODY_TOO_LARGE_RESPONSES,
+)
 async def upload_skill(
     request: Request,
     file: Annotated[UploadFile, File(...)],
