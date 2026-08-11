@@ -322,3 +322,86 @@ describe('chat route advisor event bridge', () => {
     expect(forwardedBody.messages).toEqual([{ role: 'user', content: 'hi' }]);
   });
 });
+
+describe('chat route rate-limit bridge', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.DAEMON_TRUSTED_PROXY_IPS;
+  });
+
+  it('forwards the validated client IP with the backend chat request', async () => {
+    process.env.DAEMON_TRUSTED_PROXY_IPS = '10.0.0.1';
+    let capturedInit: RequestInit | undefined;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+        capturedInit = init;
+        return buildSseResponse([
+          encodeFrame('final', { data: { text: 'ok' } }),
+        ]);
+      }),
+    );
+
+    const response = await POST(
+      new Request('http://test/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Real-IP': '10.0.0.1',
+          'X-Forwarded-For': '198.51.100.9, 10.0.0.1',
+        },
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: 'hello' }],
+          id: 'conv_ip',
+        }),
+      }),
+    );
+    await response.text();
+
+    const forwardedHeaders = new Headers(capturedInit?.headers);
+    expect(forwardedHeaders.get('X-Daemon-Client-IP')).toBe('198.51.100.9');
+  });
+
+  it('emits a typed rate_limited event with the backend retry delay', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ detail: 'rate_limited' }), {
+          status: 429,
+          headers: {
+            'Content-Type': 'application/json',
+            'Retry-After': '17',
+          },
+        }),
+      ),
+    );
+
+    const response = await POST(
+      new Request('http://test/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: 'hello' }],
+          id: 'conv_429',
+        }),
+      }),
+    );
+    const writes = await readUIMessageChunks(response);
+    const dataEvents = writes
+      .filter((part) => part.type === 'data-event')
+      .map((part) => part.data as Record<string, unknown>);
+
+    expect(dataEvents).toContainEqual({
+      type: 'rate_limited',
+      scope: 'user',
+      retry_after_seconds: 17,
+    });
+    expect(
+      writes.some(
+        (part) =>
+          part.type === 'text-delta' &&
+          String(part.delta).includes('sending messages too quickly'),
+      ),
+    ).toBe(true);
+  });
+});

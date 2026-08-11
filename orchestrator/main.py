@@ -12,7 +12,7 @@ import uuid
 import asyncpg
 import httpx
 import litellm
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -31,7 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from starlette.datastructures import MutableHeaders
 from starlette.types import Receive, Scope, Send
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.auth_pepper import (
@@ -1824,40 +1824,26 @@ def _chat_rate_limit_policies(
     *,
     auth: AuthenticatedDevice,
     settings: Settings,
-) -> list[tuple[ScopeKind, str, RateLimitPolicy, str]]:
+) -> list[tuple[ScopeKind, str, RateLimitPolicy]]:
     """Return rate-limit policies for ``/chat`` and ``/v1/chat/completions``.
 
-    Three scopes are layered so a single compromised token cannot drain
-    the operator's LLM budget regardless of which user or device the
+    Two authenticated scopes are layered so a single compromised token cannot
+    drain the operator's LLM budget regardless of which user or device the
     attacker is masquerading as (issue #38):
 
+    * Per-session — narrowest scope, checked first so a runaway
+      session never increments the broader user counter.
     * Per-user — primary defence against compromised-token abuse. The
       operator's LLM bill is bounded per account regardless of how
       many devices/tokens that account owns.
-    * Per-token — defence in depth against multi-device bursts from a
-      single leaked token before the user notices.
-    * Per-IP — bound on authenticated chat traffic from a single
-      network. Helps when an attacker cycles through credentials on a
-      botnet.
 
-    All three checks share the same 60-second window. The per-IP policy
-    is intentionally higher than per-user because legitimate users
-    share CGNAT IPs more often than they share a user account.
+    The per-IP quota is enforced by middleware before body validation so
+    malformed payloads cannot bypass it. All checks use a 60-second window.
 
-    The ``endpoint`` suffix distinguishes the policies in Redis key
-    derivation so the limits stay independent across the three scopes.
+    The route-level ``endpoint`` (``chat:daemon`` vs ``chat:openai``)
+    flows into the Redis key so each chat route keeps an independent quota.
     """
-    client_ip = client_ip_for_key(request)
     return [
-        (
-            "user_id",
-            str(auth.user_id),
-            RateLimitPolicy(
-                limit=settings.daemon_rate_limit_chat_per_user_per_minute,
-                window_seconds=60,
-            ),
-            "chat:user:minute",
-        ),
         (
             "session_id",
             str(auth.session_id),
@@ -1865,16 +1851,14 @@ def _chat_rate_limit_policies(
                 limit=settings.daemon_rate_limit_chat_per_token_per_minute,
                 window_seconds=60,
             ),
-            "chat:session:minute",
         ),
         (
-            "ip",
-            client_ip,
+            "user_id",
+            str(auth.user_id),
             RateLimitPolicy(
-                limit=settings.daemon_rate_limit_chat_per_ip_per_minute,
+                limit=settings.daemon_rate_limit_chat_per_user_per_minute,
                 window_seconds=60,
             ),
-            "chat:ip:minute",
         ),
     ]
 
@@ -1904,6 +1888,45 @@ async def _enforce_chat_rate_limit(
             settings=settings,
         ),
     )
+
+
+_CHAT_IP_RATE_LIMIT_ENDPOINTS = {
+    "/chat": "chat:daemon",
+    "/chat/completions": "chat:openai",
+    "/v1/chat/completions": "chat:openai",
+}
+
+
+@app.middleware("http")
+async def _enforce_chat_ip_rate_limit_before_body_validation(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
+) -> Response:
+    """Charge chat IP quotas before FastAPI parses or validates the body."""
+
+    endpoint = _CHAT_IP_RATE_LIMIT_ENDPOINTS.get(request.url.path.rstrip("/") or "/")
+    if request.method.upper() != "POST" or endpoint is None:
+        return await call_next(request)
+
+    settings = get_settings()
+    policy = RateLimitPolicy(
+        limit=settings.daemon_rate_limit_chat_per_ip_per_minute,
+        window_seconds=60,
+    )
+    try:
+        await enforce_rate_limit(
+            request=request,
+            policies=[("ip", client_ip_for_key(request), policy)],
+            limiter=get_rate_limiter(request),
+            endpoint=endpoint,
+        )
+    except HTTPException as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=exc.headers,
+        )
+    return await call_next(request)
 
 
 @app.post("/chat", responses=REQUEST_BODY_TOO_LARGE_RESPONSES)

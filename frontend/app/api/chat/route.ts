@@ -1,5 +1,6 @@
 import type { ChatEvent } from '@/lib/events';
 import type { DaemonMessage } from '@/lib/chatMessages';
+import { daemonClientIp } from '../_lib/clientIp';
 
 const API_URLS = [
   process.env.DAEMON_INTERNAL_API_URL,
@@ -37,6 +38,11 @@ function buildProxyHeaders(req: Request): Headers {
 
   const xForwardedProto = req.headers.get('x-forwarded-proto');
   if (xForwardedProto) headers.set('X-Forwarded-Proto', xForwardedProto);
+
+  // Use the same trusted-proxy derivation as the auth bridge so
+  // browser-controlled forwarding headers cannot bypass the IP quota.
+  const clientIp = daemonClientIp(req);
+  if (clientIp) headers.set('X-Daemon-Client-IP', clientIp);
 
   return headers;
 }
@@ -148,6 +154,28 @@ export async function POST(req: Request) {
         if (!backendRes) {
           writeText(
             `Backend error (network): ${lastError?.message || 'unknown error'}.`,
+          );
+          return;
+        }
+
+        if (backendRes.status === 429) {
+          // Backend per-user/per-session/per-IP rate limit fired
+          // (issue #38). Surface the typed event so the chat UI can
+          // show a retryable error with the correct backoff instead
+          // of treating throttling as a successful assistant reply.
+          const retryAfterRaw = backendRes.headers.get('retry-after');
+          const retryAfter = Number.parseInt(retryAfterRaw ?? '', 10);
+          writeData([
+            {
+              type: 'rate_limited',
+              scope: 'user',
+              retry_after_seconds: Number.isFinite(retryAfter)
+                ? Math.max(1, retryAfter)
+                : 60,
+            },
+          ]);
+          writeText(
+            `You are sending messages too quickly. Please wait a moment before trying again.`,
           );
           return;
         }
