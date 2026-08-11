@@ -775,6 +775,59 @@ class TestCrawl4AIStrategy:
 
         assert mock_post.call_count == 0
 
+    @pytest.mark.asyncio
+    async def test_fetch_returns_none_when_user_url_dns_unreachable(self, fetch_policy):
+        """Transient DNS failures on the user URL must surface as ``None``
+        so the strategy chain can fall back rather than terminating on
+        ``SsrfUnreachable``. Mirrors the Jina / Archive strategies that
+        already distinguish reachability from policy.
+        """
+        strategy = Crawl4AIStrategy(fetch_policy)
+
+        def fake_getaddrinfo(host, port, *args, **kwargs):  # type: ignore[no-untyped-def]
+            raise socket.gaierror(-2, "Name or service not known")
+
+        with (
+            patch("httpx.AsyncClient.post") as mock_post,
+            patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
+        ):
+            result = await strategy.fetch("https://example.com/")
+
+        assert result is None
+        assert mock_post.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_fetch_returns_none_when_upstream_dns_unreachable(self, fetch_policy):
+        """Transient DNS failures on the configured ``crawl4ai_url`` must
+        also surface as ``None`` (no upstream POST attempted), not raise
+        — the chain can fall back to Archive rather than terminating on
+        an unreachable configured service.
+        """
+        strategy = Crawl4AIStrategy(fetch_policy)
+
+        call_count = {"n": 0}
+
+        def fake_getaddrinfo(host, port, *args, **kwargs):  # type: ignore[no-untyped-def]
+            call_count["n"] += 1
+            # Second call (crawl4ai upstream) fails with DNS error;
+            # first call (user URL) returns a public address.
+            if call_count["n"] == 1:
+                return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+            raise socket.gaierror(-2, "Name or service not known")
+
+        with (
+            patch("httpx.AsyncClient.post") as mock_post,
+            patch(
+                "orchestrator.services.fetch.strategies.crawl4ai.get_settings",
+                return_value=MagicMock(crawl4ai_url="https://crawl4ai.invalid"),
+            ),
+            patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
+        ):
+            result = await strategy.fetch("https://example.com/")
+
+        assert result is None
+        assert mock_post.call_count == 0
+
 
 class TestArchiveOrgStrategy:
     @pytest.mark.asyncio

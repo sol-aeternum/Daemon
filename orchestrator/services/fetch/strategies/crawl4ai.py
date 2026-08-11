@@ -11,9 +11,11 @@ import httpx
 from orchestrator.config import get_settings
 from orchestrator.services.fetch.models import FetchResult
 from orchestrator.tools.ssrf_guard import (
+    SsrfPolicyViolation,
+    SsrfUnreachable,
     SsrfViolation,
     socket_guard,
-    validate_url,
+    validate_url_and_resolve_async,
 )
 
 if TYPE_CHECKING:
@@ -71,19 +73,29 @@ class Crawl4AIStrategy:
         # capability so legitimate use is not broken; the
         # IP-range / DNS-rebinding blocklist is unchanged.
         #
-        # ``asyncio.to_thread`` offloads the synchronous ``socket.getaddrinfo``
-        # inside ``validate_url`` so a slow or unavailable resolver cannot
-        # stall the FastAPI event loop on unrelated requests. Same pattern
-        # used by ``HttpRequestTool``, the Jina strategy, and the Archive
-        # strategy.
+        # ``validate_url_and_resolve_async`` runs the synchronous
+        # ``socket.getaddrinfo`` on the SSRF module's bounded resolver pool
+        # (4 workers, 8 slots) so attacker-controlled slow lookups cannot
+        # queue unbounded work in asyncio's process-wide default executor
+        # and starve unrelated backend operations. ``SsrfUnreachable``
+        # (DNS timeout / gaierror / resolver-pool exhaustion) is treated as
+        # a transient reachability failure: this strategy returns ``None``
+        # so the chain can fall back to Archive / Jina rather than
+        # terminating on an unreachable target.
         try:
-            await asyncio.to_thread(
-                validate_url,
+            await validate_url_and_resolve_async(
                 url,
                 allowed_schemes=_CRAWL4AI_USER_URL_SCHEMES,
                 allowed_ports=_CRAWL4AI_USER_URL_PORTS,
             )
-        except SsrfViolation as exc:
+        except SsrfUnreachable as exc:
+            logger.info(
+                "Crawl4AI user URL %s is unreachable (DNS): %s; returning None",
+                url,
+                exc,
+            )
+            return None
+        except SsrfPolicyViolation as exc:
             logger.warning(
                 "Crawl4AI user URL %s violates SSRF policy: %s; refusing to fetch",
                 url,
@@ -112,13 +124,19 @@ class Crawl4AIStrategy:
         # per-fetch pre-flight is the first line of defense and runs on
         # every call regardless of how the operator set the value.
         try:
-            await asyncio.to_thread(
-                validate_url,
+            await validate_url_and_resolve_async(
                 api_url,
                 allowed_schemes=_CRAWL4AI_UPSTREAM_SCHEMES,
                 allowed_ports=_CRAWL4AI_UPSTREAM_PORTS,
             )
-        except SsrfViolation as exc:
+        except SsrfUnreachable as exc:
+            logger.info(
+                "Configured Crawl4AI upstream %s is unreachable (DNS): %s; returning None",
+                api_url,
+                exc,
+            )
+            return None
+        except SsrfPolicyViolation as exc:
             logger.error(
                 "Configured Crawl4AI upstream %s violates SSRF policy: %s; refusing to fetch",
                 api_url,
