@@ -612,7 +612,17 @@ class TestCrawl4AIStrategy:
         }
         mock_response.raise_for_status = MagicMock()
 
-        with patch("httpx.AsyncClient.post", return_value=mock_response):
+        def fake_getaddrinfo(host, port, *args, **kwargs):  # type: ignore[no-untyped-def]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+        with (
+            patch("httpx.AsyncClient.post", return_value=mock_response),
+            patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
+            patch(
+                "orchestrator.services.fetch.strategies.crawl4ai.get_settings",
+                return_value=MagicMock(crawl4ai_url="https://crawl4ai.example.com"),
+            ),
+        ):
             result = await strategy.fetch("https://example.com")
 
         assert result is not None
@@ -630,10 +640,140 @@ class TestCrawl4AIStrategy:
         mock_response.json.return_value = {"result": []}
         mock_response.raise_for_status = MagicMock()
 
-        with patch("httpx.AsyncClient.post", return_value=mock_response):
+        def fake_getaddrinfo(host, port, *args, **kwargs):  # type: ignore[no-untyped-def]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+        with (
+            patch("httpx.AsyncClient.post", return_value=mock_response),
+            patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
+            patch(
+                "orchestrator.services.fetch.strategies.crawl4ai.get_settings",
+                return_value=MagicMock(crawl4ai_url="https://crawl4ai.example.com"),
+            ),
+        ):
             result = await strategy.fetch("https://example.com")
 
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_rejects_user_url_pointing_at_link_local(self, fetch_policy):
+        """An attacker-supplied URL whose host is link-local (cloud
+        metadata) must be rejected with ``SsrfViolation`` before any
+        upstream POST is attempted. Mirrors the Jina strategy's
+        ``test_fetch_rejects_user_url_pointing_at_link_local`` and
+        PR #188's direct-strategy regression tests.
+        """
+        strategy = Crawl4AIStrategy(fetch_policy)
+
+        with (
+            patch("httpx.AsyncClient.post") as mock_post,
+            pytest.raises(SsrfViolation),
+        ):
+            await strategy.fetch("http://169.254.169.254/latest/meta-data/")
+
+        # Confirm no upstream POST was attempted; the user URL failed the
+        # pre-flight before any HTTP work was done.
+        assert mock_post.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_fetch_rejects_user_url_pointing_at_rfc1918(self, fetch_policy):
+        """RFC1918 destinations (10.0.0.0/8) must be rejected with
+        ``SsrfViolation``. The validator catches the literal IP before
+        forwarding to crawl4ai.
+        """
+        strategy = Crawl4AIStrategy(fetch_policy)
+
+        with (
+            patch("httpx.AsyncClient.post") as mock_post,
+            pytest.raises(SsrfViolation),
+        ):
+            await strategy.fetch("https://10.0.0.5/internal-admin")
+
+        assert mock_post.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_fetch_rejects_user_url_with_userinfo(self, fetch_policy):
+        """URLs containing ``user:pass@`` must be rejected (userinfo can
+        smuggle a real host after a parser misread).
+        """
+        strategy = Crawl4AIStrategy(fetch_policy)
+
+        with (
+            patch("httpx.AsyncClient.post") as mock_post,
+            pytest.raises(SsrfViolation),
+        ):
+            await strategy.fetch("https://attacker:pwn@example.com/")
+
+        assert mock_post.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_fetch_uses_socket_guard_around_upstream_post(self, fetch_policy):
+        """The upstream POST to ``crawl4ai_url`` must run under
+        ``socket_guard`` so a DNS-rebinding response between pre-flight
+        ``validate_url`` and the connect-time ``getaddrinfo`` cannot
+        bypass the policy. Mirrors the Jina strategy's
+        ``test_fetch_uses_socket_guard_around_upstream_get`` (PR #217).
+        """
+        strategy = Crawl4AIStrategy(fetch_policy)
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "result": [
+                {
+                    "markdown": "# Article\n\nThis is sufficiently long content from Crawl4AI for testing purposes"
+                }
+            ]
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        mock_socket_guard = MagicMock()
+        mock_socket_guard.__enter__ = MagicMock(return_value=None)
+        mock_socket_guard.__exit__ = MagicMock(return_value=None)
+
+        def fake_getaddrinfo(host, port, *args, **kwargs):  # type: ignore[no-untyped-def]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+        with (
+            patch("httpx.AsyncClient.post", return_value=mock_response),
+            patch(
+                "orchestrator.services.fetch.strategies.crawl4ai.socket_guard",
+                return_value=mock_socket_guard,
+            ),
+            patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
+            patch(
+                "orchestrator.services.fetch.strategies.crawl4ai.get_settings",
+                return_value=MagicMock(crawl4ai_url="https://crawl4ai.example.com"),
+            ),
+        ):
+            result = await strategy.fetch("https://example.com")
+
+        assert result is not None
+        # Confirm socket_guard was entered exactly once around the upstream
+        # POST — the rebinding-protection gate is wired up, not just imported.
+        assert mock_socket_guard.__enter__.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_fetch_rejects_misconfigured_crawl4ai_upstream(self, fetch_policy):
+        """A misconfigured ``crawl4ai_url`` pointing at a private IP must
+        be rejected with ``SsrfViolation`` before any upstream POST is
+        attempted. The configured crawl4ai host is the actual SSRF
+        amplification vector (the configured service is then responsible
+        for the outbound fetch), so an explicit pre-flight on the
+        upstream URL is the necessary defense.
+        """
+        strategy = Crawl4AIStrategy(fetch_policy)
+
+        with (
+            patch("httpx.AsyncClient.post") as mock_post,
+            patch(
+                "orchestrator.services.fetch.strategies.crawl4ai.get_settings",
+                return_value=MagicMock(crawl4ai_url="http://10.0.0.5:11235"),
+            ),
+            pytest.raises(SsrfViolation),
+        ):
+            await strategy.fetch("https://example.com")
+
+        assert mock_post.call_count == 0
 
 
 class TestArchiveOrgStrategy:
