@@ -126,11 +126,14 @@ def _normalize_forwarded_ip(raw: str | None) -> str | None:
         return None
 
 
-def _raise_429(decision: RateLimitDecision) -> None:
+def _raise_429(decision: RateLimitDecision, scope_kind: ScopeKind) -> None:
     raise HTTPException(
         status_code=429,
         detail="rate_limited",
-        headers={"Retry-After": str(decision.retry_after_seconds)},
+        headers={
+            "Retry-After": str(decision.retry_after_seconds),
+            "X-Daemon-Rate-Limit-Scope": scope_kind,
+        },
     )
 
 
@@ -205,7 +208,7 @@ async def enforce_rate_limit(
             return
 
         if not decision.allowed:
-            _raise_429(decision)
+            _raise_429(decision, scope_kind)
 
 
 def client_ip_for_key(request: Request) -> str:

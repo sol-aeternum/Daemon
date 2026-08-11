@@ -151,6 +151,7 @@ async def test_chat_endpoint_returns_429_after_user_limit(
     )
     assert rejected.status_code == 429, rejected.text
     assert "retry-after" in {k.lower() for k in rejected.headers.keys()}
+    assert rejected.headers["X-Daemon-Rate-Limit-Scope"] == "session_id"
 
 
 @pytest.mark.asyncio

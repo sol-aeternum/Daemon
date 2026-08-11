@@ -371,6 +371,7 @@ describe('chat route rate-limit bridge', () => {
           headers: {
             'Content-Type': 'application/json',
             'Retry-After': '17',
+            'X-Daemon-Rate-Limit-Scope': 'session_id',
           },
         }),
       ),
@@ -393,7 +394,7 @@ describe('chat route rate-limit bridge', () => {
 
     expect(dataEvents).toContainEqual({
       type: 'rate_limited',
-      scope: 'user',
+      scope: 'session',
       retry_after_seconds: 17,
     });
     expect(

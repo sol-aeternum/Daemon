@@ -165,10 +165,19 @@ export async function POST(req: Request) {
           // of treating throttling as a successful assistant reply.
           const retryAfterRaw = backendRes.headers.get('retry-after');
           const retryAfter = Number.parseInt(retryAfterRaw ?? '', 10);
+          const backendScope = backendRes.headers.get(
+            'x-daemon-rate-limit-scope',
+          );
+          const scope =
+            backendScope === 'session_id'
+              ? 'session'
+              : backendScope === 'ip'
+                ? 'ip'
+                : 'user';
           writeData([
             {
               type: 'rate_limited',
-              scope: 'user',
+              scope,
               retry_after_seconds: Number.isFinite(retryAfter)
                 ? Math.max(1, retryAfter)
                 : 60,
