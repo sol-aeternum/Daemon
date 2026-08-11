@@ -147,6 +147,10 @@ class Settings(BaseSettings):
 
     # Request and stream settings
     request_timeout_s: float = 90.0
+    daemon_max_request_body_bytes: int = Field(default=50 * 1024 * 1024, ge=1)
+    daemon_max_chat_body_bytes: int = Field(default=8 * 1024 * 1024, ge=1)
+    daemon_max_stt_body_bytes: int = Field(default=25 * 1024 * 1024, ge=1)
+    daemon_max_skill_upload_body_bytes: int = Field(default=50 * 1024 * 1024, ge=1)
     stream_ping_interval_s: float = Field(default=15.0, ge=0)
     daemon_sse_keepalive_interval_s: float | None = Field(default=None, ge=0)
     chat_history_limit: int = 50
