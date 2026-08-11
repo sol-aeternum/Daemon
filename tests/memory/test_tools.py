@@ -1,5 +1,6 @@
 """Tests for memory tools."""
 
+import asyncio
 import threading
 import uuid
 from collections import deque
@@ -1448,3 +1449,85 @@ def test_memory_write_attempt_log_caps_fresh_user_burst(monkeypatch):
 def test_memory_write_attempt_log_lock_is_event_loop_independent() -> None:
     """The process ledger must not retain affinity to a closed asyncio loop."""
     assert isinstance(tools_module._attempt_log_lock, type(threading.Lock()))
+
+
+@pytest.mark.asyncio
+async def test_memory_write_active_count_cancellation_releases_reservation(monkeypatch):
+    """Round-10 P2: cancellation at the active-row count await must release the reservation.
+
+    Codex review (chatgpt-codex-connector[bot] @2026-08-11T04:02:59Z,
+    P2 on `orchestrator/memory/tools.py:408`): `asyncio.CancelledError`
+    is a `BaseException` in Python 3.8+, so the surrounding
+    `except Exception` does not catch it. The reservation has already
+    been appended to the per-user deque by the time the await raises,
+    so without an explicit `except BaseException` that releases and
+    re-raises, ten pre-embedding cancellations leave the user
+    rate-limited for the remainder of the 60-second window despite no
+    billed work occurring. The fix releases the reservation and
+    re-raises so cancellation propagates cleanly.
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
+
+    user_id = uuid.uuid4()
+    tools_module._attempt_log.pop(user_id, None)
+    tools_module._attempt_log_last_seen.pop(user_id, None)
+
+    store = AsyncMock()
+    store.count_active_memories = AsyncMock(side_effect=asyncio.CancelledError())
+    tool = MemoryWriteTool(store, user_id)
+
+    with pytest.raises(asyncio.CancelledError):
+        await tool.execute(action="create", content="cancelled before embedding")
+
+    assert user_id not in tools_module._attempt_log
+    assert user_id not in tools_module._attempt_log_last_seen
+
+
+@pytest.mark.asyncio
+async def test_memory_write_update_below_cap_of_historical_target_proceeds(monkeypatch):
+    """Round-10 P2: a below-cap update of an owned historical memory must succeed.
+
+    Codex review (chatgpt-codex-connector[bot] @2026-08-11T04:02:59Z,
+    P2 on `orchestrator/memory/tools.py:641`): the round-9 fix made
+    `update` refuse when `close_memory()` returned `False`, but that
+    branch is reached unconditionally. For an owned row whose
+    `valid_to` is already set (historical), `close_memory()` returns
+    `False` by construction — the close filter is `valid_to IS NULL`
+    — and the unconditional refusal blocked legitimate below-cap
+    updates. The fix distinguishes the preflight-confirmed-active
+    case (`replace_active=True`, which only loses when a real close
+    race wins) from the historical case (`replace_active=False`,
+    which was never going to close).
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1000)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        user_id = uuid.uuid4()
+        memory_id = uuid.uuid4()
+        new_memory_id = uuid.uuid4()
+        mock_dedup.return_value = new_memory_id
+        store = _quota_store(recent_writes=0, active_rows=5)  # below cap
+        store.get_memory = AsyncMock(
+            return_value={
+                "id": memory_id,
+                "user_id": user_id,
+                "content": "old",
+                "category": "fact",
+                "memory_slot": None,
+                "source_conversation_id": None,
+                "valid_to": datetime.now(timezone.utc),  # already closed
+                "status": "active",
+            }
+        )
+        store.close_memory = AsyncMock(return_value=False)  # close is a no-op for historical
+        tool = MemoryWriteTool(store, user_id)
+
+        result = await tool.execute(action="update", memory_id=str(memory_id), content="new")
+
+        # Below-cap historical updates must proceed to insertion,
+        # not refuse with "concurrently".
+        assert "concurrently" not in result.lower()
+        assert "Memory updated" in result
+        mock_dedup.assert_awaited_once()

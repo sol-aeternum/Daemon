@@ -446,6 +446,20 @@ class MemoryWriteTool(Tool):
                         reservation=None,
                     )
                 return _WriteQuotaDecision(refusal=None, reservation=reservation)
+            except BaseException:
+                # Round-10 Codex review (P2, 2026-08-11T04:02:59Z,
+                # `orchestrator/memory/tools.py:408`): cancellation at
+                # the active-row count await bypasses the surrounding
+                # `except Exception` handlers — `asyncio.CancelledError`
+                # is a `BaseException` in Python 3.8+ — and the
+                # reservation has already been appended to the per-user
+                # deque. Ten pre-embedding cancellations therefore leave
+                # the user rate-limited for the remainder of the window
+                # despite no billed work occurring. Release the
+                # reservation and re-raise so the cancellation propagates
+                # cleanly.
+                _release_attempt_reservation(self.user_id, reservation)
+                raise
         except Exception as error:
             logger.warning(
                 "memory_write quota check failed; allowing write user_id=%s action=%s error=%s",
@@ -639,15 +653,29 @@ class MemoryWriteTool(Tool):
             try:
                 close_took_effect = await self.store.close_memory(memory_id, user_id=self.user_id)
                 if not close_took_effect:
-                    # Either the row does not exist, it is owned by a
-                    # different user (the store-layer `user_id` filter
-                    # excluded it), or it was already closed by a
-                    # concurrent transaction. None reached the billed
-                    # embedding path, so release the rate reservation.
-                    _release_attempt_reservation(self.user_id, quota.reservation)
-                    return (
-                        "Memory was modified concurrently and could not be replaced. "
-                        "Retry the update."
+                    # Round-10 Codex review (P2, 2026-08-11T04:02:59Z,
+                    # `orchestrator/memory/tools.py:641`): the
+                    # unconditional refusal regressed below-cap updates
+                    # of owned historical memories whose `valid_to` is
+                    # already set. `close_memory()` filters on
+                    # `valid_to IS NULL`, so the close was a no-op for a
+                    # historical target by construction — not a
+                    # concurrent close race. Reserve the refusal for the
+                    # case the preflight said the row was active and the
+                    # close lost a race to another transaction. A
+                    # below-cap historical update is a net-active-row
+                    # +1 operation and is legitimate.
+                    if replace_active:
+                        _release_attempt_reservation(self.user_id, quota.reservation)
+                        return (
+                            "Memory was modified concurrently and could not be replaced. "
+                            "Retry the update."
+                        )
+                    logger.info(
+                        "memory_write_update_historical_close_noop user_id=%s "
+                        "memory_id=%s — proceeding to insert replacement",
+                        self.user_id,
+                        memory_id,
                     )
 
                 # Round-8 Codex review (P1, 2026-08-11T02:01:09Z,
