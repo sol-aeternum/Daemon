@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, waitFor } from '@testing-library/react';
+import { act, render, waitFor } from '@testing-library/react';
 import { useEffect } from 'react';
 
 type ResolvedAuthConfig = {
@@ -50,6 +50,7 @@ function makeFetchMock(): () => Promise<unknown> {
 }
 
 vi.mock('../lib/auth-config', () => ({
+  AUTH_CONFIG_CACHE_TTL_MS: 60_000,
   fetchAuthConfig: vi.fn(makeFetchMock()),
   subscribeAuthConfig: vi.fn((cb: (s: unknown) => void) => {
     mockAuthConfig.listeners.add(cb);
@@ -88,6 +89,7 @@ vi.mock('../lib/auth', () => ({
 import { AuthProvider, useAuth } from '../components/AuthProvider';
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   mockAuthConfig.state = { status: 'loading' };
   mockAuthConfig.resolved = undefined;
@@ -162,6 +164,29 @@ async function flush(): Promise<void> {
 describe('AuthProvider mode-aware redirects', () => {
   beforeEach(() => {
     setLocation('/');
+  });
+
+  it('refreshes runtime auth config when the 60s cache TTL expires', async () => {
+    vi.useFakeTimers();
+    setLocation('/auth');
+    mockAuthConfig.state = { status: 'resolved' };
+    mockAuthConfig.resolved = {
+      mode: 'hosted',
+      email: { enabled: true },
+      google: { enabled: false, clientId: '' },
+    };
+
+    renderProvider();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(59_999);
+    });
+    expect(mockAuthConfig.fetchCalls).toBe(0);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(mockAuthConfig.fetchCalls).toBe(1);
   });
 
   it('does not redirect while authConfig is still loading', async () => {

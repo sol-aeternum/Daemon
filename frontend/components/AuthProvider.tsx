@@ -22,6 +22,7 @@ import {
   type RefreshResult,
 } from '@/lib/auth';
 import {
+  AUTH_CONFIG_CACHE_TTL_MS,
   fetchAuthConfig,
   getCachedAuthConfig,
   subscribeAuthConfig,
@@ -85,6 +86,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
       void fetchAuthConfig().then(applyConfig);
     }
     const unsubscribeConfig = subscribeAuthConfig(applyConfig);
+    const refreshConfigTimer = setInterval(() => {
+      void fetchAuthConfig();
+    }, AUTH_CONFIG_CACHE_TTL_MS);
 
     function doRedirect(target: string): void {
       if (typeof window !== 'undefined') {
@@ -151,6 +155,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
     return () => {
       mounted = false;
+      clearInterval(refreshConfigTimer);
       unsubscribe();
       unsubscribeConfig();
     };
