@@ -160,36 +160,28 @@ account, or approving unexpected sign-ins. Daemon mitigates this with nonce-boun
 challenges, single-use proofs, generic responses, short TTLs, new-device visibility, and
 revocation; these controls reduce but do not eliminate user-targeted deception risk.
 
-## Frontend Build-Time Defaults (fallback only)
+## Legacy Frontend Build-Time Defaults
 
 > **Authoritative source of truth: the [`Runtime Config`](#runtime-config) endpoint
-> (`GET /v1/auth/config`).** The `NEXT_PUBLIC_*` vars described below are read
-> only as a first-paint default and as a fail-safe if the runtime endpoint is
-> unreachable; they are **no longer** the gating contract for the hosted landing
-> or Google button. Operators should change `DAEMON_HOSTED_IDENTITY_ENABLED` and
-> related backend settings at runtime — no rebuild required. This section is
-> kept only so existing `.env` entries and `docker-compose.yml` fragments
-> remain documented; new operators should ignore it and start at
-> [Runtime Config](#runtime-config).
+> (`GET /v1/auth/config`).** Operators configure hosted mode with
+> `DAEMON_DEPLOYMENT_MODE=hosted`, `DAEMON_HOSTED_IDENTITY_ENABLED=true`, and
+> the applicable backend provider settings. The `NEXT_PUBLIC_*` variables
+> below are retained only for compatibility with existing images and
+> development tests; they are not the gating contract for the hosted landing
+> or Google button. If runtime config is unavailable or invalid, the frontend
+> fails closed to `/setup` rather than trusting build-time values.
 
-When the Next.js frontend is built, two `NEXT_PUBLIC_*` env vars set the
-default mode and Google client ID baked into the JavaScript bundle. The
-runtime endpoint overrides them within 60 seconds of being reachable, so
-operators do not need to keep these in sync with the backend to switch
-hosted/self-hosted modes:
+Existing builds may still contain these legacy values, but operators do not
+need to keep them synchronized with the backend or rebuild the frontend to
+switch hosted/self-hosted modes:
 
-| Var                                  | Default                    | Effect (first-paint / unreachable-fallback only)                                                                            |
-| ------------------------------------ | -------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE` | `self-hosted` (when unset) | `hosted` switches the landing to Google / email sign-in primary; `self-hosted` keeps the setup-first landing.               |
-| `NEXT_PUBLIC_GOOGLE_CLIENT_ID`       | empty (no Google button)   | Public Google OAuth web client ID. When set, the hosted landing renders the Google sign-in button. Must match the backend's `DAEMON_GOOGLE_CLIENT_ID`. |
-
-Pairing with the backend is informational only; the runtime endpoint is what
-matters at request time:
-
-- `DAEMON_HOSTED_IDENTITY_ENABLED=true` ↔ `NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE=hosted`
-- `DAEMON_GOOGLE_CLIENT_ID=<server client id>` ↔ `NEXT_PUBLIC_GOOGLE_CLIENT_ID=<same public client id>`
+| Var                                  | Default                    | Current role                                                                                      |
+| ------------------------------------ | -------------------------- | ------------------------------------------------------------------------------------------------- |
+| `NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE` | `self-hosted` (when unset) | Legacy build compatibility only; runtime `DAEMON_DEPLOYMENT_MODE` controls navigation.           |
+| `NEXT_PUBLIC_GOOGLE_CLIENT_ID`       | empty                      | Legacy build compatibility only; runtime `DAEMON_GOOGLE_CLIENT_ID` controls the Google provider. |
 
 Hosted mode and the Google button are only meaningful when the backend has
+`DAEMON_DEPLOYMENT_MODE=hosted` and
 `DAEMON_HOSTED_IDENTITY_ENABLED=true`; the backend `fail-closed` gate in
 `orchestrator/routes/auth_setup.py` rejects hosted email/Google requests with
 `404 hosted_identity_disabled` regardless of frontend configuration when the backend is

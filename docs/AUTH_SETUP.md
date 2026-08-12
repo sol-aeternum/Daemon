@@ -22,24 +22,24 @@ GitHub sign-in is out of scope. Provider tokens are never accepted as protected 
 
 Hosted identity still has residual phishing and social-engineering risk: users can be tricked into entering email codes or approving the wrong account. Daemon mitigates this with nonce-bound challenges, single-use codes, generic responses, short TTLs, new-device visibility, and revocation, but operators should still treat suspicious sign-ins as account-security events.
 
-### Deployment Mode and Frontend Defaults (fallback only)
+### Deployment Mode and Legacy Frontend Defaults
 
 > **The runtime endpoint `GET /v1/auth/config` is the authoritative source of
-> truth for deployment mode and provider availability.** The `NEXT_PUBLIC_*`
-> vars below are first-paint defaults and unreachable-fallback only — they
-> are no longer the gating contract. Operators should set
-> `DAEMON_HOSTED_IDENTITY_ENABLED` and `DAEMON_GOOGLE_CLIENT_ID` on the
-> backend; the frontend picks up the change within 60 seconds. The default
-> values below are kept only so existing `.env` entries and
-> `docker-compose.yml` fragments remain documented.
+> truth for deployment mode and provider availability.** Hosted operators
+> must set `DAEMON_DEPLOYMENT_MODE=hosted`,
+> `DAEMON_HOSTED_IDENTITY_ENABLED=true`, and the applicable provider settings
+> on the backend. The frontend picks up successful runtime changes within 60
+> seconds. If the endpoint is unavailable or returns invalid data, the
+> frontend fails closed to `/setup`; build-time values are not used as an
+> authentication fallback.
 
-When the Next.js frontend is built, two `NEXT_PUBLIC_*` env vars set the
-default mode and Google client ID baked into the JavaScript bundle. The
-runtime endpoint overrides them at request time:
+The following legacy `NEXT_PUBLIC_*` build arguments remain accepted for
+compatibility with existing images and development tests, but they do not
+control the landing or provider availability once runtime configuration is
+loaded:
 
-- `NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE` (`self-hosted` default; set `hosted`
-  to switch the first-paint landing) and
-- `NEXT_PUBLIC_GOOGLE_CLIENT_ID` (the public Google OAuth web client ID).
+- `NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE` (`self-hosted` default), and
+- `NEXT_PUBLIC_GOOGLE_CLIENT_ID` (a public Google OAuth web client ID).
 
 The hosted landing and Google button additionally require
 `DAEMON_HOSTED_IDENTITY_ENABLED=true` on the FastAPI side; when that flag is
