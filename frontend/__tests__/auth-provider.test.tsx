@@ -125,6 +125,34 @@ function setLocation(pathname: string): void {
   });
 }
 
+function installStorage(initial: Record<string, string>): Storage {
+  const values = new Map(Object.entries(initial));
+  const storage: Storage = {
+    get length() {
+      return values.size;
+    },
+    clear: () => values.clear(),
+    getItem: (key) => values.get(key) ?? null,
+    key: (index) => [...values.keys()][index] ?? null,
+    removeItem: (key) => {
+      values.delete(key);
+    },
+    setItem: (key, value) => {
+      values.set(key, value);
+    },
+  };
+
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: storage,
+  });
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: storage,
+  });
+  return storage;
+}
+
 function setupHrefSpy(pathname: string = '/'): {
   hrefSetter: ReturnType<typeof vi.fn>;
 } {
@@ -178,6 +206,23 @@ async function flush(): Promise<void> {
 describe('AuthProvider mode-aware redirects', () => {
   beforeEach(() => {
     setLocation('/');
+  });
+
+  it('purges legacy browser PII when the app loads', () => {
+    setLocation('/auth');
+    const storage = installStorage({
+      user_name: 'Ada',
+      daemon_user_id: 'user-id',
+      daemon_tier: 'pro',
+      theme: 'dark',
+    });
+
+    renderProvider();
+
+    expect(storage.getItem('user_name')).toBeNull();
+    expect(storage.getItem('daemon_user_id')).toBeNull();
+    expect(storage.getItem('daemon_tier')).toBeNull();
+    expect(storage.getItem('theme')).toBe('dark');
   });
 
   it('refreshes runtime auth config when the 60s cache TTL expires', async () => {
