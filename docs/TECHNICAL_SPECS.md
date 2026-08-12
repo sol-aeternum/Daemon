@@ -125,6 +125,11 @@ Hybrid search combining:
 | **Retired Image API** | `/api/images/models`, `/api/images/generate`, `/api/images/upload-reference`, `/api/images/{image_id}`, `/api/images/{image_id}/metadata` (authenticated 410) |
 | **System** | `/status`, `/health`, `/generated-images/{filename}`, `/generated-audio/{filename}`, `/generated-files/{filename}` |
 
+Subagent-generated image and audio payloads are persisted only after strict
+base64 decoding, a 50 MiB decoded-size ceiling, an allowlisted format check,
+and matching file-signature validation. Generated-media responses use the
+validated extension's media type and carry the global `nosniff` header.
+
 ### Chat rate limits
 
 All three chat routes use atomic Redis windows before any LLM-backed work:
