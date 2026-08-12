@@ -17,6 +17,7 @@ no-fact checkpoint (per-chunk ``log_extraction`` even on zero-fact chunks).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -25,6 +26,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from arq import Retry
 
 from orchestrator.memory.extraction import (
     MAX_EXTRACTION_INPUT_CHARS,
@@ -123,6 +125,50 @@ def test_chunk_messages_rejects_non_positive_max_chars() -> None:
         _chunk_messages_for_extraction([], [], max_chars=0)
 
 
+@pytest.mark.asyncio
+async def test_store_cursor_skips_explicit_error_and_cancelled_rows() -> None:
+    base = datetime(2026, 8, 11, 12, 0, 0, tzinfo=timezone.utc)
+    pool = SimpleNamespace(
+        fetch=AsyncMock(
+            return_value=[
+                {
+                    "id": "err",
+                    "content": "bad-row",
+                    "created_at": base,
+                    "status": "error",
+                },
+                {
+                    "id": "cxl",
+                    "content": "cancelled-row",
+                    "created_at": base + timedelta(minutes=1),
+                    "status": "cancelled",
+                },
+                {
+                    "id": "mutable",
+                    "content": "pending",
+                    "created_at": base + timedelta(minutes=2),
+                    "status": "streaming",
+                },
+            ]
+        )
+    )
+    store = object.__new__(MemoryStore)
+    store._pool = cast(Any, pool)
+    store._enc = cast(Any, SimpleNamespace(decrypt=lambda value: value))
+
+    rows = await store.get_messages_after_cursor(
+        uuid.uuid4(),
+        created_at=base,
+        message_id="cursor",
+    )
+
+    assert [row["id"] for row in rows] == ["err", "cxl"]
+    assert rows[0]["_extraction_skip"] is True
+    assert rows[0]["content"] == ""
+    assert rows[1]["_extraction_skip"] is True
+    assert rows[1]["content"] == ""
+
+
 # ---------------------------------------------------------------------------
 # extract_memories integration: cursor only advances per chunk
 # ---------------------------------------------------------------------------
@@ -207,6 +253,57 @@ async def test_extract_memories_chunks_large_batch_and_advances_per_chunk() -> N
     for ts in coerced_observed:
         assert ts is not None
         assert ts in expected_observed
+
+
+@pytest.mark.asyncio
+async def test_extract_memories_checkpoint_exception_is_retryable() -> None:
+    store = object.__new__(MemoryStore)
+    store.get_conversation = AsyncMock(return_value=None)
+    store.log_extraction = AsyncMock(side_effect=RuntimeError("checkpoint write failed"))
+
+    message = {
+        "role": "user",
+        "content": "x" * 120,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "id": "0",
+    }
+
+    class _Outcome:
+        facts: list[object] = []
+        raw_count = 0
+        calibrated_count = 0
+        rejected_count = 0
+        slot_coverage = 0
+        succeeded = True
+
+    with patch(
+        "orchestrator.memory.extraction.extract_facts_from_text",
+        new_callable=AsyncMock,
+    ) as extract_mock:
+        extract_mock.return_value = _Outcome()
+        with pytest.raises(Retry):
+            await extract_memories(
+                {"store": store},
+                uuid.uuid4(),
+                uuid.uuid4(),
+                json.dumps([message]),
+            )
+
+
+@pytest.mark.asyncio
+async def test_extract_memories_internal_timeout_is_retryable() -> None:
+    async def delayed_extract(*_args: object, **_kwargs: object) -> dict[str, object]:
+        await asyncio.sleep(0.01)
+        return {"status": "ok"}
+
+    with (
+        patch("orchestrator.worker.jobs.EXTRACTION_JOB_DEADLINE_SECONDS", 0.001),
+        patch("orchestrator.worker.jobs._extract_memories_once", delayed_extract),
+    ):
+        with pytest.raises(Retry):
+            await extract_memories(
+                {"store": object.__new__(MemoryStore)}, uuid.uuid4(), uuid.uuid4()
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -835,7 +932,7 @@ async def test_store_stops_before_first_unfinished_message() -> None:
 
 
 @pytest.mark.asyncio
-async def test_store_marks_abandoned_streaming_row_skippable() -> None:
+async def test_store_never_age_skips_streaming_row() -> None:
     store = object.__new__(MemoryStore)
     pool = SimpleNamespace(
         fetch=AsyncMock(
@@ -864,9 +961,10 @@ async def test_store_marks_abandoned_streaming_row_skippable() -> None:
         message_id=None,
     )
 
-    assert [row["id"] for row in rows] == ["stale", "later"]
-    assert rows[0]["_extraction_skip"] is True
-    assert rows[0]["content"] == ""
+    # Streaming rows are still treated as live and must remain mutable regardless
+    # of age; they intentionally block extraction and are not emitted from this
+    # page.
+    assert rows == []
 
 
 @pytest.mark.asyncio

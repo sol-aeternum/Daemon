@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportArgumentType=false, reportMissingImports=false
 
+import asyncio
 import json
 import logging
 import uuid
@@ -40,6 +41,9 @@ WorkerContext = dict[str, object]
 # One chunk can perform two 90-second provider calls (initial + retry).
 # Keeping the cap at one leaves headroom inside arq's 300-second job timeout.
 MAX_EXTRACTION_CHUNKS_PER_JOB = 1
+# Leave one minute for arq to cancel the coroutine, record the retry, and
+# release resources before the worker's fixed 300-second timeout.
+EXTRACTION_JOB_DEADLINE_SECONDS = 240
 
 
 class ConsolidationResults(TypedDict):
@@ -325,7 +329,7 @@ def _chunk_messages_for_extraction(
     return chunks
 
 
-async def extract_memories(
+async def _extract_memories_once(
     ctx: WorkerContext,
     user_id: str | uuid.UUID,
     conversation_id: str | uuid.UUID,
@@ -695,6 +699,43 @@ async def extract_memories(
         "processed_chunks": len(chunks_to_process),
         "last_processed_message_id": last_processed_message_id,
     }
+
+
+async def extract_memories(
+    ctx: WorkerContext,
+    user_id: str | uuid.UUID,
+    conversation_id: str | uuid.UUID,
+    messages_json: object | None = None,
+) -> dict[str, object]:
+    """Run one resumable extraction attempt within the arq job deadline.
+
+    A durable cursor is written only after a chunk succeeds. Timeouts and
+    ordinary recoverable failures therefore retry the same uncheckpointed
+    suffix instead of letting arq terminate the job with no continuation.
+    """
+    try:
+        async with asyncio.timeout(EXTRACTION_JOB_DEADLINE_SECONDS):
+            return await _extract_memories_once(
+                ctx,
+                user_id,
+                conversation_id,
+                messages_json,
+            )
+    except Retry:
+        raise
+    except TimeoutError:
+        logger.warning(
+            "Extraction reached its internal deadline for conversation %s; retrying",
+            conversation_id,
+        )
+        raise Retry(defer=5) from None
+    except Exception:
+        logger.warning(
+            "Recoverable extraction failure for conversation %s; retrying",
+            conversation_id,
+            exc_info=True,
+        )
+        raise Retry(defer=5) from None
 
 
 async def generate_title(

@@ -2032,7 +2032,7 @@ async def chat(
             db_messages = await store.get_recent_messages(
                 conversation_uuid,
                 limit=settings.chat_history_limit,
-                exclude_status=["streaming"],
+                exclude_status=["streaming", "error", "cancelled"],
             )
             history_messages = [
                 _to_history_message(msg)
