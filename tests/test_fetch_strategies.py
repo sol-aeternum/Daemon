@@ -1,4 +1,5 @@
 import socket
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -31,6 +32,28 @@ from orchestrator.tools.ssrf_guard import (
     SsrfViolation,
     ValidatedUrl,
 )
+
+
+def _validated_direct_url(
+    url: str,
+    *,
+    host: str = "example.com",
+    addresses: tuple[str, ...] = ("93.184.216.34",),
+) -> ValidatedUrl:
+    return ValidatedUrl(url=url, host=host, port=443, addresses=addresses)
+
+
+def _mock_direct_resolution(
+    url: str,
+    *,
+    host: str = "example.com",
+    addresses: tuple[str, ...] = ("93.184.216.34",),
+) -> AbstractContextManager[AsyncMock]:
+    return patch(
+        "orchestrator.services.fetch.strategies.direct.validate_url_and_resolve_async",
+        new_callable=AsyncMock,
+        return_value=_validated_direct_url(url, host=host, addresses=addresses),
+    )
 
 
 @pytest.fixture
@@ -76,7 +99,10 @@ class TestDirectStrategy:
         mock_response.headers = {"content-type": "text/html"}
         mock_response.raise_for_status = MagicMock()
 
-        with patch("httpx.AsyncClient.get", return_value=mock_response):
+        with (
+            _mock_direct_resolution("https://example.com"),
+            patch("httpx.AsyncClient.get", return_value=mock_response),
+        ):
             result = await strategy.fetch("https://example.com")
 
         assert result is not None
@@ -89,7 +115,10 @@ class TestDirectStrategy:
     async def test_fetch_failure(self, fetch_policy):
         strategy = DirectFetchStrategy(fetch_policy)
 
-        with patch("httpx.AsyncClient.get", side_effect=Exception("Network error")):
+        with (
+            _mock_direct_resolution("https://example.com"),
+            patch("httpx.AsyncClient.get", side_effect=Exception("Network error")),
+        ):
             result = await strategy.fetch("https://example.com")
 
         assert result is None
@@ -132,9 +161,10 @@ class TestDirectStrategy:
         success.raise_for_status = MagicMock()
 
         with (
-            patch(
-                "orchestrator.tools.ssrf_guard._resolve_and_check",
-                return_value=("8.8.8.8",),
+            _mock_direct_resolution(
+                "https://8.8.8.8/start",
+                host="8.8.8.8",
+                addresses=("8.8.8.8",),
             ),
             patch(
                 "httpx.AsyncClient.get",
@@ -161,7 +191,14 @@ class TestDirectStrategy:
             assert socket.getaddrinfo is original_getaddrinfo
             return response
 
-        with patch("httpx.AsyncClient.get", side_effect=assert_dns_is_unpatched):
+        with (
+            _mock_direct_resolution(
+                "https://8.8.8.8/article",
+                host="8.8.8.8",
+                addresses=("8.8.8.8",),
+            ),
+            patch("httpx.AsyncClient.get", side_effect=assert_dns_is_unpatched),
+        ):
             result = await strategy.fetch("https://8.8.8.8/article")
 
         assert result is not None
@@ -176,10 +213,7 @@ class TestDirectStrategy:
         response.raise_for_status = MagicMock()
 
         with (
-            patch(
-                "orchestrator.tools.ssrf_guard._resolve_and_check",
-                return_value=("93.184.216.34",),
-            ),
+            _mock_direct_resolution("https://example.com/article?q=1"),
             patch(
                 "httpx.AsyncClient.get", new_callable=AsyncMock, return_value=response
             ) as mock_get,
@@ -210,9 +244,10 @@ class TestDirectStrategy:
         success.raise_for_status = MagicMock()
 
         with (
-            patch(
-                "orchestrator.tools.ssrf_guard._resolve_and_check",
-                return_value=("8.8.8.8",),
+            _mock_direct_resolution(
+                "https://8.8.8.8/start",
+                host="8.8.8.8",
+                addresses=("8.8.8.8",),
             ),
             patch(
                 "httpx.AsyncClient.get",
@@ -236,9 +271,9 @@ class TestDirectStrategy:
         response.raise_for_status = MagicMock()
 
         with (
-            patch(
-                "orchestrator.tools.ssrf_guard._resolve_and_check",
-                return_value=("93.184.216.34",),
+            _mock_direct_resolution(
+                "https://bücher.example:443/article",
+                host="xn--bcher-kva.example",
             ),
             patch(
                 "httpx.AsyncClient.get", new_callable=AsyncMock, return_value=response
@@ -263,9 +298,9 @@ class TestDirectStrategy:
         response.raise_for_status = MagicMock()
 
         with (
-            patch(
-                "orchestrator.tools.ssrf_guard._resolve_and_check",
-                return_value=("2606:4700:4700::1111", "93.184.216.34"),
+            _mock_direct_resolution(
+                "https://example.com/article",
+                addresses=("2606:4700:4700::1111", "93.184.216.34"),
             ),
             patch(
                 "httpx.AsyncClient.get",
@@ -288,9 +323,9 @@ class TestDirectStrategy:
         strategy = DirectFetchStrategy(fetch_policy)
 
         with (
-            patch(
-                "orchestrator.tools.ssrf_guard._resolve_and_check",
-                return_value=("2606:4700:4700::1111", "2001:4860:4860::8888"),
+            _mock_direct_resolution(
+                "https://example.com/article",
+                addresses=("2606:4700:4700::1111", "2001:4860:4860::8888"),
             ),
             patch(
                 "httpx.AsyncClient.get",
@@ -439,7 +474,7 @@ class TestDirectStrategy:
         transport = httpx.MockTransport(handler)
 
         # Two different pinned IPs for the same logical hostname. The
-        # ``_resolve_and_check`` mock returns a different IP per
+        # The async validation mock returns a different IP per
         # invocation so each redirect hop resolves to a distinct address
         # and ``_pin_url_to_address`` rewrites the request URL host.
         pinned_addresses = iter(("93.184.216.34", "140.82.114.3"))
@@ -1814,10 +1849,7 @@ class TestFetchService:
                 return response
 
             with (
-                patch(
-                    "orchestrator.tools.ssrf_guard._resolve_and_check",
-                    return_value=("93.184.216.34",),
-                ),
+                _mock_direct_resolution("https://example.com/article"),
                 patch(
                     "httpx.AsyncClient.get",
                     new_callable=AsyncMock,
@@ -1999,9 +2031,9 @@ class TestFetchService:
 
         started = _time.monotonic()
         with (
-            patch(
-                "orchestrator.tools.ssrf_guard._resolve_and_check",
-                return_value=addresses,
+            _mock_direct_resolution(
+                "https://example.com/article",
+                addresses=addresses,
             ),
             patch(
                 "httpx.AsyncClient.get",
@@ -2043,9 +2075,9 @@ class TestFetchService:
 
         started = _time.monotonic()
         with (
-            patch(
-                "orchestrator.tools.ssrf_guard._resolve_and_check",
-                return_value=("93.184.216.34", "93.184.216.35"),
+            _mock_direct_resolution(
+                "https://example.com/article",
+                addresses=("93.184.216.34", "93.184.216.35"),
             ),
             patch(
                 "httpx.AsyncClient.get",
@@ -2128,10 +2160,7 @@ class TestFetchService:
 
             started = _time.monotonic()
             with (
-                patch(
-                    "orchestrator.tools.ssrf_guard._resolve_and_check",
-                    return_value=("93.184.216.34",),
-                ),
+                _mock_direct_resolution("https://example.com/article"),
                 patch(
                     "httpx.AsyncClient.get",
                     new_callable=AsyncMock,
