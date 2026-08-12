@@ -22,7 +22,10 @@ in the wire contract fails fast.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -884,10 +887,11 @@ def _make_request(
     *,
     host: str,
     headers: list[tuple[bytes, bytes]] | None = None,
+    method: str = "POST",
 ) -> Request:
     scope = {
         "type": "http",
-        "method": "POST",
+        "method": method,
         "path": "/v1/auth/email/start",
         "headers": headers or [],
         "client": (host, 12345),
@@ -914,12 +918,124 @@ class TestClientIpForKey:
     def test_trusted_proxy_mode_uses_internal_header_when_proxy_hop_is_private(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        secret = "x" * 32
+        timestamp = "1700000000"
         monkeypatch.setenv("DAEMON_TRUST_PROXY_FORWARDED_CLIENT_IP", "true")
+        monkeypatch.setenv("DAEMON_INTERNAL_PROXY_HMAC_SECRET", secret)
+        monkeypatch.setattr(time, "time", lambda: float(int(timestamp)))
+        signature = hmac.new(
+            secret.encode(),
+            f"v1\n{timestamp}\nPOST\n198.51.100.8".encode(),
+            hashlib.sha256,
+        ).hexdigest()
         request = _make_request(
             host="10.0.0.12",
-            headers=[(b"x-daemon-client-ip", b"198.51.100.8")],
+            headers=[
+                (b"x-daemon-client-ip", b"198.51.100.8"),
+                (b"x-daemon-client-ip-timestamp", timestamp.encode()),
+                (b"x-daemon-client-ip-signature", signature.encode()),
+            ],
         )
         assert client_ip_for_key(request) == "198.51.100.8"
+
+    def test_signed_expanded_ipv6_is_canonicalized_after_verification(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        secret = "x" * 32
+        timestamp = "1700000000"
+        asserted_ip = "2001:0db8:0000:0000:0000:0000:0000:0001"
+        monkeypatch.setenv("DAEMON_TRUST_PROXY_FORWARDED_CLIENT_IP", "true")
+        monkeypatch.setenv("DAEMON_INTERNAL_PROXY_HMAC_SECRET", secret)
+        monkeypatch.setattr(time, "time", lambda: float(int(timestamp)))
+        signature = hmac.new(
+            secret.encode(),
+            f"v1\n{timestamp}\nPOST\n{asserted_ip}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        request = _make_request(
+            host="127.0.0.1",
+            headers=[
+                (b"x-daemon-client-ip", asserted_ip.encode()),
+                (b"x-daemon-client-ip-timestamp", timestamp.encode()),
+                (b"x-daemon-client-ip-signature", signature.encode()),
+            ],
+        )
+        assert client_ip_for_key(request) == "2001:db8::1"
+
+    def test_trusted_proxy_mode_falls_back_without_signature(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DAEMON_TRUST_PROXY_FORWARDED_CLIENT_IP", "true")
+        monkeypatch.setenv("DAEMON_INTERNAL_PROXY_HMAC_SECRET", "x" * 32)
+        request = _make_request(
+            host="127.0.0.1",
+            headers=[(b"x-daemon-client-ip", b"198.51.100.8")],
+        )
+        assert client_ip_for_key(request) == "127.0.0.1"
+
+    def test_trusted_proxy_mode_falls_back_on_signature_mismatch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        secret = "x" * 32
+        timestamp = "1700000000"
+        monkeypatch.setenv("DAEMON_TRUST_PROXY_FORWARDED_CLIENT_IP", "true")
+        monkeypatch.setenv("DAEMON_INTERNAL_PROXY_HMAC_SECRET", secret)
+        request = _make_request(
+            host="127.0.0.1",
+            headers=[
+                (b"x-daemon-client-ip", b"198.51.100.8"),
+                (b"x-daemon-client-ip-timestamp", timestamp.encode()),
+                (b"x-daemon-client-ip-signature", b"bad"),
+            ],
+        )
+        assert client_ip_for_key(request) == "127.0.0.1"
+
+    def test_trusted_proxy_mode_falls_back_on_stale_timestamp(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        secret = "x" * 32
+        issued_at = 1_700_000_000
+        timestamp = str(issued_at - 120)
+        signature = hmac.new(
+            secret.encode(),
+            f"v1\n{timestamp}\nPOST\n198.51.100.8".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        monkeypatch.setenv("DAEMON_TRUST_PROXY_FORWARDED_CLIENT_IP", "true")
+        monkeypatch.setenv("DAEMON_INTERNAL_PROXY_HMAC_SECRET", secret)
+        monkeypatch.setattr(time, "time", lambda: float(issued_at))
+        request = _make_request(
+            host="127.0.0.1",
+            headers=[
+                (b"x-daemon-client-ip", b"198.51.100.8"),
+                (b"x-daemon-client-ip-timestamp", timestamp.encode()),
+                (b"x-daemon-client-ip-signature", signature.encode()),
+            ],
+        )
+        assert client_ip_for_key(request) == "127.0.0.1"
+
+    def test_trusted_proxy_mode_falls_back_on_method_mismatch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        secret = "x" * 32
+        timestamp = "1700000000"
+        signature = hmac.new(
+            secret.encode(),
+            f"v1\n{timestamp}\nGET\n198.51.100.8".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        monkeypatch.setenv("DAEMON_TRUST_PROXY_FORWARDED_CLIENT_IP", "true")
+        monkeypatch.setenv("DAEMON_INTERNAL_PROXY_HMAC_SECRET", secret)
+        request = _make_request(
+            host="127.0.0.1",
+            method="POST",
+            headers=[
+                (b"x-daemon-client-ip", b"198.51.100.8"),
+                (b"x-daemon-client-ip-timestamp", timestamp.encode()),
+                (b"x-daemon-client-ip-signature", signature.encode()),
+            ],
+        )
+        assert client_ip_for_key(request) == "127.0.0.1"
 
     def test_trusted_proxy_mode_still_rejects_forwarded_headers_on_public_socket(
         self, monkeypatch: pytest.MonkeyPatch

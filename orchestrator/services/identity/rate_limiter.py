@@ -196,8 +196,8 @@ class RateLimiter:
         """
         if not endpoint:
             raise ValueError("endpoint must be a non-empty string")
-        if scope_kind not in ("ip", "email"):
-            raise ValueError("scope_kind must be 'ip' or 'email'")
+        if scope_kind not in ("ip", "email", "user_id", "session_id"):
+            raise ValueError("scope_kind must be 'ip', 'email', 'user_id', or 'session_id'")
         scope_hash = hash_key_material(self._hmac_secret, raw_value)
         return f"{self._namespace}:{endpoint}:{scope_kind}:{scope_hash}"
 

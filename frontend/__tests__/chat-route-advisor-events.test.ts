@@ -1,8 +1,24 @@
+import { createHmac } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { POST } from '../app/api/chat/route';
 
 type UIMessageChunk = Record<string, unknown> & { type: string };
+const DAEMON_INTERNAL_PROXY_HMAC_SECRET = 'x'.repeat(32);
+
+function daemonClientIpSignature(
+  clientIp: string,
+  method: string,
+  timestampMs: number,
+  secret = DAEMON_INTERNAL_PROXY_HMAC_SECRET,
+) {
+  const timestamp = Math.floor(timestampMs / 1000).toString();
+  const payload = `v1\n${timestamp}\n${method.toUpperCase()}\n${clientIp}`;
+  return {
+    timestamp,
+    signature: createHmac('sha256', secret).update(payload).digest('hex'),
+  };
+}
 
 async function readUIMessageChunks(response: Response) {
   const body = await response.text();
@@ -320,5 +336,140 @@ describe('chat route advisor event bridge', () => {
     const forwardedBody = JSON.parse(String(capturedInit?.body));
     expect(forwardedBody.message).toBe('hi');
     expect(forwardedBody.messages).toEqual([{ role: 'user', content: 'hi' }]);
+  });
+});
+
+describe('chat route rate-limit bridge', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    process.env.DAEMON_INTERNAL_PROXY_HMAC_SECRET =
+      DAEMON_INTERNAL_PROXY_HMAC_SECRET;
+    delete process.env.DAEMON_TRUSTED_PROXY_IPS;
+  });
+
+  it('forwards the validated client IP with the backend chat request', async () => {
+    process.env.DAEMON_TRUSTED_PROXY_IPS = '10.0.0.1';
+    const nowMs = 1_700_000_000_000;
+    vi.spyOn(Date, 'now').mockReturnValue(nowMs);
+    const { timestamp, signature } = daemonClientIpSignature(
+      '198.51.100.9',
+      'POST',
+      nowMs,
+    );
+    let capturedInit: RequestInit | undefined;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+        capturedInit = init;
+        return buildSseResponse([
+          encodeFrame('final', { data: { text: 'ok' } }),
+        ]);
+      }),
+    );
+
+    const response = await POST(
+      new Request('http://test/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Real-IP': '10.0.0.1',
+          'X-Forwarded-For': '198.51.100.9, 10.0.0.1',
+        },
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: 'hello' }],
+          id: 'conv_ip',
+        }),
+      }),
+    );
+    await response.text();
+
+    const forwardedHeaders = new Headers(capturedInit?.headers);
+    expect(forwardedHeaders.get('X-Daemon-Client-IP')).toBe('198.51.100.9');
+    expect(forwardedHeaders.get('X-Daemon-Client-IP-Timestamp')).toBe(
+      timestamp,
+    );
+    expect(forwardedHeaders.get('X-Daemon-Client-IP-Signature')).toBe(
+      signature,
+    );
+  });
+
+  it('does not add daemon client-IP headers when signing secret is missing', async () => {
+    delete process.env.DAEMON_INTERNAL_PROXY_HMAC_SECRET;
+    process.env.DAEMON_TRUSTED_PROXY_IPS = '10.0.0.1';
+    let capturedInit: RequestInit | undefined;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+        capturedInit = init;
+        return buildSseResponse([
+          encodeFrame('final', { data: { text: 'ok' } }),
+        ]);
+      }),
+    );
+
+    const response = await POST(
+      new Request('http://test/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Real-IP': '10.0.0.1',
+          'X-Forwarded-For': '198.51.100.9, 10.0.0.1',
+        },
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: 'hello' }],
+          id: 'conv_ip',
+        }),
+      }),
+    );
+    await response.text();
+
+    const forwardedHeaders = new Headers(capturedInit?.headers);
+    expect(forwardedHeaders.get('X-Daemon-Client-IP')).toBeNull();
+    expect(forwardedHeaders.get('X-Daemon-Client-IP-Timestamp')).toBeNull();
+    expect(forwardedHeaders.get('X-Daemon-Client-IP-Signature')).toBeNull();
+  });
+
+  it('emits a typed rate_limited event with the backend retry delay', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ detail: 'rate_limited' }), {
+          status: 429,
+          headers: {
+            'Content-Type': 'application/json',
+            'Retry-After': '17',
+            'X-Daemon-Rate-Limit-Scope': 'session_id',
+          },
+        }),
+      ),
+    );
+
+    const response = await POST(
+      new Request('http://test/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: 'hello' }],
+          id: 'conv_429',
+        }),
+      }),
+    );
+    const writes = await readUIMessageChunks(response);
+    const dataEvents = writes
+      .filter((part) => part.type === 'data-event')
+      .map((part) => part.data as Record<string, unknown>);
+
+    expect(dataEvents).toContainEqual({
+      type: 'rate_limited',
+      scope: 'session',
+      retry_after_seconds: 17,
+    });
+    expect(
+      writes.some(
+        (part) =>
+          part.type === 'text-delta' &&
+          String(part.delta).includes('sending messages too quickly'),
+      ),
+    ).toBe(true);
   });
 });

@@ -125,6 +125,22 @@ Hybrid search combining:
 | **Retired Image API** | `/api/images/models`, `/api/images/generate`, `/api/images/upload-reference`, `/api/images/{image_id}`, `/api/images/{image_id}/metadata` (authenticated 410) |
 | **System** | `/status`, `/health`, `/generated-images/{filename}`, `/generated-audio/{filename}`, `/generated-files/{filename}` |
 
+### Chat rate limits
+
+All three chat routes use atomic Redis windows before any LLM-backed work:
+30 requests/minute per session, 60/minute per user, and a coarse 120/minute
+per client IP. The IP ceiling intentionally applies to every chat attempt,
+including malformed or unauthenticated traffic. This differs from the original
+5/minute unauthenticated proposal: 120/minute avoids penalizing legitimate
+households and CGNAT users while the narrower authenticated scopes protect the
+LLM budget. Thresholds are configurable through the corresponding
+`DAEMON_RATE_LIMIT_CHAT_*` variables.
+
+Rate-limit rejections are structured log events. The authenticated `/status`
+response exposes process-local request/rejection totals and per-endpoint ratios;
+the backend emits a rate-bounded warning once at least 10 requests have a
+rejection ratio above 10%.
+
 ---
 
 ## Infrastructure

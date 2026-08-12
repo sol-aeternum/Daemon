@@ -160,36 +160,44 @@ account, or approving unexpected sign-ins. Daemon mitigates this with nonce-boun
 challenges, single-use proofs, generic responses, short TTLs, new-device visibility, and
 revocation; these controls reduce but do not eliminate user-targeted deception risk.
 
-## Frontend Deployment Env Contract
+## Legacy Frontend Build-Time Defaults
 
-The hosted landing and Google sign-in button are gated by two `NEXT_PUBLIC_*` env vars that
-are baked at Next.js build time. They mirror the backend hosted-identity knobs and must be
-set in `.env.example` and the frontend `docker-compose.yml` environment block:
+> **Authoritative source of truth: the [`Runtime Config`](#runtime-config) endpoint
+> (`GET /v1/auth/config`).** Operators configure hosted mode with
+> `DAEMON_DEPLOYMENT_MODE=hosted`, `DAEMON_HOSTED_IDENTITY_ENABLED=true`, and
+> the applicable backend provider settings. The `NEXT_PUBLIC_*` variables
+> below are retained only for compatibility with existing images and
+> development tests; they are not the gating contract for the hosted landing
+> or Google button. If runtime config is unavailable or invalid, the frontend
+> fails closed to `/setup` rather than trusting build-time values.
 
-| Var                                  | Default                    | Effect                                                                                                                                                 |
-| ------------------------------------ | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE` | `self-hosted` (when unset) | `hosted` switches the landing to Google / email sign-in primary; `self-hosted` keeps the setup-first landing.                                          |
-| `NEXT_PUBLIC_GOOGLE_CLIENT_ID`       | empty (no Google button)   | Public Google OAuth web client ID. When set, the hosted landing renders the Google sign-in button. Must match the backend's `DAEMON_GOOGLE_CLIENT_ID`. |
+Existing builds may still contain these legacy values, but operators do not
+need to keep them synchronized with the backend or rebuild the frontend to
+switch hosted/self-hosted modes:
 
-Required pairing:
-
-- `DAEMON_HOSTED_IDENTITY_ENABLED=true` ↔ `NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE=hosted`
-- `DAEMON_GOOGLE_CLIENT_ID=<server client id>` ↔ `NEXT_PUBLIC_GOOGLE_CLIENT_ID=<same public client id>`
+| Var                                  | Default                    | Current role                                                                                      |
+| ------------------------------------ | -------------------------- | ------------------------------------------------------------------------------------------------- |
+| `NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE` | `self-hosted` (when unset) | Legacy build compatibility only; runtime `DAEMON_DEPLOYMENT_MODE` controls navigation.           |
+| `NEXT_PUBLIC_GOOGLE_CLIENT_ID`       | empty                      | Legacy build compatibility only; runtime `DAEMON_GOOGLE_CLIENT_ID` controls the Google provider. |
 
 Hosted mode and the Google button are only meaningful when the backend has
+`DAEMON_DEPLOYMENT_MODE=hosted` and
 `DAEMON_HOSTED_IDENTITY_ENABLED=true`; the backend `fail-closed` gate in
 `orchestrator/routes/auth_setup.py` rejects hosted email/Google requests with
 `404 hosted_identity_disabled` regardless of frontend configuration when the backend is
 self-hosted. Setup, enrollment, and device endpoints remain available for self-hosted and
 recovery flows on the same router.
 
-When hosted auth runs through the Next.js frontend auth proxy, operators may optionally set
+When hosted auth or chat runs through the Next.js frontend server proxy, operators may optionally set
 `DAEMON_TRUST_PROXY_FORWARDED_CLIENT_IP=true` on the backend so identity rate limits can
 key on the original browser IP carried by the frontend's internal `X-Daemon-Client-IP`
-header instead of the proxy/container hop. The frontend auth proxy only sets that internal
+header instead of the proxy/container hop. The frontend server proxy only sets that internal
 header from `X-Forwarded-For` / platform client-IP headers when its `DAEMON_TRUSTED_PROXY_IPS`
 allowlist contains the immediate proxy IP from `x-real-ip`; configure the reverse proxy to
-overwrite, not append, client IP headers. Leave both settings unset/false for direct/self-hosted
+overwrite, not append, client IP headers. Trusted forwarding also requires the same server-only
+`DAEMON_INTERNAL_PROXY_HMAC_SECRET` (at least 32 random characters) on Next.js and the backend;
+the signed assertion expires after 60 seconds and the secret must never use a `NEXT_PUBLIC_*`
+name. Leave trusted forwarding disabled for direct/self-hosted
 deployments; the default safe posture is to trust only the immediate client IP and ignore
 arbitrary forwarded headers.
 
@@ -206,7 +214,9 @@ on a build-time `NEXT_PUBLIC_*` env:
 The endpoint returns only non-secret runtime data. It never serializes the
 audience allowlist, mail sender mode, refresh TTLs, pepper, or any other secret
 or secret-adjacent value. The `google.clientId` is the public OAuth client ID,
-not a secret.
+not a secret. The frontend caches a successful response for at most 60 seconds
+and refreshes it while the auth provider remains mounted. An unavailable or
+invalid response retains the fail-safe unresolved-mode behavior (`/setup`).
 
 `mode` is sourced from `DAEMON_DEPLOYMENT_MODE` (default `self_hosted`).
 `email.enabled` is true only when both `DAEMON_HOSTED_IDENTITY_ENABLED` and

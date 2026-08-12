@@ -12,7 +12,7 @@ import uuid
 import asyncpg
 import httpx
 import litellm
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -31,7 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from starlette.datastructures import MutableHeaders
 from starlette.types import Receive, Scope, Send
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.auth_pepper import (
@@ -45,10 +45,20 @@ from orchestrator.auth_runtime_state import (
     lock_auth_runtime_state,
     replace_setup_token,
 )
+from orchestrator.services.identity import (
+    RateLimitPolicy,
+    ScopeKind,
+    client_ip_for_key,
+    enforce_rate_limit,
+    get_rate_limiter,
+    record_chat_rate_limit_rejection,
+    record_chat_rate_limit_request,
+)
 from orchestrator.council.sse import stream_council, stream_council_interview_response
 from orchestrator.config import (
     HostSecurityConfigError,
     HostedIdentityConfigError,
+    InternalProxyConfigError,
     ProviderConfig,
     Settings,
     get_settings,
@@ -141,7 +151,6 @@ CORS_ALLOW_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
 CORS_ALLOW_HEADERS = (
     "Authorization",
     "Content-Type",
-    "X-Daemon-Client-IP",
     "X-CSRF-Token",
     "X-Request-ID",
 )
@@ -195,6 +204,7 @@ def _validate_startup_config(settings: Settings, argv: Sequence[str] | None = No
     validate_pepper_config(settings)
     settings.validate_deployment_mode()
     settings.validate_hosted_identity_config()
+    settings.validate_internal_proxy_config()
     if settings.daemon_encryption_key is not None:
         ContentEncryption(settings.daemon_encryption_key)
     settings.validate_host_security_config()
@@ -218,6 +228,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         raise
     except HostedIdentityConfigError as exc:
         logger.critical("Hosted identity config validation failed: %s", exc)
+        raise
+    except InternalProxyConfigError as exc:
+        logger.critical("Internal proxy config validation failed: %s", exc)
         raise
     except EncryptionInitError as exc:
         logger.critical("Encryption config validation failed: %s", exc)
@@ -1239,6 +1252,16 @@ async def openai_chat_completions(
 ) -> StreamingResponse | OpenAIChatResponse:
     """OpenAI-compatible chat completions endpoint for Open WebUI integration."""
 
+    # Per-issue-#38 rate limit must run before payload validation so
+    # abusive clients cannot flood the validation path while a
+    # legitimate user's budget is being drained.
+    await _enforce_chat_rate_limit(
+        request=request,
+        auth=auth,
+        settings=settings,
+        endpoint="chat:openai",
+    )
+
     # Extract the last user message
     user_messages = [m for m in payload.messages if m.role == "user"]
     if not user_messages:
@@ -1802,6 +1825,125 @@ async def generate_sound_effect(
 # ============== Legacy Daemon Endpoint ==============
 
 
+def _chat_rate_limit_policies(
+    request: Request,
+    *,
+    auth: AuthenticatedDevice,
+    settings: Settings,
+) -> list[tuple[ScopeKind, str, RateLimitPolicy]]:
+    """Return rate-limit policies for ``/chat`` and ``/v1/chat/completions``.
+
+    Two authenticated scopes are layered so a single compromised token cannot
+    drain the operator's LLM budget regardless of which user or device the
+    attacker is masquerading as (issue #38):
+
+    * Per-session — narrowest scope, checked first so a runaway
+      session never increments the broader user counter.
+    * Per-user — primary defence against compromised-token abuse. The
+      operator's LLM bill is bounded per account regardless of how
+      many devices/tokens that account owns.
+
+    The per-IP quota is enforced by middleware before body validation so
+    malformed payloads cannot bypass it. All checks use a 60-second window.
+
+    The route-level ``endpoint`` (``chat:daemon`` vs ``chat:openai``)
+    flows into the Redis key so each chat route keeps an independent quota.
+    """
+    return [
+        (
+            "session_id",
+            str(auth.session_id),
+            RateLimitPolicy(
+                limit=settings.daemon_rate_limit_chat_per_token_per_minute,
+                window_seconds=60,
+            ),
+        ),
+        (
+            "user_id",
+            str(auth.user_id),
+            RateLimitPolicy(
+                limit=settings.daemon_rate_limit_chat_per_user_per_minute,
+                window_seconds=60,
+            ),
+        ),
+    ]
+
+
+async def _enforce_chat_rate_limit(
+    *,
+    request: Request,
+    auth: AuthenticatedDevice,
+    settings: Settings,
+    endpoint: str,
+) -> None:
+    """Enforce ``_chat_rate_limit_policies`` for the named chat endpoint.
+
+    Helper exists so ``/chat`` and ``/v1/chat/completions`` (and the
+    ``/chat/completions`` alias) can share the same policy wiring. The
+    endpoint tag is the only difference so logs and Redis keys stay
+    per-route.
+    """
+    limiter = get_rate_limiter(request)
+    await enforce_rate_limit(
+        request=request,
+        limiter=limiter,
+        endpoint=endpoint,
+        policies=_chat_rate_limit_policies(
+            request,
+            auth=auth,
+            settings=settings,
+        ),
+    )
+
+
+_CHAT_IP_RATE_LIMIT_ENDPOINTS = {
+    "/chat": "chat:daemon",
+    "/chat/completions": "chat:openai",
+    "/v1/chat/completions": "chat:openai",
+}
+
+
+@app.middleware("http")
+async def _enforce_chat_ip_rate_limit_before_body_validation(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
+) -> Response:
+    """Charge chat IP quotas before FastAPI parses or validates the body."""
+
+    endpoint = _CHAT_IP_RATE_LIMIT_ENDPOINTS.get(request.url.path.rstrip("/") or "/")
+    if request.method.upper() != "POST" or endpoint is None:
+        return await call_next(request)
+
+    record_chat_rate_limit_request(endpoint)
+    settings = get_settings()
+    policy = RateLimitPolicy(
+        limit=settings.daemon_rate_limit_chat_per_ip_per_minute,
+        window_seconds=60,
+    )
+    try:
+        await enforce_rate_limit(
+            request=request,
+            policies=[("ip", client_ip_for_key(request), policy)],
+            limiter=get_rate_limiter(request),
+            endpoint=endpoint,
+        )
+    except HTTPException as exc:
+        if exc.status_code == 429:
+            scope = (exc.headers or {}).get("X-Daemon-Rate-Limit-Scope", "unknown")
+            record_chat_rate_limit_rejection(endpoint, scope)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=exc.headers,
+        )
+    response = await call_next(request)
+    if response.status_code == 429:
+        scope = response.headers.get("X-Daemon-Rate-Limit-Scope")
+        if scope:
+            record_chat_rate_limit_rejection(endpoint, scope)
+    return response
+
+
 @app.post("/chat", responses=REQUEST_BODY_TOO_LARGE_RESPONSES)
 async def chat(
     payload: ChatRequest,
@@ -1810,6 +1952,16 @@ async def chat(
     app_state: AppState = Depends(get_app_state),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> StreamingResponse:
+    # Per-issue-#38 rate limit runs after auth so user/session scope
+    # values are populated, but before any LLM-backed work so the
+    # operator's budget is bounded even when the request would have
+    # succeeded.
+    await _enforce_chat_rate_limit(
+        request=request,
+        auth=auth,
+        settings=settings,
+        endpoint="chat:daemon",
+    )
     conversation_id = payload.conversation_id or new_conversation_id()
     # Warn if no conversation_id was provided - should not happen in normal frontend flow
     if not payload.conversation_id:
@@ -2032,7 +2184,7 @@ async def chat(
             db_messages = await store.get_recent_messages(
                 conversation_uuid,
                 limit=settings.chat_history_limit,
-                exclude_status=["streaming"],
+                exclude_status=["streaming", "error", "cancelled"],
             )
             history_messages = [
                 _to_history_message(msg)
