@@ -14,6 +14,7 @@ from orchestrator.memory.encryption import (
     ENCRYPTION_OPERATIONS_FAILED_TOTAL_KEY,
     get_encryption_operations_failed_total,
 )
+from orchestrator.services.identity.rate_limit_dep import get_chat_rate_limit_metrics
 
 router = APIRouter(prefix="/status", tags=["system"])
 
@@ -63,4 +64,5 @@ async def get_status(
         "embedding_provider_used": get_embedding_provider_used_counts(),
         "encryption_operations_failed_total": encryption_failures,
         "encryption_failure_alert": encryption_failures > 0,
+        "chat_rate_limits": get_chat_rate_limit_metrics(),
     }

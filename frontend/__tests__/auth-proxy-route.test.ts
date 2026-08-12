@@ -1,4 +1,21 @@
-import { describe, expect, it, vi, afterEach } from 'vitest';
+import { createHmac } from 'node:crypto';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const DAEMON_INTERNAL_PROXY_HMAC_SECRET = 'x'.repeat(32);
+
+function daemonClientIpSignature(
+  clientIp: string,
+  method: string,
+  timestampMs: number,
+  secret = DAEMON_INTERNAL_PROXY_HMAC_SECRET,
+) {
+  const timestamp = Math.floor(timestampMs / 1000).toString();
+  const payload = `v1\n${timestamp}\n${method.toUpperCase()}\n${clientIp}`;
+  return {
+    timestamp,
+    signature: createHmac('sha256', secret).update(payload).digest('hex'),
+  };
+}
 
 async function loadPostHandler() {
   vi.resetModules();
@@ -7,9 +24,15 @@ async function loadPostHandler() {
 }
 
 describe('auth proxy forwarded header handling', () => {
+  beforeEach(() => {
+    process.env.DAEMON_INTERNAL_PROXY_HMAC_SECRET =
+      DAEMON_INTERNAL_PROXY_HMAC_SECRET;
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     delete process.env.DAEMON_TRUSTED_PROXY_IPS;
+    delete process.env.DAEMON_INTERNAL_PROXY_HMAC_SECRET;
   });
 
   it('ignores spoofed forwarded headers and uses the immediate client IP', async () => {
@@ -57,6 +80,84 @@ describe('auth proxy forwarded header handling', () => {
     expect(headers.get('X-Forwarded-Host')).toBe('localhost:3000');
     expect(headers.get('X-Forwarded-Proto')).toBe('https');
     expect(headers.get('Authorization')).toBe('Bearer daemon-token');
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('DAEMON_TRUSTED_PROXY_IPS is unset'),
+    );
+  });
+
+  it('adds signed daemon client-IP headers when proxy signing is enabled', async () => {
+    const nowMs = 1_700_000_000_000;
+    vi.spyOn(Date, 'now').mockReturnValue(nowMs);
+    const { timestamp, signature } = daemonClientIpSignature(
+      '198.51.100.9',
+      'POST',
+      nowMs,
+    );
+    process.env.DAEMON_TRUSTED_PROXY_IPS = '10.0.0.12,10.0.0.13';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const req = new Request('http://localhost:3000/api/v1/auth/refresh', {
+      method: 'POST',
+      headers: {
+        host: 'localhost:3000',
+        'x-forwarded-host': 'localhost:3000',
+        'x-forwarded-proto': 'https',
+        'x-real-ip': '10.0.0.13',
+        'x-forwarded-for': '198.51.100.9, 10.0.0.12',
+      },
+    });
+
+    const POST = await loadPostHandler();
+    await POST(req, {
+      params: Promise.resolve({ path: ['refresh'] }),
+    });
+
+    const [, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+    const headers = new Headers(init.headers);
+    expect(headers.get('X-Daemon-Client-IP')).toBe('198.51.100.9');
+    expect(headers.get('X-Daemon-Client-IP-Timestamp')).toBe(timestamp);
+    expect(headers.get('X-Daemon-Client-IP-Signature')).toBe(signature);
+  });
+
+  it('does not add daemon client-IP headers without a signing secret', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    delete process.env.DAEMON_INTERNAL_PROXY_HMAC_SECRET;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const req = new Request('http://localhost:3000/api/v1/auth/refresh', {
+      method: 'POST',
+      headers: {
+        host: 'localhost:3000',
+        'x-forwarded-host': 'localhost:3000',
+        'x-forwarded-proto': 'https',
+        'x-real-ip': '203.0.113.6',
+        'x-forwarded-for': '203.0.113.5',
+        'content-type': 'application/json',
+      },
+    });
+
+    const POST = await loadPostHandler();
+    const response = await POST(req, {
+      params: Promise.resolve({ path: ['refresh'] }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+    const headers = new Headers(init.headers);
+    expect(headers.get('X-Daemon-Client-IP')).toBeNull();
+    expect(headers.get('X-Daemon-Client-IP-Timestamp')).toBeNull();
+    expect(headers.get('X-Daemon-Client-IP-Signature')).toBeNull();
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('DAEMON_TRUSTED_PROXY_IPS is unset'),
     );
