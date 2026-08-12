@@ -6,6 +6,12 @@ from pathlib import Path
 
 import pytest
 
+# LiteLLM defaults to DEV mode and calls load_dotenv() during import. Test
+# worktrees can be nested below a primary checkout, so that search may cross
+# the worktree boundary and load the primary checkout's credentials. Disable
+# LiteLLM's implicit dotenv loading before any test module can import it.
+os.environ["LITELLM_MODE"] = "PRODUCTION"
+
 from orchestrator.config import get_settings
 
 
