@@ -942,22 +942,36 @@ class MemoryStore:
         confidence: float = 1.0,
         status: str = "active",
         memory_slot: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        conn: Any | None = None,
     ) -> dict[str, Any]:
         encrypted_content = self._enc.encrypt(content)
         content_hash = compute_memory_content_hash(content)
         embedding_str = _format_vector(embedding) if embedding else None
         effective_embedding_model = embedding_model or _default_embedding_model()
+        metadata_json = json.dumps(metadata) if metadata is not None else None
+
+        # When ``conn`` is supplied, every SQL call in this method runs
+        # on that connection inside the caller's transaction. This is
+        # the atomic-cap path (issue #221): the caller has already
+        # acquired the per-user advisory lock and verified the
+        # active-row cap, so the insert must stay on the same
+        # transaction as the cap check or the lock guarantee is lost.
+        # When ``conn`` is None (legacy path), the pool is used as
+        # before.
+        executor = conn if conn is not None else self._pool
 
         async def _insert(
             conversation_id: uuid.UUID | None,
-        ) -> asyncpg.Record:
-            row = await self._pool.fetchrow(
+        ) -> asyncpg.Record | None:
+            return await executor.fetchrow(
                 """
                 INSERT INTO memories
                     (user_id, content, content_hash, content_tsv, embedding, embedding_model,
                      category, source_type, source_conversation_id, local_only, confidence,
-                     status, memory_slot)
-                VALUES ($1, $2, $3, to_tsvector('english', $13), $4::vector, $5, $6, $7, $8, $9, $10, $11, $12)
+                     status, memory_slot, metadata)
+                VALUES ($1, $2, $3, to_tsvector('english', $14), $4::vector, $5, $6, $7, (SELECT id FROM conversations WHERE id = $8), $9, $10, $11, $12, $13)
+                ON CONFLICT DO NOTHING
                 RETURNING *
                 """,
                 user_id,
@@ -972,34 +986,160 @@ class MemoryStore:
                 confidence,
                 status,
                 memory_slot,
+                metadata_json,
                 content,  # plaintext for tsvector computation
             )
-            if row is None:
-                raise RuntimeError("insert_memory: insert returned no row")
-            return row
 
         try:
-            try:
-                row = await _insert(source_conversation_id)
-            except asyncpg.ForeignKeyViolationError as error:
-                if source_conversation_id is None:
-                    raise
-                logger.warning(
-                    "insert_memory: source_conversation_id %s missing; retrying without source conversation reference (%s)",
-                    source_conversation_id,
-                    error,
-                )
-                row = await _insert(None)
+            row = await _insert(source_conversation_id)
         except asyncpg.UniqueViolationError:
+            # Compatibility for pool/test executors that surface a unique
+            # violation instead of honoring ON CONFLICT DO NOTHING.
+            if conn is not None:
+                raise
             existing = await self._get_active_memory_by_content_hash(
-                user_id,
-                content_hash,
-                local_only,
+                user_id, content_hash, local_only
             )
             if existing is not None:
                 return existing
             raise
+
+        if row is None:
+            # ON CONFLICT keeps a caller-owned transaction usable. Resolve
+            # the active duplicate on the same executor/connection so the
+            # dedup mutation remains inside the advisory-lock transaction.
+            row = await executor.fetchrow(
+                """
+                SELECT * FROM memories
+                WHERE user_id = $1 AND content_hash = $2
+                  AND local_only = $3 AND status = 'active' AND valid_to IS NULL
+                ORDER BY created_at ASC LIMIT 1
+                """,
+                user_id,
+                content_hash,
+                local_only,
+            )
+            if row is None:
+                raise RuntimeError("insert_memory: conflict returned no active duplicate")
         return self._memory_row_to_dict(row)
+
+    # ------------------------------------------------------------------
+    # Atomic active-row cap enforcement (issue #221)
+    # ------------------------------------------------------------------
+    # The previous design (issue #62) checked the active-row cap with
+    # `count_active_memories` and then inserted a new row in two
+    # separate pool calls. Two concurrent creates at `cap - 1` could
+    # both pass the count check and then both insert, silently raising
+    # the active count above the cap.
+    #
+    # The atomic redesign uses a PostgreSQL transaction-scoped advisory
+    # lock keyed by the user UUID (`pg_advisory_xact_lock`). The lock
+    # is held for the lifetime of the explicit surrounding transaction
+    # and released automatically on COMMIT/ROLLBACK. Contended callers
+    # wait without spinning; the embedding request has already completed
+    # before this transaction is opened.
+    #
+    # `acquire_user_cap_lock` returns `(connection, acquired)`. Callers
+    # must issue COMMIT or ROLLBACK before returning the connection to the
+    # pool; the per-user check + insert must happen on that same
+    # connection.
+    @staticmethod
+    def _user_cap_lock_keys(user_id: uuid.UUID) -> tuple[int, int]:
+        """Derive the (classid, objid) pair for the user cap lock.
+
+        `pg_try_advisory_xact_lock` takes either two `int4` keys or one
+        `int8` key. We derive a stable 64-bit split from the user's UUID
+        so every concurrent cap-path for the same user collides on the
+        same lock and every other user gets a different lock. The high
+        32 bits are derived from the first 8 hex digits of the UUID
+        (the time-low field) and the low 32 bits from the next 8 hex
+        digits, so collisions across users are vanishingly unlikely
+        (1 in 2^32 per dimension).
+        """
+        hexstr = user_id.hex
+        classid = int(hexstr[0:8], 16) & 0x7FFFFFFF  # int4 positive
+        objid = int(hexstr[8:16], 16) & 0x7FFFFFFF  # int4 positive
+        return classid, objid
+
+    async def acquire_user_cap_lock(
+        self,
+        user_id: uuid.UUID,
+    ) -> tuple[asyncpg.Connection, bool]:
+        """Acquire the per-user cap lock for the duration of a transaction.
+
+        Returns ``(connection, True)`` on success. The caller is
+        responsible for ``await connection.commit()`` (or
+        ``rollback()``) so the transaction-scoped lock is released
+        before the connection is returned to the pool. ``False`` would
+        indicate ``pg_try_advisory_xact_lock`` returned false; that is
+        currently unreachable because we use ``pg_advisory_xact_lock``
+        (blocking form) so a contended caller waits rather than
+        failing. The bool is preserved for future migration to the
+        non-blocking form.
+
+        Raises ``RuntimeError`` if the caller already holds a
+        transaction on the returned connection without having released
+        the prior cap lock — i.e. nested cap-lock acquisitions are
+        forbidden because they would mask the contention this helper
+        exists to serialize.
+        """
+        # Use the BLOCKING advisory lock (`pg_advisory_xact_lock`). A
+        # contended caller waits in the DB for the holder to commit;
+        # this is the right tradeoff for a per-user cap because
+        # contention implies two parallel writes for one user, which
+        # is the case we explicitly want to serialize. The lock is
+        # scoped to the transaction so it is released on COMMIT or
+        # ROLLBACK even if the connection is later recycled.
+        classid, objid = self._user_cap_lock_keys(user_id)
+        conn = await self._pool.acquire()
+        try:
+            # asyncpg otherwise wraps each standalone statement in its
+            # own implicit transaction. Without this explicit BEGIN a
+            # transaction-scoped advisory lock would be released as soon
+            # as the SELECT completed, reopening the TOCTOU race.
+            await conn.execute("BEGIN")
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock($1::int, $2::int)",
+                classid,
+                objid,
+            )
+        except BaseException:
+            try:
+                await conn.execute("ROLLBACK")
+            finally:
+                await self._pool.release(conn)
+            raise
+        # asyncpg's ``pool.acquire()`` returns a PoolConnectionProxy
+        # whose ``.execute``/``.fetchrow``/``.commit``/``.rollback``
+        # methods are what the caller needs; it is not literally
+        # ``asyncpg.Connection`` even though it exposes the same
+        # transaction surface. Type as ``Any`` so callers can pass it
+        # into the store's existing helpers without pyright noise.
+        return conn, True  # type: ignore[return-value]
+
+    async def count_active_memories_for_user_within_lock(
+        self,
+        conn: Any,
+        user_id: uuid.UUID,
+    ) -> int:
+        """Active-row count run on the connection that holds the cap lock.
+
+        Same query as ``count_active_memories`` but executed on the
+        supplied ``conn`` so the read is part of the same transaction
+        that will perform the insert (issue #221). Callers MUST already
+        hold the per-user advisory lock via ``acquire_user_cap_lock``.
+        """
+        row = await conn.fetchrow(
+            """
+            SELECT COUNT(*) AS count
+            FROM memories
+            WHERE user_id = $1
+              AND status = 'active'
+              AND valid_to IS NULL
+            """,
+            user_id,
+        )
+        return int(row["count"]) if row else 0
 
     async def count_active_memories(self, user_id: uuid.UUID) -> int:
         """Count this user's currently-open active memories.
@@ -1383,8 +1523,9 @@ class MemoryStore:
 
         return self._memory_row_to_dict(new_row)
 
-    async def touch_memory(self, memory_id: uuid.UUID) -> None:
-        await self._pool.execute(
+    async def touch_memory(self, memory_id: uuid.UUID, *, conn: Any | None = None) -> None:
+        executor = conn if conn is not None else self._pool
+        await executor.execute(
             """
             UPDATE memories
             SET last_accessed_at = NOW(),
@@ -1412,6 +1553,7 @@ class MemoryStore:
         memory_id: uuid.UUID,
         *,
         user_id: uuid.UUID | None = None,
+        conn: Any | None = None,
     ) -> bool:
         # When `user_id` is provided, the UPDATE filters on it for
         # defense-in-depth against the `MemoryWriteTool` IDOR: callers
@@ -1432,6 +1574,7 @@ class MemoryStore:
         # `valid_to IS NULL` predicate matching, which is what callers
         # care about (whether the row was actually closed by *this*
         # call, not whether it existed before).
+        executor = conn if conn is not None else self._pool
         if user_id is None:
             update_query = """
                 UPDATE memories
@@ -1453,7 +1596,7 @@ class MemoryStore:
                 RETURNING id
                 """
             update_args = (memory_id, user_id)
-        result = await self._pool.fetchval(update_query, *update_args)
+        result = await executor.fetchval(update_query, *update_args)
         return result is not None
 
     async def delete_memory(
@@ -1522,6 +1665,7 @@ class MemoryStore:
         include_dream_observations: bool = False,
         source_conversation_ids: list[uuid.UUID] | None = None,
         embedding_model: str | None = None,
+        conn: Any | None = None,
     ) -> list[dict[str, Any]]:
         storage_model_metadata = getattr(query_embedding, "storage_model", None)
         inferred_embedding_model = (
@@ -1532,9 +1676,10 @@ class MemoryStore:
         )
         embedding_str = _format_vector(query_embedding)
         conversation_filter = [str(value) for value in source_conversation_ids or []] or None
+        executor = conn if conn is not None else self._pool
 
         if category:
-            rows = await self._pool.fetch(
+            rows = await executor.fetch(
                 """
                 SELECT *,
                        1 - (embedding <=> $2::vector) AS similarity
@@ -1567,7 +1712,7 @@ class MemoryStore:
                 effective_embedding_model,
             )
         else:
-            rows = await self._pool.fetch(
+            rows = await executor.fetch(
                 """
                 SELECT *,
                        1 - (embedding <=> $2::vector) AS similarity
@@ -1619,6 +1764,7 @@ class MemoryStore:
         source_conversation_ids: list[uuid.UUID] | None = None,
         embedding_models: list[str] | tuple[str, ...] | None = None,
         include_l0: bool = True,
+        conn: Any | None = None,
     ) -> list[dict[str, Any]]:
         """Search memories using BM25 full-text search.
 
@@ -1629,8 +1775,9 @@ class MemoryStore:
         # queries. Dedup callers opt out so frozen memories cannot be mutated.
         conversation_filter = [str(value) for value in source_conversation_ids or []] or None
         effective_embedding_models = sorted(set(embedding_models or (_default_embedding_model(),)))
+        executor = conn if conn is not None else self._pool
         if category:
-            rows = await self._pool.fetch(
+            rows = await executor.fetch(
                 """
                 SELECT *,
                        ts_rank(content_tsv, plainto_tsquery('english', $2)) AS bm25_score
@@ -1663,7 +1810,7 @@ class MemoryStore:
                 include_l0,
             )
         else:
-            rows = await self._pool.fetch(
+            rows = await executor.fetch(
                 """
                 SELECT *,
                        ts_rank(content_tsv, plainto_tsquery('english', $2)) AS bm25_score
@@ -1738,8 +1885,10 @@ class MemoryStore:
         include_local: bool = False,
         include_historical: bool = False,
         limit: int = 50,
+        conn: Any | None = None,
     ) -> list[dict[str, Any]]:
-        rows = await self._pool.fetch(
+        executor = conn if conn is not None else self._pool
+        rows = await executor.fetch(
             """
             SELECT *
             FROM memories

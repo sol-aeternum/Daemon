@@ -14,6 +14,28 @@ import orchestrator.memory.tools as tools_module
 from orchestrator.memory.tools import MemoryReadTool, MemoryWriteTool
 
 
+def _install_cap_lock_mocks(store: AsyncMock, *, active_rows: int = 0) -> AsyncMock:
+    """Install the transaction-lock surface used by write-tool tests."""
+    conn = AsyncMock()
+    store.acquire_user_cap_lock = AsyncMock(return_value=(conn, True))
+    store.count_active_memories_for_user_within_lock = AsyncMock(return_value=active_rows)
+    store._pool = AsyncMock()
+    store._pool.release = AsyncMock()
+    return conn
+
+
+@pytest.fixture(autouse=True)
+def _stub_prepared_write_embedding(monkeypatch):
+    """Keep tool tests offline while writes prepare embeddings before locks."""
+    prepared = SimpleNamespace(
+        embeddings=[[0.1, 0.2]],
+        storage_model="test:embedding",
+    )
+    mock = AsyncMock(return_value=prepared)
+    monkeypatch.setattr(tools_module, "prepare_memory_embedding", mock)
+    return mock
+
+
 @pytest.mark.asyncio
 async def test_memory_tools_import():
     with patch("orchestrator.memory.dedup.dedup_and_store", new_callable=AsyncMock):
@@ -206,6 +228,12 @@ async def test_memory_write_create_passes_slot_to_dedup_and_store():
         mock_dedup.return_value = uuid.uuid4()
 
         mock_store = AsyncMock()
+        # Cap-lock helpers (issue #221) — default to a no-op sentinel.
+        sentinel_conn = AsyncMock()
+        mock_store.acquire_user_cap_lock = AsyncMock(return_value=(sentinel_conn, True))
+        mock_store.count_active_memories_for_user_within_lock = AsyncMock(return_value=0)
+        mock_store._pool = AsyncMock()
+        mock_store._pool.release = AsyncMock()
         user_id = uuid.uuid4()
         tool = MemoryWriteTool(mock_store, user_id)
 
@@ -214,6 +242,7 @@ async def test_memory_write_create_passes_slot_to_dedup_and_store():
         mock_dedup.assert_called_once()
         call_kwargs = mock_dedup.call_args[1]
         assert call_kwargs["slot"] == "test_slot"
+        assert call_kwargs["lock_conn"] is sentinel_conn
 
 
 @pytest.mark.asyncio
@@ -223,6 +252,8 @@ async def test_memory_write_update_calls_close_then_dedup():
         mock_dedup.return_value = uuid.uuid4()
 
         mock_store = AsyncMock()
+        cap_conn = _install_cap_lock_mocks(mock_store)
+        mock_store.close_memory = AsyncMock(return_value=True)
         existing_memory_id = uuid.uuid4()
         user_id = uuid.uuid4()
         # First call (ownership check): open row. Second call
@@ -261,7 +292,9 @@ async def test_memory_write_update_calls_close_then_dedup():
         )
 
         # Verify close_memory was called with user_id for defense-in-depth.
-        mock_store.close_memory.assert_called_once_with(existing_memory_id, user_id=user_id)
+        mock_store.close_memory.assert_called_once_with(
+            existing_memory_id, user_id=user_id, conn=cap_conn
+        )
         # Verify dedup_and_store was called after close
         mock_dedup.assert_called_once()
 
@@ -273,6 +306,8 @@ async def test_memory_write_update_inherits_category_and_slot():
         mock_dedup.return_value = uuid.uuid4()
 
         mock_store = AsyncMock()
+        _install_cap_lock_mocks(mock_store)
+        mock_store.close_memory = AsyncMock(return_value=True)
         existing_memory_id = uuid.uuid4()
         user_id = uuid.uuid4()
         # First call (ownership check): open row. Second call
@@ -457,9 +492,34 @@ async def test_memory_write_invalid_category_returns_error():
 
 
 def _quota_store(*, recent_writes: int, active_rows: int) -> AsyncMock:
-    """An AsyncMock store whose quota counters return fixed values."""
+    """An AsyncMock store whose quota counters return fixed values.
+
+    The mock also stubs the issue #221 cap-lock helpers: by default
+    they simulate "no contention" — the lock returns a sentinel
+    connection, the count returns the supplied ``active_rows``, and
+    releasing the sentinel is a no-op. Tests that need to simulate
+    contention or a concurrent writer that has changed the count
+    override ``store.acquire_user_cap_lock`` /
+    ``store.count_active_memories_for_user_within_lock`` on the
+    returned mock directly.
+    """
     store = AsyncMock()
     store.count_active_memories = AsyncMock(return_value=active_rows)
+    # Cap-lock helpers (issue #221). The "no contention" default is a
+    # no-op conn release; the lock acquire is treated as immediate.
+    sentinel_conn = AsyncMock()
+    store.acquire_user_cap_lock = AsyncMock(return_value=(sentinel_conn, True))
+    # The lock-aware count tracks `store.count_active_memories`'s
+    # current return value so tests that mutate the non-locked
+    # count to simulate a "row was deleted" scenario also see the
+    # change reflected inside the locked transaction.
+    store.count_active_memories_for_user_within_lock = AsyncMock(
+        side_effect=lambda *_args, **_kwargs: store.count_active_memories.return_value
+    )
+    # `_pool.release` is called to drop the lock conn back to the
+    # pool. The mock pool's release is a no-op.
+    store._pool = AsyncMock()
+    store._pool.release = AsyncMock()
     return store
 
 
@@ -566,31 +626,47 @@ async def test_memory_write_active_row_cap_is_enforced(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_memory_write_cap_refusal_releases_rate_reservation(monkeypatch):
-    """A cap-refused write must not consume the next billed-attempt slot."""
-    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1)
+async def test_memory_write_cap_refusal_retains_rate_reservation_after_embedding(monkeypatch):
+    """Round-N+1 Codex P1 (Finding 3, 2026-08-12): the embedding is billed before the atomic-cap check.
+
+    The earlier ``test_memory_write_cap_refusal_releases_rate_reservation``
+    pinned the design that ``prepare_memory_embedding`` runs after the
+    cap check, so a cap refusal had no billing cost to recover. Issue
+    #221's atomic redesign moved the embedding BEFORE
+    ``acquire_user_cap_lock`` (the issue explicitly forbids holding the
+    transaction open across the external embedding call). With the new
+    order the embedding is already billed when the cap refuses, so the
+    rate-limit reservation must remain consumed — otherwise a caller at
+    ``cap - 1`` can launch many concurrent creates, let one insert,
+    observe every refusal here, and effectively bypass the rate limit
+    by retrying until the cap is freed (each retry still bills an
+    embedding).
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1000)
     monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1)
 
     with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
         mock_dedup.return_value = uuid.uuid4()
         user_id = uuid.uuid4()
-        store = _quota_store(recent_writes=0, active_rows=1)
+        store = _quota_store(recent_writes=0, active_rows=0)
+        # The pre-embedding ``count_active_memories`` reads zero (the
+        # reservation can be taken), then a concurrent writer inserts
+        # before the atomic check, so the locked recount observes
+        # ``active_rows=1`` and the cap refusal happens AFTER the
+        # embedding has been billed.
+        store.count_active_memories_for_user_within_lock = AsyncMock(return_value=1)
         tool = MemoryWriteTool(store, user_id)
 
         refused = await tool.execute(action="create", content="at cap")
 
         assert "cap" in refused.lower()
-        assert user_id not in tools_module._attempt_log
+        # The embedding has already been billed by the time the
+        # atomic-cap refusal fires, so the rate-limit reservation
+        # must remain consumed. The next write in the window is
+        # refused by the rate limit until the original timestamp
+        # slides out.
+        assert user_id in tools_module._attempt_log
         mock_dedup.assert_not_called()
-
-        # Once the user follows the recovery instruction and frees a
-        # row, the next write must proceed immediately rather than being
-        # rate-limited by the earlier non-billed refusal.
-        store.count_active_memories.return_value = 0
-        allowed = await tool.execute(action="create", content="after delete")
-
-        assert "Memory created" in allowed
-        mock_dedup.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -655,6 +731,13 @@ async def test_memory_write_quota_fails_open_on_counter_error(monkeypatch):
         mock_dedup.return_value = uuid.uuid4()
         store = AsyncMock()
         store.count_active_memories = AsyncMock(side_effect=RuntimeError("pool down"))
+        # Cap-lock helpers (issue #221) — default to a no-op sentinel
+        # so the atomic-cap path does not blow up on a missing mock.
+        sentinel_conn = AsyncMock()
+        store.acquire_user_cap_lock = AsyncMock(return_value=(sentinel_conn, True))
+        store.count_active_memories_for_user_within_lock = AsyncMock(return_value=0)
+        store._pool = AsyncMock()
+        store._pool.release = AsyncMock()
         tool = MemoryWriteTool(store, uuid.uuid4())
 
         result = await tool.execute(action="create", content="fact")
@@ -1029,21 +1112,8 @@ async def test_memory_write_update_at_cap_with_active_target_is_net_neutral(monk
 
 
 @pytest.mark.asyncio
-async def test_memory_write_update_post_close_toctou_is_refused(monkeypatch):
-    """Round-8 P1: post-close re-fetch must catch the TOCTOU no-op.
-
-    Codex review (chatgpt-codex-connector[bot] @2026-08-11T02:01:09Z,
-    P1 on `orchestrator/memory/tools.py:454`): between the initial
-    `get_memory` (which established `valid_to IS NULL` and unlocked
-    the net-neutral cap exemption) and the `close_memory` UPDATE,
-    another transaction can close the same row. `close_memory()`
-    returns `True` for an already-closed target (the EXISTS check
-    matches the row, even though the UPDATE affects zero rows), so
-    without a post-close verification the dedup/insert would silently
-    raise the active count above the cap. The fix re-fetches the row
-    after `close_memory` and refuses the write if `valid_to` is
-    still NULL — meaning the close was a TOCTOU no-op.
-    """
+async def test_memory_write_update_concurrent_close_is_refused(monkeypatch):
+    """An active replacement refuses when its transactional close loses a race."""
     monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1000)
     monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
 
@@ -1051,34 +1121,21 @@ async def test_memory_write_update_post_close_toctou_is_refused(monkeypatch):
         user_id = uuid.uuid4()
         memory_id = uuid.uuid4()
         store = _quota_store(recent_writes=0, active_rows=1000)
-        # First `get_memory` (ownership check): row is closable.
-        # Second `get_memory` (post-close verification): row is
-        # STILL active — `close_memory` was a no-op (TOCTOU).
+        # Preflight sees an active target, but the locked close affects
+        # zero rows because another transaction won the close race.
         store.get_memory = AsyncMock(
-            side_effect=[
-                {
-                    "id": memory_id,
-                    "user_id": user_id,
-                    "content": "old",
-                    "category": "fact",
-                    "memory_slot": None,
-                    "source_conversation_id": None,
-                    "valid_to": None,
-                    "status": "active",
-                },
-                {
-                    "id": memory_id,
-                    "user_id": user_id,
-                    "content": "old",
-                    "category": "fact",
-                    "memory_slot": None,
-                    "source_conversation_id": None,
-                    "valid_to": None,
-                    "status": "active",
-                },
-            ]
+            return_value={
+                "id": memory_id,
+                "user_id": user_id,
+                "content": "old",
+                "category": "fact",
+                "memory_slot": None,
+                "source_conversation_id": None,
+                "valid_to": None,
+                "status": "active",
+            }
         )
-        store.close_memory = AsyncMock(return_value=True)
+        store.close_memory = AsyncMock(return_value=False)
         tool = MemoryWriteTool(store, user_id)
 
         result = await tool.execute(action="update", memory_id=str(memory_id), content="new")
@@ -1087,7 +1144,10 @@ async def test_memory_write_update_post_close_toctou_is_refused(monkeypatch):
         # Critically, the dedup/insert must not be reached when the
         # post-close re-fetch shows the row is still active.
         mock_dedup.assert_not_called()
-        assert user_id not in tools_module._attempt_log
+        # Round-N+1 Codex P1 (Finding 3, 2026-08-12): the embedding
+        # was already billed before the concurrent close race was
+        # detected, so the rate-limit reservation must remain.
+        assert user_id in tools_module._attempt_log
 
 
 @pytest.mark.asyncio
@@ -1202,7 +1262,10 @@ async def test_memory_write_update_close_no_op_is_refused(monkeypatch):
         # Critically, the dedup/insert must not be reached when the
         # close was a no-op (the round-9 concurrent race scenario).
         mock_dedup.assert_not_called()
-        assert user_id not in tools_module._attempt_log
+        # Round-N+1 Codex P1 (Finding 3, 2026-08-12): the embedding
+        # was already billed before the close failed, so the
+        # rate-limit reservation must remain.
+        assert user_id in tools_module._attempt_log
 
 
 @pytest.mark.asyncio
@@ -1243,12 +1306,411 @@ async def test_memory_write_update_close_already_closed_is_refused(monkeypatch):
 
         assert "concurrently" in result.lower()
         mock_dedup.assert_not_called()
-        assert user_id not in tools_module._attempt_log
+        # Round-N+1 Codex P1 (Finding 3, 2026-08-12): the embedding
+        # was already billed before the close took effect check
+        # failed, so the rate-limit reservation must remain.
+        assert user_id in tools_module._attempt_log
 
 
 @pytest.mark.asyncio
-async def test_memory_write_update_store_error_releases_rate_reservation(monkeypatch):
-    """A pre-embedding store error must not consume the user's rate quota."""
+async def test_memory_write_update_close_target_excluded_from_dedup_search(monkeypatch):
+    """Round-N+1 Codex P1 (Finding 1, 2026-08-12, tools.py:739).
+
+    The update path closes the target row on ``cap_conn`` (uncommitted)
+    and then calls ``dedup_and_store``. ``deduplicate_facts`` searches
+    via ``store.search_memories`` which uses a separate pool
+    connection — that connection cannot observe the uncommitted
+    close. Without filtering, the search could return the just-closed
+    row as ``best_match``, the supersede branch would try to close it
+    again on ``cap_conn``, ``_close_memory`` would return ``False``
+    (valid_to already set), and the whole update would raise
+    ``RuntimeError`` and roll back. The fix threads the set of
+    closed-by-caller IDs through ``deduplicate_facts`` so the
+    candidate pool is filtered before best-match selection.
+
+    This test verifies the integration: ``dedup_and_store`` is
+    awaited with the closed memory ID passed through
+    ``excluded_memory_ids``, and the new memory is created (not the
+    update silently rolled back).
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1000)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
+
+    user_id = uuid.uuid4()
+    old_memory_id = uuid.uuid4()
+    new_memory_id = uuid.uuid4()
+    store = _quota_store(recent_writes=0, active_rows=1000)
+    store.get_memory = AsyncMock(
+        return_value={
+            "id": old_memory_id,
+            "user_id": user_id,
+            "content": "old",
+            "category": "fact",
+            "memory_slot": None,
+            "source_conversation_id": None,
+            "valid_to": None,
+            "status": "active",
+        }
+    )
+    store.close_memory = AsyncMock(return_value=True)
+
+    with patch("orchestrator.memory.tools.dedup_and_store", new_callable=AsyncMock) as mock_dedup:
+        mock_dedup.return_value = new_memory_id
+        tool = MemoryWriteTool(store, user_id)
+
+        result = await tool.execute(action="update", memory_id=str(old_memory_id), content="new")
+
+        assert "updated" in result.lower()
+        store.close_memory.assert_called_once()
+        mock_dedup.assert_called_once()
+        # The closed ID must reach the dedup call so the candidate
+        # pool is filtered before best-match selection.
+        kwargs = mock_dedup.call_args.kwargs
+        assert old_memory_id in kwargs.get("excluded_memory_ids", set())
+
+
+@pytest.mark.asyncio
+async def test_memory_dedup_candidate_reads_route_to_lock_conn():
+    """With an active lock connection, all dedup candidate reads use that connection."""
+    from dataclasses import dataclass
+    from orchestrator.memory.store import MemoryStore
+    from orchestrator.memory.dedup import deduplicate_facts
+
+    @dataclass
+    class SimpleFact:
+        content: str
+        category: str
+        confidence: float = 0.8
+        slot: str | None = None
+
+    user_id = uuid.uuid4()
+    fact = SimpleFact(content="the thing happened", category="fact", slot="vehicle.current")
+    lock_conn = AsyncMock(name="lock_conn")
+    lock_conn.fetch = AsyncMock(return_value=[])
+
+    mock_store = AsyncMock(spec=MemoryStore)
+    mock_store.search_memories = AsyncMock(return_value=[])
+    mock_store.search_memories_bm25 = AsyncMock(return_value=[])
+    mock_store.list_memories_by_slot_family = AsyncMock(return_value=[])
+    mock_store.insert_memory = AsyncMock(
+        return_value={
+            "id": uuid.uuid4(),
+            "content": fact.content,
+            "memory_slot": fact.slot,
+        }
+    )
+
+    with (
+        patch(
+            "orchestrator.memory.dedup.embed_documents_with_metadata",
+            new_callable=AsyncMock,
+        ) as mock_embed,
+        patch(
+            "orchestrator.memory.dedup.get_configured_embedding_fallback_storage_models",
+            return_value=["voyage-4-large-fallback"],
+        ),
+    ):
+        mock_embed.return_value = SimpleNamespace(
+            embeddings=[[0.1, 0.2]],
+            storage_model="voyage-4-large",
+        )
+
+        await deduplicate_facts(
+            store=mock_store,
+            user_id=user_id,
+            facts=[fact],
+            conversation_id=None,
+            lock_conn=lock_conn,
+        )
+
+    mock_store.search_memories.assert_awaited_once()
+    assert mock_store.search_memories.await_args.kwargs["conn"] is lock_conn
+
+    mock_store.search_memories_bm25.assert_awaited_once()
+    assert mock_store.search_memories_bm25.await_args.kwargs["conn"] is lock_conn
+
+    mock_store.list_memories_by_slot_family.assert_awaited_once()
+    assert mock_store.list_memories_by_slot_family.await_args.kwargs["conn"] is lock_conn
+
+
+@pytest.mark.asyncio
+async def test_deduplicate_facts_does_not_check_contradiction_when_lock_conn_defers_supersede():
+    """A lock-conn supersede path defers contradiction/trust side effects."""
+    from dataclasses import dataclass
+    from orchestrator.memory.store import MemoryStore
+    from orchestrator.memory.dedup import deduplicate_facts
+
+    @dataclass
+    class SimpleFact:
+        content: str
+        category: str
+        confidence: float = 0.8
+        slot: str | None = None
+
+    superseded_memory_id = uuid.uuid4()
+    new_memory_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    fact = SimpleFact(content="new fact", category="fact")
+    lock_conn = AsyncMock(name="lock_conn")
+
+    mock_store = AsyncMock(spec=MemoryStore)
+    mock_store.search_memories = AsyncMock(
+        return_value=[
+            {
+                "id": str(superseded_memory_id),
+                "content": "old fact",
+                "similarity": 0.8,
+                "valid_to": None,
+                "memory_slot": None,
+            }
+        ]
+    )
+    mock_store.insert_memory = AsyncMock(
+        return_value={"id": new_memory_id, "content": fact.content}
+    )
+    mock_store.close_memory = AsyncMock(return_value=True)
+
+    with (
+        patch(
+            "orchestrator.memory.dedup.embed_documents_with_metadata",
+            new_callable=AsyncMock,
+        ) as mock_embed,
+        patch(
+            "orchestrator.memory.dedup.check_contradiction",
+            new_callable=AsyncMock,
+            return_value=(True, "found"),
+        ) as mock_contradiction,
+        patch("orchestrator.memory.dedup.get_settings") as mock_settings,
+    ):
+        mock_embed.return_value = SimpleNamespace(
+            embeddings=[[0.1, 0.2]],
+            storage_model="voyage-4-large",
+        )
+        mock_settings.return_value.dedup_merge_threshold = 1.0
+        mock_settings.return_value.dedup_supersede_threshold = 0.75
+        mock_settings.return_value.dedup_supersede_same_slot_threshold = 0.75
+        mock_settings.return_value.background_reasoning_model = "gpt-4o-mini"
+        mock_settings.return_value.embedding_document_model = "voyage-4-large"
+
+        result = await deduplicate_facts(
+            store=mock_store,
+            user_id=user_id,
+            facts=[fact],
+            conversation_id=None,
+            lock_conn=lock_conn,
+        )
+
+    assert mock_contradiction.await_count == 0
+    assert len(result.deferred_supersede_effects) == 1
+    assert result.deferred_supersede_effects[0].superseded_memory_id == superseded_memory_id
+    assert result.deferred_supersede_effects[0].new_memory_id == new_memory_id
+
+
+@pytest.mark.asyncio
+async def test_memory_write_create_applies_deferred_supersede_after_commit_and_pool_release():
+    """Deferred contradiction/trust work runs only after cap-locked commit + pool release."""
+    user_id = uuid.uuid4()
+    lock_conn = AsyncMock(name="lock_conn")
+
+    def _record_conn_execute(statement: str) -> None:
+        events.append(f"conn_exec:{statement}")
+
+    async def _fake_dedup_and_store(
+        *,
+        deferred_supersede_effects: list | None = None,
+        **kwargs: object,
+    ) -> uuid.UUID:
+        events.append("dedup_and_store")
+        if deferred_supersede_effects is not None:
+            deferred_supersede_effects.append(
+                tools_module.DeferredSupersedeEffects(
+                    superseded_memory_id=uuid.uuid4(),
+                    new_memory_id=uuid.uuid4(),
+                    existing_content="old fact",
+                    new_content="new fact",
+                )
+            )
+        return uuid.uuid4()
+
+    async def _capture_apply_deferred(
+        self, _effects: list[tools_module.DeferredSupersedeEffects]
+    ) -> None:
+        events.append("apply_deferred")
+
+    async def _capture_check_and_set(
+        self,
+        _memory_id: uuid.UUID,
+        _content: str,
+        _slot: str | None,
+    ) -> None:
+        events.append("check_and_set")
+
+    async def _record_pool_release(_: AsyncMock) -> None:
+        events.append("pool_release")
+
+    store = _quota_store(recent_writes=0, active_rows=0)
+    store._pool = AsyncMock()
+    store._pool.release = AsyncMock(side_effect=_record_pool_release)
+    store.acquire_user_cap_lock = AsyncMock(return_value=(lock_conn, True))
+    store.count_active_memories_for_user_within_lock = AsyncMock(return_value=0)
+    lock_conn.execute = AsyncMock(side_effect=_record_conn_execute)
+
+    events: list[str] = []
+
+    with (
+        patch("orchestrator.memory.tools.dedup_and_store", new=_fake_dedup_and_store),
+        patch.object(
+            tools_module.MemoryWriteTool,
+            "_apply_deferred_supersede_effects",
+            _capture_apply_deferred,
+        ),
+        patch.object(
+            tools_module.MemoryWriteTool, "_check_and_set_contradiction", _capture_check_and_set
+        ),
+    ):
+        tool = MemoryWriteTool(store, user_id)
+        result = await tool.execute(action="create", content="new fact")
+
+    assert result.startswith("Memory created")
+    assert "conn_exec:COMMIT" in events
+    assert "pool_release" in events
+
+    assert events.index("conn_exec:COMMIT") < events.index("pool_release")
+    assert events.index("pool_release") < events.index("apply_deferred")
+    assert events.index("apply_deferred") < events.index("check_and_set")
+
+
+@pytest.mark.asyncio
+async def test_memory_dedup_excluded_ids_filter_fallback_candidate_sources(monkeypatch):
+    """Round-N+1 Codex P1 (Finding 6, 2026-08-11) regression: ``excluded_memory_ids`` must
+    filter the candidate pool AFTER every candidate source has been
+    appended.
+
+    The earlier round-N+1 fix (Finding 1) filtered ``similar`` BEFORE
+    the BM25 and slot-family fallback loops ran. Codex correctly
+    flagged that a closed-then-reopened-via-fallback candidate could
+    slip back in. This test exercises ``deduplicate_facts`` directly:
+
+    1. vector search returns no candidates for the excluded ID;
+    2. BM25 fallback search returns a candidate that IS the excluded
+       ID — would re-introduce it into ``similar`` if exclusion is
+       applied before the fallback loop;
+    3. slot-family fallback adds nothing new;
+    4. after exclusion, the candidate pool is empty, so ``deduplicate_facts``
+       takes the ``new`` branch and the closed target is NOT surfaced
+       as ``best_match``.
+    """
+    from dataclasses import dataclass
+    from unittest.mock import MagicMock
+
+    from orchestrator.memory.dedup import deduplicate_facts
+    from orchestrator.memory.store import MemoryStore
+
+    monkeypatch.setattr(
+        "orchestrator.memory.dedup.get_configured_embedding_fallback_storage_models",
+        lambda: ["voyage-4-large-fallback"],
+    )
+
+    user_id = uuid.uuid4()
+    excluded_id = uuid.uuid4()
+
+    @dataclass
+    class SimpleFact:
+        content: str
+        category: str
+        confidence: float = 0.8
+        slot: str | None = None
+
+    fact = SimpleFact(content="the thing happened", category="fact")
+
+    mock_store = MagicMock(spec=MemoryStore)
+
+    # Vector search returns nothing; the closed target's row would only
+    # come back through BM25 (because the close was uncommitted on
+    # ``cap_conn``, invisible to the pool).
+    mock_store.search_memories = AsyncMock(return_value=[])
+
+    # BM25 fallback returns the just-closed row's content match. The
+    # excluded_memory_ids filter MUST drop this candidate AFTER it is
+    # appended, not before — or the superseded/closed target resurfaces
+    # as ``best_match`` and the supersede branch would attempt to close
+    # the already-closed row again (P1 Finding 6).
+    mock_store.search_memories_bm25 = AsyncMock(
+        return_value=[
+            {
+                "id": str(excluded_id),
+                "content": "the thing happened",
+                "similarity": 0.0,
+                "valid_to": None,
+                "memory_slot": None,
+                "category": "fact",
+            }
+        ]
+    )
+    mock_store.touch_memory = AsyncMock()
+    mock_store.insert_memory = AsyncMock(
+        return_value={"id": str(uuid.uuid4()), "content": "the thing happened"}
+    )
+    mock_store.supersede_memory = AsyncMock(
+        return_value={"id": str(uuid.uuid4()), "content": "the thing happened"}
+    )
+
+    with (
+        patch(
+            "orchestrator.memory.dedup.embed_documents_with_metadata",
+            new_callable=AsyncMock,
+        ) as mock_embed,
+        patch(
+            "orchestrator.memory.dedup.check_contradiction",
+            new_callable=AsyncMock,
+            return_value=(False, ""),
+        ),
+        patch("orchestrator.memory.dedup.get_settings") as mock_settings,
+    ):
+        mock_settings.return_value.dedup_merge_threshold = 0.99
+        mock_settings.return_value.dedup_supersede_threshold = 0.95
+        mock_settings.return_value.dedup_supersede_same_slot_threshold = 0.95
+        mock_settings.return_value.background_reasoning_model = "gpt-4o-mini"
+        mock_settings.return_value.embedding_document_model = "voyage-4-large"
+        mock_embed.return_value = SimpleNamespace(
+            embeddings=[[0.1] * 1024],
+            storage_model="voyage-4-large",
+        )
+
+        result = await deduplicate_facts(
+            store=mock_store,
+            user_id=user_id,
+            facts=[fact],
+            conversation_id=None,
+            excluded_memory_ids={excluded_id},
+        )
+
+    # The BM25 candidate was the excluded ID; the post-fallback filter
+    # MUST drop it. ``best_match`` is therefore empty, dedup takes the
+    # ``new`` branch, and supersede_memory is never called on the
+    # already-closed row.
+    assert result.merged == []
+    assert result.superseded == []
+    assert len(result.new) == 1, (
+        "excluded_memory_ids must drop the BM25 fallback candidate; "
+        f"got merged={result.merged} superseded={result.superseded} new={result.new}"
+    )
+    mock_store.search_memories_bm25.assert_awaited_once()
+    mock_store.supersede_memory.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_memory_write_update_store_error_retains_rate_reservation(monkeypatch):
+    """Round-N+1 Codex P1 (Finding 3, 2026-08-12): the update path embeds before ``close_memory``.
+
+    The earlier ``test_memory_write_update_store_error_releases_rate_reservation``
+    pinned a release on ``close_memory`` failure. Issue #221's
+    atomic redesign moved ``prepare_memory_embedding`` BEFORE the
+    cap lock and close call, so any error after embedding must
+    retain the rate-limit reservation — the caller was billed for
+    the embedding, and a transient store fault must not let the
+    caller retry without rate-limit consequences.
+    """
     monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1)
     monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1000)
 
@@ -1274,7 +1736,7 @@ async def test_memory_write_update_store_error_releases_rate_reservation(monkeyp
         with pytest.raises(RuntimeError, match="database unavailable"):
             await tool.execute(action="update", memory_id=str(memory_id), content="new")
 
-        assert user_id not in tools_module._attempt_log
+        assert user_id in tools_module._attempt_log
         mock_dedup.assert_not_called()
 
 
@@ -1335,6 +1797,12 @@ async def test_memory_write_cap_query_failure_below_rate_limit_fails_open(monkey
         # No prior writes — rate limit is at 0.
         store = AsyncMock()
         store.count_active_memories = AsyncMock(side_effect=RuntimeError("pool down"))
+        # Cap-lock helpers (issue #221) — default to a no-op sentinel.
+        sentinel_conn = AsyncMock()
+        store.acquire_user_cap_lock = AsyncMock(return_value=(sentinel_conn, True))
+        store.count_active_memories_for_user_within_lock = AsyncMock(return_value=0)
+        store._pool = AsyncMock()
+        store._pool.release = AsyncMock()
         tool = MemoryWriteTool(store, user_id)
 
         result = await tool.execute(action="create", content="fact")
@@ -1531,3 +1999,184 @@ async def test_memory_write_update_below_cap_of_historical_target_proceeds(monke
         assert "concurrently" not in result.lower()
         assert "Memory updated" in result
         mock_dedup.assert_awaited_once()
+
+
+# ------------------------------------------------------------------
+# Issue #221 — atomic active-row cap enforcement
+# ------------------------------------------------------------------
+# Regression tests for the per-user PostgreSQL advisory lock that
+# serializes the cap-check + insert in `MemoryWriteTool.execute`. The
+# lock converts the prior TOCTOU race (two concurrent creates at
+# `cap - 1` both passing the non-locked count check) into a serialized
+# sequence: the first writer's insert is visible to the second
+# writer's count read, so the second writer is refused.
+
+
+@pytest.mark.asyncio
+async def test_memory_write_cap_atomic_two_concurrent_creates_at_cap_minus_one(monkeypatch):
+    """Two concurrent creates at cap - 1 must not both pass the cap gate.
+
+    Issue #221 acceptance criterion: "Two concurrent creates at
+    ``cap - 1`` cannot leave more than the cap's active rows."
+
+    The legacy ``_check_write_quota`` refuses at the cap boundary
+    itself (``active_rows >= cap``). For the atomic-cap race window
+    we must bypass that first-line defense — both writers need to
+    pass it so that the race is between the atomic-cap gate and
+    the lock, not the legacy guard. The test patches
+    ``_check_write_quota`` to always pass, then simulates two
+    concurrent tool executions at ``active_rows = cap - 1`` and
+    asserts that exactly one succeeds.
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1000)
+
+    cap = 3
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", cap)
+
+    user_id = uuid.uuid4()
+    # Force the legacy quota check to always pass — we are testing
+    # the atomic-cap gate, not the legacy guard. Without this
+    # patch, both writers would refuse at the non-locked count
+    # check (cap = 1, active_rows = 0, that path passes; but with
+    # the patch we model the race window between the count read
+    # and the insert).
+    from orchestrator.memory.tools import _WriteQuotaDecision
+
+    async def _pass_quota(self, *args, **kwargs):
+        return _WriteQuotaDecision(refusal=None, reservation=None)
+
+    monkeypatch.setattr(tools_module.MemoryWriteTool, "_check_write_quota", _pass_quota)
+
+    cap = 3
+    shared_active_rows = {"value": cap - 1}
+
+    def _locked_count(*_args, **_kwargs):
+        return shared_active_rows["value"]
+
+    async def _attempt_insert(*_args, **_kwargs):
+        # Simulate `dedup_and_store` succeeding — atomically bump
+        # the shared counter so the second writer's later count
+        # read sees the bump.
+        shared_active_rows["value"] += 1
+        return uuid.uuid4()
+
+    store = AsyncMock()
+    store.count_active_memories = AsyncMock(side_effect=_locked_count)
+    store.count_active_memories_for_user_within_lock = AsyncMock(side_effect=_locked_count)
+
+    sentinel_a = AsyncMock(name="conn_a")
+    sentinel_b = AsyncMock(name="conn_b")
+
+    # ``pg_advisory_xact_lock`` is the blocking form. Model the
+    # serialization with a single asyncio.Lock — the second writer
+    # waits for the first to release (and commit) before its count
+    # read reflects the bump.
+    cap_lock = asyncio.Lock()
+
+    async def _acquire_lock(target_user_id):
+        await cap_lock.acquire()
+        return (sentinel_a if target_user_id == user_id else sentinel_b, True)
+
+    # Wire both COMMIT and ROLLBACK to the lock release so the
+    # asyncio.Lock matches production transaction semantics: the
+    # second writer's lock acquire blocks until the first writer's
+    # commit or rollback releases it.
+    async def _end_tx(*_args, **_kwargs):
+        cap_lock.release()
+
+    store.acquire_user_cap_lock = AsyncMock(side_effect=_acquire_lock)
+    store._pool = AsyncMock()
+    store._pool.release = AsyncMock()
+    sentinel_a.execute = AsyncMock(side_effect=_end_tx)
+    sentinel_b.execute = AsyncMock(side_effect=_end_tx)
+
+    async def writer_a():
+        with patch(
+            "orchestrator.memory.tools.dedup_and_store",
+            new_callable=AsyncMock,
+        ) as mock_dedup:
+            mock_dedup.side_effect = _attempt_insert
+            tool = MemoryWriteTool(store, user_id)
+            return await tool.execute(action="create", content="fact a")
+
+    async def writer_b():
+        with patch(
+            "orchestrator.memory.tools.dedup_and_store",
+            new_callable=AsyncMock,
+        ) as mock_dedup:
+            mock_dedup.side_effect = _attempt_insert
+            tool = MemoryWriteTool(store, user_id)
+            return await tool.execute(action="create", content="fact b")
+
+    results = await asyncio.gather(writer_a(), writer_b())
+
+    # Exactly one create succeeds; the other is refused with the
+    # canonical cap message. Without the lock both would succeed
+    # and the active count would climb to cap + 1.
+    succeeded = [r for r in results if "Memory created" in r]
+    refused = [r for r in results if "cap" in r.lower()]
+
+    assert len(succeeded) == 1, f"expected exactly one success, got {results!r}"
+    assert len(refused) == 1, f"expected exactly one refusal, got {results!r}"
+    # And the post-race active count is exactly the cap — not cap+1.
+    assert shared_active_rows["value"] == cap, (
+        f"active count must be capped at {cap}, got {shared_active_rows['value']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_memory_write_cap_atomic_refusal_releases_lock(monkeypatch):
+    """A cap-refused create releases the advisory lock so the next writer can proceed.
+
+    Sibling to ``test_memory_write_cap_atomic_two_concurrent_creates_at_cap_minus_one``.
+    Verifies that the cap-protected path releases the lock in BOTH
+    the "insert succeeded" and "insert refused (cap exceeded)"
+    branches, so a future writer for the same user is not stuck.
+
+    Note: the legacy non-locked ``_check_write_quota`` is the first
+    line of defense and refuses at the cap boundary itself. The
+    atomic-cap path (issue #221) is the second line that protects
+    against the race window between two concurrent calls — both
+    see ``active_rows == cap - 1`` at the non-locked check and both
+    would proceed past it without the lock. The test below exercises
+    the atomic-cap path by patching the legacy quota check to
+    always pass and asserting the atomic path's lock contract.
+    """
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_PER_WINDOW", 1000)
+    monkeypatch.setattr(tools_module, "MEMORY_WRITE_MAX_ACTIVE_ROWS", 1)
+
+    user_id = uuid.uuid4()
+    store = _quota_store(recent_writes=0, active_rows=1)
+    # Force the legacy quota check to always pass — we are testing
+    # the atomic-cap path, which is the second line of defense.
+    from orchestrator.memory.tools import _WriteQuotaDecision
+
+    async def _pass_quota(self, *args, **kwargs):
+        return _WriteQuotaDecision(refusal=None, reservation=None)
+
+    monkeypatch.setattr(tools_module.MemoryWriteTool, "_check_write_quota", _pass_quota)
+    tool = MemoryWriteTool(store, user_id)
+
+    # First create: cap-aware count returns 1 == cap → atomic
+    # refusal.
+    refused = await tool.execute(action="create", content="one too many")
+    assert "cap" in refused.lower()
+    # The cap-aware count helper was awaited once (inside the lock).
+    assert store.count_active_memories_for_user_within_lock.await_count == 1
+    # The pool release was awaited once (lock conn released even
+    # on refusal so the next contender can proceed).
+    assert store._pool.release.await_count == 1
+
+    # Second create after the user deletes one row: succeeds.
+    store.count_active_memories.return_value = 0
+    with patch(
+        "orchestrator.memory.tools.dedup_and_store",
+        new_callable=AsyncMock,
+    ) as mock_dedup:
+        mock_dedup.return_value = uuid.uuid4()
+        allowed = await tool.execute(action="create", content="after delete")
+
+    assert "Memory created" in allowed
+    # Lock acquire + release happened again on the success path.
+    assert store.acquire_user_cap_lock.await_count == 2
+    assert store._pool.release.await_count == 2

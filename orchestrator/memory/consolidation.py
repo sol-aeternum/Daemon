@@ -476,6 +476,10 @@ async def consolidate_cluster(
 
         # Create summary memories
         created_memories = []
+        # Lifecycle summaries are intentionally outside the user-invoked
+        # MemoryWriteTool cap: this job closes source rows after producing
+        # bounded summaries, so applying the pre-insert tool quota would
+        # block the maintenance operation that reduces active-row pressure.
         for summary_text in summaries:
             # Create memory with correct metadata
             memory = await store.insert_memory(

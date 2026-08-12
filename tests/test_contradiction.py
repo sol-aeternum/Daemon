@@ -35,6 +35,17 @@ class MockLitellmResponse:
         return self.model_dump()
 
 
+@pytest.fixture(autouse=True)
+def _mock_trust_signal():
+    """Dedup tests do not exercise database-backed trust signaling."""
+    with patch(
+        "orchestrator.memory.trust_signals.apply_explicit_negative_signal",
+        new_callable=AsyncMock,
+        return_value=False,
+    ):
+        yield
+
+
 @pytest.mark.asyncio
 async def test_check_contradiction_yes() -> None:
     with patch("orchestrator.memory.dedup.litellm.acompletion") as mock:

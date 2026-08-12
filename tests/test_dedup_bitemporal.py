@@ -29,10 +29,17 @@ def _embedding_result(
 
 @pytest.fixture(autouse=True)
 def _mock_contradiction_check():
-    with patch(
-        "orchestrator.memory.dedup.check_contradiction",
-        new_callable=AsyncMock,
-        return_value=(True, "bitemporal test contradiction"),
+    with (
+        patch(
+            "orchestrator.memory.dedup.check_contradiction",
+            new_callable=AsyncMock,
+            return_value=(True, "bitemporal test contradiction"),
+        ),
+        patch(
+            "orchestrator.memory.trust_signals.apply_explicit_negative_signal",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
     ):
         yield
 
