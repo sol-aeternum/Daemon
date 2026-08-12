@@ -1,5 +1,5 @@
 import { copyResponseHeaders } from '../../../_lib/cookies';
-import { daemonClientIp } from '../../../_lib/clientIp';
+import { appendDaemonClientIpHeaders } from '../../../_lib/clientIp';
 
 const API_URLS = [
   process.env.DAEMON_INTERNAL_API_URL,
@@ -34,8 +34,7 @@ function buildProxyHeaders(req: Request): Headers {
   const xForwardedProto = req.headers.get('x-forwarded-proto');
   if (xForwardedProto) headers.set('X-Forwarded-Proto', xForwardedProto);
 
-  const clientIp = daemonClientIp(req);
-  if (clientIp) headers.set('X-Daemon-Client-IP', clientIp);
+  appendDaemonClientIpHeaders(headers, req);
 
   const authorization = req.headers.get('authorization');
   if (authorization) headers.set('Authorization', authorization);

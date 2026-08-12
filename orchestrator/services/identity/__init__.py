@@ -32,7 +32,10 @@ from orchestrator.services.identity.rate_limit_dep import (
     ScopeKind,
     client_ip_for_key,
     enforce_rate_limit,
+    get_chat_rate_limit_metrics,
     get_rate_limiter,
+    record_chat_rate_limit_rejection,
+    record_chat_rate_limit_request,
 )
 from orchestrator.services.identity.account_service import (
     AccountService,
@@ -210,6 +213,7 @@ __all__ = [
     "enforce_rate_limit",
     "generate_email_code",
     "generate_google_nonce",
+    "get_chat_rate_limit_metrics",
     "get_mail_sender",
     "get_rate_limiter",
     "hash_ip_for_storage",
@@ -222,6 +226,8 @@ __all__ = [
     "normalize_code",
     "normalize_email",
     "parse_audience_allowlist",
+    "record_chat_rate_limit_rejection",
+    "record_chat_rate_limit_request",
     "render_device_notification",
     "schedule_device_notification",
     "send_device_notification",

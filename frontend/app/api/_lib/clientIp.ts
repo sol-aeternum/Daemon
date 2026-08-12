@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { isIP } from 'node:net';
 
 let warnedMissingTrustedProxyConfig = false;
@@ -104,4 +105,22 @@ export function daemonClientIp(req: Request): string | null {
       trustedProxies,
     ) ?? platformClientIp(req)
   );
+}
+
+/** Add a short-lived, server-authenticated client-IP assertion for FastAPI. */
+export function appendDaemonClientIpHeaders(
+  headers: Headers,
+  req: Request,
+): void {
+  const clientIp = daemonClientIp(req);
+  const secret = process.env.DAEMON_INTERNAL_PROXY_HMAC_SECRET?.trim();
+  if (!clientIp || !secret) return;
+
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const payload = `v1\n${timestamp}\n${req.method.toUpperCase()}\n${clientIp}`;
+  const signature = createHmac('sha256', secret).update(payload).digest('hex');
+
+  headers.set('X-Daemon-Client-IP', clientIp);
+  headers.set('X-Daemon-Client-IP-Timestamp', timestamp);
+  headers.set('X-Daemon-Client-IP-Signature', signature);
 }

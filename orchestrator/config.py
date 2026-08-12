@@ -34,6 +34,10 @@ class HostSecurityConfigError(ValueError):
     """
 
 
+class InternalProxyConfigError(ValueError):
+    """Raised when trusted internal proxy headers cannot be authenticated."""
+
+
 def _strip_host_port(entry: str) -> str:
     """Drop a ``:port`` suffix from an allowlist entry.
 
@@ -496,6 +500,9 @@ class Settings(BaseSettings):
     # proxy/container hop. The rate-limit helper still requires the immediate
     # socket hop to be loopback/private before honoring forwarded headers.
     daemon_trust_proxy_forwarded_client_ip: bool = False
+    # Dedicated server-only secret shared by the Next.js proxy and backend.
+    # It must never use a NEXT_PUBLIC_* name or reuse the auth pepper.
+    daemon_internal_proxy_hmac_secret: str = ""
 
     def get_tier_config(self, tier: str | None = None) -> TierConfig:
         """Get model configuration for a specific tier.
@@ -883,6 +890,16 @@ class Settings(BaseSettings):
                 "comma-separated list of allowed Host values (e.g. "
                 "'app.daemon.ai,*.daemon.ai') or to a single '*' to "
                 "explicitly opt out of the host check."
+            )
+
+    def validate_internal_proxy_config(self) -> None:
+        """Require authenticated forwarding whenever proxy IP trust is enabled."""
+        if not self.daemon_trust_proxy_forwarded_client_ip:
+            return
+        if len(self.daemon_internal_proxy_hmac_secret.strip()) < 32:
+            raise InternalProxyConfigError(
+                "daemon_trust_proxy_forwarded_client_ip requires "
+                "daemon_internal_proxy_hmac_secret with at least 32 characters"
             )
 
 

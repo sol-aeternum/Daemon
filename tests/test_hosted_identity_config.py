@@ -13,6 +13,7 @@ import pytest
 from orchestrator.config import (
     HOSTED_MAIL_SENDER_MODES,
     HOSTED_SIGNUP_MODES,
+    InternalProxyConfigError,
     HostedIdentityConfigError,
     Settings,
 )
@@ -268,9 +269,30 @@ def test_forwarded_client_ip_trust_defaults_false() -> None:
 
 
 def test_forwarded_client_ip_trust_can_be_enabled() -> None:
-    settings = _hosted_base(daemon_trust_proxy_forwarded_client_ip=True)
+    settings = _hosted_base(
+        daemon_trust_proxy_forwarded_client_ip=True,
+        daemon_internal_proxy_hmac_secret="x" * 32,
+    )
     settings.validate_hosted_identity_config()
     assert settings.daemon_trust_proxy_forwarded_client_ip is True
+
+
+def test_forwarded_proxy_ip_trust_requires_32_char_secret() -> None:
+    settings = _hosted_base(
+        daemon_trust_proxy_forwarded_client_ip=True,
+        daemon_internal_proxy_hmac_secret="x" * 31,
+    )
+    with pytest.raises(InternalProxyConfigError, match="at least 32"):
+        settings.validate_internal_proxy_config()
+
+
+def test_forwarded_proxy_ip_trust_passes_with_32_char_secret() -> None:
+    settings = _hosted_base(
+        daemon_trust_proxy_forwarded_client_ip=True,
+        daemon_internal_proxy_hmac_secret="x" * 32,
+    )
+    settings.validate_internal_proxy_config()
+    assert settings.daemon_internal_proxy_hmac_secret == "x" * 32
 
 
 def test_signup_mode_all_three_allowed() -> None:

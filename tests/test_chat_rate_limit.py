@@ -9,6 +9,7 @@ shared Lua-style INCR + EXPIRE per window).
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from typing import Any
@@ -106,6 +107,13 @@ async def chat_client(monkeypatch):
         app.dependency_overrides.clear()
         app.state.app_state = original_app_state
         app.state.settings = original_settings
+
+
+@pytest.fixture(autouse=True)
+def _reset_chat_rate_metrics() -> None:
+    from orchestrator.services.identity.rate_limit_dep import reset_chat_rate_limit_metrics
+
+    reset_chat_rate_limit_metrics()
 
 
 @pytest.mark.asyncio
@@ -324,6 +332,72 @@ async def test_per_route_quota_is_independent(chat_client: AsyncClient, monkeypa
         headers={"Content-Type": "application/json"},
     )
     assert openai_ok.status_code != 429, openai_ok.text
+
+
+@pytest.mark.asyncio
+async def test_chat_endpoint_respects_ip_rate_limit_under_parallel_load(
+    chat_client: AsyncClient, monkeypatch
+) -> None:
+    """Parallel requests should enforce the endpoint-local IP cap exactly."""
+    monkeypatch.setenv("MOCK_LLM", "true")
+    monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
+    monkeypatch.setenv("DAEMON_RATE_LIMIT_CHAT_PER_USER_PER_MINUTE", "100")
+    monkeypatch.setenv("DAEMON_RATE_LIMIT_CHAT_PER_TOKEN_PER_MINUTE", "100")
+    monkeypatch.setenv("DAEMON_RATE_LIMIT_CHAT_PER_IP_PER_MINUTE", "60")
+    get_settings.cache_clear()
+
+    responses = await asyncio.gather(
+        *(
+            chat_client.post(
+                "/chat",
+                json=_make_chat_payload(),
+                headers={"Content-Type": "application/json"},
+            )
+            for _ in range(100)
+        )
+    )
+
+    allowed = [response for response in responses if response.status_code == 200]
+    rejected = [response for response in responses if response.status_code == 429]
+    assert len(allowed) == 60
+    assert len(rejected) == 40
+    assert all(int(response.headers["Retry-After"]) > 0 for response in rejected)
+
+
+@pytest.mark.asyncio
+async def test_chat_rate_limit_metrics_are_reported_on_status(
+    chat_client: AsyncClient, monkeypatch
+) -> None:
+    """IP limits should emit request/rejection counters and threshold data."""
+    monkeypatch.setenv("MOCK_LLM", "true")
+    monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
+    monkeypatch.setenv("DAEMON_RATE_LIMIT_CHAT_PER_USER_PER_MINUTE", "100")
+    monkeypatch.setenv("DAEMON_RATE_LIMIT_CHAT_PER_TOKEN_PER_MINUTE", "100")
+    monkeypatch.setenv("DAEMON_RATE_LIMIT_CHAT_PER_IP_PER_MINUTE", "8")
+    get_settings.cache_clear()
+
+    for _ in range(10):
+        response = await chat_client.post(
+            "/chat",
+            json=_make_chat_payload(),
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code in (200, 429)
+
+    status = await chat_client.get("/status")
+    assert status.status_code == 200, status.text
+    payload = status.json()
+    limits = payload["chat_rate_limits"]
+    assert limits["requests_total"] == 10
+    assert limits["rejections_total"] == 2
+    assert limits["rejection_ratio"] == pytest.approx(0.2)
+    assert limits["warning_threshold"] == pytest.approx(0.10)
+    assert limits["warning_active"] is True
+
+    endpoint_metrics = limits["by_endpoint"]["chat:daemon"]
+    assert endpoint_metrics["requests_total"] == 10
+    assert endpoint_metrics["rejections_total"] == 2
+    assert endpoint_metrics["rejection_ratio"] == pytest.approx(0.2)
 
 
 @pytest.mark.asyncio

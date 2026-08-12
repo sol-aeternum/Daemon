@@ -51,11 +51,14 @@ from orchestrator.services.identity import (
     client_ip_for_key,
     enforce_rate_limit,
     get_rate_limiter,
+    record_chat_rate_limit_rejection,
+    record_chat_rate_limit_request,
 )
 from orchestrator.council.sse import stream_council, stream_council_interview_response
 from orchestrator.config import (
     HostSecurityConfigError,
     HostedIdentityConfigError,
+    InternalProxyConfigError,
     ProviderConfig,
     Settings,
     get_settings,
@@ -148,7 +151,6 @@ CORS_ALLOW_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
 CORS_ALLOW_HEADERS = (
     "Authorization",
     "Content-Type",
-    "X-Daemon-Client-IP",
     "X-CSRF-Token",
     "X-Request-ID",
 )
@@ -202,6 +204,7 @@ def _validate_startup_config(settings: Settings, argv: Sequence[str] | None = No
     validate_pepper_config(settings)
     settings.validate_deployment_mode()
     settings.validate_hosted_identity_config()
+    settings.validate_internal_proxy_config()
     if settings.daemon_encryption_key is not None:
         ContentEncryption(settings.daemon_encryption_key)
     settings.validate_host_security_config()
@@ -225,6 +228,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         raise
     except HostedIdentityConfigError as exc:
         logger.critical("Hosted identity config validation failed: %s", exc)
+        raise
+    except InternalProxyConfigError as exc:
+        logger.critical("Internal proxy config validation failed: %s", exc)
         raise
     except EncryptionInitError as exc:
         logger.critical("Encryption config validation failed: %s", exc)
@@ -1908,6 +1914,7 @@ async def _enforce_chat_ip_rate_limit_before_body_validation(
     if request.method.upper() != "POST" or endpoint is None:
         return await call_next(request)
 
+    record_chat_rate_limit_request(endpoint)
     settings = get_settings()
     policy = RateLimitPolicy(
         limit=settings.daemon_rate_limit_chat_per_ip_per_minute,
@@ -1921,12 +1928,20 @@ async def _enforce_chat_ip_rate_limit_before_body_validation(
             endpoint=endpoint,
         )
     except HTTPException as exc:
+        if exc.status_code == 429:
+            scope = (exc.headers or {}).get("X-Daemon-Rate-Limit-Scope", "unknown")
+            record_chat_rate_limit_rejection(endpoint, scope)
         return JSONResponse(
             status_code=exc.status_code,
             content={"detail": exc.detail},
             headers=exc.headers,
         )
-    return await call_next(request)
+    response = await call_next(request)
+    if response.status_code == 429:
+        scope = response.headers.get("X-Daemon-Rate-Limit-Scope")
+        if scope:
+            record_chat_rate_limit_rejection(endpoint, scope)
+    return response
 
 
 @app.post("/chat", responses=REQUEST_BODY_TOO_LARGE_RESPONSES)

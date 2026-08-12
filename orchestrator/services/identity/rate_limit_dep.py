@@ -25,8 +25,12 @@ nonces — only the endpoint tag and the scope kind.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import ipaddress
 import logging
+import threading
+import time
 from collections.abc import Sequence
 from typing import Literal
 
@@ -42,6 +46,12 @@ from orchestrator.services.identity.rate_limiter import (
 )
 
 logger = logging.getLogger(__name__)
+
+_PROXY_SIGNATURE_MAX_AGE_SECONDS = 60
+_CHAT_REJECTION_WARNING_THRESHOLD = 0.10
+_CHAT_REJECTION_WARNING_MIN_REQUESTS = 10
+_chat_metrics_lock = threading.Lock()
+_chat_metrics: dict[str, dict[str, int]] = {}
 
 
 ScopeKind = Literal["ip", "email", "user_id", "session_id"]
@@ -87,7 +97,10 @@ def _client_ip(request: Request) -> str:
 
     settings = get_settings()
     if settings.daemon_trust_proxy_forwarded_client_ip and _is_trusted_proxy_hop(immediate):
-        forwarded_ip = _daemon_client_ip_header(request)
+        forwarded_ip = _daemon_client_ip_header(
+            request,
+            secret=settings.daemon_internal_proxy_hmac_secret.strip(),
+        )
         if forwarded_ip is not None:
             return forwarded_ip
 
@@ -102,8 +115,29 @@ def _is_trusted_proxy_hop(host: str) -> bool:
     return ip.is_loopback or ip.is_private
 
 
-def _daemon_client_ip_header(request: Request) -> str | None:
-    return _normalize_forwarded_ip(request.headers.get("x-daemon-client-ip"))
+def _daemon_client_ip_header(request: Request, *, secret: str) -> str | None:
+    asserted_ip = request.headers.get("x-daemon-client-ip")
+    forwarded_ip = _normalize_forwarded_ip(asserted_ip)
+    timestamp = request.headers.get("x-daemon-client-ip-timestamp")
+    signature = request.headers.get("x-daemon-client-ip-signature")
+    if forwarded_ip is None or not secret or timestamp is None or signature is None:
+        return None
+    try:
+        issued_at = int(timestamp)
+    except ValueError:
+        return None
+    if abs(int(time.time()) - issued_at) > _PROXY_SIGNATURE_MAX_AGE_SECONDS:
+        return None
+
+    signed_ip = asserted_ip.strip() if asserted_ip is not None else ""
+    payload = f"v1\n{timestamp}\n{request.method.upper()}\n{signed_ip}".encode()
+    expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+    supplied = signature.strip().lower()
+    if len(supplied) != len(expected) or any(char not in "0123456789abcdef" for char in supplied):
+        return None
+    if not hmac.compare_digest(expected, supplied):
+        return None
+    return forwarded_ip
 
 
 def _normalize_forwarded_ip(raw: str | None) -> str | None:
@@ -126,7 +160,17 @@ def _normalize_forwarded_ip(raw: str | None) -> str | None:
         return None
 
 
-def _raise_429(decision: RateLimitDecision, scope_kind: ScopeKind) -> None:
+def _raise_429(
+    decision: RateLimitDecision,
+    scope_kind: ScopeKind,
+    endpoint: str,
+) -> None:
+    logger.info(
+        "rate_limit_rejected endpoint=%s scope=%s retry_after_seconds=%s",
+        endpoint,
+        scope_kind,
+        decision.retry_after_seconds,
+    )
     raise HTTPException(
         status_code=429,
         detail="rate_limited",
@@ -208,7 +252,86 @@ async def enforce_rate_limit(
             return
 
         if not decision.allowed:
-            _raise_429(decision, scope_kind)
+            _raise_429(decision, scope_kind, policy_endpoint)
+
+
+def record_chat_rate_limit_request(endpoint: str) -> None:
+    """Record one chat request before any parsing, auth, or limit decision."""
+    with _chat_metrics_lock:
+        metrics = _chat_metrics.setdefault(
+            endpoint,
+            {"requests_total": 0, "rejections_total": 0, "last_warning_total": 0},
+        )
+        metrics["requests_total"] += 1
+
+
+def record_chat_rate_limit_rejection(endpoint: str, scope: str) -> None:
+    """Record one rejected chat request and emit a rate-bounded threshold warning."""
+    with _chat_metrics_lock:
+        metrics = _chat_metrics.setdefault(
+            endpoint,
+            {"requests_total": 0, "rejections_total": 0, "last_warning_total": 0},
+        )
+        metrics["rejections_total"] += 1
+        total = metrics["requests_total"]
+        rejected = metrics["rejections_total"]
+        ratio = rejected / total if total else 0.0
+        should_warn = (
+            total >= _CHAT_REJECTION_WARNING_MIN_REQUESTS
+            and ratio > _CHAT_REJECTION_WARNING_THRESHOLD
+            and total - metrics["last_warning_total"] >= _CHAT_REJECTION_WARNING_MIN_REQUESTS
+        )
+        if should_warn:
+            metrics["last_warning_total"] = total
+
+    if should_warn:
+        logger.warning(
+            "chat_rate_limit_rejection_threshold_exceeded endpoint=%s scope=%s "
+            "requests_total=%s rejections_total=%s rejection_ratio=%.4f threshold=%.2f",
+            endpoint,
+            scope,
+            total,
+            rejected,
+            ratio,
+            _CHAT_REJECTION_WARNING_THRESHOLD,
+        )
+
+
+def get_chat_rate_limit_metrics() -> dict[str, object]:
+    """Return a process-local snapshot suitable for the authenticated status API."""
+    with _chat_metrics_lock:
+        by_endpoint = {
+            endpoint: {
+                "requests_total": values["requests_total"],
+                "rejections_total": values["rejections_total"],
+                "rejection_ratio": (
+                    values["rejections_total"] / values["requests_total"]
+                    if values["requests_total"]
+                    else 0.0
+                ),
+            }
+            for endpoint, values in sorted(_chat_metrics.items())
+        }
+    requests_total = sum(int(values["requests_total"]) for values in by_endpoint.values())
+    rejections_total = sum(int(values["rejections_total"]) for values in by_endpoint.values())
+    rejection_ratio = rejections_total / requests_total if requests_total else 0.0
+    return {
+        "requests_total": requests_total,
+        "rejections_total": rejections_total,
+        "rejection_ratio": rejection_ratio,
+        "warning_threshold": _CHAT_REJECTION_WARNING_THRESHOLD,
+        "warning_active": (
+            requests_total >= _CHAT_REJECTION_WARNING_MIN_REQUESTS
+            and rejection_ratio > _CHAT_REJECTION_WARNING_THRESHOLD
+        ),
+        "by_endpoint": by_endpoint,
+    }
+
+
+def reset_chat_rate_limit_metrics() -> None:
+    """Clear process-local counters for deterministic tests."""
+    with _chat_metrics_lock:
+        _chat_metrics.clear()
 
 
 def client_ip_for_key(request: Request) -> str:

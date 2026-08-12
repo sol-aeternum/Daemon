@@ -1,6 +1,6 @@
 import type { ChatEvent } from '@/lib/events';
 import type { DaemonMessage } from '@/lib/chatMessages';
-import { daemonClientIp } from '../_lib/clientIp';
+import { appendDaemonClientIpHeaders } from '../_lib/clientIp';
 
 const API_URLS = [
   process.env.DAEMON_INTERNAL_API_URL,
@@ -41,8 +41,7 @@ function buildProxyHeaders(req: Request): Headers {
 
   // Use the same trusted-proxy derivation as the auth bridge so
   // browser-controlled forwarding headers cannot bypass the IP quota.
-  const clientIp = daemonClientIp(req);
-  if (clientIp) headers.set('X-Daemon-Client-IP', clientIp);
+  appendDaemonClientIpHeaders(headers, req);
 
   return headers;
 }
