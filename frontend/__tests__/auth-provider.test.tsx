@@ -188,13 +188,17 @@ function Consumer(): null {
   return null;
 }
 
-function resolveConfig(next: ResolvedAuthConfig | undefined): void {
-  mockAuthConfig.trigger?.(next);
-  if (next === undefined) {
-    fireSubscribers({ status: 'error' });
-  } else {
-    fireSubscribers({ status: 'resolved', config: next });
-  }
+async function resolveConfig(
+  next: ResolvedAuthConfig | undefined,
+): Promise<void> {
+  await act(async () => {
+    mockAuthConfig.trigger?.(next);
+    if (next === undefined) {
+      fireSubscribers({ status: 'error' });
+    } else {
+      fireSubscribers({ status: 'resolved', config: next });
+    }
+  });
 }
 
 async function flush(): Promise<void> {
@@ -294,7 +298,7 @@ describe('AuthProvider mode-aware redirects', () => {
     expect(mockRefresh).toHaveBeenCalledWith({
       redirectOnExpiredSession: false,
     });
-    resolveConfig({
+    await resolveConfig({
       mode: 'hosted',
       email: { enabled: true },
       google: { enabled: false, clientId: '' },
@@ -309,7 +313,7 @@ describe('AuthProvider mode-aware redirects', () => {
     mockRefresh.mockResolvedValue(false);
     renderProvider();
     await flush();
-    resolveConfig({
+    await resolveConfig({
       mode: 'self_hosted',
       email: { enabled: true },
       google: { enabled: false, clientId: '' },
@@ -324,7 +328,7 @@ describe('AuthProvider mode-aware redirects', () => {
     mockRefresh.mockResolvedValue(false);
     renderProvider();
     await flush();
-    resolveConfig(undefined);
+    await resolveConfig(undefined);
     await waitFor(() => {
       expect(hrefSetter).toHaveBeenCalledWith('/setup');
     });
@@ -335,7 +339,7 @@ describe('AuthProvider mode-aware redirects', () => {
     mockRefresh.mockResolvedValue(true);
     renderProvider();
     await flush();
-    resolveConfig({
+    await resolveConfig({
       mode: 'hosted',
       email: { enabled: true },
       google: { enabled: false, clientId: '' },
@@ -350,7 +354,7 @@ describe('AuthProvider mode-aware redirects', () => {
     mockRefresh.mockResolvedValue(false);
     renderProvider();
     await flush();
-    resolveConfig({
+    await resolveConfig({
       mode: 'hosted',
       email: { enabled: true },
       google: { enabled: false, clientId: '' },
@@ -365,7 +369,7 @@ describe('AuthProvider mode-aware redirects', () => {
     mockRefresh.mockResolvedValue(false);
     renderProvider();
     await flush();
-    resolveConfig({
+    await resolveConfig({
       mode: 'hosted',
       email: { enabled: true },
       google: { enabled: false, clientId: '' },
@@ -379,7 +383,7 @@ describe('AuthProvider mode-aware redirects', () => {
     mockRefresh.mockResolvedValue(true);
     renderProvider();
     await flush();
-    resolveConfig({
+    await resolveConfig({
       mode: 'hosted',
       email: { enabled: true },
       google: { enabled: false, clientId: '' },
@@ -412,7 +416,7 @@ describe('AuthProvider mode-aware redirects', () => {
     mockRefresh.mockResolvedValue(true);
     renderProvider();
     await flush();
-    resolveConfig({
+    await resolveConfig({
       mode: 'self_hosted',
       email: { enabled: true },
       google: { enabled: false, clientId: '' },
@@ -450,7 +454,7 @@ describe('AuthProvider mode-aware redirects', () => {
     mockRefresh.mockResolvedValue(true);
     renderProvider();
     await flush();
-    resolveConfig({
+    await resolveConfig({
       mode: 'hosted',
       email: { enabled: true },
       google: { enabled: false, clientId: '' },
