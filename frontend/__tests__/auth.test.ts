@@ -1334,7 +1334,7 @@ describe('attemptPageLoadRefresh identity-session restore', () => {
     vi.restoreAllMocks();
   });
 
-  it('attemptPageLoadRefresh returns false on 401 with read-only window.location (no throw)', async () => {
+  it('attemptPageLoadRefresh can avoid mutating read-only window.location on 401', async () => {
     Object.defineProperty(globalThis, 'navigator', {
       value: { locks: undefined },
       writable: true,
@@ -1352,7 +1352,9 @@ describe('attemptPageLoadRefresh identity-session restore', () => {
     const { attemptPageLoadRefresh, getAccessToken } =
       await import('../lib/auth');
 
-    const ok = await attemptPageLoadRefresh();
+    const ok = await attemptPageLoadRefresh({
+      redirectOnExpiredSession: false,
+    });
     expect(ok).toBe(false);
     expect(getAccessToken()).toBeNull();
     vi.restoreAllMocks();
