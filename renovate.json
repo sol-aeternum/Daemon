@@ -8,6 +8,10 @@
   },
   "packageRules": [
     {
+      "matchManagers": ["github-actions"],
+      "enabled": false
+    },
+    {
       "matchUpdateTypes": ["minor", "patch"],
       "groupName": "minor and patch dependencies",
       "groupSlug": "minor-patch-all"

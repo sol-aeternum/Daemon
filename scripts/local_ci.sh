@@ -57,13 +57,13 @@ backend|ruff-format|blocking|uv run ruff format --check .
 backend|basedpyright|blocking|uv run basedpyright --level error
 backend|bandit-high|blocking|uv run bandit -r orchestrator providers scripts tests -lll
 backend|bandit|inventory|uv run bandit -r orchestrator providers scripts tests
-backend|pip-audit|inventory|uv run pip-audit
+backend|pip-audit|blocking|uv run pip-audit
 backend|pytest|blocking|PYTHONPATH=. uv run pytest -q
 frontend|npm-ci|blocking|npm ci --prefix frontend --no-audit --no-fund --prefer-offline
 frontend|type-check|blocking|npm --prefix frontend run type-check
 frontend|lint|blocking|npm --prefix frontend run lint
 frontend|format-check|blocking|npm --prefix frontend run format:check
-frontend|audit-ci|inventory|npm --prefix frontend run audit:ci
+frontend|audit-ci|blocking|npm --prefix frontend run audit:ci
 frontend|test-run|blocking|npm --prefix frontend run test:run
 frontend|build|blocking|npm --prefix frontend run build
 aggregate|feature-matrix|blocking|python scripts/lint_feature_matrix.py
