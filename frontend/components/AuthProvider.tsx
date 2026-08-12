@@ -22,8 +22,11 @@ import {
   type RefreshResult,
 } from '@/lib/auth';
 import {
+  AUTH_CONFIG_CACHE_TTL_MS,
   fetchAuthConfig,
   getCachedAuthConfig,
+  getCachedAuthConfigAgeMs,
+  refreshAuthConfig,
   subscribeAuthConfig,
   type AuthConfig,
   type AuthConfigResult,
@@ -85,6 +88,26 @@ export function AuthProvider({ children }: AuthProviderProps) {
       void fetchAuthConfig().then(applyConfig);
     }
     const unsubscribeConfig = subscribeAuthConfig(applyConfig);
+    // Align the first refresh with the cached response's remaining TTL so a
+    // remount with a 59-second-old cache refreshes within 1s instead of up
+    // to 119s (Codex P2 on AuthProvider.tsx). Re-schedule after each refresh
+    // so a cache populated by another mount path also aligns.
+    let refreshConfigTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleNextConfigRefresh = (): void => {
+      if (!mounted) return;
+      const freshCached = getCachedAuthConfig();
+      const ageMs = freshCached ? getCachedAuthConfigAgeMs() : undefined;
+      const delay =
+        ageMs !== undefined
+          ? Math.max(0, AUTH_CONFIG_CACHE_TTL_MS - ageMs)
+          : AUTH_CONFIG_CACHE_TTL_MS;
+      refreshConfigTimer = setTimeout(() => {
+        void refreshAuthConfig().finally(() => {
+          scheduleNextConfigRefresh();
+        });
+      }, delay);
+    };
+    scheduleNextConfigRefresh();
 
     function doRedirect(target: string): void {
       if (typeof window !== 'undefined') {
@@ -151,6 +174,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
     return () => {
       mounted = false;
+      if (refreshConfigTimer !== null) {
+        clearTimeout(refreshConfigTimer);
+        refreshConfigTimer = null;
+      }
       unsubscribe();
       unsubscribeConfig();
     };

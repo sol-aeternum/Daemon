@@ -22,19 +22,31 @@ GitHub sign-in is out of scope. Provider tokens are never accepted as protected 
 
 Hosted identity still has residual phishing and social-engineering risk: users can be tricked into entering email codes or approving the wrong account. Daemon mitigates this with nonce-bound challenges, single-use codes, generic responses, short TTLs, new-device visibility, and revocation, but operators should still treat suspicious sign-ins as account-security events.
 
-### Deployment Mode and Frontend Env Contract
+### Deployment Mode and Legacy Frontend Defaults
 
-The hosted landing and Google button are gated on the frontend by
-`NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE` (`self-hosted` default; set `hosted` to switch the
-landing) and `NEXT_PUBLIC_GOOGLE_CLIENT_ID` (the public Google OAuth web client ID). Pair
-`DAEMON_HOSTED_IDENTITY_ENABLED=true` with `NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE=hosted`, and
-pair `DAEMON_GOOGLE_CLIENT_ID` with the same public client id in
-`NEXT_PUBLIC_GOOGLE_CLIENT_ID`. The backend hosted email and Google endpoints additionally
-require `DAEMON_HOSTED_IDENTITY_ENABLED=true` on the FastAPI side; when that flag is off,
-those endpoints return
-`404 hosted_identity_disabled` before any challenge, rate-limit, or provider-token work.
-Setup, enrollment, and device endpoints remain reachable on the same router for self-hosted
-and recovery flows. See [`docs/HOSTED_IDENTITY.md`](HOSTED_IDENTITY.md) for the full
+> **The runtime endpoint `GET /v1/auth/config` is the authoritative source of
+> truth for deployment mode and provider availability.** Hosted operators
+> must set `DAEMON_DEPLOYMENT_MODE=hosted`,
+> `DAEMON_HOSTED_IDENTITY_ENABLED=true`, and the applicable provider settings
+> on the backend. The frontend picks up successful runtime changes within 60
+> seconds. If the endpoint is unavailable or returns invalid data, the
+> frontend fails closed to `/setup`; build-time values are not used as an
+> authentication fallback.
+
+The following legacy `NEXT_PUBLIC_*` build arguments remain accepted for
+compatibility with existing images and development tests, but they do not
+control the landing or provider availability once runtime configuration is
+loaded:
+
+- `NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE` (`self-hosted` default), and
+- `NEXT_PUBLIC_GOOGLE_CLIENT_ID` (a public Google OAuth web client ID).
+
+The hosted landing and Google button additionally require
+`DAEMON_HOSTED_IDENTITY_ENABLED=true` on the FastAPI side; when that flag is
+off, those endpoints return `404 hosted_identity_disabled` before any
+challenge, rate-limit, or provider-token work. Setup, enrollment, and device
+endpoints remain reachable on the same router for self-hosted and recovery
+flows. See [`docs/HOSTED_IDENTITY.md`](HOSTED_IDENTITY.md) for the full
 contract.
 
 If you proxy hosted auth endpoints through the Next.js frontend and want hosted-identity rate
