@@ -573,6 +573,7 @@ VALID_BILLING_TIERS = {"free", "starter", "pro", "max", "byok"}
 def _build_trusted_spawn_context(
     settings: Settings,
     metadata: dict[str, Any] | None,
+    authenticated_user_id: uuid.UUID | None = None,
 ) -> dict[str, Any] | None:
     if not isinstance(metadata, dict):
         return None
@@ -588,10 +589,18 @@ def _build_trusted_spawn_context(
     if tier == "byok":
         return None
 
-    try:
-        user_id = str(uuid.UUID(DEFAULT_BILLING_USER_ID))
-    except ValueError:
-        return None
+    # Attribute the trusted video spawn context to the authenticated device
+    # owner so video credit checks/debits are billed to the actual user that
+    # triggered the request. Fall back to DEFAULT_BILLING_USER_ID only when no
+    # authenticated user is available (e.g. legacy callers that have not been
+    # updated to thread auth through). Issue #232 surface.
+    if authenticated_user_id is not None:
+        user_id = str(authenticated_user_id)
+    else:
+        try:
+            user_id = str(uuid.UUID(DEFAULT_BILLING_USER_ID))
+        except ValueError:
+            return None
 
     duration_raw = video_meta.get("duration")
     if isinstance(duration_raw, bool):
@@ -2387,7 +2396,11 @@ async def chat(
                 )
                 return
 
-            trusted_spawn_context = _build_trusted_spawn_context(settings, payload.metadata)
+            trusted_spawn_context = _build_trusted_spawn_context(
+                settings,
+                payload.metadata,
+                authenticated_user_id=auth.user_id,
+            )
             async for frame in stream_sse_chat(
                 settings=settings,
                 provider_config=provider_config,

@@ -93,3 +93,5 @@ backups/
 # Python package metadata
 *.egg-info/
 daemon.egg-info/
+
+.uv-venv
