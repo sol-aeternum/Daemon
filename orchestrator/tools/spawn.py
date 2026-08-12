@@ -382,7 +382,11 @@ class SpawnAgentTool(Tool):
         if agent_type == SubagentType.IMAGE:
             merged_context: dict[str, Any] = dict(context or {})
             trusted_video = self._trusted_spawn_context.get("video")
-            if isinstance(trusted_video, dict):
+            video_requested = merged_context.get("mode") == "video"
+            metadata_requested = (
+                isinstance(trusted_video, dict) and trusted_video.get("mode") == "video"
+            )
+            if isinstance(trusted_video, dict) and (video_requested or metadata_requested):
                 merged_context["mode"] = "video"
                 for key in (
                     "duration",
@@ -485,7 +489,11 @@ class SpawnMultipleTool(Tool):
         if agent_type == SubagentType.IMAGE:
             merged_context: dict[str, Any] = dict(context or {})
             trusted_video = self._trusted_spawn_context.get("video")
-            if isinstance(trusted_video, dict):
+            video_requested = merged_context.get("mode") == "video"
+            metadata_requested = (
+                isinstance(trusted_video, dict) and trusted_video.get("mode") == "video"
+            )
+            if isinstance(trusted_video, dict) and (video_requested or metadata_requested):
                 merged_context["mode"] = "video"
                 for key in (
                     "duration",
