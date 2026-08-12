@@ -303,6 +303,9 @@ def _chunk_messages_for_extraction(
                 fragment_raw = dict(raw_msg)
                 fragment_raw["content"] = fragment
                 fragment_raw["_extraction_cursor_checkpoint"] = index == len(fragments) - 1
+                fragment_raw["_extraction_continuation_key"] = (
+                    f"{raw_msg.get('id', 'unknown')}:{index}"
+                )
                 chunks.append(
                     {
                         "messages": [fragment_message],
@@ -615,11 +618,14 @@ async def extract_memories(
         if queue is None or not hasattr(queue, "enqueue_job"):
             raise Retry(defer=5)
         try:
-            continuation_key = last_processed_message_id or (
-                uuid.uuid5(uuid.NAMESPACE_URL, continuation_messages_json).hex
-                if continuation_messages_json is not None
-                else "unknown"
-            )
+            continuation_key = last_processed_message_id
+            if continuation_key is None and continuation_messages_json is not None:
+                remaining_for_key = _parse_raw_messages(continuation_messages_json)
+                continuation_key = str(
+                    remaining_for_key[0].get("_extraction_continuation_key", "unknown")
+                    if remaining_for_key
+                    else "unknown"
+                )
             continuation_args: tuple[str, str] | tuple[str, str, str] = (
                 (str(_as_uuid(user_id)), str(_as_uuid(conversation_id)), continuation_messages_json)
                 if continuation_messages_json is not None
