@@ -74,6 +74,8 @@ async def client(monkeypatch):
 
 def create_mock_app_state(mock_store: AsyncMock | None = None) -> AppState:
     """Create a mock AppState with optional memory store."""
+    if mock_store is not None:
+        mock_store.get_user_settings = AsyncMock(return_value=None)
     app_state = MagicMock(spec=AppState)
     app_state.memory_store = mock_store
     app_state.redis = None
@@ -159,16 +161,16 @@ async def test_chat_history_loaded_on_page_refresh(client, monkeypatch) -> None:
     assert response.status_code == 200
     assert response.headers["content-type"] == "text/event-stream; charset=utf-8"
 
-    # Verify get_recent_messages was called with streaming exclusion
+    # Verify mutable and unsuccessful assistant rows are excluded from prompt history.
     mock_store.get_recent_messages.assert_called()
     # Find the call with exclude_status parameter
     calls_with_exclude = [
         call
         for call in mock_store.get_recent_messages.call_args_list
-        if call.kwargs.get("exclude_status") == ["streaming"]
+        if call.kwargs.get("exclude_status") == ["streaming", "error", "cancelled"]
     ]
     assert len(calls_with_exclude) > 0, (
-        "Expected at least one call with exclude_status=['streaming']"
+        "Expected prompt history to exclude streaming/error/cancelled rows"
     )
 
     # Verify history was populated from DB
@@ -492,7 +494,7 @@ async def test_chat_multiple_turns_roundtrip(client, monkeypatch) -> None:
     calls_with_exclude = [
         call
         for call in mock_store_2.get_recent_messages.call_args_list
-        if call.kwargs.get("exclude_status") == ["streaming"]
+        if call.kwargs.get("exclude_status") == ["streaming", "error", "cancelled"]
     ]
     assert len(calls_with_exclude) > 0
 

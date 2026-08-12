@@ -270,8 +270,8 @@ async def test_extract_memories_recovers_pending_continuation_on_retry(
     # ``consume_summary_continuation_pending`` returns True (flag was set)
     store.consume_summary_continuation_pending = AsyncMock(return_value=True)
     # No messages found — the watermark advanced past everything
-    store.get_last_extraction_time = AsyncMock(return_value=datetime.now(timezone.utc))
-    store.get_messages = AsyncMock(return_value=[])
+    store.get_last_extraction_cursor = AsyncMock(return_value=(datetime.now(timezone.utc), None))
+    store.get_messages_after_cursor = AsyncMock(return_value=[])
 
     enqueue = AsyncMock(return_value=SimpleNamespace())
     monkeypatch.setattr(jobs, "enqueue_with_debounce", enqueue)
@@ -311,8 +311,8 @@ async def test_extract_memories_does_not_recover_when_flag_unset(
     user_id = uuid4()
     store = object.__new__(MemoryStore)
     store.consume_summary_continuation_pending = AsyncMock(return_value=False)
-    store.get_last_extraction_time = AsyncMock(return_value=datetime.now(timezone.utc))
-    store.get_messages = AsyncMock(return_value=[])
+    store.get_last_extraction_cursor = AsyncMock(return_value=(datetime.now(timezone.utc), None))
+    store.get_messages_after_cursor = AsyncMock(return_value=[])
 
     enqueue = AsyncMock(return_value=SimpleNamespace())
     monkeypatch.setattr(jobs, "enqueue_with_debounce", enqueue)
