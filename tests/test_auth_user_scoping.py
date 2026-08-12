@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,6 +13,9 @@ from orchestrator.auth import AuthenticatedDevice
 from orchestrator.config import get_settings
 from orchestrator.db import get_app_state
 from orchestrator.main import app
+
+
+pytestmark = pytest.mark.filterwarnings("error::pytest.PytestUnraisableExceptionWarning")
 
 
 def make_auth_headers(token: str) -> dict[str, str]:
@@ -26,18 +30,41 @@ async def authenticated_app(monkeypatch):
     monkeypatch.setenv("MOCK_LLM", "true")
     get_settings.cache_clear()
 
+    settings = get_settings()
+    connection = MagicMock()
+
+    @asynccontextmanager
+    async def transaction():
+        yield
+
+    async def fetchval(query: str, *_args):
+        if "FROM system_state" in query:
+            return "test-development-pepper"
+        if "COUNT(*) FROM devices" in query:
+            return 1
+        if "SELECT EXISTS" in query:
+            return True
+        return 0
+
+    connection.transaction = transaction
+    connection.execute = AsyncMock(return_value="UPDATE 0")
+    connection.fetch = AsyncMock(return_value=[])
+    connection.fetchrow = AsyncMock(return_value={"candidate_count": 0, "total_count": 0})
+    connection.fetchval = AsyncMock(side_effect=fetchval)
+
+    @asynccontextmanager
+    async def acquire():
+        yield connection
+
     app_state = MagicMock()
-    app_state.db_pool = AsyncMock()
+    app_state.settings = settings
+    app_state.db_pool = MagicMock()
+    app_state.db_pool.acquire = acquire
+    app_state.db_pool.fetch = AsyncMock(return_value=[])
+    app_state.db_pool.fetchrow = AsyncMock(return_value=None)
     app_state.db_pool.fetchval = AsyncMock(return_value=1)
+    app_state.db_pool.execute = AsyncMock(return_value="UPDATE 0")
     app_state.db_pool.close = AsyncMock()
-    # asyncpg-style acquire() is itself an async context manager (NOT a
-    # coroutine-returning method), so `async with db_pool.acquire() as conn:`
-    # works without an await. AsyncMock alone returns a coroutine from the
-    # call, breaking the protocol; configure acquire to return a context
-    # manager directly.
-    app_state.db_pool.acquire = MagicMock(
-        return_value=AsyncMock(__aenter__=AsyncMock(), __aexit__=AsyncMock())
-    )
     app_state.redis = None
     app_state.memory_store = None
     app_state.video_credits_dal = None
@@ -49,8 +76,6 @@ async def authenticated_app(monkeypatch):
     async with app.router.lifespan_context(app):
         original_app_state = app.state.app_state
         app.state.app_state = app_state
-
-        settings = get_settings()
 
         async def override_settings():
             return settings
