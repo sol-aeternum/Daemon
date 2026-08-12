@@ -860,7 +860,6 @@ class MemoryStore:
         content_hash = compute_memory_content_hash(content)
         embedding_str = _format_vector(embedding) if embedding else None
         effective_embedding_model = embedding_model or _default_embedding_model()
-        metadata_json = json.dumps(metadata) if metadata is not None else None
 
         # When ``conn`` is supplied, every SQL call in this method runs
         # on that connection inside the caller's transaction. This is
@@ -880,8 +879,8 @@ class MemoryStore:
                 INSERT INTO memories
                     (user_id, content, content_hash, content_tsv, embedding, embedding_model,
                      category, source_type, source_conversation_id, local_only, confidence,
-                     status, memory_slot, metadata)
-                VALUES ($1, $2, $3, to_tsvector('english', $14), $4::vector, $5, $6, $7, (SELECT id FROM conversations WHERE id = $8), $9, $10, $11, $12, $13)
+                     status, memory_slot)
+                VALUES ($1, $2, $3, to_tsvector('english', $13), $4::vector, $5, $6, $7, $8, $9, $10, $11, $12)
                 ON CONFLICT DO NOTHING
                 RETURNING *
                 """,
@@ -897,7 +896,6 @@ class MemoryStore:
                 confidence,
                 status,
                 memory_slot,
-                metadata_json,
                 content,  # plaintext for tsvector computation
             )
 
