@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from datetime import timedelta
@@ -69,6 +70,7 @@ async def _collect_stream(
     *,
     queue: FakeDedupQueue | None = None,
     conversation_uuid: uuid.UUID | None = None,
+    is_disconnected=None,
 ) -> list[str]:
     async def fake_completion_with_tools(**_kwargs: Any) -> AsyncIterator[dict[str, Any]]:
         async for event in completion_events:
@@ -84,7 +86,7 @@ async def _collect_stream(
             user_message="hello",
             request_id="req_123",
             conversation_id=f"conv_{effective_conversation_uuid.hex}",
-            is_disconnected=_not_disconnected,
+            is_disconnected=is_disconnected or _not_disconnected,
             memory_store=store,
             user_id=uuid.uuid4(),
             conversation_uuid=effective_conversation_uuid,
@@ -110,9 +112,10 @@ async def test_real_stream_abort_leaves_streaming_row_with_partial_content() -> 
     assert store.insert_calls[0]["status"] == "streaming"
     assert store.row is not None
     assert store.row["content"] == "partial"
-    assert store.row["status"] == "streaming"
+    assert store.row["status"] == "error"
     assert any("event: error" in frame for frame in frames)
-    assert all(call.get("status") != "complete" for call in store.update_calls)
+    assert any(call.get("status") == "error" for call in store.update_calls)
+    assert store.row["status"] == "error"
 
 
 @pytest.mark.asyncio
@@ -132,6 +135,85 @@ async def test_real_completed_stream_updates_single_row_to_complete() -> None:
     assert store.row["status"] == "complete"
     assert sum(1 for call in store.update_calls if call.get("status") == "complete") == 1
     assert any("event: final" in frame for frame in frames)
+    assert any("event: done" in frame for frame in frames)
+
+
+@pytest.mark.asyncio
+async def test_streaming_generator_close_forced_status_cancelled() -> None:
+    async def streaming_completion() -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "content_delta", "content": "partial"}
+        event = asyncio.Event()
+        await event.wait()
+
+    store = FakeMemoryStore()
+    frames: list[str] = []
+    conversation_uuid = uuid.uuid4()
+
+    async def collect_stream() -> None:
+        async def fake_completion_with_tools(**_kwargs: Any) -> AsyncIterator[dict[str, Any]]:
+            async for event in streaming_completion():
+                yield event
+
+        with patch("orchestrator.daemon.completion_with_tools", fake_completion_with_tools):
+            async for frame in stream_sse_chat(
+                settings=Settings(mock_llm=False),
+                provider_config=ProviderConfig(name="openrouter", model="test-model"),
+                system_prompt="system",
+                user_message="hello",
+                request_id="req_123",
+                conversation_id=f"conv_{conversation_uuid.hex}",
+                is_disconnected=_not_disconnected,
+                memory_store=store,
+                user_id=uuid.uuid4(),
+                conversation_uuid=conversation_uuid,
+            ):
+                frames.append(frame)
+
+    stream_task = asyncio.create_task(collect_stream())
+    while not store.insert_calls:
+        await asyncio.sleep(0)
+    while not any("event: token" in frame for frame in frames):
+        await asyncio.sleep(0)
+
+    stream_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await stream_task
+
+    assert store.row is not None
+    assert store.row["status"] == "cancelled"
+    assert store.row["content"] == "partial"
+    assert any("event: token" in frame for frame in frames)
+
+
+@pytest.mark.asyncio
+async def test_disconnected_stream_updates_status_cancelled_and_skips_extraction() -> None:
+    async def partial_completion() -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "content_delta", "content": "partial"}
+        yield {"type": "content_delta", "content": "more"}
+
+    disconnected: dict[str, int] = {"count": 0}
+
+    async def after_first_disconnect() -> bool:
+        disconnected["count"] += 1
+        return disconnected["count"] >= 2
+
+    queue = FakeDedupQueue()
+    store = FakeMemoryStore()
+
+    frames = await _collect_stream(
+        store,
+        partial_completion(),
+        queue=queue,
+        is_disconnected=after_first_disconnect,
+    )
+
+    assert store.row is not None
+    assert store.row["status"] == "cancelled"
+    assert store.row["content"] == "partial"
+    extraction_attempts = [
+        attempt for attempt in queue.attempts if attempt["args"][0] == "extract_memories"
+    ]
+    assert extraction_attempts == []
     assert any("event: done" in frame for frame in frames)
 
 

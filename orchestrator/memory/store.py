@@ -24,6 +24,7 @@ def is_explicit_memory(memory: dict[str, Any]) -> bool:
 
 
 logger = logging.getLogger(__name__)
+EXTRACTION_SKIPPED_TERMINAL_STATUSES = frozenset({"error", "cancelled"})
 
 
 def _default_embedding_model() -> str:
@@ -443,6 +444,84 @@ class MemoryStore:
             results.append(_normalize_message(d))
         return results
 
+    async def get_messages_after_cursor(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        created_at: datetime | None,
+        message_id: str | None,
+        limit: int = 250,
+    ) -> list[dict[str, Any]]:
+        """Load the oldest messages strictly after a stable extraction cursor."""
+        if created_at is None:
+            rows = await self._pool.fetch(
+                """
+                SELECT * FROM messages
+                WHERE conversation_id = $1
+                ORDER BY created_at ASC, id::text ASC
+                LIMIT $2
+                """,
+                conversation_id,
+                limit,
+            )
+        elif message_id is None:
+            rows = await self._pool.fetch(
+                """
+                SELECT * FROM messages
+                WHERE conversation_id = $1 AND created_at >= $2
+                ORDER BY created_at ASC, id::text ASC
+                LIMIT $3
+                """,
+                conversation_id,
+                created_at,
+                limit,
+            )
+        else:
+            rows = await self._pool.fetch(
+                """
+                SELECT * FROM messages
+                WHERE conversation_id = $1
+                  AND (created_at > $2 OR (created_at = $2 AND id::text > $3))
+                ORDER BY created_at ASC, id::text ASC
+                LIMIT $4
+                """,
+                conversation_id,
+                created_at,
+                message_id,
+                limit,
+            )
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            message = dict(row)
+            # Stop at the first mutable row. Failed and cancelled rows have an
+            # explicit terminal state, so advance the cursor across them
+            # without extracting their partial content. A ``streaming`` row is
+            # always mutable regardless of age and must never be guessed stale.
+            status = message.get("status")
+            if status in EXTRACTION_SKIPPED_TERMINAL_STATUSES:
+                message["content"] = ""
+                message["_extraction_skip"] = True
+                results.append(_normalize_message(message))
+                continue
+            if status not in (None, "complete"):
+                break
+            message["content"] = self._enc.decrypt(message["content"])
+            if message.get("reasoning_text") is not None:
+                message["reasoning_text"] = self._enc.decrypt(message["reasoning_text"])
+            if message.get("advisor_traces") is not None:
+                message["advisor_traces"] = self._decrypt_advisor_traces(message["advisor_traces"])
+            results.append(_normalize_message(message))
+        return results
+
+    def encrypt_extraction_continuation(self, payload: str) -> str:
+        """Encrypt an extraction continuation before Redis persistence."""
+        return self._enc.encrypt(payload)
+
+    def decrypt_extraction_continuation(self, payload: str) -> str:
+        """Decrypt an extraction continuation loaded from Redis."""
+        return self._enc.decrypt(payload)
+
     async def get_summary_message_batch(
         self,
         conversation_id: uuid.UUID,
@@ -461,44 +540,47 @@ class MemoryStore:
         """
         batch_limit = min(100, max(1, int(limit)))
         batch_offset = max(0, int(offset))
-        # Stop at the first non-finalized row instead of merely filtering it out.
+        # Stop at the first mutable row instead of merely filtering it out.
         # A row that was streaming at fetch time but finalized later (without a
         # ``created_at`` change) would otherwise insert before already-summarized
         # rows and replay the same messages on the next iteration (Codex P2 on
         # PR #165, ``store.py:464``).
         #
-        # The ``ranked`` CTE must include ALL conversation rows (not just the
-        # finalized ones) so the ``cutoff`` CTE can find the first non-finalized
-        # row and stop the contiguous prefix before it. The outer SELECT then
-        # filters to finalized-only rows within that contiguous prefix.
-        base_filter = "conversation_id = $1 AND (status IS NULL OR status = 'complete')"
+        # The cursor is expressed in finalized-row space because terminal
+        # ``error``/``cancelled`` rows are intentionally omitted from summary
+        # content. They must not shift an offset or pin later complete rows.
+        # Unknown non-terminal statuses remain conservative blockers.
+        base_filter = "m.conversation_id = $1 AND (m.status IS NULL OR m.status = 'complete')"
         if snapshot_at is not None:
             rows = await self._pool.fetch(
                 f"""
                 WITH ranked AS (
-                    SELECT id, ROW_NUMBER() OVER (
-                        ORDER BY created_at ASC, id ASC
-                    ) AS rn
+                    SELECT id, created_at, status,
+                           COUNT(*) FILTER (
+                               WHERE status IS NULL OR status = 'complete'
+                           ) OVER (
+                               ORDER BY created_at ASC, id ASC
+                           ) AS summary_rn
                     FROM messages
                     WHERE conversation_id = $1
                       AND created_at <= $4
                 ),
                 cutoff AS (
                     SELECT COALESCE(
-                        MIN(rn) - 1,
-                        (SELECT MAX(rn) FROM ranked)
-                    ) AS contiguous_rn
-                    FROM ranked r
-                    JOIN messages m ON m.id = r.id
-                    WHERE m.status IS NOT NULL AND m.status <> 'complete'
-                      AND m.created_at <= $4
+                        MIN(summary_rn) FILTER (
+                            WHERE status IS NOT NULL
+                              AND status NOT IN ('complete', 'error', 'cancelled')
+                        ),
+                        (SELECT COALESCE(MAX(summary_rn), 0) FROM ranked)
+                    ) AS contiguous_summary_rn
+                    FROM ranked
                 )
                 SELECT m.* FROM messages m
                 JOIN ranked r ON m.id = r.id
                 WHERE {base_filter}
-                  AND r.rn > $3
-                  AND r.rn <= (SELECT contiguous_rn FROM cutoff)
-                ORDER BY r.rn ASC
+                  AND r.summary_rn > $3
+                  AND r.summary_rn <= (SELECT contiguous_summary_rn FROM cutoff)
+                ORDER BY r.summary_rn ASC
                 LIMIT $2
                 """,
                 conversation_id,
@@ -511,26 +593,30 @@ class MemoryStore:
                 f"""
                 WITH ranked AS (
                     SELECT id, created_at, status,
-                           ROW_NUMBER() OVER (
+                           COUNT(*) FILTER (
+                               WHERE status IS NULL OR status = 'complete'
+                           ) OVER (
                                ORDER BY created_at ASC, id ASC
-                           ) AS rn
+                           ) AS summary_rn
                     FROM messages
                     WHERE conversation_id = $1
                 ),
                 cutoff AS (
                     SELECT COALESCE(
-                        MIN(rn) - 1,
-                        (SELECT MAX(rn) FROM ranked)
-                    ) AS contiguous_rn
+                        MIN(summary_rn) FILTER (
+                            WHERE status IS NOT NULL
+                              AND status NOT IN ('complete', 'error', 'cancelled')
+                        ),
+                        (SELECT COALESCE(MAX(summary_rn), 0) FROM ranked)
+                    ) AS contiguous_summary_rn
                     FROM ranked
-                    WHERE status IS NOT NULL AND status <> 'complete'
                 )
                 SELECT m.* FROM messages m
                 JOIN ranked r ON m.id = r.id
                 WHERE {base_filter}
-                  AND r.rn > $3
-                  AND r.rn <= (SELECT contiguous_rn FROM cutoff)
-                ORDER BY r.rn ASC
+                  AND r.summary_rn > $3
+                  AND r.summary_rn <= (SELECT contiguous_summary_rn FROM cutoff)
+                ORDER BY r.summary_rn ASC
                 LIMIT $2
                 """,
                 conversation_id,
@@ -595,10 +681,11 @@ class MemoryStore:
     ) -> int:
         """Count the contiguous-finalized-message prefix at ``snapshot_at``.
 
-        A "contiguous finalized prefix" is the longest run of finalized rows
-        (legacy ``status IS NULL`` or ``status = 'complete'``) in
-        ``(created_at ASC, id ASC)`` order such that every row in the prefix
-        is finalized. This excludes a row that was ``streaming`` at the
+        A "contiguous finalized prefix" is the longest run of summary-eligible
+        rows (legacy ``status IS NULL`` or ``status = 'complete'``) in
+        ``(created_at ASC, id ASC)`` order before a mutable row. Terminal
+        ``error``/``cancelled`` rows are skipped without consuming cursor
+        positions. This excludes a row that was ``streaming`` at the
         snapshot and later transitioned to ``complete`` — its ``created_at``
         still satisfies ``created_at <= snapshot_at``, but inserting it
         before the prior finalized rows would shift the cursor and replay
@@ -609,27 +696,29 @@ class MemoryStore:
         captured, so concurrent ``streaming -> complete`` transitions can
         never reorder the row set under an in-flight summary batch.
         """
-        # ``prefix_count`` is the longest contiguous run of finalized rows
-        # from the snapshot. When a non-finalized row exists, prefix_count
-        # is its row number minus one. When every row at the snapshot is
-        # finalized, the inner ``WHERE`` returns nothing and ``MIN(rn)`` is
-        # NULL — fall back to the total ranked-row count so the prefix
-        # spans the whole snapshot (Codex P2 on PR #165, ``store.py:566``).
+        # ``prefix_count`` is expressed in finalized-row space so skipped
+        # terminal rows cannot shift the persisted summary offset. Unknown
+        # non-terminal statuses remain blockers alongside ``streaming``.
         row = await self._pool.fetchrow(
             """
             WITH ranked AS (
                 SELECT
-                    row_number() OVER (
+                    COUNT(*) FILTER (
+                        WHERE status IS NULL OR status = 'complete'
+                    ) OVER (
                         ORDER BY created_at ASC, id ASC
-                    ) AS rn,
+                    ) AS summary_rn,
                     status
                 FROM messages
                 WHERE conversation_id = $1
                   AND created_at <= $2
             )
             SELECT COALESCE(
-                MIN(rn) FILTER (WHERE status IS NOT NULL AND status <> 'complete') - 1,
-                (SELECT COUNT(*) FROM ranked)
+                MIN(summary_rn) FILTER (
+                    WHERE status IS NOT NULL
+                      AND status NOT IN ('complete', 'error', 'cancelled')
+                ),
+                (SELECT COALESCE(MAX(summary_rn), 0) FROM ranked)
             ) AS prefix_count
             FROM ranked
             """,
@@ -2221,26 +2310,41 @@ class MemoryStore:
         result["input_snippet"] = self._enc.decrypt(result["input_snippet"])
         return result
 
+    async def get_last_extraction_cursor(
+        self,
+        conversation_id: uuid.UUID,
+    ) -> tuple[datetime | None, str | None]:
+        """Return the latest durable ``(created_at, message_id)`` cursor.
+
+        Fragment logs marked ``cursor_checkpoint=false`` are audit records,
+        not progress markers. Legacy rows without that key remain eligible.
+        """
+        row = await self._pool.fetchrow(
+            """
+            SELECT
+                COALESCE(last_message_observed_at, created_at) AS watermark,
+                dedup_results->>'last_message_id' AS message_id
+            FROM memory_extraction_log
+            WHERE conversation_id = $1
+              AND dedup_results->>'cursor_checkpoint' IS DISTINCT FROM 'false'
+            ORDER BY COALESCE(last_message_observed_at, created_at) DESC,
+                     dedup_results->>'last_message_id' DESC NULLS LAST,
+                     created_at DESC
+            LIMIT 1
+            """,
+            conversation_id,
+        )
+        if not row:
+            return None, None
+        return row["watermark"], row["message_id"]
+
     async def get_last_extraction_time(
         self,
         conversation_id: uuid.UUID,
     ) -> datetime | None:
-        """Get the watermark for the next extraction.
-
-        Prefers last_message_observed_at over created_at so that a turn
-        which arrived while the previous extraction was in flight is not
-        skipped by the `created_at > last_extraction_time` filter.
-        """
-        row = await self._pool.fetchrow(
-            """
-            SELECT COALESCE(last_message_observed_at, created_at) AS watermark
-            FROM memory_extraction_log
-            WHERE conversation_id = $1
-            ORDER BY COALESCE(last_message_observed_at, created_at) DESC LIMIT 1
-            """,
-            conversation_id,
-        )
-        return row["watermark"] if row else None
+        """Get the timestamp component of the durable extraction cursor."""
+        watermark, _ = await self.get_last_extraction_cursor(conversation_id)
+        return watermark
 
     # ------------------------------------------------------------------
     # Retrieval log operations

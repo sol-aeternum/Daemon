@@ -140,6 +140,7 @@ class ExtractionOutcome:
     calibrated_count: int
     rejected_count: int
     slot_coverage: int
+    succeeded: bool = True
 
 
 class BenchmarkProviderError(RuntimeError):
@@ -529,17 +530,73 @@ async def extract_facts_from_text(
                 calibrated_count=0,
                 rejected_count=0,
                 slot_coverage=0,
+                succeeded=False,
             )
 
         data = json.loads(content)
 
+        if not isinstance(data, dict) or not isinstance(data.get("facts"), list):
+            logger.warning("Extraction response violated the required facts envelope")
+            return ExtractionOutcome(
+                facts=[],
+                raw_count=0,
+                calibrated_count=0,
+                rejected_count=0,
+                slot_coverage=0,
+                succeeded=False,
+            )
+
         raw_facts: list[ExtractedFact] = []
-        if isinstance(data, list):
-            items = data
-        elif isinstance(data, dict) and "facts" in data:
-            items = data["facts"]
-        else:
-            items = [data] if data else []
+        items = data["facts"]
+
+        def has_valid_fact_shape(item: object) -> bool:
+            if not isinstance(item, dict):
+                return False
+            content_value = item.get("content")
+            raw_category_value = item.get("category")
+            # Apply normalization/coercion before shape rejection so that
+            # provider output using supported variants ("intent"/"goal" etc.
+            # or numeric-string confidence) is accepted before downstream
+            # validation (Codex P2 on PR #238, ``extraction.py:552-578``).
+            normalized_category_value = _normalize_category(raw_category_value)
+            confidence_value = item.get("confidence")
+            if isinstance(confidence_value, bool):
+                # bool is a subclass of int in Python; reject explicitly so a
+                # stray ``true`` token does not implicitly coerce to 1.0.
+                confidence_value = None
+            elif isinstance(confidence_value, str):
+                # Accept numeric strings ("0.85") via the existing coercion
+                # so the raw ``isinstance(..., (int, float))`` check no longer
+                # rejects them (Codex P2 on PR #238, ``extraction.py:552-578``).
+                try:
+                    float(confidence_value)
+                except ValueError:
+                    confidence_value = None
+            elif confidence_value is None:
+                confidence_value = None
+            else:
+                confidence_value = _coerce_confidence(confidence_value)
+            slot_value = item.get("slot")
+            return (
+                isinstance(content_value, str)
+                and bool(content_value.strip())
+                and isinstance(raw_category_value, str)
+                and raw_category_value.strip() != ""
+                and normalized_category_value in ALLOWED_CATEGORIES
+                and confidence_value is not None
+                and (slot_value is None or isinstance(slot_value, str))
+            )
+
+        if any(not has_valid_fact_shape(item) for item in items):
+            logger.warning("Extraction response contained a malformed fact entry")
+            return ExtractionOutcome(
+                facts=[],
+                raw_count=len(items),
+                calibrated_count=0,
+                rejected_count=len(items),
+                slot_coverage=0,
+                succeeded=False,
+            )
 
         for item in items:
             if isinstance(item, dict) and "content" in item:
@@ -585,6 +642,7 @@ async def extract_facts_from_text(
             calibrated_count=0,
             rejected_count=0,
             slot_coverage=0,
+            succeeded=False,
         )
 
 
@@ -595,6 +653,9 @@ async def process_extraction(
     text: str,
     *,
     last_message_observed_at: datetime | None = None,
+    last_message_id: str | None = None,
+    chunk_index: int | None = None,
+    cursor_checkpoint: bool = True,
 ) -> tuple[bool, list[dict[str, Any]], bool]:
     """Orchestrate extraction -> dedup -> insert.
 
@@ -605,6 +666,14 @@ async def process_extraction(
         post-extraction summary call filled its bounded batch and more
         finalized messages remain. Worker callers should enqueue
         ``generate_summary_job(force=True)`` to drain the tail.
+
+    Issue #229: a no-fact chunk still records a ``log_extraction``
+    checkpoint so the durable watermark advances through messages the
+    extractor has actually seen, instead of replaying the same
+    zero-fact text on every subsequent job. ``chunk_index`` is
+    informational — it is persisted into the extraction log row so an
+    operator can correlate the row to the chunked worker run that
+    emitted it. ``None`` is preserved as the legacy single-chunk case.
     """
     from orchestrator.memory.dedup import deduplicate_facts
 
@@ -617,9 +686,13 @@ async def process_extraction(
     outcome = await extract_facts_from_text(text, model=model, summary=summary)
     retry_used = False
 
-    should_retry = len(text.strip()) >= 80 and (
-        not outcome.facts
-        or (outcome.calibrated_count > 0 and outcome.rejected_count >= outcome.calibrated_count)
+    outcome_succeeded = bool(getattr(outcome, "succeeded", True))
+    should_retry = not outcome_succeeded or (
+        len(text.strip()) >= 80
+        and (
+            not outcome.facts
+            or (outcome.calibrated_count > 0 and outcome.rejected_count >= outcome.calibrated_count)
+        )
     )
     if should_retry:
         retry_used = True
@@ -633,10 +706,39 @@ async def process_extraction(
                 "mentions. Keep facts user-specific and durable."
             ),
         )
-        if retry_outcome.facts:
+        if bool(getattr(retry_outcome, "succeeded", True)):
             outcome = retry_outcome
+            outcome_succeeded = True
+
+    if not outcome_succeeded:
+        return False, [], False
 
     if not outcome.facts:
+        # A successful zero-fact call is still a durable checkpoint. Let
+        # logging failures propagate so arq retries instead of reporting
+        # success without advancing the cursor.
+        await store.log_extraction(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            input_snippet=text[:1000],
+            extracted_facts=[],
+            dedup_results={
+                "merged": 0,
+                "superseded": 0,
+                "new": 0,
+                "raw_count": outcome.raw_count,
+                "calibrated_count": outcome.calibrated_count,
+                "rejected_count": outcome.rejected_count,
+                "slot_coverage": outcome.slot_coverage,
+                "retry_used": retry_used,
+                "chunk_index": chunk_index,
+                "last_message_id": last_message_id,
+                "cursor_checkpoint": cursor_checkpoint,
+                "no_fact_checkpoint": True,
+            },
+            model_used=model,
+            last_message_observed_at=last_message_observed_at,
+        )
         return True, [], False
 
     result = await deduplicate_facts(
@@ -669,6 +771,9 @@ async def process_extraction(
             "rejected_count": outcome.rejected_count,
             "slot_coverage": outcome.slot_coverage,
             "retry_used": retry_used,
+            "chunk_index": chunk_index,
+            "last_message_id": last_message_id,
+            "cursor_checkpoint": cursor_checkpoint,
         },
         model_used=model,
         last_message_observed_at=last_message_observed_at,

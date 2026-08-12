@@ -30,26 +30,23 @@ async def test_summary_batch_excludes_streaming_messages_and_applies_offset() ->
     assert offset == 12
     normalized = " ".join(query.split())
     assert "status IS NULL OR status = 'complete'" in normalized
-    # Stop at the first non-finalized row (Codex P2 on PR #165,
-    # ``store.py:464``): the SQL now uses a ranked CTE with a cutoff
-    # derived from the first row whose status is non-finalized.
-    assert "ROW_NUMBER() OVER (" in normalized
+    # Cursor positions count only summary-eligible rows so skipped terminal
+    # rows cannot shift the persisted finalized-message offset.
+    assert "COUNT(*) FILTER ( WHERE status IS NULL OR status = 'complete' ) OVER (" in normalized
     assert "ORDER BY created_at ASC, id ASC" in normalized
-    assert "contiguous_rn" in normalized
+    assert "contiguous_summary_rn" in normalized
 
 
 @pytest.mark.asyncio
-async def test_summary_batch_stops_at_first_non_finalized_row() -> None:
+async def test_summary_batch_stops_at_first_mutable_row_but_skips_terminal_rows() -> None:
     """Codex P2 on PR #165, store.py:464 — finalized rows after a
-    streaming or failed row must not be returned in the same batch;
-    the SQL must stop at the contiguous-prefix boundary rather than
-    merely filtering the gap row out.
+    streaming row must not be returned in the same batch, while terminal
+    error/cancelled rows must neither contribute content nor pin later
+    finalized rows.
 
-    Regression: prior implementation applied the ``base_filter`` (status
-    IS NULL OR status = 'complete') inside the ``ranked`` CTE, which
-    excluded non-finalized rows before the ``cutoff`` CTE could find
-    them — so ``MIN(rn) - 1`` was always NULL and the COALESCE fell back
-    to ``MAX(rn)``, returning finalized rows past a streaming gap.
+    Regression: raw-row offsets shift when terminal rows are filtered out.
+    The ranked CTE must instead compute a finalized-only cursor while still
+    retaining every row for the mutable-boundary calculation.
     """
     conversation_id = uuid4()
     snapshot = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
@@ -71,35 +68,30 @@ async def test_summary_batch_stops_at_first_non_finalized_row() -> None:
 
     query, _actual_id, _limit, _offset, _snapshot_arg = pool.fetch.await_args.args
     normalized = " ".join(query.split())
-    # The cutoff CTE must compute a contiguous prefix that excludes
-    # any non-finalized row's later finalized rows.
+    # The cutoff is expressed in finalized-row space. Terminal rows are
+    # explicitly non-blocking; streaming and unknown states stay conservative.
     assert "COALESCE" in normalized
-    assert "MIN(rn) - 1" in normalized
-    # The outer SELECT joins ranked CTE and applies ``r.rn > $3``
-    # (offset) and ``r.rn <= contiguous_rn`` (the boundary).
-    assert "r.rn > $3" in normalized
-    assert "r.rn <= (SELECT contiguous_rn FROM cutoff)" in normalized
+    assert "MIN(summary_rn) FILTER" in normalized
+    assert "status NOT IN ('complete', 'error', 'cancelled')" in normalized
+    # The outer SELECT applies the finalized-space offset and boundary.
+    assert "r.summary_rn > $3" in normalized
+    assert "r.summary_rn <= (SELECT contiguous_summary_rn FROM cutoff)" in normalized
 
     # Regression guard for the ranked-CTE bug: the ``ranked`` CTE must
-    # rank ALL conversation rows at-or-before the snapshot (regardless
-    # of status), so the ``cutoff`` CTE can find non-finalized rows
+    # inspect ALL conversation rows at-or-before the snapshot (regardless
+    # of status), so the ``cutoff`` CTE can find mutable rows
     # that would otherwise be hidden by ``base_filter``. The outer
     # SELECT then filters to finalized rows within the contiguous
     # prefix.
     #
     # The fix is verified by inspecting the CTE structure: the ``ranked``
-    # CTE must reference ``messages`` with only the conversation-id and
-    # snapshot filter, NOT the finalized-status filter; the
-    # finalized-only filter (``status IS NULL OR status = 'complete'``)
-    # must appear only in the outer SELECT.
+    # CTE's row source must use only conversation/snapshot bounds; status is
+    # used by the windowed finalized counter, not to filter rows out.
     ranked_section, outer_section = _split_ctes(normalized)
     assert "messages" in ranked_section
-    # base_filter MUST NOT appear inside the ranked CTE
-    assert "status IS NULL OR status = 'complete'" not in ranked_section, (
-        "ranked CTE must include ALL rows so cutoff can find non-finalized gap rows"
-    )
+    assert "FROM messages WHERE conversation_id = $1 AND created_at <= $4" in ranked_section
     # base_filter MUST appear in the outer SELECT (filter finalized-only)
-    assert "status IS NULL OR status = 'complete'" in outer_section, (
+    assert "m.status IS NULL OR m.status = 'complete'" in outer_section, (
         "outer SELECT must filter to finalized-only rows"
     )
 
@@ -257,5 +249,6 @@ async def test_count_contiguous_prefix_returns_total_when_all_finalized() -> Non
     normalized_query = " ".join(query.split())
     # COALESCE fallback to total count is the regression target.
     assert "COALESCE" in normalized_query
-    assert "COUNT(*)" in normalized_query
+    assert "MAX(summary_rn)" in normalized_query
     assert "FILTER" in normalized_query
+    assert "status NOT IN ('complete', 'error', 'cancelled')" in normalized_query

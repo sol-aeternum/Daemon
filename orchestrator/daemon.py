@@ -333,13 +333,66 @@ async def stream_sse_chat(
     advisor_traces: dict[str, dict[str, Any]] = {}
     finish_reason: str | None = None
     usage: dict[str, int] | None = None
+    first_token_time: float | None = None
+    last_token_time: float | None = None
+    first_reasoning_time: float | None = None
+    last_reasoning_time: float | None = None
+    reasoning_parts: list[str] = []
 
     assistant_message_id: uuid.UUID | None = None
+    assistant_message_terminalized = False
+    turn_finished_normally = False
     _last_persist_s: float | None = None
     _persist_interval_s = 1.0
 
     forced_terminal_status: str | None = None
     terminal_reason: str | None = None
+
+    async def terminalize_incomplete_assistant() -> None:
+        """Best-effort transition for a pre-inserted row on every exit path."""
+        nonlocal assistant_message_terminalized
+        if assistant_message_terminalized or not memory_store or assistant_message_id is None:
+            return
+
+        status = forced_terminal_status or ("complete" if turn_finished_normally else "cancelled")
+        metadata: dict[str, Any] = {"terminal_status": status}
+        if finish_reason is not None:
+            metadata["finish_reason"] = finish_reason
+        if terminal_reason:
+            metadata["terminal_reason"] = terminal_reason
+        reasoning_text = "\n".join(reasoning_parts).strip() or None
+        reasoning_duration_secs: int | None = None
+        if (
+            first_reasoning_time is not None
+            and last_reasoning_time is not None
+            and last_reasoning_time >= first_reasoning_time
+        ):
+            reasoning_duration_secs = max(
+                1,
+                int(last_reasoning_time - first_reasoning_time),
+            )
+
+        try:
+            updated = await memory_store.update_message(
+                message_id=assistant_message_id,
+                content="".join(final_text_parts),
+                tool_calls=persisted_tool_calls,
+                tool_results=persisted_tool_results,
+                advisor_traces=advisor_traces or None,
+                reasoning_text=reasoning_text,
+                reasoning_duration_secs=reasoning_duration_secs,
+                reasoning_model=actual_model or model,
+                status=status,
+                metadata=metadata,
+            )
+            assistant_message_terminalized = updated is not None
+        except Exception as error:
+            logger.warning(
+                "Failed to terminalize assistant message %s as %s: %s",
+                assistant_message_id,
+                status,
+                error,
+            )
 
     # Track if memory_write (correction) occurred during this response
     memory_write_occurred = False
@@ -397,12 +450,6 @@ async def stream_sse_chat(
     # Mock mode uses the simple token stream for deterministic tests.
     try:
         try:
-            first_token_time: float | None = None
-            last_token_time: float | None = None
-            first_reasoning_time: float | None = None
-            last_reasoning_time: float | None = None
-            reasoning_parts: list[str] = []
-
             if memory_store and conversation_uuid and user_id:
                 try:
                     inserted = await memory_store.insert_message(
@@ -421,6 +468,8 @@ async def stream_sse_chat(
                 mock_response = "(mock) Mock response from Daemon"
                 for token in mock_response:
                     if await is_disconnected():
+                        forced_terminal_status = "cancelled"
+                        terminal_reason = "Client disconnected during streaming"
                         break
                     yield sse(
                         "token",
@@ -823,9 +872,11 @@ async def stream_sse_chat(
             )
             return
 
+        turn_finished_normally = True
+
         # Ensure assistant always provides visible response even when tool failures occur
         # without explicit error events (e.g., tool_result with failure status then done)
-        if not final_text_parts:
+        if forced_terminal_status is None and not final_text_parts:
             fallback_message = (
                 "I encountered issues while executing tools and couldn't complete the request as intended. "
                 "Please try rephrasing your request, or ask me to explain what went wrong."
@@ -855,10 +906,11 @@ async def stream_sse_chat(
                 "last_token_s": last_token_time,
             }
 
-        yield sse(
-            "final",
-            make_envelope("final", final_data, evt_id="evt_final"),
-        )
+        if forced_terminal_status is None:
+            yield sse(
+                "final",
+                make_envelope("final", final_data, evt_id="evt_final"),
+            )
 
         # Persist final message to memory store
         if memory_store and conversation_uuid and user_id:
@@ -880,10 +932,14 @@ async def stream_sse_chat(
                     final_metadata["finish_reason"] = finish_reason
                 if usage is not None:
                     final_metadata["usage"] = usage
+                persisted_status = forced_terminal_status or "complete"
+                final_metadata["terminal_status"] = persisted_status
+                if terminal_reason:
+                    final_metadata["terminal_reason"] = terminal_reason
 
                 if assistant_message_id:
                     # Update existing message
-                    await memory_store.update_message(
+                    updated = await memory_store.update_message(
                         message_id=assistant_message_id,
                         content=content,
                         tool_calls=persisted_tool_calls,
@@ -892,9 +948,10 @@ async def stream_sse_chat(
                         reasoning_text=reasoning_text,
                         reasoning_duration_secs=reasoning_duration_secs,
                         reasoning_model=model_name,
-                        status="complete",
+                        status=persisted_status,
                         metadata=final_metadata or None,
                     )
+                    assistant_message_terminalized = updated is not None
                 else:
                     # Insert new message
                     inserted = await memory_store.insert_message(
@@ -909,15 +966,16 @@ async def stream_sse_chat(
                         reasoning_text=reasoning_text,
                         reasoning_duration_secs=reasoning_duration_secs,
                         reasoning_model=model_name,
-                        status="complete",
+                        status=persisted_status,
                         metadata=final_metadata or None,
                     )
                     assistant_message_id = inserted["id"]
+                    assistant_message_terminalized = True
 
                 # Apply implicit positive trust signal (boost previous turn's memories if no correction)
                 try:
                     ts_module = _lazy_import_trust_signals()
-                    if ts_module and conversation_uuid:
+                    if persisted_status == "complete" and ts_module and conversation_uuid:
                         await ts_module.apply_implicit_positive_signal(
                             conversation_id=conversation_uuid,
                             store=memory_store,
@@ -927,7 +985,7 @@ async def stream_sse_chat(
                 except Exception as trust_error:
                     logger.debug(f"Trust signal application skipped: {trust_error}")
 
-                if queue is not None:
+                if persisted_status == "complete" and queue is not None:
                     extract_job_id = f"extract:{conversation_uuid}"
                     try:
                         # arq records failed results under Worker-level keep_result_s
@@ -973,7 +1031,12 @@ async def stream_sse_chat(
                                 )
 
                 tool_call_count = len(persisted_tool_calls)
-                if queue is not None and assistant_message_id is not None and tool_call_count >= 5:
+                if (
+                    persisted_status == "complete"
+                    and queue is not None
+                    and assistant_message_id is not None
+                    and tool_call_count >= 5
+                ):
                     try:
                         debounce_key = f"skill_eval:{conversation_uuid}:{assistant_message_id}"
                         await queue.enqueue_job(
@@ -1002,8 +1065,12 @@ async def stream_sse_chat(
         )
 
     except Exception as e:
+        forced_terminal_status = "error"
+        terminal_reason = _SSE_INTERNAL_ERROR_TOKEN
         logger.error("Unexpected error in stream_sse_chat: %s", e, exc_info=True)
         yield sse(
             "error",
             make_envelope("error", {"message": "Internal server error"}, evt_id="evt_error"),
         )
+    finally:
+        await terminalize_incomplete_assistant()

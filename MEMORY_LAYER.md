@@ -67,6 +67,12 @@ reasoning_model TEXT
 created_at TIMESTAMPTZ DEFAULT NOW()
 ```
 
+Assistant message status is an explicit lifecycle contract: `streaming` is
+mutable, `complete` is eligible for extraction, and terminal `error` or
+`cancelled` rows are retained for audit/history but skipped by extraction.
+They are also excluded from future model prompt context. Extraction never
+infers abandonment from message age.
+
 **Note:** Messages do not have an embedding column. Extraction operates on the text content directly.
 
 #### `memories`
