@@ -12,7 +12,10 @@ export type AuthConfigResult =
 
 type Listener = (result: AuthConfigResult) => void;
 
+export const AUTH_CONFIG_CACHE_TTL_MS = 60_000;
+
 let _cached: AuthConfig | null = null;
+let _cachedAtMs: number | null = null;
 let _inflight: Promise<AuthConfigResult> | null = null;
 const _listeners = new Set<Listener>();
 
@@ -34,14 +37,24 @@ function isAuthConfig(value: unknown): value is AuthConfig {
 }
 
 export function fetchAuthConfig(): Promise<AuthConfigResult> {
-  if (_cached) {
-    return Promise.resolve({ status: 'resolved', config: _cached });
+  return requestAuthConfig(false);
+}
+
+export function refreshAuthConfig(): Promise<AuthConfigResult> {
+  return requestAuthConfig(true);
+}
+
+function requestAuthConfig(forceRefresh: boolean): Promise<AuthConfigResult> {
+  const cached = forceRefresh ? undefined : getCachedAuthConfig();
+  if (cached) {
+    return Promise.resolve({ status: 'resolved', config: cached });
   }
   if (_inflight) return _inflight;
   _inflight = doFetch().then((result) => {
     _inflight = null;
     if (result.status === 'resolved') {
       _cached = result.config;
+      _cachedAtMs = Date.now();
       for (const cb of _listeners) cb(result);
     } else {
       for (const cb of _listeners) cb(result);
@@ -80,7 +93,26 @@ async function doFetch(): Promise<AuthConfigResult> {
 }
 
 export function getCachedAuthConfig(): AuthConfig | undefined {
-  return _cached ?? undefined;
+  if (
+    !_cached ||
+    _cachedAtMs === null ||
+    Date.now() - _cachedAtMs >= AUTH_CONFIG_CACHE_TTL_MS
+  ) {
+    return undefined;
+  }
+  return _cached;
+}
+
+/**
+ * Returns the age of the cached config in milliseconds, or `undefined` if
+ * no config is cached. Used by the periodic-refresh timer to schedule the
+ * first refresh at the cache's actual expiry rather than a full TTL after
+ * mount — otherwise remounting a 59-second-old cache would leave the runtime
+ * contract invisible for nearly 119 seconds.
+ */
+export function getCachedAuthConfigAgeMs(): number | undefined {
+  if (!_cached || _cachedAtMs === null) return undefined;
+  return Date.now() - _cachedAtMs;
 }
 
 export function subscribeAuthConfig(cb: Listener): () => void {
