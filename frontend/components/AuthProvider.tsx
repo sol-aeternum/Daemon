@@ -31,6 +31,7 @@ import {
   type AuthConfig,
   type AuthConfigResult,
 } from '@/lib/auth-config';
+import { clearLegacyPiiStorage } from '@/lib/privacy-storage';
 
 interface AuthContextValue {
   isAuthenticated: boolean;
@@ -72,6 +73,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   }, []);
 
   useEffect(() => {
+    clearLegacyPiiStorage();
     let mounted = true;
 
     function applyConfig(result: AuthConfigResult): void {

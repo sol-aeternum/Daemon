@@ -6,7 +6,6 @@ import type { StudioModel } from '../types';
 import { ensureAuthHeader } from '@/lib/auth';
 
 const DEFAULT_USER_TIER: StudioModel['tier_minimum'] = 'starter';
-const TIER_STORAGE_KEY = 'daemon_tier';
 
 const TIER_LABELS: Record<StudioModel['tier_minimum'], string> = {
   free: 'Free',
@@ -15,10 +14,6 @@ const TIER_LABELS: Record<StudioModel['tier_minimum'], string> = {
   max: 'Max',
   byok: 'BYOK',
 };
-
-function isTierMinimum(value: string): value is StudioModel['tier_minimum'] {
-  return value in TIER_LABELS;
-}
 
 export function ModelSelector() {
   const {
@@ -30,19 +25,7 @@ export function ModelSelector() {
   } = useStudio();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [userTier, setUserTier] =
-    useState<StudioModel['tier_minimum']>(DEFAULT_USER_TIER);
-
-  useEffect(() => {
-    const storedTier = localStorage.getItem(TIER_STORAGE_KEY);
-    if (!storedTier) {
-      return;
-    }
-    const normalized = storedTier.toLowerCase();
-    if (isTierMinimum(normalized)) {
-      setUserTier(normalized);
-    }
-  }, []);
+  const userTier = DEFAULT_USER_TIER;
 
   useEffect(() => {
     let mounted = true;

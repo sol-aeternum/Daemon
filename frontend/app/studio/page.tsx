@@ -47,18 +47,8 @@ async function getAuthHeaders(): Promise<HeadersInit> {
   return { Authorization: header };
 }
 
-function isVideoTier(value: string): value is VideoTier {
-  return VALID_VIDEO_TIERS.includes(value as VideoTier);
-}
-
 function isVideoEnabledTier(value: VideoTier): value is VideoEnabledTier {
   return VIDEO_ENABLED_TIERS.includes(value as VideoEnabledTier);
-}
-
-function isUuid(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-    value,
-  );
 }
 
 function StudioHydration() {
@@ -637,25 +627,9 @@ function StudioPageContent({
 }
 
 function StudioView() {
-  const [userId, setUserId] = useState(DEFAULT_STUDIO_USER_ID);
-  const [tier, setTier] = useState<VideoTier>('starter');
+  const userId = DEFAULT_STUDIO_USER_ID;
+  const tier: VideoTier = 'starter';
   const videoEnabled = isVideoEnabledTier(tier);
-
-  useEffect(() => {
-    queueMicrotask(() => {
-      const storedUserId = localStorage.getItem('daemon_user_id') || '';
-      if (isUuid(storedUserId)) {
-        setUserId(storedUserId);
-      }
-
-      const storedTier = (
-        localStorage.getItem('daemon_tier') || ''
-      ).toLowerCase();
-      if (isVideoTier(storedTier)) {
-        setTier(storedTier);
-      }
-    });
-  }, []);
 
   return (
     <SidebarShell
