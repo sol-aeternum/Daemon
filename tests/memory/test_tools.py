@@ -1370,6 +1370,217 @@ async def test_memory_write_update_close_target_excluded_from_dedup_search(monke
 
 
 @pytest.mark.asyncio
+async def test_memory_dedup_candidate_reads_route_to_lock_conn():
+    """With an active lock connection, all dedup candidate reads use that connection."""
+    from dataclasses import dataclass
+    from orchestrator.memory.store import MemoryStore
+    from orchestrator.memory.dedup import deduplicate_facts
+
+    @dataclass
+    class SimpleFact:
+        content: str
+        category: str
+        confidence: float = 0.8
+        slot: str | None = None
+
+    user_id = uuid.uuid4()
+    fact = SimpleFact(content="the thing happened", category="fact", slot="vehicle.current")
+    lock_conn = AsyncMock(name="lock_conn")
+    lock_conn.fetch = AsyncMock(return_value=[])
+
+    mock_store = AsyncMock(spec=MemoryStore)
+    mock_store.search_memories = AsyncMock(return_value=[])
+    mock_store.search_memories_bm25 = AsyncMock(return_value=[])
+    mock_store.list_memories_by_slot_family = AsyncMock(return_value=[])
+    mock_store.insert_memory = AsyncMock(
+        return_value={
+            "id": uuid.uuid4(),
+            "content": fact.content,
+            "memory_slot": fact.slot,
+        }
+    )
+
+    with (
+        patch(
+            "orchestrator.memory.dedup.embed_documents_with_metadata",
+            new_callable=AsyncMock,
+        ) as mock_embed,
+        patch(
+            "orchestrator.memory.dedup.get_configured_embedding_fallback_storage_models",
+            return_value=["voyage-4-large-fallback"],
+        ),
+    ):
+        mock_embed.return_value = SimpleNamespace(
+            embeddings=[[0.1, 0.2]],
+            storage_model="voyage-4-large",
+        )
+
+        await deduplicate_facts(
+            store=mock_store,
+            user_id=user_id,
+            facts=[fact],
+            conversation_id=None,
+            lock_conn=lock_conn,
+        )
+
+    mock_store.search_memories.assert_awaited_once()
+    assert mock_store.search_memories.await_args.kwargs["conn"] is lock_conn
+
+    mock_store.search_memories_bm25.assert_awaited_once()
+    assert mock_store.search_memories_bm25.await_args.kwargs["conn"] is lock_conn
+
+    mock_store.list_memories_by_slot_family.assert_awaited_once()
+    assert mock_store.list_memories_by_slot_family.await_args.kwargs["conn"] is lock_conn
+
+
+@pytest.mark.asyncio
+async def test_deduplicate_facts_does_not_check_contradiction_when_lock_conn_defers_supersede():
+    """A lock-conn supersede path defers contradiction/trust side effects."""
+    from dataclasses import dataclass
+    from orchestrator.memory.store import MemoryStore
+    from orchestrator.memory.dedup import deduplicate_facts
+
+    @dataclass
+    class SimpleFact:
+        content: str
+        category: str
+        confidence: float = 0.8
+        slot: str | None = None
+
+    superseded_memory_id = uuid.uuid4()
+    new_memory_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    fact = SimpleFact(content="new fact", category="fact")
+    lock_conn = AsyncMock(name="lock_conn")
+
+    mock_store = AsyncMock(spec=MemoryStore)
+    mock_store.search_memories = AsyncMock(
+        return_value=[
+            {
+                "id": str(superseded_memory_id),
+                "content": "old fact",
+                "similarity": 0.8,
+                "valid_to": None,
+                "memory_slot": None,
+            }
+        ]
+    )
+    mock_store.insert_memory = AsyncMock(
+        return_value={"id": new_memory_id, "content": fact.content}
+    )
+    mock_store.close_memory = AsyncMock(return_value=True)
+
+    with (
+        patch(
+            "orchestrator.memory.dedup.embed_documents_with_metadata",
+            new_callable=AsyncMock,
+        ) as mock_embed,
+        patch(
+            "orchestrator.memory.dedup.check_contradiction",
+            new_callable=AsyncMock,
+            return_value=(True, "found"),
+        ) as mock_contradiction,
+        patch("orchestrator.memory.dedup.get_settings") as mock_settings,
+    ):
+        mock_embed.return_value = SimpleNamespace(
+            embeddings=[[0.1, 0.2]],
+            storage_model="voyage-4-large",
+        )
+        mock_settings.return_value.dedup_merge_threshold = 1.0
+        mock_settings.return_value.dedup_supersede_threshold = 0.75
+        mock_settings.return_value.dedup_supersede_same_slot_threshold = 0.75
+        mock_settings.return_value.background_reasoning_model = "gpt-4o-mini"
+        mock_settings.return_value.embedding_document_model = "voyage-4-large"
+
+        result = await deduplicate_facts(
+            store=mock_store,
+            user_id=user_id,
+            facts=[fact],
+            conversation_id=None,
+            lock_conn=lock_conn,
+        )
+
+    assert mock_contradiction.await_count == 0
+    assert len(result.deferred_supersede_effects) == 1
+    assert result.deferred_supersede_effects[0].superseded_memory_id == superseded_memory_id
+    assert result.deferred_supersede_effects[0].new_memory_id == new_memory_id
+
+
+@pytest.mark.asyncio
+async def test_memory_write_create_applies_deferred_supersede_after_commit_and_pool_release():
+    """Deferred contradiction/trust work runs only after cap-locked commit + pool release."""
+    user_id = uuid.uuid4()
+    lock_conn = AsyncMock(name="lock_conn")
+
+    def _record_conn_execute(statement: str) -> None:
+        events.append(f"conn_exec:{statement}")
+
+    async def _fake_dedup_and_store(
+        *,
+        deferred_supersede_effects: list | None = None,
+        **kwargs: object,
+    ) -> uuid.UUID:
+        events.append("dedup_and_store")
+        if deferred_supersede_effects is not None:
+            deferred_supersede_effects.append(
+                tools_module.DeferredSupersedeEffects(
+                    superseded_memory_id=uuid.uuid4(),
+                    new_memory_id=uuid.uuid4(),
+                    existing_content="old fact",
+                    new_content="new fact",
+                )
+            )
+        return uuid.uuid4()
+
+    async def _capture_apply_deferred(
+        self, _effects: list[tools_module.DeferredSupersedeEffects]
+    ) -> None:
+        events.append("apply_deferred")
+
+    async def _capture_check_and_set(
+        self,
+        _memory_id: uuid.UUID,
+        _content: str,
+        _slot: str | None,
+    ) -> None:
+        events.append("check_and_set")
+
+    async def _record_pool_release(_: AsyncMock) -> None:
+        events.append("pool_release")
+
+    store = _quota_store(recent_writes=0, active_rows=0)
+    store._pool = AsyncMock()
+    store._pool.release = AsyncMock(side_effect=_record_pool_release)
+    store.acquire_user_cap_lock = AsyncMock(return_value=(lock_conn, True))
+    store.count_active_memories_for_user_within_lock = AsyncMock(return_value=0)
+    lock_conn.execute = AsyncMock(side_effect=_record_conn_execute)
+
+    events: list[str] = []
+
+    with (
+        patch("orchestrator.memory.tools.dedup_and_store", new=_fake_dedup_and_store),
+        patch.object(
+            tools_module.MemoryWriteTool,
+            "_apply_deferred_supersede_effects",
+            _capture_apply_deferred,
+        ),
+        patch.object(
+            tools_module.MemoryWriteTool, "_check_and_set_contradiction", _capture_check_and_set
+        ),
+    ):
+        tool = MemoryWriteTool(store, user_id)
+        result = await tool.execute(action="create", content="new fact")
+
+    assert result.startswith("Memory created")
+    assert "conn_exec:COMMIT" in events
+    assert "pool_release" in events
+
+    assert events.index("conn_exec:COMMIT") < events.index("pool_release")
+    assert events.index("pool_release") < events.index("apply_deferred")
+    assert events.index("apply_deferred") < events.index("check_and_set")
+
+
+@pytest.mark.asyncio
 async def test_memory_dedup_excluded_ids_filter_fallback_candidate_sources(monkeypatch):
     """Round-N+1 Codex P1 (Finding 6, 2026-08-11) regression: ``excluded_memory_ids`` must
     filter the candidate pool AFTER every candidate source has been

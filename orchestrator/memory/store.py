@@ -1576,6 +1576,7 @@ class MemoryStore:
         include_dream_observations: bool = False,
         source_conversation_ids: list[uuid.UUID] | None = None,
         embedding_model: str | None = None,
+        conn: Any | None = None,
     ) -> list[dict[str, Any]]:
         storage_model_metadata = getattr(query_embedding, "storage_model", None)
         inferred_embedding_model = (
@@ -1586,9 +1587,10 @@ class MemoryStore:
         )
         embedding_str = _format_vector(query_embedding)
         conversation_filter = [str(value) for value in source_conversation_ids or []] or None
+        executor = conn if conn is not None else self._pool
 
         if category:
-            rows = await self._pool.fetch(
+            rows = await executor.fetch(
                 """
                 SELECT *,
                        1 - (embedding <=> $2::vector) AS similarity
@@ -1621,7 +1623,7 @@ class MemoryStore:
                 effective_embedding_model,
             )
         else:
-            rows = await self._pool.fetch(
+            rows = await executor.fetch(
                 """
                 SELECT *,
                        1 - (embedding <=> $2::vector) AS similarity
@@ -1673,6 +1675,7 @@ class MemoryStore:
         source_conversation_ids: list[uuid.UUID] | None = None,
         embedding_models: list[str] | tuple[str, ...] | None = None,
         include_l0: bool = True,
+        conn: Any | None = None,
     ) -> list[dict[str, Any]]:
         """Search memories using BM25 full-text search.
 
@@ -1683,8 +1686,9 @@ class MemoryStore:
         # queries. Dedup callers opt out so frozen memories cannot be mutated.
         conversation_filter = [str(value) for value in source_conversation_ids or []] or None
         effective_embedding_models = sorted(set(embedding_models or (_default_embedding_model(),)))
+        executor = conn if conn is not None else self._pool
         if category:
-            rows = await self._pool.fetch(
+            rows = await executor.fetch(
                 """
                 SELECT *,
                        ts_rank(content_tsv, plainto_tsquery('english', $2)) AS bm25_score
@@ -1717,7 +1721,7 @@ class MemoryStore:
                 include_l0,
             )
         else:
-            rows = await self._pool.fetch(
+            rows = await executor.fetch(
                 """
                 SELECT *,
                        ts_rank(content_tsv, plainto_tsquery('english', $2)) AS bm25_score
@@ -1792,8 +1796,10 @@ class MemoryStore:
         include_local: bool = False,
         include_historical: bool = False,
         limit: int = 50,
+        conn: Any | None = None,
     ) -> list[dict[str, Any]]:
-        rows = await self._pool.fetch(
+        executor = conn if conn is not None else self._pool
+        rows = await executor.fetch(
             """
             SELECT *
             FROM memories

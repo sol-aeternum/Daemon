@@ -63,6 +63,17 @@ class DedupResult:
     merged: list[dict[str, Any]] = field(default_factory=list)
     superseded: list[dict[str, Any]] = field(default_factory=list)
     new: list[dict[str, Any]] = field(default_factory=list)
+    deferred_supersede_effects: list[DeferredSupersedeEffects] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class DeferredSupersedeEffects:
+    """External and pool-backed work deferred until a cap transaction commits."""
+
+    superseded_memory_id: uuid.UUID
+    new_memory_id: uuid.UUID
+    existing_content: str
+    new_content: str
 
 
 # Thresholds per Spec E - now configurable via config.py
@@ -358,6 +369,7 @@ async def _find_slot_family_candidates(
     store: MemoryStore,
     user_id: uuid.UUID,
     slot_family: str,
+    conn: Any | None = None,
 ) -> list[dict[str, Any]]:
     finder = getattr(store, "list_memories_by_slot_family", None)
     if not callable(finder):
@@ -370,6 +382,7 @@ async def _find_slot_family_candidates(
             slot_family,
             include_historical=True,
             limit=50,
+            conn=conn,
         )
     except Exception:
         logger.exception("Failed to fetch same-slot dedup candidates")
@@ -422,24 +435,17 @@ async def deduplicate_facts(
 ) -> DedupResult:
     """Deduplicate extracted facts against existing memories.
 
-    ``lock_conn`` (issue #221): when supplied, all WRITE paths route
-    onto ``lock_conn`` so the dedup insert participates in the
-    cap-protected transaction that the caller has already opened. The
-    dedup SEARCH continues to run on the pool — the search reads the
-    pre-insert committed state, which is the correct dedup decision
-    input; the unique constraint on ``content_hash`` catches any
-    duplicate that races against us between search and insert.
+    ``lock_conn`` (issue #221): when supplied, every database read and
+    write routes onto that connection so a one-slot pool cannot deadlock
+    while the cap-protected transaction owns its only connection.
+    Provider calls and trust-signal reads are returned as deferred effects
+    for the caller to run only after the transaction commits.
 
-    ``excluded_memory_ids`` (Codex P1 round-N+1, 2026-08-12): when
-    the caller has already closed one or more rows in the same
-    transaction (the ``update`` path closes the target before
-    ``dedup_and_store`` runs), the dedup search on the pool cannot
-    observe those uncommitted closes, so the closed row may surface
-    as ``best_match`` and the supersede branch raises ``RuntimeError``
-    when its second close attempt returns ``False``. Passing the set
-    of already-closed IDs filters them out of the candidate pool
-    before the best-match decision so the supersede path sees a clean
-    ``similar`` list.
+    ``excluded_memory_ids``: when the caller has already closed one or
+    more rows in the same transaction (the ``update`` path closes the
+    target before ``dedup_and_store`` runs), filter those rows out of
+    every candidate source before choosing the best match. This keeps
+    the closed replacement target from being selected and closed twice.
     """
     result = DedupResult()
     current_slot_families: set[str] = set()
@@ -475,6 +481,7 @@ async def deduplicate_facts(
             include_historical=True,
             memory_slot=None,
             embedding_model=document_model,
+            conn=lock_conn,
         )
         if _is_fallback_storage_model(document_model) or _has_configured_fallback_storage_spaces():
             enabled_storage_models = sorted(
@@ -492,6 +499,7 @@ async def deduplicate_facts(
                 memory_slot=None,
                 embedding_models=enabled_storage_models,
                 include_l0=False,
+                conn=lock_conn,
             )
             lexical_candidates = (
                 raw_lexical_candidates if isinstance(raw_lexical_candidates, list) else []
@@ -525,6 +533,7 @@ async def deduplicate_facts(
                     store,
                     user_id,
                     fact_slot_family,
+                    conn=lock_conn,
                 )
                 for candidate in slot_family_candidates:
                     candidate_id = candidate.get("id")
@@ -546,17 +555,10 @@ async def deduplicate_facts(
                     )
                     similar.append(candidate_with_similarity)
                     seen_ids.add(candidate_id)
-        # Round-N+1 Codex P1 (Finding 1, 2026-08-12, tools.py:739):
-        # the caller may have closed one or more rows in the same
-        # transaction (e.g. the ``update`` path closes the target before
-        # ``dedup_and_store`` runs). The pool searches (vector, BM25,
-        # slot-family fallback) cannot observe those uncommitted closes,
-        # so the closed row may surface as ``best_match`` and the
-        # supersede branch raises ``RuntimeError`` on the second close.
-        # Apply the exclusion once, AFTER every candidate source has
-        # been appended (see Finding 6, 2026-08-11 round-2: filtering
-        # before the BM25/slot-family fallback loops let excluded IDs
-        # sneak back in via the fallback sources).
+        # The caller may have closed one or more rows earlier in the same
+        # transaction. Apply the exclusion once, AFTER every candidate
+        # source has been appended; filtering before the BM25/slot-family
+        # fallback loops would let excluded IDs re-enter the candidate set.
         if excluded_memory_ids:
             similar = [
                 m for m in similar if _as_uuid_or_none(m.get("id")) not in excluded_memory_ids
@@ -731,15 +733,16 @@ async def deduplicate_facts(
                     result.new.append(memory)
                 else:
                     existing_content = best_match.get("content", "")
-                    contradiction_detected, explanation = await check_contradiction(
-                        existing_content, fact.content
-                    )
                     metadata = None
-                    if contradiction_detected:
-                        metadata = {
-                            "contradiction_detected": True,
-                            "contradiction_explanation": explanation,
-                        }
+                    if lock_conn is None:
+                        contradiction_detected, explanation = await check_contradiction(
+                            existing_content, fact.content
+                        )
+                        if contradiction_detected:
+                            metadata = {
+                                "contradiction_detected": True,
+                                "contradiction_explanation": explanation,
+                            }
                     supersede_kwargs: dict[str, Any] = {
                         "old_memory_id": best_match_id,
                         "new_content": fact.content,
@@ -800,17 +803,29 @@ async def deduplicate_facts(
                             )
                     result.superseded.append(new_memory)
 
-                    # Apply explicit negative trust signal for superseded memory
-                    try:
-                        ts_module = _lazy_import_trust_signals()
-                        if ts_module and best_match.get("id"):
-                            superseded_id = uuid.UUID(str(best_match.get("id")))
-                            await ts_module.apply_explicit_negative_signal(
-                                superseded_memory_id=superseded_id,
-                                store=store,
+                    superseded_id = _as_uuid_or_none(best_match.get("id"))
+                    new_memory_id = _as_uuid_or_none(new_memory.get("id"))
+                    if lock_conn is not None:
+                        if superseded_id is not None and new_memory_id is not None:
+                            result.deferred_supersede_effects.append(
+                                DeferredSupersedeEffects(
+                                    superseded_memory_id=superseded_id,
+                                    new_memory_id=new_memory_id,
+                                    existing_content=existing_content,
+                                    new_content=fact.content,
+                                )
                             )
-                    except Exception:
-                        pass  # Trust signals are best-effort
+                    else:
+                        # Apply explicit negative trust signal for superseded memory.
+                        try:
+                            ts_module = _lazy_import_trust_signals()
+                            if ts_module and superseded_id is not None:
+                                await ts_module.apply_explicit_negative_signal(
+                                    superseded_memory_id=superseded_id,
+                                    store=store,
+                                )
+                        except Exception:
+                            pass  # Trust signals are best-effort
 
                     if current_like_slot and fact_slot_family:
                         new_id = new_memory.get("id")
@@ -915,6 +930,7 @@ async def dedup_and_store(
     lock_conn: Any | None = None,
     embedding_result: Any | None = None,
     excluded_memory_ids: set[uuid.UUID] | None = None,
+    deferred_supersede_effects: list[DeferredSupersedeEffects] | None = None,
 ) -> uuid.UUID:
     """Store a single memory with deduplication.
 
@@ -923,14 +939,10 @@ async def dedup_and_store(
     ``lock_conn`` (issue #221): when supplied, the caller has already
     acquired the per-user active-row cap advisory lock on this
     connection (see ``MemoryStore.acquire_user_cap_lock``). The
-    function routes the WRITE paths (insert_memory, touch_memory,
-    close_memory) onto ``lock_conn`` so the cap check + insert happen
-    inside the same transaction. The dedup search continues to run on
-    the pool — the search reads the pre-insert committed state of the
-    table, which is exactly what the dedup decision needs (a separate
-    transaction can race against us, but the unique constraint on
-    ``content_hash`` catches the duplicate at insert time and
-    ``insert_memory`` resolves it into a merged return).
+    function routes all database work onto ``lock_conn`` so the cap check,
+    dedup decision, and insert happen inside the same transaction without
+    reacquiring the pool. Any provider or trust-signal work is returned via
+    ``deferred_supersede_effects`` for the caller to run after commit.
     """
     from dataclasses import dataclass
 
@@ -953,6 +965,10 @@ async def dedup_and_store(
         prepared_embeddings=[embedding_result] if embedding_result is not None else None,
         excluded_memory_ids=excluded_memory_ids,
     )
+    if deferred_supersede_effects is not None:
+        deferred_supersede_effects.extend(result.deferred_supersede_effects)
+    elif result.deferred_supersede_effects:
+        raise RuntimeError("cap-locked dedup requires a deferred effects collector")
 
     if result.merged:
         return result.merged[0]["id"]

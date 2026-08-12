@@ -14,6 +14,7 @@ from typing import Any
 from orchestrator.memory.retrieval import retrieve_memories_for_text
 from orchestrator.memory.store import MemoryStore
 from orchestrator.memory.dedup import (
+    DeferredSupersedeEffects,
     check_contradiction,
     dedup_and_store,
     prepare_memory_embedding,
@@ -321,6 +322,44 @@ class MemoryWriteTool(Tool):
                 error,
             )
 
+    async def _apply_deferred_supersede_effects(
+        self,
+        effects: list[DeferredSupersedeEffects],
+    ) -> None:
+        """Run provider and pool-backed supersede side effects after commit."""
+        from orchestrator.memory.trust_signals import apply_explicit_negative_signal
+
+        for effect in effects:
+            try:
+                contradiction_detected, explanation = await check_contradiction(
+                    effect.existing_content,
+                    effect.new_content,
+                )
+                if contradiction_detected:
+                    await self.store.update_memory_metadata(
+                        effect.new_memory_id,
+                        {
+                            "contradiction_detected": True,
+                            "contradiction_explanation": explanation,
+                        },
+                    )
+            except Exception as error:
+                logger.warning(
+                    "Failed to annotate deferred contradiction metadata: %s",
+                    error,
+                )
+
+            try:
+                await apply_explicit_negative_signal(
+                    superseded_memory_id=effect.superseded_memory_id,
+                    store=self.store,
+                )
+            except Exception as error:
+                logger.warning(
+                    "Failed to apply deferred supersede trust signal: %s",
+                    error,
+                )
+
     async def _check_write_quota(
         self,
         action: str,
@@ -580,6 +619,7 @@ class MemoryWriteTool(Tool):
             # issue explicitly forbids holding the transaction open
             # across the external embedding call).
             cap_conn: Any | None = None
+            deferred_effects: list[DeferredSupersedeEffects] = []
             try:
                 cap_conn, _ = await self.store.acquire_user_cap_lock(self.user_id)
                 # Re-check the cap inside the lock transaction. The
@@ -635,6 +675,7 @@ class MemoryWriteTool(Tool):
                     slot=effective_slot,
                     lock_conn=cap_conn,
                     embedding_result=embedding_result,
+                    deferred_supersede_effects=deferred_effects,
                 )
                 # Commit the cap-locked transaction so the advisory
                 # lock is released (it is transaction-scoped). The
@@ -662,6 +703,7 @@ class MemoryWriteTool(Tool):
                 # transient store fault into unlimited billed
                 # embeddings by retrying.
                 raise
+            await self._apply_deferred_supersede_effects(deferred_effects)
             await self._check_and_set_contradiction(memory_id, content, effective_slot)
             return f"Memory created (ID: {memory_id})."
 
@@ -729,6 +771,7 @@ class MemoryWriteTool(Tool):
             # and replacement insert under one per-user advisory lock.
             embedding_result = await prepare_memory_embedding(content, slot)
             cap_conn = None
+            deferred_effects = []
             try:
                 cap_conn, _ = await self.store.acquire_user_cap_lock(self.user_id)
                 active_rows = await self.store.count_active_memories_for_user_within_lock(
@@ -774,15 +817,12 @@ class MemoryWriteTool(Tool):
                     slot=slot,
                     lock_conn=cap_conn,
                     embedding_result=embedding_result,
-                    # Round-N+1 Codex P1 (Finding 1, 2026-08-12): the
-                    # pool-based dedup search cannot observe the
-                    # just-issued close on ``cap_conn`` (separate
-                    # transaction), so it can return the closed
-                    # target as ``best_match``. Passing the closed
-                    # ID set keeps the supersede branch from raising
-                    # ``RuntimeError`` on the second close attempt
-                    # and silently rolling back the entire update.
+                    # Exclude the replacement target from every candidate
+                    # source after closing it on this transaction. Otherwise
+                    # it can still be selected as the best match and trigger
+                    # a redundant second close.
                     excluded_memory_ids=({memory_id} if close_took_effect else None),
+                    deferred_supersede_effects=deferred_effects,
                 )
                 await cap_conn.execute("COMMIT")
                 await self.store._pool.release(cap_conn)
@@ -804,6 +844,7 @@ class MemoryWriteTool(Tool):
                 # to prevent unlimited billed-embedding retries.
                 raise
 
+            await self._apply_deferred_supersede_effects(deferred_effects)
             await self._check_and_set_contradiction(new_memory_id, content, slot)
             return f"Memory updated. Old ID: {memory_id}, New ID: {new_memory_id}."
 
