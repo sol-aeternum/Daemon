@@ -553,16 +553,37 @@ async def extract_facts_from_text(
             if not isinstance(item, dict):
                 return False
             content_value = item.get("content")
-            category_value = item.get("category")
+            raw_category_value = item.get("category")
+            # Apply normalization/coercion before shape rejection so that
+            # provider output using supported variants ("intent"/"goal" etc.
+            # or numeric-string confidence) is accepted before downstream
+            # validation (Codex P2 on PR #238, ``extraction.py:552-578``).
+            normalized_category_value = _normalize_category(raw_category_value)
             confidence_value = item.get("confidence")
+            if isinstance(confidence_value, bool):
+                # bool is a subclass of int in Python; reject explicitly so a
+                # stray ``true`` token does not implicitly coerce to 1.0.
+                confidence_value = None
+            elif isinstance(confidence_value, str):
+                # Accept numeric strings ("0.85") via the existing coercion
+                # so the raw ``isinstance(..., (int, float))`` check no longer
+                # rejects them (Codex P2 on PR #238, ``extraction.py:552-578``).
+                try:
+                    float(confidence_value)
+                except ValueError:
+                    confidence_value = None
+            elif confidence_value is None:
+                confidence_value = None
+            else:
+                confidence_value = _coerce_confidence(confidence_value)
             slot_value = item.get("slot")
             return (
                 isinstance(content_value, str)
                 and bool(content_value.strip())
-                and isinstance(category_value, str)
-                and category_value.strip().lower() in ALLOWED_CATEGORIES
-                and isinstance(confidence_value, (int, float))
-                and not isinstance(confidence_value, bool)
+                and isinstance(raw_category_value, str)
+                and raw_category_value.strip() != ""
+                and normalized_category_value in ALLOWED_CATEGORIES
+                and confidence_value is not None
                 and (slot_value is None or isinstance(slot_value, str))
             )
 

@@ -474,6 +474,177 @@ async def test_malformed_fact_entry_is_not_successful() -> None:
 
 
 @pytest.mark.asyncio
+async def test_supported_category_alias_is_not_treated_as_malformed() -> None:
+    """``CATEGORY_NORMALIZATION`` aliases like ``intent``/``goal``/``plan`` map to
+    ``project``; they must not be rejected by the shape check before the
+    normalization runs (Codex P2 on PR #238, ``extraction.py:552-578``)."""
+
+    response = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "facts": [
+                                {
+                                    "content": "user plans to ship feature F",
+                                    "category": "intent",
+                                    "confidence": 0.7,
+                                    "slot": "project_f",
+                                }
+                            ]
+                        }
+                    )
+                }
+            }
+        ]
+    }
+    with patch(
+        "orchestrator.memory.extraction.litellm.acompletion",
+        new_callable=AsyncMock,
+        return_value=response,
+    ):
+        outcome = await extract_facts_from_text("candidate memory text")
+
+    assert outcome.succeeded is True
+    assert outcome.facts
+    assert outcome.facts[0].category == "project"
+
+
+@pytest.mark.asyncio
+async def test_numeric_string_confidence_is_not_treated_as_malformed() -> None:
+    """Provider confidence returned as a numeric string (``"0.85"``) must be
+    accepted by the shape check before downstream coercion
+    (Codex P2 on PR #238, ``extraction.py:552-578``)."""
+
+    response = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "facts": [
+                                {
+                                    "content": "user reports working on feature F this quarter",
+                                    "category": "fact",
+                                    "confidence": "0.85",
+                                    "slot": None,
+                                }
+                            ]
+                        }
+                    )
+                }
+            }
+        ]
+    }
+    with patch(
+        "orchestrator.memory.extraction.litellm.acompletion",
+        new_callable=AsyncMock,
+        return_value=response,
+    ):
+        outcome = await extract_facts_from_text("candidate memory text")
+
+    assert outcome.succeeded is True
+    assert outcome.facts
+    assert outcome.facts[0].confidence == pytest.approx(0.85)
+
+
+@pytest.mark.asyncio
+async def test_bool_confidence_is_still_rejected_as_malformed() -> None:
+    """``True``/``False`` are ``int`` subclasses in Python; they must still be
+    rejected by the shape check so a stray ``true`` token does not silently
+    coerce to ``1.0``."""
+
+    response = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "facts": [
+                                {
+                                    "content": "user has confirmed allergy to peanuts",
+                                    "category": "fact",
+                                    "confidence": True,
+                                    "slot": None,
+                                }
+                            ]
+                        }
+                    )
+                }
+            }
+        ]
+    }
+    with patch(
+        "orchestrator.memory.extraction.litellm.acompletion",
+        new_callable=AsyncMock,
+        return_value=response,
+    ):
+        outcome = await extract_facts_from_text("candidate memory text")
+
+    assert outcome.succeeded is False
+    assert outcome.facts == []
+
+
+@pytest.mark.asyncio
+async def test_oversized_message_continuation_key_is_stable_across_ciphertext() -> None:
+    """The continuation key embedded in the encrypted envelope must be derived
+    from the plaintext fragment's ``_extraction_continuation_key`` so the next
+    job enqueues under the same job id regardless of the randomized Fernet
+    ciphertext (Codex P2 on PR #238, ``worker/jobs.py:466-473``)."""
+
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    store = object.__new__(MemoryStore)
+    store.consume_summary_continuation_pending = AsyncMock(return_value=False)
+    store.get_last_extraction_cursor = AsyncMock(return_value=(None, None))
+    store.get_messages_after_cursor = AsyncMock(
+        return_value=[
+            _msg(
+                "user",
+                "x" * 80_000,
+                created_at=datetime.now(timezone.utc),
+                id="oversized",
+            )
+        ]
+    )
+    store.encrypt_extraction_continuation = Mock(return_value="ciphertext-token")
+    queue = SimpleNamespace(enqueue_job=AsyncMock())
+    ctx = cast(dict[str, object], {"store": store, "redis": queue})
+
+    captured_keys: list[str] = []
+
+    def _capture(_value: str) -> str:
+        captured_keys.append(_value)
+        return "ciphertext-token"
+
+    store.encrypt_extraction_continuation = Mock(side_effect=_capture)
+
+    with (
+        patch(
+            "orchestrator.worker.jobs.process_extraction",
+            new_callable=AsyncMock,
+            return_value=(True, [], False),
+        ),
+        patch(
+            "orchestrator.worker.jobs.enqueue_with_debounce",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(job_id="continuation"),
+        ) as enqueue_mock,
+    ):
+        await extract_memories(ctx, user_id, conversation_id)
+
+    assert enqueue_mock.await_args is not None
+    envelope = json.loads(enqueue_mock.await_args.kwargs["args"][2])
+    assert envelope["_encrypted_extraction_continuation"] == "ciphertext-token"
+    # The plaintext-derived continuation key survives the encryption
+    # round-trip; this is the value the next job uses to deduplicate.
+    # The fixture's 80_000-character message spans multiple fragments; the
+    # continuation payload begins with fragment index 1.
+    assert envelope["_continuation_key"] == "oversized:1"
+
+
+@pytest.mark.asyncio
 async def test_extract_memories_caps_chunks_and_enqueues_continuation() -> None:
     user_id = uuid.uuid4()
     conversation_id = uuid.uuid4()
@@ -556,9 +727,14 @@ async def test_database_continuation_is_encrypted_before_enqueue() -> None:
 
     assert enqueue_mock.await_args is not None
     continuation_arg = enqueue_mock.await_args.kwargs["args"][2]
-    assert json.loads(continuation_arg) == {
-        "_encrypted_extraction_continuation": "ciphertext-token"
-    }
+    continuation_envelope = json.loads(continuation_arg)
+    assert continuation_envelope["_encrypted_extraction_continuation"] == "ciphertext-token"
+    # The continuation key is derived from plaintext fragment metadata so
+    # the next job can recover a stable key regardless of randomized Fernet
+    # ciphertext (Codex P2 on PR #238, ``worker/jobs.py:466-473``). The
+    # oversized message in this fixture spans multiple fragments; the
+    # continuation payload begins with fragment index 1.
+    assert continuation_envelope["_continuation_key"] == "oversized:1"
     assert "secret-plaintext" not in continuation_arg
     store.encrypt_extraction_continuation.assert_called_once()
 

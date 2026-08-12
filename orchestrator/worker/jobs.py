@@ -466,13 +466,30 @@ async def extract_memories(
             first_remaining = dict(remaining_raw[0])
             first_remaining["_resume_database_extraction"] = True
             remaining_raw[0] = first_remaining
+        # Derive the continuation key from plaintext metadata before encryption
+        # so the next job can recover a stable key regardless of randomized
+        # Fernet ciphertext (Codex P2 on PR #238, ``worker/jobs.py:466-473``).
+        # The key is the first fragment's ``_extraction_continuation_key``;
+        # fall back to ``last_processed_message_id`` then ``"unknown"``.
+        continuation_key = "unknown"
+        if remaining_raw:
+            raw_first_key = remaining_raw[0].get("_extraction_continuation_key")
+            if isinstance(raw_first_key, str) and raw_first_key:
+                continuation_key = raw_first_key
+            else:
+                first_id = remaining_raw[0].get("id")
+                if first_id is not None:
+                    continuation_key = str(first_id)
         continuation_messages_json = json.dumps(remaining_raw, default=str)
         if messages_json is None or resume_database_after_payload:
             encrypted_payload = store_obj.encrypt_extraction_continuation(
                 continuation_messages_json
             )
             continuation_messages_json = json.dumps(
-                {"_encrypted_extraction_continuation": encrypted_payload}
+                {
+                    "_encrypted_extraction_continuation": encrypted_payload,
+                    "_continuation_key": continuation_key,
+                }
             )
 
     new_memories: list[dict[str, Any]] = []
@@ -620,12 +637,34 @@ async def extract_memories(
         try:
             continuation_key = last_processed_message_id
             if continuation_key is None and continuation_messages_json is not None:
-                remaining_for_key = _parse_raw_messages(continuation_messages_json)
-                continuation_key = str(
-                    remaining_for_key[0].get("_extraction_continuation_key", "unknown")
-                    if remaining_for_key
-                    else "unknown"
-                )
+                # Prefer the plaintext key embedded in the encrypted envelope
+                # (Codex P2 on PR #238, ``worker/jobs.py:466-473``); fall back
+                # to inspecting the plaintext payload if the envelope does
+                # not carry it (older enqueued continuations).
+                envelope_for_key: object = None
+                try:
+                    envelope_for_key = (
+                        json.loads(continuation_messages_json)
+                        if isinstance(continuation_messages_json, str)
+                        else continuation_messages_json
+                    )
+                except (TypeError, json.JSONDecodeError):
+                    envelope_for_key = None
+                envelope_key: object = None
+                if isinstance(envelope_for_key, Mapping):
+                    envelope_key = envelope_for_key.get("_continuation_key")
+                if isinstance(envelope_key, str) and envelope_key:
+                    continuation_key = envelope_key
+                else:
+                    remaining_for_key = _parse_raw_messages(continuation_messages_json)
+                    if remaining_for_key:
+                        raw_key = remaining_for_key[0].get("_extraction_continuation_key")
+                        if isinstance(raw_key, str) and raw_key:
+                            continuation_key = raw_key
+                        else:
+                            first_id = remaining_for_key[0].get("id")
+                            if first_id is not None:
+                                continuation_key = str(first_id)
             continuation_args: tuple[str, str] | tuple[str, str, str] = (
                 (str(_as_uuid(user_id)), str(_as_uuid(conversation_id)), continuation_messages_json)
                 if continuation_messages_json is not None
