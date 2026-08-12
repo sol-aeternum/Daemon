@@ -566,41 +566,34 @@ if _allowed_hosts == ["*"]:
 app.add_middleware(CaseInsensitiveTrustedHostMiddleware, allowed_hosts=_allowed_hosts)
 
 
-DEFAULT_BILLING_USER_ID = "00000000-0000-0000-0000-000000000001"
 VALID_BILLING_TIERS = {"free", "starter", "pro", "max", "byok"}
 
 
 def _build_trusted_spawn_context(
     settings: Settings,
     metadata: dict[str, Any] | None,
-    authenticated_user_id: uuid.UUID | None = None,
+    authenticated_user_id: uuid.UUID,
 ) -> dict[str, Any] | None:
-    if not isinstance(metadata, dict):
-        return None
-
-    video_meta = metadata.get("video_generation")
-    if not isinstance(video_meta, dict):
-        return None
+    video_meta = metadata.get("video_generation") if isinstance(metadata, dict) else None
 
     tier = settings.default_tier.lower().strip()
     if tier not in VALID_BILLING_TIERS:
         return None
 
-    if tier == "byok":
-        return None
+    # Billing identity and entitlement are trusted request context, regardless
+    # of whether Studio supplied optional video metadata. The model can choose
+    # to invoke video generation during any authenticated chat, so conditioning
+    # these values on metadata would let model-generated tool arguments select
+    # another account or an unbilled tier.
+    trusted_video: dict[str, Any] = {
+        "tier": tier,
+        "user_id": str(authenticated_user_id),
+    }
 
-    # Attribute the trusted video spawn context to the authenticated device
-    # owner so video credit checks/debits are billed to the actual user that
-    # triggered the request. Fall back to DEFAULT_BILLING_USER_ID only when no
-    # authenticated user is available (e.g. legacy callers that have not been
-    # updated to thread auth through). Issue #232 surface.
-    if authenticated_user_id is not None:
-        user_id = str(authenticated_user_id)
-    else:
-        try:
-            user_id = str(uuid.UUID(DEFAULT_BILLING_USER_ID))
-        except ValueError:
-            return None
+    # Without Studio video metadata, carry only immutable billing fields. The
+    # spawn tool applies them if (and only if) the model requests video mode.
+    if not isinstance(video_meta, dict):
+        return {"video": trusted_video}
 
     duration_raw = video_meta.get("duration")
     if isinstance(duration_raw, bool):
@@ -655,12 +648,10 @@ def _build_trusted_spawn_context(
         elif provider_lower in ("xai", "fal"):
             video_provider = provider_lower
 
-    return {
-        "video": {
+    trusted_video.update(
+        {
             "mode": "video",
             "duration": duration,
-            "tier": tier,
-            "user_id": user_id,
             "source_mode": source_mode,
             "reference_image_url": reference_image_url,
             "reference_image_id": reference_image_id,
@@ -668,7 +659,8 @@ def _build_trusted_spawn_context(
             "kling_model": kling_model,
             "audio_enabled": audio_enabled,
         }
-    }
+    )
+    return {"video": trusted_video}
 
 
 def _extract_text_content(content: Any) -> str:
@@ -1295,6 +1287,11 @@ async def openai_chat_completions(
         provider_name = "openrouter"
 
     provider_config = settings.get_provider_config(provider_name)
+    trusted_spawn_context = _build_trusted_spawn_context(
+        settings,
+        None,
+        authenticated_user_id=auth.user_id,
+    )
 
     # Strip provider prefix to get actual model ID
     actual_model = payload.model
@@ -1348,6 +1345,7 @@ async def openai_chat_completions(
                     ping_interval_s=settings.sse_keepalive_interval_s,
                     is_disconnected=is_disconnected,
                     actual_model=actual_model,
+                    trusted_spawn_context=trusted_spawn_context,
                 ):
                     # Parse the SSE frame
                     if frame.startswith("event: token"):
@@ -1453,6 +1451,7 @@ async def openai_chat_completions(
                 ping_interval_s=settings.sse_keepalive_interval_s,
                 is_disconnected=is_disconnected,
                 actual_model=actual_model,
+                trusted_spawn_context=trusted_spawn_context,
             ):
                 if frame.startswith("event: token"):
                     lines = frame.split("\n")
