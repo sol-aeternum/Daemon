@@ -362,10 +362,6 @@ const getTimeGreeting = () => {
 function WelcomeScreen({ setInput, onSubmit }: WelcomeScreenProps) {
   const isClientMounted = useClientMounted();
   const greeting = isClientMounted ? getTimeGreeting() : 'Good evening';
-  const userName =
-    isClientMounted && typeof localStorage !== 'undefined'
-      ? localStorage.getItem('user_name')
-      : null;
 
   const quickActions = [
     {
@@ -436,7 +432,7 @@ function WelcomeScreen({ setInput, onSubmit }: WelcomeScreenProps) {
         {/* Greeting */}
         <div className="text-center space-y-2">
           <h1 className="text-4xl md:text-5xl font-bold text-[var(--color-text-primary)] tracking-tight">
-            {userName ? `${greeting}, ${userName}` : greeting}
+            {greeting}
           </h1>
           <p className="text-lg text-[var(--color-text-muted)]">
             What would you like to do today?

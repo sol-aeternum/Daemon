@@ -77,6 +77,7 @@ The web frontend stores access tokens only in module-level memory / React contex
 
 ### Decision 24 — Browser storage is forbidden for credentials
 No auth credential may be stored in browser `localStorage` or `sessionStorage`, including access tokens, refresh tokens, enrollment codes, setup tokens, API keys, JWTs, or equivalent credentials.
+Legacy profile and tier identifiers are purged on load; user PII is not read from or written to browser storage.
 
 ### Decision 25 — Route modules must be hardened
 All formerly API-key-protected endpoints and currently-unprotected route modules must be deliberately wrapped with access-token auth, while `/health` stays public and auth endpoints are explicitly public only where required.
