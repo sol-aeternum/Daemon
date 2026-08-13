@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, Optional
 
 import fal_client
@@ -46,7 +45,12 @@ class FalKlingClient:
 
     def __init__(self) -> None:
         """Initialize the client with API key from environment."""
-        self.api_key: str = os.environ.get("FAL_KEY", "")
+        # FAL_KEY is read via Settings (orchestrator.config) — direct env
+        # access would bypass the prefix convention and validation that
+        # the Settings class provides.
+        from orchestrator.config import get_settings
+
+        self.api_key: str = get_settings().fal_key
         if not self.api_key:
             raise FalKlingError("FAL_KEY not configured")
 

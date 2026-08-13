@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import asyncio
 from typing import Protocol
 
@@ -70,7 +69,15 @@ class EncryptionKeyMissing(EncryptionInitError):
 
 class ContentEncryption:
     def __init__(self, key: str | None = None) -> None:
-        resolved = key if key is not None else os.environ.get("DAEMON_ENCRYPTION_KEY")
+        # Settings is the canonical source for the encryption key. An explicit
+        # `key` argument overrides the setting (used by tests and migration
+        # scripts). When neither is provided, raise — fail-closed.
+        if key is not None:
+            resolved: str | bytes | None = key
+        else:
+            from orchestrator.config import get_settings
+
+            resolved = get_settings().daemon_encryption_key
         if not resolved:
             _record_encryption_failure()
             raise EncryptionKeyMissing(

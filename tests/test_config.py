@@ -171,3 +171,58 @@ def test_validate_hosted_identity_noop_when_disabled() -> None:
         daemon_mail_sender_mode="console",
     )
     settings.validate_hosted_identity_config()
+
+
+# ===== Issue #83 — direct os.environ.get bypasses Settings =====
+
+
+def test_elevenlabs_api_key_default_none() -> None:
+    """ELEVENLABS_API_KEY env var should default to None when unset."""
+    settings = Settings()
+    assert settings.elevenlabs_api_key is None
+
+
+def test_elevenlabs_api_key_from_env(monkeypatch) -> None:
+    """ELEVENLABS_API_KEY is read via Settings (not os.environ.get)."""
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test-eleven-key")
+    settings = Settings()
+    assert settings.elevenlabs_api_key == "test-eleven-key"
+
+
+def test_openrouter_image_model_default() -> None:
+    """OPENROUTER_IMAGE_MODEL has a sensible default."""
+    settings = Settings()
+    assert settings.openrouter_image_model == "google/gemini-2.5-flash-image"
+
+
+def test_openrouter_image_model_from_env(monkeypatch) -> None:
+    """OPENROUTER_IMAGE_MODEL is overridable via Settings."""
+    monkeypatch.setenv("OPENROUTER_IMAGE_MODEL", "google/gemini-3-flash")
+    settings = Settings()
+    assert settings.openrouter_image_model == "google/gemini-3-flash"
+
+
+def test_fal_key_default_empty_string() -> None:
+    """FAL_KEY has an empty-string default to match `or ""` fallback in image subagent."""
+    settings = Settings()
+    assert settings.fal_key == ""
+
+
+def test_fal_key_from_env(monkeypatch) -> None:
+    """FAL_KEY is read via Settings."""
+    monkeypatch.setenv("FAL_KEY", "test-fal-key")
+    settings = Settings()
+    assert settings.fal_key == "test-fal-key"
+
+
+def test_http_allowed_domains_default_empty() -> None:
+    """DAEMON_HTTP_ALLOWED_DOMAINS has an empty default."""
+    settings = Settings()
+    assert settings.daemon_http_allowed_domains == ""
+
+
+def test_http_allowed_domains_from_env(monkeypatch) -> None:
+    """DAEMON_HTTP_ALLOWED_DOMAINS is read via Settings."""
+    monkeypatch.setenv("DAEMON_HTTP_ALLOWED_DOMAINS", "example.com,*.trusted.org")
+    settings = Settings()
+    assert settings.daemon_http_allowed_domains == "example.com,*.trusted.org"

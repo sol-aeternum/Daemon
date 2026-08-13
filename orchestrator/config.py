@@ -303,6 +303,17 @@ class Settings(BaseSettings):
     # Brave Search API (Web search)
     brave_api_key: str | None = None
 
+    # ElevenLabs API key (TTS, STT, sound effects)
+    elevenlabs_api_key: str | None = None
+
+    # OpenRouter image model override (default: google/gemini-2.5-flash-image)
+    openrouter_image_model: str = "google/gemini-2.5-flash-image"
+
+    # Comma-separated egress allowlist applied by SSRF guard.
+    # Empty/unset means no allowlist filter is applied (only the IP-range
+    # check). Wildcards use the `*.example.com` form.
+    daemon_http_allowed_domains: str = ""
+
     # ===== FETCH SERVICE (Web content fetching) =====
     # Jina AI API key for web fetching (optional)
     jina_api_key: str | None = None
@@ -317,6 +328,9 @@ class Settings(BaseSettings):
 
     # xAI API (for Imagine image/video generation)
     xai_api_key: str = ""
+
+    # fal.ai API key (Kling video provider)
+    fal_key: str = ""
 
     voyage_api_key: str | None = None
     embedding_document_model: str = "voyage-4-large"

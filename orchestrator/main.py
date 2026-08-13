@@ -1620,7 +1620,7 @@ async def text_to_speech(
             "format": fmt,
         }
 
-    eleven_api_key = os.environ.get("ELEVENLABS_API_KEY")
+    eleven_api_key = settings.elevenlabs_api_key
     if not eleven_api_key:
         raise HTTPException(status_code=500, detail="ElevenLabs API key missing")
 
@@ -1688,7 +1688,7 @@ async def get_audio_token(
     Returns a scoped single-use token instead of the raw API key
     to prevent key exposure in the browser.
     """
-    eleven_api_key = os.environ.get("ELEVENLABS_API_KEY")
+    eleven_api_key = settings.elevenlabs_api_key
     if not eleven_api_key:
         raise HTTPException(status_code=500, detail="ElevenLabs API key not configured")
 
@@ -1720,7 +1720,7 @@ async def get_scribe_token(
     settings: Settings = Depends(get_settings),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> dict[str, Any]:
-    eleven_api_key = os.environ.get("ELEVENLABS_API_KEY")
+    eleven_api_key = settings.elevenlabs_api_key
     if not eleven_api_key:
         raise HTTPException(status_code=500, detail="ElevenLabs API key not configured")
 
@@ -1754,7 +1754,7 @@ async def speech_to_text(
     settings: Settings = Depends(get_settings),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> dict[str, Any]:
-    eleven_api_key = os.environ.get("ELEVENLABS_API_KEY")
+    eleven_api_key = settings.elevenlabs_api_key
     if not eleven_api_key:
         raise HTTPException(status_code=500, detail="ElevenLabs API key missing")
 
@@ -1797,7 +1797,7 @@ async def generate_sound_effect(
     settings: Settings = Depends(get_settings),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> FileResponse:
-    eleven_api_key = os.environ.get("ELEVENLABS_API_KEY")
+    eleven_api_key = settings.elevenlabs_api_key
     if not eleven_api_key:
         raise HTTPException(status_code=500, detail="ElevenLabs API key missing")
 

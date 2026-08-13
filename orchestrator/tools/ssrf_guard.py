@@ -16,7 +16,6 @@ import asyncio
 import contextlib
 import functools
 import ipaddress
-import os
 import socket
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -407,12 +406,14 @@ async def validate_url_and_resolve_async(
 
 
 def _load_allowed_domains() -> frozenset[str]:
-    """Load the egress allowlist from `DAEMON_HTTP_ALLOWED_DOMAINS`.
+    """Load the egress allowlist from Settings.
 
     Comma-separated, lowercase. Empty/unset means no allowlist filter is
     applied (only the IP-range check). Wildcards use `*.example.com` form.
     """
-    raw = os.environ.get("DAEMON_HTTP_ALLOWED_DOMAINS", "")
+    from orchestrator.config import get_settings
+
+    raw = get_settings().daemon_http_allowed_domains
     if not raw.strip():
         return frozenset()
     return frozenset(d.strip().lower() for d in raw.split(",") if d.strip())
