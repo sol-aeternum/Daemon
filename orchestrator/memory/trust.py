@@ -39,18 +39,22 @@ async def boost_trust(
     if not memory_ids:
         return 0
 
-    # Build bulk UPDATE query with CASE expression for ceiling enforcement
-    query = f"""
+    query = """
         UPDATE memories
-        SET trust_score = LEAST(trust_score + {TRUST_BOOST_AMOUNT}, {TRUST_CEILING}),
+        SET trust_score = LEAST(trust_score + $2, $3),
             updated_at = NOW()
         WHERE id = ANY($1::uuid[])
-        AND trust_score < {TRUST_CEILING}
+        AND trust_score < $3
         RETURNING id
     """
 
     try:
-        rows = await store._pool.fetch(query, memory_ids)
+        rows = await store._pool.fetch(
+            query,
+            memory_ids,
+            TRUST_BOOST_AMOUNT,
+            TRUST_CEILING,
+        )
         return len(rows)
     except Exception as e:
         logger = __import__("logging").getLogger(__name__)
@@ -77,18 +81,22 @@ async def penalize_trust(
     if not memory_ids:
         return 0
 
-    # Build bulk UPDATE query with GREATEST for floor enforcement
-    query = f"""
+    query = """
         UPDATE memories
-        SET trust_score = GREATEST(trust_score - {TRUST_PENALTY_AMOUNT}, {TRUST_FLOOR}),
+        SET trust_score = GREATEST(trust_score - $2, $3),
             updated_at = NOW()
         WHERE id = ANY($1::uuid[])
-        AND trust_score > {TRUST_FLOOR}
+        AND trust_score > $3
         RETURNING id
     """
 
     try:
-        rows = await store._pool.fetch(query, memory_ids)
+        rows = await store._pool.fetch(
+            query,
+            memory_ids,
+            TRUST_PENALTY_AMOUNT,
+            TRUST_FLOOR,
+        )
         return len(rows)
     except Exception as e:
         logger = __import__("logging").getLogger(__name__)

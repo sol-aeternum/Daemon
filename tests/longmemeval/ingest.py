@@ -18,7 +18,9 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import sys
+import tempfile
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -35,7 +37,7 @@ from orchestrator.memory.store import MemoryStore
 DATASET_URL = (
     "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s.json"
 )
-DATASET_PATH = Path("/tmp/longmemeval-review/data/longmemeval_s.json")
+DATASET_PATH = Path(tempfile.gettempdir()) / "longmemeval-review/data/longmemeval_s.json"
 TEST_USER_NAME = "longmemeval_test_user"
 TEST_USER_EMAIL = "longmemeval@daemon.test"
 TEST_USER_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")
@@ -453,9 +455,22 @@ def main() -> None:
     results = asyncio.run(run_ingestion(limit=args.limit, cleanup=args.cleanup))
 
     if results:
-        output_path = Path("/tmp/longmemeval_ingestion_results.json")
-        with open(output_path, "w") as f:
-            json.dump(results, f, indent=2)
+        output_path = Path(tempfile.gettempdir()) / "longmemeval_ingestion_results.json"
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=output_path.parent,
+                prefix=f".{output_path.name}.",
+                delete=False,
+            ) as output_file:
+                temporary_path = Path(output_file.name)
+                json.dump(results, output_file, indent=2)
+            os.replace(temporary_path, output_path)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
         logger.info(f"Results written to {output_path}")
 
     if args.cleanup:

@@ -23,6 +23,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -31,7 +32,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 OUTPUT_DIR = Path("tests/benchmark_results/wave0_full_corpus_baseline")
-DATASET = PROJECT_ROOT / "/tmp/longmemeval-review/data/longmemeval_s.json"
+DATASET = Path(tempfile.gettempdir()) / "longmemeval-review/data/longmemeval_s.json"
 CHECKPOINT = OUTPUT_DIR / "longmemeval_checkpoint.json"
 RESULT_FILE = OUTPUT_DIR / "result.json"
 LOG_FILE = OUTPUT_DIR / "ingest.log"

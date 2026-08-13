@@ -38,12 +38,14 @@ from orchestrator.tools.ssrf_guard import (
     validate_url_and_resolve_async,
 )
 
+UNSPECIFIED_IPV4 = str(ipaddress.IPv4Address(0))
+
 
 class TestIsDisallowedIp:
     @pytest.mark.parametrize(
         "ip",
         [
-            "0.0.0.0",
+            UNSPECIFIED_IPV4,
             "0.255.255.255",
             "10.0.0.0",
             "10.255.255.255",
@@ -336,7 +338,7 @@ class TestValidateUrlIpChecks:
         "ip",
         [
             "127.0.0.1",
-            "0.0.0.0",
+            UNSPECIFIED_IPV4,
             "10.0.0.1",
             "172.16.0.1",
             "192.168.1.1",

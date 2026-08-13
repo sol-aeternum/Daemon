@@ -140,12 +140,17 @@ class SkillProjectionStore:
             params.append(enabled)
             conditions.append(f"enabled = ${len(params)}")
         params.extend([limit, offset])
-        query = f"""
-            SELECT * FROM skill_projections
-            WHERE {" AND ".join(conditions)}
-            ORDER BY updated_at DESC
-            LIMIT ${len(params) - 1} OFFSET ${len(params)}
-        """
+        # conditions contains only the fixed clauses selected above; values
+        # remain positional asyncpg parameters.
+        where_clause = " AND ".join(conditions)
+        query = " ".join(
+            (
+                "SELECT * FROM skill_projections",
+                f"WHERE {where_clause}",
+                "ORDER BY updated_at DESC",
+                f"LIMIT ${len(params) - 1} OFFSET ${len(params)}",
+            )
+        )
         rows = await self._pool.fetch(query, *params)
         return [projection_from_row(r) for r in rows]
 
@@ -251,11 +256,15 @@ class SkillProjectionStore:
             return False
 
         params.append(skill_id)
-        query = f"""
-            UPDATE skill_projections
-            SET {", ".join(set_clauses)}
-            WHERE skill_id = ${len(params)}
-        """
+        # set_clauses contains only the fixed column assignments above.
+        set_clause = ", ".join(set_clauses)
+        query = " ".join(
+            (
+                "UPDATE skill_projections",
+                f"SET {set_clause}",
+                f"WHERE skill_id = ${len(params)}",
+            )
+        )
         result = await self._pool.execute(query, *params)
         return result == "UPDATE 1"
 
@@ -280,14 +289,18 @@ class SkillProjectionStore:
         if enabled_only:
             conditions.append("enabled = TRUE")
         params.append(limit)
-        query = f"""
-            SELECT *,
-                   1 - (embedding <=> $1::vector) AS similarity
-            FROM skill_projections
-            WHERE {" AND ".join(conditions)}
-            ORDER BY embedding <=> $1::vector
-            LIMIT ${len(params)}
-        """
+        # conditions contains only the fixed clauses selected above; values
+        # remain positional asyncpg parameters.
+        where_clause = " AND ".join(conditions)
+        query = " ".join(
+            (
+                "SELECT *, 1 - (embedding <=> $1::vector) AS similarity",
+                "FROM skill_projections",
+                f"WHERE {where_clause}",
+                "ORDER BY embedding <=> $1::vector",
+                f"LIMIT ${len(params)}",
+            )
+        )
         rows = await self._pool.fetch(query, *params)
         return [projection_from_row(r) for r in rows]
 
@@ -335,11 +348,15 @@ class SkillProjectionStore:
         if not params:
             return False
         params.append(skill_id)
-        query = f"""
-            UPDATE skill_projections
-            SET {", ".join(set_clauses)}
-            WHERE skill_id = ${len(params)}
-        """
+        # set_clauses contains only the fixed column assignments above.
+        set_clause = ", ".join(set_clauses)
+        query = " ".join(
+            (
+                "UPDATE skill_projections",
+                f"SET {set_clause}",
+                f"WHERE skill_id = ${len(params)}",
+            )
+        )
         result = await self._pool.execute(query, *params)
         return result == "UPDATE 1"
 

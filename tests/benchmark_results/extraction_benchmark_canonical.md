@@ -62,7 +62,7 @@ PYTHONPATH=. python tests/benchmark_extraction.py --json --no-save
 | Redis | `localhost:6379` (rewritten from `redis:6379`) | Disposable Docker | `_is_safe_redis()` with `SAFE_HOSTS` guard |
 
 **Safety guarantees:**
-- `SAFE_HOSTS = ("localhost", "127.0.0.1", "postgres", "db", "0.0.0.0")`
+- `SAFE_HOSTS = ("localhost", "127.0.0.1", "postgres", "db")`
 - Benchmark refuses to run on non-SAFE_HOSTS database/Redis targets
 - `db_wipe=true` wipes workspace between scenarios for isolation
 
