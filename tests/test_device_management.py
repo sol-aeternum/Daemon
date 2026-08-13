@@ -815,8 +815,10 @@ class TestRevokeDeviceCurrentDeviceClearsCookie:
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     response = await client.delete(
                         f"/v1/auth/devices/{my_device_id}",
-                        headers=make_auth_headers(access_token),
-                        cookies={"__Host-daemon_refresh": "some-refresh-token"},
+                        headers={
+                            **make_auth_headers(access_token),
+                            "Cookie": "__Host-daemon_refresh=some-refresh-token",
+                        },
                     )
 
                     assert response.status_code == 409, f"Expected 409, got {response.status_code}"
@@ -936,8 +938,10 @@ class TestRevokeDeviceCurrentDeviceClearsCookie:
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     response = await client.delete(
                         f"/v1/auth/devices/{my_device_id}",
-                        headers=make_auth_headers(access_token),
-                        cookies={"__Host-daemon_refresh": "some-refresh-token"},
+                        headers={
+                            **make_auth_headers(access_token),
+                            "Cookie": "__Host-daemon_refresh=some-refresh-token",
+                        },
                     )
 
                     assert response.status_code == 204, f"Expected 204, got {response.status_code}"

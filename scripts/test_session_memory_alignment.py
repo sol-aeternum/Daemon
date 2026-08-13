@@ -4,6 +4,8 @@ import asyncio
 import json
 import math
 import sys
+import tempfile
+from pathlib import Path
 
 sys.path.insert(0, "/app")
 
@@ -72,7 +74,8 @@ async def test_alignment():
     settings = get_settings()
     pool = await asyncpg.create_pool(dsn=settings.database_url, min_size=1, max_size=5)
 
-    with open("/tmp/longmemeval_examples.json", "r") as f:
+    examples_path = Path(tempfile.gettempdir()) / "longmemeval_examples.json"
+    with examples_path.open() as f:
         examples = json.load(f)
 
     print("=" * 70)

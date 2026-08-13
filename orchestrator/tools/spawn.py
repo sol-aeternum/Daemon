@@ -13,6 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from orchestrator.artifacts import ArtifactOwnerError, user_artifact_directory
 from orchestrator.tools.registry import Tool
 from orchestrator.config import get_settings
 from orchestrator.subagents.base import SubagentType, SubagentManager
@@ -185,7 +186,10 @@ def _rejected_media_result(
     }
 
 
-def _persist_image_result(result_dict: dict[str, Any]) -> dict[str, Any]:
+def _persist_image_result(
+    result_dict: dict[str, Any],
+    user_id: Any = None,
+) -> dict[str, Any]:
     """Save base64 image data to disk and replace with a servable URL path.
 
     Prevents the raw base64 blob from being re-injected into the LLM context,
@@ -206,9 +210,10 @@ def _persist_image_result(result_dict: dict[str, Any]) -> dict[str, Any]:
             default_format="png",
             allowed_formats=_IMAGE_FORMATS,
         )
-        filename = _write_generated_media(GENERATED_IMAGES_DIR, raw, extension)
+        owner_dir = user_artifact_directory(GENERATED_IMAGES_DIR, user_id, create=True)
+        filename = _write_generated_media(owner_dir, raw, extension)
         logger.info("Saved generated image %s (%d bytes)", filename, len(raw))
-    except _InvalidGeneratedMedia as exc:
+    except (_InvalidGeneratedMedia, ArtifactOwnerError) as exc:
         return _rejected_media_result(
             result_dict,
             data,
@@ -236,7 +241,10 @@ def _persist_image_result(result_dict: dict[str, Any]) -> dict[str, Any]:
     return result_dict
 
 
-def _persist_audio_result(result_dict: dict[str, Any]) -> dict[str, Any]:
+def _persist_audio_result(
+    result_dict: dict[str, Any],
+    user_id: Any = None,
+) -> dict[str, Any]:
     """Save base64 audio data to disk and replace with a servable URL path.
 
     Prevents the raw base64 blob from being re-injected into the LLM context,
@@ -257,9 +265,10 @@ def _persist_audio_result(result_dict: dict[str, Any]) -> dict[str, Any]:
             default_format="mp3",
             allowed_formats=_AUDIO_FORMATS,
         )
-        filename = _write_generated_media(GENERATED_AUDIO_DIR, raw, extension)
+        owner_dir = user_artifact_directory(GENERATED_AUDIO_DIR, user_id, create=True)
+        filename = _write_generated_media(owner_dir, raw, extension)
         logger.info("Saved generated audio %s (%d bytes)", filename, len(raw))
-    except _InvalidGeneratedMedia as exc:
+    except (_InvalidGeneratedMedia, ArtifactOwnerError) as exc:
         return _rejected_media_result(
             result_dict,
             data,
@@ -373,9 +382,11 @@ class SpawnAgentTool(Tool):
         self,
         *,
         db_pool: Any | None = None,
+        user_id: Any = None,
         trusted_spawn_context: dict[str, Any] | None = None,
     ) -> None:
         self._db_pool = db_pool
+        self._user_id = user_id
         self._trusted_spawn_context = trusted_spawn_context or {}
 
     def _apply_trusted_context(
@@ -435,8 +446,8 @@ class SpawnAgentTool(Tool):
         manager = get_subagent_manager(db_pool=self._db_pool)
         result = await manager.spawn(subagent_type, task, context, session_id)
         result_dict = result.to_dict()
-        result_dict = _persist_image_result(result_dict)
-        result_dict = _persist_audio_result(result_dict)
+        result_dict = _persist_image_result(result_dict, self._user_id)
+        result_dict = _persist_audio_result(result_dict, self._user_id)
 
         return json.dumps(result_dict)
 
@@ -480,9 +491,11 @@ class SpawnMultipleTool(Tool):
         self,
         *,
         db_pool: Any | None = None,
+        user_id: Any = None,
         trusted_spawn_context: dict[str, Any] | None = None,
     ) -> None:
         self._db_pool = db_pool
+        self._user_id = user_id
         self._trusted_spawn_context = trusted_spawn_context or {}
 
     def _apply_trusted_context(
@@ -578,8 +591,8 @@ class SpawnMultipleTool(Tool):
         for agent_type, task, context, session_id in valid_spawns:
             result = await manager.spawn(agent_type, task, context, session_id)
             result_dict = result.to_dict()
-            result_dict = _persist_image_result(result_dict)
-            result_dict = _persist_audio_result(result_dict)
+            result_dict = _persist_image_result(result_dict, self._user_id)
+            result_dict = _persist_audio_result(result_dict, self._user_id)
             results.append(result_dict)
 
         return json.dumps(

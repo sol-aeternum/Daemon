@@ -23,6 +23,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import shutil
 from datetime import UTC, datetime
@@ -33,7 +34,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 BASELINE_DIR = PROJECT_ROOT / "tests/benchmark_results/wave0_full_corpus_baseline"
 RECOVERY_DIR = PROJECT_ROOT / "tests/benchmark_results/wave0_full_corpus_recovery"
-DATASET = PROJECT_ROOT / "/tmp/longmemeval-review/data/longmemeval_s.json"
+DATASET = Path(tempfile.gettempdir()) / "longmemeval-review/data/longmemeval_s.json"
 
 os.environ["BENCHMARK_MODE"] = "1"
 

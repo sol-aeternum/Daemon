@@ -132,7 +132,7 @@ def _fresh_benchmark_user() -> str:
 
 
 # Safety: hosts we'll allow DB wipe on
-SAFE_HOSTS = ("localhost", "127.0.0.1", "postgres", "db", "0.0.0.0")
+SAFE_HOSTS = ("localhost", "127.0.0.1", "postgres", "db")
 
 # Docker service names that should be rewritten to localhost when running
 # the benchmark from the host (outside Docker network)
@@ -285,7 +285,10 @@ def wipe_memories(db_url: str = DATABASE_URL) -> int:
         return 0
 
     # Try the actual table name — could be extraction_log or memory_extraction_log
-    log_tables = ["memory_extraction_log", "extraction_log"]
+    log_delete_queries = (
+        "DELETE FROM memory_extraction_log",
+        "DELETE FROM extraction_log",
+    )
 
     if psycopg2 is not None:
         psycopg2_mod = cast(Any, psycopg2)
@@ -297,9 +300,9 @@ def wipe_memories(db_url: str = DATABASE_URL) -> int:
         # Clean all messages and conversations for full isolation
         cur.execute("DELETE FROM messages")
         cur.execute("DELETE FROM conversations")
-        for tbl in log_tables:
+        for delete_query in log_delete_queries:
             try:
-                cur.execute(f"DELETE FROM {tbl}")
+                cur.execute(delete_query)
                 break
             except Exception:
                 conn.rollback()
@@ -319,9 +322,9 @@ def wipe_memories(db_url: str = DATABASE_URL) -> int:
             # Clean all messages and conversations for full isolation
             await conn.execute("DELETE FROM messages")
             await conn.execute("DELETE FROM conversations")
-            for tbl in log_tables:
+            for delete_query in log_delete_queries:
                 try:
-                    await conn.execute(f"DELETE FROM {tbl}")
+                    await conn.execute(delete_query)
                     break
                 except Exception:
                     pass

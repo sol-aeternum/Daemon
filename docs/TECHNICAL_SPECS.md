@@ -129,6 +129,11 @@ Subagent-generated image and audio payloads are persisted only after strict
 base64 decoding, a 50 MiB decoded-size ceiling, an allowlisted format check,
 and matching file-signature validation. Generated-media responses use the
 validated extension's media type and carry the global `nosniff` header.
+All generated image, audio, TTS/sound-effect cache, and document files live in
+opaque per-user filesystem namespaces derived by the server from the
+authenticated UUID. Download routes keep filename-only URLs and resolve them
+only within that authenticated namespace; wrong-owner and legacy flat files
+return 404, and legacy files are not migrated.
 
 ### Chat rate limits
 

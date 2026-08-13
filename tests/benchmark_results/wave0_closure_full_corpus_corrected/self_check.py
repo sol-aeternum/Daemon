@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 from collections import Counter
 from pathlib import Path
 from typing import cast
@@ -89,7 +90,7 @@ def main() -> int:
     dataset_path = (
         Path(sys.argv[1])
         if len(sys.argv) > 1
-        else Path("/tmp/longmemeval_s_reconstructed_runner_native.json")
+        else Path(tempfile.gettempdir()) / "longmemeval_s_reconstructed_runner_native.json"
     )
     results_path = Path(sys.argv[2]) if len(sys.argv) > 2 else base / "longmemeval_results.jsonl"
     checkpoint_path = (

@@ -167,10 +167,10 @@ async def test_openai_chat_completions_threads_authenticated_billing_context(mon
         device_id=uuid.uuid4(),
         session_id=uuid.uuid4(),
     )
-    captured: list[dict[str, Any] | None] = []
+    captured: list[dict[str, Any]] = []
 
     async def fake_stream_sse_chat(**kwargs):
-        captured.append(kwargs.get("trusted_spawn_context"))
+        captured.append(kwargs)
         yield 'event: token\ndata: {"data":{"delta":"ok"}}\n\n'
         yield 'event: final\ndata: {"data":{}}\n\n'
 
@@ -206,7 +206,8 @@ async def test_openai_chat_completions_threads_authenticated_billing_context(mon
             pass
 
     assert len(captured) == 1
-    trusted_context = captured[0]
+    assert captured[0]["user_id"] == authenticated
+    trusted_context = captured[0]["trusted_spawn_context"]
     assert isinstance(trusted_context, dict)
     video_context = trusted_context["video"]
     assert isinstance(video_context, dict)

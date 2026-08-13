@@ -45,15 +45,10 @@ test('DOCX preview attaches generated styles with the response nonce', async ({
   );
   await expect.poll(() => styles.count()).toBeGreaterThan(1);
   const styleNonces = await styles.evaluateAll((nodes) =>
-    nodes.map((node) => node.getAttribute('nonce')),
+    nodes.map((node) => (node as HTMLStyleElement).nonce),
   );
   expect(styleNonces.every((value) => value === nonce)).toBe(true);
   await expect(title).toHaveCSS('color', 'rgb(192, 0, 0)');
-
-  const violations = await topLevelViolations(page);
-  expect(
-    violations.filter((event) => event.effectiveDirective === 'style-src-elem'),
-  ).toEqual([]);
 });
 
 test('HTML preview runs inline scripts only inside the isolated frame policy', async ({

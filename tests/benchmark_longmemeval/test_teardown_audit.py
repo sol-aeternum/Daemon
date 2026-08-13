@@ -19,16 +19,17 @@ from tests.longmemeval.evaluate import evaluate_single
 from tests.longmemeval.ingest import ingest_session
 
 REPORT_PATH = Path(__file__).with_name("TEARDOWN_AUDIT.md")
-TABLES = [
-    "users",
-    "conversations",
-    "messages",
-    "memories",
-    "memory_extraction_log",
-    "retrieval_log",
-    "entities",
-    "dream_log",
-]
+COUNT_QUERIES = {
+    "users": "SELECT COUNT(*) FROM users WHERE id = $1",
+    "conversations": "SELECT COUNT(*) FROM conversations WHERE user_id = $1",
+    "messages": "SELECT COUNT(*) FROM messages WHERE user_id = $1",
+    "memories": "SELECT COUNT(*) FROM memories WHERE user_id = $1",
+    "memory_extraction_log": ("SELECT COUNT(*) FROM memory_extraction_log WHERE user_id = $1"),
+    "retrieval_log": "SELECT COUNT(*) FROM retrieval_log WHERE user_id = $1",
+    "entities": "SELECT COUNT(*) FROM entities WHERE user_id = $1",
+    "dream_log": "SELECT COUNT(*) FROM dream_log WHERE user_id = $1",
+}
+TABLES = list(COUNT_QUERIES)
 
 
 @dataclass(slots=True)
@@ -107,10 +108,7 @@ async def _delete_user(pool: asyncpg.Pool, user_id: uuid.UUID) -> None:
 
 
 async def _count_rows(pool: asyncpg.Pool, table: str, user_id: uuid.UUID) -> int:
-    if table == "users":
-        query = "SELECT COUNT(*) FROM users WHERE id = $1"
-    else:
-        query = f"SELECT COUNT(*) FROM {table} WHERE user_id = $1"
+    query = COUNT_QUERIES[table]
     value = cast(int, await pool.fetchval(query, user_id))
     assert isinstance(value, int)
     return value
@@ -240,13 +238,13 @@ The fast-lane audit deliberately held the background `store.log_retrieval()` tas
 | --- | --- | --- | --- |
 | Canonical | Yes: `conversations`, `messages`, `memories`, `memory_extraction_log`, `retrieval_log` accumulate 1 -> 2 across the two cases | Missing teardown | Counts only reset after the audit manually deletes the whole user |
 | Fast | Yes, but only for `retrieval_log` when the delayed background write lands after cleanup | Async bleed | Post-case cleanup reaches zero, then a late `retrieval_log` row reappears with all other tables still at zero |
-| Fast end-of-run | No rows remain after `DELETE FROM users ...` | End-of-run user deletion | Final user delete returns the run-scoped user and every user-linked table to zero |
+| Fast end-of-run | No rows remain after deleting the benchmark user | End-of-run user deletion | Final user delete returns the run-scoped user and every user-linked table to zero |
 
 ## Bottom line
 
 - The canonical lane leaks benchmark state between cases because it never tears the benchmark user down between cases.
 - The fast lane cleans its synchronous benchmark tables, but retrieval evidence is vulnerable to async timing because the retrieval-log write is backgrounded.
-- End-of-run user deletion is a separate mechanism from per-case teardown: it is not what causes the leak, but it is what guarantees the last fast-lane stray row disappears.
+- End-of-run user deletion is a separate mechanism from per-case teardown: it is not what causes the leak, but it guarantees the last fast-lane stray row disappears.
 """
 
 

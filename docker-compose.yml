@@ -80,6 +80,7 @@ services:
       - DAEMON_HOSTED_IDENTITY_REQUIRE_REDIS=${DAEMON_HOSTED_IDENTITY_REQUIRE_REDIS:-true}
     volumes:
       - .:/app
+      - daemon_benchmark_artifacts:/var/lib/daemon/benchmark-artifacts
     command: uvicorn orchestrator.main:app --host 0.0.0.0 --port 8000
     depends_on:
       postgres:
@@ -236,5 +237,6 @@ networks:
     driver: bridge
 
 volumes:
+  daemon_benchmark_artifacts:
   daemon_postgres16_data:
   redis_data:

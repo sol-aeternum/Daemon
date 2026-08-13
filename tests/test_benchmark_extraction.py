@@ -63,6 +63,7 @@ def test_wipe_refusal_does_not_log_database_credentials(
         ("postgresql://user:secret@127.0.0.1:5432/daemon", True),
         ("postgresql://user:secret@postgres/daemon", True),
         ("postgresql://user:secret@db/daemon", True),
+        ("postgresql://user:secret@0.0.0.0/daemon", False),
         ("postgresql://user:secret@example.com/postgres", False),
         ("postgresql://user:secret@postgres.example.com/daemon", False),
         ("not a database url", False),

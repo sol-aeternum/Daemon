@@ -151,15 +151,10 @@ asyncio.run(main())
 
 
 def run_ingest(run_dir: Path) -> tuple[int, str]:
-    run_dir_str = str(run_dir)
-    dataset_str = str(DATASET)
-
-    ingest_code = (
-        PATCH_CODE
-        + f"""
+    ingest_template = """
 import asyncio, sys, json, uuid
 from pathlib import Path
-sys.path.insert(0, '{PROJECT_ROOT}')
+sys.path.insert(0, __PROJECT_ROOT__)
 
 from orchestrator.eval.fact_harness import LongMemEvalFactRunner
 from orchestrator.memory.encryption import ContentEncryption
@@ -172,11 +167,11 @@ async def main():
     pool = await asyncpg.create_pool(dsn=settings.database_url, min_size=2, max_size=5)
     encryption = ContentEncryption(settings.daemon_encryption_key)
 
-    OUTPUT = Path('{run_dir_str}')
+    OUTPUT = Path(__RUN_DIR__)
     OUTPUT.mkdir(parents=True, exist_ok=True)
 
     runner = LongMemEvalFactRunner(
-        dataset_path=Path('{dataset_str}'),
+        dataset_path=Path(__DATASET__),
         output_path=OUTPUT / "longmemeval_results.jsonl",
         checkpoint_path=OUTPUT / "longmemeval_checkpoint.json",
         score_path=OUTPUT / "longmemeval_score.json",
@@ -319,6 +314,12 @@ datetime = datetime_module.datetime
 
 asyncio.run(main())
 """
+    ingest_code = PATCH_CODE + (
+        ingest_template.replace("__PROJECT_ROOT__", repr(str(PROJECT_ROOT)))
+        .replace("__RUN_DIR__", repr(str(run_dir)))
+        .replace("__DATASET__", repr(str(DATASET)))
+        .replace("{{", "{")
+        .replace("}}", "}")
     )
 
     print("\n[PRESERVE] === INGEST ===")
