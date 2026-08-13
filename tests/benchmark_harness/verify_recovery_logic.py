@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_DIR = PROJECT_ROOT / "tests/benchmark_results/wave0_full_corpus_baseline"
 RECOVERY_DIR = PROJECT_ROOT / "tests/benchmark_results/wave0_full_corpus_recovery"
-DATASET = PROJECT_ROOT / "/tmp/longmemeval-review/data/longmemeval_s.json"
+DATASET = Path(tempfile.gettempdir()) / "longmemeval-review/data/longmemeval_s.json"
 
 sys.path.insert(0, str(PROJECT_ROOT))
 

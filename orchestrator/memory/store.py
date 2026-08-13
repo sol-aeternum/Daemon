@@ -550,10 +550,9 @@ class MemoryStore:
         # ``error``/``cancelled`` rows are intentionally omitted from summary
         # content. They must not shift an offset or pin later complete rows.
         # Unknown non-terminal statuses remain conservative blockers.
-        base_filter = "m.conversation_id = $1 AND (m.status IS NULL OR m.status = 'complete')"
         if snapshot_at is not None:
             rows = await self._pool.fetch(
-                f"""
+                """
                 WITH ranked AS (
                     SELECT id, created_at, status,
                            COUNT(*) FILTER (
@@ -577,7 +576,8 @@ class MemoryStore:
                 )
                 SELECT m.* FROM messages m
                 JOIN ranked r ON m.id = r.id
-                WHERE {base_filter}
+                WHERE m.conversation_id = $1
+                  AND (m.status IS NULL OR m.status = 'complete')
                   AND r.summary_rn > $3
                   AND r.summary_rn <= (SELECT contiguous_summary_rn FROM cutoff)
                 ORDER BY r.summary_rn ASC
@@ -590,7 +590,7 @@ class MemoryStore:
             )
         else:
             rows = await self._pool.fetch(
-                f"""
+                """
                 WITH ranked AS (
                     SELECT id, created_at, status,
                            COUNT(*) FILTER (
@@ -613,7 +613,8 @@ class MemoryStore:
                 )
                 SELECT m.* FROM messages m
                 JOIN ranked r ON m.id = r.id
-                WHERE {base_filter}
+                WHERE m.conversation_id = $1
+                  AND (m.status IS NULL OR m.status = 'complete')
                   AND r.summary_rn > $3
                   AND r.summary_rn <= (SELECT contiguous_summary_rn FROM cutoff)
                 ORDER BY r.summary_rn ASC
@@ -1226,12 +1227,17 @@ class MemoryStore:
                 conditions.append(f"status = ANY(${len(params)}::text[])")
 
         params.extend([limit, offset])
-        query = f"""
-            SELECT * FROM memories
-            WHERE {" AND ".join(conditions)}
-            ORDER BY created_at DESC
-            LIMIT ${len(params) - 1} OFFSET ${len(params)}
-        """
+        # Every SQL fragment in conditions is selected from fixed clauses
+        # above; all caller-controlled values remain asyncpg parameters.
+        where_clause = " AND ".join(conditions)
+        query = " ".join(
+            (
+                "SELECT * FROM memories",
+                f"WHERE {where_clause}",
+                "ORDER BY created_at DESC",
+                f"LIMIT ${len(params) - 1} OFFSET ${len(params)}",
+            )
+        )
         rows = await self._pool.fetch(query, *params)
         results = []
         for r in rows:

@@ -36,24 +36,26 @@ TEST_USER_ID: uuid.UUID = uuid.UUID("12345678-1234-5678-1234-567812345678")
 # cleanup_canonical_benchmark_state(). These are identified in
 # wave0_state_reset_audit_v2.md Section 2.2 as missing from
 # the production reset scope.
-EXTENDED_RESET_TABLES = [
-    "skill_consolidation_log",
-    "skill_nudge_user_state",
-]
+EXTENDED_RESET_QUERIES = {
+    "skill_consolidation_log": ("DELETE FROM skill_consolidation_log WHERE user_id = $1"),
+    "skill_nudge_user_state": "DELETE FROM skill_nudge_user_state WHERE user_id = $1",
+}
+EXTENDED_RESET_TABLES = list(EXTENDED_RESET_QUERIES)
 
 # All tables that should reach zero-row state after a full reset.
 # Includes the 7 core tables + 2 extended tables.
-ALL_RESET_TABLES = [
-    "conversations",
-    "messages",
-    "memories",
-    "memory_extraction_log",
-    "retrieval_log",
-    "dream_log",
-    "entities",
-    "skill_consolidation_log",
-    "skill_nudge_user_state",
-]
+ALL_RESET_COUNT_QUERIES = {
+    "conversations": "SELECT COUNT(*) FROM conversations WHERE user_id = $1",
+    "messages": "SELECT COUNT(*) FROM messages WHERE user_id = $1",
+    "memories": "SELECT COUNT(*) FROM memories WHERE user_id = $1",
+    "memory_extraction_log": ("SELECT COUNT(*) FROM memory_extraction_log WHERE user_id = $1"),
+    "retrieval_log": "SELECT COUNT(*) FROM retrieval_log WHERE user_id = $1",
+    "dream_log": "SELECT COUNT(*) FROM dream_log WHERE user_id = $1",
+    "entities": "SELECT COUNT(*) FROM entities WHERE user_id = $1",
+    "skill_consolidation_log": ("SELECT COUNT(*) FROM skill_consolidation_log WHERE user_id = $1"),
+    "skill_nudge_user_state": ("SELECT COUNT(*) FROM skill_nudge_user_state WHERE user_id = $1"),
+}
+ALL_RESET_TABLES = list(ALL_RESET_COUNT_QUERIES)
 
 # Redis key patterns that should be cleaned
 REDIS_EXTRACT_PATTERNS = (
@@ -87,8 +89,8 @@ async def extended_cleanup_tables(pool: asyncpg.Pool) -> dict[str, int]:
     """
     deleted: dict[str, int] = {}
     async with pool.acquire() as conn:
-        for table in EXTENDED_RESET_TABLES:
-            result = await conn.execute(f"DELETE FROM {table} WHERE user_id = $1", TEST_USER_ID)
+        for table, delete_query in EXTENDED_RESET_QUERIES.items():
+            result = await conn.execute(delete_query, TEST_USER_ID)
             count_str = result.split()[-1] if result else "0"
             deleted[table] = int(count_str)
     return deleted
@@ -102,10 +104,8 @@ async def get_table_row_counts(pool: asyncpg.Pool) -> dict[str, int]:
     """
     counts: dict[str, int] = {}
     async with pool.acquire() as conn:
-        for table in ALL_RESET_TABLES:
-            count = await conn.fetchval(
-                f"SELECT COUNT(*) FROM {table} WHERE user_id = $1", TEST_USER_ID
-            )
+        for table, count_query in ALL_RESET_COUNT_QUERIES.items():
+            count = await conn.fetchval(count_query, TEST_USER_ID)
             counts[table] = int(count)
     return counts
 

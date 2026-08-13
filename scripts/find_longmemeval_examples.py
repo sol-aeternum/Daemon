@@ -2,8 +2,12 @@
 """Find 3 LongMemEval examples with evidence for diagnostic testing."""
 
 import json
+import os
+import tempfile
+from pathlib import Path
 
-with open("/tmp/longmemeval-review/data/longmemeval_s.json", "r") as f:
+input_path = Path(tempfile.gettempdir()) / "longmemeval-review/data/longmemeval_s.json"
+with input_path.open() as f:
     data = json.load(f)
 
 # Find 3 examples with haystack sessions and clear answers
@@ -42,6 +46,21 @@ for i, ex in enumerate(examples, 1):
     print(f"Answer Sessions: {ex['answer_session']}")
     print("---")
 
-# Save for later use
-with open("/tmp/longmemeval_examples.json", "w") as f:
-    json.dump(examples, f, indent=2)
+# Use a securely created sibling and replace the stable hand-off path atomically.
+# This avoids following a pre-planted symlink at the predictable output name.
+output_path = Path(tempfile.gettempdir()) / "longmemeval_examples.json"
+temporary_path: Path | None = None
+try:
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=output_path.parent,
+        prefix=f".{output_path.name}.",
+        delete=False,
+    ) as output_file:
+        temporary_path = Path(output_file.name)
+        json.dump(examples, output_file, indent=2)
+    os.replace(temporary_path, output_path)
+finally:
+    if temporary_path is not None:
+        temporary_path.unlink(missing_ok=True)
