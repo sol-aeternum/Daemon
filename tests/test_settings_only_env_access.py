@@ -105,11 +105,9 @@ class _OsAliasVisitor(ast.NodeVisitor):
     """Resolve per-scope bindings of `os` / `os.environ` / `os.getenv`.
 
     Tracks the enclosing function (or module-level) for every binding so
-    a function parameter named `getenv` (e.g. `def foo(getenv): ...`) does
-    not inherit a module-level `from os import getenv` binding and get
-    misclassified as a direct env read. Returns a list of
-    ``(function_name | None, os_names, getenv_names, environ_names)`` tuples
-    that the walker consults for each hit.
+    nested functions inherit aliases from their immediate lexical parent,
+    while parameters and local assignments shadow same-named outer aliases.
+    The walker consults the resulting frame for each potential hit.
     """
 
     def __init__(self) -> None:
@@ -138,18 +136,30 @@ class _OsAliasVisitor(ast.NodeVisitor):
             frame = {
                 "func": None,
                 "node": node,
+                "parent_node": None,
                 "os_names": set(),
                 "getenv_names": set(),
                 "environ_names": set(),
+                "bound_names": set(),
+                "global_names": set(),
+                "nonlocal_names": set(),
             }
         else:
             assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
             frame = {
                 "func": node.name,
                 "node": node,
+                "parent_node": (
+                    self._stack[-1]["node"]
+                    if self._stack and self._stack[-1]["func"] is not None
+                    else None
+                ),
                 "os_names": set(),
                 "getenv_names": set(),
                 "environ_names": set(),
+                "bound_names": set(),
+                "global_names": set(),
+                "nonlocal_names": set(),
             }
         self._stack.append(frame)
         self._frames.append(frame)
@@ -164,26 +174,57 @@ class _OsAliasVisitor(ast.NodeVisitor):
         self._pop()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self._push(node)
-        # Function parameters shadow any outer-scope binding of the same
-        # name. Parameters here are not bound to `os`, so we don't add
-        # them to any alias set — they are simply absent, which is the
-        # correct behavior.
+        frame = self._push(node)
+        frame["bound_names"].update(self._argument_names(node.args))
         self.generic_visit(node)
         self._pop()
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self._push(node)
+        frame = self._push(node)
+        frame["bound_names"].update(self._argument_names(node.args))
         self.generic_visit(node)
         self._pop()
 
+    @staticmethod
+    def _argument_names(arguments: ast.arguments) -> set[str]:
+        names = {
+            argument.arg
+            for argument in (
+                *arguments.posonlyargs,
+                *arguments.args,
+                *arguments.kwonlyargs,
+            )
+        }
+        if arguments.vararg is not None:
+            names.add(arguments.vararg.arg)
+        if arguments.kwarg is not None:
+            names.add(arguments.kwarg.arg)
+        return names
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
+            self._current()["bound_names"].add(node.id)
+        self.generic_visit(node)
+
+    def visit_Global(self, node: ast.Global) -> None:
+        self._current()["global_names"].update(node.names)
+        self.generic_visit(node)
+
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+        self._current()["nonlocal_names"].update(node.names)
+        self.generic_visit(node)
+
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
+            self._current()["bound_names"].add(alias.asname or alias.name.split(".", 1)[0])
             if alias.name == "os":
                 self._current()["os_names"].add(alias.asname or "os")
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        for alias in node.names:
+            if alias.name != "*":
+                self._current()["bound_names"].add(alias.asname or alias.name)
         if node.module == "os" and node.level == 0:
             for alias in node.names:
                 local = alias.asname or alias.name
@@ -197,8 +238,9 @@ class _OsAliasVisitor(ast.NodeVisitor):
         """Return one frame per scope (module + each FunctionDef/AsyncFunctionDef).
 
         The walker looks up the enclosing function for each hit and uses
-        that frame's alias sets. Module-level aliases are also available
-        in every frame via the ``_inherited`` merge the caller performs.
+        that frame's alias sets. Each function records its immediate lexical
+        parent so closure aliases can be inherited without leaking across
+        sibling functions.
         """
         return self._frames
 
@@ -207,10 +249,11 @@ def _resolve_aliases_for(tree: ast.AST) -> dict[ast.AST | None, dict[str, set[st
     """Return a mapping from enclosing-function node (or None for module
     level) to a dict of alias sets.
 
-    Each scope frame contains its own bindings (those declared inside that
-    scope) and an ``_inherited`` set merged from the enclosing module-level
-    frame, so a function that does its own ``import os`` is correctly
-    resolved without inheriting unrelated aliases from sibling functions.
+    Each scope frame contains its own bindings plus aliases inherited from
+    its immediate lexical parent. Local bindings remove same-named inherited
+    aliases, while ``global`` and ``nonlocal`` declarations keep the outer
+    binding visible. This mirrors closure lookup without leaking aliases
+    across sibling functions.
 
     Keyed by AST-node identity so two same-named methods in different
     enclosing classes (``ClassA.configure`` vs ``ClassB.configure``)
@@ -221,37 +264,28 @@ def _resolve_aliases_for(tree: ast.AST) -> dict[ast.AST | None, dict[str, set[st
     visitor.visit(tree)
     result: dict[ast.AST | None, dict[str, set[str]]] = {}
     module_frame = next(f for f in visitor.scopes() if f["func"] is None)
-    inherited = {
+    module_aliases = {
         "os_names": set(module_frame["os_names"]),
         "getenv_names": set(module_frame["getenv_names"]),
         "environ_names": set(module_frame["environ_names"]),
     }
     result[None] = {
-        "os_names": set(inherited["os_names"]),
-        "getenv_names": set(inherited["getenv_names"]),
-        "environ_names": set(inherited["environ_names"]),
+        "os_names": set(module_aliases["os_names"]),
+        "getenv_names": set(module_aliases["getenv_names"]),
+        "environ_names": set(module_aliases["environ_names"]),
     }
     for frame in visitor.scopes():
         if frame["func"] is None:
             continue
-        # Module-level bindings are NOT inherited by every function:
-        # a sibling function that defines `def foo(getenv):` is allowed
-        # to have `getenv` shadow the module-level os.getenv import,
-        # and we must not retroactively re-flag it. Aliases declared at
-        # module level are inherited only when the function does not
-        # shadow them.
-        merged = {
-            "os_names": set(frame["os_names"]),
-            "getenv_names": set(frame["getenv_names"]),
-            "environ_names": set(frame["environ_names"]),
-        }
-        # Inherit any module-level aliases the function has not shadowed.
-        if not frame["os_names"]:
-            merged["os_names"] |= inherited["os_names"]
-        if not frame["getenv_names"]:
-            merged["getenv_names"] |= inherited["getenv_names"]
-        if not frame["environ_names"]:
-            merged["environ_names"] |= inherited["environ_names"]
+        parent_aliases = result[frame["parent_node"]]
+        shadowed_names = (
+            set(frame["bound_names"]) - set(frame["global_names"]) - set(frame["nonlocal_names"])
+        )
+        merged = {}
+        for alias_kind in ("os_names", "getenv_names", "environ_names"):
+            merged[alias_kind] = (set(parent_aliases[alias_kind]) - shadowed_names) | set(
+                frame[alias_kind]
+            )
         # ``frame["node"]`` is the AST node the visitor pushed; keying the
         # result by it (rather than by name) is what makes same-named
         # methods in different enclosing classes resolve independently.
@@ -703,3 +737,53 @@ def test_ast_gate_resolves_same_named_methods_in_distinct_classes(tmp_path, monk
     assert lines == [4], (
         f"only A.configure's host_os.getenv (line 4) should be flagged, got lines {lines}"
     )
+
+
+def test_ast_gate_inherits_aliases_from_immediate_lexical_parent(tmp_path, monkeypatch) -> None:
+    """Nested functions inherit parent aliases unless a local binding shadows them."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "closures"
+    case_dir.mkdir()
+    (case_dir / "closures.py").write_text(
+        "def inherited():\n"
+        "    import os as host_os\n"
+        "    def inner():\n"
+        '        return host_os.getenv("K1")\n'
+        "    return inner\n"
+        "\n"
+        "def shadowed():\n"
+        "    import os as host_os\n"
+        "    def inner(host_os):\n"
+        '        return host_os.getenv("NOT_OS")\n'
+        "    return inner\n"
+        "\n"
+        "def inherited_alongside_local_alias():\n"
+        "    import os as outer_os\n"
+        "    def inner():\n"
+        "        import os as inner_os\n"
+        '        return outer_os.getenv("K2"), inner_os.environ["K3"]\n'
+        "    return inner\n"
+        "\n"
+        "def declared_nonlocal():\n"
+        "    import os as host_os\n"
+        "    def inner():\n"
+        "        nonlocal host_os\n"
+        '        return host_os.environ.get("K4")\n'
+        "    return inner\n"
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    snippets = sorted(snippet for _, _, snippet in hits)
+    assert snippets == [
+        "os.environ.get(...)",
+        "os.environ[...]",
+        "os.getenv(...)",
+        "os.getenv(...)",
+    ]
+    lines = sorted(line for _, line, _ in hits)
+    assert lines == [4, 17, 17, 24]

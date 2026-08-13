@@ -536,6 +536,21 @@ class Settings(BaseSettings):
     # It must never use a NEXT_PUBLIC_* name or reuse the auth pepper.
     daemon_internal_proxy_hmac_secret: str = ""
 
+    def get_video_provider_for_tier(self, tier: str | None = None) -> str:
+        """Resolve the tier video provider while preserving the PRO fallback.
+
+        A tier field's built-in ``fal`` value is a default, not an explicit
+        override. The legacy environment lookup fell back to
+        ``TIER_PRO_VIDEO_PROVIDER`` whenever the selected tier variable was
+        unset, so only fields supplied by configuration should take priority.
+        """
+        tier_name = (tier or self.default_tier).lower()
+        field_name = f"tier_{tier_name}_video_provider"
+        tier_override = getattr(self, field_name, "")
+        if field_name in self.model_fields_set and tier_override:
+            return tier_override
+        return self.tier_pro_video_provider
+
     def get_tier_config(self, tier: str | None = None) -> TierConfig:
         """Get model configuration for a specific tier.
 

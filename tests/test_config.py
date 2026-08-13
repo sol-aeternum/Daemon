@@ -228,6 +228,56 @@ def test_http_allowed_domains_from_env(monkeypatch) -> None:
     assert settings.daemon_http_allowed_domains == "example.com,*.trusted.org"
 
 
+def test_video_provider_falls_back_to_configured_pro_for_unset_tier(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TIER_STARTER_VIDEO_PROVIDER", raising=False)
+    monkeypatch.setenv("DEFAULT_TIER", "starter")
+    monkeypatch.setenv("TIER_PRO_VIDEO_PROVIDER", "xai")
+    settings = Settings()
+
+    assert settings.get_video_provider_for_tier() == "xai"
+
+
+def test_video_provider_explicit_tier_override_wins_over_pro(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DEFAULT_TIER", "starter")
+    monkeypatch.setenv("TIER_STARTER_VIDEO_PROVIDER", "fal")
+    monkeypatch.setenv("TIER_PRO_VIDEO_PROVIDER", "xai")
+    settings = Settings()
+
+    assert settings.get_video_provider_for_tier() == "fal"
+
+
+def test_video_provider_empty_tier_override_falls_back_to_pro(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DEFAULT_TIER", "starter")
+    monkeypatch.setenv("TIER_STARTER_VIDEO_PROVIDER", "")
+    monkeypatch.setenv("TIER_PRO_VIDEO_PROVIDER", "xai")
+    settings = Settings()
+
+    assert settings.get_video_provider_for_tier() == "xai"
+
+
+def test_image_subagent_uses_pro_provider_fallback_for_unset_tier(tmp_path, monkeypatch) -> None:
+    import orchestrator.subagents.image as image_module
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TIER_STARTER_VIDEO_PROVIDER", raising=False)
+    monkeypatch.setenv("DEFAULT_TIER", "starter")
+    monkeypatch.setenv("TIER_PRO_VIDEO_PROVIDER", "xai")
+    settings = Settings()
+    monkeypatch.setattr(image_module, "get_settings", lambda: settings)
+
+    subagent = image_module.ImageSubagent(
+        {
+            "openrouter_api_key": "test-key",
+            "openrouter_base_url": "https://openrouter.ai/api/v1",
+        }
+    )
+
+    assert subagent.video_provider_name == "xai"
+
+
 def test_fetch_allowed_content_types_default_empty() -> None:
     """FETCH_ALLOWED_CONTENT_TYPES has an empty default."""
     settings = Settings()

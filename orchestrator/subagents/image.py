@@ -385,15 +385,12 @@ class ImageSubagent(BaseSubagent):
         ).lower()
         self.provider_name = config_provider
 
-        # Video provider selection falls back to PRO tier, then to image
-        # provider. Settings carries the tier-specific slots.
-        tier = settings.default_tier.upper()
-        tier_video_provider = getattr(settings, f"tier_{tier.lower()}_video_provider", None)
-
+        # A tier's built-in `fal` default is not an explicit override. Let
+        # Settings distinguish configured tier values from defaults before
+        # applying the legacy PRO-tier fallback.
         video_provider_value = (
             config_dict.get("video_provider")
-            or tier_video_provider
-            or settings.tier_pro_video_provider
+            or settings.get_video_provider_for_tier()
             or config_provider
         )
         self.video_provider_name = video_provider_value.lower()
