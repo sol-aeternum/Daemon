@@ -593,8 +593,8 @@ class TestAuthDeviceLifecycleSmoke:
 
                     resp = await client.post(
                         "/v1/auth/refresh",
-                        cookies={"__Host-daemon_refresh": raw_refresh_a},
                         headers={
+                            "Cookie": f"__Host-daemon_refresh={raw_refresh_a}",
                             "Origin": "https://app.daemon.ai",
                             "Sec-Fetch-Site": "same-origin",
                         },
@@ -724,8 +724,10 @@ class TestAuthDeviceLifecycleSmoke:
 
                     resp = await client.delete(
                         f"/v1/auth/devices/{pool._devices[device_a_id]['id']}",
-                        headers=make_auth_headers(enroll_complete["access_token"]),
-                        cookies={"__Host-daemon_refresh": raw_refresh_b},
+                        headers={
+                            **make_auth_headers(enroll_complete["access_token"]),
+                            "Cookie": f"__Host-daemon_refresh={raw_refresh_b}",
+                        },
                     )
                     assert resp.status_code == 204
                     assert pool._devices[device_a_id]["revoked_at"] is not None
@@ -738,8 +740,8 @@ class TestAuthDeviceLifecycleSmoke:
 
                     resp = await client.post(
                         "/v1/auth/refresh",
-                        cookies={"__Host-daemon_refresh": raw_refresh_b},
                         headers={
+                            "Cookie": f"__Host-daemon_refresh={raw_refresh_b}",
                             "Origin": "https://app.daemon.ai",
                             "Sec-Fetch-Site": "same-origin",
                         },
@@ -750,8 +752,8 @@ class TestAuthDeviceLifecycleSmoke:
                     assert pool._devices[device_b_id]["revoked_at"] is None
                     resp = await client.post(
                         "/v1/auth/refresh",
-                        cookies={"__Host-daemon_refresh": raw_refresh_b},
                         headers={
+                            "Cookie": f"__Host-daemon_refresh={raw_refresh_b}",
                             "Origin": "https://app.daemon.ai",
                             "Sec-Fetch-Site": "same-origin",
                         },

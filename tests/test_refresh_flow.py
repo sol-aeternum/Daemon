@@ -345,8 +345,8 @@ class TestWebRefreshRotatesCookie:
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     response = await client.post(
                         "/v1/auth/refresh",
-                        cookies={"__Host-daemon_refresh": refresh_token},
                         headers={
+                            "Cookie": f"__Host-daemon_refresh={refresh_token}",
                             "Origin": "https://app.daemon.ai",
                             "Sec-Fetch-Site": "same-origin",
                         },
@@ -425,8 +425,10 @@ class TestLogoutCurrentSession:
                     async with AsyncClient(transport=transport, base_url="http://test") as client:
                         logout_response = await client.post(
                             "/v1/auth/logout",
-                            headers={"Authorization": f"Bearer {access_token}"},
-                            cookies={"__Host-daemon_refresh": refresh_token},
+                            headers={
+                                "Authorization": f"Bearer {access_token}",
+                                "Cookie": f"__Host-daemon_refresh={refresh_token}",
+                            },
                         )
 
                         assert logout_response.status_code == 204
@@ -438,8 +440,8 @@ class TestLogoutCurrentSession:
 
                         refresh_response = await client.post(
                             "/v1/auth/refresh",
-                            cookies={"__Host-daemon_refresh": refresh_token},
                             headers={
+                                "Cookie": f"__Host-daemon_refresh={refresh_token}",
                                 "Origin": "https://app.daemon.ai",
                                 "Sec-Fetch-Site": "same-origin",
                             },
@@ -479,8 +481,8 @@ class TestConsumedRefreshReuse:
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     response = await client.post(
                         "/v1/auth/refresh",
-                        cookies={"__Host-daemon_refresh": refresh_token},
                         headers={
+                            "Cookie": f"__Host-daemon_refresh={refresh_token}",
                             "Origin": "https://app.daemon.ai",
                             "Sec-Fetch-Site": "same-origin",
                         },
@@ -522,8 +524,8 @@ class TestConsumedRefreshReuse:
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     response = await client.post(
                         "/v1/auth/refresh",
-                        cookies={"__Host-daemon_refresh": refresh_token},
                         headers={
+                            "Cookie": f"__Host-daemon_refresh={refresh_token}",
                             "Origin": "https://app.daemon.ai",
                             "Sec-Fetch-Site": "same-origin",
                         },
@@ -557,8 +559,8 @@ class TestConsumedRefreshReuse:
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     response = await client.post(
                         "/v1/auth/refresh",
-                        cookies={"__Host-daemon_refresh": refresh_token},
                         headers={
+                            "Cookie": f"__Host-daemon_refresh={refresh_token}",
                             "Origin": "https://app.daemon.ai",
                             "Sec-Fetch-Site": "same-origin",
                         },
@@ -729,7 +731,7 @@ class TestNativeRefresh:
                     response = await client.post(
                         "/v1/auth/refresh",
                         json={"refresh_token": refresh_token},
-                        cookies={"__Host-daemon_refresh": refresh_token},
+                        headers={"Cookie": f"__Host-daemon_refresh={refresh_token}"},
                     )
 
                     assert response.status_code == 400, response.text
@@ -755,16 +757,16 @@ class TestConcurrentRefresh:
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     results = await client.post(
                         "/v1/auth/refresh",
-                        cookies={"__Host-daemon_refresh": refresh_token},
                         headers={
+                            "Cookie": f"__Host-daemon_refresh={refresh_token}",
                             "Origin": "https://app.daemon.ai",
                             "Sec-Fetch-Site": "same-origin",
                         },
                     )
                     results2 = await client.post(
                         "/v1/auth/refresh",
-                        cookies={"__Host-daemon_refresh": refresh_token},
                         headers={
+                            "Cookie": f"__Host-daemon_refresh={refresh_token}",
                             "Origin": "https://app.daemon.ai",
                             "Sec-Fetch-Site": "same-origin",
                         },
@@ -831,8 +833,8 @@ class TestExpiredBadRevokedRefresh:
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     response = await client.post(
                         "/v1/auth/refresh",
-                        cookies={"__Host-daemon_refresh": refresh_token},
                         headers={
+                            "Cookie": f"__Host-daemon_refresh={refresh_token}",
                             "Origin": "https://app.daemon.ai",
                             "Sec-Fetch-Site": "same-origin",
                         },
@@ -860,8 +862,8 @@ class TestExpiredBadRevokedRefresh:
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     response = await client.post(
                         "/v1/auth/refresh",
-                        cookies={"__Host-daemon_refresh": refresh_token},
                         headers={
+                            "Cookie": f"__Host-daemon_refresh={refresh_token}",
                             "Origin": "https://app.daemon.ai",
                             "Sec-Fetch-Site": "same-origin",
                         },
@@ -893,8 +895,8 @@ class TestExpiredBadRevokedRefresh:
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     response = await client.post(
                         "/v1/auth/refresh",
-                        cookies={"__Host-daemon_refresh": refresh_token},
                         headers={
+                            "Cookie": f"__Host-daemon_refresh={refresh_token}",
                             "Origin": "https://app.daemon.ai",
                             "Sec-Fetch-Site": "same-origin",
                         },
@@ -920,8 +922,8 @@ class TestExpiredBadRevokedRefresh:
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     response = await client.post(
                         "/v1/auth/refresh",
-                        cookies={"__Host-daemon_refresh": refresh_token},
                         headers={
+                            "Cookie": f"__Host-daemon_refresh={refresh_token}",
                             "Origin": "https://app.daemon.ai",
                             "Sec-Fetch-Site": "same-origin",
                         },
@@ -950,8 +952,8 @@ class TestClientKindPreservation:
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     response = await client.post(
                         "/v1/auth/refresh",
-                        cookies={"__Host-daemon_refresh": refresh_token},
                         headers={
+                            "Cookie": f"__Host-daemon_refresh={refresh_token}",
                             "Origin": "https://app.daemon.ai",
                             "Sec-Fetch-Site": "same-origin",
                         },
@@ -1034,8 +1036,8 @@ class TestRefreshTransportMismatch:
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     response = await client.post(
                         "/v1/auth/refresh",
-                        cookies={"__Host-daemon_refresh": refresh_token},
                         headers={
+                            "Cookie": f"__Host-daemon_refresh={refresh_token}",
                             "Origin": "https://app.daemon.ai",
                             "Sec-Fetch-Site": "same-origin",
                         },
@@ -1066,8 +1068,8 @@ class TestWebRefreshCSRF:
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     response = await client.post(
                         "/v1/auth/refresh",
-                        cookies={"__Host-daemon_refresh": refresh_token},
                         headers={
+                            "Cookie": f"__Host-daemon_refresh={refresh_token}",
                             "Origin": "https://evil.example.com",
                             "Sec-Fetch-Site": "cross-site",
                         },
@@ -1109,8 +1111,8 @@ class TestRefreshPreservesDevicePersistence:
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     response = await client.post(
                         "/v1/auth/refresh",
-                        cookies={"__Host-daemon_refresh": refresh_token},
                         headers={
+                            "Cookie": f"__Host-daemon_refresh={refresh_token}",
                             "Origin": "https://app.daemon.ai",
                             "Sec-Fetch-Site": "same-origin",
                         },
@@ -1149,8 +1151,8 @@ class TestRefreshPreservesDevicePersistence:
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     response = await client.post(
                         "/v1/auth/refresh",
-                        cookies={"__Host-daemon_refresh": refresh_token},
                         headers={
+                            "Cookie": f"__Host-daemon_refresh={refresh_token}",
                             "Origin": "https://app.daemon.ai",
                             "Sec-Fetch-Site": "same-origin",
                         },
@@ -1191,8 +1193,8 @@ class TestRefreshPreservesDevicePersistence:
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     response = await client.post(
                         "/v1/auth/refresh",
-                        cookies={"__Host-daemon_refresh": refresh_token},
                         headers={
+                            "Cookie": f"__Host-daemon_refresh={refresh_token}",
                             "Origin": "https://app.daemon.ai",
                             "Sec-Fetch-Site": "same-origin",
                         },
@@ -1308,8 +1310,8 @@ class TestRefreshPreservesDevicePersistence:
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     response = await client.post(
                         "/v1/auth/refresh",
-                        cookies={"__Host-daemon_refresh": refresh_token},
                         headers={
+                            "Cookie": f"__Host-daemon_refresh={refresh_token}",
                             "Origin": "https://app.daemon.ai",
                             "Sec-Fetch-Site": "same-origin",
                         },

@@ -476,7 +476,7 @@ class TestCookieOnlyAuthRejected:
     async def test_refresh_cookie_not_accepted_on_protected_route(self, client):
         response = await client.get(
             "/conversations",
-            cookies={"__Host-daemon_refresh": "some-refresh-token-value"},
+            headers={"Cookie": "__Host-daemon_refresh=some-refresh-token-value"},
         )
         assert response.status_code == 401
 
@@ -484,6 +484,6 @@ class TestCookieOnlyAuthRejected:
     async def test_any_cookie_not_accepted_as_bearer(self, client):
         response = await client.get(
             "/providers",
-            cookies={"some_cookie": "some_value"},
+            headers={"Cookie": "some_cookie=some_value"},
         )
         assert response.status_code == 401
