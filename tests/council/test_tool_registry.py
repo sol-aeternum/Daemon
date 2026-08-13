@@ -50,6 +50,45 @@ def test_council_registry_is_strictly_readonly() -> None:
     assert names.isdisjoint(FORBIDDEN_COUNCIL_TOOL_NAMES)
 
 
+def test_council_registry_threads_brave_api_key_from_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for #83 / PR #264 Codex P2 #1.
+
+    ``_get_council_tools`` must pass ``get_settings().brave_api_key`` into
+    ``create_council_readonly_registry`` so the registered WebSearchTool
+    receives the same key the chat path uses. Without this, when
+    ``BRAVE_API_KEY`` is configured but the env var is not separately read
+    in ``WebSearchTool.__init__`` (which is the whole point of routing env
+    access through Settings), the council's web_search tool reports the
+    key is missing.
+    """
+    from orchestrator.tools import builtin as builtin_module
+
+    monkeypatch.setattr(engine, "_council_tool_registry", None)
+    monkeypatch.setattr(engine, "_council_tool_executor", None)
+
+    captured_kwargs: dict[str, Any] = {}
+
+    def _fake_registry(**kwargs: Any) -> Any:
+        captured_kwargs.update(kwargs)
+        # Return a stub registry object with the minimum surface the
+        # engine exercises after construction (list_schemas is the only
+        # call we need; ToolExecutor is built from it).
+        stub = type("StubRegistry", (), {"list_schemas": staticmethod(lambda: [])})()
+        return stub
+
+    monkeypatch.setattr(engine, "create_council_readonly_registry", _fake_registry)
+    monkeypatch.setattr(builtin_module, "create_council_readonly_registry", _fake_registry)
+
+    engine._get_council_tools()
+
+    assert "brave_api_key" in captured_kwargs, (
+        "council engine must thread brave_api_key into the registry factory; "
+        "captured kwargs: " + repr(captured_kwargs)
+    )
+
+
 @pytest.mark.asyncio
 async def test_council_executor_cannot_call_side_effect_tools(
     monkeypatch: pytest.MonkeyPatch,

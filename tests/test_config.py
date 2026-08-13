@@ -226,3 +226,42 @@ def test_http_allowed_domains_from_env(monkeypatch) -> None:
     monkeypatch.setenv("DAEMON_HTTP_ALLOWED_DOMAINS", "example.com,*.trusted.org")
     settings = Settings()
     assert settings.daemon_http_allowed_domains == "example.com,*.trusted.org"
+
+
+def test_fetch_allowed_content_types_default_empty() -> None:
+    """FETCH_ALLOWED_CONTENT_TYPES has an empty default."""
+    settings = Settings()
+    assert settings.fetch_allowed_content_types == ""
+
+
+def test_fetch_allowed_content_types_from_env(monkeypatch) -> None:
+    """FETCH_ALLOWED_CONTENT_TYPES is read via Settings."""
+    monkeypatch.setenv("FETCH_ALLOWED_CONTENT_TYPES", "text/html,application/json")
+    settings = Settings()
+    assert settings.fetch_allowed_content_types == "text/html,application/json"
+
+
+def test_fetch_max_depth_default_none() -> None:
+    """FETCH_MAX_DEPTH has None default (no override)."""
+    settings = Settings()
+    assert settings.fetch_max_depth is None
+
+
+def test_fetch_max_depth_from_env(monkeypatch) -> None:
+    """FETCH_MAX_DEPTH is read via Settings when env is set."""
+    monkeypatch.setenv("FETCH_MAX_DEPTH", "3")
+    settings = Settings()
+    assert settings.fetch_max_depth == 3
+
+
+def test_fetch_error_signatures_default_empty() -> None:
+    """FETCH_ERROR_SIGNATURES has an empty default."""
+    settings = Settings()
+    assert settings.fetch_error_signatures == ""
+
+
+def test_fetch_error_signatures_from_env(monkeypatch) -> None:
+    """FETCH_ERROR_SIGNATURES is read via Settings."""
+    monkeypatch.setenv("FETCH_ERROR_SIGNATURES", "not found,access denied")
+    settings = Settings()
+    assert settings.fetch_error_signatures == "not found,access denied"

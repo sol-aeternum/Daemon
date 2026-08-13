@@ -3,16 +3,14 @@
 import asyncio
 import json
 import logging
-import os
 import urllib.parse
 
 from arq.connections import ArqRedis
 
+from orchestrator.config import get_settings
 from orchestrator.services.fetch.models import FetchResult
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_TTL_SECONDS = 3600
 
 
 def normalize_url(url: str) -> str:
@@ -28,7 +26,7 @@ class FetchCache:
 
     def __init__(self, redis_url: str | None = None):
         """Initialize cache with Redis connection."""
-        self.redis_url: str | None = redis_url or os.getenv("REDIS_URL")
+        self.redis_url: str | None = redis_url or get_settings().redis_url
         self.redis: ArqRedis | None = None
         self._connect_lock: asyncio.Lock = asyncio.Lock()
 
@@ -165,7 +163,7 @@ class FetchCache:
             key = f"fetch:result:{normalized_url}"
             data = self._serialize_result(result)
 
-            cache_ttl = ttl or int(os.getenv("FETCH_CACHE_TTL_SECONDS", DEFAULT_TTL_SECONDS))
+            cache_ttl = ttl or get_settings().fetch_cache_ttl_seconds
 
             # Type narrowing - _ensure_connection guarantees redis is not None here
             assert self.redis is not None

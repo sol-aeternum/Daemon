@@ -325,6 +325,17 @@ class Settings(BaseSettings):
     crawl4ai_url: str = "http://crawl4ai:11235"
     # Comma-separated list of blocked domains (default: empty)
     fetch_blocked_domains: str = ""
+    # Comma-separated list of MIME content types the fetcher will accept
+    # (default: empty means "no additional allowlist restriction beyond the
+    # caller-supplied `allowed_content_types`").
+    fetch_allowed_content_types: str = ""
+    # Maximum crawl depth passed to the fetcher when not overridden by the
+    # caller. None means no maximum-depth constraint is applied.
+    fetch_max_depth: int | None = None
+    # Comma-separated substrings used to identify short error pages (e.g.
+    # "not found", "access denied"). Empty means "no signature-based
+    # rejection".
+    fetch_error_signatures: str = ""
 
     # xAI API (for Imagine image/video generation)
     xai_api_key: str = ""
