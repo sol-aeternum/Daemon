@@ -2,13 +2,13 @@
 
 All env-var access in the backend must go through the `Settings` class
 (`orchestrator/config.py`). Direct `os.environ.get(...)`, `os.getenv(...)`,
-or `os.environ[...]` reads bypass the type validation, defaults, and env-var
-prefix convention that Settings provides.
+`os.environ[...]`, or membership reads bypass the type validation, defaults,
+and env-var prefix convention that Settings provides.
 
 This test scans the backend tree (excluding `config.py` itself, which is
 where the canonical field definitions live) and fails the suite if any new
-direct env reads are introduced. Detection is AST-based so all three direct
-access forms are caught, not just `os.environ.get(...)`.
+direct env reads are introduced. Detection is AST-based so every supported
+direct-access form is caught, not just `os.environ.get(...)`.
 
 The allowlist covers:
   * `orchestrator/config.py` — Settings is the canonical binding site.
@@ -65,37 +65,53 @@ FUNCTION_ALLOWLIST: dict[str, frozenset[str]] = {
 
 
 def _enclosing_function(node: ast.AST) -> ast.AST | None:
-    """Walk up the parent map to find the innermost FunctionDef/AsyncFunctionDef node.
+    """Return the callable scope in which ``node`` is evaluated.
 
     Keying alias frames by AST-node identity (not the function name) means two
     same-named methods in different enclosing classes resolve to distinct frames
     — e.g. ``ClassA.configure`` and ``ClassB.configure`` get independent alias
     tables, so ``ClassA.configure``'s ``import os as host_os`` does not collide
     with ``ClassB.configure``'s ``host_os`` parameter.
+
+    Function decorators, defaults, and annotations are evaluated in the
+    enclosing scope, before the new function's parameters exist. Lambda
+    defaults follow the same rule, while lambda bodies use their own frame.
     """
+    child = node
     cur = getattr(node, "parent", None)
     while cur is not None:
         if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if child in cur.body:
+                return cur
+        elif isinstance(cur, ast.Lambda) and child is cur.body:
             return cur
+        child = cur
         cur = getattr(cur, "parent", None)
     return None
 
 
 def _qualified_function_name(node: ast.AST) -> str | None:
-    """Return the dotted lexical path to the enclosing function, or None.
+    """Return the dotted path to the effective enclosing function, or None.
 
     Example: a ``configure`` method inside ``class Foo`` resolves to
     ``"Foo.configure"`` — so the ``FUNCTION_ALLOWLIST`` and the per-scope
-    alias frames stay aligned when two same-named methods coexist.
+    alias frames stay aligned when two same-named methods coexist. Definition-
+    time expressions are intentionally attributed to the parent scope, so an
+    allowlisted function cannot also exempt direct reads in its defaults or
+    decorators.
     """
     parts: list[str] = []
-    cur: ast.AST | None = node
-    while cur is not None:
-        if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            parts.append(cur.name)
-        elif isinstance(cur, ast.ClassDef):
-            parts.append(cur.name)
-        cur = getattr(cur, "parent", None)
+    scope = _enclosing_function(node)
+    while scope is not None:
+        if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            parts.append(scope.name)
+        parent_scope = _enclosing_function(scope)
+        cur = getattr(scope, "parent", None)
+        while cur is not None and cur is not parent_scope:
+            if isinstance(cur, ast.ClassDef):
+                parts.append(cur.name)
+            cur = getattr(cur, "parent", None)
+        scope = parent_scope
     if not parts:
         return None
     return ".".join(reversed(parts))
@@ -145,9 +161,11 @@ class _OsAliasVisitor(ast.NodeVisitor):
                 "nonlocal_names": set(),
             }
         else:
-            assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
             frame = {
-                "func": node.name,
+                "func": node.name
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                else "<lambda>",
                 "node": node,
                 "parent_node": (
                     self._stack[-1]["node"]
@@ -174,16 +192,54 @@ class _OsAliasVisitor(ast.NodeVisitor):
         self._pop()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_function_definition_expressions(node)
         frame = self._push(node)
         frame["bound_names"].update(self._argument_names(node.args))
-        self.generic_visit(node)
+        for statement in node.body:
+            self.visit(statement)
         self._pop()
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_function_definition_expressions(node)
         frame = self._push(node)
         frame["bound_names"].update(self._argument_names(node.args))
-        self.generic_visit(node)
+        for statement in node.body:
+            self.visit(statement)
         self._pop()
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        for default in (*node.args.defaults, *node.args.kw_defaults):
+            if default is not None:
+                self.visit(default)
+        frame = self._push(node)
+        frame["bound_names"].update(self._argument_names(node.args))
+        self.visit(node.body)
+        self._pop()
+
+    def _visit_function_definition_expressions(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> None:
+        """Visit definition-time expressions in the enclosing scope."""
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for argument in (
+            *node.args.posonlyargs,
+            *node.args.args,
+            *node.args.kwonlyargs,
+        ):
+            if argument.annotation is not None:
+                self.visit(argument.annotation)
+        if node.args.vararg is not None and node.args.vararg.annotation is not None:
+            self.visit(node.args.vararg.annotation)
+        if node.args.kwarg is not None and node.args.kwarg.annotation is not None:
+            self.visit(node.args.kwarg.annotation)
+        for default in (*node.args.defaults, *node.args.kw_defaults):
+            if default is not None:
+                self.visit(default)
+        if node.returns is not None:
+            self.visit(node.returns)
+        for type_param in getattr(node, "type_params", ()):
+            self.visit(type_param)
 
     @staticmethod
     def _argument_names(arguments: ast.arguments) -> set[str]:
@@ -235,7 +291,7 @@ class _OsAliasVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def scopes(self) -> list[dict]:
-        """Return one frame per scope (module + each FunctionDef/AsyncFunctionDef).
+        """Return one frame per scope (module, functions, and lambdas).
 
         The walker looks up the enclosing function for each hit and uses
         that frame's alias sets. Each function records its immediate lexical
@@ -307,6 +363,7 @@ def _scan_for_direct_env_access() -> list[tuple[pathlib.Path, int, str]]:
       * ``os.environ.get("X")`` / ``environ.get("X")``
       * ``os.environ["X"]`` / ``environ["X"]``
       * ``os.getenv("X")`` / ``getenv("X")``
+      * ``"X" in os.environ`` / ``"X" not in environ``
 
     ...including under any import alias (``import os as host_os``,
     ``from os import getenv``, ``from os import environ as e``), because
@@ -362,6 +419,7 @@ def _scan_for_direct_env_access() -> list[tuple[pathlib.Path, int, str]]:
                 #   2) <os>.getenv(...)     Call( Attribute(Name(os-alias), getenv) )
                 #   3) getenv(...)          Call( Name(getenv-alias) )
                 #   4) <environ>["KEY"]     Subscript( <environ expr>, ctx=Load )
+                #   5) "KEY" in <environ>   Compare(..., In/NotIn, <environ expr>)
                 if module_allowlist is not None:
                     # If the file has a function-scoped allowlist, only
                     # nodes inside the allowlisted functions are exempt;
@@ -391,6 +449,14 @@ def _scan_for_direct_env_access() -> list[tuple[pathlib.Path, int, str]]:
                     elif isinstance(func, ast.Name) and func.id in aliases["getenv_names"]:
                         hits.append((path, node.lineno, "os.getenv(...)"))
                     continue
+                if isinstance(node, ast.Compare):
+                    if any(
+                        isinstance(operator, (ast.In, ast.NotIn))
+                        and _is_environ_expr(comparator, aliases)
+                        for operator, comparator in zip(node.ops, node.comparators, strict=True)
+                    ):
+                        hits.append((path, node.lineno, "membership in os.environ"))
+                    continue
                 if (
                     isinstance(node, ast.Subscript)
                     and isinstance(node.ctx, ast.Load)
@@ -403,7 +469,7 @@ def _scan_for_direct_env_access() -> list[tuple[pathlib.Path, int, str]]:
 def test_no_direct_env_access_outside_settings() -> None:
     hits = _scan_for_direct_env_access()
     assert not hits, (
-        "Direct `os.environ.get(...)` / `os.getenv(...)` / "
+        "Direct `os.environ.get(...)` / `os.getenv(...)` / membership / "
         '`os.environ["KEY"]` reads detected outside '
         "`orchestrator/config.py` (or other allowed files). Read env vars "
         "through the `Settings` class instead so type validation, defaults, "
@@ -664,7 +730,7 @@ def test_ast_gate_function_allowlist_scopes_database_url(tmp_path, monkeypatch) 
         "import os\n"
         "from collections.abc import Mapping\n"
         "\n"
-        "def resolve_database_url(configured_url=None, *, environ=None):\n"
+        'def resolve_database_url(configured_url=os.getenv("DEFAULT"), *, environ=None):\n'
         "    source = os.environ if environ is None else environ\n"
         '    return source.get("DATABASE_URL")\n'
         "\n"
@@ -689,6 +755,8 @@ def test_ast_gate_function_allowlist_scopes_database_url(tmp_path, monkeypatch) 
     assert snippets == ["os.getenv(...)"], (
         f"function-allowlist mis-applied: expected ['os.getenv(...)'], got {snippets}"
     )
+    lines = sorted(line for _, line, _ in hits)
+    assert lines == [6, 11, 11]
 
 
 def test_ast_gate_resolves_same_named_methods_in_distinct_classes(tmp_path, monkeypatch) -> None:
@@ -787,3 +855,74 @@ def test_ast_gate_inherits_aliases_from_immediate_lexical_parent(tmp_path, monke
     ]
     lines = sorted(line for _, line, _ in hits)
     assert lines == [4, 17, 17, 24]
+
+
+def test_ast_gate_uses_enclosing_scope_for_callable_definition_expressions(
+    tmp_path, monkeypatch
+) -> None:
+    """Defaults, decorators, and annotations run before parameter shadowing."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "callable_scopes"
+    case_dir.mkdir()
+    (case_dir / "callable_scopes.py").write_text(
+        "import os\n"
+        "\n"
+        'def sync_default(os=os.getenv("SYNC")):\n'
+        "    return os\n"
+        "\n"
+        'async def async_default(os=os.environ["ASYNC"]):\n'
+        "    return os\n"
+        "\n"
+        '@decorate(os.getenv("DECORATOR"))\n'
+        "def decorated(os):\n"
+        "    return os\n"
+        "\n"
+        'def annotated(value: os.getenv("ANNOTATION"), os=os.environ["DEFAULT"]):\n'
+        "    return value, os\n"
+        "\n"
+        'shadowed = lambda os: (os.getenv("BODY"), os.environ["BODY_SUBSCRIPT"])\n'
+        'defaulted = lambda os=os.environ.get("LAMBDA_DEFAULT"): os.getenv("BODY_TOO")\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (3, "os.getenv(...)"),
+        (6, "os.environ[...]"),
+        (9, "os.getenv(...)"),
+        (13, "os.environ[...]"),
+        (13, "os.getenv(...)"),
+        (17, "os.environ.get(...)"),
+    ]
+
+
+def test_ast_gate_detects_environment_membership_checks(tmp_path, monkeypatch) -> None:
+    """Membership checks read process configuration, including through aliases."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "membership"
+    case_dir.mkdir()
+    (case_dir / "membership.py").write_text(
+        "import os as host_os\n"
+        "from os import environ as env\n"
+        "OTHER = {}\n"
+        'A = "K1" in host_os.environ\n'
+        'B = "K2" not in env\n'
+        'C = "K3" in host_os.environ in OTHER\n'
+        'D = "K4" in OTHER\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (4, "membership in os.environ"),
+        (5, "membership in os.environ"),
+        (6, "membership in os.environ"),
+    ]

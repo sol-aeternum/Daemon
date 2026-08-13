@@ -67,6 +67,13 @@ def test_council_registry_threads_brave_api_key_from_settings(
 
     monkeypatch.setattr(engine, "_council_tool_registry", None)
     monkeypatch.setattr(engine, "_council_tool_executor", None)
+    expected_brave_api_key = "test-council-brave-key"
+    settings_stub = type(
+        "SettingsStub",
+        (),
+        {"brave_api_key": expected_brave_api_key},
+    )()
+    monkeypatch.setattr(engine, "get_settings", lambda: settings_stub)
 
     captured_kwargs: dict[str, Any] = {}
 
@@ -83,10 +90,7 @@ def test_council_registry_threads_brave_api_key_from_settings(
 
     engine._get_council_tools()
 
-    assert "brave_api_key" in captured_kwargs, (
-        "council engine must thread brave_api_key into the registry factory; "
-        "captured kwargs: " + repr(captured_kwargs)
-    )
+    assert captured_kwargs == {"brave_api_key": expected_brave_api_key}
 
 
 @pytest.mark.asyncio
