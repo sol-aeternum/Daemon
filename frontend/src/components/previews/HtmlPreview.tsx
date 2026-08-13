@@ -16,11 +16,10 @@ interface HtmlPreviewProps {
 export function HtmlPreview({ content, title }: HtmlPreviewProps) {
   const [error, setError] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const isFrameReadyRef = useRef(false);
 
   const postPreviewContent = useCallback(() => {
     const target = iframeRef.current?.contentWindow;
-    if (!target || !isFrameReadyRef.current) return;
+    if (!target) return;
 
     const message: HtmlPreviewMessage = {
       type: HTML_PREVIEW_MESSAGE_TYPE,
@@ -39,7 +38,6 @@ export function HtmlPreview({ content, title }: HtmlPreviewProps) {
   }, [postPreviewContent]);
 
   const handleIframeLoad = () => {
-    isFrameReadyRef.current = true;
     postPreviewContent();
   };
 
