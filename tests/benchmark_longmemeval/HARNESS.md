@@ -101,6 +101,17 @@ The benchmark shell commands use the host-mapped endpoint
 `postgresql://daemon:daemon@127.0.0.1:5432/daemon` — resolved by the host Docker network,
 not from inside containers. See `QUICKSTART.md` for full stack bring-up.
 
+### Persistent artifacts for container-side runs
+
+The canonical commands in this document run from the host and write directly to
+`tests/benchmark_results/`. If an ad hoc or long-running benchmark is instead executed inside the
+backend container, write its output beneath `/var/lib/daemon/benchmark-artifacts`. Docker Compose
+mounts the dedicated `daemon_benchmark_artifacts` named volume there, so results survive backend
+container recreation and can be copied into `tests/benchmark_results/` after the run.
+
+Do not use `/tmp/opencode` for benchmark output. That path belongs to the OpenCode development
+environment and is not benchmark storage.
+
 ### Environment check
 
 The benchmark harness executes entirely from the **host shell** (not inside containers).
