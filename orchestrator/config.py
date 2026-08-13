@@ -111,6 +111,13 @@ class Settings(BaseSettings):
     # Production requires strong pepper and rejects insecure cookies.
     daemon_environment: str = Field(default="production")
 
+    # Alternate database password credential sources, read at startup
+    # by `validate_database_credentials` to reject known-default passwords.
+    # Bound to `POSTGRES_PASSWORD` and `PGPASSWORD` env vars via the
+    # Pydantic field name (case insensitive). Empty string when unset.
+    postgres_password: str = ""
+    pgpassword: str = ""
+
     # Auth pepper for enrollment code HMAC verification.
     # Production: must be ≥32 random bytes (≥43 base64url chars). Missing/weak = fails startup.
     # Development: if absent, a process-ephemeral pepper is generated with a warning.
