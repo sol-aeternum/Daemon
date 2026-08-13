@@ -115,7 +115,7 @@ def test_no_direct_env_access_outside_settings() -> None:
     )
 
 
-def test_ast_gate_detects_all_three_direct_env_forms(tmp_path) -> None:
+def test_ast_gate_detects_all_three_direct_env_forms(tmp_path, monkeypatch) -> None:
     """Regression for Codex round-2 P2 on PR #264:
 
     The widened AST walker must catch every direct env-access form
@@ -135,20 +135,17 @@ def test_ast_gate_detects_all_three_direct_env_forms(tmp_path) -> None:
         'C = os.environ["BACKUP_DIR"]\n'
     )
 
-    # Point the scanner at the fixture by overriding SCAN_DIRS at the call
-    # boundary. _scan_for_direct_env_access takes no args, so we patch
-    # SCAN_DIRS via the module-level constant by monkeypatching.
-    import tests.test_settings_only_env_access as mod
+    # Point the scanner at the fixture by overriding the module-level
+    # SCAN_DIRS / REPO_ROOT via a MonkeyPatch fixture, then call the
+    # scanner. We resolve the module via sys.modules (already loaded by
+    # pytest at collection time) rather than a self-import that
+    # basedpyright cannot statically resolve.
+    import sys
 
-    original_scan_dirs = mod.SCAN_DIRS
-    original_repo_root = mod.REPO_ROOT
-    try:
-        mod.SCAN_DIRS = (fixture_dir,)
-        mod.REPO_ROOT = tmp_path
-        hits = mod._scan_for_direct_env_access()
-    finally:
-        mod.SCAN_DIRS = original_scan_dirs
-        mod.REPO_ROOT = original_repo_root
+    mod = sys.modules[__name__]
+    monkeypatch.setattr(mod, "SCAN_DIRS", (fixture_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
+    hits = mod._scan_for_direct_env_access()
 
     snippets = sorted({snippet for _, _, snippet in hits})
     assert set(snippets) == {
