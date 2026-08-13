@@ -63,17 +63,26 @@ def resolve_owned_artifact(
     filename: str,
 ) -> Path | None:
     """Resolve a regular file only inside the authenticated user's namespace."""
-    safe_name = os.path.basename(filename)
-    if not safe_name or filename != safe_name:
+    if not filename or filename != os.path.basename(filename):
         return None
 
     try:
         owner_dir = user_artifact_directory(base_dir, user_id, create=False)
-        candidate = owner_dir / safe_name
+        owner_root = os.fspath(owner_dir)
+        owner_prefix = f"{owner_root}{os.sep}"
+        candidate_value = os.path.normpath(os.path.join(owner_root, filename))
+        if not candidate_value.startswith(owner_prefix):
+            return None
+        if os.path.dirname(candidate_value) != owner_root:
+            return None
+
+        candidate = Path(candidate_value)
         if candidate.is_symlink():
             return None
-        candidate_resolved = candidate.resolve(strict=True)
-        candidate_resolved.relative_to(owner_dir)
+        candidate_resolved_value = os.path.realpath(candidate_value)
+        if not candidate_resolved_value.startswith(owner_prefix):
+            return None
+        candidate_resolved = Path(candidate_resolved_value)
         return candidate_resolved if candidate_resolved.is_file() else None
     except (ArtifactOwnerError, OSError, RuntimeError, ValueError):
         return None
@@ -86,11 +95,19 @@ def write_owned_artifact(
     content: bytes,
 ) -> Path:
     """Atomically write a regular file inside the authenticated namespace."""
-    safe_name = os.path.basename(filename)
-    if not safe_name or filename != safe_name:
+    if not filename or filename != os.path.basename(filename):
         raise ArtifactOwnerError("artifact filename is unsafe")
 
     owner_dir = user_artifact_directory(base_dir, user_id, create=True)
+    owner_root = os.fspath(owner_dir)
+    owner_prefix = f"{owner_root}{os.sep}"
+    destination_value = os.path.normpath(os.path.join(owner_root, filename))
+    if not destination_value.startswith(owner_prefix):
+        raise ArtifactOwnerError("artifact filename is unsafe")
+    if os.path.dirname(destination_value) != owner_root:
+        raise ArtifactOwnerError("artifact filename is unsafe")
+
+    safe_name = os.path.basename(destination_value)
     temporary_name = f".{safe_name}.{uuid.uuid4().hex}.tmp"
     directory_flags = os.O_RDONLY
     if hasattr(os, "O_DIRECTORY"):
