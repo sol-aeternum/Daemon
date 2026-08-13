@@ -742,7 +742,7 @@ class TestEnrollHappyPath:
                             "code": code,
                             "client_kind": "native",
                         },
-                        cookies={"__Host-daemon_refresh": "some-refresh-token"},
+                        headers={"Cookie": "__Host-daemon_refresh=some-refresh-token"},
                     )
 
                     assert mixed_response.status_code == 400
