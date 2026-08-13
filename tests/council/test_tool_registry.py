@@ -62,11 +62,31 @@ def test_council_registry_threads_brave_api_key_from_settings(
     in ``WebSearchTool.__init__`` (which is the whole point of routing env
     access through Settings), the council's web_search tool reports the
     key is missing.
+
+    Regression for the round-5 Codex P2: a sentinel ``brave_api_key``
+    value is patched onto ``get_settings()`` and the test asserts the
+    captured kwargs equal that sentinel exactly. A previous version of
+    this test only checked the keyword was present, which let
+    ``brave_api_key=None`` (or any other incorrect value) silently pass
+    while the council's web_search tool still reported an unconfigured
+    key at runtime.
     """
     from orchestrator.tools import builtin as builtin_module
 
+    sentinel_key = "sentinel-brave-key-from-settings-12345"
+
     monkeypatch.setattr(engine, "_council_tool_registry", None)
     monkeypatch.setattr(engine, "_council_tool_executor", None)
+
+    # Patch the ``get_settings`` that the engine module imported so it
+    # returns a stub with a known configured ``brave_api_key``. Without
+    # this the test would rely on whatever value the runtime Settings
+    # cache happens to hold.
+    class _StubSettings:
+        def __init__(self, key: str) -> None:
+            self.brave_api_key = key
+
+    monkeypatch.setattr(engine, "get_settings", lambda: _StubSettings(sentinel_key))
 
     captured_kwargs: dict[str, Any] = {}
 
@@ -83,9 +103,10 @@ def test_council_registry_threads_brave_api_key_from_settings(
 
     engine._get_council_tools()
 
-    assert "brave_api_key" in captured_kwargs, (
-        "council engine must thread brave_api_key into the registry factory; "
-        "captured kwargs: " + repr(captured_kwargs)
+    assert captured_kwargs.get("brave_api_key") == sentinel_key, (
+        "council engine must thread the configured Settings.brave_api_key "
+        "into the registry factory unchanged; "
+        f"captured kwargs: {captured_kwargs!r}"
     )
 
 

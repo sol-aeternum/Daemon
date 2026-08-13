@@ -72,11 +72,25 @@ def _enclosing_function(node: ast.AST) -> ast.AST | None:
     — e.g. ``ClassA.configure`` and ``ClassB.configure`` get independent alias
     tables, so ``ClassA.configure``'s ``import os as host_os`` does not collide
     with ``ClassB.configure``'s ``host_os`` parameter.
+
+    Default expressions and decorators live in the *enclosing* scope, not the
+    function's own scope. When the parent chain passes through an
+    ``ast.arguments`` node (which holds parameter defaults and annotations) or
+    a ``decorator_list`` entry, the enclosing scope is the function's
+    parent — walk past the FunctionDef so the call resolves against the
+    parent frame's alias table, which is what Python's name resolution does
+    at default-evaluation time.
     """
     cur = getattr(node, "parent", None)
     while cur is not None:
         if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
             return cur
+        # A node reached through ``arguments`` is in a default / annotation;
+        # return the function's lexical parent (the enclosing scope).
+        if isinstance(cur, ast.arguments):
+            owner = getattr(cur, "parent", None)
+            if isinstance(owner, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return getattr(owner, "parent", None)
         cur = getattr(cur, "parent", None)
     return None
 
@@ -131,6 +145,9 @@ class _OsAliasVisitor(ast.NodeVisitor):
         # FunctionDef/AsyncFunctionDef → method-level frame keyed by the
         # node itself (so two same-named methods in different enclosing
         # classes resolve to distinct frames).
+        # Lambda → lambda frame keyed by the node itself. Lambdas are
+        # anonymous so ``func`` is the synthetic label ``"<lambda>"``;
+        # they inherit aliases from the immediate enclosing function.
         frame: dict
         if isinstance(node, ast.Module):
             frame = {
@@ -145,9 +162,9 @@ class _OsAliasVisitor(ast.NodeVisitor):
                 "nonlocal_names": set(),
             }
         else:
-            assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
             frame = {
-                "func": node.name,
+                "func": getattr(node, "name", "<lambda>"),
                 "node": node,
                 "parent_node": (
                     self._stack[-1]["node"]
@@ -173,17 +190,49 @@ class _OsAliasVisitor(ast.NodeVisitor):
         self.generic_visit(node)
         self._pop()
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def _visit_function_like(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
+    ) -> None:
+        """Shared body for function-like scopes.
+
+        Python evaluates default expressions and decorators in the
+        *enclosing* scope, then binds the parameter names so the body
+        sees them. Visiting defaults/decorators with the parent frame
+        active is what catches ``def f(os=os.getenv("KEY"))`` — the
+        default's ``os`` reference is resolved against the imported
+        alias, not the parameter that doesn't exist yet.
+        """
+        if isinstance(node, ast.Lambda):
+            # Lambdas have no defaults/decorators; push the frame and
+            # parameter bindings, then visit the body. Inherit from the
+            # current frame so ``def outer(): import os as host_os;
+            # probe = lambda x: host_os.getenv("K")`` resolves the alias
+            # correctly while a parameter named ``host_os`` shadows it.
+            frame = self._push(node)
+            frame["bound_names"].update(self._argument_names(node.args))
+            self.generic_visit(node)
+            self._pop()
+            return
+        # Default expressions and decorators are evaluated in the
+        # enclosing scope, before the parameter bindings exist.
+        for default in node.args.defaults + node.args.kw_defaults:
+            if default is not None:
+                self.generic_visit(default)
+        for decorator in node.decorator_list:
+            self.generic_visit(decorator)
         frame = self._push(node)
         frame["bound_names"].update(self._argument_names(node.args))
         self.generic_visit(node)
         self._pop()
 
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_function_like(node)
+
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        frame = self._push(node)
-        frame["bound_names"].update(self._argument_names(node.args))
-        self.generic_visit(node)
-        self._pop()
+        self._visit_function_like(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self._visit_function_like(node)
 
     @staticmethod
     def _argument_names(arguments: ast.arguments) -> set[str]:
@@ -307,6 +356,7 @@ def _scan_for_direct_env_access() -> list[tuple[pathlib.Path, int, str]]:
       * ``os.environ.get("X")`` / ``environ.get("X")``
       * ``os.environ["X"]`` / ``environ["X"]``
       * ``os.getenv("X")`` / ``getenv("X")``
+      * ``"KEY" in os.environ`` / ``"KEY" not in os.environ`` (membership check)
 
     ...including under any import alias (``import os as host_os``,
     ``from os import getenv``, ``from os import environ as e``), because
@@ -320,6 +370,12 @@ def _scan_for_direct_env_access() -> list[tuple[pathlib.Path, int, str]]:
     pattern in ``orchestrator/database_url.py`` is the motivating case).
     Aliases are resolved per lexical scope so a function parameter named
     ``getenv`` is not retroactively flagged as a direct env read.
+    Function defaults and decorators are evaluated in the enclosing
+    scope (the parameter names do not exist yet at default-evaluation
+    time), so the resolver visits those nodes with the parent frame
+    active. Lambdas get their own scope keyed by the AST node so a
+    lambda parameter shadows the enclosing alias while a lambda body
+    without a shadow still sees the inherited alias.
     """
     hits: list[tuple[pathlib.Path, int, str]] = []
     for scan_dir in SCAN_DIRS:
@@ -397,6 +453,24 @@ def _scan_for_direct_env_access() -> list[tuple[pathlib.Path, int, str]]:
                     and _is_environ_expr(node.value, aliases)
                 ):
                     hits.append((path, node.lineno, "os.environ[...]"))
+                # Detect membership checks (``"KEY" in os.environ`` and the
+                # ``NotIn``/imported-alias equivalents). The Compare walker
+                # consults ``ast.Compare`` directly because a read-only
+                # ``in`` lookup is semantically a direct env read — it
+                # queries the live process environment and bypasses the
+                # ``Settings`` validation path that the gate enforces.
+                if isinstance(node, ast.Compare):
+                    env_left = _is_environ_expr(node.left, aliases)
+                    env_rights = [
+                        comparator
+                        for comparator in node.comparators
+                        if _is_environ_expr(comparator, aliases)
+                    ]
+                    if env_left or env_rights:
+                        for op in node.ops:
+                            if isinstance(op, (ast.In, ast.NotIn)):
+                                hits.append((path, node.lineno, "os.environ membership check"))
+                                break
     return hits
 
 
@@ -787,3 +861,129 @@ def test_ast_gate_inherits_aliases_from_immediate_lexical_parent(tmp_path, monke
     ]
     lines = sorted(line for _, line, _ in hits)
     assert lines == [4, 17, 17, 24]
+
+
+def test_ast_gate_detects_function_default_with_enclosing_alias(tmp_path, monkeypatch) -> None:
+    """Regression for the round-5 P2 on PR #268: function defaults live
+    in the enclosing scope.
+
+    ``def f(os=os.getenv("KEY"))`` reads the module-level ``os`` alias
+    in the default; the parameter ``os`` does not exist yet at that
+    point. The walker must visit defaults with the parent frame active
+    so the default's env read is detected.
+    """
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "defaults"
+    case_dir.mkdir()
+    (case_dir / "defaults.py").write_text(
+        "import os\n"
+        "\n"
+        "def f(os=os.getenv('DEFAULT_KEY')):\n"
+        "    return os\n"
+        "\n"
+        "def g(target=os.environ.get('ANOTHER_KEY')):\n"
+        "    return target\n"
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    snippets = sorted(snippet for _, _, snippet in hits)
+    assert snippets == ["os.environ.get(...)", "os.getenv(...)"], (
+        f"function-default reads not flagged: expected default-vs-enclosing detection, got {snippets}"
+    )
+    lines = sorted(ln for _, ln, _ in hits)
+    assert lines == [3, 6], (
+        f"only the default expressions (lines 3 and 6) should be flagged, got lines {lines}"
+    )
+
+
+def test_ast_gate_tracks_lambda_scope_with_parameter_shadowing(tmp_path, monkeypatch) -> None:
+    """Regression for the round-5 P2 on PR #268: lambdas are their own
+    scope but inherit from the enclosing function.
+
+    A lambda parameter must shadow the enclosing scope's ``os`` alias,
+    while a lambda body that uses the enclosing alias (no shadow) must
+    still see the alias and flag the read.
+    """
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "lambdas"
+    case_dir.mkdir()
+    (case_dir / "lambdas.py").write_text(
+        "import os\n"
+        "\n"
+        "def shadowed():\n"
+        "    # ``os`` is shadowed by the lambda parameter; the body\n"
+        "    # calls the parameter, not ``os.getenv``, so no hit.\n"
+        "    probe = lambda os: os('KEY')\n"
+        "    return probe\n"
+        "\n"
+        "def inherited():\n"
+        "    # No shadow; the lambda body uses the enclosing ``os`` alias.\n"
+        "    probe = lambda: os.getenv('INHERITED_KEY')\n"
+        "    return probe\n"
+        "\n"
+        "def nested():\n"
+        "    import os as host_os\n"
+        "    # Lambda with no override sees the enclosing ``host_os`` alias.\n"
+        "    probe = lambda: host_os.environ['NESTED_KEY']\n"
+        "    return probe\n"
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    snippets = sorted(snippet for _, _, snippet in hits)
+    assert snippets == ["os.environ[...]", "os.getenv(...)"], (
+        f"lambda shadowing mis-flagged: expected lambda lexical frames, got {snippets}"
+    )
+    lines = sorted(ln for _, ln, _ in hits)
+    # ``inherited``'s lambda on line 11; ``nested``'s lambda on line 17.
+    assert lines == [11, 17], (
+        f"only the unshaded lambdas' reads should be flagged, got lines {lines}"
+    )
+
+
+def test_ast_gate_detects_environment_membership_check(tmp_path, monkeypatch) -> None:
+    """Regression for the round-5 P2 on PR #268: ``"X" in os.environ`` is
+    a direct env read.
+
+    A membership check queries the live process environment, so it
+    bypasses ``Settings`` validation just like ``os.environ[X]`` does.
+    Cover all four idiomatic forms: ``os.environ``, ``environ`` alias,
+    ``not in``, and the ``os.environ`` membership on the right side.
+    """
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "membership"
+    case_dir.mkdir()
+    (case_dir / "membership.py").write_text(
+        "import os\n"
+        "from os import environ\n"
+        "\n"
+        "A = 'FEATURE_FLAG' in os.environ\n"
+        "B = 'OTHER_FLAG' not in os.environ\n"
+        "C = 'YET_ANOTHER' in environ\n"
+        "D = environ in ('X', 'Y')  # membership with environ on the right\n"
+        "E = 'os.environ' == 'os.environ'  # string comparison, must NOT fire\n"
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    snippets = sorted(snippet for _, _, snippet in hits)
+    assert snippets == ["os.environ membership check"] * 4, (
+        f"membership-check detection failed: expected 4 hits, got {snippets}"
+    )
+    lines = sorted(ln for _, ln, _ in hits)
+    assert lines == [4, 5, 6, 7], (
+        f"only the in/not-in/right-side membership lines should fire, got lines {lines}"
+    )
