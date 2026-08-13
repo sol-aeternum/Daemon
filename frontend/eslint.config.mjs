@@ -7,8 +7,8 @@ export default defineConfig([
   prettier,
   {
     ignores: [
-      '.next/**',
-      '.next_new/**',
+      '**/.next/**',
+      '**/.next_new/**',
       'out/**',
       'build/**',
       'coverage/**',

@@ -9,6 +9,8 @@ out/
 tsconfig.tsbuildinfo
 next-env.d.ts.root.*
 /e2e/csp-preview-app/next-env.d.ts
+/e2e/csp-preview-app/AGENTS.md
+/e2e/csp-preview-app/CLAUDE.md
 
 # Local test/debug outputs
 test-results/
