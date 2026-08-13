@@ -224,32 +224,75 @@ def test_ast_gate_resolves_imported_os_aliases(tmp_path, monkeypatch) -> None:
     fixture_dir.mkdir()
 
     cases = {
-        "import_os_as.py": (
+        "import_os_as": (
             "import os as host_os\n"
             '\nA = host_os.getenv("K1")\n'
             'B = host_os.environ.get("K2")\n'
-            'C = host_os.environ["K3"]\n'
+            'C = host_os.environ["K3"]\n',
+            {"os.getenv(...)", "os.environ.get(...)", "os.environ[...]"},
         ),
-        "from_os_import_getenv.py": ('from os import getenv\n\nA = getenv("K1")\n'),
-        "from_os_import_getenv_as.py": ('from os import getenv as g\n\nA = g("K1")\n'),
-        "from_os_import_environ.py": (
-            'from os import environ\n\nA = environ.get("K1")\nB = environ["K2"]\n'
+        "from_os_import_getenv": (
+            'from os import getenv\n\nA = getenv("K1")\n',
+            {"os.getenv(...)"},
         ),
-        "from_os_import_environ_as.py": (
-            'from os import environ as e\n\nA = e.get("K1")\nB = e["K2"]\n'
+        "from_os_import_getenv_as": (
+            'from os import getenv as g\n\nA = g("K1")\n',
+            {"os.getenv(...)"},
+        ),
+        "from_os_import_environ": (
+            'from os import environ\n\nA = environ.get("K1")\nB = environ["K2"]\n',
+            {"os.environ.get(...)", "os.environ[...]"},
+        ),
+        "from_os_import_environ_as": (
+            'from os import environ as e\n\nA = e.get("K1")\nB = e["K2"]\n',
+            {"os.environ.get(...)", "os.environ[...]"},
         ),
     }
 
-    for name, source in cases.items():
-        case_dir = fixture_dir / name.removesuffix(".py")
+    for name, (source, expected) in cases.items():
+        case_dir = fixture_dir / name
         case_dir.mkdir()
-        (case_dir / name).write_text(source)
+        (case_dir / f"{name}.py").write_text(source)
 
         monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
         monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
         hits = mod._scan_for_direct_env_access()
 
-        assert hits, f"alias form in {name} produced no hits — gate is blind to it"
+        found = {snippet for _, _, snippet in hits}
+        assert found == expected, (
+            f"alias form `{name}`: gate reported {sorted(found)}, expected {sorted(expected)}"
+        )
+
+
+def test_ast_gate_does_not_flag_unrelated_names(tmp_path, monkeypatch) -> None:
+    """The alias resolver must not fire on names that are not bound to `os`.
+
+    A local variable, function parameter, or same-named import from another
+    module called `environ` / `getenv` is not a direct env read, and flagging
+    it would make the gate unusable (notably
+    `orchestrator/database_url.py` takes an injected `environ` mapping).
+    """
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "unrelated"
+    case_dir.mkdir()
+    (case_dir / "unrelated.py").write_text(
+        "from mylib import getenv, environ\n"
+        "\n"
+        "\n"
+        "def read(environ):\n"
+        '    local = environ.get("K1")\n'
+        '    other = environ["K2"]\n'
+        '    third = getenv("K3")\n'
+        "    return local, other, third\n"
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    assert mod._scan_for_direct_env_access() == [], (
+        "gate flagged names that are not bound to the os module — false positive"
+    )
 
 
 def test_ast_gate_scans_every_backend_package() -> None:
