@@ -26,10 +26,19 @@ import ast
 import pathlib
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+# Every backend Python package. `config/`, `db/`, `council/`, and `backend/`
+# are production modules imported by the orchestrator (e.g.
+# `orchestrator/subagents/image.py` imports `config.video_pricing` and
+# `db.video_credits`), so a direct env read added there must fail this gate
+# exactly as one added under `orchestrator/` does.
 SCAN_DIRS = (
     REPO_ROOT / "orchestrator",
     REPO_ROOT / "providers",
     REPO_ROOT / "scripts",
+    REPO_ROOT / "config",
+    REPO_ROOT / "db",
+    REPO_ROOT / "council",
+    REPO_ROOT / "backend",
 )
 ALLOWLIST = frozenset(
     {
@@ -47,16 +56,51 @@ ALLOWLIST = frozenset(
 )
 
 
+def _resolve_os_aliases(tree: ast.AST) -> tuple[set[str], set[str], set[str]]:
+    """Collect the local names that alias `os` / `os.environ` / `os.getenv`.
+
+    Handles the equivalent-but-differently-spelled import forms:
+      * ``import os``                  -> os_names = {"os"}
+      * ``import os as host_os``       -> os_names = {"host_os"}
+      * ``from os import getenv``      -> getenv_names = {"getenv"}
+      * ``from os import getenv as g`` -> getenv_names = {"g"}
+      * ``from os import environ``     -> environ_names = {"environ"}
+      * ``from os import environ as e``-> environ_names = {"e"}
+    """
+    os_names: set[str] = set()
+    getenv_names: set[str] = set()
+    environ_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "os":
+                    os_names.add(alias.asname or "os")
+        elif isinstance(node, ast.ImportFrom) and node.module == "os" and node.level == 0:
+            for alias in node.names:
+                local = alias.asname or alias.name
+                if alias.name == "getenv":
+                    getenv_names.add(local)
+                elif alias.name == "environ":
+                    environ_names.add(local)
+    return os_names, getenv_names, environ_names
+
+
 def _scan_for_direct_env_access() -> list[tuple[pathlib.Path, int, str]]:
     """AST-scan for direct env reads that bypass Settings.
 
     Catches any of:
-      * ``os.environ.get("X")``
-      * ``os.environ["X"]``
-      * ``os.getenv("X")``
+      * ``os.environ.get("X")`` / ``environ.get("X")``
+      * ``os.environ["X"]`` / ``environ["X"]``
+      * ``os.getenv("X")`` / ``getenv("X")``
+
+    ...including under any import alias (``import os as host_os``,
+    ``from os import getenv``, ``from os import environ as e``), because
+    those forms are semantically identical direct reads.
     """
     hits: list[tuple[pathlib.Path, int, str]] = []
     for scan_dir in SCAN_DIRS:
+        if not scan_dir.is_dir():
+            continue
         for path in scan_dir.rglob("*.py"):
             rel = path.relative_to(REPO_ROOT).as_posix()
             if rel in ALLOWLIST:
@@ -65,41 +109,51 @@ def _scan_for_direct_env_access() -> list[tuple[pathlib.Path, int, str]]:
                 tree = ast.parse(path.read_text(encoding="utf-8"))
             except SyntaxError:
                 continue
+            os_names, getenv_names, environ_names = _resolve_os_aliases(tree)
+
+            def _is_environ_expr(
+                node: ast.expr,
+                _os_names: set[str] = os_names,
+                _environ_names: set[str] = environ_names,
+            ) -> bool:
+                """True if `node` evaluates to the `os.environ` mapping."""
+                # `os.environ` / `host_os.environ`
+                if (
+                    isinstance(node, ast.Attribute)
+                    and node.attr == "environ"
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id in _os_names
+                ):
+                    return True
+                # bare `environ` / aliased `e` from `from os import environ`
+                return isinstance(node, ast.Name) and node.id in _environ_names
+
             for node in ast.walk(tree):
-                # Detect three direct access forms:
-                #   1) os.environ.get(...)           Call( Attribute(os.environ, get) )
-                #   2) os.getenv(...)                Call( Attribute(os, getenv) )
-                #   3) os.environ["KEY"]             Subscript( Attribute(os, environ), Constant )
+                # Detect the direct access forms:
+                #   1) <environ>.get(...)   Call( Attribute(<environ expr>, get) )
+                #   2) <os>.getenv(...)     Call( Attribute(Name(os-alias), getenv) )
+                #   3) getenv(...)          Call( Name(getenv-alias) )
+                #   4) <environ>["KEY"]     Subscript( <environ expr>, ... )
                 if isinstance(node, ast.Call):
                     func = node.func
-                    is_environ_get = (
+                    if (
                         isinstance(func, ast.Attribute)
                         and func.attr == "get"
-                        and isinstance(func.value, ast.Attribute)
-                        and func.value.attr == "environ"
-                        and isinstance(func.value.value, ast.Name)
-                        and func.value.value.id == "os"
-                    )
-                    is_os_getenv = (
+                        and _is_environ_expr(func.value)
+                    ):
+                        hits.append((path, node.lineno, "os.environ.get(...)"))
+                    elif (
                         isinstance(func, ast.Attribute)
                         and func.attr == "getenv"
                         and isinstance(func.value, ast.Name)
-                        and func.value.id == "os"
-                    )
-                    if is_environ_get:
-                        hits.append((path, node.lineno, "os.environ.get(...)"))
-                    elif is_os_getenv:
+                        and func.value.id in os_names
+                    ):
+                        hits.append((path, node.lineno, "os.getenv(...)"))
+                    elif isinstance(func, ast.Name) and func.id in getenv_names:
                         hits.append((path, node.lineno, "os.getenv(...)"))
                     continue
-                if isinstance(node, ast.Subscript):
-                    target = node.value
-                    if (
-                        isinstance(target, ast.Attribute)
-                        and target.attr == "environ"
-                        and isinstance(target.value, ast.Name)
-                        and target.value.id == "os"
-                    ):
-                        hits.append((path, node.lineno, "os.environ[...]"))
+                if isinstance(node, ast.Subscript) and _is_environ_expr(node.value):
+                    hits.append((path, node.lineno, "os.environ[...]"))
     return hits
 
 
@@ -153,3 +207,72 @@ def test_ast_gate_detects_all_three_direct_env_forms(tmp_path, monkeypatch) -> N
         "os.environ.get(...)",
         "os.getenv(...)",
     }, f"Expected all three forms detected, got {snippets}"
+
+
+def test_ast_gate_resolves_imported_os_aliases(tmp_path, monkeypatch) -> None:
+    """Regression for the round-3 P2 on PR #268:
+
+    `from os import getenv`, `from os import environ`, and `import os as X`
+    are semantically identical direct env reads, but a walker that only
+    recognizes an `ast.Name` whose identifier is literally `os` misses all
+    of them. Each alias form must produce a hit.
+    """
+    import sys
+
+    mod = sys.modules[__name__]
+    fixture_dir = tmp_path / "aliased"
+    fixture_dir.mkdir()
+
+    cases = {
+        "import_os_as.py": (
+            "import os as host_os\n"
+            '\nA = host_os.getenv("K1")\n'
+            'B = host_os.environ.get("K2")\n'
+            'C = host_os.environ["K3"]\n'
+        ),
+        "from_os_import_getenv.py": ('from os import getenv\n\nA = getenv("K1")\n'),
+        "from_os_import_getenv_as.py": ('from os import getenv as g\n\nA = g("K1")\n'),
+        "from_os_import_environ.py": (
+            'from os import environ\n\nA = environ.get("K1")\nB = environ["K2"]\n'
+        ),
+        "from_os_import_environ_as.py": (
+            'from os import environ as e\n\nA = e.get("K1")\nB = e["K2"]\n'
+        ),
+    }
+
+    for name, source in cases.items():
+        case_dir = fixture_dir / name.removesuffix(".py")
+        case_dir.mkdir()
+        (case_dir / name).write_text(source)
+
+        monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+        monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+        hits = mod._scan_for_direct_env_access()
+
+        assert hits, f"alias form in {name} produced no hits — gate is blind to it"
+
+
+def test_ast_gate_scans_every_backend_package() -> None:
+    """Regression for the round-3 P2 on PR #268:
+
+    `config/`, `db/`, `council/`, and `backend/` are production packages
+    imported by the orchestrator, so the gate must cover them. Guard the
+    SCAN_DIRS tuple against silent narrowing.
+    """
+    scanned = {d.name for d in SCAN_DIRS}
+    for required in ("orchestrator", "providers", "scripts", "config", "db", "council", "backend"):
+        assert required in scanned, f"backend package `{required}/` is not covered by the gate"
+
+    # Every top-level directory that contains Python and is not test/tooling
+    # scaffolding must be in SCAN_DIRS, so a newly added backend package
+    # cannot silently escape the gate.
+    ignored = {"tests", "migrations", "frontend", "docs", ".venv", "node_modules"}
+    for child in REPO_ROOT.iterdir():
+        if not child.is_dir() or child.name.startswith(".") or child.name in ignored:
+            continue
+        if not any(child.rglob("*.py")):
+            continue
+        assert child.name in scanned, (
+            f"top-level package `{child.name}/` contains Python but is not in SCAN_DIRS; "
+            "add it to the gate or to the ignored set with a rationale"
+        )
