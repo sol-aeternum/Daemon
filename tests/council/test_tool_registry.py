@@ -62,16 +62,24 @@ def test_council_registry_threads_brave_api_key_from_settings(
     in ``WebSearchTool.__init__`` (which is the whole point of routing env
     access through Settings), the council's web_search tool reports the
     key is missing.
+
+    Regression for the round-5 Codex P2: a sentinel ``brave_api_key``
+    value is patched onto ``get_settings()`` and the test asserts the
+    captured kwargs equal that sentinel exactly. A previous version of
+    this test only checked the keyword was present, which let
+    ``brave_api_key=None`` (or any other incorrect value) silently pass
+    while the council's web_search tool still reported an unconfigured
+    key at runtime.
     """
     from orchestrator.tools import builtin as builtin_module
 
     monkeypatch.setattr(engine, "_council_tool_registry", None)
     monkeypatch.setattr(engine, "_council_tool_executor", None)
-    expected_brave_api_key = "test-council-brave-key"
+    sentinel_key = "sentinel-brave-key-from-settings-12345"
     settings_stub = type(
         "SettingsStub",
         (),
-        {"brave_api_key": expected_brave_api_key},
+        {"brave_api_key": sentinel_key},
     )()
     monkeypatch.setattr(engine, "get_settings", lambda: settings_stub)
 
@@ -90,7 +98,7 @@ def test_council_registry_threads_brave_api_key_from_settings(
 
     engine._get_council_tools()
 
-    assert captured_kwargs == {"brave_api_key": expected_brave_api_key}
+    assert captured_kwargs == {"brave_api_key": sentinel_key}
 
 
 @pytest.mark.asyncio

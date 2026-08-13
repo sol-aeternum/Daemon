@@ -147,6 +147,9 @@ class _OsAliasVisitor(ast.NodeVisitor):
         # FunctionDef/AsyncFunctionDef → method-level frame keyed by the
         # node itself (so two same-named methods in different enclosing
         # classes resolve to distinct frames).
+        # Lambda → lambda frame keyed by the node itself. Lambdas are
+        # anonymous so ``func`` is the synthetic label ``"<lambda>"``;
+        # they inherit aliases from the immediate enclosing function.
         frame: dict
         if isinstance(node, ast.Module):
             frame = {
@@ -377,6 +380,12 @@ def _scan_for_direct_env_access() -> list[tuple[pathlib.Path, int, str]]:
     pattern in ``orchestrator/database_url.py`` is the motivating case).
     Aliases are resolved per lexical scope so a function parameter named
     ``getenv`` is not retroactively flagged as a direct env read.
+    Function defaults and decorators are evaluated in the enclosing
+    scope (the parameter names do not exist yet at default-evaluation
+    time), so the resolver visits those nodes with the parent frame
+    active. Lambdas get their own scope keyed by the AST node so a
+    lambda parameter shadows the enclosing alias while a lambda body
+    without a shadow still sees the inherited alias.
     """
     hits: list[tuple[pathlib.Path, int, str]] = []
     for scan_dir in SCAN_DIRS:
@@ -914,7 +923,7 @@ def test_ast_gate_detects_environment_membership_checks(tmp_path, monkeypatch) -
         'A = "K1" in host_os.environ\n'
         'B = "K2" not in env\n'
         'C = "K3" in host_os.environ in OTHER\n'
-        'D = "K4" in OTHER\n'
+        "D = env in OTHER\n"
     )
 
     monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
