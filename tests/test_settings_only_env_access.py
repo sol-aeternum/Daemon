@@ -66,39 +66,93 @@ def _scan_for_direct_env_access() -> list[tuple[pathlib.Path, int, str]]:
             except SyntaxError:
                 continue
             for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
+                # Detect three direct access forms:
+                #   1) os.environ.get(...)           Call( Attribute(os.environ, get) )
+                #   2) os.getenv(...)                Call( Attribute(os, getenv) )
+                #   3) os.environ["KEY"]             Subscript( Attribute(os, environ), Constant )
+                if isinstance(node, ast.Call):
+                    func = node.func
+                    is_environ_get = (
+                        isinstance(func, ast.Attribute)
+                        and func.attr == "get"
+                        and isinstance(func.value, ast.Attribute)
+                        and func.value.attr == "environ"
+                        and isinstance(func.value.value, ast.Name)
+                        and func.value.value.id == "os"
+                    )
+                    is_os_getenv = (
+                        isinstance(func, ast.Attribute)
+                        and func.attr == "getenv"
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id == "os"
+                    )
+                    if is_environ_get:
+                        hits.append((path, node.lineno, "os.environ.get(...)"))
+                    elif is_os_getenv:
+                        hits.append((path, node.lineno, "os.getenv(...)"))
                     continue
-                func = node.func
-                # Two call shapes we care about:
-                #   1) os.environ.get(...)           Attribute(os.environ, get)
-                #   2) os.getenv(...)                Attribute(os, getenv)
-                is_environ_get = (
-                    isinstance(func, ast.Attribute)
-                    and func.attr == "get"
-                    and isinstance(func.value, ast.Attribute)
-                    and func.value.attr == "environ"
-                    and isinstance(func.value.value, ast.Name)
-                    and func.value.value.id == "os"
-                )
-                is_os_getenv = (
-                    isinstance(func, ast.Attribute)
-                    and func.attr == "getenv"
-                    and isinstance(func.value, ast.Name)
-                    and func.value.id == "os"
-                )
-                if not (is_environ_get or is_os_getenv):
-                    continue
-                snippet = "os.environ.get(...)" if is_environ_get else "os.getenv(...)"
-                hits.append((path, node.lineno, snippet))
+                if isinstance(node, ast.Subscript):
+                    target = node.value
+                    if (
+                        isinstance(target, ast.Attribute)
+                        and target.attr == "environ"
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id == "os"
+                    ):
+                        hits.append((path, node.lineno, "os.environ[...]"))
     return hits
 
 
 def test_no_direct_env_access_outside_settings() -> None:
     hits = _scan_for_direct_env_access()
     assert not hits, (
-        "Direct `os.environ.get(...)` / `os.getenv(...)` calls detected "
-        "outside `orchestrator/config.py` (or other allowed files). Read "
-        "env vars through the `Settings` class instead so type validation, "
-        "defaults, and env-var prefixing apply uniformly.\n\nFound:\n"
+        "Direct `os.environ.get(...)` / `os.getenv(...)` / "
+        '`os.environ["KEY"]` reads detected outside '
+        "`orchestrator/config.py` (or other allowed files). Read env vars "
+        "through the `Settings` class instead so type validation, defaults, "
+        "and env-var prefixing apply uniformly.\n\nFound:\n"
         + "\n".join(f"  {p.relative_to(REPO_ROOT)}:{ln}: {snippet}" for p, ln, snippet in hits)
     )
+
+
+def test_ast_gate_detects_all_three_direct_env_forms(tmp_path) -> None:
+    """Regression for Codex round-2 P2 on PR #264:
+
+    The widened AST walker must catch every direct env-access form
+    (os.environ.get, os.getenv, os.environ["KEY"]) — a previous widening
+    pass claimed to detect subscript reads but actually only walked
+    ast.Call nodes. Drive the scanner against a fixture file that uses
+    each form and assert the fixture produces the expected hits.
+    """
+    fixture_dir = tmp_path / "orchestrator"
+    fixture_dir.mkdir()
+    fixture = fixture_dir / "fixture_uses_all_forms.py"
+    fixture.write_text(
+        "import os\n"
+        "\n"
+        'A = os.environ.get("DATABASE_URL")\n'
+        'B = os.getenv("ENCRYPTION_KEY")\n'
+        'C = os.environ["BACKUP_DIR"]\n'
+    )
+
+    # Point the scanner at the fixture by overriding SCAN_DIRS at the call
+    # boundary. _scan_for_direct_env_access takes no args, so we patch
+    # SCAN_DIRS via the module-level constant by monkeypatching.
+    import tests.test_settings_only_env_access as mod
+
+    original_scan_dirs = mod.SCAN_DIRS
+    original_repo_root = mod.REPO_ROOT
+    try:
+        mod.SCAN_DIRS = (fixture_dir,)
+        mod.REPO_ROOT = tmp_path
+        hits = mod._scan_for_direct_env_access()
+    finally:
+        mod.SCAN_DIRS = original_scan_dirs
+        mod.REPO_ROOT = original_repo_root
+
+    snippets = sorted({snippet for _, _, snippet in hits})
+    assert set(snippets) == {
+        "os.environ[...]",
+        "os.environ.get(...)",
+        "os.getenv(...)",
+    }, f"Expected all three forms detected, got {snippets}"
