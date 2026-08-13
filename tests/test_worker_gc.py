@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import uuid
 from pathlib import Path
 from typing import Any
@@ -8,9 +9,10 @@ from typing import Any
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+from orchestrator.artifacts import user_artifact_directory
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
-from orchestrator.worker.jobs import garbage_collect
+from orchestrator.worker.jobs import _cleanup_expired_artifacts, garbage_collect
 
 
 def _memory_store(pool: AsyncMock) -> MemoryStore:
@@ -87,6 +89,34 @@ def test_generated_file_cleanup_uses_repo_root_artifact_directory() -> None:
     source = Path("orchestrator/worker/jobs.py").read_text()
 
     assert 'parent.parent.parent / "data" / "generated_files"' in source
+
+
+def test_artifact_cleanup_preserves_other_users_live_files_and_skips_symlinks(
+    tmp_path: Path,
+) -> None:
+    user_a_dir = user_artifact_directory(tmp_path, uuid.uuid4(), create=True)
+    user_b_dir = user_artifact_directory(tmp_path, uuid.uuid4(), create=True)
+    old_user_a_file = user_a_dir / "old.csv"
+    live_user_b_file = user_b_dir / "live.csv"
+    legacy_file = tmp_path / "legacy.csv"
+    outside_file = tmp_path.parent / f"outside-{uuid.uuid4().hex}.csv"
+    old_user_a_file.write_text("old")
+    live_user_b_file.write_text("live")
+    legacy_file.write_text("legacy")
+    outside_file.write_text("outside")
+    (user_a_dir / "escape.csv").symlink_to(outside_file)
+
+    old_timestamp = old_user_a_file.stat().st_mtime - (25 * 60 * 60)
+    os.utime(old_user_a_file, (old_timestamp, old_timestamp))
+    os.utime(legacy_file, (old_timestamp, old_timestamp))
+
+    result = _cleanup_expired_artifacts(tmp_path, artifact_kind="file")
+
+    assert result == {"scanned": 3, "deleted": 2}
+    assert not old_user_a_file.exists()
+    assert not legacy_file.exists()
+    assert live_user_b_file.read_text() == "live"
+    assert outside_file.read_text() == "outside"
 
 
 @pytest.mark.asyncio

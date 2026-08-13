@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast, NotRequired, TypedDict
@@ -16,6 +16,7 @@ from arq import Retry
 from arq.connections import ArqRedis
 from arq.jobs import Job
 
+from orchestrator.artifacts import is_artifact_owner_namespace
 from orchestrator.config import Settings
 from orchestrator.memory.dreaming import run_dreaming
 from orchestrator.memory.entities import (
@@ -957,34 +958,56 @@ async def garbage_collect(ctx: WorkerContext) -> dict[str, int]:
     return await store_obj.run_garbage_collect()
 
 
-async def cleanup_generated_files(ctx: WorkerContext) -> dict[str, int]:
-    """Delete generated files older than 24 hours."""
-    from orchestrator.config import get_settings
+def _iter_generated_artifact_files(base_dir: Path) -> Iterator[Path]:
+    """Yield legacy root files and files in canonical owner namespaces."""
+    for entry in base_dir.iterdir():
+        if entry.is_symlink():
+            continue
+        if entry.is_file():
+            yield entry
+            continue
+        if not entry.is_dir() or not is_artifact_owner_namespace(entry.name):
+            continue
+        for artifact in entry.iterdir():
+            if not artifact.is_symlink() and artifact.is_file():
+                yield artifact
 
-    settings = get_settings()  # noqa: F841
-    generated_files_dir = Path(__file__).resolve().parent.parent.parent / "data" / "generated_files"
 
-    if not generated_files_dir.exists():
+def _cleanup_expired_artifacts(base_dir: Path, *, artifact_kind: str) -> dict[str, int]:
+    if not base_dir.exists():
         return {"scanned": 0, "deleted": 0}
 
     cutoff = datetime.now() - timedelta(hours=24)
     deleted = 0
     scanned = 0
-
-    for item in generated_files_dir.iterdir():
-        scanned += 1
-        # Only delete files, not directories
-        if item.is_file():
+    try:
+        artifacts = _iter_generated_artifact_files(base_dir)
+        for artifact in artifacts:
+            scanned += 1
             try:
-                mtime = datetime.fromtimestamp(item.stat().st_mtime)
+                mtime = datetime.fromtimestamp(artifact.stat().st_mtime)
                 if mtime < cutoff:
-                    item.unlink()
+                    artifact.unlink()
                     deleted += 1
-                    logger.info(f"Deleted old generated file: {item.name}")
-            except Exception as e:
-                logger.warning(f"Failed to process {item.name}: {e}")
+                    logger.info("Deleted old generated %s: %s", artifact_kind, artifact.name)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to process generated %s %s: %s",
+                    artifact_kind,
+                    artifact.name,
+                    exc,
+                )
+    except OSError as exc:
+        logger.warning("Failed to scan generated %s directory: %s", artifact_kind, exc)
 
     return {"scanned": scanned, "deleted": deleted}
+
+
+async def cleanup_generated_files(ctx: WorkerContext) -> dict[str, int]:
+    """Delete generated files older than 24 hours."""
+    _ = ctx
+    generated_files_dir = Path(__file__).resolve().parent.parent.parent / "data" / "generated_files"
+    return _cleanup_expired_artifacts(generated_files_dir, artifact_kind="file")
 
 
 async def cleanup_generated_images(ctx: WorkerContext) -> dict[str, int]:
@@ -993,26 +1016,7 @@ async def cleanup_generated_images(ctx: WorkerContext) -> dict[str, int]:
         Path(__file__).resolve().parent.parent.parent / "data" / "generated_images"
     )
 
-    if not generated_images_dir.exists():
-        return {"scanned": 0, "deleted": 0}
-
-    cutoff = datetime.now() - timedelta(hours=24)
-    deleted = 0
-    scanned = 0
-
-    for item in generated_images_dir.iterdir():
-        scanned += 1
-        if item.is_file():
-            try:
-                mtime = datetime.fromtimestamp(item.stat().st_mtime)
-                if mtime < cutoff:
-                    item.unlink()
-                    deleted += 1
-                    logger.info(f"Deleted old generated image artifact: {item.name}")
-            except Exception as e:
-                logger.warning(f"Failed to process generated image artifact {item.name}: {e}")
-
-    return {"scanned": scanned, "deleted": deleted}
+    return _cleanup_expired_artifacts(generated_images_dir, artifact_kind="image artifact")
 
 
 async def run_dreaming_job(

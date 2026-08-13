@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from orchestrator.artifacts import user_artifact_directory
 from orchestrator.tools.registry import Tool
 from orchestrator.utils import slugify_filename
 
@@ -63,6 +64,9 @@ class GenerateDocumentTool(Tool):
         "required": ["format", "content"],
     }
 
+    def __init__(self, *, user_id: Any = None) -> None:
+        self._user_id = user_id
+
     async def execute(self, **kwargs: Any) -> str:
         format = kwargs.get("format", "")
         content = kwargs.get("content", "")
@@ -96,7 +100,7 @@ class GenerateDocumentTool(Tool):
         title: str,
         filename: str,
     ) -> dict[str, Any]:
-        GENERATED_FILES_DIR.mkdir(parents=True, exist_ok=True)
+        output_dir = user_artifact_directory(GENERATED_FILES_DIR, self._user_id, create=True)
 
         rows: list[list[str]] = []
         headers: list[str] = []
@@ -137,15 +141,15 @@ class GenerateDocumentTool(Tool):
 
         if slug:
             out_name = f"{slug}.{safe_ext}"
-            out_path = GENERATED_FILES_DIR / out_name
+            out_path = output_dir / out_name
             if out_path.exists():
                 slug = f"{slug}-{uuid.uuid4().hex[:8]}"
                 out_name = f"{slug}.{safe_ext}"
-                out_path = GENERATED_FILES_DIR / out_name
+                out_path = output_dir / out_name
         else:
             while True:
                 out_name = f"{uuid.uuid4().hex[:12]}.{safe_ext}"
-                out_path = GENERATED_FILES_DIR / out_name
+                out_path = output_dir / out_name
                 if not out_path.exists():
                     break
 
@@ -178,7 +182,7 @@ class GenerateDocumentTool(Tool):
         from docx import Document
         from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-        GENERATED_FILES_DIR.mkdir(parents=True, exist_ok=True)
+        output_dir = user_artifact_directory(GENERATED_FILES_DIR, self._user_id, create=True)
 
         doc = Document()
 
@@ -221,15 +225,15 @@ class GenerateDocumentTool(Tool):
 
         if slug:
             out_name = f"{slug}.{safe_ext}"
-            out_path = GENERATED_FILES_DIR / out_name
+            out_path = output_dir / out_name
             if out_path.exists():
                 slug = f"{slug}-{uuid.uuid4().hex[:8]}"
                 out_name = f"{slug}.{safe_ext}"
-                out_path = GENERATED_FILES_DIR / out_name
+                out_path = output_dir / out_name
         else:
             while True:
                 out_name = f"{uuid.uuid4().hex[:12]}.{safe_ext}"
-                out_path = GENERATED_FILES_DIR / out_name
+                out_path = output_dir / out_name
                 if not out_path.exists():
                     break
 

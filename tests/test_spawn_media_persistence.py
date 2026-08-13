@@ -12,6 +12,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from orchestrator import main as main_module
+from orchestrator.artifacts import user_artifact_directory
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.main import app
 from orchestrator.tools import spawn
@@ -24,6 +25,7 @@ MP3 = b"\xff\xfb\x90\x64valid-mp3-data"
 WAV = b"RIFF\x0c\x00\x00\x00WAVEvalid-wav-data"
 OGG = b"OggSvalid-ogg-data"
 OPUS = b"OggS\x00\x00OpusHeadvalid-opus-data"
+TEST_USER_ID = uuid.UUID("10000000-0000-0000-0000-000000000001")
 
 
 def _encoded(raw: bytes) -> str:
@@ -62,14 +64,15 @@ def test_persist_image_accepts_allowlisted_matching_signatures(
 ) -> None:
     monkeypatch.setattr(spawn, "GENERATED_IMAGES_DIR", tmp_path)
 
-    persisted = spawn._persist_image_result(_result("image", raw, claimed_format))
+    persisted = spawn._persist_image_result(_result("image", raw, claimed_format), TEST_USER_ID)
 
     filename = f"{hashlib.sha256(raw).hexdigest()}.{extension}"
     assert persisted["success"] is True
     assert persisted["data"]["image_path"] == f"/generated-images/{filename}"
     assert "image_base64" not in persisted["data"]
     assert "image_url" not in persisted["data"]
-    assert (tmp_path / filename).read_bytes() == raw
+    owner_dir = user_artifact_directory(tmp_path, TEST_USER_ID, create=False)
+    assert (owner_dir / filename).read_bytes() == raw
 
 
 @pytest.mark.parametrize(
@@ -89,14 +92,15 @@ def test_persist_audio_accepts_allowlisted_matching_signatures(
 ) -> None:
     monkeypatch.setattr(spawn, "GENERATED_AUDIO_DIR", tmp_path)
 
-    persisted = spawn._persist_audio_result(_result("audio", raw, claimed_format))
+    persisted = spawn._persist_audio_result(_result("audio", raw, claimed_format), TEST_USER_ID)
 
     filename = f"{hashlib.sha256(raw).hexdigest()}.{claimed_format}"
     assert persisted["success"] is True
     assert persisted["data"]["audio_path"] == f"/generated-audio/{filename}"
     assert "audio_base64" not in persisted["data"]
     assert "audio_url" not in persisted["data"]
-    assert (tmp_path / filename).read_bytes() == raw
+    owner_dir = user_artifact_directory(tmp_path, TEST_USER_ID, create=False)
+    assert (owner_dir / filename).read_bytes() == raw
 
 
 @pytest.mark.parametrize(
@@ -116,7 +120,7 @@ def test_persist_image_rejects_non_media_mismatches_and_unsafe_formats(
 ) -> None:
     monkeypatch.setattr(spawn, "GENERATED_IMAGES_DIR", tmp_path)
 
-    persisted = spawn._persist_image_result(_result("image", payload, claimed_format))
+    persisted = spawn._persist_image_result(_result("image", payload, claimed_format), TEST_USER_ID)
 
     assert persisted["success"] is False
     assert persisted["error"] == "Generated image payload failed validation"
@@ -133,7 +137,7 @@ def test_persist_image_rejects_invalid_base64_without_writing(
     result = _result("image", PNG, "png")
     result["data"]["image_base64"] = "not base64!!!"
 
-    persisted = spawn._persist_image_result(result)
+    persisted = spawn._persist_image_result(result, TEST_USER_ID)
 
     assert persisted["success"] is False
     assert list(tmp_path.iterdir()) == []
@@ -146,7 +150,7 @@ def test_persist_audio_rejects_payload_over_the_decoded_ceiling(
     monkeypatch.setattr(spawn, "GENERATED_AUDIO_DIR", tmp_path)
     monkeypatch.setattr(spawn, "MAX_PERSISTED_MEDIA_BYTES", 4)
 
-    persisted = spawn._persist_audio_result(_result("audio", MP3, "mp3"))
+    persisted = spawn._persist_audio_result(_result("audio", MP3, "mp3"), TEST_USER_ID)
 
     assert persisted["success"] is False
     assert list(tmp_path.iterdir()) == []
@@ -157,14 +161,14 @@ def test_persist_image_does_not_follow_an_existing_symlink(
     tmp_path: Path,
 ) -> None:
     generated_dir = tmp_path / "generated"
-    generated_dir.mkdir()
+    owner_dir = user_artifact_directory(generated_dir, TEST_USER_ID, create=True)
     target = tmp_path / "target"
     target.write_bytes(b"do not overwrite")
     filename = f"{hashlib.sha256(PNG).hexdigest()}.png"
-    (generated_dir / filename).symlink_to(target)
+    (owner_dir / filename).symlink_to(target)
     monkeypatch.setattr(spawn, "GENERATED_IMAGES_DIR", generated_dir)
 
-    persisted = spawn._persist_image_result(_result("image", PNG, "png"))
+    persisted = spawn._persist_image_result(_result("image", PNG, "png"), TEST_USER_ID)
 
     assert persisted["success"] is False
     assert target.read_bytes() == b"do not overwrite"
@@ -175,10 +179,11 @@ def test_persist_image_reuses_matching_content_addressed_file(
     tmp_path: Path,
 ) -> None:
     filename = f"{hashlib.sha256(PNG).hexdigest()}.png"
-    (tmp_path / filename).write_bytes(PNG)
+    owner_dir = user_artifact_directory(tmp_path, TEST_USER_ID, create=True)
+    (owner_dir / filename).write_bytes(PNG)
     monkeypatch.setattr(spawn, "GENERATED_IMAGES_DIR", tmp_path)
 
-    persisted = spawn._persist_image_result(_result("image", PNG, "png"))
+    persisted = spawn._persist_image_result(_result("image", PNG, "png"), TEST_USER_ID)
 
     assert persisted["success"] is True
     assert persisted["data"]["image_path"] == f"/generated-images/{filename}"
@@ -189,20 +194,21 @@ def test_persist_image_rejects_conflicting_content_addressed_file(
     tmp_path: Path,
 ) -> None:
     filename = f"{hashlib.sha256(PNG).hexdigest()}.png"
-    (tmp_path / filename).write_bytes(b"unexpected existing content")
+    owner_dir = user_artifact_directory(tmp_path, TEST_USER_ID, create=True)
+    (owner_dir / filename).write_bytes(b"unexpected existing content")
     monkeypatch.setattr(spawn, "GENERATED_IMAGES_DIR", tmp_path)
 
-    persisted = spawn._persist_image_result(_result("image", PNG, "png"))
+    persisted = spawn._persist_image_result(_result("image", PNG, "png"), TEST_USER_ID)
 
     assert persisted["success"] is False
-    assert (tmp_path / filename).read_bytes() == b"unexpected existing content"
+    assert (owner_dir / filename).read_bytes() == b"unexpected existing content"
 
 
 @pytest_asyncio.fixture
 async def authenticated_client() -> AsyncIterator[AsyncClient]:
     async def authenticated() -> AuthenticatedDevice:
         return AuthenticatedDevice(
-            user_id=uuid.uuid4(),
+            user_id=TEST_USER_ID,
             device_id=uuid.uuid4(),
             session_id=uuid.uuid4(),
         )
@@ -241,8 +247,8 @@ async def test_generated_media_routes_use_expected_type_and_nosniff(
     expected_type: str,
 ) -> None:
     media_dir = tmp_path / directory_attribute.lower()
-    media_dir.mkdir()
-    (media_dir / filename).write_bytes(b"route-test")
+    owner_dir = user_artifact_directory(media_dir, TEST_USER_ID, create=True)
+    (owner_dir / filename).write_bytes(b"route-test")
     monkeypatch.setattr(main_module, directory_attribute, media_dir)
     if route == "generated-audio":
         tts_dir = tmp_path / "tts"
