@@ -31,6 +31,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT" || { echo "local_ci: cannot cd to $REPO_ROOT" >&2; exit 2; }
 
+# Keep uv's project environment aligned with pyrightconfig.json and CI while
+# preserving an explicit caller override for shared or externally managed envs.
+export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-.uv-venv}"
+
 # colors only when stdout is a tty, so logs piped to files stay plain
 if [[ -t 1 ]]; then
     C_RESET=$'\033[0m'

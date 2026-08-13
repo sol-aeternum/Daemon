@@ -111,6 +111,14 @@ def test_local_ci_security_policy_matches_workflow() -> None:
         assert row in local_ci
 
 
+def test_local_ci_uses_basedpyright_project_environment() -> None:
+    local_ci = LOCAL_CI.read_text(encoding="utf-8")
+
+    environment_export = 'export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-.uv-venv}"'
+    assert environment_export in local_ci
+    assert local_ci.index(environment_export) < local_ci.index("uv run basedpyright --level error")
+
+
 def test_frontend_browser_regression_blocking_sequence_is_anchored() -> None:
     workflow = _load_ci_workflow()
     frontend_steps = [name for job_id, name, _ in _iter_job_steps(workflow) if job_id == "frontend"]
