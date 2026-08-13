@@ -64,14 +64,41 @@ FUNCTION_ALLOWLIST: dict[str, frozenset[str]] = {
 }
 
 
-def _enclosing_function(node: ast.AST) -> str | None:
-    """Walk up the parent map to find the innermost FunctionDef/AsyncFunctionDef name."""
+def _enclosing_function(node: ast.AST) -> ast.AST | None:
+    """Walk up the parent map to find the innermost FunctionDef/AsyncFunctionDef node.
+
+    Keying alias frames by AST-node identity (not the function name) means two
+    same-named methods in different enclosing classes resolve to distinct frames
+    — e.g. ``ClassA.configure`` and ``ClassB.configure`` get independent alias
+    tables, so ``ClassA.configure``'s ``import os as host_os`` does not collide
+    with ``ClassB.configure``'s ``host_os`` parameter.
+    """
     cur = getattr(node, "parent", None)
     while cur is not None:
         if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            return cur.name
+            return cur
         cur = getattr(cur, "parent", None)
     return None
+
+
+def _qualified_function_name(node: ast.AST) -> str | None:
+    """Return the dotted lexical path to the enclosing function, or None.
+
+    Example: a ``configure`` method inside ``class Foo`` resolves to
+    ``"Foo.configure"`` — so the ``FUNCTION_ALLOWLIST`` and the per-scope
+    alias frames stay aligned when two same-named methods coexist.
+    """
+    parts: list[str] = []
+    cur: ast.AST | None = node
+    while cur is not None:
+        if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            parts.append(cur.name)
+        elif isinstance(cur, ast.ClassDef):
+            parts.append(cur.name)
+        cur = getattr(cur, "parent", None)
+    if not parts:
+        return None
+    return ".".join(reversed(parts))
 
 
 class _OsAliasVisitor(ast.NodeVisitor):
@@ -91,20 +118,39 @@ class _OsAliasVisitor(ast.NodeVisitor):
         # the cumulative log so the resolver can inspect every scope
         # after the visitor has returned (the visitor pops each frame on
         # the way out, so the live stack is empty by the time
-        # ``scopes()`` is called).
+        # ``scopes()`` is called). Each frame records the AST node the
+        # visitor pushed so the resolver can key alias tables by
+        # node identity (same-named methods in different enclosing
+        # classes resolve to distinct frames).
         self._stack: list[dict] = []
         self._frames: list[dict] = []
 
     def _current(self) -> dict:
         return self._stack[-1]
 
-    def _push(self, name: str | None) -> dict:
-        frame = {
-            "func": name,
-            "os_names": set(),
-            "getenv_names": set(),
-            "environ_names": set(),
-        }
+    def _push(self, node: ast.AST) -> dict:
+        # Module → module-level frame keyed by None.
+        # FunctionDef/AsyncFunctionDef → method-level frame keyed by the
+        # node itself (so two same-named methods in different enclosing
+        # classes resolve to distinct frames).
+        frame: dict
+        if isinstance(node, ast.Module):
+            frame = {
+                "func": None,
+                "node": node,
+                "os_names": set(),
+                "getenv_names": set(),
+                "environ_names": set(),
+            }
+        else:
+            assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            frame = {
+                "func": node.name,
+                "node": node,
+                "os_names": set(),
+                "getenv_names": set(),
+                "environ_names": set(),
+            }
         self._stack.append(frame)
         self._frames.append(frame)
         return frame
@@ -113,12 +159,12 @@ class _OsAliasVisitor(ast.NodeVisitor):
         self._stack.pop()
 
     def visit_Module(self, node: ast.Module) -> None:
-        self._push(None)
+        self._push(node)
         self.generic_visit(node)
         self._pop()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self._push(node.name)
+        self._push(node)
         # Function parameters shadow any outer-scope binding of the same
         # name. Parameters here are not bound to `os`, so we don't add
         # them to any alias set — they are simply absent, which is the
@@ -127,7 +173,7 @@ class _OsAliasVisitor(ast.NodeVisitor):
         self._pop()
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self._push(node.name)
+        self._push(node)
         self.generic_visit(node)
         self._pop()
 
@@ -157,18 +203,23 @@ class _OsAliasVisitor(ast.NodeVisitor):
         return self._frames
 
 
-def _resolve_aliases_for(tree: ast.AST) -> dict[str | None, dict[str, set[str]]]:
-    """Return a mapping from enclosing-function name (or None for module
+def _resolve_aliases_for(tree: ast.AST) -> dict[ast.AST | None, dict[str, set[str]]]:
+    """Return a mapping from enclosing-function node (or None for module
     level) to a dict of alias sets.
 
     Each scope frame contains its own bindings (those declared inside that
     scope) and an ``_inherited`` set merged from the enclosing module-level
     frame, so a function that does its own ``import os`` is correctly
     resolved without inheriting unrelated aliases from sibling functions.
+
+    Keyed by AST-node identity so two same-named methods in different
+    enclosing classes (``ClassA.configure`` vs ``ClassB.configure``)
+    resolve to distinct frames; a string-name key would let the later
+    frame overwrite the earlier one and silently bypass the gate.
     """
     visitor = _OsAliasVisitor()
     visitor.visit(tree)
-    result: dict[str | None, dict[str, set[str]]] = {}
+    result: dict[ast.AST | None, dict[str, set[str]]] = {}
     module_frame = next(f for f in visitor.scopes() if f["func"] is None)
     inherited = {
         "os_names": set(module_frame["os_names"]),
@@ -201,7 +252,10 @@ def _resolve_aliases_for(tree: ast.AST) -> dict[str | None, dict[str, set[str]]]
             merged["getenv_names"] |= inherited["getenv_names"]
         if not frame["environ_names"]:
             merged["environ_names"] |= inherited["environ_names"]
-        result[frame["func"]] = merged
+        # ``frame["node"]`` is the AST node the visitor pushed; keying the
+        # result by it (rather than by name) is what makes same-named
+        # methods in different enclosing classes resolve independently.
+        result[frame["node"]] = merged
     return result
 
 
@@ -250,9 +304,9 @@ def _scan_for_direct_env_access() -> list[tuple[pathlib.Path, int, str]]:
             module_allowlist = FUNCTION_ALLOWLIST.get(rel)
 
             def _aliases_for(node: ast.AST) -> dict[str, set[str]]:
-                func_name = _enclosing_function(node)
-                if func_name is not None and func_name in scopes:
-                    return scopes[func_name]
+                func_node = _enclosing_function(node)
+                if func_node is not None and func_node in scopes:
+                    return scopes[func_node]
                 return scopes[None]
 
             def _is_environ_expr(node: ast.expr, aliases: dict[str, set[str]]) -> bool:
@@ -278,8 +332,11 @@ def _scan_for_direct_env_access() -> list[tuple[pathlib.Path, int, str]]:
                     # If the file has a function-scoped allowlist, only
                     # nodes inside the allowlisted functions are exempt;
                     # other functions in the same file are still scanned.
-                    func_name = _enclosing_function(node)
-                    if func_name is not None and func_name in module_allowlist:
+                    # Use the qualified lexical path (``ClassName.method``)
+                    # so two same-named methods in different enclosing
+                    # classes resolve to distinct allowlist keys.
+                    func_qname = _qualified_function_name(node)
+                    if func_qname is not None and func_qname in module_allowlist:
                         continue
                 aliases = _aliases_for(node)
                 if isinstance(node, ast.Call):
@@ -597,4 +654,52 @@ def test_ast_gate_function_allowlist_scopes_database_url(tmp_path, monkeypatch) 
     # `resolve_database_url` is allowlisted on a per-function basis.
     assert snippets == ["os.getenv(...)"], (
         f"function-allowlist mis-applied: expected ['os.getenv(...)'], got {snippets}"
+    )
+
+
+def test_ast_gate_resolves_same_named_methods_in_distinct_classes(tmp_path, monkeypatch) -> None:
+    """Regression for the round-4 P2 on PR #268: alias frames are keyed by
+    AST-node identity, not function name.
+
+    Two classes with a same-named method that share the file:
+        class A:
+            def configure(self):
+                import os as host_os
+                return host_os.getenv("K1")
+        class B:
+            def configure(self, host_os):  # unrelated parameter
+                return host_os.get("K2")
+
+    A string-name key would let B's frame overwrite A's, and
+    ``host_os.getenv("K1")`` would silently bypass the gate. With
+    node-identity keying, A's frame retains its ``host_os`` alias and
+    the direct env read is detected.
+    """
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "classes"
+    case_dir.mkdir()
+    (case_dir / "classes.py").write_text(
+        "class A:\n"
+        "    def configure(self):\n"
+        "        import os as host_os\n"
+        '        return host_os.getenv("K1")\n'
+        "\n"
+        "class B:\n"
+        "    def configure(self, host_os):\n"
+        '        return host_os.get("K2")\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    snippets = sorted({snippet for _, _, snippet in hits})
+    assert snippets == ["os.getenv(...)"], (
+        f"node-keyed resolver mis-flagged: expected ['os.getenv(...)'], got {snippets}"
+    )
+    lines = sorted(ln for _, ln, _ in hits)
+    assert lines == [4], (
+        f"only A.configure's host_os.getenv (line 4) should be flagged, got lines {lines}"
     )
