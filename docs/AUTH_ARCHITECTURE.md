@@ -85,6 +85,9 @@ All formerly API-key-protected endpoints and currently-unprotected route modules
 ### Decision 26 — SSE/chat authenticates at request start
 Daemon chat streaming uses POST/fetch rather than browser `EventSource`. The frontend pre-refreshes before long streams, sends `Authorization: Bearer <access_token>` when opening the request, and reconnects with a fresh token if a new request is needed.
 
+### Decision 27 — Generated artifacts are owner-scoped
+Generated images, audio, TTS/sound-effect cache entries, and documents are written beneath deterministic opaque filesystem namespaces derived server-side from the authenticated user UUID. Download URLs remain filename-only; the server selects the namespace from the access-token identity and never accepts one from the caller. Missing artifacts, artifacts owned by another user, and legacy ownerless files all return 404. Legacy flat files are not migrated or made reachable through a compatibility fallback.
+
 ## Schema Definitions
 
 Task 5 will materialize this logical schema in the next migration. Names may add implementation-specific indexes, but the sensitive-data constraints below are locked.
@@ -290,7 +293,7 @@ Audit gaps to harden:
 - `video_credits.py`: currently fully protected with legacy API-key/admin-key helpers and must move to device auth/admin semantics.
 - `orchestrator/routes/images.py`: legacy Studio image endpoints are retained as device-authenticated retired routes that return 410 after auth; a hosted-identity replacement is tracked separately.
 
-`/health` remains public. Generated media/file serving and model/catalog endpoints must be explicitly classified during hardening rather than inheriting accidental public/private behavior.
+`/health` remains public. Generated media/file serving requires device access-token authentication and resolves files only inside the authenticated user's opaque namespace. Model/catalog endpoints must be explicitly classified during hardening rather than inheriting accidental public/private behavior.
 
 ## Frontend Token Model
 

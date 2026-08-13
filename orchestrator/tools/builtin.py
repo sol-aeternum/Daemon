@@ -261,16 +261,26 @@ def create_default_registry(
     registry.register(NotificationSendTool())
     registry.register(ReminderSetTool())
     registry.register(ReminderListTool())
-    registry.register(SpawnAgentTool(db_pool=db_pool, trusted_spawn_context=trusted_spawn_context))
     registry.register(
-        SpawnMultipleTool(db_pool=db_pool, trusted_spawn_context=trusted_spawn_context)
+        SpawnAgentTool(
+            db_pool=db_pool,
+            user_id=user_id,
+            trusted_spawn_context=trusted_spawn_context,
+        )
+    )
+    registry.register(
+        SpawnMultipleTool(
+            db_pool=db_pool,
+            user_id=user_id,
+            trusted_spawn_context=trusted_spawn_context,
+        )
     )
 
     from orchestrator.tools.skill_manage import SkillManageTool
     from orchestrator.tools.document import GenerateDocumentTool
 
     registry.register(SkillManageTool(db_pool=db_pool))
-    registry.register(GenerateDocumentTool())
+    registry.register(GenerateDocumentTool(user_id=user_id))
 
     if memory_store and user_id:
         from orchestrator.memory.tools import MemoryReadTool, MemoryWriteTool

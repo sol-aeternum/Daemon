@@ -5,16 +5,21 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
+import uuid
 
 import pytest
 
+from orchestrator.artifacts import user_artifact_directory
 from orchestrator.tools import document as document_module
 from orchestrator.tools.document import GenerateDocumentTool
 
 
+TEST_USER_ID = uuid.UUID("20000000-0000-0000-0000-000000000001")
+
+
 @pytest.fixture
 def tool():
-    return GenerateDocumentTool()
+    return GenerateDocumentTool(user_id=TEST_USER_ID)
 
 
 @pytest.fixture
@@ -25,7 +30,7 @@ def temp_gen_dir():
         # Patch the module-level constant
         original = document_module.GENERATED_FILES_DIR
         document_module.GENERATED_FILES_DIR = temp_path
-        yield temp_path
+        yield user_artifact_directory(temp_path, TEST_USER_ID, create=True)
         document_module.GENERATED_FILES_DIR = original
 
 
@@ -147,6 +152,18 @@ async def test_unsupported_format_returns_error(tool):
     result = json.loads(result_json)
     assert result["success"] is False
     assert "Unsupported format" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_generation_fails_closed_without_authenticated_owner(tmp_path, monkeypatch):
+    monkeypatch.setattr(document_module, "GENERATED_FILES_DIR", tmp_path)
+
+    result_json = await GenerateDocumentTool().execute(format="csv", content="test")
+
+    result = json.loads(result_json)
+    assert result["success"] is False
+    assert result["error"] == "authenticated artifact owner required"
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.asyncio

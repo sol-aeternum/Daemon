@@ -522,22 +522,6 @@
         ],
         "./orchestrator/worker/jobs.py": [
             {
-                "code": "reportUnusedParameter",
-                "range": {
-                    "startColumn": 34,
-                    "endColumn": 37,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnusedVariable",
-                "range": {
-                    "startColumn": 4,
-                    "endColumn": 12,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportUnusedFunction",
                 "range": {
                     "startColumn": 4,

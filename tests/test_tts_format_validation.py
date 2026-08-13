@@ -26,10 +26,14 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 
+from orchestrator.artifacts import user_artifact_directory
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.config import get_settings
 from orchestrator.main import _resolve_safe_file_path, app
 from orchestrator.models import TtsRequest
+
+
+TEST_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
 # ---------------------------------------------------------------------------
@@ -71,24 +75,25 @@ def test_tts_request_rejects_invalid_formats(bad_format: str) -> None:
 
 @pytest.mark.parametrize("filename", ["", "../secret.mp3", "nested/file.mp3", "/absolute/file.mp3"])
 def test_safe_file_path_rejects_non_basename_paths(tmp_path: Path, filename: str) -> None:
-    assert _resolve_safe_file_path(tmp_path, filename) is None
+    assert _resolve_safe_file_path(tmp_path, filename, TEST_USER_ID) is None
 
 
 def test_safe_file_path_rejects_symlink_escape(tmp_path: Path) -> None:
     base_dir = tmp_path / "generated"
-    base_dir.mkdir()
+    owner_dir = user_artifact_directory(base_dir, TEST_USER_ID, create=True)
     outside_file = tmp_path / "secret.mp3"
     outside_file.write_bytes(b"secret")
-    (base_dir / "escaped.mp3").symlink_to(outside_file)
+    (owner_dir / "escaped.mp3").symlink_to(outside_file)
 
-    assert _resolve_safe_file_path(base_dir, "escaped.mp3") is None
+    assert _resolve_safe_file_path(base_dir, "escaped.mp3", TEST_USER_ID) is None
 
 
 def test_safe_file_path_accepts_regular_file_inside_base(tmp_path: Path) -> None:
-    expected = tmp_path / "audio.mp3"
+    owner_dir = user_artifact_directory(tmp_path, TEST_USER_ID, create=True)
+    expected = owner_dir / "audio.mp3"
     expected.write_bytes(b"audio")
 
-    assert _resolve_safe_file_path(tmp_path, expected.name) == expected.resolve()
+    assert _resolve_safe_file_path(tmp_path, expected.name, TEST_USER_ID) == expected.resolve()
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +122,7 @@ async def test_tts_endpoint_rejects_invalid_format(
 
     async def override_auth() -> AuthenticatedDevice:
         return AuthenticatedDevice(
-            user_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+            user_id=TEST_USER_ID,
             device_id=uuid.UUID("00000000-0000-0000-0000-000000000002"),
             session_id=uuid.UUID("00000000-0000-0000-0000-000000000003"),
         )
@@ -192,7 +197,7 @@ async def test_tts_endpoint_maps_supported_formats(
 
     async def override_auth() -> AuthenticatedDevice:
         return AuthenticatedDevice(
-            user_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+            user_id=TEST_USER_ID,
             device_id=uuid.UUID("00000000-0000-0000-0000-000000000002"),
             session_id=uuid.UUID("00000000-0000-0000-0000-000000000003"),
         )
@@ -217,7 +222,8 @@ async def test_tts_endpoint_maps_supported_formats(
         assert posted_params["output_format"] == expected_provider_format
         assert "output_format" not in posted_json
         assert response.json()["audio_path"].endswith(f".{expected_extension}")
-        assert next(cache_dir.glob(f"*.{expected_extension}")).read_bytes() == b"audio-data"
+        owner_dir = user_artifact_directory(cache_dir, TEST_USER_ID, create=False)
+        assert next(owner_dir.glob(f"*.{expected_extension}")).read_bytes() == b"audio-data"
     finally:
         app.dependency_overrides.pop(require_device_auth, None)
         app.dependency_overrides.pop(get_settings, None)

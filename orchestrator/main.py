@@ -33,6 +33,10 @@ from starlette.datastructures import MutableHeaders
 from starlette.types import Receive, Scope, Send
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
+from orchestrator.artifacts import (
+    resolve_owned_artifact,
+    write_owned_artifact,
+)
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.auth_pepper import (
     PepperValidationError,
@@ -1345,6 +1349,7 @@ async def openai_chat_completions(
                     ping_interval_s=settings.sse_keepalive_interval_s,
                     is_disconnected=is_disconnected,
                     actual_model=actual_model,
+                    user_id=auth.user_id,
                     trusted_spawn_context=trusted_spawn_context,
                 ):
                     # Parse the SSE frame
@@ -1451,6 +1456,7 @@ async def openai_chat_completions(
                 ping_interval_s=settings.sse_keepalive_interval_s,
                 is_disconnected=is_disconnected,
                 actual_model=actual_model,
+                user_id=auth.user_id,
                 trusted_spawn_context=trusted_spawn_context,
             ):
                 if frame.startswith("event: token"):
@@ -1519,7 +1525,7 @@ async def serve_generated_image(
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> FileResponse:
     """Serve a generated image file from disk."""
-    filepath = _resolve_safe_file_path(GENERATED_IMAGES_DIR, filename)
+    filepath = _resolve_safe_file_path(GENERATED_IMAGES_DIR, filename, auth.user_id)
     if filepath is None:
         raise HTTPException(status_code=404, detail="Image not found")
 
@@ -1531,21 +1537,12 @@ async def serve_generated_image(
     return FileResponse(filepath, media_type=media_type)
 
 
-def _resolve_safe_file_path(base_dir: Path, filename: str) -> Path | None:
-    safe_name = os.path.basename(filename)
-    if not safe_name or filename != safe_name:
-        return None
-    try:
-        base_resolved = base_dir.resolve()
-        for directory_entry in base_resolved.iterdir():
-            if directory_entry.name != safe_name:
-                continue
-            candidate = directory_entry.resolve()
-            candidate.relative_to(base_resolved)
-            return candidate if candidate.is_file() else None
-    except (OSError, RuntimeError, ValueError):
-        return None
-    return None
+def _resolve_safe_file_path(
+    base_dir: Path,
+    filename: str,
+    user_id: uuid.UUID | str | None,
+) -> Path | None:
+    return resolve_owned_artifact(base_dir, user_id, filename)
 
 
 @app.get("/generated-audio/{filename}")
@@ -1554,9 +1551,9 @@ async def serve_generated_audio(
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> FileResponse:
     """Serve a generated audio file from disk (TTS or sound effects)."""
-    filepath = _resolve_safe_file_path(TTS_CACHE_DIR, filename)
+    filepath = _resolve_safe_file_path(TTS_CACHE_DIR, filename, auth.user_id)
     if filepath is None:
-        filepath = _resolve_safe_file_path(GENERATED_AUDIO_DIR, filename)
+        filepath = _resolve_safe_file_path(GENERATED_AUDIO_DIR, filename, auth.user_id)
     if filepath is None:
         raise HTTPException(status_code=404, detail="Audio not found")
 
@@ -1574,7 +1571,7 @@ async def serve_generated_file(
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> FileResponse:
     """Serve a generated document file from disk."""
-    filepath = _resolve_safe_file_path(GENERATED_FILES_DIR, filename)
+    filepath = _resolve_safe_file_path(GENERATED_FILES_DIR, filename, auth.user_id)
     if filepath is None:
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -1610,8 +1607,8 @@ async def text_to_speech(
 
     cache_key = hashlib.sha256(f"{model}|{voice}|{speed}|{fmt}|{text}".encode("utf-8")).hexdigest()
     filename = f"{cache_key}.{fmt}"
-    filepath = TTS_CACHE_DIR / filename
-    if use_cache and filepath.exists():
+    cached_filepath = resolve_owned_artifact(TTS_CACHE_DIR, auth.user_id, filename)
+    if use_cache and cached_filepath is not None:
         return {
             "audio_path": f"/generated-audio/{filename}",
             "cached": True,
@@ -1663,7 +1660,7 @@ async def text_to_speech(
                 status_code=502,
                 detail=f"ElevenLabs TTS request failed: {response.text}",
             )
-        filepath.write_bytes(response.content)
+        write_owned_artifact(TTS_CACHE_DIR, auth.user_id, filename, response.content)
 
     return {
         "audio_path": f"/generated-audio/{filename}",
@@ -1803,10 +1800,9 @@ async def generate_sound_effect(
 
     cache_key = hashlib.sha256(f"{text}|{duration_seconds}".encode("utf-8")).hexdigest()
     filename = f"{cache_key}.mp3"
-    filepath = TTS_CACHE_DIR / filename
-
-    if filepath.exists():
-        return FileResponse(filepath, media_type="audio/mpeg")
+    cached_filepath = resolve_owned_artifact(TTS_CACHE_DIR, auth.user_id, filename)
+    if cached_filepath is not None:
+        return FileResponse(cached_filepath, media_type="audio/mpeg")
 
     url = "https://api.elevenlabs.io/v1/sound-generation"
     headers = {
@@ -1825,7 +1821,7 @@ async def generate_sound_effect(
                 status_code=502,
                 detail=f"Sound effects request failed: {response.text}",
             )
-        filepath.write_bytes(response.content)
+        filepath = write_owned_artifact(TTS_CACHE_DIR, auth.user_id, filename, response.content)
 
     return FileResponse(filepath, media_type="audio/mpeg")
 
