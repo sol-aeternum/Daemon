@@ -135,6 +135,12 @@ class _BindingEvent(_AliasEvent):
 
 
 @dataclass(frozen=True)
+class _ComprehensionBindingEvent(_AliasEvent):
+    name: str
+    source: ast.expr
+
+
+@dataclass(frozen=True)
 class _BranchEvent(_AliasEvent):
     alternatives: tuple[tuple[_AliasEvent, ...], ...]
 
@@ -144,8 +150,11 @@ class _LoopEvent(_AliasEvent):
     iteration: tuple[_AliasEvent, ...]
     orelse: tuple[_AliasEvent, ...]
     may_skip: bool
-    break_nodes: tuple[ast.Break, ...]
-    continue_nodes: tuple[ast.Continue, ...]
+
+
+@dataclass(frozen=True)
+class _ControlEvent(_AliasEvent):
+    kind: str
 
 
 @dataclass(frozen=True)
@@ -323,22 +332,38 @@ class _OsAliasVisitor(ast.NodeVisitor):
         The first iterable is evaluated in the enclosing scope. Targets,
         filters, later iterables, and the result expression execute in the
         comprehension's implicit scope, in generator-clause order.
+
+        Generator expressions remain conservative: their body may run after
+        creation, and this gate does not attempt iterator escape/consumption
+        analysis. The outer binding therefore represents a possible later
+        execution unless a literal iterable proves the body cannot run.
         """
         first, *remaining = node.generators
         self._record_node(first)
         self.visit(first.iter)
         self._record_scope_entry(node)
 
-        self._push(node)
+        frame = self._push(node)
+        frame["body_may_execute"] = all(
+            enclosing.get("body_may_execute", True)
+            for enclosing in self._stack[:-1]
+            if enclosing["kind"] == "comprehension"
+        ) and not self._iterable_is_definitely_empty(first.iter)
         self.visit(first.target)
         for condition in first.ifs:
             self.visit(condition)
+            if self._condition_is_definitely_false(condition):
+                frame["body_may_execute"] = False
         for generator in remaining:
             self._record_node(generator)
             self.visit(generator.iter)
+            if self._iterable_is_definitely_empty(generator.iter):
+                frame["body_may_execute"] = False
             self.visit(generator.target)
             for condition in generator.ifs:
                 self.visit(condition)
+                if self._condition_is_definitely_false(condition):
+                    frame["body_may_execute"] = False
 
         if isinstance(node, ast.DictComp):
             self.visit(node.key)
@@ -546,6 +571,31 @@ class _OsAliasVisitor(ast.NodeVisitor):
         self.visit(node.value)
         if isinstance(node.target, ast.Name):
             self._record_direct_binding(node.target.id, node.value)
+            if self._current()["kind"] == "comprehension":
+                containing_frame = next(
+                    (
+                        frame
+                        for frame in reversed(self._stack[:-1])
+                        if frame["kind"] != "comprehension"
+                    ),
+                    None,
+                )
+                # Assignment expressions in comprehensions bind to the nearest
+                # containing non-comprehension scope. Python rejects the class-
+                # body form at parse time, so a class frame is not routed.
+                if containing_frame is not None and containing_frame["kind"] != "class":
+                    # The target is a local/cell binding even when the
+                    # comprehension never iterates, so it must participate in
+                    # compile-time shadowing independently of runtime flow.
+                    containing_frame["bound_names"].add(node.target.id)
+                    if all(
+                        frame.get("body_may_execute", True)
+                        for frame in self._stack
+                        if frame["kind"] == "comprehension"
+                    ):
+                        containing_frame["events"].append(
+                            _ComprehensionBindingEvent(node.target.id, node.value)
+                        )
         else:
             self.visit(node.target)
 
@@ -571,27 +621,26 @@ class _OsAliasVisitor(ast.NodeVisitor):
         return True
 
     @staticmethod
-    def _direct_loop_controls(
-        node: ast.For | ast.AsyncFor | ast.While,
-    ) -> tuple[tuple[ast.Break, ...], tuple[ast.Continue, ...]]:
-        breaks: list[ast.Break] = []
-        continues: list[ast.Continue] = []
-        for statement in node.body:
-            for descendant in ast.walk(statement):
-                if not isinstance(descendant, (ast.Break, ast.Continue)):
-                    continue
-                enclosing = getattr(descendant, "parent", None)
-                while enclosing is not None and not isinstance(
-                    enclosing, (ast.For, ast.AsyncFor, ast.While)
-                ):
-                    enclosing = getattr(enclosing, "parent", None)
-                if enclosing is not node:
-                    continue
-                if isinstance(descendant, ast.Break):
-                    breaks.append(descendant)
-                else:
-                    continues.append(descendant)
-        return tuple(breaks), tuple(continues)
+    def _iterable_is_definitely_empty(node: ast.expr) -> bool:
+        """Return True only for literal iterables proven empty."""
+        if isinstance(node, (ast.List, ast.Set, ast.Tuple)):
+            return not node.elts
+        if isinstance(node, ast.Dict):
+            return not node.keys
+        return (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, (str, bytes, tuple, frozenset))
+            and not node.value
+        )
+
+    @staticmethod
+    def _condition_is_definitely_false(node: ast.expr) -> bool:
+        """Return True only when a literal comprehension filter is false."""
+        if isinstance(node, ast.Constant):
+            return not bool(node.value)
+        if isinstance(node, (ast.List, ast.Set, ast.Tuple)):
+            return not node.elts
+        return isinstance(node, ast.Dict) and not node.keys
 
     def _visit_for(self, node: ast.For | ast.AsyncFor) -> None:
         # Python evaluates the iterable before either the zero-iteration path
@@ -606,14 +655,11 @@ class _OsAliasVisitor(ast.NodeVisitor):
         finally:
             self._event_stack.pop()
         orelse = self._visit_alternative(tuple(node.orelse))
-        breaks, continues = self._direct_loop_controls(node)
         self._event_stack[-1].append(
             _LoopEvent(
                 iteration=tuple(iteration),
                 orelse=orelse,
                 may_skip=self._iterable_may_be_empty(node.iter),
-                break_nodes=breaks,
-                continue_nodes=continues,
             )
         )
 
@@ -627,16 +673,31 @@ class _OsAliasVisitor(ast.NodeVisitor):
         self.visit(node.test)
         iteration = self._visit_alternative(tuple(node.body))
         orelse = self._visit_alternative(tuple(node.orelse))
-        breaks, continues = self._direct_loop_controls(node)
         self._event_stack[-1].append(
             _LoopEvent(
                 iteration=iteration,
                 orelse=orelse,
                 may_skip=True,
-                break_nodes=breaks,
-                continue_nodes=continues,
             )
         )
+
+    def visit_Return(self, node: ast.Return) -> None:
+        if node.value is not None:
+            self.visit(node.value)
+        self._event_stack[-1].append(_ControlEvent("return"))
+
+    def visit_Raise(self, node: ast.Raise) -> None:
+        if node.exc is not None:
+            self.visit(node.exc)
+        if node.cause is not None:
+            self.visit(node.cause)
+        self._event_stack[-1].append(_ControlEvent("raise"))
+
+    def visit_Break(self, node: ast.Break) -> None:
+        self._event_stack[-1].append(_ControlEvent("break"))
+
+    def visit_Continue(self, node: ast.Continue) -> None:
+        self._event_stack[-1].append(_ControlEvent("continue"))
 
     def visit_Global(self, node: ast.Global) -> None:
         self._current()["global_names"].update(node.names)
@@ -675,6 +736,18 @@ class _OsAliasVisitor(ast.NodeVisitor):
 
 _ALIAS_KINDS = ("os_names", "getenv_names", "environ_names")
 _AliasMap = dict[str, set[str]]
+
+
+@dataclass(frozen=True)
+class _FlowResult:
+    """Alias states separated by the way control leaves an event sequence."""
+
+    normal: _AliasMap | None
+    returned: _AliasMap | None
+    raised: _AliasMap | None
+    broken: _AliasMap | None
+    continued: _AliasMap | None
+    reachable: _AliasMap
 
 
 @dataclass(frozen=True)
@@ -717,6 +790,10 @@ def _resolve_aliases_for(tree: ast.AST) -> _AliasResolution:
             alias_kind: set().union(*(state[alias_kind] for state in states))
             for alias_kind in _ALIAS_KINDS
         }
+
+    def _join_optional(states: list[_AliasMap | None]) -> _AliasMap | None:
+        present = [state for state in states if state is not None]
+        return _join_aliases(present) if present else None
 
     def _kinds_for_source(
         source: ast.expr | str | None,
@@ -775,83 +852,256 @@ def _resolve_aliases_for(tree: ast.AST) -> _AliasResolution:
             _copy_aliases(aliases) if existing is None else _join_aliases([existing, aliases])
         )
 
+    def _bind(state: _AliasMap, name: str, source: ast.expr | str | None) -> _AliasMap:
+        bound = _copy_aliases(state)
+        source_kinds = _kinds_for_source(source, state, node_aliases)
+        for alias_kind in _ALIAS_KINDS:
+            bound[alias_kind].discard(name)
+        for source_kind in source_kinds:
+            bound[source_kind].add(name)
+        return bound
+
     def _evaluate(
         events: tuple[_AliasEvent, ...] | list[_AliasEvent],
         initial: _AliasMap,
-    ) -> tuple[_AliasMap, _AliasMap]:
-        current = _copy_aliases(initial)
-        reachable_states = [_copy_aliases(current)]
+    ) -> _FlowResult:
+        normal: _AliasMap | None = _copy_aliases(initial)
+        returned: _AliasMap | None = None
+        raised: _AliasMap | None = None
+        broken: _AliasMap | None = None
+        continued: _AliasMap | None = None
+        reachable_states = [_copy_aliases(initial)]
+
+        def _add_terminal(kind: str, state: _AliasMap | None) -> None:
+            nonlocal returned, raised, broken, continued
+            if state is None:
+                return
+            if kind == "return":
+                returned = _join_optional([returned, state])
+            elif kind == "raise":
+                raised = _join_optional([raised, state])
+            elif kind == "break":
+                broken = _join_optional([broken, state])
+            else:
+                assert kind == "continue"
+                continued = _join_optional([continued, state])
+
         for event in events:
+            if normal is None:
+                break
             if isinstance(event, _NodeEvent):
-                _merge_snapshot(node_aliases, event.node, current)
+                _merge_snapshot(node_aliases, event.node, normal)
                 continue
             if isinstance(event, _ScopeEntryEvent):
-                _merge_snapshot(entry_aliases, event.node, current)
+                _merge_snapshot(entry_aliases, event.node, normal)
+                continue
+            if isinstance(event, _ControlEvent):
+                _add_terminal(event.kind, normal)
+                normal = None
                 continue
             if isinstance(event, _BranchEvent):
                 branch_results = [
-                    _evaluate(alternative, current) for alternative in event.alternatives
+                    _evaluate(alternative, normal) for alternative in event.alternatives
                 ]
-                current = _join_aliases([result[0] for result in branch_results])
-                reachable_states.extend(result[1] for result in branch_results)
-                reachable_states.append(_copy_aliases(current))
+                normal = _join_optional([result.normal for result in branch_results])
+                returned = _join_optional(
+                    [returned, *(result.returned for result in branch_results)]
+                )
+                raised = _join_optional([raised, *(result.raised for result in branch_results)])
+                broken = _join_optional([broken, *(result.broken for result in branch_results)])
+                continued = _join_optional(
+                    [continued, *(result.continued for result in branch_results)]
+                )
+                reachable_states.extend(result.reachable for result in branch_results)
+                if normal is not None:
+                    reachable_states.append(_copy_aliases(normal))
                 continue
             if isinstance(event, _LoopEvent):
-                iteration_final, iteration_reachable = _evaluate(event.iteration, current)
-                normal_inputs = [iteration_final]
-                if event.may_skip:
-                    normal_inputs.append(current)
-                normal_inputs.extend(
-                    node_aliases[continue_node] for continue_node in event.continue_nodes
+                # Widen the loop-entry state to a fixed point so aliases from a
+                # continue/fallthrough path can affect a later iteration's
+                # break/return path. The alias domain is finite and each widen
+                # only adds names, so this terminates quickly.
+                loop_entry = _copy_aliases(normal)
+                iteration_results: list[_FlowResult] = []
+                while True:
+                    iteration_result = _evaluate(event.iteration, loop_entry)
+                    iteration_results.append(iteration_result)
+                    repeated = _join_optional([iteration_result.normal, iteration_result.continued])
+                    if repeated is None:
+                        break
+                    widened = _join_aliases([loop_entry, repeated])
+                    if widened == loop_entry:
+                        break
+                    loop_entry = widened
+                iteration = _FlowResult(
+                    normal=_join_optional([result.normal for result in iteration_results]),
+                    returned=_join_optional([result.returned for result in iteration_results]),
+                    raised=_join_optional([result.raised for result in iteration_results]),
+                    broken=_join_optional([result.broken for result in iteration_results]),
+                    continued=_join_optional([result.continued for result in iteration_results]),
+                    reachable=_join_aliases([result.reachable for result in iteration_results]),
                 )
-                normal_exit = _join_aliases(normal_inputs)
-                if event.orelse:
-                    orelse_final, orelse_reachable = _evaluate(event.orelse, normal_exit)
-                else:
-                    orelse_final = normal_exit
-                    orelse_reachable = normal_exit
-                exits = [orelse_final]
-                exits.extend(node_aliases[break_node] for break_node in event.break_nodes)
-                current = _join_aliases(exits)
-                reachable_states.extend((iteration_reachable, orelse_reachable, current))
+                normal_exit = _join_optional(
+                    [
+                        iteration.normal,
+                        iteration.continued,
+                        normal if event.may_skip else None,
+                    ]
+                )
+                orelse = _evaluate(event.orelse, normal_exit) if normal_exit is not None else None
+                normal = _join_optional(
+                    [orelse.normal if orelse is not None else normal_exit, iteration.broken]
+                )
+                returned = _join_optional(
+                    [
+                        returned,
+                        iteration.returned,
+                        orelse.returned if orelse is not None else None,
+                    ]
+                )
+                raised = _join_optional(
+                    [
+                        raised,
+                        iteration.raised,
+                        orelse.raised if orelse is not None else None,
+                    ]
+                )
+                # A break/continue in a nested loop's else suite targets the
+                # surrounding loop, while controls in the iteration itself are
+                # consumed by this loop.
+                broken = _join_optional([broken, orelse.broken if orelse is not None else None])
+                continued = _join_optional(
+                    [continued, orelse.continued if orelse is not None else None]
+                )
+                reachable_states.append(iteration.reachable)
+                if orelse is not None:
+                    reachable_states.append(orelse.reachable)
+                if normal is not None:
+                    reachable_states.append(_copy_aliases(normal))
                 continue
             if isinstance(event, _TryEvent):
-                body_final, body_reachable = _evaluate(event.body, current)
-                if event.orelse:
-                    success_final, success_reachable = _evaluate(event.orelse, body_final)
-                else:
-                    success_final = body_final
-                    success_reachable = body_final
-                handler_results = [_evaluate(handler, body_reachable) for handler in event.handlers]
-                joined_paths = [success_final]
-                joined_paths.extend(result[0] for result in handler_results)
-                joined = _join_aliases(joined_paths)
-                reachable_states.extend((body_reachable, success_reachable))
-                reachable_states.extend(result[1] for result in handler_results)
+                body = _evaluate(event.body, normal)
+                success = _evaluate(event.orelse, body.normal) if body.normal is not None else None
+                handler_results = [_evaluate(handler, body.reachable) for handler in event.handlers]
+                try_result = _FlowResult(
+                    normal=_join_optional(
+                        [
+                            success.normal if success is not None else body.normal,
+                            *(result.normal for result in handler_results),
+                        ]
+                    ),
+                    returned=_join_optional(
+                        [
+                            body.returned,
+                            success.returned if success is not None else None,
+                            *(result.returned for result in handler_results),
+                        ]
+                    ),
+                    # Any operation in the body or handlers may raise. Keeping
+                    # those states on the exceptional channel makes finally
+                    # snapshots conservative without admitting them to the
+                    # normal post-try merge.
+                    raised=_join_optional(
+                        [
+                            body.raised,
+                            body.reachable,
+                            success.raised if success is not None else None,
+                            success.reachable if success is not None else None,
+                            *(result.raised for result in handler_results),
+                            *(result.reachable for result in handler_results),
+                        ]
+                    ),
+                    broken=_join_optional(
+                        [
+                            body.broken,
+                            success.broken if success is not None else None,
+                            *(result.broken for result in handler_results),
+                        ]
+                    ),
+                    continued=_join_optional(
+                        [
+                            body.continued,
+                            success.continued if success is not None else None,
+                            *(result.continued for result in handler_results),
+                        ]
+                    ),
+                    reachable=_join_aliases(
+                        [
+                            body.reachable,
+                            *([success.reachable] if success is not None else []),
+                            *(result.reachable for result in handler_results),
+                        ]
+                    ),
+                )
+
                 if event.finalbody:
-                    # ``finally`` also runs on an exception raised before a
-                    # handler completes. Evaluate that wider state for reads
-                    # *inside* the finalizer, but derive the post-try state
-                    # only from normal/handled paths; an unhandled exception
-                    # executes ``finally`` and then leaves the scope.
-                    finally_paths = [joined, body_reachable, success_reachable]
-                    finally_paths.extend(result[1] for result in handler_results)
-                    finally_input = _join_aliases(finally_paths)
-                    _, exceptional_finally_reachable = _evaluate(event.finalbody, finally_input)
-                    current, finally_reachable = _evaluate(event.finalbody, joined)
-                    reachable_states.extend((exceptional_finally_reachable, finally_reachable))
-                else:
-                    current = joined
-                reachable_states.append(_copy_aliases(current))
+                    final_states: dict[str, _AliasMap | None] = {
+                        "normal": None,
+                        "return": None,
+                        "raise": None,
+                        "break": None,
+                        "continue": None,
+                    }
+                    finally_reachable = [try_result.reachable]
+                    for incoming_kind, incoming in (
+                        ("normal", try_result.normal),
+                        ("return", try_result.returned),
+                        ("raise", try_result.raised),
+                        ("break", try_result.broken),
+                        ("continue", try_result.continued),
+                    ):
+                        if incoming is None:
+                            continue
+                        final = _evaluate(event.finalbody, incoming)
+                        finally_reachable.append(final.reachable)
+                        final_states[incoming_kind] = _join_optional(
+                            [final_states[incoming_kind], final.normal]
+                        )
+                        for outgoing_kind, outgoing in (
+                            ("return", final.returned),
+                            ("raise", final.raised),
+                            ("break", final.broken),
+                            ("continue", final.continued),
+                        ):
+                            final_states[outgoing_kind] = _join_optional(
+                                [final_states[outgoing_kind], outgoing]
+                            )
+                    try_result = _FlowResult(
+                        normal=final_states["normal"],
+                        returned=final_states["return"],
+                        raised=final_states["raise"],
+                        broken=final_states["break"],
+                        continued=final_states["continue"],
+                        reachable=_join_aliases(finally_reachable),
+                    )
+
+                normal = try_result.normal
+                returned = _join_optional([returned, try_result.returned])
+                raised = _join_optional([raised, try_result.raised])
+                broken = _join_optional([broken, try_result.broken])
+                continued = _join_optional([continued, try_result.continued])
+                reachable_states.append(try_result.reachable)
+                if normal is not None:
+                    reachable_states.append(_copy_aliases(normal))
                 continue
-            assert isinstance(event, _BindingEvent)
-            source_kinds = _kinds_for_source(event.source, current, node_aliases)
-            for alias_kind in _ALIAS_KINDS:
-                current[alias_kind].discard(event.name)
-            for source_kind in source_kinds:
-                current[source_kind].add(event.name)
-            reachable_states.append(_copy_aliases(current))
-        return current, _join_aliases(reachable_states)
+            if isinstance(event, _ComprehensionBindingEvent):
+                # A comprehension may produce no target assignments because an
+                # iterable is empty, a filter rejects every item, or a generator
+                # is never consumed. Join assigned and unchanged states instead
+                # of treating the walrus as an unconditional outer-scope write.
+                normal = _join_aliases([normal, _bind(normal, event.name, event.source)])
+            else:
+                assert isinstance(event, _BindingEvent)
+                normal = _bind(normal, event.name, event.source)
+            reachable_states.append(_copy_aliases(normal))
+        return _FlowResult(
+            normal=normal,
+            returned=returned,
+            raised=raised,
+            broken=broken,
+            continued=continued,
+            reachable=_join_aliases(reachable_states),
+        )
 
     for frame in visitor.scopes():
         if frame["kind"] == "module":
@@ -863,10 +1113,15 @@ def _resolve_aliases_for(tree: ast.AST) -> _AliasResolution:
             # Neither implicit scope closes over a containing class namespace,
             # so nested classes/comprehensions inherit that class's own lexical
             # entry state instead of its sequential local bindings.
-            if frame["container_kind"] == "class":
+            entry = entry_aliases.get(frame["node"])
+            if entry is None:
+                # The scope definition itself is unreachable (for example,
+                # after an unconditional return), so none of its body executes.
+                base_aliases = empty_aliases
+            elif frame["container_kind"] == "class":
                 base_aliases = initial_aliases[frame["container_node"]]
             else:
-                base_aliases = entry_aliases[frame["node"]]
+                base_aliases = entry
         else:
             base_aliases = final_aliases[frame["parent_node"]]
 
@@ -884,7 +1139,13 @@ def _resolve_aliases_for(tree: ast.AST) -> _AliasResolution:
         }
         scope_key = None if frame["kind"] == "module" else frame["node"]
         initial_aliases[scope_key] = _copy_aliases(initial)
-        final_aliases[scope_key] = _evaluate(frame["events"], initial)[0]
+        flow = _evaluate(frame["events"], initial)
+        visible_to_children = _join_optional(
+            [flow.normal, flow.returned, flow.raised, flow.broken, flow.continued]
+        )
+        final_aliases[scope_key] = _copy_aliases(
+            visible_to_children if visible_to_children is not None else flow.reachable
+        )
     return _AliasResolution(
         node_aliases=node_aliases,
         empty_aliases=_copy_aliases(empty_aliases),
@@ -1822,6 +2083,62 @@ def test_ast_gate_isolates_comprehension_targets(tmp_path, monkeypatch) -> None:
     ]
 
 
+def test_ast_gate_propagates_comprehension_walruses(tmp_path, monkeypatch) -> None:
+    """Walrus targets escape comprehensions along possible executable paths."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "comprehension_walruses"
+    case_dir.mkdir()
+    (case_dir / "comprehension_walruses.py").write_text(
+        "import os\n"
+        "items = [1]\n"
+        "[(module_env := os.environ) for _ in items]\n"
+        'MODULE_AFTER = module_env.get("MODULE_AFTER")\n'
+        "\n"
+        "def function_scope(values):\n"
+        "    [(function_env := os.environ) for _ in values]\n"
+        '    return function_env.get("FUNCTION_AFTER")\n'
+        "\n"
+        "[[(nested_env := os.environ) for _ in [1]] for _ in [1]]\n"
+        'NESTED_AFTER = nested_env.get("NESTED_AFTER")\n'
+        "\n"
+        "[(empty_env := os.environ) for _ in []]\n"
+        'EMPTY_AFTER = empty_env.get("NOT_ENV")\n'
+        "\n"
+        "[None for _ in [1] if (early_env := os.environ) for _ in []]\n"
+        'EARLY_AFTER = early_env.get("EARLY_AFTER")\n'
+        "[(late_env := os.environ) for _ in [1] for _ in []]\n"
+        'LATE_AFTER = late_env.get("NOT_ENV")\n'
+        "\n"
+        "{(set_env := os.environ) for _ in [1]}\n"
+        'SET_AFTER = set_env.get("SET_AFTER")\n'
+        "{_: (dict_env := os.environ) for _ in [1]}\n"
+        'DICT_AFTER = dict_env.get("DICT_AFTER")\n'
+        "lazy = ((lazy_env := os.environ) for _ in [1])\n"
+        'LAZY_AFTER = lazy_env.get("NOT_ENV")\n'
+        "list((consumed_env := os.environ) for _ in [1])\n"
+        'CONSUMED_AFTER = consumed_env.get("CONSUMED_AFTER")\n'
+        "[(filtered_env := os.environ) for _ in [1] if False]\n"
+        'FILTERED_AFTER = filtered_env.get("NOT_ENV")\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (4, "os.environ.get(...)"),
+        (8, "os.environ.get(...)"),
+        (11, "os.environ.get(...)"),
+        (17, "os.environ.get(...)"),
+        (22, "os.environ.get(...)"),
+        (24, "os.environ.get(...)"),
+        (26, "os.environ.get(...)"),
+        (28, "os.environ.get(...)"),
+    ]
+
+
 def test_ast_gate_merges_aliases_across_non_if_control_flow(tmp_path, monkeypatch) -> None:
     """Try, match, and loop exits retain aliases from every reachable path."""
     import sys
@@ -1957,4 +2274,96 @@ def test_ast_gate_tracks_string_backed_control_flow_bindings(tmp_path, monkeypat
 
     assert sorted((line, snippet) for _, line, snippet in hits) == [
         (8, "os.getenv(...)"),
+    ]
+
+
+def test_ast_gate_excludes_terminal_paths_from_control_flow_joins(tmp_path, monkeypatch) -> None:
+    """Aliases on return/raise paths must not leak into later statements."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "terminal_control_flow"
+    case_dir.mkdir()
+    (case_dir / "terminal_control_flow.py").write_text(
+        "import os\n"
+        "fake = object()\n"
+        "\n"
+        "def return_branch(enabled):\n"
+        "    if enabled:\n"
+        "        import os as selected\n"
+        '        detected = selected.getenv("RETURN_BRANCH")\n'
+        "        return detected\n"
+        "    selected = fake\n"
+        '    return selected.getenv("NOT_ENV")\n'
+        "\n"
+        "def raise_branch(enabled):\n"
+        "    if enabled:\n"
+        "        import os as selected\n"
+        '        selected.getenv("RAISE_BRANCH")\n'
+        "        raise RuntimeError\n"
+        "    selected = fake\n"
+        '    return selected.getenv("NOT_ENV")\n'
+        "\n"
+        "def match_branch(token):\n"
+        "    match token:\n"
+        '        case "stop":\n'
+        "            import os as selected\n"
+        '            detected = selected.getenv("MATCH_BRANCH")\n'
+        "            return detected\n"
+        "        case _:\n"
+        "            selected = fake\n"
+        '    return selected.getenv("NOT_ENV")\n'
+        "\n"
+        "def loop_branch():\n"
+        "    for _ in [1]:\n"
+        "        import os as selected\n"
+        '        detected = selected.getenv("LOOP_BRANCH")\n'
+        "        return detected\n"
+        "    selected = fake\n"
+        '    return selected.getenv("NOT_ENV")\n'
+        "\n"
+        "def try_finally_branch(enabled):\n"
+        "    try:\n"
+        "        if enabled:\n"
+        "            import os as selected\n"
+        '            detected = selected.getenv("TRY_BRANCH")\n'
+        "            return detected\n"
+        "        selected = fake\n"
+        "    finally:\n"
+        "        cleanup()\n"
+        '    return selected.getenv("NOT_ENV")\n'
+        "\n"
+        "def nested_scope(enabled):\n"
+        "    if enabled:\n"
+        "        import os as selected\n"
+        "        def inner():\n"
+        '            return selected.getenv("NESTED_TERMINAL")\n'
+        "        return inner\n"
+        "    selected = fake\n"
+        "    return None\n"
+        "\n"
+        "def repeated_loop(values):\n"
+        "    selected = fake\n"
+        "    for value in values:\n"
+        "        if value:\n"
+        "            selected = os\n"
+        "            continue\n"
+        "        break\n"
+        "    else:\n"
+        "        selected = fake\n"
+        '    return selected.getenv("REPEATED_LOOP")\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (7, "os.getenv(...)"),
+        (15, "os.getenv(...)"),
+        (24, "os.getenv(...)"),
+        (33, "os.getenv(...)"),
+        (42, "os.getenv(...)"),
+        (53, "os.getenv(...)"),
+        (67, "os.getenv(...)"),
     ]
