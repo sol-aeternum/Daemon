@@ -132,7 +132,11 @@ def load_policy_from_env() -> FetchPolicy:
         kwargs["allowed_content_types"] = allowed_content_types
     if max_depth is not None:
         kwargs["max_depth"] = max_depth
-    if min_content_length is not None:
+    # Preserve the legacy loader's effective default: when the env var was
+    # absent it omitted this keyword and `FetchPolicy` supplied 100. The
+    # Settings field's built-in 200 is only an override when configuration
+    # explicitly supplied it.
+    if "fetch_min_content_length" in settings.model_fields_set:
         kwargs["min_content_length"] = min_content_length
     if settings.fetch_error_signatures.strip():
         kwargs["error_signatures"] = error_signatures

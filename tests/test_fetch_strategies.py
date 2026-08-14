@@ -13,6 +13,8 @@ try:
 except ImportError:
     YouTubeTranscriptApi = None
 
+from orchestrator.config import Settings
+from orchestrator.services.fetch import models as fetch_models
 from orchestrator.services.fetch.cache import FetchCache
 from orchestrator.services.fetch.models import FetchPolicy, FetchResult
 from orchestrator.services.fetch.service import FetchService
@@ -86,6 +88,36 @@ def fetch_cache():
 def fetch_service(fetch_policy, fetch_cache):
     service = FetchService(policy=fetch_policy, cache=fetch_cache)
     return service
+
+
+def test_fetch_policy_preserves_unset_minimum_length(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """An unset Settings field keeps the legacy FetchPolicy default of 100."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("FETCH_MIN_CONTENT_LENGTH", raising=False)
+    settings = Settings()
+    assert "fetch_min_content_length" not in settings.model_fields_set
+    monkeypatch.setattr(fetch_models, "get_settings", lambda: settings)
+
+    policy = fetch_models.load_policy_from_env()
+
+    assert policy.min_content_length == FetchPolicy().min_content_length == 100
+
+
+def test_fetch_policy_applies_explicit_minimum_length(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """An operator-provided env value remains an explicit policy override."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("FETCH_MIN_CONTENT_LENGTH", "275")
+    settings = Settings()
+    assert "fetch_min_content_length" in settings.model_fields_set
+    monkeypatch.setattr(fetch_models, "get_settings", lambda: settings)
+
+    policy = fetch_models.load_policy_from_env()
+
+    assert policy.min_content_length == 275
 
 
 class TestDirectStrategy:
