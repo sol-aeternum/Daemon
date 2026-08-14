@@ -140,6 +140,23 @@ class _BranchEvent(_AliasEvent):
 
 
 @dataclass(frozen=True)
+class _LoopEvent(_AliasEvent):
+    iteration: tuple[_AliasEvent, ...]
+    orelse: tuple[_AliasEvent, ...]
+    may_skip: bool
+    break_nodes: tuple[ast.Break, ...]
+    continue_nodes: tuple[ast.Continue, ...]
+
+
+@dataclass(frozen=True)
+class _TryEvent(_AliasEvent):
+    body: tuple[_AliasEvent, ...]
+    handlers: tuple[tuple[_AliasEvent, ...], ...]
+    orelse: tuple[_AliasEvent, ...]
+    finalbody: tuple[_AliasEvent, ...]
+
+
+@dataclass(frozen=True)
 class _ScopeEntryEvent(_AliasEvent):
     node: ast.AST
 
@@ -370,6 +387,92 @@ class _OsAliasVisitor(ast.NodeVisitor):
         orelse = self._visit_alternative((node.orelse,))
         self._event_stack[-1].append(_BranchEvent((body, orelse)))
 
+    def _visit_exception_handler(self, node: ast.ExceptHandler) -> tuple[_AliasEvent, ...]:
+        events: list[_AliasEvent] = []
+        self._event_stack.append(events)
+        try:
+            self._record_node(node)
+            if node.type is not None:
+                self.visit(node.type)
+            if node.name is not None:
+                # ``ExceptHandler.name`` is a string rather than an ast.Name.
+                # The exception object shadows any alias within the handler
+                # and Python deletes the temporary name when the handler exits.
+                self._record_direct_binding(node.name, None)
+            for statement in node.body:
+                self.visit(statement)
+            if node.name is not None:
+                self._record_direct_binding(node.name, None)
+        finally:
+            self._event_stack.pop()
+        return tuple(events)
+
+    def _visit_try(self, node: ast.Try | ast.TryStar) -> None:
+        body = self._visit_alternative(tuple(node.body))
+        handlers = tuple(self._visit_exception_handler(handler) for handler in node.handlers)
+        orelse = self._visit_alternative(tuple(node.orelse))
+        finalbody = self._visit_alternative(tuple(node.finalbody))
+        self._event_stack[-1].append(_TryEvent(body, handlers, orelse, finalbody))
+
+    def visit_Try(self, node: ast.Try) -> None:
+        self._visit_try(node)
+
+    def visit_TryStar(self, node: ast.TryStar) -> None:
+        self._visit_try(node)
+
+    def visit_Match(self, node: ast.Match) -> None:
+        self.visit(node.subject)
+        alternatives: list[tuple[_AliasEvent, ...]] = []
+        for case in node.cases:
+            events: list[_AliasEvent] = []
+            self._event_stack.append(events)
+            try:
+                self._record_node(case)
+                self.visit(case.pattern)
+                if case.guard is not None:
+                    self.visit(case.guard)
+                for statement in case.body:
+                    self.visit(statement)
+            finally:
+                self._event_stack.pop()
+            alternatives.append(tuple(events))
+        # Pattern feasibility is deliberately conservative. The unchanged
+        # state covers a subject that matches no case (or a guard that fails).
+        last_case = node.cases[-1] if node.cases else None
+        if (
+            last_case is None
+            or last_case.guard is not None
+            or not self._pattern_is_irrefutable(last_case.pattern)
+        ):
+            alternatives.append(())
+        self._event_stack[-1].append(_BranchEvent(tuple(alternatives)))
+
+    @classmethod
+    def _pattern_is_irrefutable(cls, node: ast.pattern) -> bool:
+        if isinstance(node, ast.MatchAs):
+            return node.pattern is None or cls._pattern_is_irrefutable(node.pattern)
+        if isinstance(node, ast.MatchOr):
+            return any(cls._pattern_is_irrefutable(pattern) for pattern in node.patterns)
+        return False
+
+    def visit_MatchAs(self, node: ast.MatchAs) -> None:
+        if node.pattern is not None:
+            self.visit(node.pattern)
+        if node.name is not None:
+            self._record_direct_binding(node.name, None)
+
+    def visit_MatchStar(self, node: ast.MatchStar) -> None:
+        if node.name is not None:
+            self._record_direct_binding(node.name, None)
+
+    def visit_MatchMapping(self, node: ast.MatchMapping) -> None:
+        for key in node.keys:
+            self.visit(key)
+        for pattern in node.patterns:
+            self.visit(pattern)
+        if node.rest is not None:
+            self._record_direct_binding(node.rest, None)
+
     def _visit_function_definition_expressions(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
     ) -> None:
@@ -454,19 +557,86 @@ class _OsAliasVisitor(ast.NodeVisitor):
             self.visit(node.target)
             self.visit(node.value)
 
-    def visit_For(self, node: ast.For) -> None:
-        # Python evaluates the iterable before rebinding the loop target.
+    @staticmethod
+    def _iterable_may_be_empty(node: ast.expr) -> bool:
+        """Return False only for literal iterables proven non-empty."""
+        if isinstance(node, (ast.List, ast.Set, ast.Tuple)):
+            return not node.elts
+        if isinstance(node, ast.Dict):
+            return not node.keys
+        if isinstance(node, ast.Constant) and isinstance(
+            node.value, (str, bytes, tuple, frozenset)
+        ):
+            return not node.value
+        return True
+
+    @staticmethod
+    def _direct_loop_controls(
+        node: ast.For | ast.AsyncFor | ast.While,
+    ) -> tuple[tuple[ast.Break, ...], tuple[ast.Continue, ...]]:
+        breaks: list[ast.Break] = []
+        continues: list[ast.Continue] = []
+        for statement in node.body:
+            for descendant in ast.walk(statement):
+                if not isinstance(descendant, (ast.Break, ast.Continue)):
+                    continue
+                enclosing = getattr(descendant, "parent", None)
+                while enclosing is not None and not isinstance(
+                    enclosing, (ast.For, ast.AsyncFor, ast.While)
+                ):
+                    enclosing = getattr(enclosing, "parent", None)
+                if enclosing is not node:
+                    continue
+                if isinstance(descendant, ast.Break):
+                    breaks.append(descendant)
+                else:
+                    continues.append(descendant)
+        return tuple(breaks), tuple(continues)
+
+    def _visit_for(self, node: ast.For | ast.AsyncFor) -> None:
+        # Python evaluates the iterable before either the zero-iteration path
+        # or the first target binding.
         self.visit(node.iter)
-        self.visit(node.target)
-        for statement in (*node.body, *node.orelse):
-            self.visit(statement)
+        iteration: list[_AliasEvent] = []
+        self._event_stack.append(iteration)
+        try:
+            self.visit(node.target)
+            for statement in node.body:
+                self.visit(statement)
+        finally:
+            self._event_stack.pop()
+        orelse = self._visit_alternative(tuple(node.orelse))
+        breaks, continues = self._direct_loop_controls(node)
+        self._event_stack[-1].append(
+            _LoopEvent(
+                iteration=tuple(iteration),
+                orelse=orelse,
+                may_skip=self._iterable_may_be_empty(node.iter),
+                break_nodes=breaks,
+                continue_nodes=continues,
+            )
+        )
+
+    def visit_For(self, node: ast.For) -> None:
+        self._visit_for(node)
 
     def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
-        # Async iteration has the same target-binding order as a sync loop.
-        self.visit(node.iter)
-        self.visit(node.target)
-        for statement in (*node.body, *node.orelse):
-            self.visit(statement)
+        self._visit_for(node)
+
+    def visit_While(self, node: ast.While) -> None:
+        self.visit(node.test)
+        iteration = self._visit_alternative(tuple(node.body))
+        orelse = self._visit_alternative(tuple(node.orelse))
+        breaks, continues = self._direct_loop_controls(node)
+        self._event_stack[-1].append(
+            _LoopEvent(
+                iteration=iteration,
+                orelse=orelse,
+                may_skip=True,
+                break_nodes=breaks,
+                continue_nodes=continues,
+            )
+        )
 
     def visit_Global(self, node: ast.Global) -> None:
         self._current()["global_names"].update(node.names)
@@ -533,10 +703,10 @@ def _resolve_aliases_for(tree: ast.AST) -> _AliasResolution:
     visible before a later rebind. Parent-scope aliases retain their final
     state because globals and closure cells are resolved when a callable runs.
 
-    Conditional alternatives are evaluated from the same incoming state and
-    joined by union at the merge point. A name is therefore considered an env
-    alias whenever any reachable branch can bind it to one, while reads inside
-    each branch still use that branch's own sequential state.
+    Conditional, exception, match, and loop alternatives are joined by union
+    at their merge points. A name is therefore considered an env alias whenever
+    any reachable path can bind it to one, while reads within a single path
+    still use that path's sequential state.
     """
 
     def _copy_aliases(aliases: _AliasMap) -> _AliasMap:
@@ -595,23 +765,84 @@ def _resolve_aliases_for(tree: ast.AST) -> _AliasResolution:
     final_aliases: dict[ast.AST | None, _AliasMap] = {}
     initial_aliases: dict[ast.AST | None, _AliasMap] = {}
 
+    def _merge_snapshot(
+        snapshots: dict[ast.AST, _AliasMap],
+        node: ast.AST,
+        aliases: _AliasMap,
+    ) -> None:
+        existing = snapshots.get(node)
+        snapshots[node] = (
+            _copy_aliases(aliases) if existing is None else _join_aliases([existing, aliases])
+        )
+
     def _evaluate(
         events: tuple[_AliasEvent, ...] | list[_AliasEvent],
         initial: _AliasMap,
-    ) -> _AliasMap:
+    ) -> tuple[_AliasMap, _AliasMap]:
         current = _copy_aliases(initial)
+        reachable_states = [_copy_aliases(current)]
         for event in events:
             if isinstance(event, _NodeEvent):
-                node_aliases[event.node] = _copy_aliases(current)
+                _merge_snapshot(node_aliases, event.node, current)
                 continue
             if isinstance(event, _ScopeEntryEvent):
-                entry_aliases[event.node] = _copy_aliases(current)
+                _merge_snapshot(entry_aliases, event.node, current)
                 continue
             if isinstance(event, _BranchEvent):
-                branch_states = [
+                branch_results = [
                     _evaluate(alternative, current) for alternative in event.alternatives
                 ]
-                current = _join_aliases(branch_states)
+                current = _join_aliases([result[0] for result in branch_results])
+                reachable_states.extend(result[1] for result in branch_results)
+                reachable_states.append(_copy_aliases(current))
+                continue
+            if isinstance(event, _LoopEvent):
+                iteration_final, iteration_reachable = _evaluate(event.iteration, current)
+                normal_inputs = [iteration_final]
+                if event.may_skip:
+                    normal_inputs.append(current)
+                normal_inputs.extend(
+                    node_aliases[continue_node] for continue_node in event.continue_nodes
+                )
+                normal_exit = _join_aliases(normal_inputs)
+                if event.orelse:
+                    orelse_final, orelse_reachable = _evaluate(event.orelse, normal_exit)
+                else:
+                    orelse_final = normal_exit
+                    orelse_reachable = normal_exit
+                exits = [orelse_final]
+                exits.extend(node_aliases[break_node] for break_node in event.break_nodes)
+                current = _join_aliases(exits)
+                reachable_states.extend((iteration_reachable, orelse_reachable, current))
+                continue
+            if isinstance(event, _TryEvent):
+                body_final, body_reachable = _evaluate(event.body, current)
+                if event.orelse:
+                    success_final, success_reachable = _evaluate(event.orelse, body_final)
+                else:
+                    success_final = body_final
+                    success_reachable = body_final
+                handler_results = [_evaluate(handler, body_reachable) for handler in event.handlers]
+                joined_paths = [success_final]
+                joined_paths.extend(result[0] for result in handler_results)
+                joined = _join_aliases(joined_paths)
+                reachable_states.extend((body_reachable, success_reachable))
+                reachable_states.extend(result[1] for result in handler_results)
+                if event.finalbody:
+                    # ``finally`` also runs on an exception raised before a
+                    # handler completes. Evaluate that wider state for reads
+                    # *inside* the finalizer, but derive the post-try state
+                    # only from normal/handled paths; an unhandled exception
+                    # executes ``finally`` and then leaves the scope.
+                    finally_paths = [joined, body_reachable, success_reachable]
+                    finally_paths.extend(result[1] for result in handler_results)
+                    finally_input = _join_aliases(finally_paths)
+                    _, exceptional_finally_reachable = _evaluate(event.finalbody, finally_input)
+                    current, finally_reachable = _evaluate(event.finalbody, joined)
+                    reachable_states.extend((exceptional_finally_reachable, finally_reachable))
+                else:
+                    current = joined
+                reachable_states.append(_copy_aliases(current))
                 continue
             assert isinstance(event, _BindingEvent)
             source_kinds = _kinds_for_source(event.source, current, node_aliases)
@@ -619,7 +850,8 @@ def _resolve_aliases_for(tree: ast.AST) -> _AliasResolution:
                 current[alias_kind].discard(event.name)
             for source_kind in source_kinds:
                 current[source_kind].add(event.name)
-        return current
+            reachable_states.append(_copy_aliases(current))
+        return current, _join_aliases(reachable_states)
 
     for frame in visitor.scopes():
         if frame["kind"] == "module":
@@ -652,7 +884,7 @@ def _resolve_aliases_for(tree: ast.AST) -> _AliasResolution:
         }
         scope_key = None if frame["kind"] == "module" else frame["node"]
         initial_aliases[scope_key] = _copy_aliases(initial)
-        final_aliases[scope_key] = _evaluate(frame["events"], initial)
+        final_aliases[scope_key] = _evaluate(frame["events"], initial)[0]
     return _AliasResolution(
         node_aliases=node_aliases,
         empty_aliases=_copy_aliases(empty_aliases),
@@ -1587,4 +1819,142 @@ def test_ast_gate_isolates_comprehension_targets(tmp_path, monkeypatch) -> None:
         (12, "os.getenv(...)"),
         (22, "os.getenv(...)"),
         (25, "os.getenv(...)"),
+    ]
+
+
+def test_ast_gate_merges_aliases_across_non_if_control_flow(tmp_path, monkeypatch) -> None:
+    """Try, match, and loop exits retain aliases from every reachable path."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "non_if_control_flow"
+    case_dir.mkdir()
+    (case_dir / "non_if_control_flow.py").write_text(
+        "import os\n"
+        "fake = object()\n"
+        "\n"
+        "try:\n"
+        "    env = os.environ\n"
+        "    risky()\n"
+        "except Exception:\n"
+        "    env = fake\n"
+        'TRY_AFTER = env.get("TRY_AFTER")\n'
+        "\n"
+        "try:\n"
+        "    partial = os.environ\n"
+        "    risky()\n"
+        "    partial = fake\n"
+        "except Exception:\n"
+        '    HANDLER_MAYBE = partial.get("HANDLER_MAYBE")\n'
+        "\n"
+        "try:\n"
+        "    star_os = os\n"
+        "    risky()\n"
+        "except* Exception:\n"
+        "    star_os = fake\n"
+        'TRY_STAR_AFTER = star_os.getenv("TRY_STAR_AFTER")\n'
+        "\n"
+        "match token:\n"
+        '    case "env":\n'
+        "        matched = os\n"
+        "    case _:\n"
+        "        matched = fake\n"
+        'MATCH_AFTER = matched.getenv("MATCH_AFTER")\n'
+        "\n"
+        "for os in maybe_items:\n"
+        '    ignored_for = os.getenv("NOT_ENV")\n'
+        'FOR_AFTER = os.getenv("MAYBE_OUTER")\n'
+        "\n"
+        "while condition:\n"
+        "    loop_os = os\n"
+        "    break\n"
+        'WHILE_AFTER = loop_os.getenv("WHILE_AFTER")\n'
+        "\n"
+        "async def async_loop(stream):\n"
+        "    import os as async_os\n"
+        "    async for async_os in stream:\n"
+        '        ignored = async_os.getenv("NOT_ENV")\n'
+        '    return async_os.getenv("ASYNC_MAYBE")\n'
+        "\n"
+        "for value in maybe_items:\n"
+        "    continued = os\n"
+        "    continue\n"
+        "    continued = fake\n"
+        'CONTINUE_AFTER = continued.getenv("CONTINUE_AFTER")\n'
+        "\n"
+        "import os\n"
+        "try:\n"
+        "    os = fake\n"
+        "finally:\n"
+        "    cleanup()\n"
+        'AFTER_FINALLY = os.getenv("NOT_ENV")\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (9, "os.environ.get(...)"),
+        (16, "os.environ.get(...)"),
+        (23, "os.getenv(...)"),
+        (30, "os.getenv(...)"),
+        (34, "os.getenv(...)"),
+        (39, "os.getenv(...)"),
+        (45, "os.getenv(...)"),
+        (51, "os.getenv(...)"),
+    ]
+
+
+def test_ast_gate_tracks_string_backed_control_flow_bindings(tmp_path, monkeypatch) -> None:
+    """Handler and pattern targets shadow aliases despite storing names as strings."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "string_targets"
+    case_dir.mkdir()
+    (case_dir / "string_targets.py").write_text(
+        "import os\n"
+        "\n"
+        "try:\n"
+        "    risky()\n"
+        "except Exception as os:\n"
+        '    ignored_call = os.getenv("NOT_ENV")\n'
+        '    ignored_subscript = os.environ["NOT_ENV"]\n'
+        'OUTSIDE = os.getenv("OUTSIDE")\n'
+        "\n"
+        "match token:\n"
+        "    case os:\n"
+        '        captured = os.getenv("NOT_ENV")\n'
+        'AFTER_CAPTURE = os.getenv("NOT_ENV")\n'
+        "\n"
+        "def function_handler():\n"
+        "    try:\n"
+        "        risky()\n"
+        "    except Exception as os:\n"
+        '        return os.getenv("NOT_ENV")\n'
+        "    return None\n"
+        "\n"
+        "def capture_pattern(value):\n"
+        "    match value:\n"
+        "        case os:\n"
+        '            return os.getenv("NOT_ENV")\n'
+        "\n"
+        "def star_pattern(value):\n"
+        "    match value:\n"
+        "        case [*os]:\n"
+        '            return os.getenv("NOT_ENV")\n'
+        "\n"
+        "def mapping_pattern(value):\n"
+        "    match value:\n"
+        "        case {**os}:\n"
+        '            return os.getenv("NOT_ENV")\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (8, "os.getenv(...)"),
     ]
