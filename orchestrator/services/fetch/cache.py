@@ -12,6 +12,8 @@ from orchestrator.services.fetch.models import FetchResult
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_TTL_SECONDS = 3600
+
 
 def normalize_url(url: str) -> str:
     """Normalize URL for consistent caching."""
@@ -163,7 +165,13 @@ class FetchCache:
             key = f"fetch:result:{normalized_url}"
             data = self._serialize_result(result)
 
-            cache_ttl = ttl or get_settings().fetch_cache_ttl_seconds
+            settings = get_settings()
+            configured_ttl = (
+                settings.fetch_cache_ttl_seconds
+                if "fetch_cache_ttl_seconds" in settings.model_fields_set
+                else DEFAULT_TTL_SECONDS
+            )
+            cache_ttl = ttl or configured_ttl
 
             # Type narrowing - _ensure_connection guarantees redis is not None here
             assert self.redis is not None
