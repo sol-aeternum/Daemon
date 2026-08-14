@@ -62,6 +62,7 @@ ALLOWLIST = frozenset(
 FUNCTION_ALLOWLIST: dict[str, frozenset[str]] = {
     "orchestrator/database_url.py": frozenset({"resolve_database_url"}),
 }
+ENVIRON_READ_METHODS = frozenset({"copy", "get", "items", "keys", "values"})
 
 
 def _enclosing_function(node: ast.AST) -> ast.AST | None:
@@ -461,6 +462,8 @@ def _scan_for_direct_env_access() -> list[tuple[pathlib.Path, int, str]]:
       * ``os.environ["X"]`` / ``environ["X"]``
       * ``os.getenv("X")`` / ``getenv("X")``
       * ``"X" in os.environ`` / ``"X" not in environ``
+      * whole-mapping reads such as ``os.environ.copy()`` / ``environ.items()``
+      * direct iteration such as ``for key in os.environ``
 
     ...including under any import alias (``import os as host_os``,
     ``from os import getenv``, ``from os import environ as e``), because
@@ -523,6 +526,8 @@ def _scan_for_direct_env_access() -> list[tuple[pathlib.Path, int, str]]:
                 #   3) getenv(...)          Call( Name(getenv-alias) )
                 #   4) <environ>["KEY"]     Subscript( <environ expr>, ctx=Load )
                 #   5) "KEY" in <environ>   Compare(..., In/NotIn, <environ expr>)
+                #   6) <environ>.copy/items/keys/values(...)
+                #   7) iteration over <environ>
                 if module_allowlist is not None:
                     # If the file has a function-scoped allowlist, only
                     # nodes inside the allowlisted functions are exempt;
@@ -538,10 +543,10 @@ def _scan_for_direct_env_access() -> list[tuple[pathlib.Path, int, str]]:
                     func = node.func
                     if (
                         isinstance(func, ast.Attribute)
-                        and func.attr == "get"
+                        and func.attr in ENVIRON_READ_METHODS
                         and _is_environ_expr(func.value, aliases)
                     ):
-                        hits.append((path, node.lineno, "os.environ.get(...)"))
+                        hits.append((path, node.lineno, f"os.environ.{func.attr}(...)"))
                     elif (
                         isinstance(func, ast.Attribute)
                         and func.attr == "getenv"
@@ -551,6 +556,24 @@ def _scan_for_direct_env_access() -> list[tuple[pathlib.Path, int, str]]:
                         hits.append((path, node.lineno, "os.getenv(...)"))
                     elif isinstance(func, ast.Name) and func.id in aliases["getenv_names"]:
                         hits.append((path, node.lineno, "os.getenv(...)"))
+                    elif (
+                        isinstance(func, ast.Name)
+                        and func.id == "iter"
+                        and len(node.args) == 1
+                        and _is_environ_expr(node.args[0], aliases)
+                    ):
+                        hits.append((path, node.lineno, "iteration over os.environ"))
+                    continue
+                if isinstance(node, (ast.For, ast.AsyncFor)) and _is_environ_expr(
+                    node.iter, aliases
+                ):
+                    hits.append((path, node.lineno, "iteration over os.environ"))
+                    continue
+                if isinstance(node, ast.comprehension) and _is_environ_expr(node.iter, aliases):
+                    hits.append((path, node.iter.lineno, "iteration over os.environ"))
+                    continue
+                if isinstance(node, ast.YieldFrom) and _is_environ_expr(node.value, aliases):
+                    hits.append((path, node.lineno, "iteration over os.environ"))
                     continue
                 if isinstance(node, ast.Compare):
                     if any(
@@ -572,7 +595,7 @@ def _scan_for_direct_env_access() -> list[tuple[pathlib.Path, int, str]]:
 def test_no_direct_env_access_outside_settings() -> None:
     hits = _scan_for_direct_env_access()
     assert not hits, (
-        "Direct `os.environ.get(...)` / `os.getenv(...)` / membership / "
+        "Direct `os.environ` mapping reads / `os.getenv(...)` / membership / "
         '`os.environ["KEY"]` reads detected outside '
         "`orchestrator/config.py` (or other allowed files). Read env vars "
         "through the `Settings` class instead so type validation, defaults, "
@@ -1112,4 +1135,70 @@ def test_ast_gate_propagates_environment_alias_assignments(tmp_path, monkeypatch
         (13, "os.environ.get(...)"),
         (13, "os.getenv(...)"),
         (13, "os.getenv(...)"),
+    ]
+
+
+def test_ast_gate_detects_environment_mapping_read_methods(tmp_path, monkeypatch) -> None:
+    """Whole-mapping read APIs bypass Settings just like per-key reads."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "mapping_reads"
+    case_dir.mkdir()
+    (case_dir / "mapping_reads.py").write_text(
+        "import os as host_os\n"
+        "from os import environ as env\n"
+        "assigned = host_os.environ\n"
+        "transitive = assigned\n"
+        "A = host_os.environ.copy()\n"
+        "B = env.items()\n"
+        "C = assigned.keys()\n"
+        "D = transitive.values()\n"
+        'env.update({"CHILD_FLAG": "1"})\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (5, "os.environ.copy(...)"),
+        (6, "os.environ.items(...)"),
+        (7, "os.environ.keys(...)"),
+        (8, "os.environ.values(...)"),
+    ]
+
+
+def test_ast_gate_detects_environment_iteration(tmp_path, monkeypatch) -> None:
+    """Iteration is a whole-environment read, including scoped aliases."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "mapping_iteration"
+    case_dir.mkdir()
+    (case_dir / "mapping_iteration.py").write_text(
+        "import os as host_os\n"
+        "from os import environ as env\n"
+        "for key in host_os.environ:\n"
+        "    pass\n"
+        "keys = [key for key in env]\n"
+        "iterator = iter(host_os.environ)\n"
+        "\n"
+        "def closure():\n"
+        "    local_env = env\n"
+        "    yield from local_env\n"
+        "\n"
+        "def unrelated(env, iter):\n"
+        "    return [key for key in env], iter(env)\n"
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (3, "iteration over os.environ"),
+        (5, "iteration over os.environ"),
+        (6, "iteration over os.environ"),
+        (10, "iteration over os.environ"),
     ]
