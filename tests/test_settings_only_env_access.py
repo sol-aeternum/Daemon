@@ -90,6 +90,27 @@ def _enclosing_function(node: ast.AST) -> ast.AST | None:
     return None
 
 
+def _enclosing_alias_scope(node: ast.AST) -> ast.AST | None:
+    """Return the scope whose bindings are visible while ``node`` runs.
+
+    Class bodies have their own namespace, but function and lambda bodies
+    nested inside a class do not close over that namespace. Definition-time
+    expressions (bases, decorators, defaults, and annotations) remain in the
+    parent scope until execution enters the corresponding ``body`` field.
+    """
+    child = node
+    cur = getattr(node, "parent", None)
+    while cur is not None:
+        if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if child in cur.body:
+                return cur
+        elif isinstance(cur, ast.Lambda) and child is cur.body:
+            return cur
+        child = cur
+        cur = getattr(cur, "parent", None)
+    return None
+
+
 def _qualified_function_name(node: ast.AST) -> str | None:
     """Return the dotted path to the effective enclosing function, or None.
 
@@ -120,10 +141,10 @@ def _qualified_function_name(node: ast.AST) -> str | None:
 class _OsAliasVisitor(ast.NodeVisitor):
     """Resolve per-scope bindings of `os` / `os.environ` / `os.getenv`.
 
-    Tracks the enclosing function (or module-level) for every binding so
-    nested functions inherit aliases from their immediate lexical parent,
-    while parameters and local assignments shadow same-named outer aliases.
-    The walker consults the resulting frame for each potential hit.
+    Tracks module, class-body, function, and lambda bindings separately.
+    Nested callables inherit aliases from their immediate callable parent
+    while bypassing class namespaces, matching Python's lexical lookup.
+    Parameters and local assignments shadow same-named outer aliases.
     """
 
     def __init__(self) -> None:
@@ -147,40 +168,48 @@ class _OsAliasVisitor(ast.NodeVisitor):
         # FunctionDef/AsyncFunctionDef → method-level frame keyed by the
         # node itself (so two same-named methods in different enclosing
         # classes resolve to distinct frames).
-        # Lambda → lambda frame keyed by the node itself. Lambdas are
-        # anonymous so ``func`` is the synthetic label ``"<lambda>"``;
-        # they inherit aliases from the immediate enclosing function.
+        # ClassDef → class-body frame. Methods bypass this frame because
+        # bare names in a method do not resolve through the class namespace.
+        # Lambda → lambda frame keyed by the node itself; lambdas inherit
+        # aliases from the immediate enclosing function.
         frame: dict
         if isinstance(node, ast.Module):
             frame = {
-                "func": None,
+                "kind": "module",
                 "node": node,
                 "parent_node": None,
-                "os_names": set(),
-                "getenv_names": set(),
-                "environ_names": set(),
                 "bound_names": set(),
                 "global_names": set(),
                 "nonlocal_names": set(),
+                "binding_events": [],
             }
         else:
-            assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
-            frame = {
-                "func": node.name
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                else "<lambda>",
-                "node": node,
-                "parent_node": (
-                    self._stack[-1]["node"]
-                    if self._stack and self._stack[-1]["func"] is not None
-                    else None
+            assert isinstance(
+                node,
+                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
+            )
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                kind = "function"
+            elif isinstance(node, ast.ClassDef):
+                kind = "class"
+            else:
+                kind = "lambda"
+            lexical_parent = next(
+                (
+                    frame["node"]
+                    for frame in reversed(self._stack)
+                    if frame["kind"] in {"function", "lambda"}
                 ),
-                "os_names": set(),
-                "getenv_names": set(),
-                "environ_names": set(),
+                None,
+            )
+            frame = {
+                "kind": kind,
+                "node": node,
+                "parent_node": lexical_parent,
                 "bound_names": set(),
                 "global_names": set(),
                 "nonlocal_names": set(),
+                "binding_events": [],
             }
         self._stack.append(frame)
         self._frames.append(frame)
@@ -201,6 +230,7 @@ class _OsAliasVisitor(ast.NodeVisitor):
         for statement in node.body:
             self.visit(statement)
         self._pop()
+        self._record_direct_binding(node.name, None)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         self._visit_function_definition_expressions(node)
@@ -209,6 +239,22 @@ class _OsAliasVisitor(ast.NodeVisitor):
         for statement in node.body:
             self.visit(statement)
         self._pop()
+        self._record_direct_binding(node.name, None)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for base in node.bases:
+            self.visit(base)
+        for keyword in node.keywords:
+            self.visit(keyword.value)
+        for type_param in getattr(node, "type_params", ()):
+            self.visit(type_param)
+        self._push(node)
+        for statement in node.body:
+            self.visit(statement)
+        self._pop()
+        self._record_direct_binding(node.name, None)
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
         for default in (*node.args.defaults, *node.args.kw_defaults):
@@ -263,7 +309,40 @@ class _OsAliasVisitor(ast.NodeVisitor):
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, (ast.Store, ast.Del)):
             self._current()["bound_names"].add(node.id)
+            self._record_direct_binding(node.id, None)
         self.generic_visit(node)
+
+    def _record_direct_binding(self, name: str, source: ast.expr | str | None) -> None:
+        """Record a binding event in execution order for alias propagation."""
+        self._current()["bound_names"].add(name)
+        self._current()["binding_events"].append((name, source))
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self.visit(node.value)
+        for target in node.targets:
+            self.visit(target)
+            if isinstance(target, ast.Name):
+                self._record_direct_binding(target.id, node.value)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self.visit(node.annotation)
+        if node.value is not None:
+            self.visit(node.value)
+        self.visit(node.target)
+        if isinstance(node.target, ast.Name):
+            self._record_direct_binding(node.target.id, node.value)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self.visit(node.value)
+        self.visit(node.target)
+        if isinstance(node.target, ast.Name):
+            self._record_direct_binding(node.target.id, node.value)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self.visit(node.target)
+        self.visit(node.value)
+        if isinstance(node.target, ast.Name):
+            self._record_direct_binding(node.target.id, None)
 
     def visit_Global(self, node: ast.Global) -> None:
         self._current()["global_names"].update(node.names)
@@ -275,38 +354,33 @@ class _OsAliasVisitor(ast.NodeVisitor):
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
-            self._current()["bound_names"].add(alias.asname or alias.name.split(".", 1)[0])
-            if alias.name == "os":
-                self._current()["os_names"].add(alias.asname or "os")
-        self.generic_visit(node)
+            local = alias.asname or alias.name.split(".", 1)[0]
+            self._record_direct_binding(local, "os" if alias.name == "os" else None)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         for alias in node.names:
             if alias.name != "*":
-                self._current()["bound_names"].add(alias.asname or alias.name)
-        if node.module == "os" and node.level == 0:
-            for alias in node.names:
                 local = alias.asname or alias.name
-                if alias.name == "getenv":
-                    self._current()["getenv_names"].add(local)
-                elif alias.name == "environ":
-                    self._current()["environ_names"].add(local)
-        self.generic_visit(node)
+                source: str | None = None
+                if node.module == "os" and node.level == 0:
+                    if alias.name == "getenv":
+                        source = "getenv"
+                    elif alias.name == "environ":
+                        source = "environ"
+                self._record_direct_binding(local, source)
 
     def scopes(self) -> list[dict]:
-        """Return one frame per scope (module, functions, and lambdas).
+        """Return one frame per scope (module, class bodies, functions, and lambdas).
 
-        The walker looks up the enclosing function for each hit and uses
-        that frame's alias sets. Each function records its immediate lexical
-        parent so closure aliases can be inherited without leaking across
-        sibling functions.
+        The scanner looks up the effective evaluation scope for each hit.
+        Each callable records its immediate callable parent so closure aliases
+        are inherited without leaking through class or sibling scopes.
         """
         return self._frames
 
 
 def _resolve_aliases_for(tree: ast.AST) -> dict[ast.AST | None, dict[str, set[str]]]:
-    """Return a mapping from enclosing-function node (or None for module
-    level) to a dict of alias sets.
+    """Return a mapping from alias-scope node (or None for module level).
 
     Each scope frame contains its own bindings plus aliases inherited from
     its immediate lexical parent. Local bindings remove same-named inherited
@@ -319,36 +393,56 @@ def _resolve_aliases_for(tree: ast.AST) -> dict[ast.AST | None, dict[str, set[st
     resolve to distinct frames; a string-name key would let the later
     frame overwrite the earlier one and silently bypass the gate.
     """
+    alias_kinds = ("os_names", "getenv_names", "environ_names")
+
+    def _kind_for_source(source: ast.expr | str | None, aliases: dict[str, set[str]]) -> str | None:
+        if source == "os":
+            return "os_names"
+        if source == "getenv":
+            return "getenv_names"
+        if source == "environ":
+            return "environ_names"
+        if not isinstance(source, ast.expr):
+            return None
+        if isinstance(source, ast.Name):
+            for alias_kind in alias_kinds:
+                if source.id in aliases[alias_kind]:
+                    return alias_kind
+            return None
+        if isinstance(source, ast.Attribute) and isinstance(source.value, ast.Name):
+            if source.value.id not in aliases["os_names"]:
+                return None
+            if source.attr == "getenv":
+                return "getenv_names"
+            if source.attr == "environ":
+                return "environ_names"
+        return None
+
     visitor = _OsAliasVisitor()
     visitor.visit(tree)
     result: dict[ast.AST | None, dict[str, set[str]]] = {}
-    module_frame = next(f for f in visitor.scopes() if f["func"] is None)
-    module_aliases = {
-        "os_names": set(module_frame["os_names"]),
-        "getenv_names": set(module_frame["getenv_names"]),
-        "environ_names": set(module_frame["environ_names"]),
-    }
-    result[None] = {
-        "os_names": set(module_aliases["os_names"]),
-        "getenv_names": set(module_aliases["getenv_names"]),
-        "environ_names": set(module_aliases["environ_names"]),
-    }
+    empty_aliases = {alias_kind: set() for alias_kind in alias_kinds}
     for frame in visitor.scopes():
-        if frame["func"] is None:
-            continue
-        parent_aliases = result[frame["parent_node"]]
+        parent_aliases = result.get(frame["parent_node"], empty_aliases)
         shadowed_names = (
             set(frame["bound_names"]) - set(frame["global_names"]) - set(frame["nonlocal_names"])
         )
-        merged = {}
-        for alias_kind in ("os_names", "getenv_names", "environ_names"):
-            merged[alias_kind] = (set(parent_aliases[alias_kind]) - shadowed_names) | set(
-                frame[alias_kind]
-            )
-        # ``frame["node"]`` is the AST node the visitor pushed; keying the
-        # result by it (rather than by name) is what makes same-named
-        # methods in different enclosing classes resolve independently.
-        result[frame["node"]] = merged
+        merged = {
+            alias_kind: set(parent_aliases[alias_kind]) - shadowed_names
+            for alias_kind in alias_kinds
+        }
+        for name, source in frame["binding_events"]:
+            for alias_kind in alias_kinds:
+                merged[alias_kind].discard(name)
+            source_kind = _kind_for_source(source, merged)
+            if source_kind is not None:
+                merged[source_kind].add(name)
+
+        # Module scope keeps the public ``None`` key. Every other scope is
+        # keyed by AST-node identity so same-named classes/methods cannot
+        # overwrite one another.
+        scope_key = None if frame["kind"] == "module" else frame["node"]
+        result[scope_key] = merged
     return result
 
 
@@ -404,9 +498,9 @@ def _scan_for_direct_env_access() -> list[tuple[pathlib.Path, int, str]]:
             module_allowlist = FUNCTION_ALLOWLIST.get(rel)
 
             def _aliases_for(node: ast.AST) -> dict[str, set[str]]:
-                func_node = _enclosing_function(node)
-                if func_node is not None and func_node in scopes:
-                    return scopes[func_node]
+                scope_node = _enclosing_alias_scope(node)
+                if scope_node is not None and scope_node in scopes:
+                    return scopes[scope_node]
                 return scopes[None]
 
             def _is_environ_expr(node: ast.expr, aliases: dict[str, set[str]]) -> bool:
@@ -934,4 +1028,88 @@ def test_ast_gate_detects_environment_membership_checks(tmp_path, monkeypatch) -
         (4, "membership in os.environ"),
         (5, "membership in os.environ"),
         (6, "membership in os.environ"),
+    ]
+
+
+def test_ast_gate_isolates_class_body_aliases_from_methods(tmp_path, monkeypatch) -> None:
+    """Class namespaces neither leak into methods nor hide outer closures."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "class_scopes"
+    case_dir.mkdir()
+    (case_dir / "class_scopes.py").write_text(
+        "import os\n"
+        "\n"
+        "class Rebound:\n"
+        "    os = object()\n"
+        '    unrelated = os.getenv("NOT_ENV")\n'
+        "\n"
+        "class LocalAlias:\n"
+        "    import os as host_os\n"
+        '    class_read = host_os.getenv("CLASS")\n'
+        "    def method(self):\n"
+        '        return host_os.getenv("NOT_VISIBLE")\n'
+        "\n"
+        "def outer():\n"
+        "    import os as closure_os\n"
+        "    class Nested:\n"
+        '        class_read = closure_os.getenv("CLASS_CLOSURE")\n'
+        "        def method(self):\n"
+        '            return closure_os.environ["METHOD_CLOSURE"]\n'
+        "    return Nested\n"
+        "\n"
+        'module_read = os.getenv("MODULE")\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (9, "os.getenv(...)"),
+        (16, "os.getenv(...)"),
+        (18, "os.environ[...]"),
+        (21, "os.getenv(...)"),
+    ]
+
+
+def test_ast_gate_propagates_environment_alias_assignments(tmp_path, monkeypatch) -> None:
+    """Direct and transitive accessor assignments remain visible to the gate."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "assigned_aliases"
+    case_dir.mkdir()
+    (case_dir / "assigned_aliases.py").write_text(
+        "import os\n"
+        "read_env = os.getenv\n"
+        "env = os.environ\n"
+        "host_os = os\n"
+        'A = read_env("A")\n'
+        'B = env.get("B")\n'
+        'C = host_os.environ["C"]\n'
+        "\n"
+        "def nested():\n"
+        "    local_getenv = os.getenv\n"
+        "    local_env = os.environ\n"
+        "    transitive = local_getenv\n"
+        '    return local_getenv("D"), local_env.get("E"), transitive("F")\n'
+        "\n"
+        "def unrelated(os):\n"
+        "    local_getenv = os.getenv\n"
+        '    return local_getenv("NOT_ENV")\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (5, "os.getenv(...)"),
+        (6, "os.environ.get(...)"),
+        (7, "os.environ[...]"),
+        (13, "os.environ.get(...)"),
+        (13, "os.getenv(...)"),
+        (13, "os.getenv(...)"),
     ]
