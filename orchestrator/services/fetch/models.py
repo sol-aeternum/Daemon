@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from orchestrator.config import get_settings
 
 
 @dataclass
@@ -97,49 +98,47 @@ class FetchPolicy(BaseModel):
 
 
 def load_policy_from_env() -> FetchPolicy:
-    blocked_domains: list[str] = []
-    allowed_content_types: list[str] = []
-    max_depth: int | None = None
-    min_content_length: int | None = None
-    error_signatures: list[str] = []
+    """Build a `FetchPolicy` from the canonical `Settings` fields.
 
-    blocked_domains_env = os.getenv("FETCH_BLOCKED_DOMAINS")
-    if blocked_domains_env:
-        blocked_domains = [domain.strip() for domain in blocked_domains_env.split(",")]
+    All `FETCH_*` environment variables were migrated to `Settings` fields
+    on `orchestrator.config.Settings` (the same fields any caller using
+    `Depends(get_settings)` sees). This function exists for the
+    service-level bootstrap path (`FetchService.__init__` falls back to it
+    when no explicit policy is supplied); the values are now equivalent to
+    reading `get_settings()` directly.
+    """
+    settings = get_settings()
 
-    allowed_content_types_env = os.getenv("FETCH_ALLOWED_CONTENT_TYPES")
-    if allowed_content_types_env:
-        allowed_content_types = [ct.strip() for ct in allowed_content_types_env.split(",")]
+    blocked_domains = [
+        domain.strip() for domain in settings.fetch_blocked_domains.split(",") if domain.strip()
+    ]
+    allowed_content_types = [
+        ct.strip() for ct in settings.fetch_allowed_content_types.split(",") if ct.strip()
+    ]
+    max_depth = settings.fetch_max_depth
+    min_content_length = settings.fetch_min_content_length
+    error_signatures = [
+        sig.strip() for sig in settings.fetch_error_signatures.split(",") if sig.strip()
+    ]
 
-    max_depth_env = os.getenv("FETCH_MAX_DEPTH")
-    if max_depth_env:
-        try:
-            max_depth = int(max_depth_env)
-        except ValueError:
-            pass
-
-    min_content_length_env = os.getenv("FETCH_MIN_CONTENT_LENGTH")
-    if min_content_length_env:
-        try:
-            min_content_length = int(min_content_length_env)
-        except ValueError:
-            pass
-
-    error_signatures_env = os.getenv("FETCH_ERROR_SIGNATURES")
-    if error_signatures_env:
-        error_signatures = [sig.strip() for sig in error_signatures_env.split(",")]
-
-    # Build kwargs for FetchPolicy, only including set values
+    # Build kwargs for FetchPolicy, only including set values so the
+    # caller-visible defaults (e.g. FetchPolicy.allowed_content_types'
+    # HTML/JSON allowlist) survive when the operator has not configured
+    # an override via env / .env.
     kwargs: dict[str, Any] = {}
-    if blocked_domains:
+    if settings.fetch_blocked_domains.strip():
         kwargs["blocked_domains"] = blocked_domains
-    if allowed_content_types:
+    if settings.fetch_allowed_content_types.strip():
         kwargs["allowed_content_types"] = allowed_content_types
     if max_depth is not None:
         kwargs["max_depth"] = max_depth
-    if min_content_length is not None:
+    # Preserve the legacy loader's effective default: when the env var was
+    # absent it omitted this keyword and `FetchPolicy` supplied 100. The
+    # Settings field's built-in 200 is only an override when configuration
+    # explicitly supplied it.
+    if "fetch_min_content_length" in settings.model_fields_set:
         kwargs["min_content_length"] = min_content_length
-    if error_signatures:
+    if settings.fetch_error_signatures.strip():
         kwargs["error_signatures"] = error_signatures
 
     return FetchPolicy(**kwargs)

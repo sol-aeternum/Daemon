@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, Optional
 
 import fal_client
@@ -46,9 +45,15 @@ class FalKlingClient:
 
     def __init__(self) -> None:
         """Initialize the client with API key from environment."""
-        self.api_key: str = os.environ.get("FAL_KEY", "")
+        # FAL_KEY is read via Settings (orchestrator.config) — direct env
+        # access would bypass the prefix convention and validation that
+        # the Settings class provides.
+        from orchestrator.config import get_settings
+
+        self.api_key: str = get_settings().fal_key
         if not self.api_key:
             raise FalKlingError("FAL_KEY not configured")
+        self._client = fal_client.AsyncClient(key=self.api_key)
 
     def _get_model_endpoint(self, kling_model: str, has_source_image: bool) -> str:
         """Get the appropriate model endpoint based on model type and input."""
@@ -108,7 +113,7 @@ class FalKlingClient:
             if audio_enabled:
                 arguments["audio_enabled"] = True
 
-            result = await fal_client.submit_async(
+            result = await self._client.submit(
                 endpoint,
                 arguments=arguments,
             )
@@ -143,7 +148,7 @@ class FalKlingClient:
         try:
             endpoint = self._get_model_endpoint(job.kling_model, bool(job.source_image_url))
 
-            result = await fal_client.result_async(
+            result = await self._client.result(
                 endpoint,
                 request_id=job.job_id,
             )

@@ -24,7 +24,7 @@ async def test_generate_video_text_to_video_o3_pro_success():
 
     mock_result = MagicMock()
     mock_result.request_id = "req_123"
-    with patch("providers.fal_kling.fal_client.submit_async", return_value=mock_result):
+    with patch("providers.fal_kling.fal_client.AsyncClient.submit", return_value=mock_result):
         result = await client.generate_video(
             prompt="cinematic mountains at sunset",
             duration_seconds=10,
@@ -46,7 +46,7 @@ async def test_generate_video_text_to_video_v3_pro_with_audio_success():
 
     mock_result = MagicMock()
     mock_result.request_id = "req_456"
-    with patch("providers.fal_kling.fal_client.submit_async", return_value=mock_result):
+    with patch("providers.fal_kling.fal_client.AsyncClient.submit", return_value=mock_result):
         result = await client.generate_video(
             prompt="ocean waves crashing on rocks",
             duration_seconds=15,
@@ -69,7 +69,7 @@ async def test_generate_video_image_to_video_success():
 
     mock_result = MagicMock()
     mock_result.request_id = "req_789"
-    with patch("providers.fal_kling.fal_client.submit_async", return_value=mock_result):
+    with patch("providers.fal_kling.fal_client.AsyncClient.submit", return_value=mock_result):
         result = await client.generate_video(
             prompt="animate this landscape",
             duration_seconds=5,
@@ -91,7 +91,7 @@ async def test_generate_video_duration_clamping():
 
     mock_result = MagicMock()
     mock_result.request_id = "req_999"
-    with patch("providers.fal_kling.fal_client.submit_async", return_value=mock_result):
+    with patch("providers.fal_kling.fal_client.AsyncClient.submit", return_value=mock_result):
         result = await client.generate_video(
             prompt="test video", duration_seconds=1, kling_model="o3-pro"
         )
@@ -111,7 +111,7 @@ async def test_generate_video_invalid_model_fallback():
 
     mock_result = MagicMock()
     mock_result.request_id = "req_111"
-    with patch("providers.fal_kling.fal_client.submit_async", return_value=mock_result):
+    with patch("providers.fal_kling.fal_client.AsyncClient.submit", return_value=mock_result):
         result = await client.generate_video(
             prompt="test video", duration_seconds=5, kling_model="invalid-model"
         )
@@ -126,12 +126,24 @@ async def test_generate_video_missing_api_key_raises():
             FalKlingClient()
 
 
+def test_client_authenticates_with_settings_key():
+    settings = MagicMock(fal_key="settings-only-fal-key")
+    with (
+        patch("orchestrator.config.get_settings", return_value=settings),
+        patch("providers.fal_kling.fal_client.AsyncClient") as async_client,
+    ):
+        client = FalKlingClient()
+
+    assert client.api_key == "settings-only-fal-key"
+    async_client.assert_called_once_with(key="settings-only-fal-key")
+
+
 @pytest.mark.asyncio
 async def test_generate_video_submit_failure_raises():
     client = FalKlingClient()
 
     with patch(
-        "providers.fal_kling.fal_client.submit_async",
+        "providers.fal_kling.fal_client.AsyncClient.submit",
         side_effect=Exception("API error"),
     ):
         with pytest.raises(FalKlingError, match="Failed to submit video generation job"):
@@ -145,7 +157,7 @@ async def test_poll_video_job_success():
     job = VideoJob(job_id="job_123", prompt="test video", duration_seconds=5, kling_model="o3-pro")
 
     mock_result = {"video": {"url": "https://cdn.fal.ai/video.mp4"}}
-    with patch("providers.fal_kling.fal_client.get_result", return_value=mock_result):
+    with patch("providers.fal_kling.fal_client.AsyncClient.result", return_value=mock_result):
         result = await client.poll_video_job(job)
 
         assert isinstance(result, VideoResult)
@@ -164,7 +176,7 @@ async def test_poll_video_job_get_result_failure_raises():
     job = VideoJob(job_id="job_111", prompt="test video", duration_seconds=5)
 
     with patch(
-        "providers.fal_kling.fal_client.result_async",
+        "providers.fal_kling.fal_client.AsyncClient.result",
         side_effect=Exception("API error"),
     ):
         with pytest.raises(FalKlingError, match="Failed to poll video generation job"):
@@ -178,7 +190,7 @@ async def test_poll_video_job_success():  # noqa: F811
     job = VideoJob(job_id="job_123", prompt="test video", duration_seconds=5, kling_model="o3-pro")
 
     mock_result = {"video": {"url": "https://cdn.fal.ai/video.mp4"}}
-    with patch("providers.fal_kling.fal_client.result_async", return_value=mock_result):
+    with patch("providers.fal_kling.fal_client.AsyncClient.result", return_value=mock_result):
         result = await client.poll_video_job(job)
 
         assert isinstance(result, VideoResult)
@@ -203,7 +215,7 @@ async def test_poll_video_job_with_audio_success():
     )
 
     mock_result = {"video": {"url": "https://cdn.fal.ai/video-with-audio.mp4"}}
-    with patch("providers.fal_kling.fal_client.result_async", return_value=mock_result):
+    with patch("providers.fal_kling.fal_client.AsyncClient.result", return_value=mock_result):
         result = await client.poll_video_job(job)
 
         assert isinstance(result, VideoResult)
@@ -223,7 +235,7 @@ async def test_poll_video_job_missing_video_data_raises():
     job = VideoJob(job_id="job_789", prompt="test video", duration_seconds=5)
 
     mock_result = {"status": "finished"}
-    with patch("providers.fal_kling.fal_client.result_async", return_value=mock_result):
+    with patch("providers.fal_kling.fal_client.AsyncClient.result", return_value=mock_result):
         with pytest.raises(FalKlingError, match="Video generation job failed"):
             await client.poll_video_job(job)
 
@@ -235,7 +247,7 @@ async def test_poll_video_job_missing_url_raises():
     job = VideoJob(job_id="job_999", prompt="test video", duration_seconds=5)
 
     mock_result = {"video": {"status": "finished"}}
-    with patch("providers.fal_kling.fal_client.result_async", return_value=mock_result):
+    with patch("providers.fal_kling.fal_client.AsyncClient.result", return_value=mock_result):
         with pytest.raises(FalKlingError, match="Video generation job failed"):
             await client.poll_video_job(job)
 
@@ -247,7 +259,7 @@ async def test_poll_video_job_get_result_failure_raises():  # noqa: F811
     job = VideoJob(job_id="job_111", prompt="test video", duration_seconds=5)
 
     with patch(
-        "providers.fal_kling.fal_client.result_async",
+        "providers.fal_kling.fal_client.AsyncClient.result",
         side_effect=Exception("API error"),
     ):
         with pytest.raises(FalKlingError, match="Failed to poll video generation job"):
@@ -261,7 +273,7 @@ async def test_poll_video_job_get_result_failure_raises():  # noqa: F811
     job = VideoJob(job_id="job_111", prompt="test video", duration_seconds=5)
 
     with patch(
-        "providers.fal_kling.fal_client.result_async",
+        "providers.fal_kling.fal_client.AsyncClient.result",
         side_effect=Exception("API error"),
     ):
         with pytest.raises(FalKlingError, match="Failed to poll video generation job"):

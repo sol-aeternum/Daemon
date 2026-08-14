@@ -23,6 +23,7 @@ from orchestrator.council.config import (
 )
 from orchestrator.council import prompts as council_prompts
 from orchestrator.council.tools import council_completion_with_tools
+from orchestrator.config import get_settings
 from orchestrator.tools.builtin import create_council_readonly_registry
 from orchestrator.tools.executor import ToolExecutor
 
@@ -34,7 +35,9 @@ _council_tool_executor = None
 def _get_council_tools():
     global _council_tool_registry, _council_tool_executor
     if _council_tool_registry is None:
-        _council_tool_registry = create_council_readonly_registry()
+        _council_tool_registry = create_council_readonly_registry(
+            brave_api_key=get_settings().brave_api_key,
+        )
         _council_tool_executor = ToolExecutor(_council_tool_registry)
     return _council_tool_registry.list_schemas(), _council_tool_executor
 

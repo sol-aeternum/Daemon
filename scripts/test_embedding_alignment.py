@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import math
-import os
 import sys
 from typing import Any
 
@@ -111,7 +110,9 @@ async def run_alignment_test():
     print("Connecting to database...")
 
     db_pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
-    encryption = ContentEncryption(os.environ.get("DAEMON_ENCRYPTION_KEY"))
+    # DAEMON_ENCRYPTION_KEY is read via Settings; explicit key argument is
+    # passed through unchanged so test fixtures can override it.
+    encryption = ContentEncryption()
 
     try:
         print("Fetching test memory...")

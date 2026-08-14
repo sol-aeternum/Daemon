@@ -171,3 +171,147 @@ def test_validate_hosted_identity_noop_when_disabled() -> None:
         daemon_mail_sender_mode="console",
     )
     settings.validate_hosted_identity_config()
+
+
+# ===== Issue #83 — direct os.environ.get bypasses Settings =====
+
+
+def test_elevenlabs_api_key_default_none() -> None:
+    """ELEVENLABS_API_KEY env var should default to None when unset."""
+    settings = Settings()
+    assert settings.elevenlabs_api_key is None
+
+
+def test_elevenlabs_api_key_from_env(monkeypatch) -> None:
+    """ELEVENLABS_API_KEY is read via Settings (not os.environ.get)."""
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test-eleven-key")
+    settings = Settings()
+    assert settings.elevenlabs_api_key == "test-eleven-key"
+
+
+def test_openrouter_image_model_default() -> None:
+    """OPENROUTER_IMAGE_MODEL has a sensible default."""
+    settings = Settings()
+    assert settings.openrouter_image_model == "google/gemini-2.5-flash-image"
+
+
+def test_openrouter_image_model_from_env(monkeypatch) -> None:
+    """OPENROUTER_IMAGE_MODEL is overridable via Settings."""
+    monkeypatch.setenv("OPENROUTER_IMAGE_MODEL", "google/gemini-3-flash")
+    settings = Settings()
+    assert settings.openrouter_image_model == "google/gemini-3-flash"
+
+
+def test_fal_key_default_empty_string() -> None:
+    """FAL_KEY has an empty-string default to match `or ""` fallback in image subagent."""
+    settings = Settings()
+    assert settings.fal_key == ""
+
+
+def test_fal_key_from_env(monkeypatch) -> None:
+    """FAL_KEY is read via Settings."""
+    monkeypatch.setenv("FAL_KEY", "test-fal-key")
+    settings = Settings()
+    assert settings.fal_key == "test-fal-key"
+
+
+def test_http_allowed_domains_default_empty() -> None:
+    """DAEMON_HTTP_ALLOWED_DOMAINS has an empty default."""
+    settings = Settings()
+    assert settings.daemon_http_allowed_domains == ""
+
+
+def test_http_allowed_domains_from_env(monkeypatch) -> None:
+    """DAEMON_HTTP_ALLOWED_DOMAINS is read via Settings."""
+    monkeypatch.setenv("DAEMON_HTTP_ALLOWED_DOMAINS", "example.com,*.trusted.org")
+    settings = Settings()
+    assert settings.daemon_http_allowed_domains == "example.com,*.trusted.org"
+
+
+def test_video_provider_falls_back_to_configured_pro_for_unset_tier(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TIER_STARTER_VIDEO_PROVIDER", raising=False)
+    monkeypatch.setenv("DEFAULT_TIER", "starter")
+    monkeypatch.setenv("TIER_PRO_VIDEO_PROVIDER", "xai")
+    settings = Settings()
+
+    assert settings.get_video_provider_for_tier() == "xai"
+
+
+def test_video_provider_explicit_tier_override_wins_over_pro(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DEFAULT_TIER", "starter")
+    monkeypatch.setenv("TIER_STARTER_VIDEO_PROVIDER", "fal")
+    monkeypatch.setenv("TIER_PRO_VIDEO_PROVIDER", "xai")
+    settings = Settings()
+
+    assert settings.get_video_provider_for_tier() == "fal"
+
+
+def test_video_provider_empty_tier_override_falls_back_to_pro(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DEFAULT_TIER", "starter")
+    monkeypatch.setenv("TIER_STARTER_VIDEO_PROVIDER", "")
+    monkeypatch.setenv("TIER_PRO_VIDEO_PROVIDER", "xai")
+    settings = Settings()
+
+    assert settings.get_video_provider_for_tier() == "xai"
+
+
+def test_image_subagent_uses_pro_provider_fallback_for_unset_tier(tmp_path, monkeypatch) -> None:
+    import orchestrator.subagents.image as image_module
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TIER_STARTER_VIDEO_PROVIDER", raising=False)
+    monkeypatch.setenv("DEFAULT_TIER", "starter")
+    monkeypatch.setenv("TIER_PRO_VIDEO_PROVIDER", "xai")
+    settings = Settings()
+    monkeypatch.setattr(image_module, "get_settings", lambda: settings)
+
+    subagent = image_module.ImageSubagent(
+        {
+            "openrouter_api_key": "test-key",
+            "openrouter_base_url": "https://openrouter.ai/api/v1",
+        }
+    )
+
+    assert subagent.video_provider_name == "xai"
+
+
+def test_fetch_allowed_content_types_default_empty() -> None:
+    """FETCH_ALLOWED_CONTENT_TYPES has an empty default."""
+    settings = Settings()
+    assert settings.fetch_allowed_content_types == ""
+
+
+def test_fetch_allowed_content_types_from_env(monkeypatch) -> None:
+    """FETCH_ALLOWED_CONTENT_TYPES is read via Settings."""
+    monkeypatch.setenv("FETCH_ALLOWED_CONTENT_TYPES", "text/html,application/json")
+    settings = Settings()
+    assert settings.fetch_allowed_content_types == "text/html,application/json"
+
+
+def test_fetch_max_depth_default_none() -> None:
+    """FETCH_MAX_DEPTH has None default (no override)."""
+    settings = Settings()
+    assert settings.fetch_max_depth is None
+
+
+def test_fetch_max_depth_from_env(monkeypatch) -> None:
+    """FETCH_MAX_DEPTH is read via Settings when env is set."""
+    monkeypatch.setenv("FETCH_MAX_DEPTH", "3")
+    settings = Settings()
+    assert settings.fetch_max_depth == 3
+
+
+def test_fetch_error_signatures_default_empty() -> None:
+    """FETCH_ERROR_SIGNATURES has an empty default."""
+    settings = Settings()
+    assert settings.fetch_error_signatures == ""
+
+
+def test_fetch_error_signatures_from_env(monkeypatch) -> None:
+    """FETCH_ERROR_SIGNATURES is read via Settings."""
+    monkeypatch.setenv("FETCH_ERROR_SIGNATURES", "not found,access denied")
+    settings = Settings()
+    assert settings.fetch_error_signatures == "not found,access denied"

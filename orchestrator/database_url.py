@@ -75,8 +75,8 @@ def validate_database_credentials(settings: Settings) -> None:
 
     resolved_database_url = resolve_database_url(settings.database_url)
     password_candidates: tuple[tuple[str, str | None], ...] = (
-        ("POSTGRES_PASSWORD", os.getenv("POSTGRES_PASSWORD")),
-        ("PGPASSWORD", os.getenv("PGPASSWORD")),
+        ("POSTGRES_PASSWORD", settings.postgres_password or None),
+        ("PGPASSWORD", settings.pgpassword or None),
         ("DATABASE_URL", database_password_from_url(resolved_database_url)),
     )
     for source, password in password_candidates:

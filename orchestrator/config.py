@@ -111,6 +111,13 @@ class Settings(BaseSettings):
     # Production requires strong pepper and rejects insecure cookies.
     daemon_environment: str = Field(default="production")
 
+    # Alternate database password credential sources, read at startup
+    # by `validate_database_credentials` to reject known-default passwords.
+    # Bound to `POSTGRES_PASSWORD` and `PGPASSWORD` env vars via the
+    # Pydantic field name (case insensitive). Empty string when unset.
+    postgres_password: str = ""
+    pgpassword: str = ""
+
     # Auth pepper for enrollment code HMAC verification.
     # Production: must be ≥32 random bytes (≥43 base64url chars). Missing/weak = fails startup.
     # Development: if absent, a process-ephemeral pepper is generated with a warning.
@@ -303,6 +310,17 @@ class Settings(BaseSettings):
     # Brave Search API (Web search)
     brave_api_key: str | None = None
 
+    # ElevenLabs API key (TTS, STT, sound effects)
+    elevenlabs_api_key: str | None = None
+
+    # OpenRouter image model override (default: google/gemini-2.5-flash-image)
+    openrouter_image_model: str = "google/gemini-2.5-flash-image"
+
+    # Comma-separated egress allowlist applied by SSRF guard.
+    # Empty/unset means no allowlist filter is applied (only the IP-range
+    # check). Wildcards use the `*.example.com` form.
+    daemon_http_allowed_domains: str = ""
+
     # ===== FETCH SERVICE (Web content fetching) =====
     # Jina AI API key for web fetching (optional)
     jina_api_key: str | None = None
@@ -314,9 +332,23 @@ class Settings(BaseSettings):
     crawl4ai_url: str = "http://crawl4ai:11235"
     # Comma-separated list of blocked domains (default: empty)
     fetch_blocked_domains: str = ""
+    # Comma-separated list of MIME content types the fetcher will accept
+    # (default: empty means "no additional allowlist restriction beyond the
+    # caller-supplied `allowed_content_types`").
+    fetch_allowed_content_types: str = ""
+    # Maximum crawl depth passed to the fetcher when not overridden by the
+    # caller. None means no maximum-depth constraint is applied.
+    fetch_max_depth: int | None = None
+    # Comma-separated substrings used to identify short error pages (e.g.
+    # "not found", "access denied"). Empty means "no signature-based
+    # rejection".
+    fetch_error_signatures: str = ""
 
     # xAI API (for Imagine image/video generation)
     xai_api_key: str = ""
+
+    # fal.ai API key (Kling video provider)
+    fal_key: str = ""
 
     voyage_api_key: str | None = None
     embedding_document_model: str = "voyage-4-large"
@@ -503,6 +535,21 @@ class Settings(BaseSettings):
     # Dedicated server-only secret shared by the Next.js proxy and backend.
     # It must never use a NEXT_PUBLIC_* name or reuse the auth pepper.
     daemon_internal_proxy_hmac_secret: str = ""
+
+    def get_video_provider_for_tier(self, tier: str | None = None) -> str:
+        """Resolve the tier video provider while preserving the PRO fallback.
+
+        A tier field's built-in ``fal`` value is a default, not an explicit
+        override. The legacy environment lookup fell back to
+        ``TIER_PRO_VIDEO_PROVIDER`` whenever the selected tier variable was
+        unset, so only fields supplied by configuration should take priority.
+        """
+        tier_name = (tier or self.default_tier).lower()
+        field_name = f"tier_{tier_name}_video_provider"
+        tier_override = getattr(self, field_name, "")
+        if field_name in self.model_fields_set and tier_override:
+            return tier_override
+        return self.tier_pro_video_provider
 
     def get_tier_config(self, tier: str | None = None) -> TierConfig:
         """Get model configuration for a specific tier.

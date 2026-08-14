@@ -313,9 +313,13 @@ def get_subagent_manager(db_pool: Any | None = None) -> SubagentManager:
         )
         shared_config = {
             "brave_api_key": settings.brave_api_key,
+            "elevenlabs_api_key": settings.elevenlabs_api_key,
             "openrouter_api_key": settings.openrouter_api_key,
             "openrouter_base_url": settings.openrouter_base_url,
+            "openrouter_image_model": settings.openrouter_image_model,
             "image_model": image_model,
+            "xai_api_key": settings.xai_api_key,
+            "fal_api_key": settings.fal_key,
             "tier_config": tier_config,  # Pass tier config for video generation checks
             "db_pool": db_pool,
         }

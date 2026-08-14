@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Tuple
 import uuid
@@ -368,42 +367,48 @@ class ImageSubagent(BaseSubagent):
     description = "Generates images from text prompts using AI (multiple providers supported)"
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
-        """Initialize image subagent."""
+        """Initialize image subagent.
+
+        All env vars are read via Settings (`get_settings()`) — `config_dict`
+        is populated from Settings in `spawn.get_subagent_manager`. Direct
+        `os.environ.get` access is intentionally absent to keep the config
+        validation and prefix convention centralised.
+        """
         super().__init__(config)
 
         config_dict = config or {}
-        self.provider_name = (
-            os.environ.get("TIER_PRO_IMAGE_PROVIDER")
-            or config_dict.get("image_provider")
-            or "openrouter"
-        ).lower()
+        settings = get_settings()
 
-        # For video mode, check if a specific provider is requested
-        # Try to get tier-specific video provider, fallback to PRO tier, then to image provider
-        tier = os.environ.get("DEFAULT_TIER", "pro").upper()
-        tier_video_provider_env = f"TIER_{tier}_VIDEO_PROVIDER"
-
-        self.video_provider_name = (
-            os.environ.get(tier_video_provider_env)
-            or os.environ.get("TIER_PRO_VIDEO_PROVIDER")
-            or config_dict.get("video_provider")
-            or self.provider_name
+        # Per-tier image provider (defaults to PRO tier when unset).
+        config_provider = (
+            config_dict.get("image_provider") or settings.tier_pro_image_provider
         ).lower()
+        self.provider_name = config_provider
+
+        # A tier's built-in `fal` default is not an explicit override. Let
+        # Settings distinguish configured tier values from defaults before
+        # applying the legacy PRO-tier fallback.
+        video_provider_value = (
+            config_dict.get("video_provider")
+            or settings.get_video_provider_for_tier()
+            or config_provider
+        )
+        self.video_provider_name = video_provider_value.lower()
 
         if self.provider_name == "xai":
             xai_api_key = (
                 config_dict.get("xai_api_key") if config_dict else None
-            ) or os.environ.get("XAI_API_KEY", "")
+            ) or settings.xai_api_key
             self.provider = XAIImageProvider(xai_api_key)
 
         else:
             openrouter_api_key = (
                 config_dict.get("openrouter_api_key") if config_dict else None
-            ) or os.environ.get("OPENROUTER_API_KEY")
+            ) or settings.openrouter_api_key
 
             openrouter_base_url = (
                 config_dict.get("openrouter_base_url") if config_dict else None
-            ) or os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+            ) or settings.openrouter_base_url
             openrouter_base_url = openrouter_base_url.rstrip("/")
 
             if openrouter_base_url.endswith("/chat/completions"):
@@ -413,9 +418,8 @@ class ImageSubagent(BaseSubagent):
             if "openrouter.ai" in openrouter_base_url and "/api/v1" not in openrouter_base_url:
                 openrouter_base_url = "https://openrouter.ai/api/v1"
 
-            openrouter_model = (
-                config_dict.get("image_model") if config_dict else None
-            ) or os.environ.get("OPENROUTER_IMAGE_MODEL", "google/gemini-2.5-flash-image")
+            image_model_from_config = config_dict.get("image_model") if config_dict else None
+            openrouter_model = image_model_from_config or settings.openrouter_image_model
 
             if not openrouter_api_key:
                 raise ValueError("OPENROUTER_API_KEY not configured")
@@ -575,15 +579,16 @@ class ImageSubagent(BaseSubagent):
         # Create appropriate video provider if needed
         video_provider = self.provider
         if video_provider_name != self.provider_name:
+            settings = get_settings()
             if video_provider_name == "xai":
                 xai_api_key = (
                     self.config.get("xai_api_key") if self.config else None
-                ) or os.environ.get("XAI_API_KEY", "")
+                ) or settings.xai_api_key
                 video_provider = XAIImageProvider(xai_api_key)
             elif video_provider_name == "fal":
                 fal_api_key = (
                     self.config.get("fal_api_key") if self.config else None
-                ) or os.environ.get("FAL_KEY", "")
+                ) or settings.fal_key
                 video_provider = FalKlingProvider(fal_api_key)
             else:
                 # Fallback to current provider

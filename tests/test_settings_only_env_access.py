@@ -1,0 +1,2369 @@
+"""Static convention test for #83: no direct env access outside Settings.
+
+All env-var access in the backend must go through the `Settings` class
+(`orchestrator/config.py`). Direct `os.environ.get(...)`, `os.getenv(...)`,
+`os.environ[...]`, or membership reads bypass the type validation, defaults,
+and env-var prefix convention that Settings provides.
+
+This test scans the backend tree (excluding `config.py` itself, which is
+where the canonical field definitions live) and fails the suite if any new
+direct env reads are introduced. Detection is AST-based so every supported
+direct-access form is caught, not just `os.environ.get(...)`.
+
+The allowlist covers:
+  * `orchestrator/config.py` — Settings is the canonical binding site.
+  * `orchestrator/database_url.py` — accepts `environ` as a parameter
+    (dependency injection used by tests).
+  * `scripts/backup_db.py`, `scripts/seed.py` — standalone operational CLIs
+    that run outside the daemon process; they read DATABASE_URL and
+    BACKUP_DIR directly without booting Settings. Migrating them is
+    tracked separately.
+"""
+
+from __future__ import annotations
+
+import ast
+import pathlib
+from dataclasses import dataclass
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+# Every backend Python package. `config/`, `db/`, `council/`, and `backend/`
+# are production modules imported by the orchestrator (e.g.
+# `orchestrator/subagents/image.py` imports `config.video_pricing` and
+# `db.video_credits`), so a direct env read added there must fail this gate
+# exactly as one added under `orchestrator/` does.
+SCAN_DIRS = (
+    REPO_ROOT / "orchestrator",
+    REPO_ROOT / "providers",
+    REPO_ROOT / "scripts",
+    REPO_ROOT / "config",
+    REPO_ROOT / "db",
+    REPO_ROOT / "council",
+    REPO_ROOT / "backend",
+)
+ALLOWLIST = frozenset(
+    {
+        "orchestrator/config.py",
+        # Standalone operational / diagnostic CLIs that run outside the
+        # daemon process. They read DATABASE_URL, ENCRYPTION_KEY, and
+        # BACKUP_DIR directly without booting Settings. Migrating them to
+        # Settings is tracked separately — they intentionally avoid the
+        # daemon lifecycle so they can be invoked from cron / ad-hoc.
+        "scripts/backup_db.py",
+        "scripts/seed.py",
+        "scripts/test_retrieval_quality.py",
+    }
+)
+# `orchestrator/database_url.py` is scanned: only the `resolve_database_url`
+# function (the DI entry point that accepts an injected `environ` mapping)
+# is allowed to reference `os.environ` directly. `validate_database_credentials`
+# still uses `os.getenv` and remains a known divergence from the convention —
+# the file is allowed only on a per-function basis so a future drift outside
+# the documented function will fail the gate.
+FUNCTION_ALLOWLIST: dict[str, frozenset[str]] = {
+    "orchestrator/database_url.py": frozenset({"resolve_database_url"}),
+}
+ENVIRON_READ_METHODS = frozenset({"copy", "get", "items", "keys", "values"})
+
+
+def _enclosing_function(node: ast.AST) -> ast.AST | None:
+    """Return the callable scope in which ``node`` is evaluated.
+
+    Keying alias frames by AST-node identity (not the function name) means two
+    same-named methods in different enclosing classes resolve to distinct frames
+    — e.g. ``ClassA.configure`` and ``ClassB.configure`` get independent alias
+    tables, so ``ClassA.configure``'s ``import os as host_os`` does not collide
+    with ``ClassB.configure``'s ``host_os`` parameter.
+
+    Function decorators, defaults, and annotations are evaluated in the
+    enclosing scope, before the new function's parameters exist. Lambda
+    defaults follow the same rule, while lambda bodies use their own frame.
+    """
+    child = node
+    cur = getattr(node, "parent", None)
+    while cur is not None:
+        if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if child in cur.body:
+                return cur
+        elif isinstance(cur, ast.Lambda) and child is cur.body:
+            return cur
+        child = cur
+        cur = getattr(cur, "parent", None)
+    return None
+
+
+def _qualified_function_name(node: ast.AST) -> str | None:
+    """Return the dotted path to the effective enclosing function, or None.
+
+    Example: a ``configure`` method inside ``class Foo`` resolves to
+    ``"Foo.configure"`` — so the ``FUNCTION_ALLOWLIST`` and the per-scope
+    alias frames stay aligned when two same-named methods coexist. Definition-
+    time expressions are intentionally attributed to the parent scope, so an
+    allowlisted function cannot also exempt direct reads in its defaults or
+    decorators.
+    """
+    parts: list[str] = []
+    scope = _enclosing_function(node)
+    while scope is not None:
+        if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            parts.append(scope.name)
+        parent_scope = _enclosing_function(scope)
+        cur = getattr(scope, "parent", None)
+        while cur is not None and cur is not parent_scope:
+            if isinstance(cur, ast.ClassDef):
+                parts.append(cur.name)
+            cur = getattr(cur, "parent", None)
+        scope = parent_scope
+    if not parts:
+        return None
+    return ".".join(reversed(parts))
+
+
+class _AliasEvent:
+    """Marker base for the abstract alias event stream."""
+
+
+@dataclass(frozen=True)
+class _NodeEvent(_AliasEvent):
+    node: ast.AST
+
+
+@dataclass(frozen=True)
+class _BindingEvent(_AliasEvent):
+    name: str
+    source: ast.expr | str | None
+
+
+@dataclass(frozen=True)
+class _ComprehensionBindingEvent(_AliasEvent):
+    name: str
+    source: ast.expr
+
+
+@dataclass(frozen=True)
+class _BranchEvent(_AliasEvent):
+    alternatives: tuple[tuple[_AliasEvent, ...], ...]
+
+
+@dataclass(frozen=True)
+class _LoopEvent(_AliasEvent):
+    iteration: tuple[_AliasEvent, ...]
+    orelse: tuple[_AliasEvent, ...]
+    may_skip: bool
+
+
+@dataclass(frozen=True)
+class _ControlEvent(_AliasEvent):
+    kind: str
+
+
+@dataclass(frozen=True)
+class _TryEvent(_AliasEvent):
+    body: tuple[_AliasEvent, ...]
+    handlers: tuple[tuple[_AliasEvent, ...], ...]
+    orelse: tuple[_AliasEvent, ...]
+    finalbody: tuple[_AliasEvent, ...]
+
+
+@dataclass(frozen=True)
+class _ScopeEntryEvent(_AliasEvent):
+    node: ast.AST
+
+
+class _OsAliasVisitor(ast.NodeVisitor):
+    """Resolve per-scope bindings of `os` / `os.environ` / `os.getenv`.
+
+    Tracks module, class-body, function, lambda, and comprehension bindings.
+    Nested callables inherit aliases from their immediate callable parent
+    while bypassing class namespaces, matching Python's lexical lookup.
+    Parameters and local assignments shadow same-named outer aliases.
+    """
+
+    def __init__(self) -> None:
+        # All frames ever pushed, in visitation order. ``self._stack`` is
+        # the live parent chain used by the visitor; ``self._frames`` is
+        # the cumulative log so the resolver can inspect every scope
+        # after the visitor has returned (the visitor pops each frame on
+        # the way out, so the live stack is empty by the time
+        # ``scopes()`` is called). Each frame records the AST node the
+        # visitor pushed so the resolver can key alias tables by
+        # node identity (same-named methods in different enclosing
+        # classes resolve to distinct frames).
+        self._stack: list[dict] = []
+        self._frames: list[dict] = []
+        self._event_stack: list[list[_AliasEvent]] = []
+
+    def visit(self, node: ast.AST):
+        """Record the alias state immediately before each visited AST node."""
+        if self._event_stack:
+            self._event_stack[-1].append(_NodeEvent(node))
+        return super().visit(node)
+
+    def _current(self) -> dict:
+        return self._stack[-1]
+
+    def _push(self, node: ast.AST) -> dict:
+        # Module → module-level frame keyed by None.
+        # FunctionDef/AsyncFunctionDef → method-level frame keyed by the
+        # node itself (so two same-named methods in different enclosing
+        # classes resolve to distinct frames).
+        # ClassDef → class-body frame. Methods bypass this frame because
+        # bare names in a method do not resolve through the class namespace.
+        # Lambda/comprehension → implicit callable frame keyed by the node
+        # itself. Comprehensions execute immediately and receive an entry
+        # snapshot after their first iterable is evaluated.
+        frame: dict
+        if isinstance(node, ast.Module):
+            frame = {
+                "kind": "module",
+                "node": node,
+                "parent_node": None,
+                "container_node": None,
+                "container_kind": None,
+                "bound_names": set(),
+                "global_names": set(),
+                "nonlocal_names": set(),
+                "events": [],
+            }
+        else:
+            assert isinstance(
+                node,
+                (
+                    ast.FunctionDef,
+                    ast.AsyncFunctionDef,
+                    ast.ClassDef,
+                    ast.Lambda,
+                    ast.ListComp,
+                    ast.SetComp,
+                    ast.DictComp,
+                    ast.GeneratorExp,
+                ),
+            )
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                kind = "function"
+            elif isinstance(node, ast.ClassDef):
+                kind = "class"
+            elif isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+                kind = "comprehension"
+            else:
+                kind = "lambda"
+            lexical_parent = next(
+                (
+                    frame["node"]
+                    for frame in reversed(self._stack)
+                    if frame["kind"] in {"function", "lambda", "comprehension"}
+                ),
+                None,
+            )
+            frame = {
+                "kind": kind,
+                "node": node,
+                "parent_node": lexical_parent,
+                "container_node": self._stack[-1]["node"],
+                "container_kind": self._stack[-1]["kind"],
+                "bound_names": set(),
+                "global_names": set(),
+                "nonlocal_names": set(),
+                "events": [],
+            }
+        self._stack.append(frame)
+        self._frames.append(frame)
+        self._event_stack.append(frame["events"])
+        return frame
+
+    def _pop(self) -> None:
+        self._event_stack.pop()
+        self._stack.pop()
+
+    def visit_Module(self, node: ast.Module) -> None:
+        self._push(node)
+        self.generic_visit(node)
+        self._pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_function_definition_expressions(node)
+        frame = self._push(node)
+        frame["bound_names"].update(self._argument_names(node.args))
+        for statement in node.body:
+            self.visit(statement)
+        self._pop()
+        self._record_direct_binding(node.name, None)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_function_definition_expressions(node)
+        frame = self._push(node)
+        frame["bound_names"].update(self._argument_names(node.args))
+        for statement in node.body:
+            self.visit(statement)
+        self._pop()
+        self._record_direct_binding(node.name, None)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for base in node.bases:
+            self.visit(base)
+        for keyword in node.keywords:
+            self.visit(keyword.value)
+        for type_param in getattr(node, "type_params", ()):
+            self.visit(type_param)
+        self._record_scope_entry(node)
+        self._push(node)
+        for statement in node.body:
+            self.visit(statement)
+        self._pop()
+        self._record_direct_binding(node.name, None)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        for default in (*node.args.defaults, *node.args.kw_defaults):
+            if default is not None:
+                self.visit(default)
+        frame = self._push(node)
+        frame["bound_names"].update(self._argument_names(node.args))
+        self.visit(node.body)
+        self._pop()
+
+    def _visit_comprehension(
+        self,
+        node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+    ) -> None:
+        """Visit a Python 3 comprehension without leaking its targets.
+
+        The first iterable is evaluated in the enclosing scope. Targets,
+        filters, later iterables, and the result expression execute in the
+        comprehension's implicit scope, in generator-clause order.
+
+        Generator expressions remain conservative: their body may run after
+        creation, and this gate does not attempt iterator escape/consumption
+        analysis. The outer binding therefore represents a possible later
+        execution unless a literal iterable proves the body cannot run.
+        """
+        first, *remaining = node.generators
+        self._record_node(first)
+        self.visit(first.iter)
+        self._record_scope_entry(node)
+
+        frame = self._push(node)
+        frame["body_may_execute"] = all(
+            enclosing.get("body_may_execute", True)
+            for enclosing in self._stack[:-1]
+            if enclosing["kind"] == "comprehension"
+        ) and not self._iterable_is_definitely_empty(first.iter)
+        self.visit(first.target)
+        for condition in first.ifs:
+            self.visit(condition)
+            if self._condition_is_definitely_false(condition):
+                frame["body_may_execute"] = False
+        for generator in remaining:
+            self._record_node(generator)
+            self.visit(generator.iter)
+            if self._iterable_is_definitely_empty(generator.iter):
+                frame["body_may_execute"] = False
+            self.visit(generator.target)
+            for condition in generator.ifs:
+                self.visit(condition)
+                if self._condition_is_definitely_false(condition):
+                    frame["body_may_execute"] = False
+
+        if isinstance(node, ast.DictComp):
+            self.visit(node.key)
+            self.visit(node.value)
+        else:
+            self.visit(node.elt)
+        self._pop()
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._visit_comprehension(node)
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._visit_comprehension(node)
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._visit_comprehension(node)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._visit_comprehension(node)
+
+    def _record_node(self, node: ast.AST) -> None:
+        self._event_stack[-1].append(_NodeEvent(node))
+
+    def _record_scope_entry(self, node: ast.AST) -> None:
+        self._event_stack[-1].append(_ScopeEntryEvent(node))
+
+    def _visit_alternative(self, nodes: tuple[ast.AST, ...]) -> tuple[_AliasEvent, ...]:
+        events: list[_AliasEvent] = []
+        self._event_stack.append(events)
+        try:
+            for node in nodes:
+                self.visit(node)
+        finally:
+            self._event_stack.pop()
+        return tuple(events)
+
+    def visit_If(self, node: ast.If) -> None:
+        self.visit(node.test)
+        body = self._visit_alternative(tuple(node.body))
+        orelse = self._visit_alternative(tuple(node.orelse))
+        self._event_stack[-1].append(_BranchEvent((body, orelse)))
+
+    def visit_IfExp(self, node: ast.IfExp) -> None:
+        self.visit(node.test)
+        body = self._visit_alternative((node.body,))
+        orelse = self._visit_alternative((node.orelse,))
+        self._event_stack[-1].append(_BranchEvent((body, orelse)))
+
+    def _visit_exception_handler(self, node: ast.ExceptHandler) -> tuple[_AliasEvent, ...]:
+        events: list[_AliasEvent] = []
+        self._event_stack.append(events)
+        try:
+            self._record_node(node)
+            if node.type is not None:
+                self.visit(node.type)
+            if node.name is not None:
+                # ``ExceptHandler.name`` is a string rather than an ast.Name.
+                # The exception object shadows any alias within the handler
+                # and Python deletes the temporary name when the handler exits.
+                self._record_direct_binding(node.name, None)
+            for statement in node.body:
+                self.visit(statement)
+            if node.name is not None:
+                self._record_direct_binding(node.name, None)
+        finally:
+            self._event_stack.pop()
+        return tuple(events)
+
+    def _visit_try(self, node: ast.Try | ast.TryStar) -> None:
+        body = self._visit_alternative(tuple(node.body))
+        handlers = tuple(self._visit_exception_handler(handler) for handler in node.handlers)
+        orelse = self._visit_alternative(tuple(node.orelse))
+        finalbody = self._visit_alternative(tuple(node.finalbody))
+        self._event_stack[-1].append(_TryEvent(body, handlers, orelse, finalbody))
+
+    def visit_Try(self, node: ast.Try) -> None:
+        self._visit_try(node)
+
+    def visit_TryStar(self, node: ast.TryStar) -> None:
+        self._visit_try(node)
+
+    def visit_Match(self, node: ast.Match) -> None:
+        self.visit(node.subject)
+        alternatives: list[tuple[_AliasEvent, ...]] = []
+        for case in node.cases:
+            events: list[_AliasEvent] = []
+            self._event_stack.append(events)
+            try:
+                self._record_node(case)
+                self.visit(case.pattern)
+                if case.guard is not None:
+                    self.visit(case.guard)
+                for statement in case.body:
+                    self.visit(statement)
+            finally:
+                self._event_stack.pop()
+            alternatives.append(tuple(events))
+        # Pattern feasibility is deliberately conservative. The unchanged
+        # state covers a subject that matches no case (or a guard that fails).
+        last_case = node.cases[-1] if node.cases else None
+        if (
+            last_case is None
+            or last_case.guard is not None
+            or not self._pattern_is_irrefutable(last_case.pattern)
+        ):
+            alternatives.append(())
+        self._event_stack[-1].append(_BranchEvent(tuple(alternatives)))
+
+    @classmethod
+    def _pattern_is_irrefutable(cls, node: ast.pattern) -> bool:
+        if isinstance(node, ast.MatchAs):
+            return node.pattern is None or cls._pattern_is_irrefutable(node.pattern)
+        if isinstance(node, ast.MatchOr):
+            return any(cls._pattern_is_irrefutable(pattern) for pattern in node.patterns)
+        return False
+
+    def visit_MatchAs(self, node: ast.MatchAs) -> None:
+        if node.pattern is not None:
+            self.visit(node.pattern)
+        if node.name is not None:
+            self._record_direct_binding(node.name, None)
+
+    def visit_MatchStar(self, node: ast.MatchStar) -> None:
+        if node.name is not None:
+            self._record_direct_binding(node.name, None)
+
+    def visit_MatchMapping(self, node: ast.MatchMapping) -> None:
+        for key in node.keys:
+            self.visit(key)
+        for pattern in node.patterns:
+            self.visit(pattern)
+        if node.rest is not None:
+            self._record_direct_binding(node.rest, None)
+
+    def _visit_function_definition_expressions(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> None:
+        """Visit definition-time expressions in the enclosing scope."""
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for argument in (
+            *node.args.posonlyargs,
+            *node.args.args,
+            *node.args.kwonlyargs,
+        ):
+            if argument.annotation is not None:
+                self.visit(argument.annotation)
+        if node.args.vararg is not None and node.args.vararg.annotation is not None:
+            self.visit(node.args.vararg.annotation)
+        if node.args.kwarg is not None and node.args.kwarg.annotation is not None:
+            self.visit(node.args.kwarg.annotation)
+        for default in (*node.args.defaults, *node.args.kw_defaults):
+            if default is not None:
+                self.visit(default)
+        if node.returns is not None:
+            self.visit(node.returns)
+        for type_param in getattr(node, "type_params", ()):
+            self.visit(type_param)
+
+    @staticmethod
+    def _argument_names(arguments: ast.arguments) -> set[str]:
+        names = {
+            argument.arg
+            for argument in (
+                *arguments.posonlyargs,
+                *arguments.args,
+                *arguments.kwonlyargs,
+            )
+        }
+        if arguments.vararg is not None:
+            names.add(arguments.vararg.arg)
+        if arguments.kwarg is not None:
+            names.add(arguments.kwarg.arg)
+        return names
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
+            self._current()["bound_names"].add(node.id)
+            self._record_direct_binding(node.id, None)
+        self.generic_visit(node)
+
+    def _record_direct_binding(self, name: str, source: ast.expr | str | None) -> None:
+        """Record a binding event in execution order for alias propagation."""
+        self._current()["bound_names"].add(name)
+        self._event_stack[-1].append(_BindingEvent(name, source))
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self.visit(node.value)
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                self._record_direct_binding(target.id, node.value)
+            else:
+                self.visit(target)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self.visit(node.annotation)
+        if node.value is not None:
+            self.visit(node.value)
+        if isinstance(node.target, ast.Name):
+            self._record_direct_binding(node.target.id, node.value)
+        else:
+            self.visit(node.target)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self.visit(node.value)
+        if isinstance(node.target, ast.Name):
+            self._record_direct_binding(node.target.id, node.value)
+            if self._current()["kind"] == "comprehension":
+                containing_frame = next(
+                    (
+                        frame
+                        for frame in reversed(self._stack[:-1])
+                        if frame["kind"] != "comprehension"
+                    ),
+                    None,
+                )
+                # Assignment expressions in comprehensions bind to the nearest
+                # containing non-comprehension scope. Python rejects the class-
+                # body form at parse time, so a class frame is not routed.
+                if containing_frame is not None and containing_frame["kind"] != "class":
+                    # The target is a local/cell binding even when the
+                    # comprehension never iterates, so it must participate in
+                    # compile-time shadowing independently of runtime flow.
+                    containing_frame["bound_names"].add(node.target.id)
+                    if all(
+                        frame.get("body_may_execute", True)
+                        for frame in self._stack
+                        if frame["kind"] == "comprehension"
+                    ):
+                        containing_frame["events"].append(
+                            _ComprehensionBindingEvent(node.target.id, node.value)
+                        )
+        else:
+            self.visit(node.target)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        if isinstance(node.target, ast.Name):
+            self.visit(node.value)
+            self._record_direct_binding(node.target.id, None)
+        else:
+            self.visit(node.target)
+            self.visit(node.value)
+
+    @staticmethod
+    def _iterable_may_be_empty(node: ast.expr) -> bool:
+        """Return False only for literal iterables proven non-empty."""
+        if isinstance(node, (ast.List, ast.Set, ast.Tuple)):
+            return not node.elts
+        if isinstance(node, ast.Dict):
+            return not node.keys
+        if isinstance(node, ast.Constant) and isinstance(
+            node.value, (str, bytes, tuple, frozenset)
+        ):
+            return not node.value
+        return True
+
+    @staticmethod
+    def _iterable_is_definitely_empty(node: ast.expr) -> bool:
+        """Return True only for literal iterables proven empty."""
+        if isinstance(node, (ast.List, ast.Set, ast.Tuple)):
+            return not node.elts
+        if isinstance(node, ast.Dict):
+            return not node.keys
+        return (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, (str, bytes, tuple, frozenset))
+            and not node.value
+        )
+
+    @staticmethod
+    def _condition_is_definitely_false(node: ast.expr) -> bool:
+        """Return True only when a literal comprehension filter is false."""
+        if isinstance(node, ast.Constant):
+            return not bool(node.value)
+        if isinstance(node, (ast.List, ast.Set, ast.Tuple)):
+            return not node.elts
+        return isinstance(node, ast.Dict) and not node.keys
+
+    def _visit_for(self, node: ast.For | ast.AsyncFor) -> None:
+        # Python evaluates the iterable before either the zero-iteration path
+        # or the first target binding.
+        self.visit(node.iter)
+        iteration: list[_AliasEvent] = []
+        self._event_stack.append(iteration)
+        try:
+            self.visit(node.target)
+            for statement in node.body:
+                self.visit(statement)
+        finally:
+            self._event_stack.pop()
+        orelse = self._visit_alternative(tuple(node.orelse))
+        self._event_stack[-1].append(
+            _LoopEvent(
+                iteration=tuple(iteration),
+                orelse=orelse,
+                may_skip=self._iterable_may_be_empty(node.iter),
+            )
+        )
+
+    def visit_For(self, node: ast.For) -> None:
+        self._visit_for(node)
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+        self._visit_for(node)
+
+    def visit_While(self, node: ast.While) -> None:
+        self.visit(node.test)
+        iteration = self._visit_alternative(tuple(node.body))
+        orelse = self._visit_alternative(tuple(node.orelse))
+        self._event_stack[-1].append(
+            _LoopEvent(
+                iteration=iteration,
+                orelse=orelse,
+                may_skip=True,
+            )
+        )
+
+    def visit_Return(self, node: ast.Return) -> None:
+        if node.value is not None:
+            self.visit(node.value)
+        self._event_stack[-1].append(_ControlEvent("return"))
+
+    def visit_Raise(self, node: ast.Raise) -> None:
+        if node.exc is not None:
+            self.visit(node.exc)
+        if node.cause is not None:
+            self.visit(node.cause)
+        self._event_stack[-1].append(_ControlEvent("raise"))
+
+    def visit_Break(self, node: ast.Break) -> None:
+        self._event_stack[-1].append(_ControlEvent("break"))
+
+    def visit_Continue(self, node: ast.Continue) -> None:
+        self._event_stack[-1].append(_ControlEvent("continue"))
+
+    def visit_Global(self, node: ast.Global) -> None:
+        self._current()["global_names"].update(node.names)
+        self.generic_visit(node)
+
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+        self._current()["nonlocal_names"].update(node.names)
+        self.generic_visit(node)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            local = alias.asname or alias.name.split(".", 1)[0]
+            self._record_direct_binding(local, "os" if alias.name == "os" else None)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        for alias in node.names:
+            if alias.name != "*":
+                local = alias.asname or alias.name
+                source: str | None = None
+                if node.module == "os" and node.level == 0:
+                    if alias.name == "getenv":
+                        source = "getenv"
+                    elif alias.name == "environ":
+                        source = "environ"
+                self._record_direct_binding(local, source)
+
+    def scopes(self) -> list[dict]:
+        """Return one frame per explicit or implicit Python lexical scope.
+
+        The scanner looks up the effective evaluation scope for each hit.
+        Each callable records its immediate callable parent so closure aliases
+        are inherited without leaking through class or sibling scopes.
+        """
+        return self._frames
+
+
+_ALIAS_KINDS = ("os_names", "getenv_names", "environ_names")
+_AliasMap = dict[str, set[str]]
+
+
+@dataclass(frozen=True)
+class _FlowResult:
+    """Alias states separated by the way control leaves an event sequence."""
+
+    normal: _AliasMap | None
+    returned: _AliasMap | None
+    raised: _AliasMap | None
+    broken: _AliasMap | None
+    continued: _AliasMap | None
+    reachable: _AliasMap
+
+
+@dataclass(frozen=True)
+class _AliasResolution:
+    """Resolve the aliases visible at a specific AST use site."""
+
+    node_aliases: dict[ast.AST, _AliasMap]
+    empty_aliases: _AliasMap
+
+    def aliases_for(self, node: ast.AST) -> _AliasMap:
+        resolved_node: ast.AST | None = node
+        while resolved_node is not None:
+            aliases = self.node_aliases.get(resolved_node)
+            if aliases is not None:
+                return aliases
+            resolved_node = getattr(resolved_node, "parent", None)
+        return self.empty_aliases
+
+
+def _resolve_aliases_for(tree: ast.AST) -> _AliasResolution:
+    """Build a conservative per-use-site alias state for every scope.
+
+    Function and lambda locals shadow inherited bindings throughout their
+    bodies, matching Python's compile-time local-name rules. Module and class
+    bodies instead apply bindings sequentially, so an outer alias can remain
+    visible before a later rebind. Parent-scope aliases retain their final
+    state because globals and closure cells are resolved when a callable runs.
+
+    Conditional, exception, match, and loop alternatives are joined by union
+    at their merge points. A name is therefore considered an env alias whenever
+    any reachable path can bind it to one, while reads within a single path
+    still use that path's sequential state.
+    """
+
+    def _copy_aliases(aliases: _AliasMap) -> _AliasMap:
+        return {alias_kind: set(aliases[alias_kind]) for alias_kind in _ALIAS_KINDS}
+
+    def _join_aliases(states: list[_AliasMap]) -> _AliasMap:
+        return {
+            alias_kind: set().union(*(state[alias_kind] for state in states))
+            for alias_kind in _ALIAS_KINDS
+        }
+
+    def _join_optional(states: list[_AliasMap | None]) -> _AliasMap | None:
+        present = [state for state in states if state is not None]
+        return _join_aliases(present) if present else None
+
+    def _kinds_for_source(
+        source: ast.expr | str | None,
+        aliases: _AliasMap,
+        node_aliases: dict[ast.AST, _AliasMap],
+    ) -> set[str]:
+        if source == "os":
+            return {"os_names"}
+        if source == "getenv":
+            return {"getenv_names"}
+        if source == "environ":
+            return {"environ_names"}
+        if not isinstance(source, ast.expr):
+            return set()
+        source_aliases = node_aliases.get(source, aliases)
+        if isinstance(source, ast.Name):
+            return {
+                alias_kind for alias_kind in _ALIAS_KINDS if source.id in source_aliases[alias_kind]
+            }
+        if isinstance(source, ast.Attribute) and isinstance(source.value, ast.Name):
+            if source.value.id not in source_aliases["os_names"]:
+                return set()
+            if source.attr == "getenv":
+                return {"getenv_names"}
+            if source.attr == "environ":
+                return {"environ_names"}
+        if isinstance(source, ast.IfExp):
+            return _kinds_for_source(
+                source.body,
+                node_aliases.get(source.body, aliases),
+                node_aliases,
+            ) | _kinds_for_source(
+                source.orelse,
+                node_aliases.get(source.orelse, aliases),
+                node_aliases,
+            )
+        if isinstance(source, ast.NamedExpr):
+            return _kinds_for_source(source.value, source_aliases, node_aliases)
+        return set()
+
+    visitor = _OsAliasVisitor()
+    visitor.visit(tree)
+    empty_aliases = {alias_kind: set() for alias_kind in _ALIAS_KINDS}
+    node_aliases: dict[ast.AST, _AliasMap] = {}
+    entry_aliases: dict[ast.AST, _AliasMap] = {}
+    final_aliases: dict[ast.AST | None, _AliasMap] = {}
+    initial_aliases: dict[ast.AST | None, _AliasMap] = {}
+
+    def _merge_snapshot(
+        snapshots: dict[ast.AST, _AliasMap],
+        node: ast.AST,
+        aliases: _AliasMap,
+    ) -> None:
+        existing = snapshots.get(node)
+        snapshots[node] = (
+            _copy_aliases(aliases) if existing is None else _join_aliases([existing, aliases])
+        )
+
+    def _bind(state: _AliasMap, name: str, source: ast.expr | str | None) -> _AliasMap:
+        bound = _copy_aliases(state)
+        source_kinds = _kinds_for_source(source, state, node_aliases)
+        for alias_kind in _ALIAS_KINDS:
+            bound[alias_kind].discard(name)
+        for source_kind in source_kinds:
+            bound[source_kind].add(name)
+        return bound
+
+    def _evaluate(
+        events: tuple[_AliasEvent, ...] | list[_AliasEvent],
+        initial: _AliasMap,
+    ) -> _FlowResult:
+        normal: _AliasMap | None = _copy_aliases(initial)
+        returned: _AliasMap | None = None
+        raised: _AliasMap | None = None
+        broken: _AliasMap | None = None
+        continued: _AliasMap | None = None
+        reachable_states = [_copy_aliases(initial)]
+
+        def _add_terminal(kind: str, state: _AliasMap | None) -> None:
+            nonlocal returned, raised, broken, continued
+            if state is None:
+                return
+            if kind == "return":
+                returned = _join_optional([returned, state])
+            elif kind == "raise":
+                raised = _join_optional([raised, state])
+            elif kind == "break":
+                broken = _join_optional([broken, state])
+            else:
+                assert kind == "continue"
+                continued = _join_optional([continued, state])
+
+        for event in events:
+            if normal is None:
+                break
+            if isinstance(event, _NodeEvent):
+                _merge_snapshot(node_aliases, event.node, normal)
+                continue
+            if isinstance(event, _ScopeEntryEvent):
+                _merge_snapshot(entry_aliases, event.node, normal)
+                continue
+            if isinstance(event, _ControlEvent):
+                _add_terminal(event.kind, normal)
+                normal = None
+                continue
+            if isinstance(event, _BranchEvent):
+                branch_results = [
+                    _evaluate(alternative, normal) for alternative in event.alternatives
+                ]
+                normal = _join_optional([result.normal for result in branch_results])
+                returned = _join_optional(
+                    [returned, *(result.returned for result in branch_results)]
+                )
+                raised = _join_optional([raised, *(result.raised for result in branch_results)])
+                broken = _join_optional([broken, *(result.broken for result in branch_results)])
+                continued = _join_optional(
+                    [continued, *(result.continued for result in branch_results)]
+                )
+                reachable_states.extend(result.reachable for result in branch_results)
+                if normal is not None:
+                    reachable_states.append(_copy_aliases(normal))
+                continue
+            if isinstance(event, _LoopEvent):
+                # Widen the loop-entry state to a fixed point so aliases from a
+                # continue/fallthrough path can affect a later iteration's
+                # break/return path. The alias domain is finite and each widen
+                # only adds names, so this terminates quickly.
+                loop_entry = _copy_aliases(normal)
+                iteration_results: list[_FlowResult] = []
+                while True:
+                    iteration_result = _evaluate(event.iteration, loop_entry)
+                    iteration_results.append(iteration_result)
+                    repeated = _join_optional([iteration_result.normal, iteration_result.continued])
+                    if repeated is None:
+                        break
+                    widened = _join_aliases([loop_entry, repeated])
+                    if widened == loop_entry:
+                        break
+                    loop_entry = widened
+                iteration = _FlowResult(
+                    normal=_join_optional([result.normal for result in iteration_results]),
+                    returned=_join_optional([result.returned for result in iteration_results]),
+                    raised=_join_optional([result.raised for result in iteration_results]),
+                    broken=_join_optional([result.broken for result in iteration_results]),
+                    continued=_join_optional([result.continued for result in iteration_results]),
+                    reachable=_join_aliases([result.reachable for result in iteration_results]),
+                )
+                normal_exit = _join_optional(
+                    [
+                        iteration.normal,
+                        iteration.continued,
+                        normal if event.may_skip else None,
+                    ]
+                )
+                orelse = _evaluate(event.orelse, normal_exit) if normal_exit is not None else None
+                normal = _join_optional(
+                    [orelse.normal if orelse is not None else normal_exit, iteration.broken]
+                )
+                returned = _join_optional(
+                    [
+                        returned,
+                        iteration.returned,
+                        orelse.returned if orelse is not None else None,
+                    ]
+                )
+                raised = _join_optional(
+                    [
+                        raised,
+                        iteration.raised,
+                        orelse.raised if orelse is not None else None,
+                    ]
+                )
+                # A break/continue in a nested loop's else suite targets the
+                # surrounding loop, while controls in the iteration itself are
+                # consumed by this loop.
+                broken = _join_optional([broken, orelse.broken if orelse is not None else None])
+                continued = _join_optional(
+                    [continued, orelse.continued if orelse is not None else None]
+                )
+                reachable_states.append(iteration.reachable)
+                if orelse is not None:
+                    reachable_states.append(orelse.reachable)
+                if normal is not None:
+                    reachable_states.append(_copy_aliases(normal))
+                continue
+            if isinstance(event, _TryEvent):
+                body = _evaluate(event.body, normal)
+                success = _evaluate(event.orelse, body.normal) if body.normal is not None else None
+                handler_results = [_evaluate(handler, body.reachable) for handler in event.handlers]
+                try_result = _FlowResult(
+                    normal=_join_optional(
+                        [
+                            success.normal if success is not None else body.normal,
+                            *(result.normal for result in handler_results),
+                        ]
+                    ),
+                    returned=_join_optional(
+                        [
+                            body.returned,
+                            success.returned if success is not None else None,
+                            *(result.returned for result in handler_results),
+                        ]
+                    ),
+                    # Any operation in the body or handlers may raise. Keeping
+                    # those states on the exceptional channel makes finally
+                    # snapshots conservative without admitting them to the
+                    # normal post-try merge.
+                    raised=_join_optional(
+                        [
+                            body.raised,
+                            body.reachable,
+                            success.raised if success is not None else None,
+                            success.reachable if success is not None else None,
+                            *(result.raised for result in handler_results),
+                            *(result.reachable for result in handler_results),
+                        ]
+                    ),
+                    broken=_join_optional(
+                        [
+                            body.broken,
+                            success.broken if success is not None else None,
+                            *(result.broken for result in handler_results),
+                        ]
+                    ),
+                    continued=_join_optional(
+                        [
+                            body.continued,
+                            success.continued if success is not None else None,
+                            *(result.continued for result in handler_results),
+                        ]
+                    ),
+                    reachable=_join_aliases(
+                        [
+                            body.reachable,
+                            *([success.reachable] if success is not None else []),
+                            *(result.reachable for result in handler_results),
+                        ]
+                    ),
+                )
+
+                if event.finalbody:
+                    final_states: dict[str, _AliasMap | None] = {
+                        "normal": None,
+                        "return": None,
+                        "raise": None,
+                        "break": None,
+                        "continue": None,
+                    }
+                    finally_reachable = [try_result.reachable]
+                    for incoming_kind, incoming in (
+                        ("normal", try_result.normal),
+                        ("return", try_result.returned),
+                        ("raise", try_result.raised),
+                        ("break", try_result.broken),
+                        ("continue", try_result.continued),
+                    ):
+                        if incoming is None:
+                            continue
+                        final = _evaluate(event.finalbody, incoming)
+                        finally_reachable.append(final.reachable)
+                        final_states[incoming_kind] = _join_optional(
+                            [final_states[incoming_kind], final.normal]
+                        )
+                        for outgoing_kind, outgoing in (
+                            ("return", final.returned),
+                            ("raise", final.raised),
+                            ("break", final.broken),
+                            ("continue", final.continued),
+                        ):
+                            final_states[outgoing_kind] = _join_optional(
+                                [final_states[outgoing_kind], outgoing]
+                            )
+                    try_result = _FlowResult(
+                        normal=final_states["normal"],
+                        returned=final_states["return"],
+                        raised=final_states["raise"],
+                        broken=final_states["break"],
+                        continued=final_states["continue"],
+                        reachable=_join_aliases(finally_reachable),
+                    )
+
+                normal = try_result.normal
+                returned = _join_optional([returned, try_result.returned])
+                raised = _join_optional([raised, try_result.raised])
+                broken = _join_optional([broken, try_result.broken])
+                continued = _join_optional([continued, try_result.continued])
+                reachable_states.append(try_result.reachable)
+                if normal is not None:
+                    reachable_states.append(_copy_aliases(normal))
+                continue
+            if isinstance(event, _ComprehensionBindingEvent):
+                # A comprehension may produce no target assignments because an
+                # iterable is empty, a filter rejects every item, or a generator
+                # is never consumed. Join assigned and unchanged states instead
+                # of treating the walrus as an unconditional outer-scope write.
+                normal = _join_aliases([normal, _bind(normal, event.name, event.source)])
+            else:
+                assert isinstance(event, _BindingEvent)
+                normal = _bind(normal, event.name, event.source)
+            reachable_states.append(_copy_aliases(normal))
+        return _FlowResult(
+            normal=normal,
+            returned=returned,
+            raised=raised,
+            broken=broken,
+            continued=continued,
+            reachable=_join_aliases(reachable_states),
+        )
+
+    for frame in visitor.scopes():
+        if frame["kind"] == "module":
+            base_aliases = empty_aliases
+        elif frame["kind"] in {"class", "comprehension"}:
+            # Class bodies execute at their definition site. Python 3
+            # comprehensions similarly start from the enclosing state after
+            # evaluating their first iterable, then isolate all target binds.
+            # Neither implicit scope closes over a containing class namespace,
+            # so nested classes/comprehensions inherit that class's own lexical
+            # entry state instead of its sequential local bindings.
+            entry = entry_aliases.get(frame["node"])
+            if entry is None:
+                # The scope definition itself is unreachable (for example,
+                # after an unconditional return), so none of its body executes.
+                base_aliases = empty_aliases
+            elif frame["container_kind"] == "class":
+                base_aliases = initial_aliases[frame["container_node"]]
+            else:
+                base_aliases = entry
+        else:
+            base_aliases = final_aliases[frame["parent_node"]]
+
+        if frame["kind"] in {"function", "lambda"}:
+            shadowed_names = (
+                set(frame["bound_names"])
+                - set(frame["global_names"])
+                - set(frame["nonlocal_names"])
+            )
+        else:
+            shadowed_names = set()
+        initial = {
+            alias_kind: set(base_aliases[alias_kind]) - shadowed_names
+            for alias_kind in _ALIAS_KINDS
+        }
+        scope_key = None if frame["kind"] == "module" else frame["node"]
+        initial_aliases[scope_key] = _copy_aliases(initial)
+        flow = _evaluate(frame["events"], initial)
+        visible_to_children = _join_optional(
+            [flow.normal, flow.returned, flow.raised, flow.broken, flow.continued]
+        )
+        final_aliases[scope_key] = _copy_aliases(
+            visible_to_children if visible_to_children is not None else flow.reachable
+        )
+    return _AliasResolution(
+        node_aliases=node_aliases,
+        empty_aliases=_copy_aliases(empty_aliases),
+    )
+
+
+def _attach_parents(tree: ast.AST) -> None:
+    """Walk the tree and set ``.parent`` on every child node."""
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            child.parent = node  # type: ignore[attr-defined]
+
+
+def _scan_for_direct_env_access() -> list[tuple[pathlib.Path, int, str]]:
+    """AST-scan for direct env reads that bypass Settings.
+
+    Catches any of:
+      * ``os.environ.get("X")`` / ``environ.get("X")``
+      * ``os.environ["X"]`` / ``environ["X"]``
+      * ``os.getenv("X")`` / ``getenv("X")``
+      * ``"X" in os.environ`` / ``"X" not in environ``
+      * whole-mapping reads such as ``os.environ.copy()`` / ``environ.items()``
+      * direct iteration such as ``for key in os.environ``
+
+    ...including under any import alias (``import os as host_os``,
+    ``from os import getenv``, ``from os import environ as e``), because
+    those forms are semantically identical direct reads.
+
+    Subscript writes (``os.environ["KEY"] = value``) and deletes
+    (``del os.environ["KEY"]``) are excluded — those do not bypass
+    Settings, they mutate the process environment for child processes.
+    Per-function allowlist (``FUNCTION_ALLOWLIST``) lets specific functions
+    in otherwise-scanned files keep their direct env access (the DI
+    pattern in ``orchestrator/database_url.py`` is the motivating case).
+    Aliases are resolved per lexical scope so a function parameter named
+    ``getenv`` is not retroactively flagged as a direct env read.
+    Function defaults and decorators are evaluated in the enclosing
+    scope (the parameter names do not exist yet at default-evaluation
+    time), so the resolver visits those nodes with the parent frame
+    active. Lambdas get their own scope keyed by the AST node so a
+    lambda parameter shadows the enclosing alias while a lambda body
+    without a shadow still sees the inherited alias.
+    """
+    hits: list[tuple[pathlib.Path, int, str]] = []
+    for scan_dir in SCAN_DIRS:
+        if not scan_dir.is_dir():
+            continue
+        for path in scan_dir.rglob("*.py"):
+            rel = path.relative_to(REPO_ROOT).as_posix()
+            if rel in ALLOWLIST:
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except SyntaxError:
+                continue
+            _attach_parents(tree)
+            resolution = _resolve_aliases_for(tree)
+            module_allowlist = FUNCTION_ALLOWLIST.get(rel)
+
+            def _aliases_for(node: ast.AST) -> dict[str, set[str]]:
+                return resolution.aliases_for(node)
+
+            def _is_environ_expr(node: ast.expr, aliases: dict[str, set[str]]) -> bool:
+                """True if `node` evaluates to the `os.environ` mapping."""
+                # `os.environ` / `host_os.environ`
+                if (
+                    isinstance(node, ast.Attribute)
+                    and node.attr == "environ"
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id in aliases["os_names"]
+                ):
+                    return True
+                # bare `environ` / aliased `e` from `from os import environ`
+                return isinstance(node, ast.Name) and node.id in aliases["environ_names"]
+
+            for node in ast.walk(tree):
+                # Detect the direct access forms:
+                #   1) <environ>.get(...)   Call( Attribute(<environ expr>, get) )
+                #   2) <os>.getenv(...)     Call( Attribute(Name(os-alias), getenv) )
+                #   3) getenv(...)          Call( Name(getenv-alias) )
+                #   4) <environ>["KEY"]     Subscript( <environ expr>, ctx=Load )
+                #   5) "KEY" in <environ>   Compare(..., In/NotIn, <environ expr>)
+                #   6) <environ>.copy/items/keys/values(...)
+                #   7) iteration over <environ>
+                if module_allowlist is not None:
+                    # If the file has a function-scoped allowlist, only
+                    # nodes inside the allowlisted functions are exempt;
+                    # other functions in the same file are still scanned.
+                    # Use the qualified lexical path (``ClassName.method``)
+                    # so two same-named methods in different enclosing
+                    # classes resolve to distinct allowlist keys.
+                    func_qname = _qualified_function_name(node)
+                    if func_qname is not None and func_qname in module_allowlist:
+                        continue
+                aliases = _aliases_for(node)
+                if isinstance(node, ast.Call):
+                    func = node.func
+                    if (
+                        isinstance(func, ast.Attribute)
+                        and func.attr in ENVIRON_READ_METHODS
+                        and _is_environ_expr(func.value, aliases)
+                    ):
+                        hits.append((path, node.lineno, f"os.environ.{func.attr}(...)"))
+                    elif (
+                        isinstance(func, ast.Attribute)
+                        and func.attr == "getenv"
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id in aliases["os_names"]
+                    ):
+                        hits.append((path, node.lineno, "os.getenv(...)"))
+                    elif isinstance(func, ast.Name) and func.id in aliases["getenv_names"]:
+                        hits.append((path, node.lineno, "os.getenv(...)"))
+                    elif (
+                        isinstance(func, ast.Name)
+                        and func.id == "iter"
+                        and len(node.args) == 1
+                        and _is_environ_expr(node.args[0], aliases)
+                    ):
+                        hits.append((path, node.lineno, "iteration over os.environ"))
+                    continue
+                if isinstance(node, (ast.For, ast.AsyncFor)) and _is_environ_expr(
+                    node.iter, aliases
+                ):
+                    hits.append((path, node.lineno, "iteration over os.environ"))
+                    continue
+                if isinstance(node, ast.comprehension) and _is_environ_expr(node.iter, aliases):
+                    hits.append((path, node.iter.lineno, "iteration over os.environ"))
+                    continue
+                if isinstance(node, ast.YieldFrom) and _is_environ_expr(node.value, aliases):
+                    hits.append((path, node.lineno, "iteration over os.environ"))
+                    continue
+                if isinstance(node, ast.Compare):
+                    if any(
+                        isinstance(operator, (ast.In, ast.NotIn))
+                        and _is_environ_expr(comparator, aliases)
+                        for operator, comparator in zip(node.ops, node.comparators, strict=True)
+                    ):
+                        hits.append((path, node.lineno, "membership in os.environ"))
+                    continue
+                if (
+                    isinstance(node, ast.Subscript)
+                    and isinstance(node.ctx, ast.Load)
+                    and _is_environ_expr(node.value, aliases)
+                ):
+                    hits.append((path, node.lineno, "os.environ[...]"))
+    return hits
+
+
+def test_no_direct_env_access_outside_settings() -> None:
+    hits = _scan_for_direct_env_access()
+    assert not hits, (
+        "Direct `os.environ` mapping reads / `os.getenv(...)` / membership / "
+        '`os.environ["KEY"]` reads detected outside '
+        "`orchestrator/config.py` (or other allowed files). Read env vars "
+        "through the `Settings` class instead so type validation, defaults, "
+        "and env-var prefixing apply uniformly.\n\nFound:\n"
+        + "\n".join(f"  {p.relative_to(REPO_ROOT)}:{ln}: {snippet}" for p, ln, snippet in hits)
+    )
+
+
+def test_ast_gate_detects_all_three_direct_env_forms(tmp_path, monkeypatch) -> None:
+    """Regression for Codex round-2 P2 on PR #264:
+
+    The widened AST walker must catch every direct env-access form
+    (os.environ.get, os.getenv, os.environ["KEY"]) — a previous widening
+    pass claimed to detect subscript reads but actually only walked
+    ast.Call nodes. Drive the scanner against a fixture file that uses
+    each form and assert the fixture produces the expected hits.
+    """
+    fixture_dir = tmp_path / "orchestrator"
+    fixture_dir.mkdir()
+    fixture = fixture_dir / "fixture_uses_all_forms.py"
+    fixture.write_text(
+        "import os\n"
+        "\n"
+        'A = os.environ.get("DATABASE_URL")\n'
+        'B = os.getenv("ENCRYPTION_KEY")\n'
+        'C = os.environ["BACKUP_DIR"]\n'
+    )
+
+    # Point the scanner at the fixture by overriding the module-level
+    # SCAN_DIRS / REPO_ROOT via a MonkeyPatch fixture, then call the
+    # scanner. We resolve the module via sys.modules (already loaded by
+    # pytest at collection time) rather than a self-import that
+    # basedpyright cannot statically resolve.
+    import sys
+
+    mod = sys.modules[__name__]
+    monkeypatch.setattr(mod, "SCAN_DIRS", (fixture_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
+    hits = mod._scan_for_direct_env_access()
+
+    snippets = sorted({snippet for _, _, snippet in hits})
+    assert set(snippets) == {
+        "os.environ[...]",
+        "os.environ.get(...)",
+        "os.getenv(...)",
+    }, f"Expected all three forms detected, got {snippets}"
+
+
+def test_ast_gate_resolves_imported_os_aliases(tmp_path, monkeypatch) -> None:
+    """Regression for the round-3 P2 on PR #268:
+
+    `from os import getenv`, `from os import environ`, and `import os as X`
+    are semantically identical direct env reads, but a walker that only
+    recognizes an `ast.Name` whose identifier is literally `os` misses all
+    of them. Each alias form must produce a hit.
+    """
+    import sys
+
+    mod = sys.modules[__name__]
+    fixture_dir = tmp_path / "aliased"
+    fixture_dir.mkdir()
+
+    cases = {
+        "import_os_as": (
+            "import os as host_os\n"
+            '\nA = host_os.getenv("K1")\n'
+            'B = host_os.environ.get("K2")\n'
+            'C = host_os.environ["K3"]\n',
+            {"os.getenv(...)", "os.environ.get(...)", "os.environ[...]"},
+        ),
+        "from_os_import_getenv": (
+            'from os import getenv\n\nA = getenv("K1")\n',
+            {"os.getenv(...)"},
+        ),
+        "from_os_import_getenv_as": (
+            'from os import getenv as g\n\nA = g("K1")\n',
+            {"os.getenv(...)"},
+        ),
+        "from_os_import_environ": (
+            'from os import environ\n\nA = environ.get("K1")\nB = environ["K2"]\n',
+            {"os.environ.get(...)", "os.environ[...]"},
+        ),
+        "from_os_import_environ_as": (
+            'from os import environ as e\n\nA = e.get("K1")\nB = e["K2"]\n',
+            {"os.environ.get(...)", "os.environ[...]"},
+        ),
+    }
+
+    for name, (source, expected) in cases.items():
+        case_dir = fixture_dir / name
+        case_dir.mkdir()
+        (case_dir / f"{name}.py").write_text(source)
+
+        monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+        monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+        hits = mod._scan_for_direct_env_access()
+
+        found = {snippet for _, _, snippet in hits}
+        assert found == expected, (
+            f"alias form `{name}`: gate reported {sorted(found)}, expected {sorted(expected)}"
+        )
+
+
+def test_ast_gate_does_not_flag_unrelated_names(tmp_path, monkeypatch) -> None:
+    """The alias resolver must not fire on names that are not bound to `os`.
+
+    A local variable, function parameter, or same-named import from another
+    module called `environ` / `getenv` is not a direct env read, and flagging
+    it would make the gate unusable (notably
+    `orchestrator/database_url.py` takes an injected `environ` mapping).
+    """
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "unrelated"
+    case_dir.mkdir()
+    (case_dir / "unrelated.py").write_text(
+        "from mylib import getenv, environ\n"
+        "\n"
+        "\n"
+        "def read(environ):\n"
+        '    local = environ.get("K1")\n'
+        '    other = environ["K2"]\n'
+        '    third = getenv("K3")\n'
+        "    return local, other, third\n"
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    assert mod._scan_for_direct_env_access() == [], (
+        "gate flagged names that are not bound to the os module — false positive"
+    )
+
+
+def test_ast_gate_scans_every_backend_package() -> None:
+    """Regression for the round-3 P2 on PR #268:
+
+    `config/`, `db/`, `council/`, and `backend/` are production packages
+    imported by the orchestrator, so the gate must cover them. Guard the
+    SCAN_DIRS tuple against silent narrowing.
+    """
+    scanned = {d.name for d in SCAN_DIRS}
+    for required in ("orchestrator", "providers", "scripts", "config", "db", "council", "backend"):
+        assert required in scanned, f"backend package `{required}/` is not covered by the gate"
+
+    # Every top-level directory that contains Python and is not test/tooling
+    # scaffolding must be in SCAN_DIRS, so a newly added backend package
+    # cannot silently escape the gate.
+    ignored = {"tests", "migrations", "frontend", "docs", ".venv", "node_modules"}
+    for child in REPO_ROOT.iterdir():
+        if not child.is_dir() or child.name.startswith(".") or child.name in ignored:
+            continue
+        if not any(child.rglob("*.py")):
+            continue
+        assert child.name in scanned, (
+            f"top-level package `{child.name}/` contains Python but is not in SCAN_DIRS; "
+            "add it to the gate or to the ignored set with a rationale"
+        )
+
+
+def test_ast_gate_resolves_aliases_per_function_scope(tmp_path, monkeypatch) -> None:
+    """Regression for the round-3 P2 on PR #268: aliases are resolved per
+    lexical scope, not module-wide.
+
+    A function that imports ``from os import getenv`` should not cause
+    a *sibling* function in the same module to mis-attribute a parameter
+    named ``getenv`` as a direct env read. Conversely, a function whose
+    body uses ``host_os.getenv(...)`` should be detected even when the
+    alias is bound inside that function.
+    """
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "scoped"
+    case_dir.mkdir()
+    (case_dir / "scoped.py").write_text(
+        "import os\n"
+        "\n"
+        "def uses_os_directly():\n"
+        '    return os.getenv("OUTSIDE_KEY")\n'
+        "\n"
+        "def getenv(getenv_arg):\n"
+        '    return getenv_arg("KEY")\n'
+        "\n"
+        "def scoped_alias():\n"
+        "    import os as host_os\n"
+        '    return host_os.getenv("INSIDE_KEY")\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    # Only the two real direct env reads should be flagged; the
+    # shadowed `getenv` parameter in `def getenv(getenv_arg):` must
+    # NOT be flagged.
+    snippets = sorted({snippet for _, _, snippet in hits})
+    assert snippets == ["os.getenv(...)"], (
+        f"per-scope resolver mis-flagged: expected ['os.getenv(...)'], got {snippets}"
+    )
+
+
+def test_ast_gate_ignores_subscript_writes(tmp_path, monkeypatch) -> None:
+    """Regression for the round-3 P2 on PR #268: subscript writes/deletes
+    are not direct env reads.
+
+    A production module that does ``os.environ[\"CHILD_FLAG\"] = \"1\"``
+    before spawning a child process is *configuring* the child, not
+    reading configuration itself. The gate should only catch ``Load``
+    subscripts (reads) — ``Store`` and ``Del`` contexts are excluded.
+    """
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "writes"
+    case_dir.mkdir()
+    (case_dir / "writes.py").write_text(
+        "import os\n"
+        "\n"
+        'A = os.environ["READ_KEY"]\n'
+        'os.environ["WRITE_KEY"] = "1"\n'
+        'del os.environ["DELETE_KEY"]\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    snippets = sorted({snippet for _, _, snippet in hits})
+    assert snippets == ["os.environ[...]"], (
+        f"subscript-write filter mis-fired: expected ['os.environ[...]'], got {snippets}"
+    )
+    lines = sorted(ln for _, ln, _ in hits)
+    assert lines == [3], (
+        f"only the Load-context subscript (line 3) should be flagged, got lines {lines}"
+    )
+
+
+def test_ast_gate_function_allowlist_scopes_database_url(tmp_path, monkeypatch) -> None:
+    """Regression for the round-3 P2 on PR #268: the database_url.py
+    exemption is function-scoped, not file-scoped.
+
+    Only ``resolve_database_url`` is allowed to reference ``os.environ``
+    directly (the DI entry point that accepts an injected ``environ``
+    mapping). ``validate_database_credentials`` uses ``os.getenv`` and
+    must be flagged so any future drift in the DI function or any new
+    direct env read added to ``validate_database_credentials`` will be
+    caught at CI time.
+    """
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "dburl"
+    case_dir.mkdir()
+    (case_dir / "database_url.py").write_text(
+        "from __future__ import annotations\n"
+        "\n"
+        "import os\n"
+        "from collections.abc import Mapping\n"
+        "\n"
+        'def resolve_database_url(configured_url=os.getenv("DEFAULT"), *, environ=None):\n'
+        "    source = os.environ if environ is None else environ\n"
+        '    return source.get("DATABASE_URL")\n'
+        "\n"
+        "def validate_database_credentials(settings):\n"
+        '    return (os.getenv("POSTGRES_PASSWORD"), os.getenv("PGPASSWORD"))\n'
+    )
+
+    # Register the function-scoped allowlist entry and scan.
+    monkeypatch.setitem(
+        mod.FUNCTION_ALLOWLIST,
+        "database_url.py",
+        frozenset({"resolve_database_url"}),
+    )
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    snippets = sorted({snippet for _, _, snippet in hits})
+    # Only the `os.getenv(...)` calls inside `validate_database_credentials`
+    # should be flagged — the `os.environ` reference inside
+    # `resolve_database_url` is allowlisted on a per-function basis.
+    assert snippets == ["os.getenv(...)"], (
+        f"function-allowlist mis-applied: expected ['os.getenv(...)'], got {snippets}"
+    )
+    lines = sorted(line for _, line, _ in hits)
+    assert lines == [6, 11, 11]
+
+
+def test_ast_gate_resolves_same_named_methods_in_distinct_classes(tmp_path, monkeypatch) -> None:
+    """Regression for the round-4 P2 on PR #268: alias frames are keyed by
+    AST-node identity, not function name.
+
+    Two classes with a same-named method that share the file:
+        class A:
+            def configure(self):
+                import os as host_os
+                return host_os.getenv("K1")
+        class B:
+            def configure(self, host_os):  # unrelated parameter
+                return host_os.get("K2")
+
+    A string-name key would let B's frame overwrite A's, and
+    ``host_os.getenv("K1")`` would silently bypass the gate. With
+    node-identity keying, A's frame retains its ``host_os`` alias and
+    the direct env read is detected.
+    """
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "classes"
+    case_dir.mkdir()
+    (case_dir / "classes.py").write_text(
+        "class A:\n"
+        "    def configure(self):\n"
+        "        import os as host_os\n"
+        '        return host_os.getenv("K1")\n'
+        "\n"
+        "class B:\n"
+        "    def configure(self, host_os):\n"
+        '        return host_os.get("K2")\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    snippets = sorted({snippet for _, _, snippet in hits})
+    assert snippets == ["os.getenv(...)"], (
+        f"node-keyed resolver mis-flagged: expected ['os.getenv(...)'], got {snippets}"
+    )
+    lines = sorted(ln for _, ln, _ in hits)
+    assert lines == [4], (
+        f"only A.configure's host_os.getenv (line 4) should be flagged, got lines {lines}"
+    )
+
+
+def test_ast_gate_inherits_aliases_from_immediate_lexical_parent(tmp_path, monkeypatch) -> None:
+    """Nested functions inherit parent aliases unless a local binding shadows them."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "closures"
+    case_dir.mkdir()
+    (case_dir / "closures.py").write_text(
+        "def inherited():\n"
+        "    import os as host_os\n"
+        "    def inner():\n"
+        '        return host_os.getenv("K1")\n'
+        "    return inner\n"
+        "\n"
+        "def shadowed():\n"
+        "    import os as host_os\n"
+        "    def inner(host_os):\n"
+        '        return host_os.getenv("NOT_OS")\n'
+        "    return inner\n"
+        "\n"
+        "def inherited_alongside_local_alias():\n"
+        "    import os as outer_os\n"
+        "    def inner():\n"
+        "        import os as inner_os\n"
+        '        return outer_os.getenv("K2"), inner_os.environ["K3"]\n'
+        "    return inner\n"
+        "\n"
+        "def declared_nonlocal():\n"
+        "    import os as host_os\n"
+        "    def inner():\n"
+        "        nonlocal host_os\n"
+        '        return host_os.environ.get("K4")\n'
+        "    return inner\n"
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    snippets = sorted(snippet for _, _, snippet in hits)
+    assert snippets == [
+        "os.environ.get(...)",
+        "os.environ[...]",
+        "os.getenv(...)",
+        "os.getenv(...)",
+    ]
+    lines = sorted(line for _, line, _ in hits)
+    assert lines == [4, 17, 17, 24]
+
+
+def test_ast_gate_uses_enclosing_scope_for_callable_definition_expressions(
+    tmp_path, monkeypatch
+) -> None:
+    """Defaults, decorators, and annotations run before parameter shadowing."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "callable_scopes"
+    case_dir.mkdir()
+    (case_dir / "callable_scopes.py").write_text(
+        "import os\n"
+        "\n"
+        'def sync_default(os=os.getenv("SYNC")):\n'
+        "    return os\n"
+        "\n"
+        'async def async_default(os=os.environ["ASYNC"]):\n'
+        "    return os\n"
+        "\n"
+        '@decorate(os.getenv("DECORATOR"))\n'
+        "def decorated(os):\n"
+        "    return os\n"
+        "\n"
+        'def annotated(value: os.getenv("ANNOTATION"), os=os.environ["DEFAULT"]):\n'
+        "    return value, os\n"
+        "\n"
+        'shadowed = lambda os: (os.getenv("BODY"), os.environ["BODY_SUBSCRIPT"])\n'
+        'defaulted = lambda os=os.environ.get("LAMBDA_DEFAULT"): os.getenv("BODY_TOO")\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (3, "os.getenv(...)"),
+        (6, "os.environ[...]"),
+        (9, "os.getenv(...)"),
+        (13, "os.environ[...]"),
+        (13, "os.getenv(...)"),
+        (17, "os.environ.get(...)"),
+    ]
+
+
+def test_ast_gate_detects_environment_membership_checks(tmp_path, monkeypatch) -> None:
+    """Membership checks read process configuration, including through aliases."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "membership"
+    case_dir.mkdir()
+    (case_dir / "membership.py").write_text(
+        "import os as host_os\n"
+        "from os import environ as env\n"
+        "OTHER = {}\n"
+        'A = "K1" in host_os.environ\n'
+        'B = "K2" not in env\n'
+        'C = "K3" in host_os.environ in OTHER\n'
+        "D = env in OTHER\n"
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (4, "membership in os.environ"),
+        (5, "membership in os.environ"),
+        (6, "membership in os.environ"),
+    ]
+
+
+def test_ast_gate_isolates_class_body_aliases_from_methods(tmp_path, monkeypatch) -> None:
+    """Class namespaces neither leak into methods nor hide outer closures."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "class_scopes"
+    case_dir.mkdir()
+    (case_dir / "class_scopes.py").write_text(
+        "import os\n"
+        "\n"
+        "class Rebound:\n"
+        "    os = object()\n"
+        '    unrelated = os.getenv("NOT_ENV")\n'
+        "\n"
+        "class LocalAlias:\n"
+        "    import os as host_os\n"
+        '    class_read = host_os.getenv("CLASS")\n'
+        "    def method(self):\n"
+        '        return host_os.getenv("NOT_VISIBLE")\n'
+        "\n"
+        "def outer():\n"
+        "    import os as closure_os\n"
+        "    class Nested:\n"
+        '        class_read = closure_os.getenv("CLASS_CLOSURE")\n'
+        "        def method(self):\n"
+        '            return closure_os.environ["METHOD_CLOSURE"]\n'
+        "    return Nested\n"
+        "\n"
+        'module_read = os.getenv("MODULE")\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (9, "os.getenv(...)"),
+        (16, "os.getenv(...)"),
+        (18, "os.environ[...]"),
+        (21, "os.getenv(...)"),
+    ]
+
+
+def test_ast_gate_propagates_environment_alias_assignments(tmp_path, monkeypatch) -> None:
+    """Direct and transitive accessor assignments remain visible to the gate."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "assigned_aliases"
+    case_dir.mkdir()
+    (case_dir / "assigned_aliases.py").write_text(
+        "import os\n"
+        "read_env = os.getenv\n"
+        "env = os.environ\n"
+        "host_os = os\n"
+        'A = read_env("A")\n'
+        'B = env.get("B")\n'
+        'C = host_os.environ["C"]\n'
+        "\n"
+        "def nested():\n"
+        "    local_getenv = os.getenv\n"
+        "    local_env = os.environ\n"
+        "    transitive = local_getenv\n"
+        '    return local_getenv("D"), local_env.get("E"), transitive("F")\n'
+        "\n"
+        "def unrelated(os):\n"
+        "    local_getenv = os.getenv\n"
+        '    return local_getenv("NOT_ENV")\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (5, "os.getenv(...)"),
+        (6, "os.environ.get(...)"),
+        (7, "os.environ[...]"),
+        (13, "os.environ.get(...)"),
+        (13, "os.getenv(...)"),
+        (13, "os.getenv(...)"),
+    ]
+
+
+def test_ast_gate_detects_environment_mapping_read_methods(tmp_path, monkeypatch) -> None:
+    """Whole-mapping read APIs bypass Settings just like per-key reads."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "mapping_reads"
+    case_dir.mkdir()
+    (case_dir / "mapping_reads.py").write_text(
+        "import os as host_os\n"
+        "from os import environ as env\n"
+        "assigned = host_os.environ\n"
+        "transitive = assigned\n"
+        "A = host_os.environ.copy()\n"
+        "B = env.items()\n"
+        "C = assigned.keys()\n"
+        "D = transitive.values()\n"
+        'env.update({"CHILD_FLAG": "1"})\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (5, "os.environ.copy(...)"),
+        (6, "os.environ.items(...)"),
+        (7, "os.environ.keys(...)"),
+        (8, "os.environ.values(...)"),
+    ]
+
+
+def test_ast_gate_detects_environment_iteration(tmp_path, monkeypatch) -> None:
+    """Iteration is a whole-environment read, including scoped aliases."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "mapping_iteration"
+    case_dir.mkdir()
+    (case_dir / "mapping_iteration.py").write_text(
+        "import os as host_os\n"
+        "from os import environ as env\n"
+        "for key in host_os.environ:\n"
+        "    pass\n"
+        "keys = [key for key in env]\n"
+        "iterator = iter(host_os.environ)\n"
+        "\n"
+        "def closure():\n"
+        "    local_env = env\n"
+        "    yield from local_env\n"
+        "\n"
+        "def unrelated(env, iter):\n"
+        "    return [key for key in env], iter(env)\n"
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (3, "iteration over os.environ"),
+        (5, "iteration over os.environ"),
+        (6, "iteration over os.environ"),
+        (10, "iteration over os.environ"),
+    ]
+
+
+def test_ast_gate_resolves_aliases_at_each_use_site(tmp_path, monkeypatch) -> None:
+    """A later rebind neither erases nor retroactively creates an alias."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "ordered_aliases"
+    case_dir.mkdir()
+    (case_dir / "ordered_aliases.py").write_text(
+        "import os\n"
+        "\n"
+        'EARLY = os.getenv("EARLY")\n'
+        "os = object()\n"
+        'LATE = os.getenv("NOT_ENV")\n'
+        "\n"
+        "os = object()\n"
+        'BEFORE_IMPORT = os.getenv("NOT_ENV")\n'
+        "import os\n"
+        'AFTER_IMPORT = os.getenv("AFTER_IMPORT")\n'
+        "\n"
+        "def rebound_alias():\n"
+        "    host_os = os\n"
+        '    first = host_os.getenv("FIRST")\n'
+        "    host_os = object()\n"
+        '    second = host_os.getenv("NOT_ENV")\n'
+        "    return first, second\n"
+        "\n"
+        "def introduced_alias():\n"
+        "    host_os = object()\n"
+        '    first = host_os.getenv("NOT_ENV")\n'
+        "    host_os = os\n"
+        '    second = host_os.environ.get("SECOND")\n'
+        "    return first, second\n"
+        "\n"
+        "class SequentialClass:\n"
+        '    before = os.getenv("CLASS_BEFORE")\n'
+        "    os = object()\n"
+        '    after = os.getenv("NOT_ENV")\n'
+        "\n"
+        "def lexical_local():\n"
+        '    before = os.getenv("UNBOUND")\n'
+        "    os = object()\n"
+        "    return before\n"
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (3, "os.getenv(...)"),
+        (10, "os.getenv(...)"),
+        (14, "os.getenv(...)"),
+        (23, "os.environ.get(...)"),
+        (27, "os.getenv(...)"),
+    ]
+
+
+def test_ast_gate_evaluates_loop_iterable_before_target_binding(tmp_path, monkeypatch) -> None:
+    """A loop target rebind takes effect only after its iterable is read."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "loop_order"
+    case_dir.mkdir()
+    (case_dir / "loop_order.py").write_text(
+        "import os\n"
+        'for os in (os.getenv("LOOP"),):\n'
+        "    pass\n"
+        'AFTER = os.getenv("NOT_ENV")\n'
+        "import os\n"
+        'RESTORED = os.getenv("RESTORED")\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (2, "os.getenv(...)"),
+        (6, "os.getenv(...)"),
+    ]
+
+
+def test_ast_gate_merges_alias_states_across_conditional_branches(tmp_path, monkeypatch) -> None:
+    """A post-branch read is flagged when any reachable arm binds an env alias."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "conditional_aliases"
+    case_dir.mkdir()
+    (case_dir / "conditional_aliases.py").write_text(
+        "def maybe_env(enabled, fake):\n"
+        "    if enabled:\n"
+        "        import os\n"
+        "    else:\n"
+        "        os = fake\n"
+        '    return os.getenv("MAYBE_ENV")\n'
+        "\n"
+        "def branch_local(enabled, fake):\n"
+        "    import os as host_os\n"
+        "    if enabled:\n"
+        "        host_os = fake\n"
+        '        ignored = host_os.getenv("NOT_ENV")\n'
+        "    else:\n"
+        '        detected = host_os.getenv("BRANCH_ENV")\n'
+        '    after = host_os.getenv("MAYBE_AFTER")\n'
+        "    return ignored, detected, after\n"
+        "\n"
+        "def conditional_expression(enabled, fake):\n"
+        "    import os\n"
+        "    selected = os if enabled else fake\n"
+        '    return selected.getenv("MAYBE_EXPRESSION")\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (6, "os.getenv(...)"),
+        (14, "os.getenv(...)"),
+        (15, "os.getenv(...)"),
+        (21, "os.getenv(...)"),
+    ]
+
+
+def test_ast_gate_isolates_comprehension_targets(tmp_path, monkeypatch) -> None:
+    """Comprehension targets shadow only their implicit Python 3 scope."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "comprehension_scopes"
+    case_dir.mkdir()
+    (case_dir / "comprehension_scopes.py").write_text(
+        "import os\n"
+        "clients = [object()]\n"
+        "list_result = [client for os in clients]\n"
+        'LIST_AFTER = os.getenv("LIST_AFTER")\n'
+        "set_result = {client for os in clients}\n"
+        'SET_AFTER = os.getenv("SET_AFTER")\n'
+        "dict_result = {client: client for os in clients}\n"
+        'DICT_AFTER = os.getenv("DICT_AFTER")\n'
+        "generator_result = (client for os in clients)\n"
+        'GENERATOR_AFTER = os.getenv("GENERATOR_AFTER")\n'
+        "\n"
+        'first_iter = [client for os in (os.getenv("FIRST_ITER"),)]\n'
+        'ignored_list = [os.getenv("NOT_ENV") for os in clients]\n'
+        'ignored_set = {os.getenv("NOT_ENV") for os in clients}\n'
+        'ignored_dict = {os.getenv("NOT_ENV"): client for os in clients}\n'
+        'ignored_generator = (os.getenv("NOT_ENV") for os in clients)\n'
+        "ignored_multi = [client for client in clients for os in clients "
+        'if os.getenv("NOT_ENV")]\n'
+        "\n"
+        "class ClassScope:\n"
+        "    import os as class_os\n"
+        '    ignored_comp = [class_os.getenv("NOT_VISIBLE") for client in clients]\n'
+        '    detected_body = class_os.getenv("CLASS_BODY")\n'
+        "    class Nested:\n"
+        '        ignored_outer = class_os.getenv("NOT_VISIBLE")\n'
+        '        detected_global = os.getenv("GLOBAL")\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (4, "os.getenv(...)"),
+        (6, "os.getenv(...)"),
+        (8, "os.getenv(...)"),
+        (10, "os.getenv(...)"),
+        (12, "os.getenv(...)"),
+        (22, "os.getenv(...)"),
+        (25, "os.getenv(...)"),
+    ]
+
+
+def test_ast_gate_propagates_comprehension_walruses(tmp_path, monkeypatch) -> None:
+    """Walrus targets escape comprehensions along possible executable paths."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "comprehension_walruses"
+    case_dir.mkdir()
+    (case_dir / "comprehension_walruses.py").write_text(
+        "import os\n"
+        "items = [1]\n"
+        "[(module_env := os.environ) for _ in items]\n"
+        'MODULE_AFTER = module_env.get("MODULE_AFTER")\n'
+        "\n"
+        "def function_scope(values):\n"
+        "    [(function_env := os.environ) for _ in values]\n"
+        '    return function_env.get("FUNCTION_AFTER")\n'
+        "\n"
+        "[[(nested_env := os.environ) for _ in [1]] for _ in [1]]\n"
+        'NESTED_AFTER = nested_env.get("NESTED_AFTER")\n'
+        "\n"
+        "[(empty_env := os.environ) for _ in []]\n"
+        'EMPTY_AFTER = empty_env.get("NOT_ENV")\n'
+        "\n"
+        "[None for _ in [1] if (early_env := os.environ) for _ in []]\n"
+        'EARLY_AFTER = early_env.get("EARLY_AFTER")\n'
+        "[(late_env := os.environ) for _ in [1] for _ in []]\n"
+        'LATE_AFTER = late_env.get("NOT_ENV")\n'
+        "\n"
+        "{(set_env := os.environ) for _ in [1]}\n"
+        'SET_AFTER = set_env.get("SET_AFTER")\n'
+        "{_: (dict_env := os.environ) for _ in [1]}\n"
+        'DICT_AFTER = dict_env.get("DICT_AFTER")\n'
+        "lazy = ((lazy_env := os.environ) for _ in [1])\n"
+        'LAZY_AFTER = lazy_env.get("NOT_ENV")\n'
+        "list((consumed_env := os.environ) for _ in [1])\n"
+        'CONSUMED_AFTER = consumed_env.get("CONSUMED_AFTER")\n'
+        "[(filtered_env := os.environ) for _ in [1] if False]\n"
+        'FILTERED_AFTER = filtered_env.get("NOT_ENV")\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (4, "os.environ.get(...)"),
+        (8, "os.environ.get(...)"),
+        (11, "os.environ.get(...)"),
+        (17, "os.environ.get(...)"),
+        (22, "os.environ.get(...)"),
+        (24, "os.environ.get(...)"),
+        (26, "os.environ.get(...)"),
+        (28, "os.environ.get(...)"),
+    ]
+
+
+def test_ast_gate_merges_aliases_across_non_if_control_flow(tmp_path, monkeypatch) -> None:
+    """Try, match, and loop exits retain aliases from every reachable path."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "non_if_control_flow"
+    case_dir.mkdir()
+    (case_dir / "non_if_control_flow.py").write_text(
+        "import os\n"
+        "fake = object()\n"
+        "\n"
+        "try:\n"
+        "    env = os.environ\n"
+        "    risky()\n"
+        "except Exception:\n"
+        "    env = fake\n"
+        'TRY_AFTER = env.get("TRY_AFTER")\n'
+        "\n"
+        "try:\n"
+        "    partial = os.environ\n"
+        "    risky()\n"
+        "    partial = fake\n"
+        "except Exception:\n"
+        '    HANDLER_MAYBE = partial.get("HANDLER_MAYBE")\n'
+        "\n"
+        "try:\n"
+        "    star_os = os\n"
+        "    risky()\n"
+        "except* Exception:\n"
+        "    star_os = fake\n"
+        'TRY_STAR_AFTER = star_os.getenv("TRY_STAR_AFTER")\n'
+        "\n"
+        "match token:\n"
+        '    case "env":\n'
+        "        matched = os\n"
+        "    case _:\n"
+        "        matched = fake\n"
+        'MATCH_AFTER = matched.getenv("MATCH_AFTER")\n'
+        "\n"
+        "for os in maybe_items:\n"
+        '    ignored_for = os.getenv("NOT_ENV")\n'
+        'FOR_AFTER = os.getenv("MAYBE_OUTER")\n'
+        "\n"
+        "while condition:\n"
+        "    loop_os = os\n"
+        "    break\n"
+        'WHILE_AFTER = loop_os.getenv("WHILE_AFTER")\n'
+        "\n"
+        "async def async_loop(stream):\n"
+        "    import os as async_os\n"
+        "    async for async_os in stream:\n"
+        '        ignored = async_os.getenv("NOT_ENV")\n'
+        '    return async_os.getenv("ASYNC_MAYBE")\n'
+        "\n"
+        "for value in maybe_items:\n"
+        "    continued = os\n"
+        "    continue\n"
+        "    continued = fake\n"
+        'CONTINUE_AFTER = continued.getenv("CONTINUE_AFTER")\n'
+        "\n"
+        "import os\n"
+        "try:\n"
+        "    os = fake\n"
+        "finally:\n"
+        "    cleanup()\n"
+        'AFTER_FINALLY = os.getenv("NOT_ENV")\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (9, "os.environ.get(...)"),
+        (16, "os.environ.get(...)"),
+        (23, "os.getenv(...)"),
+        (30, "os.getenv(...)"),
+        (34, "os.getenv(...)"),
+        (39, "os.getenv(...)"),
+        (45, "os.getenv(...)"),
+        (51, "os.getenv(...)"),
+    ]
+
+
+def test_ast_gate_tracks_string_backed_control_flow_bindings(tmp_path, monkeypatch) -> None:
+    """Handler and pattern targets shadow aliases despite storing names as strings."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "string_targets"
+    case_dir.mkdir()
+    (case_dir / "string_targets.py").write_text(
+        "import os\n"
+        "\n"
+        "try:\n"
+        "    risky()\n"
+        "except Exception as os:\n"
+        '    ignored_call = os.getenv("NOT_ENV")\n'
+        '    ignored_subscript = os.environ["NOT_ENV"]\n'
+        'OUTSIDE = os.getenv("OUTSIDE")\n'
+        "\n"
+        "match token:\n"
+        "    case os:\n"
+        '        captured = os.getenv("NOT_ENV")\n'
+        'AFTER_CAPTURE = os.getenv("NOT_ENV")\n'
+        "\n"
+        "def function_handler():\n"
+        "    try:\n"
+        "        risky()\n"
+        "    except Exception as os:\n"
+        '        return os.getenv("NOT_ENV")\n'
+        "    return None\n"
+        "\n"
+        "def capture_pattern(value):\n"
+        "    match value:\n"
+        "        case os:\n"
+        '            return os.getenv("NOT_ENV")\n'
+        "\n"
+        "def star_pattern(value):\n"
+        "    match value:\n"
+        "        case [*os]:\n"
+        '            return os.getenv("NOT_ENV")\n'
+        "\n"
+        "def mapping_pattern(value):\n"
+        "    match value:\n"
+        "        case {**os}:\n"
+        '            return os.getenv("NOT_ENV")\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (8, "os.getenv(...)"),
+    ]
+
+
+def test_ast_gate_excludes_terminal_paths_from_control_flow_joins(tmp_path, monkeypatch) -> None:
+    """Aliases on return/raise paths must not leak into later statements."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "terminal_control_flow"
+    case_dir.mkdir()
+    (case_dir / "terminal_control_flow.py").write_text(
+        "import os\n"
+        "fake = object()\n"
+        "\n"
+        "def return_branch(enabled):\n"
+        "    if enabled:\n"
+        "        import os as selected\n"
+        '        detected = selected.getenv("RETURN_BRANCH")\n'
+        "        return detected\n"
+        "    selected = fake\n"
+        '    return selected.getenv("NOT_ENV")\n'
+        "\n"
+        "def raise_branch(enabled):\n"
+        "    if enabled:\n"
+        "        import os as selected\n"
+        '        selected.getenv("RAISE_BRANCH")\n'
+        "        raise RuntimeError\n"
+        "    selected = fake\n"
+        '    return selected.getenv("NOT_ENV")\n'
+        "\n"
+        "def match_branch(token):\n"
+        "    match token:\n"
+        '        case "stop":\n'
+        "            import os as selected\n"
+        '            detected = selected.getenv("MATCH_BRANCH")\n'
+        "            return detected\n"
+        "        case _:\n"
+        "            selected = fake\n"
+        '    return selected.getenv("NOT_ENV")\n'
+        "\n"
+        "def loop_branch():\n"
+        "    for _ in [1]:\n"
+        "        import os as selected\n"
+        '        detected = selected.getenv("LOOP_BRANCH")\n'
+        "        return detected\n"
+        "    selected = fake\n"
+        '    return selected.getenv("NOT_ENV")\n'
+        "\n"
+        "def try_finally_branch(enabled):\n"
+        "    try:\n"
+        "        if enabled:\n"
+        "            import os as selected\n"
+        '            detected = selected.getenv("TRY_BRANCH")\n'
+        "            return detected\n"
+        "        selected = fake\n"
+        "    finally:\n"
+        "        cleanup()\n"
+        '    return selected.getenv("NOT_ENV")\n'
+        "\n"
+        "def nested_scope(enabled):\n"
+        "    if enabled:\n"
+        "        import os as selected\n"
+        "        def inner():\n"
+        '            return selected.getenv("NESTED_TERMINAL")\n'
+        "        return inner\n"
+        "    selected = fake\n"
+        "    return None\n"
+        "\n"
+        "def repeated_loop(values):\n"
+        "    selected = fake\n"
+        "    for value in values:\n"
+        "        if value:\n"
+        "            selected = os\n"
+        "            continue\n"
+        "        break\n"
+        "    else:\n"
+        "        selected = fake\n"
+        '    return selected.getenv("REPEATED_LOOP")\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (7, "os.getenv(...)"),
+        (15, "os.getenv(...)"),
+        (24, "os.getenv(...)"),
+        (33, "os.getenv(...)"),
+        (42, "os.getenv(...)"),
+        (53, "os.getenv(...)"),
+        (67, "os.getenv(...)"),
+    ]

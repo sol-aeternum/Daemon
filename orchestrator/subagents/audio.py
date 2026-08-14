@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import logging
-import os
 from typing import Any
 
 import httpx
@@ -23,8 +22,9 @@ class AudioSubagent(BaseSubagent):
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         """Initialize audio subagent."""
         super().__init__(config)
+        # ElevenLabs API key is read from Settings in spawn.get_subagent_manager
+        # and threaded through `shared_config` — do not call os.environ here.
         self.api_key = config.get("elevenlabs_api_key") if config else None
-        self.api_key = self.api_key or os.environ.get("ELEVENLABS_API_KEY")
         self.base_url = "https://api.elevenlabs.io/v1"
         self.timeout = 60.0  # Sound effects are faster than images
 

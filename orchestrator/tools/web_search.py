@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
 import httpx
@@ -31,7 +30,9 @@ class WebSearchTool(Tool):
     }
 
     def __init__(self, api_key: str | None = None) -> None:
-        self.api_key = api_key or os.environ.get("BRAVE_API_KEY")
+        # Brave API key is read from Settings by the registry factory and
+        # passed in here — do not call os.environ here.
+        self.api_key = api_key
         self.base_url = "https://api.search.brave.com/res/v1/web/search"
 
     async def execute(self, **kwargs: Any) -> str:

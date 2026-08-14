@@ -13,6 +13,9 @@ try:
 except ImportError:
     YouTubeTranscriptApi = None
 
+from orchestrator.config import Settings
+from orchestrator.services.fetch import cache as fetch_cache_module
+from orchestrator.services.fetch import models as fetch_models
 from orchestrator.services.fetch.cache import FetchCache
 from orchestrator.services.fetch.models import FetchPolicy, FetchResult
 from orchestrator.services.fetch.service import FetchService
@@ -86,6 +89,88 @@ def fetch_cache():
 def fetch_service(fetch_policy, fetch_cache):
     service = FetchService(policy=fetch_policy, cache=fetch_cache)
     return service
+
+
+def test_fetch_policy_preserves_unset_minimum_length(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """An unset Settings field keeps the legacy FetchPolicy default of 100."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("FETCH_MIN_CONTENT_LENGTH", raising=False)
+    settings = Settings()
+    assert "fetch_min_content_length" not in settings.model_fields_set
+    monkeypatch.setattr(fetch_models, "get_settings", lambda: settings)
+
+    policy = fetch_models.load_policy_from_env()
+
+    assert policy.min_content_length == FetchPolicy().min_content_length == 100
+
+
+def test_fetch_policy_applies_explicit_minimum_length(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """An operator-provided env value remains an explicit policy override."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("FETCH_MIN_CONTENT_LENGTH", "275")
+    settings = Settings()
+    assert "fetch_min_content_length" in settings.model_fields_set
+    monkeypatch.setattr(fetch_models, "get_settings", lambda: settings)
+
+    policy = fetch_models.load_policy_from_env()
+
+    assert policy.min_content_length == 275
+
+
+@pytest.mark.asyncio
+async def test_fetch_cache_preserves_unset_ttl(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, fetch_cache
+) -> None:
+    """An unset Settings field keeps the legacy one-hour cache lifetime."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("FETCH_CACHE_TTL_SECONDS", raising=False)
+    settings = Settings()
+    assert "fetch_cache_ttl_seconds" not in settings.model_fields_set
+    monkeypatch.setattr(fetch_cache_module, "get_settings", lambda: settings)
+    result = FetchResult(
+        url="https://example.com",
+        content="content",
+        title="Example",
+        strategy_used="direct",
+        cached=False,
+        fetch_time_ms=1.0,
+        content_length=7,
+    )
+
+    assert await fetch_cache.set(result.url, result) is True
+
+    fetch_cache.redis.set.assert_awaited_once()
+    assert fetch_cache.redis.set.await_args.kwargs["ex"] == 3600
+
+
+@pytest.mark.asyncio
+async def test_fetch_cache_applies_explicit_ttl_setting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, fetch_cache
+) -> None:
+    """An operator-provided cache TTL remains an explicit override."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("FETCH_CACHE_TTL_SECONDS", "7200")
+    settings = Settings()
+    assert "fetch_cache_ttl_seconds" in settings.model_fields_set
+    monkeypatch.setattr(fetch_cache_module, "get_settings", lambda: settings)
+    result = FetchResult(
+        url="https://example.com",
+        content="content",
+        title="Example",
+        strategy_used="direct",
+        cached=False,
+        fetch_time_ms=1.0,
+        content_length=7,
+    )
+
+    assert await fetch_cache.set(result.url, result) is True
+
+    fetch_cache.redis.set.assert_awaited_once()
+    assert fetch_cache.redis.set.await_args.kwargs["ex"] == 7200
 
 
 class TestDirectStrategy:

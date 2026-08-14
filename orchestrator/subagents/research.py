@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Any
 
 import httpx
@@ -24,8 +23,9 @@ class ResearchSubagent(BaseSubagent):
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         """Initialize research subagent."""
         super().__init__(config)
+        # Brave Search API key is read from Settings in
+        # spawn.get_subagent_manager and threaded through `shared_config`.
         self.api_key = config.get("brave_api_key") if config else None
-        self.api_key = self.api_key or os.environ.get("BRAVE_API_KEY")
         self.base_url = "https://api.search.brave.com/res/v1/web/search"
         self.max_concurrent = 3  # Max parallel searches
 
