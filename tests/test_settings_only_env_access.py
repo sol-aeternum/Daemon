@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import ast
 import pathlib
+from bisect import bisect_right
+from dataclasses import dataclass
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 # Every backend Python package. `config/`, `db/`, `council/`, and `backend/`
@@ -160,6 +162,15 @@ class _OsAliasVisitor(ast.NodeVisitor):
         # classes resolve to distinct frames).
         self._stack: list[dict] = []
         self._frames: list[dict] = []
+        self._node_orders: dict[ast.AST, int] = {}
+        self._next_order = 0
+
+    def visit(self, node: ast.AST):
+        """Record a stable traversal position for every alias use site."""
+        if node not in self._node_orders:
+            self._node_orders[node] = self._next_order
+            self._next_order += 1
+        return super().visit(node)
 
     def _current(self) -> dict:
         return self._stack[-1]
@@ -316,34 +327,53 @@ class _OsAliasVisitor(ast.NodeVisitor):
     def _record_direct_binding(self, name: str, source: ast.expr | str | None) -> None:
         """Record a binding event in execution order for alias propagation."""
         self._current()["bound_names"].add(name)
-        self._current()["binding_events"].append((name, source))
+        self._current()["binding_events"].append((self._next_order, name, source))
 
     def visit_Assign(self, node: ast.Assign) -> None:
         self.visit(node.value)
         for target in node.targets:
-            self.visit(target)
             if isinstance(target, ast.Name):
                 self._record_direct_binding(target.id, node.value)
+            else:
+                self.visit(target)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         self.visit(node.annotation)
         if node.value is not None:
             self.visit(node.value)
-        self.visit(node.target)
         if isinstance(node.target, ast.Name):
             self._record_direct_binding(node.target.id, node.value)
+        else:
+            self.visit(node.target)
 
     def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
         self.visit(node.value)
-        self.visit(node.target)
         if isinstance(node.target, ast.Name):
             self._record_direct_binding(node.target.id, node.value)
+        else:
+            self.visit(node.target)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
-        self.visit(node.target)
-        self.visit(node.value)
         if isinstance(node.target, ast.Name):
+            self.visit(node.value)
             self._record_direct_binding(node.target.id, None)
+        else:
+            self.visit(node.target)
+            self.visit(node.value)
+
+    def visit_For(self, node: ast.For) -> None:
+        # Python evaluates the iterable before rebinding the loop target.
+        self.visit(node.iter)
+        self.visit(node.target)
+        for statement in (*node.body, *node.orelse):
+            self.visit(statement)
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+        # Async iteration has the same target-binding order as a sync loop.
+        self.visit(node.iter)
+        self.visit(node.target)
+        for statement in (*node.body, *node.orelse):
+            self.visit(statement)
 
     def visit_Global(self, node: ast.Global) -> None:
         self._current()["global_names"].update(node.names)
@@ -379,24 +409,62 @@ class _OsAliasVisitor(ast.NodeVisitor):
         """
         return self._frames
 
+    def node_orders(self) -> dict[ast.AST, int]:
+        """Return traversal positions used to resolve bindings at each node."""
+        return self._node_orders
 
-def _resolve_aliases_for(tree: ast.AST) -> dict[ast.AST | None, dict[str, set[str]]]:
-    """Return a mapping from alias-scope node (or None for module level).
 
-    Each scope frame contains its own bindings plus aliases inherited from
-    its immediate lexical parent. Local bindings remove same-named inherited
-    aliases, while ``global`` and ``nonlocal`` declarations keep the outer
-    binding visible. This mirrors closure lookup without leaking aliases
-    across sibling functions.
+_ALIAS_KINDS = ("os_names", "getenv_names", "environ_names")
+_AliasMap = dict[str, set[str]]
 
-    Keyed by AST-node identity so two same-named methods in different
-    enclosing classes (``ClassA.configure`` vs ``ClassB.configure``)
-    resolve to distinct frames; a string-name key would let the later
-    frame overwrite the earlier one and silently bypass the gate.
+
+@dataclass(frozen=True)
+class _AliasTimeline:
+    """Alias snapshots after each binding event in one lexical scope."""
+
+    base_aliases: _AliasMap
+    event_orders: tuple[int, ...]
+    snapshots: tuple[_AliasMap, ...]
+    final_aliases: _AliasMap
+
+
+@dataclass(frozen=True)
+class _AliasResolution:
+    """Resolve the aliases visible at a specific AST use site."""
+
+    timelines: dict[ast.AST | None, _AliasTimeline]
+    node_orders: dict[ast.AST, int]
+
+    def aliases_for(self, scope: ast.AST | None, node: ast.AST) -> _AliasMap:
+        timeline = self.timelines[scope]
+        ordered_node: ast.AST | None = node
+        while ordered_node is not None and ordered_node not in self.node_orders:
+            ordered_node = getattr(ordered_node, "parent", None)
+        if ordered_node is None:
+            return timeline.final_aliases
+        event_index = bisect_right(timeline.event_orders, self.node_orders[ordered_node]) - 1
+        if event_index < 0:
+            return timeline.base_aliases
+        return timeline.snapshots[event_index]
+
+
+def _resolve_aliases_for(tree: ast.AST) -> _AliasResolution:
+    """Build per-use-site alias timelines for every lexical scope.
+
+    Function and lambda locals shadow inherited bindings throughout their
+    bodies, matching Python's compile-time local-name rules. Module and class
+    bodies instead apply bindings sequentially, so an outer alias can remain
+    visible before a later rebind. Parent-scope aliases retain their final
+    state because globals and closure cells are resolved when a callable runs.
+
+    The traversal timeline is deliberately path-agnostic: it preserves source
+    ordering but does not attempt control-flow analysis across branches.
     """
-    alias_kinds = ("os_names", "getenv_names", "environ_names")
 
-    def _kind_for_source(source: ast.expr | str | None, aliases: dict[str, set[str]]) -> str | None:
+    def _copy_aliases(aliases: _AliasMap) -> _AliasMap:
+        return {alias_kind: set(aliases[alias_kind]) for alias_kind in _ALIAS_KINDS}
+
+    def _kind_for_source(source: ast.expr | str | None, aliases: _AliasMap) -> str | None:
         if source == "os":
             return "os_names"
         if source == "getenv":
@@ -406,7 +474,7 @@ def _resolve_aliases_for(tree: ast.AST) -> dict[ast.AST | None, dict[str, set[st
         if not isinstance(source, ast.expr):
             return None
         if isinstance(source, ast.Name):
-            for alias_kind in alias_kinds:
+            for alias_kind in _ALIAS_KINDS:
                 if source.id in aliases[alias_kind]:
                     return alias_kind
             return None
@@ -421,30 +489,54 @@ def _resolve_aliases_for(tree: ast.AST) -> dict[ast.AST | None, dict[str, set[st
 
     visitor = _OsAliasVisitor()
     visitor.visit(tree)
-    result: dict[ast.AST | None, dict[str, set[str]]] = {}
-    empty_aliases = {alias_kind: set() for alias_kind in alias_kinds}
+    timelines: dict[ast.AST | None, _AliasTimeline] = {}
+    empty_aliases = {alias_kind: set() for alias_kind in _ALIAS_KINDS}
     for frame in visitor.scopes():
-        parent_aliases = result.get(frame["parent_node"], empty_aliases)
-        shadowed_names = (
-            set(frame["bound_names"]) - set(frame["global_names"]) - set(frame["nonlocal_names"])
-        )
+        if frame["kind"] == "module":
+            parent_aliases = empty_aliases
+        else:
+            parent_aliases = timelines[frame["parent_node"]].final_aliases
+
+        if frame["kind"] in {"function", "lambda"}:
+            shadowed_names = (
+                set(frame["bound_names"])
+                - set(frame["global_names"])
+                - set(frame["nonlocal_names"])
+            )
+        else:
+            shadowed_names = set()
         merged = {
             alias_kind: set(parent_aliases[alias_kind]) - shadowed_names
-            for alias_kind in alias_kinds
+            for alias_kind in _ALIAS_KINDS
         }
-        for name, source in frame["binding_events"]:
-            for alias_kind in alias_kinds:
-                merged[alias_kind].discard(name)
+
+        event_orders: list[int] = []
+        snapshots: list[_AliasMap] = []
+        for event_order, name, source in frame["binding_events"]:
+            # Resolve the RHS before rebinding the target. This preserves
+            # self-assignments such as ``host_os = host_os``.
             source_kind = _kind_for_source(source, merged)
+            for alias_kind in _ALIAS_KINDS:
+                merged[alias_kind].discard(name)
             if source_kind is not None:
                 merged[source_kind].add(name)
+            event_orders.append(event_order)
+            snapshots.append(_copy_aliases(merged))
 
         # Module scope keeps the public ``None`` key. Every other scope is
         # keyed by AST-node identity so same-named classes/methods cannot
         # overwrite one another.
         scope_key = None if frame["kind"] == "module" else frame["node"]
-        result[scope_key] = merged
-    return result
+        timelines[scope_key] = _AliasTimeline(
+            base_aliases={
+                alias_kind: set(parent_aliases[alias_kind]) - shadowed_names
+                for alias_kind in _ALIAS_KINDS
+            },
+            event_orders=tuple(event_orders),
+            snapshots=tuple(snapshots),
+            final_aliases=_copy_aliases(merged),
+        )
+    return _AliasResolution(timelines=timelines, node_orders=visitor.node_orders())
 
 
 def _attach_parents(tree: ast.AST) -> None:
@@ -497,14 +589,14 @@ def _scan_for_direct_env_access() -> list[tuple[pathlib.Path, int, str]]:
             except SyntaxError:
                 continue
             _attach_parents(tree)
-            scopes = _resolve_aliases_for(tree)
+            resolution = _resolve_aliases_for(tree)
             module_allowlist = FUNCTION_ALLOWLIST.get(rel)
 
             def _aliases_for(node: ast.AST) -> dict[str, set[str]]:
                 scope_node = _enclosing_alias_scope(node)
-                if scope_node is not None and scope_node in scopes:
-                    return scopes[scope_node]
-                return scopes[None]
+                if scope_node is not None and scope_node in resolution.timelines:
+                    return resolution.aliases_for(scope_node, node)
+                return resolution.aliases_for(None, node)
 
             def _is_environ_expr(node: ast.expr, aliases: dict[str, set[str]]) -> bool:
                 """True if `node` evaluates to the `os.environ` mapping."""
@@ -1201,4 +1293,87 @@ def test_ast_gate_detects_environment_iteration(tmp_path, monkeypatch) -> None:
         (5, "iteration over os.environ"),
         (6, "iteration over os.environ"),
         (10, "iteration over os.environ"),
+    ]
+
+
+def test_ast_gate_resolves_aliases_at_each_use_site(tmp_path, monkeypatch) -> None:
+    """A later rebind neither erases nor retroactively creates an alias."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "ordered_aliases"
+    case_dir.mkdir()
+    (case_dir / "ordered_aliases.py").write_text(
+        "import os\n"
+        "\n"
+        'EARLY = os.getenv("EARLY")\n'
+        "os = object()\n"
+        'LATE = os.getenv("NOT_ENV")\n'
+        "\n"
+        "os = object()\n"
+        'BEFORE_IMPORT = os.getenv("NOT_ENV")\n'
+        "import os\n"
+        'AFTER_IMPORT = os.getenv("AFTER_IMPORT")\n'
+        "\n"
+        "def rebound_alias():\n"
+        "    host_os = os\n"
+        '    first = host_os.getenv("FIRST")\n'
+        "    host_os = object()\n"
+        '    second = host_os.getenv("NOT_ENV")\n'
+        "    return first, second\n"
+        "\n"
+        "def introduced_alias():\n"
+        "    host_os = object()\n"
+        '    first = host_os.getenv("NOT_ENV")\n'
+        "    host_os = os\n"
+        '    second = host_os.environ.get("SECOND")\n'
+        "    return first, second\n"
+        "\n"
+        "class SequentialClass:\n"
+        '    before = os.getenv("CLASS_BEFORE")\n'
+        "    os = object()\n"
+        '    after = os.getenv("NOT_ENV")\n'
+        "\n"
+        "def lexical_local():\n"
+        '    before = os.getenv("UNBOUND")\n'
+        "    os = object()\n"
+        "    return before\n"
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (3, "os.getenv(...)"),
+        (10, "os.getenv(...)"),
+        (14, "os.getenv(...)"),
+        (23, "os.environ.get(...)"),
+        (27, "os.getenv(...)"),
+    ]
+
+
+def test_ast_gate_evaluates_loop_iterable_before_target_binding(tmp_path, monkeypatch) -> None:
+    """A loop target rebind takes effect only after its iterable is read."""
+    import sys
+
+    mod = sys.modules[__name__]
+    case_dir = tmp_path / "loop_order"
+    case_dir.mkdir()
+    (case_dir / "loop_order.py").write_text(
+        "import os\n"
+        'for os in (os.getenv("LOOP"),):\n'
+        "    pass\n"
+        'AFTER = os.getenv("NOT_ENV")\n'
+        "import os\n"
+        'RESTORED = os.getenv("RESTORED")\n'
+    )
+
+    monkeypatch.setattr(mod, "SCAN_DIRS", (case_dir,))
+    monkeypatch.setattr(mod, "REPO_ROOT", case_dir)
+    hits = mod._scan_for_direct_env_access()
+
+    assert sorted((line, snippet) for _, line, snippet in hits) == [
+        (2, "os.getenv(...)"),
+        (6, "os.getenv(...)"),
     ]
