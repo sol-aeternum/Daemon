@@ -67,18 +67,18 @@ export class ErrorBoundary extends Component<
               </div>
             </div>
 
-            <h2 className="text-xl font-semibold text-[--daemon-text-primary] mb-2">
+            <h2 className="text-xl font-semibold text-[var(--color-text-primary)] mb-2">
               Something went wrong
             </h2>
 
-            <p className="text-[--daemon-text-secondary] mb-4">
+            <p className="text-[var(--color-text-secondary)] mb-4">
               The chat view encountered an error. Reloading should restore
               functionality.
             </p>
 
             {this.state.error && (
               <div className="mb-4 p-3 bg-[var(--color-bg-tertiary)] rounded text-left">
-                <p className="font-mono text-sm text-[--daemon-text-primary] break-words">
+                <p className="font-mono text-sm text-[var(--color-text-primary)] break-words">
                   {this.state.error.message}
                 </p>
               </div>
@@ -86,7 +86,7 @@ export class ErrorBoundary extends Component<
 
             <button
               onClick={this.toggleDetails}
-              className="text-sm text-[--daemon-text-secondary] hover:text-[--daemon-text-primary] mb-4 underline"
+              className="text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] mb-4 underline"
             >
               {this.state.showDetails ? 'Hide details' : 'Show details'}
             </button>
@@ -105,7 +105,7 @@ export class ErrorBoundary extends Component<
 
             <button
               onClick={this.handleReload}
-              className="px-6 py-2 bg-[--daemon-accent] hover:bg-[--daemon-accent-hover] text-white font-medium rounded transition-colors"
+              className="px-6 py-2 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-[var(--color-text-on-accent)] font-medium rounded transition-colors"
             >
               Reload Page
             </button>

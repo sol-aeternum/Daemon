@@ -66,11 +66,11 @@ export function ImageLightbox({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--color-bg-overlay)] p-4"
       onClick={onClose}
     >
       <div
-        className="max-h-[90vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)]"
+        className="max-h-lightbox w-full max-w-5xl overflow-hidden rounded-2xl border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)]"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-[var(--color-border-primary)] px-4 py-3">
@@ -86,8 +86,8 @@ export function ImageLightbox({
           </button>
         </div>
 
-        <div className="grid gap-4 p-4 md:grid-cols-[1fr_280px]">
-          <div className="rounded-xl border border-[var(--color-border-primary)] bg-black/20 p-2">
+        <div className="grid gap-4 p-4 md:grid-cols-artifact-details">
+          <div className="rounded-xl border border-[var(--color-border-primary)] bg-[var(--color-bg-tertiary)] p-2">
             {loading ? (
               <div className="flex items-center justify-center h-64 text-[var(--color-text-muted)]">
                 Loading...
@@ -103,7 +103,7 @@ export function ImageLightbox({
                 width={1600}
                 height={1200}
                 unoptimized
-                className="max-h-[70vh] w-full rounded-md object-contain"
+                className="max-h-media-preview w-full rounded-md object-contain"
               />
             ) : (
               <div className="flex items-center justify-center h-64 text-[var(--color-text-muted)] text-sm">
@@ -114,7 +114,7 @@ export function ImageLightbox({
 
           <div className="space-y-3 text-xs text-[var(--color-text-secondary)]">
             <div>
-              <p className="mb-1 text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">
+              <p className="mb-1 text-xs uppercase tracking-wide text-[var(--color-text-muted)]">
                 Prompt
               </p>
               <p className="text-[var(--color-text-primary)]">
@@ -181,7 +181,7 @@ export function ImageLightbox({
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md border border-[var(--color-border-primary)] p-2">
-      <p className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">
+      <p className="text-xs uppercase tracking-wide text-[var(--color-text-muted)]">
         {label}
       </p>
       <p className="mt-1 text-[var(--color-text-primary)]">{value}</p>

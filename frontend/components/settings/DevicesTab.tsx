@@ -278,7 +278,7 @@ export default function DevicesTab() {
         <button
           type="button"
           onClick={() => setShowEnrollment(true)}
-          className="inline-flex items-center gap-2 px-5 py-2.5 bg-accent-primary hover:bg-accent-hover active:bg-accent-active text-white font-medium rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
+          className="inline-flex items-center gap-2 px-5 py-2.5 bg-accent-primary hover:bg-accent-hover active:bg-accent-active text-[var(--color-text-on-accent)] font-medium rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
         >
           <Plus className="w-4 h-4" />
           <span>Add new device</span>
@@ -322,7 +322,7 @@ export default function DevicesTab() {
                   type="button"
                   onClick={() => handleRevoke(confirmDevice)}
                   disabled={revokingId === confirmDevice.id}
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-status-error text-white font-medium rounded-md hover:bg-status-error/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-status-error/50"
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-status-error text-[var(--color-text-on-status)] font-medium rounded-md hover:bg-status-error/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-status-error/50"
                 >
                   {revokingId === confirmDevice.id ? (
                     <>

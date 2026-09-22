@@ -110,7 +110,7 @@ export function AccountWidget({
       <div className="border-t border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-4 py-3">
         <div className="flex items-center gap-3">
           <div
-            className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold text-white shrink-0 animate-pulse"
+            className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold text-[var(--color-text-on-accent)] shrink-0 animate-pulse"
             style={{ backgroundColor: avatarColor }}
           >
             {initials}
@@ -138,7 +138,7 @@ export function AccountWidget({
       >
         {/* Avatar */}
         <div
-          className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold text-white shrink-0"
+          className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold text-[var(--color-text-on-accent)] shrink-0"
           style={{ backgroundColor: avatarColor }}
         >
           {initials}
@@ -170,7 +170,7 @@ export function AccountWidget({
           {/* Settings option */}
           <button
             onClick={handleSettings}
-            className="flex w-full min-h-[44px] items-center gap-2 px-3 py-2 text-left text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)]"
+            className="flex w-full min-h-touch items-center gap-2 px-3 py-2 text-left text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)]"
           >
             <Settings className="w-4 h-4" />
             Settings
@@ -184,9 +184,9 @@ export function AccountWidget({
             <div className="flex gap-1">
               <button
                 onClick={() => toggleTheme('light')}
-                className={`flex min-h-[44px] flex-1 items-center justify-center gap-1 rounded px-2 py-1.5 text-xs transition-colors ${
+                className={`flex min-h-touch flex-1 items-center justify-center gap-1 rounded px-2 py-1.5 text-xs transition-colors ${
                   theme === 'light'
-                    ? 'bg-[var(--color-accent-primary)] text-white'
+                    ? 'bg-[var(--color-accent-primary)] text-[var(--color-text-on-accent)]'
                     : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]'
                 }`}
                 title="Light theme"
@@ -196,9 +196,9 @@ export function AccountWidget({
               </button>
               <button
                 onClick={() => toggleTheme('dark')}
-                className={`flex min-h-[44px] flex-1 items-center justify-center gap-1 rounded px-2 py-1.5 text-xs transition-colors ${
+                className={`flex min-h-touch flex-1 items-center justify-center gap-1 rounded px-2 py-1.5 text-xs transition-colors ${
                   theme === 'dark'
-                    ? 'bg-[var(--color-accent-primary)] text-white'
+                    ? 'bg-[var(--color-accent-primary)] text-[var(--color-text-on-accent)]'
                     : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]'
                 }`}
                 title="Dark theme"
@@ -208,9 +208,9 @@ export function AccountWidget({
               </button>
               <button
                 onClick={() => toggleTheme('system')}
-                className={`flex min-h-[44px] flex-1 items-center justify-center gap-1 rounded px-2 py-1.5 text-xs transition-colors ${
+                className={`flex min-h-touch flex-1 items-center justify-center gap-1 rounded px-2 py-1.5 text-xs transition-colors ${
                   theme === 'system'
-                    ? 'bg-[var(--color-accent-primary)] text-white'
+                    ? 'bg-[var(--color-accent-primary)] text-[var(--color-text-on-accent)]'
                     : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]'
                 }`}
                 title="System theme"
@@ -224,7 +224,7 @@ export function AccountWidget({
           {/* Log out option */}
           <button
             onClick={handleLogout}
-            className="mt-1 flex w-full min-h-[44px] items-center gap-2 border-t border-[var(--color-border-muted)] px-3 py-2 text-left text-sm text-[var(--color-status-error)] transition-colors hover:bg-[var(--color-status-error-bg)]"
+            className="mt-1 flex w-full min-h-touch items-center gap-2 border-t border-[var(--color-border-muted)] px-3 py-2 text-left text-sm text-[var(--color-status-error)] transition-colors hover:bg-[var(--color-status-error-bg)]"
           >
             <LogOut className="w-4 h-4" />
             Log out

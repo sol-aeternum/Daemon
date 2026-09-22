@@ -145,7 +145,7 @@ export function ModelSelector() {
       <div className="max-h-72 space-y-3 overflow-y-auto pr-1">
         {Object.entries(grouped).map(([provider, models]) => (
           <div key={provider} className="space-y-1">
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+            <p className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
               {provider}
             </p>
             {models.map((model) => {
@@ -189,7 +189,7 @@ export function ModelSelector() {
                       {model.pricing_info}
                     </p>
                     {isLocked && (
-                      <p className="mt-1 text-[10px] text-amber-400">
+                      <p className="mt-1 text-xs text-amber-400">
                         🔒 Requires {TIER_LABELS[model.tier_minimum]} tier
                       </p>
                     )}

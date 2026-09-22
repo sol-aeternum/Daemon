@@ -81,7 +81,7 @@ export function PdfPreview({ url, filename }: PdfPreviewProps) {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center gap-3 p-8 bg-[var(--color-bg-tertiary)] rounded-xl border border-[var(--color-border-primary)] max-h-[400px]">
+      <div className="flex items-center justify-center gap-3 p-8 bg-[var(--color-bg-tertiary)] rounded-xl border border-[var(--color-border-primary)] max-h-file-preview">
         <Loader2 className="w-5 h-5 animate-spin text-[var(--color-accent-primary)]" />
         <span className="text-sm text-[var(--color-text-muted)]">
           Loading PDF...
@@ -92,7 +92,7 @@ export function PdfPreview({ url, filename }: PdfPreviewProps) {
 
   if (error) {
     return (
-      <div className="flex flex-col items-start gap-3 p-4 bg-red-500/10 border border-red-500/30 rounded-xl max-h-[400px]">
+      <div className="flex flex-col items-start gap-3 p-4 bg-red-500/10 border border-red-500/30 rounded-xl max-h-file-preview">
         <div className="flex items-start gap-3">
           <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
           <div className="flex-1">
@@ -114,7 +114,7 @@ export function PdfPreview({ url, filename }: PdfPreviewProps) {
   }
 
   return (
-    <div className="bg-[var(--color-bg-tertiary)] rounded-xl border border-[var(--color-border-primary)] overflow-hidden max-h-[400px]">
+    <div className="bg-[var(--color-bg-tertiary)] rounded-xl border border-[var(--color-border-primary)] overflow-hidden max-h-file-preview">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 bg-[var(--color-bg-secondary)] border-b border-[var(--color-border-primary)]">
         <div className="flex items-center gap-2">
@@ -125,7 +125,7 @@ export function PdfPreview({ url, filename }: PdfPreviewProps) {
         </div>
         <button
           onClick={handleDownload}
-          className="flex items-center gap-1.5 px-2.5 py-1 bg-[var(--color-bg-tertiary)] hover:bg-[var(--color-accent-primary)] hover:text-white text-[var(--color-text-muted)] text-xs font-medium rounded-lg transition-colors"
+          className="flex items-center gap-1.5 px-2.5 py-1 bg-[var(--color-bg-tertiary)] hover:bg-[var(--color-accent-primary)] hover:text-[var(--color-text-on-accent)] text-[var(--color-text-muted)] text-xs font-medium rounded-lg transition-colors"
         >
           <Download className="w-3 h-3" />
           Download
@@ -133,11 +133,11 @@ export function PdfPreview({ url, filename }: PdfPreviewProps) {
       </div>
 
       {objectUrl ? (
-        <div className="overflow-auto max-h-[340px]">
+        <div className="overflow-auto max-h-file-content">
           <iframe
             src={objectUrl}
             title={filename || 'PDF Preview'}
-            className="w-full min-h-[340px] bg-[var(--color-bg-secondary)]"
+            className="w-full min-h-file-content bg-[var(--color-bg-secondary)]"
           />
         </div>
       ) : null}

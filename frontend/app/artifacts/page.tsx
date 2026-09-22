@@ -181,7 +181,7 @@ function ArtifactsView() {
                 key={`${artifact.conversationId}:${artifact.path}`}
                 className="overflow-hidden rounded-2xl border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)]"
               >
-                <div className="aspect-[16/10] w-full bg-[var(--color-bg-tertiary)] flex items-center justify-center overflow-hidden">
+                <div className="aspect-artifact w-full bg-[var(--color-bg-tertiary)] flex items-center justify-center overflow-hidden">
                   {artifact.kind === 'image' ? (
                     <ArtifactImageItem
                       path={artifact.path}
@@ -342,7 +342,7 @@ function ArtifactImageItem({
             event.stopPropagation();
             onOpen(resolvedUrl);
           }}
-          className="p-1.5 bg-black/50 hover:bg-black/70 text-white rounded-md backdrop-blur-sm transition-colors"
+          className="p-1.5 bg-media/50 hover:bg-media/70 text-on-media rounded-md backdrop-blur-sm transition-colors"
           title="Expand"
         >
           <Maximize2 className="h-4 w-4" />
@@ -352,7 +352,7 @@ function ArtifactImageItem({
             event.stopPropagation();
             void handleDownload();
           }}
-          className="p-1.5 bg-black/50 hover:bg-black/70 text-white rounded-md backdrop-blur-sm transition-colors"
+          className="p-1.5 bg-media/50 hover:bg-media/70 text-on-media rounded-md backdrop-blur-sm transition-colors"
           title="Download"
         >
           <Download className="h-4 w-4" />
@@ -396,21 +396,21 @@ function ArtifactLightbox({
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/95 backdrop-blur-sm p-4 animate-in fade-in duration-200"
+      className="fixed inset-0 z-lightbox flex items-center justify-center bg-media/95 backdrop-blur-sm p-4 animate-in fade-in duration-200"
       onClick={onClose}
     >
       <button
         onClick={onClose}
-        className="absolute top-4 right-4 p-2 text-white/70 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-colors"
+        className="absolute top-4 right-4 p-2 text-on-media/70 hover:text-on-media bg-on-media/10 hover:bg-on-media/20 rounded-full transition-colors"
         title="Close"
       >
         <X className="h-6 w-6" />
       </button>
 
       {loading ? (
-        <div className="text-white/50 text-sm">Loading...</div>
+        <div className="text-on-media/50 text-sm">Loading...</div>
       ) : error || !displayUrl ? (
-        <div className="text-white/70 text-sm">Failed to load image</div>
+        <div className="text-on-media/70 text-sm">Failed to load image</div>
       ) : (
         <Image
           src={displayUrl}

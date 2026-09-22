@@ -94,7 +94,7 @@ export function CouncilInterviewCard({
                   <div className="text-xs font-medium text-[var(--color-text-muted)] capitalize">
                     {member.name}
                   </div>
-                  <div className="text-[10px] text-[var(--color-text-muted)] truncate">
+                  <div className="text-xs text-[var(--color-text-muted)] truncate">
                     {member.description}
                   </div>
                 </div>
@@ -116,7 +116,7 @@ export function CouncilInterviewCard({
                 onClick={() => setSelectedPreset(preset)}
                 className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
                   selectedPreset === preset
-                    ? 'bg-[var(--color-accent-primary)] text-white'
+                    ? 'bg-[var(--color-accent-primary)] text-[var(--color-text-on-accent)]'
                     : 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] border border-[var(--color-border-primary)] hover:border-[var(--color-border-secondary)]'
                 }`}
               >
@@ -137,7 +137,7 @@ export function CouncilInterviewCard({
                 onClick={() => setSelectedRounds(rounds)}
                 className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
                   selectedRounds === rounds
-                    ? 'bg-[var(--color-accent-primary)] text-white'
+                    ? 'bg-[var(--color-accent-primary)] text-[var(--color-text-on-accent)]'
                     : 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] border border-[var(--color-border-primary)] hover:border-[var(--color-border-secondary)]'
                 }`}
               >
@@ -163,7 +163,7 @@ export function CouncilInterviewCard({
             }`}
           >
             <span
-              className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
+              className={`absolute top-0.5 left-0.5 w-4 h-4 bg-[var(--color-bg-primary)] rounded-full transition-transform ${
                 auditEnabled ? 'translate-x-5' : 'translate-x-0'
               }`}
             />
@@ -174,7 +174,7 @@ export function CouncilInterviewCard({
       <div className="px-4 py-3 border-t border-[var(--color-border-primary)] bg-[var(--color-bg-tertiary)] flex gap-2">
         <button
           onClick={handleRunCouncil}
-          className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-white text-sm font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)]"
+          className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-[var(--color-text-on-accent)] text-sm font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)]"
         >
           <Play className="w-4 h-4" />
           Run Council

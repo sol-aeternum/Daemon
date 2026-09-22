@@ -35,6 +35,15 @@
   --color-text-secondary: hsl(220, 15%, 75%); /* Body text */
   --color-text-muted: hsl(220, 10%, 55%); /* Placeholder, disabled, hints */
   --color-text-inverse: hsl(220, 13%, 10%); /* Text on light backgrounds */
+  /* Fixed foregrounds belong to filled controls/media, not inverse surfaces. */
+  --color-text-on-accent: hsl(0, 0%, 100%);
+  --color-text-on-status: hsl(0, 0%, 100%);
+  --color-text-on-warning: hsl(220, 13%, 10%);
+  --color-text-on-tooltip: hsl(0, 0%, 100%);
+  --color-bg-document: hsl(0, 0%, 100%); /* Preserve document paper. */
+  --color-bg-qr: hsl(0, 0%, 100%); /* QR codes require a light quiet zone. */
+  --color-media-bg: 0 0% 0%; /* Channels allow Tailwind opacity modifiers. */
+  --color-media-fg: 0 0% 100%;
   --color-text-accent: hsl(215, 60%, 65%); /* Accent-colored text */
   --color-text-link: hsl(215, 70%, 60%); /* Interactive links */
   --color-text-link-hover: hsl(215, 70%, 70%); /* Link hover state */
@@ -94,6 +103,7 @@
     0 20px 25px -5px hsla(220, 13%, 5%, 0.5),
     0 8px 10px -6px hsla(220, 13%, 5%, 0.3);
   --shadow-glow: 0 0 20px hsla(215, 60%, 55%, 0.3);
+  --shadow-stop: 0 0 12px hsla(0, 65%, 55%, 0.4);
   --shadow-inner: inset 0 2px 4px 0 hsla(220, 13%, 5%, 0.3);
 
   /* ==========================================================================
@@ -111,6 +121,38 @@
   --space-16: 4rem; /* 64px */
   --space-20: 5rem; /* 80px */
   --space-24: 6rem; /* 96px */
+
+  /* Component geometry: shared names preserve the existing layout. */
+  --touch-min: 44px;
+  --size-sidebar: 260px;
+  --size-tool-step: 22px;
+  --offset-tool-step-center: 11px;
+  --offset-memory-trail: 15px;
+  --height-file-preview-max: 400px;
+  --height-file-content: 340px;
+  --height-html-preview-min: 300px;
+  --height-docx-preview-min: 200px;
+  --height-composer-max: 200px;
+  --height-memory-list-max: 400px;
+  --height-skill-details-max: 500px;
+  --height-memory-editor-min: 120px;
+  --height-conversation-row-min: 60px;
+  --width-model-label-max: 120px;
+  --width-attachment-label-max: 180px;
+  --width-message-preview-max: 70%;
+  --width-message-mobile-max: 85%;
+  --width-user-message-max: 75%;
+  --width-assistant-message-max: 80%;
+  --height-media-preview-max: 70vh;
+  --height-agent-panel-max: 80vh;
+  --height-lightbox-max: 90vh;
+  --columns-skill-editor: 320px minmax(0, 1fr);
+  --columns-artifact-details: 1fr 280px;
+  --columns-studio: 340px 1fr;
+  --aspect-artifact: 16 / 10;
+  --blur-hero: 128px;
+  --blur-subtle: 1px;
+  --tracking-tool-step: 0.08em;
 
   /* ==========================================================================
      FONT TOKENS
@@ -148,6 +190,7 @@
   /* ==========================================================================
      Z-INDEX TOKENS
      ========================================================================== */
+  --z-lightbox: 60;
   --z-base: 0;
   --z-dropdown: 100;
   --z-sticky: 200;
@@ -156,22 +199,6 @@
   --z-modal: 500;
   --z-popover: 600;
   --z-tooltip: 700;
-
-  /* ==========================================================================
-     BACKWARD COMPATIBILITY - Legacy daemon-* tokens
-     These map to the new token system for compatibility
-     ========================================================================== */
-  --daemon-bg-primary: var(--color-bg-primary);
-  --daemon-bg-secondary: var(--color-bg-secondary);
-  --daemon-bg-tertiary: var(--color-bg-tertiary);
-  --daemon-bg-sidebar: var(--color-bg-sidebar);
-  --daemon-text-primary: var(--color-text-primary);
-  --daemon-text-secondary: var(--color-text-secondary);
-  --daemon-text-muted: var(--color-text-muted);
-  --daemon-accent: var(--color-accent-primary);
-  --daemon-accent-hover: var(--color-accent-hover);
-  --daemon-border-primary: var(--color-border-primary);
-  --daemon-border-secondary: var(--color-border-secondary);
 }
 
 /* =============================================================================
@@ -245,6 +272,41 @@
    ============================================================================= */
 
 @layer utilities {
+  .surface-card {
+    background-color: var(--color-bg-secondary);
+    border: 1px solid var(--color-border-primary);
+    border-radius: var(--radius-xl);
+  }
+
+  .status-dot {
+    width: var(--space-2);
+    height: var(--space-2);
+    border-radius: var(--radius-full);
+    background-color: currentColor;
+    flex-shrink: 0;
+  }
+
+  .focus-ring:focus-visible {
+    outline: 2px solid var(--color-border-focus);
+    outline-offset: 2px;
+  }
+
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .pb-safe-panel {
+    padding-bottom: max(var(--space-4), env(safe-area-inset-bottom));
+  }
+
+  .pt-safe-panel {
+    padding-top: max(var(--space-4), env(safe-area-inset-top));
+  }
+
+  .pt-safe-header {
+    padding-top: max(var(--space-3), env(safe-area-inset-top));
+  }
+
   /* Animation utilities */
   .animate-fade-in {
     animation: fadeIn 300ms ease-out forwards;

@@ -253,7 +253,7 @@ export function VideoPlayer({
   return (
     <div
       ref={containerRef}
-      className={`relative group rounded-xl border border-[var(--color-border-primary)] bg-black overflow-hidden ${className}`}
+      className={`relative group rounded-xl border border-[var(--color-border-primary)] bg-media overflow-hidden ${className}`}
       onMouseMove={showControlsTemporarily}
       onMouseLeave={() => isPlaying && setShowControls(false)}
     >
@@ -269,7 +269,7 @@ export function VideoPlayer({
       />
 
       {isLoading && !isGenerating && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/50 pointer-events-none">
+        <div className="absolute inset-0 flex items-center justify-center bg-media/50 pointer-events-none">
           <Loader2 className="h-10 w-10 animate-spin text-[var(--color-accent-primary)]" />
         </div>
       )}
@@ -278,16 +278,16 @@ export function VideoPlayer({
         <button
           type="button"
           onClick={togglePlay}
-          className="absolute inset-0 flex items-center justify-center bg-black/30 hover:bg-black/40 transition-colors"
+          className="absolute inset-0 flex items-center justify-center bg-media/30 hover:bg-media/40 transition-colors"
         >
           <div className="flex items-center justify-center w-16 h-16 rounded-full bg-[var(--color-accent-primary)]/90 hover:bg-[var(--color-accent-primary)] transition-colors shadow-lg">
-            <Play className="h-8 w-8 text-white ml-1" fill="white" />
+            <Play className="h-8 w-8 text-on-media ml-1" fill="currentColor" />
           </div>
         </button>
       )}
 
       <div
-        className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-4 transition-opacity duration-300 ${
+        className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-media/80 to-transparent p-4 transition-opacity duration-300 ${
           showControls || !isPlaying ? 'opacity-100' : 'opacity-0'
         }`}
       >
@@ -301,13 +301,13 @@ export function VideoPlayer({
             className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
             aria-label="Seek video"
           />
-          <div className="h-1 bg-white/30 rounded-full overflow-hidden">
+          <div className="h-1 bg-on-media/30 rounded-full overflow-hidden">
             <div
               className="h-full bg-[var(--color-accent-primary)] transition-all duration-100"
               style={{ width: `${progressPercent}%` }}
             />
           </div>
-          <div className="absolute -top-6 left-0 px-2 py-1 bg-black/80 rounded text-xs text-white opacity-0 group-hover/progress:opacity-100 transition-opacity pointer-events-none">
+          <div className="absolute -top-6 left-0 px-2 py-1 bg-media/80 rounded text-xs text-on-media opacity-0 group-hover/progress:opacity-100 transition-opacity pointer-events-none">
             {formatDuration(currentTime)} / {formatDuration(videoDuration)}
           </div>
         </div>
@@ -317,17 +317,17 @@ export function VideoPlayer({
             <button
               type="button"
               onClick={togglePlay}
-              className="text-white hover:text-[var(--color-accent-primary)] transition-colors"
+              className="text-on-media hover:text-[var(--color-accent-primary)] transition-colors"
               aria-label={isPlaying ? 'Pause' : 'Play'}
             >
               {isPlaying ? (
-                <Pause className="h-5 w-5" fill="white" />
+                <Pause className="h-5 w-5" fill="currentColor" />
               ) : (
-                <Play className="h-5 w-5" fill="white" />
+                <Play className="h-5 w-5" fill="currentColor" />
               )}
             </button>
 
-            <div className="text-xs text-white/80 font-medium tabular-nums">
+            <div className="text-xs text-on-media/80 font-medium tabular-nums">
               {formatDuration(currentTime)} / {formatDuration(videoDuration)}
             </div>
 
@@ -335,7 +335,7 @@ export function VideoPlayer({
               <button
                 type="button"
                 onClick={toggleMute}
-                className="text-white hover:text-[var(--color-accent-primary)] transition-colors"
+                className="text-on-media hover:text-[var(--color-accent-primary)] transition-colors"
                 aria-label={isMuted ? 'Unmute' : 'Mute'}
               >
                 {isMuted || volume === 0 ? (
@@ -363,7 +363,7 @@ export function VideoPlayer({
             <button
               type="button"
               onClick={handleDownload}
-              className="text-white hover:text-[var(--color-accent-primary)] transition-colors"
+              className="text-on-media hover:text-[var(--color-accent-primary)] transition-colors"
               aria-label="Download video"
               title="Download video"
             >
@@ -373,7 +373,7 @@ export function VideoPlayer({
             <button
               type="button"
               onClick={toggleFullscreen}
-              className="text-white hover:text-[var(--color-accent-primary)] transition-colors"
+              className="text-on-media hover:text-[var(--color-accent-primary)] transition-colors"
               aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
             >
               {isFullscreen ? (
@@ -387,7 +387,7 @@ export function VideoPlayer({
       </div>
 
       {isBase64Video(src) && (
-        <div className="absolute top-3 right-3 px-2 py-1 bg-black/60 rounded text-[10px] text-white/70 font-medium">
+        <div className="absolute top-3 right-3 px-2 py-1 bg-media/60 rounded text-xs text-on-media/70 font-medium">
           base64
         </div>
       )}

@@ -262,7 +262,7 @@ export function DocxPreview({ content, filename }: DocxPreviewProps) {
   }, [blobUrl, filename]);
 
   return (
-    <div className="bg-[var(--color-bg-tertiary)] rounded-xl border border-[var(--color-border-primary)] overflow-hidden max-h-[400px]">
+    <div className="bg-[var(--color-bg-tertiary)] rounded-xl border border-[var(--color-border-primary)] overflow-hidden max-h-file-preview">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 bg-[var(--color-bg-secondary)] border-b border-[var(--color-border-primary)]">
         <div className="flex items-center gap-2">
@@ -273,7 +273,7 @@ export function DocxPreview({ content, filename }: DocxPreviewProps) {
         </div>
         <button
           onClick={handleDownload}
-          className="flex items-center gap-1.5 px-2.5 py-1 bg-[var(--color-bg-tertiary)] hover:bg-[var(--color-accent-primary)] hover:text-white text-[var(--color-text-muted)] text-xs font-medium rounded-lg transition-colors"
+          className="flex items-center gap-1.5 px-2.5 py-1 bg-[var(--color-bg-tertiary)] hover:bg-[var(--color-accent-primary)] hover:text-[var(--color-text-on-accent)] text-[var(--color-text-muted)] text-xs font-medium rounded-lg transition-colors"
         >
           <Download className="w-3 h-3" />
           Download
@@ -281,10 +281,10 @@ export function DocxPreview({ content, filename }: DocxPreviewProps) {
       </div>
 
       {/* DOCX render container */}
-      <div className="relative overflow-auto max-h-[340px] p-4">
+      <div className="relative overflow-auto max-h-file-content p-4">
         <div
           ref={containerRef}
-          className="docx-preview-container bg-white rounded shadow-sm min-h-[200px]"
+          className="docx-preview-container bg-[var(--color-bg-document)] rounded shadow-sm min-h-docx-preview"
         />
 
         {isLoading && (

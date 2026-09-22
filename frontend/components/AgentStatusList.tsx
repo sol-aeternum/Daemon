@@ -22,7 +22,7 @@ export function AgentStatusList({ agents }: AgentStatusListProps) {
   if (activeAgents.length === 0) return null;
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end max-h-[80vh] w-full max-w-xs pointer-events-none">
+    <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end max-h-agent-panel w-full max-w-xs pointer-events-none">
       <div className="pointer-events-auto overflow-y-auto w-full pr-2 space-y-4">
         {activeAgents.map((agent) => (
           <AgentStatusCard

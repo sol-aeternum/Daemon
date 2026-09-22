@@ -258,7 +258,7 @@ export default function SettingsPanel({
                     console.error('Failed to clear memory:', error);
                   }
                 }}
-                className="flex-1 px-3 py-2 text-xs text-white bg-[var(--color-status-error)] rounded-md hover:bg-[var(--color-status-error)]/90 transition-colors"
+                className="flex-1 px-3 py-2 text-xs text-[var(--color-text-on-status)] bg-[var(--color-status-error)] rounded-md hover:bg-[var(--color-status-error)]/90 transition-colors"
               >
                 Yes, Clear All
               </button>

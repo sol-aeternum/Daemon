@@ -51,7 +51,7 @@ export function ResolutionPicker() {
               onClick={() => setResolution(option.value)}
             >
               <span className="block font-medium">{option.label}</span>
-              <span className="block text-[10px]">{option.value}</span>
+              <span className="block text-xs">{option.value}</span>
             </button>
           );
         })}

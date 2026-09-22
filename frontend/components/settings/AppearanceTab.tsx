@@ -91,7 +91,7 @@ export default function AppearanceTab() {
           {[1, 2, 3].map((i) => (
             <div
               key={i}
-              className="rounded-xl border border-border-primary bg-bg-secondary p-4 space-y-3"
+              className="rounded-xl border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] p-4 space-y-3"
             >
               <SkeletonBlock className="w-full aspect-video rounded-lg" />
               <div className="flex items-center gap-3">
@@ -113,15 +113,15 @@ export default function AppearanceTab() {
   return (
     <div className="animate-fade-in">
       {/* Header */}
-      <div className="flex items-center gap-3 mb-6 pb-6 border-b border-border-primary">
-        <div className="w-10 h-10 rounded-full bg-accent-subtle flex items-center justify-center">
-          <Palette className="w-5 h-5 text-accent-primary" />
+      <div className="flex items-center gap-3 mb-6 pb-6 border-b border-[var(--color-border-primary)]">
+        <div className="w-10 h-10 rounded-full bg-[var(--color-accent-subtle)] flex items-center justify-center">
+          <Palette className="w-5 h-5 text-[var(--color-accent-primary)]" />
         </div>
         <div>
-          <h2 className="text-lg font-semibold text-text-primary">
+          <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">
             Appearance
           </h2>
-          <p className="text-sm text-text-muted">
+          <p className="text-sm text-[var(--color-text-muted)]">
             Customize the look and feel of your workspace
           </p>
         </div>
@@ -130,8 +130,10 @@ export default function AppearanceTab() {
       {/* Theme Selection */}
       <section className="space-y-5">
         <div className="flex items-center gap-2">
-          <Palette className="w-5 h-5 text-accent-primary" />
-          <h3 className="text-base font-semibold text-text-primary">Theme</h3>
+          <Palette className="w-5 h-5 text-[var(--color-accent-primary)]" />
+          <h3 className="text-base font-semibold text-[var(--color-text-primary)]">
+            Theme
+          </h3>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -145,15 +147,15 @@ export default function AppearanceTab() {
                 onClick={() => handleThemeChange(themeOption.id)}
                 className={`group relative rounded-xl border-2 p-4 text-left transition-all duration-200 ${
                   isSelected
-                    ? 'border-accent-primary bg-accent-subtle'
-                    : 'border-border-primary bg-bg-secondary hover:border-border-focus hover:bg-bg-hover'
+                    ? 'border-[var(--color-accent-primary)] bg-[var(--color-accent-subtle)]'
+                    : 'border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] hover:border-[var(--color-border-focus)] hover:bg-[var(--color-bg-hover)]'
                 }`}
                 aria-pressed={isSelected}
               >
                 {/* Selection Indicator */}
                 {isSelected && (
-                  <div className="absolute top-3 right-3 w-5 h-5 rounded-full bg-accent-primary flex items-center justify-center">
-                    <Check className="w-3 h-3 text-white" />
+                  <div className="absolute top-3 right-3 w-5 h-5 rounded-full bg-[var(--color-accent-primary)] flex items-center justify-center">
+                    <Check className="w-3 h-3 text-[var(--color-text-on-accent)]" />
                   </div>
                 )}
 
@@ -193,32 +195,34 @@ export default function AppearanceTab() {
                   <div
                     className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 mt-0.5 transition-colors ${
                       isSelected
-                        ? 'border-accent-primary bg-accent-primary'
-                        : 'border-border-primary group-hover:border-border-focus'
+                        ? 'border-[var(--color-accent-primary)] bg-[var(--color-accent-primary)]'
+                        : 'border-[var(--color-border-primary)] group-hover:border-[var(--color-border-focus)]'
                     }`}
                   >
                     {isSelected && (
-                      <div className="w-2 h-2 rounded-full bg-white" />
+                      <div className="w-2 h-2 rounded-full bg-[var(--color-text-on-accent)]" />
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <Icon
                         className={`w-4 h-4 ${
-                          isSelected ? 'text-accent-primary' : 'text-text-muted'
+                          isSelected
+                            ? 'text-[var(--color-accent-primary)]'
+                            : 'text-[var(--color-text-muted)]'
                         }`}
                       />
                       <span
                         className={`font-medium ${
                           isSelected
-                            ? 'text-text-primary'
-                            : 'text-text-secondary'
+                            ? 'text-[var(--color-text-primary)]'
+                            : 'text-[var(--color-text-secondary)]'
                         }`}
                       >
                         {themeOption.label}
                       </span>
                     </div>
-                    <p className="text-xs text-text-muted mt-0.5">
+                    <p className="text-xs text-[var(--color-text-muted)] mt-0.5">
                       {themeOption.description}
                     </p>
                   </div>
@@ -229,17 +233,20 @@ export default function AppearanceTab() {
         </div>
 
         {/* Current Theme Info */}
-        <div className="mt-6 p-4 rounded-lg bg-bg-secondary border border-border-primary">
-          <div className="flex items-center gap-2 text-sm text-text-secondary">
-            <Monitor className="w-4 h-4 text-accent-primary" />
+        <div className="mt-6 p-4 rounded-lg bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)]">
+          <div className="flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
+            <Monitor className="w-4 h-4 text-[var(--color-accent-primary)]" />
             <span>
               Currently using{' '}
-              <span className="font-medium text-text-primary capitalize">
+              <span className="font-medium text-[var(--color-text-primary)] capitalize">
                 {resolvedTheme || 'dark'}
               </span>{' '}
               theme
               {currentTheme === 'system' && (
-                <span className="text-text-muted"> (system preference)</span>
+                <span className="text-[var(--color-text-muted)]">
+                  {' '}
+                  (system preference)
+                </span>
               )}
             </span>
           </div>

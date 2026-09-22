@@ -66,7 +66,7 @@ function ChatBackLink() {
   return (
     <Link
       href={href}
-      className="inline-flex min-h-[44px] items-center rounded-md px-3 py-2 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]"
+      className="inline-flex min-h-touch items-center rounded-md px-3 py-2 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]"
     >
       ← Chat
     </Link>
@@ -84,7 +84,7 @@ export default function SettingsLayout({
     <div className="flex h-screen overflow-hidden flex-col md:flex-row">
       <Suspense
         fallback={
-          <aside className="hidden h-screen w-[260px] border-r border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] md:block" />
+          <aside className="hidden h-screen w-sidebar border-r border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] md:block" />
         }
       >
         <SettingsSidebar />
@@ -97,7 +97,7 @@ export default function SettingsLayout({
               fallback={
                 <Link
                   href="/"
-                  className="inline-flex min-h-[44px] items-center rounded-md px-3 py-2 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]"
+                  className="inline-flex min-h-touch items-center rounded-md px-3 py-2 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]"
                 >
                   ← Chat
                 </Link>
@@ -116,7 +116,7 @@ export default function SettingsLayout({
                 <Link
                   key={item.href}
                   href={item.href}
-                  className={`inline-flex min-h-[44px] items-center rounded-md px-3 py-2 text-sm whitespace-nowrap transition-colors ${
+                  className={`inline-flex min-h-touch items-center rounded-md px-3 py-2 text-sm whitespace-nowrap transition-colors ${
                     pathname === item.href
                       ? 'bg-[var(--color-accent-subtle)] text-[var(--color-text-primary)]'
                       : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'

@@ -118,7 +118,7 @@ export function FileDownloadCard({
       <button
         type="button"
         onClick={handleDownload}
-        className="flex-shrink-0 flex items-center gap-2 px-3 py-2 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-white text-sm font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)]"
+        className="flex-shrink-0 flex items-center gap-2 px-3 py-2 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-[var(--color-text-on-accent)] text-sm font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)]"
         title={`Download ${filename}`}
       >
         <Download className="w-4 h-4" />

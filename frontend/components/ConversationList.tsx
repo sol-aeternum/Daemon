@@ -207,7 +207,7 @@ export function ConversationList({
 
   const ConversationItem = ({ conv }: { conv: Conversation }) => (
     <div
-      className={`group relative p-3 cursor-pointer hover:bg-[var(--color-bg-hover)] transition-colors min-h-[60px] flex items-center ${
+      className={`group relative p-3 cursor-pointer hover:bg-[var(--color-bg-hover)] transition-colors min-h-conversation-row flex items-center ${
         currentId === conv.id
           ? 'bg-[var(--color-accent-subtle)] hover:bg-[var(--color-accent-muted)]'
           : ''
@@ -272,7 +272,7 @@ export function ConversationList({
                 setMenuOpenId(conv.id);
               }
             }}
-            className={`min-h-[44px] min-w-[44px] rounded-md p-1.5 text-[var(--color-text-muted)] transition-all hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-secondary)] ${
+            className={`min-h-touch min-w-touch rounded-md p-1.5 text-[var(--color-text-muted)] transition-all hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-secondary)] ${
               menuOpenId === conv.id
                 ? 'opacity-100 bg-[var(--color-bg-hover)]'
                 : 'opacity-100 md:opacity-0 md:group-hover:opacity-100'
@@ -297,7 +297,7 @@ export function ConversationList({
                     setMenuOpenId(null);
                     setMenuPosition(null);
                   }}
-                  className="flex w-full min-h-[44px] items-center gap-2 px-3 py-2 text-left text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)]"
+                  className="flex w-full min-h-touch items-center gap-2 px-3 py-2 text-left text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)]"
                 >
                   <Pin className="w-3 h-3" />
                   {conv.pinned ? 'Unpin' : 'Pin'}
@@ -308,7 +308,7 @@ export function ConversationList({
                     setMenuOpenId(null);
                     setMenuPosition(null);
                   }}
-                  className="flex w-full min-h-[44px] items-center gap-2 px-3 py-2 text-left text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)]"
+                  className="flex w-full min-h-touch items-center gap-2 px-3 py-2 text-left text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)]"
                 >
                   <Edit2 className="w-3 h-3" />
                   Rename
@@ -319,7 +319,7 @@ export function ConversationList({
                     setMenuOpenId(null);
                     setMenuPosition(null);
                   }}
-                  className="flex w-full min-h-[44px] items-center gap-2 px-3 py-2 text-left text-xs text-[var(--color-status-error)] hover:bg-[var(--color-status-error-bg)]"
+                  className="flex w-full min-h-touch items-center gap-2 px-3 py-2 text-left text-xs text-[var(--color-status-error)] hover:bg-[var(--color-status-error-bg)]"
                 >
                   <Trash2 className="w-3 h-3" />
                   Delete
@@ -334,10 +334,10 @@ export function ConversationList({
 
   return (
     <div
-      className={`w-full md:w-[260px] bg-[var(--color-bg-tertiary)] border-r border-[var(--color-border-primary)] flex flex-col h-full ${className}`}
+      className={`w-full md:w-sidebar bg-[var(--color-bg-tertiary)] border-r border-[var(--color-border-primary)] flex flex-col h-full ${className}`}
     >
       <div
-        className="p-4 border-b pt-[max(1rem,env(safe-area-inset-top))] space-y-2"
+        className="p-4 border-b pt-safe-panel space-y-2"
         suppressHydrationWarning
       >
         <button
@@ -350,7 +350,7 @@ export function ConversationList({
         <nav className="space-y-1">
           <button
             onClick={onNewChat}
-            className="w-full min-h-[40px] rounded-md px-3 py-2 text-sm flex items-center gap-2.5 transition-colors text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+            className="w-full min-h-10 rounded-md px-3 py-2 text-sm flex items-center gap-2.5 transition-colors text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
           >
             <Plus className="w-4 h-4" />
             <span>New chat</span>
@@ -362,7 +362,7 @@ export function ConversationList({
               <button
                 key={section}
                 onClick={() => handleNavigate(section)}
-                className={`w-full min-h-[40px] rounded-md px-3 py-2 text-sm flex items-center gap-2.5 transition-colors ${
+                className={`w-full min-h-10 rounded-md px-3 py-2 text-sm flex items-center gap-2.5 transition-colors ${
                   isActive
                     ? 'bg-[var(--color-accent-subtle)] text-[var(--color-text-primary)]'
                     : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]'
@@ -382,16 +382,19 @@ export function ConversationList({
             placeholder="Search conversations..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full min-h-[44px] pl-9 pr-3 py-2 text-sm bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:border-transparent"
+            className="w-full min-h-touch pl-9 pr-3 py-2 text-sm bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:border-transparent"
           />
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto pb-[env(safe-area-inset-bottom)]">
+      <div className="flex-1 overflow-y-auto pb-safe">
         {isLoading ? (
           <div className="p-3 space-y-1">
             {[...Array(7)].map((_, i) => (
-              <div key={i} className="flex items-center gap-3 p-3 min-h-[60px]">
+              <div
+                key={i}
+                className="flex items-center gap-3 p-3 min-h-conversation-row"
+              >
                 <SkeletonCircle size={40} />
                 <div className="flex-1 space-y-2 min-w-0">
                   <SkeletonLine width="70%" height="0.875rem" />
@@ -446,7 +449,7 @@ export function ConversationList({
           aria-modal="true"
           aria-label="Delete conversation"
           data-stop-shortcut-block="true"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--color-bg-overlay)] p-4"
         >
           <div className="w-full max-w-sm rounded-lg bg-[var(--color-bg-secondary)] p-4 shadow-xl">
             <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
@@ -471,7 +474,7 @@ export function ConversationList({
                   onDelete(deleteConfirmId);
                   setDeleteConfirmId(null);
                 }}
-                className="rounded-md bg-[var(--color-status-error)] px-3 py-2 text-xs font-semibold text-white hover:bg-[var(--color-status-error)]/90"
+                className="rounded-md bg-[var(--color-status-error)] px-3 py-2 text-xs font-semibold text-[var(--color-text-on-status)] hover:bg-[var(--color-status-error)]/90"
               >
                 Delete
               </button>
