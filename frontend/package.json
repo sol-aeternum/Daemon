@@ -55,7 +55,7 @@
     "serwist": "^9.5.12",
     "tailwindcss": "^3",
     "typescript": "^5",
-    "vitest": "^3.2.6"
+    "vitest": "^4.1.11"
   },
   "overrides": {
     "browserslist": "4.29.0"
