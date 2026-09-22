@@ -9,6 +9,9 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+DEFAULT_FETCH_USER_AGENT = "Daemon (+https://github.com/sol-aeternum/Daemon)"
+
+
 # ===== Hosted identity config constants =====
 # Allowlist of signup modes. invite_only is the default per hosted identity
 # decision lock; open is gated behind a deliberate operator change; disabled
@@ -322,6 +325,13 @@ class Settings(BaseSettings):
     daemon_http_allowed_domains: str = ""
 
     # ===== FETCH SERVICE (Web content fetching) =====
+    # Stable outbound identity. Overrides must be valid printable ASCII headers.
+    daemon_fetch_user_agent: str = Field(
+        default=DEFAULT_FETCH_USER_AGENT,
+        min_length=1,
+        max_length=512,
+        pattern=r"^[!-~][ -~]*$",
+    )
     # Jina AI API key for web fetching (optional)
     jina_api_key: str | None = None
     # Cache TTL for fetched content in seconds (default: 86400 = 24 hours)

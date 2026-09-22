@@ -59,7 +59,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | @reader (document analysis) — NOT IMPLEMENTED | Web experimental | Web experimental | Not started | Not started | Reserved subagent orchestration mode | No |
 | **Tools** | — | — | — | — | — | — |
 | Web Search (Brave Search API) | Backend stable | Backend stable | Not started | Not started | Web search service | No |
-| Web Fetch (multi-strategy URL fetcher) | Backend stable | Backend stable | Not started | Not started | URL fetch service | No |
+| Web Fetch (multi-strategy URL fetcher) | Backend stable | Backend stable | Not started | Not started | URL fetch service; direct requests use a stable Daemon identity with an operator-configurable User-Agent | No |
 | HTTP Request (generic) | Backend stable | Backend stable | Not started | Not started | HTTP request service | No |
 | Reminders (local JSON) | Backend stable | Backend stable | Not started | Not started | Reminder scheduling service | No |
 | Time & Math (get_time, calculate) | Backend stable | Backend stable | Not started | Not started | Utility tools service | No |
