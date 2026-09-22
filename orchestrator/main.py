@@ -2166,6 +2166,25 @@ async def chat(
             logger.warning(
                 "Conversation persistence failed, continuing without persistence: %s", e
             )  # Graceful degradation - continue without persistence
+            # A refreshed client may have no history of its own. Preserve readable
+            # prior turns, appending the unsaved question rather than replacing one.
+            if conversation_exists and conversation_uuid and not incoming_messages:
+                try:
+                    prior_messages = await store.get_recent_messages(
+                        conversation_uuid,
+                        limit=settings.chat_history_limit,
+                        exclude_status=["streaming", "error", "cancelled"],
+                    )
+                    incoming_messages = [
+                        msg for msg in prior_messages if msg.get("role") != "system"
+                    ] + [{"role": "user", "content": user_message}]
+                except Exception:
+                    logger.warning("Conversation history unavailable during persistence failure")
+            # Do not re-read history as if the current question had been stored,
+            # or persist an orphan assistant reply after the user insert failed.
+            store = None
+            conversation_uuid = None
+            conversation_exists = False
 
     history_messages: list[dict[str, Any]] | None = None
 

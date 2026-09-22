@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from abc import ABC, abstractmethod
@@ -576,26 +577,60 @@ class ImageSubagent(BaseSubagent):
 
             transaction_id = debit_result.transaction_id
 
-        # Create appropriate video provider if needed
-        video_provider = self.provider
-        if video_provider_name != self.provider_name:
-            settings = get_settings()
-            if video_provider_name == "xai":
-                xai_api_key = (
-                    self.config.get("xai_api_key") if self.config else None
-                ) or settings.xai_api_key
-                video_provider = XAIImageProvider(xai_api_key)
-            elif video_provider_name == "fal":
-                fal_api_key = (
-                    self.config.get("fal_api_key") if self.config else None
-                ) or settings.fal_key
-                video_provider = FalKlingProvider(fal_api_key)
-            else:
-                # Fallback to current provider
-                video_provider = self.provider
+        # Compensation boundary: the debit is committed, so any failure from here
+        # (provider construction, provider error, or task cancellation during the
+        # provider await) must refund the transaction before returning/raising.
 
-        # Check if the selected provider supports video generation
+        async def _run_refund(reason: str) -> Any:
+            """Attempt compensation without masking cancellation with a DB error."""
+            if transaction_id is None:
+                return None
+            refund_task = asyncio.create_task(video_credits_dal.refund_transaction(transaction_id))
+            cancellation = None
+            while True:
+                try:
+                    result = await asyncio.shield(refund_task)
+                    break
+                except asyncio.CancelledError as exc:
+                    # Keep shielding on repeated cancellation, and retain the task
+                    # until its result/exception is observed. Do not loop if the
+                    # refund task itself was cancelled (e.g. event-loop shutdown).
+                    if refund_task.cancelled():
+                        raise
+                    cancellation = exc
+                except Exception:
+                    logger.exception(
+                        "Failed to refund video-credit transaction %s (%s)",
+                        transaction_id,
+                        reason,
+                    )
+                    result = None
+                    break
+            if cancellation is not None:
+                raise cancellation
+            return result
+
+        # Create appropriate video provider if needed
         try:
+            video_provider = self.provider
+            if video_provider_name != self.provider_name:
+                settings = get_settings()
+                if video_provider_name == "xai":
+                    xai_api_key = (
+                        self.config.get("xai_api_key") if self.config else None
+                    ) or settings.xai_api_key
+                    video_provider = XAIImageProvider(xai_api_key)
+                elif video_provider_name == "fal":
+                    fal_api_key = (
+                        self.config.get("fal_api_key") if self.config else None
+                    ) or settings.fal_key
+                    video_provider = FalKlingProvider(fal_api_key)
+                else:
+                    # Fallback to current provider
+                    video_provider = self.provider
+
+            # Check if the selected provider supports video generation
+
             # Prepare kwargs for video generation
             video_kwargs = {
                 "resolution": context.get("resolution"),
@@ -613,11 +648,7 @@ class ImageSubagent(BaseSubagent):
                 **video_kwargs,
             )
         except NotImplementedError:
-            refund_result = (
-                await video_credits_dal.refund_transaction(transaction_id)
-                if transaction_id
-                else None
-            )
+            refund_result = await _run_refund("video not supported by provider")
             return self._create_result(
                 success=False,
                 error=f"Video generation is not supported with {video_provider_name} provider",
@@ -630,10 +661,8 @@ class ImageSubagent(BaseSubagent):
                 },
             )
         except Exception as e:
-            # Refund credits on failure
-            refund_result = None
-            if transaction_id:
-                refund_result = await video_credits_dal.refund_transaction(transaction_id)
+            # Refund credits on failure; propagate if cancellation landed during refund.
+            refund_result = await _run_refund("video generation failure")
 
             return self._create_result(
                 success=False,
@@ -647,6 +676,11 @@ class ImageSubagent(BaseSubagent):
                     "refund_message": refund_result.message if refund_result else None,
                 },
             )
+        except asyncio.CancelledError:
+            # CancelledError does not derive from Exception on Python 3.11: compensate
+            # for the committed debit, then re-raise so cancellation propagates.
+            await _run_refund("task cancelled during video generation")
+            raise
 
         # Return video metadata in result
         return self._create_result(
