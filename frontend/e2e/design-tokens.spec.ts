@@ -114,7 +114,10 @@ for (const theme of ['dark', 'light']) {
       await page.goto(target.path);
       await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
       await expect(
-        page.getByText(target.ready, { exact: false }).first(),
+        page
+          .getByText(target.ready, { exact: false })
+          .filter({ visible: true })
+          .first(),
       ).toBeVisible();
       await page.waitForLoadState('networkidle');
 
@@ -145,7 +148,7 @@ for (const theme of ['dark', 'light']) {
       const options = {
         fullPage: true,
         animations: 'disabled' as const,
-        style: 'nextjs-portal { visibility: hidden !important; }',
+        style: 'nextjs-portal { display: none !important; }',
       };
       await page.screenshot({
         ...options,
