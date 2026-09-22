@@ -59,6 +59,11 @@ def test_dependabot_tracks_github_action_updates() -> None:
             "package-ecosystem": "github-actions",
             "directory": "/",
             "schedule": {"interval": "weekly"},
+            "groups": {
+                "codeql-action": {
+                    "patterns": ["github/codeql-action/*"],
+                }
+            },
         }
     ]
 
