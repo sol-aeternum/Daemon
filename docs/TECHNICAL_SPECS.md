@@ -31,6 +31,14 @@ Daemon is a personal AI assistant orchestration layer. The system prompt (v4) de
 
 Full prompt in `orchestrator/prompts.py`.
 
+**Runtime date/time:** Native and OpenAI-compatible chat prompts use the authenticated user's
+saved `timezone` (or `time_zone`), including either key under `preferences`, before
+`Settings.daemon_default_timezone` (`DAEMON_DEFAULT_TIMEZONE`, default `UTC`). Invalid or
+unavailable user settings fall back to the deployment default; an invalid default falls
+back to UTC. IANA zones apply daylight-saving rules. Set `DAEMON_DEFAULT_TIMEZONE=Australia/Adelaide`
+to retain the former deployment-wide timezone. Sources: `orchestrator/timezones.py`,
+`orchestrator/daemon.py`, and the chat entry points in `orchestrator/main.py`.
+
 ---
 
 ## Tier Configuration

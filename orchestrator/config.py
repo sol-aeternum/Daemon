@@ -101,6 +101,8 @@ class Settings(BaseSettings):
 
     env: str = "dev"
     log_level: str = "INFO"
+    # Prompt datetime fallback when the user has no valid saved timezone.
+    daemon_default_timezone: str = "UTC"
 
     daemon_admin_api_key: str | None = None
 
