@@ -762,7 +762,247 @@ async def test_kling_e2e_byok_tier_success(
     assert final_balance == 0
 
 
-# Test 7: Pro tier supports all provider durations (no tier cap)
+# Test 7: Task cancellation during video generation refunds credits and propagates
+@pytest.mark.asyncio
+async def test_kling_e2e_cancellation_refunds_and_propagates(
+    test_user_id: uuid.UUID,
+    fake_db_state: FakeDbState,
+    fake_pool: FakePool,
+    mock_config: dict[str, Any],
+) -> None:
+    """Cancelling the generation task after debit must refund and still raise CancelledError.
+
+    Regression: _generate_video debits credits, then awaits the provider with only
+    except NotImplementedError / except Exception handlers. asyncio.CancelledError
+    derives from BaseException, so a cancelled task skipped the refund and leaked
+    the debit. The cancellation must fully propagate to the caller.
+    """
+    fake_db_state.balances[test_user_id] = 1000
+    video_credits_dal = VideoCreditsDAL(cast(Any, fake_pool))
+
+    initial_balance = await video_credits_dal.get_balance(test_user_id)
+    assert initial_balance == 1000
+
+    subagent = ImageSubagent(config=mock_config)
+
+    provider_entered = asyncio.Event()
+
+    class HangingVideoProvider:
+        async def generate_image(self, prompt: str, size: str) -> dict[str, Any]:
+            raise NotImplementedError  # pragma: no cover
+
+        async def generate_video(self, prompt: str, duration: int, **kwargs: Any) -> dict[str, Any]:
+            provider_entered.set()
+            await asyncio.sleep(3600)  # cancelled by the test
+            raise AssertionError("should have been cancelled")  # pragma: no cover
+
+    install_video_provider(subagent, "fal", HangingVideoProvider())
+
+    install_video_provider(subagent, "fal", HangingVideoProvider())
+
+    context = {
+        "user_id": str(test_user_id),
+        "tier": "pro",
+        "duration": 5,
+        "mode": "video",
+        "video_provider": "fal",
+        "kling_model": "o3-pro",
+        "audio_enabled": False,
+    }
+
+    task = asyncio.create_task(subagent.execute("generate a video of mountains", context))
+    await asyncio.wait_for(provider_entered.wait(), timeout=5)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Balance fully restored: debit was refunded despite cancellation.
+    final_balance = await video_credits_dal.get_balance(test_user_id)
+    assert final_balance == initial_balance, (
+        f"Cancellation must refund the debit: expected {initial_balance}, got {final_balance}"
+    )
+
+    # The refund was recorded against the original debit.
+    refund_rows = [
+        tx
+        for tx in fake_db_state.transactions
+        if "Refund for transaction" in (tx["description"] or "")
+    ]
+    assert len(refund_rows) == 1, f"Exactly one refund transaction expected, got {len(refund_rows)}"
+
+
+# Test 8: Cancellation during a blocked refund (provider failure path) still
+# completes the refund and propagates cancellation
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_count", [1, 2])
+@pytest.mark.parametrize("provider_cancelled", [False, True])
+async def test_kling_e2e_cancellation_during_refund_completes_and_propagates(
+    test_user_id: uuid.UUID,
+    fake_db_state: FakeDbState,
+    fake_pool: FakePool,
+    mock_config: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    cancel_count: int,
+    provider_cancelled: bool,
+) -> None:
+    """Cancel while the post-failure refund is blocked in flight.
+
+    The provider fails (Exception path), the refund starts, then a second
+    cancellation arrives while the refund is still pending. The refund must
+    finish (balance restored) and the cancellation must propagate to the caller,
+    with no unobserved refund-task exceptions.
+    """
+    from providers.fal_kling import FalKlingError
+
+    fake_db_state.balances[test_user_id] = 1000
+    video_credits_dal = VideoCreditsDAL(cast(Any, fake_pool))
+
+    initial_balance = await video_credits_dal.get_balance(test_user_id)
+    assert initial_balance == 1000
+
+    refund_started = asyncio.Event()
+    release_refund = asyncio.Event()
+
+    class BlockingRefundDAL(VideoCreditsDAL):
+        async def refund_transaction(self, transaction_id: uuid.UUID) -> Any:
+            refund_started.set()
+            await release_refund.wait()  # hold the refund until the test releases it
+            return await VideoCreditsDAL.refund_transaction(self, transaction_id)
+
+    def blocking_dal_factory(pool: object) -> BlockingRefundDAL:
+        return BlockingRefundDAL(cast(Any, pool))
+
+    monkeypatch.setattr("orchestrator.subagents.image.VideoCreditsDAL", blocking_dal_factory)
+
+    subagent = ImageSubagent(config=mock_config)
+
+    class FailingVideoProvider:
+        async def generate_image(self, prompt: str, size: str) -> dict[str, Any]:
+            raise NotImplementedError  # pragma: no cover
+
+        async def generate_video(self, prompt: str, duration: int, **kwargs: Any) -> dict[str, Any]:
+            if provider_cancelled:
+                raise asyncio.CancelledError
+            raise FalKlingError("Kling video generation failed")
+
+    install_video_provider(subagent, "fal", FailingVideoProvider())
+
+    context = {
+        "user_id": str(test_user_id),
+        "tier": "pro",
+        "duration": 5,
+        "mode": "video",
+        "video_provider": "fal",
+        "kling_model": "o3-pro",
+        "audio_enabled": False,
+    }
+
+    task = asyncio.create_task(subagent.execute("generate a video of mountains", context))
+    await asyncio.wait_for(refund_started.wait(), timeout=5)
+    for _ in range(cancel_count):
+        task.cancel()
+        await asyncio.sleep(0)  # deliver each cancellation while refund remains blocked
+    assert not task.done()
+    release_refund.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    final_balance = await video_credits_dal.get_balance(test_user_id)
+    assert final_balance == initial_balance, (
+        f"Cancel-during-refund must still complete the refund: expected {initial_balance}, "
+        f"got {final_balance}"
+    )
+
+    refund_rows = [
+        tx
+        for tx in fake_db_state.transactions
+        if "Refund for transaction" in (tx["description"] or "")
+    ]
+    assert len(refund_rows) == 1, f"Exactly one refund transaction expected, got {len(refund_rows)}"
+
+
+# Test 9: Provider construction failure after debit still refunds credits
+@pytest.mark.asyncio
+async def test_kling_e2e_provider_construction_failure_refunds(
+    test_user_id: uuid.UUID,
+    fake_db_state: FakeDbState,
+    fake_pool: FakePool,
+    mock_config: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider build failure after the debit commits must refund, not leak credits."""
+    fake_db_state.balances[test_user_id] = 1000
+    video_credits_dal = VideoCreditsDAL(cast(Any, fake_pool))
+
+    initial_balance = await video_credits_dal.get_balance(test_user_id)
+    assert initial_balance == 1000
+
+    subagent = ImageSubagent(config=mock_config)
+
+    def boom(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("fal provider construction exploded")
+
+    monkeypatch.setattr("orchestrator.subagents.image.FalKlingProvider", boom)
+
+    context = {
+        "user_id": str(test_user_id),
+        "tier": "pro",
+        "duration": 5,
+        "mode": "video",
+        "video_provider": "fal",
+        "kling_model": "o3-pro",
+        "audio_enabled": False,
+    }
+    result = await subagent.execute("generate a video of mountains", context)
+
+    assert result.success is False
+    assert "Video generation failed" in (result.error or "")
+
+    final_balance = await video_credits_dal.get_balance(test_user_id)
+    assert final_balance == initial_balance, (
+        f"Construction failure after debit must refund: expected {initial_balance}, "
+        f"got {final_balance}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_video_refund_outage_does_not_mask_cancellation(
+    test_user_id: uuid.UUID,
+    fake_db_state: FakeDbState,
+    mock_config: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A failed compensation is logged, but the cancelled request stays cancelled."""
+    fake_db_state.balances[test_user_id] = 1000
+    subagent = ImageSubagent(config=mock_config)
+    provider = AsyncMock()
+    provider.generate_video.side_effect = asyncio.CancelledError
+    install_video_provider(subagent, "fal", provider)
+
+    class UnavailableRefundDAL(VideoCreditsDAL):
+        async def refund_transaction(self, transaction_id):
+            raise RuntimeError("synthetic refund database outage")
+
+    monkeypatch.setattr("orchestrator.subagents.image.VideoCreditsDAL", UnavailableRefundDAL)
+    with pytest.raises(asyncio.CancelledError):
+        await subagent.execute(
+            "synthetic video",
+            {
+                "user_id": str(test_user_id),
+                "tier": "pro",
+                "duration": 5,
+                "mode": "video",
+                "video_provider": "fal",
+            },
+        )
+    assert fake_db_state.balances[test_user_id] < 1000
+    assert "Failed to refund video-credit transaction" in caplog.text
+
+
+# Test 9: Pro tier supports all provider durations (no tier cap)
 @pytest.mark.asyncio
 async def test_kling_e2e_pro_tier_all_durations(
     test_user_id: uuid.UUID,
