@@ -1313,9 +1313,9 @@ function ChatContent() {
         <Panel
           defaultSize={showPreviewPanel ? 60 : 100}
           minSize={40}
-          className="flex flex-col"
+          className="flex min-h-0 flex-col"
         >
-          <div className="flex-1 flex flex-col w-full min-w-0 relative">
+          <div className="flex-1 flex min-h-0 flex-col w-full min-w-0 relative">
             {isRecording && (
               <div className="bg-[var(--color-status-error)] text-white px-4 py-2 text-center text-sm font-medium animate-pulse">
                 Recording... Tap mic to stop

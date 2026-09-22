@@ -25,14 +25,14 @@ const conversation = {
               {
                 name: 'web_search',
                 arguments: { query: 'research' },
-                id: 'search-100',
+                id: 'search-call-100',
               },
             ],
             tool_results: [
               {
                 name: 'web_search',
                 result: { hits: ['Useful result'] },
-                id: 'search-100',
+                id: 'search-result-100',
               },
             ],
           }
@@ -91,6 +91,13 @@ test('a 100-message thread collapses old content and can expand it', async ({
   await page.goto('/?id=conversation-1');
   const messages = page.getByRole('main', { name: 'Conversation messages' });
   await expect(messages.locator('article')).toHaveCount(100);
+  await expect
+    .poll(() =>
+      messages.evaluate(
+        (element) => element.scrollHeight - element.clientHeight,
+      ),
+    )
+    .toBeGreaterThan(200);
   await expect(messages).not.toContainText(
     'Internal context must stay hidden.',
   );
