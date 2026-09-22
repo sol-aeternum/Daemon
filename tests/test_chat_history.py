@@ -20,6 +20,7 @@ from httpx import ASGITransport, AsyncClient
 
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.config import get_settings
+from orchestrator.daemon import stream_sse_chat
 from orchestrator.db import AppState, get_app_state
 from orchestrator.main import app
 
@@ -89,6 +90,63 @@ def set_app_state(mock_app_state: AppState) -> None:
     conversation = getattr(get_conversation, "return_value", None)
     if isinstance(conversation, dict) and isinstance(conversation.get("user_id"), uuid.UUID):
         app.state._test_auth_user_id = conversation["user_id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing_conversation", [True, False])
+@pytest.mark.parametrize("with_client_history", [True, False])
+async def test_failed_user_insert_disables_turn_persistence(
+    client, existing_conversation, with_client_history
+) -> None:
+    """Graceful degradation must not persist an orphan reply or rewrite old DB history."""
+    conversation_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    store = AsyncMock()
+    conversation = {"id": conversation_id, "user_id": user_id}
+    store.get_conversation.return_value = conversation
+    store.create_conversation.return_value = conversation
+    store.insert_message.side_effect = RuntimeError("synthetic storage outage")
+    old_history = [
+        {"role": "user", "content": "Previous question"},
+        {"role": "assistant", "content": "Previous answer"},
+    ]
+    store.get_recent_messages.return_value = old_history
+    set_app_state(create_mock_app_state(store))
+    captured = {}
+
+    async def capture_stream(**kwargs):
+        captured.update(kwargs)
+        async for frame in stream_sse_chat(**kwargs):
+            yield frame
+
+    expected_history = [*old_history, {"role": "user", "content": "Current question"}]
+    payload = {
+        "message": "Current question",
+        "messages": expected_history if with_client_history else [],
+    }
+    if existing_conversation:
+        payload["conversation_id"] = f"conv_{conversation_id}"
+    with patch("orchestrator.main.stream_sse_chat", capture_stream):
+        response = await client.post("/chat", json=payload)
+
+    assert response.status_code == 200
+    assert "event: done\n" in response.text
+    assert "event: error\n" not in response.text
+    assert "event: conversation\n" not in response.text
+    assert captured["memory_store"] is None
+    assert captured["conversation_uuid"] is None
+    assert captured["user_id"] == user_id
+    if with_client_history or existing_conversation:
+        assert captured["history_messages"] == expected_history
+        assert captured["history_messages"][0]["content"] == "Previous question"
+    else:
+        assert captured["history_messages"] is None
+        assert captured["user_message"] == "Current question"
+    if existing_conversation and not with_client_history:
+        store.get_recent_messages.assert_awaited_once()
+    else:
+        store.get_recent_messages.assert_not_awaited()
+    store.insert_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio
