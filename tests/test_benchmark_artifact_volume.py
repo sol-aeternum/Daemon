@@ -26,4 +26,5 @@ def test_benchmark_volume_is_independent_of_opencode_scratch_space() -> None:
     compose = _compose_config()
     backend_volumes = compose["services"]["backend"]["volumes"]
 
-    assert all("/tmp/opencode" not in mount for mount in backend_volumes)
+    # Negative assertion only: the obsolete path is never created or accessed.
+    assert all("/tmp/opencode" not in mount for mount in backend_volumes)  # nosec B108
