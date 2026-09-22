@@ -16,6 +16,8 @@ import {
   type SidebarSection,
 } from '../components/ConversationList';
 import { ToolCallLog } from '../components/ToolCallBlock';
+import { CollapsibleMessage } from '../components/CollapsibleMessage';
+import { useChatScroll } from '../hooks/useChatScroll';
 import { MobileHeader } from '../components/MobileHeader';
 import ChatSkeleton from '../components/ChatSkeleton';
 import { useConversationHistory } from '../hooks/useConversationHistory';
@@ -521,11 +523,10 @@ function ChatContent() {
   const [openedPreviewFileUrl, setOpenedPreviewFileUrl] = useState<
     string | null
   >(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const isNearBottomRef = useRef(true);
-  const autoScrollEnabledRef = useRef(true);
-  const lastMessageSignatureRef = useRef('');
+  const { value: hideToolCalls, setValue: setHideToolCalls } = useLocalStorage(
+    'daemon:hideToolCalls',
+    false,
+  );
   const { showError } = useError();
   const { isOnline } = useOnlineStatus();
   const router = useRouter();
@@ -1010,7 +1011,6 @@ function ChatContent() {
   useEffect(() => {
     if (isLoading && !prevLoadingRef.current) {
       currentRequestIdRef.current = null;
-      autoScrollEnabledRef.current = true;
       if (eventsRef.current.length > 0) {
         lastArchivedEventKeysRef.current = new Set(
           eventsRef.current.map(eventKey),
@@ -1020,37 +1020,13 @@ function ChatContent() {
     prevLoadingRef.current = isLoading;
   }, [isLoading]);
 
-  // Auto-scroll: Track scroll position to respect user's reading position
-  useEffect(() => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
-
-    const handleScroll = () => {
-      const { scrollTop, clientHeight, scrollHeight } = container;
-      const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-      const isNearBottom = distanceFromBottom < 64;
-      isNearBottomRef.current = isNearBottom;
-      autoScrollEnabledRef.current = isNearBottom;
-    };
-
-    handleScroll();
-    container.addEventListener('scroll', handleScroll, { passive: true });
-    return () => container.removeEventListener('scroll', handleScroll);
-  }, []);
-
-  useEffect(() => {
-    if (!messagesEndRef.current || messages.length === 0) return;
-    if (!autoScrollEnabledRef.current) return;
-
-    const lastMessage = messages[messages.length - 1];
-    const signature = `${messages.length}:${lastMessage?.id ?? ''}`;
-    const isNewMessage = signature !== lastMessageSignatureRef.current;
-    lastMessageSignatureRef.current = signature;
-
-    const behavior: ScrollBehavior =
-      isLoading && !isNewMessage ? 'auto' : 'smooth';
-    messagesEndRef.current.scrollIntoView({ behavior });
-  }, [messages, isLoading]);
+  const {
+    scrollContainerRef,
+    messagesEndRef,
+    isScrolledUp,
+    onScroll,
+    jumpToLatest,
+  } = useChatScroll({ conversationId: currentId, messages, isLoading });
 
   const handleSelectConversation = async (id: string) => {
     // Preserve per-message stopped markers across conversation switches —
@@ -1282,6 +1258,17 @@ function ChatContent() {
     documentDownload !== undefined &&
     openedPreviewFileUrl === documentDownload.fileUrl;
 
+  const toolLogToggle = (
+    <button
+      type="button"
+      aria-pressed={hideToolCalls}
+      onClick={() => setHideToolCalls((previous) => !previous)}
+      className="min-h-[44px] px-2 text-xs font-medium rounded-lg text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] aria-pressed:bg-[var(--color-accent-subtle)] aria-pressed:text-[var(--color-accent-primary)]"
+    >
+      Hide tool calls
+    </button>
+  );
+
   return (
     <div className="flex h-screen bg-[var(--color-bg-tertiary)] overflow-hidden">
       {!isOnline && <OfflineIndicator />}
@@ -1339,6 +1326,7 @@ function ChatContent() {
               onOpenSidebar={() => setIsSidebarOpen(true)}
             >
               <div className="flex items-center gap-2">
+                {toolLogToggle}
                 <ConnectionStatus
                   status={connectionStatus}
                   onReconnect={reload}
@@ -1351,6 +1339,7 @@ function ChatContent() {
                 {currentConversation?.title || 'New conversation'}
               </h1>
               <div className="flex items-center gap-4">
+                {toolLogToggle}
                 <ConnectionStatus
                   status={connectionStatus}
                   onReconnect={reload}
@@ -1358,7 +1347,13 @@ function ChatContent() {
               </div>
             </header>
 
-            <main ref={scrollContainerRef} className="flex-1 overflow-y-auto">
+            <main
+              ref={scrollContainerRef}
+              onScroll={onScroll}
+              tabIndex={-1}
+              aria-label="Conversation messages"
+              className="flex-1 min-h-0 overflow-y-auto"
+            >
               {messages.length === 0 && isLoading ? (
                 <div className="mx-auto w-full max-w-3xl flex flex-col space-y-4 px-4 py-6 animate-fade-in">
                   {/* Assistant message skeleton - left aligned */}
@@ -1419,6 +1414,7 @@ function ChatContent() {
               ) : (
                 <div className="mx-auto w-full max-w-3xl px-4 py-6">
                   {messages.map((message, index) => {
+                    if (message.role === 'system') return null;
                     const isLast = index === messages.length - 1;
                     const liveEvents = getEventsForMessage(message.id, isLast);
                     const persistedToolEvents =
@@ -1491,9 +1487,17 @@ function ChatContent() {
                       isActivePreviewDocument && showPreviewPanel;
 
                     return (
-                      <div
+                      <CollapsibleMessage
                         key={message.id}
-                        className={`mb-8 ${message.role === 'user' ? 'flex justify-end' : 'space-y-3'}`}
+                        messageId={message.id}
+                        title={`${message.role === 'user' ? 'You' : 'Daemon'} · message ${index + 1}`}
+                        preview={formattedMessageContent}
+                        collapsible={index < messages.length - 5}
+                        childrenClassName={
+                          message.role === 'user'
+                            ? 'flex justify-end'
+                            : 'space-y-3'
+                        }
                       >
                         {message.role === 'assistant' &&
                           !councilEventsInMessage && (
@@ -1514,7 +1518,9 @@ function ChatContent() {
                                   (thinkingDurationRef.current = d)
                                 }
                               />
-                              <ToolCallLog events={msgEvents} />
+                              {!hideToolCalls && (
+                                <ToolCallLog events={msgEvents} />
+                              )}
                             </div>
                           )}
 
@@ -1664,15 +1670,26 @@ function ChatContent() {
                             </div>
                           </div>
                         ) : null}
-                      </div>
+                      </CollapsibleMessage>
                     );
                   })}
                   <div ref={messagesEndRef} />
                 </div>
               )}
             </main>
-
-            <footer className="bg-[var(--color-bg-secondary)] border-t border-[var(--color-border-primary)] p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+            <footer className="relative bg-[var(--color-bg-secondary)] border-t border-[var(--color-border-primary)] p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+              {isScrolledUp && isLoading && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    jumpToLatest();
+                    scrollContainerRef.current?.focus({ preventScroll: true });
+                  }}
+                  className="absolute bottom-full mb-4 right-4 min-h-[44px] px-4 rounded-full shadow-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-sm font-medium text-[var(--color-text-primary)]"
+                >
+                  Jump to latest
+                </button>
+              )}
               <form
                 onSubmit={handleSubmit}
                 className="mx-auto w-full max-w-3xl"
