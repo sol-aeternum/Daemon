@@ -30,7 +30,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Feature | Web | Android PWA | Android native | iOS future | Backend dependency | Wedge required? |
 |---|---|---|---|---|---|---|
 | **Chat & Streaming** | — | — | — | — | — | — |
-| Chat Streaming + Reconnect | Cross-client stable | Cross-client stable | Not started | Not started | POST /chat SSE streaming service | Yes |
+| Chat Streaming + Reconnect | Cross-client stable | Cross-client stable | Not started | Not started | POST /chat SSE streaming service; prompt datetime uses saved user timezone, then configurable deployment default (UTC) | Yes |
 | File Upload | Cross-client stable | Cross-client stable | Not started | Not started | Client-side file attachments and chat serialization | No |
 | Stop/Cancel Streaming | Cross-client stable | Cross-client stable | Not started | Not started | Web/PWA composer exposes Stop and `Esc`, preserving partial output with a `(stopped)` label | No |
 | Copy Message | Not started | Not started | Not started | Not started | Pure client-side clipboard action not implemented | No |
@@ -38,7 +38,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Edit and Resubmit Message | Not started | Not started | Not started | Not started | Existing chat submission path; message edit UI not implemented | No |
 | Model Discovery | Cross-client stable | Cross-client stable | Not started | Not started | GET /v1/models, GET /v1/catalog | No |
 | Typed SSE Event Protocol | Cross-client stable | Cross-client stable | Not started | Not started | Chat and council streaming services | No |
-| OpenAI Chat Completions API | Backend stable | Backend stable | Not started | Not started | POST /v1/chat/completions compatibility endpoint | No |
+| OpenAI Chat Completions API | Backend stable | Backend stable | Not started | Not started | POST /v1/chat/completions compatibility endpoint; same user/deployment prompt timezone precedence as native chat | No |
 | **Conversations** | — | — | — | — | — | — |
 | Recent Conversations List (search, pin, rename, delete) | Cross-client stable | Cross-client stable | Not started | Not started | GET /conversations, POST /conversations, DELETE /conversations/{id}, PATCH /conversations/{id} | Yes |
 | Conversation Switching | Cross-client stable | Cross-client stable | Not started | Not started | GET /conversations/{id} | No |
@@ -59,7 +59,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | @reader (document analysis) — NOT IMPLEMENTED | Web experimental | Web experimental | Not started | Not started | Reserved subagent orchestration mode | No |
 | **Tools** | — | — | — | — | — | — |
 | Web Search (Brave Search API) | Backend stable | Backend stable | Not started | Not started | Web search service | No |
-| Web Fetch (multi-strategy URL fetcher) | Backend stable | Backend stable | Not started | Not started | URL fetch service | No |
+| Web Fetch (multi-strategy URL fetcher) | Backend stable | Backend stable | Not started | Not started | URL fetch service; direct requests use a stable Daemon identity with an operator-configurable User-Agent | No |
 | HTTP Request (generic) | Backend stable | Backend stable | Not started | Not started | HTTP request service | No |
 | Reminders (local JSON) | Backend stable | Backend stable | Not started | Not started | Reminder scheduling service | No |
 | Time & Math (get_time, calculate) | Backend stable | Backend stable | Not started | Not started | Utility tools service | No |

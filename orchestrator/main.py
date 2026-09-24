@@ -88,6 +88,7 @@ from orchestrator.database_url import (
     validate_database_credentials,
 )
 from orchestrator.memory.encryption import ContentEncryption, EncryptionInitError
+from orchestrator.timezones import extract_timezone_name
 from orchestrator.session_cleanup import (
     cleanup_stale_sessions,
     start_session_cleanup_task,
@@ -1312,6 +1313,15 @@ async def openai_chat_completions(
         if m.role == "system" and _extract_text_content(m.content)
     ]
     system_prompt = system_prompts[-1] if system_prompts else DAEMON_SYSTEM_PROMPT
+    user_timezone = None
+    try:
+        timezone_store = request.app.state.app_state.memory_store
+        if timezone_store is not None:
+            user_timezone = extract_timezone_name(
+                await timezone_store.get_user_settings(auth.user_id)
+            )
+    except Exception:
+        logger.warning("User timezone unavailable; using deployment default", exc_info=True)
     try:
         app_state = request.app.state.app_state
         db_pool = getattr(app_state, "db_pool", None)
@@ -1350,6 +1360,7 @@ async def openai_chat_completions(
                     actual_model=actual_model,
                     user_id=auth.user_id,
                     trusted_spawn_context=trusted_spawn_context,
+                    user_timezone=user_timezone,
                 ):
                     # Parse the SSE frame
                     if frame.startswith("event: token"):
@@ -1457,6 +1468,7 @@ async def openai_chat_completions(
                 actual_model=actual_model,
                 user_id=auth.user_id,
                 trusted_spawn_context=trusted_spawn_context,
+                user_timezone=user_timezone,
             ):
                 if frame.startswith("event: token"):
                     lines = frame.split("\n")
@@ -2233,6 +2245,7 @@ async def chat(
                 break
 
     assembled_system_prompt = DAEMON_SYSTEM_PROMPT
+    user_timezone = None
     try:
         db_pool = getattr(app_state, "db_pool", None)
         skills_block = await build_skill_index(db_pool=db_pool)
@@ -2248,6 +2261,7 @@ async def chat(
             )
 
             user_settings = await store.get_user_settings(user_id)
+            user_timezone = extract_timezone_name(user_settings)
             preferences_block = format_preferences_block(user_settings)
             memory_context = await build_memory_context(store, conversation_uuid)
             assembled_system_prompt = await assemble_system_prompt(
@@ -2434,6 +2448,7 @@ async def chat(
                 db_pool=app_state.db_pool if app_state else None,
                 trusted_spawn_context=trusted_spawn_context,
                 disable_memory_write=bool(payload.disable_memory_write),
+                user_timezone=user_timezone,
             ):
                 yield frame
         except Exception as e:
