@@ -11,6 +11,11 @@ export default defineConfig({
   projects: [
     { name: 'csp-previews', testMatch: 'csp-previews.spec.ts' },
     {
+      name: 'conversation-ergonomics',
+      testMatch: 'conversation-ergonomics.spec.ts',
+      use: { baseURL: 'http://127.0.0.1:3101' },
+    },
+    {
       name: 'chat-discoverability',
       testMatch: 'chat-discoverability.spec.ts',
       use: { baseURL: 'http://127.0.0.1:3101' },

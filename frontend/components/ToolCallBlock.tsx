@@ -560,6 +560,7 @@ interface ToolCallLogProps {
 }
 
 export function ToolCallLog({ events }: ToolCallLogProps) {
+  const [showEarlier, setShowEarlier] = useState(false);
   const executions: ToolExecution[] = [];
   const isAdvisorScoped = (event: ChatEvent) =>
     'advisor_id' in event &&
@@ -581,12 +582,12 @@ export function ToolCallLog({ events }: ToolCallLogProps) {
       };
       let foundIndex = -1;
       for (let i = executions.length - 1; i >= 0; i--) {
-        const execCall = executions[i].call as ChatEvent & {
-          type: 'tool_call';
-          name: string;
-          arguments: Record<string, unknown>;
-        };
-        if (execCall.name === resultEvent.name && !executions[i].result) {
+        const execCall = executions[i].call;
+        if (!isToolCallEvent(execCall)) continue;
+        const matches = resultEvent.tool_call_id
+          ? execCall.tool_call_id === resultEvent.tool_call_id
+          : execCall.name === resultEvent.name;
+        if (matches && !executions[i].result) {
           foundIndex = i;
           break;
         }
@@ -598,82 +599,51 @@ export function ToolCallLog({ events }: ToolCallLogProps) {
     }
   });
 
-  const getImagePath = (execution: ToolExecution) => {
-    if (!execution.result || !isToolResultEvent(execution.result)) return null;
-    try {
-      const raw = execution.result.result;
-      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      const path = parsed?.data?.image_path ?? parsed?.image_path;
-      return typeof path === 'string' && path.startsWith('/generated-images/')
-        ? path
-        : null;
-    } catch {
-      return null;
-    }
-  };
-
-  if (executions.length > 1) {
-    const spawnExecutions = executions.filter(
-      (execution) =>
-        isToolCallEvent(execution.call) &&
-        execution.call.name === 'spawn_agent',
-    );
-    if (spawnExecutions.length > 1) {
-      const lastWithImage = [...spawnExecutions]
-        .reverse()
-        .find((execution) => getImagePath(execution));
-      if (lastWithImage) {
-        const keep = new Set([lastWithImage]);
-        for (let i = executions.length - 1; i >= 0; i -= 1) {
-          const execCall = executions[i].call as ChatEvent & {
-            type: 'tool_call';
-            name: string;
-          };
-          if (execCall.name === 'spawn_agent' && !keep.has(executions[i])) {
-            executions.splice(i, 1);
-          }
-        }
-      } else {
-        const lastSpawn = spawnExecutions[spawnExecutions.length - 1];
-        for (let i = executions.length - 1; i >= 0; i -= 1) {
-          const execCall = executions[i].call as ChatEvent & {
-            type: 'tool_call';
-            name: string;
-          };
-          if (execCall.name === 'spawn_agent' && executions[i] !== lastSpawn) {
-            executions.splice(i, 1);
-          }
-        }
-      }
-    }
-  }
+  const spawnExecutions = executions.filter(
+    (execution) =>
+      isToolCallEvent(execution.call) && execution.call.name === 'spawn_agent',
+  );
+  const earlierSpawns = new Set(spawnExecutions.slice(0, -3));
 
   if (executions.length === 0) return null;
 
   return (
-    <ol className="space-y-3">
-      {executions.map((execution, idx) => {
-        const toolName = isToolCallEvent(execution.call)
-          ? execution.call.name
-          : 'tool';
+    <div>
+      {earlierSpawns.size > 0 && (
+        <button
+          type="button"
+          aria-expanded={showEarlier}
+          onClick={() => setShowEarlier((previous) => !previous)}
+          className="min-h-touch text-sm text-[var(--color-accent-primary)] mb-2"
+        >
+          {showEarlier ? 'Hide earlier' : 'Show earlier'} ({earlierSpawns.size})
+        </button>
+      )}
+      <ol className="space-y-3">
+        {executions.map((execution, idx) => {
+          if (!showEarlier && earlierSpawns.has(execution)) return null;
+          const toolName = isToolCallEvent(execution.call)
+            ? execution.call.name
+            : 'tool';
 
-        return (
-          <li key={`${toolName}-${idx}`} className="relative pl-8">
-            {idx < executions.length - 1 && (
-              <span className="absolute left-tool-step-center top-7 -bottom-3.5 w-px bg-[var(--color-border-primary)]" />
-            )}
-            <span className="absolute left-0 top-1.5 flex h-tool-step w-tool-step items-center justify-center rounded-full border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-xs font-semibold text-[var(--color-text-muted)]">
-              {idx + 1}
-            </span>
-            <div className="mb-1 text-xs uppercase tracking-tool-step text-[var(--color-text-muted)]">
-              Step {idx + 1}
-              {executions.length > 1 ? ` of ${executions.length}` : ''}
-            </div>
-            <ToolCallBlock execution={execution} />
-          </li>
-        );
-      })}
-    </ol>
+          return (
+            <li key={`${toolName}-${idx}`} className="relative pl-8">
+              {idx < executions.length - 1 && (
+                <span className="absolute left-tool-step-center top-7 -bottom-3.5 w-px bg-[var(--color-border-primary)]" />
+              )}
+              <span className="absolute left-0 top-1.5 flex h-tool-step w-tool-step items-center justify-center rounded-full border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-xs font-semibold text-[var(--color-text-muted)]">
+                {idx + 1}
+              </span>
+              <div className="mb-1 text-xs uppercase tracking-tool-step text-[var(--color-text-muted)]">
+                Step {idx + 1}
+                {executions.length > 1 ? ` of ${executions.length}` : ''}
+              </div>
+              <ToolCallBlock execution={execution} />
+            </li>
+          );
+        })}
+      </ol>
+    </div>
   );
 }
 
