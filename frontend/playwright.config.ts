@@ -9,6 +9,11 @@ export default defineConfig({
       testMatch: 'conversation-ergonomics.spec.ts',
       use: { baseURL: 'http://127.0.0.1:3101' },
     },
+    {
+      name: 'chat-discoverability',
+      testMatch: 'chat-discoverability.spec.ts',
+      use: { baseURL: 'http://127.0.0.1:3101' },
+    },
   ],
   fullyParallel: false,
   retries: process.env.CI ? 1 : 0,

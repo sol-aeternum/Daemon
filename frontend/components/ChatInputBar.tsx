@@ -230,7 +230,7 @@ export function ChatInputBar({
             value={input}
             onChange={onInputChange}
             onKeyDown={handleKeyDown}
-            placeholder="Message Daemon..."
+            placeholder="Message Daemon — try /council, /image, /code"
             rows={1}
             className="flex-1 bg-transparent text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] resize-none focus:outline-none py-2 max-h-[200px] overflow-y-auto scrollbar-thin scrollbar-thumb-[var(--color-border-secondary)] scrollbar-track-transparent"
             style={{ minHeight: '24px' }}

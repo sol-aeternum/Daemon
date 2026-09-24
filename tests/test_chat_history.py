@@ -10,7 +10,7 @@ These tests verify that:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -20,7 +20,7 @@ from httpx import ASGITransport, AsyncClient
 
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.config import get_settings
-from orchestrator.daemon import stream_sse_chat
+from orchestrator.daemon import stream_sse_chat, with_runtime_datetime_context
 from orchestrator.db import AppState, get_app_state
 from orchestrator.main import app
 
@@ -90,6 +90,66 @@ def set_app_state(mock_app_state: AppState) -> None:
     conversation = getattr(get_conversation, "return_value", None)
     if isinstance(conversation, dict) and isinstance(conversation.get("user_id"), uuid.UUID):
         app.state._test_auth_user_id = conversation["user_id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["native", "openai-stream", "openai-nonstream"])
+@pytest.mark.parametrize("preference", ["saved", "missing", "invalid", "unavailable"])
+async def test_chat_prompt_timezone(client, monkeypatch, endpoint, preference) -> None:
+    """All chat paths use authenticated preferences and tolerate unavailable settings."""
+    monkeypatch.setenv("DAEMON_DEFAULT_TIMEZONE", "America/Los_Angeles")
+    # The client fixture captured this Settings instance for dependency injection.
+    get_settings().daemon_default_timezone = "America/Los_Angeles"
+    conversation_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    store = AsyncMock()
+    store.get_conversation.return_value = {"id": conversation_id, "user_id": user_id}
+    store.get_recent_messages.return_value = []
+    store.insert_message.return_value = {"id": uuid.uuid4()}
+    set_app_state(create_mock_app_state(store))
+    store.get_user_settings.return_value = {
+        "preferences": {
+            "timezone": {"saved": "Asia/Tokyo", "invalid": "Invalid/Zone"}.get(preference)
+        }
+    }
+    if preference == "unavailable":
+        store.get_user_settings.side_effect = RuntimeError("synthetic settings outage")
+
+    captured_prompts = []
+
+    def capture_context(system_prompt, **kwargs):
+        enriched = with_runtime_datetime_context(
+            system_prompt,
+            now_utc=datetime(2026, 1, 1, 1, 30, tzinfo=timezone.utc),
+            **kwargs,
+        )
+        captured_prompts.append(enriched)
+        return enriched
+
+    monkeypatch.setattr("orchestrator.daemon.with_runtime_datetime_context", capture_context)
+    if endpoint == "native":
+        response = await client.post(
+            "/chat",
+            json={"message": "What time is it?", "conversation_id": str(conversation_id)},
+        )
+        assert "event: error\n" not in response.text
+        assert "event: done\n" in response.text
+    else:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "default",
+                "messages": [{"role": "user", "content": "What time is it?"}],
+                "stream": endpoint == "openai-stream",
+            },
+        )
+    assert response.status_code == 200
+    store.get_user_settings.assert_awaited_once_with(user_id)
+    assert len(captured_prompts) == 1
+    expected_date = "2026-01-01" if preference == "saved" else "2025-12-31"
+    expected_time = "10:30:00 JST" if preference == "saved" else "17:30:00 PST"
+    assert f"Current date: {expected_date}" in captured_prompts[0]
+    assert f"Current time: {expected_time}" in captured_prompts[0]
 
 
 @pytest.mark.asyncio

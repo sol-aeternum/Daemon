@@ -2,21 +2,13 @@
 
 import { Suspense } from 'react';
 import Link from 'next/link';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { SettingsNav } from '@/components/settings/SettingsNav';
 import {
   ConversationList,
   type SidebarSection,
 } from '@/components/ConversationList';
 import { useConversationHistory } from '@/hooks/useConversationHistory';
-
-const settingsNav = [
-  { href: '/settings/profile', label: 'Profile' },
-  { href: '/settings/voice', label: 'Voice' },
-  { href: '/settings/appearance', label: 'Appearance' },
-  { href: '/settings/memory', label: 'Memory' },
-  { href: '/settings/devices', label: 'Devices' },
-  { href: '/settings/skills', label: 'Skills' },
-];
 
 function SettingsSidebar() {
   const router = useRouter();
@@ -43,6 +35,7 @@ function SettingsSidebar() {
 
   return (
     <ConversationList
+      className="hidden md:flex"
       conversations={conversations}
       currentId={currentId}
       onSelect={switchConversation}
@@ -61,7 +54,9 @@ function SettingsSidebar() {
 function ChatBackLink() {
   const searchParams = useSearchParams();
   const fromConversationId = searchParams.get('from');
-  const href = fromConversationId ? `/?id=${fromConversationId}` : '/';
+  const href = fromConversationId
+    ? `/?id=${encodeURIComponent(fromConversationId)}`
+    : '/';
 
   return (
     <Link
@@ -78,8 +73,6 @@ export default function SettingsLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const pathname = usePathname();
-
   return (
     <div className="flex h-screen overflow-hidden flex-col md:flex-row">
       <Suspense
@@ -111,21 +104,9 @@ export default function SettingsLayout({
             <div className="mb-2 px-2 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)] md:mb-3">
               Settings
             </div>
-            <nav className="flex gap-2 overflow-x-auto pb-1 md:flex-wrap md:overflow-visible md:pb-0">
-              {settingsNav.map((item) => (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={`inline-flex min-h-[44px] items-center rounded-md px-3 py-2 text-sm whitespace-nowrap transition-colors ${
-                    pathname === item.href
-                      ? 'bg-[var(--color-accent-subtle)] text-[var(--color-text-primary)]'
-                      : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'
-                  }`}
-                >
-                  {item.label}
-                </Link>
-              ))}
-            </nav>
+            <Suspense fallback={<div className="min-h-[44px]" />}>
+              <SettingsNav />
+            </Suspense>
           </aside>
 
           <section className="w-full">{children}</section>

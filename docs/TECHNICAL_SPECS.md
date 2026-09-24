@@ -31,6 +31,36 @@ Daemon is a personal AI assistant orchestration layer. The system prompt (v4) de
 
 Full prompt in `orchestrator/prompts.py`.
 
+**Runtime date/time:** Native and OpenAI-compatible chat prompts use the authenticated user's
+saved `timezone` (or `time_zone`), including either key under `preferences`, before
+`Settings.daemon_default_timezone` (`DAEMON_DEFAULT_TIMEZONE`, default `UTC`). Invalid or
+unavailable user settings fall back to the deployment default; an invalid default falls
+back to UTC. IANA zones apply daylight-saving rules. Set `DAEMON_DEFAULT_TIMEZONE=Australia/Adelaide`
+to retain the former deployment-wide timezone. Sources: `orchestrator/timezones.py`,
+`orchestrator/daemon.py`, and the chat entry points in `orchestrator/main.py`.
+
+---
+
+## Web Fetch Identity
+
+Direct HTTP fetches use a stable Daemon User-Agent defined by
+`DEFAULT_FETCH_USER_AGENT` in `orchestrator/config.py`. This replaces the former
+random browser identities, which identified automated requests as browsers.
+The same identifier is sent on each address retry, redirect hop, and subsequent fetch.
+
+Operators can set `DAEMON_FETCH_USER_AGENT` for an explicitly configured integration,
+for example `ExampleBot (+https://example.org/contact)`. Values must be 1–512 printable
+ASCII characters with no leading whitespace or control characters. Restart the service
+after changing the setting. A non-default value emits a warning when the direct strategy
+is initialized; the header value itself is not copied into that warning. Docker Compose
+passes the setting to both the backend and worker.
+
+Sites may return different content or reject the new default identifier. The existing
+fetch fallback chain remains available. This identifies direct fetch traffic; it does
+not add robots.txt enforcement or change SSRF protections, cookie scoping, or timeouts.
+Sources: `orchestrator/services/fetch/strategies/direct.py` and
+`orchestrator/services/fetch/service.py`.
+
 ---
 
 ## Tier Configuration
