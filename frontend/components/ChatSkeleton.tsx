@@ -29,9 +29,9 @@ export default function ChatSkeleton() {
               className={`flex ${i % 2 === 0 ? 'justify-end' : 'justify-start'}`}
             >
               <div
-                className={`max-w-[70%] p-3 rounded-lg ${
+                className={`max-w-message-preview p-3 rounded-lg ${
                   i % 2 === 0
-                    ? 'bg-[var(--color-accent-primary)] text-white'
+                    ? 'bg-[var(--color-accent-primary)] text-[var(--color-text-on-accent)]'
                     : 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)]'
                 }`}
               >

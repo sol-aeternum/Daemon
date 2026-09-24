@@ -101,7 +101,7 @@ export function WelcomeScreen({ setInput, onDeliberate }: WelcomeScreenProps) {
           <div className="relative">
             <div className="absolute inset-0 bg-[var(--color-accent-primary)] blur-xl opacity-30 rounded-full" />
             <div className="relative w-12 h-12 rounded-xl bg-gradient-to-br from-[var(--color-accent-primary)] to-[var(--color-accent-hover)] flex items-center justify-center shadow-lg">
-              <Sparkles className="w-6 h-6 text-white" />
+              <Sparkles className="w-6 h-6 text-[var(--color-text-on-accent)]" />
             </div>
           </div>
           <span className="text-3xl font-bold tracking-tight text-[var(--color-text-primary)]">

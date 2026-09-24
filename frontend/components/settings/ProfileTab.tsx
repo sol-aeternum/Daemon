@@ -316,7 +316,7 @@ export default function ProfileTab() {
         <button
           type="submit"
           disabled={saveStatus === 'loading'}
-          className="inline-flex items-center gap-2 px-5 py-2.5 bg-accent-primary hover:bg-accent-hover active:bg-accent-active text-white font-medium rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
+          className="inline-flex items-center gap-2 px-5 py-2.5 bg-accent-primary hover:bg-accent-hover active:bg-accent-active text-[var(--color-text-on-accent)] font-medium rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
         >
           {saveStatus === 'loading' ? (
             <>

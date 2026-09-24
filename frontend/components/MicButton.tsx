@@ -50,7 +50,7 @@ export function MicButton({
       )}
 
       {(isRecording || isConnecting) && (
-        <span className="absolute -top-8 left-1/2 -translate-x-1/2 whitespace-nowrap text-xs bg-black/75 text-white px-2 py-1 rounded pointer-events-none">
+        <span className="absolute -top-8 left-1/2 -translate-x-1/2 whitespace-nowrap text-xs bg-[var(--color-bg-tooltip)] text-[var(--color-text-on-tooltip)] px-2 py-1 rounded pointer-events-none">
           {isRecording ? 'Listening...' : 'Connecting...'}
         </span>
       )}
@@ -70,11 +70,11 @@ export function MicButton({
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
         title={isRecording ? 'Release to stop' : 'Hold to speak'}
-        className={`relative z-10 min-h-[44px] min-w-[44px] rounded-full p-2 transition-all duration-200 ${
+        className={`relative z-10 min-h-touch min-w-touch rounded-full p-2 transition-all duration-200 ${
           isRecording
-            ? 'bg-[var(--color-status-error)] text-white scale-110 shadow-lg'
+            ? 'bg-[var(--color-status-error)] text-[var(--color-text-on-status)] scale-110 shadow-lg'
             : isConnecting
-              ? 'bg-[var(--color-status-warning)] text-white'
+              ? 'bg-[var(--color-status-warning)] text-[var(--color-text-on-warning)]'
               : 'bg-[var(--color-text-muted)] text-[var(--color-text-primary)] hover:bg-[var(--color-text-secondary)] hover:scale-105'
         } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
       >

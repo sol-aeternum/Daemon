@@ -1120,7 +1120,7 @@ function ChatContent() {
       type="button"
       aria-pressed={hideToolCalls}
       onClick={() => setHideToolCalls((previous) => !previous)}
-      className="min-h-[44px] px-2 text-xs font-medium rounded-lg text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] aria-pressed:bg-[var(--color-accent-subtle)] aria-pressed:text-[var(--color-accent-primary)]"
+      className="min-h-touch px-2 text-xs font-medium rounded-lg text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] aria-pressed:bg-[var(--color-accent-subtle)] aria-pressed:text-[var(--color-accent-primary)]"
     >
       Hide tool calls
     </button>
@@ -1131,14 +1131,14 @@ function ChatContent() {
       {!isOnline && <OfflineIndicator />}
       {isSidebarOpen && (
         <div
-          className="fixed inset-0 bg-black/50 z-40 md:hidden transition-opacity"
+          className="fixed inset-0 bg-[var(--color-bg-overlay)] z-40 md:hidden transition-opacity"
           onClick={() => setIsSidebarOpen(false)}
         />
       )}
 
       <div
         className={`
-        fixed inset-y-0 left-0 z-50 w-[260px] bg-[var(--color-bg-secondary)] transform transition-transform duration-300
+        fixed inset-y-0 left-0 z-50 w-sidebar bg-[var(--color-bg-secondary)] transform transition-transform duration-300
         md:relative md:inset-auto md:z-0 md:w-auto md:translate-x-0
         ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
       `}
@@ -1174,7 +1174,7 @@ function ChatContent() {
         >
           <div className="flex-1 flex min-h-0 flex-col w-full min-w-0 relative">
             {isRecording && (
-              <div className="bg-[var(--color-status-error)] text-white px-4 py-2 text-center text-sm font-medium animate-pulse">
+              <div className="bg-[var(--color-status-error)] text-[var(--color-text-on-status)] px-4 py-2 text-center text-sm font-medium animate-pulse">
                 Recording... Tap mic to stop
               </div>
             )}
@@ -1220,7 +1220,7 @@ function ChatContent() {
                 <div className="mx-auto w-full max-w-3xl flex flex-col space-y-4 px-4 py-6 animate-fade-in">
                   {/* Assistant message skeleton - left aligned */}
                   <div className="flex flex-col items-start mb-6">
-                    <div className="max-w-[85%] md:max-w-[80%] space-y-3">
+                    <div className="max-w-message-mobile md:max-w-assistant-message space-y-3">
                       <SkeletonBlock
                         width="60%"
                         height="4rem"
@@ -1230,7 +1230,7 @@ function ChatContent() {
                   </div>
                   {/* User message skeleton - right aligned */}
                   <div className="flex flex-col items-end mb-6">
-                    <div className="max-w-[85%] md:max-w-[80%]">
+                    <div className="max-w-message-mobile md:max-w-assistant-message">
                       <SkeletonBlock
                         width="80%"
                         height="3rem"
@@ -1240,7 +1240,7 @@ function ChatContent() {
                   </div>
                   {/* Assistant message skeleton - left aligned */}
                   <div className="flex flex-col items-start mb-6">
-                    <div className="max-w-[85%] md:max-w-[80%] space-y-3">
+                    <div className="max-w-message-mobile md:max-w-assistant-message space-y-3">
                       <SkeletonBlock
                         width="50%"
                         height="5rem"
@@ -1250,7 +1250,7 @@ function ChatContent() {
                   </div>
                   {/* User message skeleton - right aligned */}
                   <div className="flex flex-col items-end mb-6">
-                    <div className="max-w-[85%] md:max-w-[80%]">
+                    <div className="max-w-message-mobile md:max-w-assistant-message">
                       <SkeletonBlock
                         width="70%"
                         height="2.5rem"
@@ -1260,7 +1260,7 @@ function ChatContent() {
                   </div>
                   {/* Assistant message skeleton - left aligned */}
                   <div className="flex flex-col items-start mb-6">
-                    <div className="max-w-[85%] md:max-w-[80%] space-y-3">
+                    <div className="max-w-message-mobile md:max-w-assistant-message space-y-3">
                       <SkeletonBlock
                         width="75%"
                         height="4rem"
@@ -1532,7 +1532,7 @@ function ChatContent() {
                             )}
                           </div>
                         ) : message.role === 'user' ? (
-                          <div className="max-w-[85%] md:max-w-[75%] rounded-2xl border border-[var(--color-accent-active)]/50 bg-[var(--color-accent-primary)] px-4 py-3 text-white shadow-sm">
+                          <div className="max-w-message-mobile md:max-w-user-message rounded-2xl border border-[var(--color-accent-active)]/50 bg-[var(--color-accent-primary)] px-4 py-3 text-[var(--color-text-on-accent)] shadow-sm">
                             <div className="whitespace-pre-wrap leading-relaxed font-medium">
                               {formattedMessageContent}
                             </div>
@@ -1545,7 +1545,8 @@ function ChatContent() {
                 </div>
               )}
             </main>
-            <footer className="relative bg-[var(--color-bg-secondary)] border-t border-[var(--color-border-primary)] p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+
+            <footer className="relative bg-[var(--color-bg-secondary)] border-t border-[var(--color-border-primary)] p-4 pb-safe-panel">
               {isScrolledUp && isLoading && (
                 <button
                   type="button"
@@ -1553,7 +1554,7 @@ function ChatContent() {
                     jumpToLatest();
                     scrollContainerRef.current?.focus({ preventScroll: true });
                   }}
-                  className="absolute bottom-full mb-4 right-4 min-h-[44px] px-4 rounded-full shadow-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-sm font-medium text-[var(--color-text-primary)]"
+                  className="absolute bottom-full mb-4 right-4 min-h-touch px-4 rounded-full shadow-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-sm font-medium text-[var(--color-text-primary)]"
                 >
                   Jump to latest
                 </button>

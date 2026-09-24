@@ -173,7 +173,7 @@ export function MemoryDetail({
               <button
                 type="button"
                 onClick={() => setShowDeleteDialog(true)}
-                className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-status-error bg-status-error-bg hover:bg-status-error hover:text-white rounded-md transition-colors"
+                className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-status-error bg-status-error-bg hover:bg-status-error hover:text-[var(--color-text-on-status)] rounded-md transition-colors"
               >
                 <Trash2 className="w-4 h-4" />
                 Delete
@@ -194,11 +194,11 @@ export function MemoryDetail({
                 type="button"
                 onClick={handleSave}
                 disabled={isSaving || !editedContent.trim()}
-                className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-white bg-accent-primary hover:bg-accent-primary/90 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-[var(--color-text-on-accent)] bg-accent-primary hover:bg-accent-primary/90 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isSaving ? (
                   <>
-                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    <div className="w-4 h-4 border-2 border-on-media/30 border-t-on-media rounded-full animate-spin" />
                     Saving...
                   </>
                 ) : (
@@ -223,7 +223,7 @@ export function MemoryDetail({
             <textarea
               value={editedContent}
               onChange={(e) => setEditedContent(e.target.value)}
-              className="w-full min-h-[120px] px-3 py-2 text-sm text-text-primary bg-bg-primary border border-border-primary rounded-md resize-y focus:outline-none focus:ring-2 focus:ring-border-focus/50"
+              className="w-full min-h-memory-editor px-3 py-2 text-sm text-text-primary bg-bg-primary border border-border-primary rounded-md resize-y focus:outline-none focus:ring-2 focus:ring-border-focus/50"
               placeholder="Enter memory content..."
             />
           ) : (
@@ -443,11 +443,11 @@ export function MemoryDetail({
                   type="button"
                   onClick={handleDeleteConfirm}
                   disabled={isDeleting}
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-status-error text-white font-medium rounded-md hover:bg-status-error/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-status-error text-[var(--color-text-on-status)] font-medium rounded-md hover:bg-status-error/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {isDeleting ? (
                     <>
-                      <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      <div className="w-4 h-4 border-2 border-on-media/30 border-t-on-media rounded-full animate-spin" />
                       Deleting...
                     </>
                   ) : (

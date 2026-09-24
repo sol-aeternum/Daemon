@@ -461,7 +461,7 @@ export function InlineArtifact({
       aria-label={title || 'Interactive artifact'}
     >
       <div className="mb-1 flex items-center justify-between px-0.5">
-        <span className="truncate text-[11px] text-[var(--color-text-muted)]">
+        <span className="truncate text-xs text-[var(--color-text-muted)]">
           {title || 'Interactive artifact'}
         </span>
 
@@ -469,7 +469,7 @@ export function InlineArtifact({
           {artifactId && (
             <a
               href={`/artifacts?artifact=${encodeURIComponent(artifactId)}`}
-              className="inline-flex items-center gap-1 text-[11px] text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-accent-primary)]"
+              className="inline-flex items-center gap-1 text-xs text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-accent-primary)]"
               target="_blank"
               rel="noopener noreferrer"
             >
@@ -536,7 +536,7 @@ export function InlineArtifact({
                 title={title || 'Artifact'}
                 onLoad={handleIframeLoad}
                 onError={handleIframeError}
-                className="min-h-[240px] w-full border-0 bg-transparent transition-opacity duration-200"
+                className="min-h-60 w-full border-0 bg-transparent transition-opacity duration-200"
                 style={{
                   height: `${height ?? 560}px`,
                   maxHeight: '2000px',

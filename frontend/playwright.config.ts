@@ -2,6 +2,12 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './e2e',
+  fullyParallel: false,
+  retries: process.env.CI ? 1 : 0,
+  use: {
+    baseURL: 'http://127.0.0.1:3100',
+    trace: 'retain-on-failure',
+  },
   projects: [
     { name: 'csp-previews', testMatch: 'csp-previews.spec.ts' },
     {
@@ -14,13 +20,12 @@ export default defineConfig({
       testMatch: 'chat-discoverability.spec.ts',
       use: { baseURL: 'http://127.0.0.1:3101' },
     },
+    {
+      name: 'design-tokens',
+      testMatch: 'design-tokens.spec.ts',
+      use: { baseURL: 'http://127.0.0.1:3101' },
+    },
   ],
-  fullyParallel: false,
-  retries: process.env.CI ? 1 : 0,
-  use: {
-    baseURL: 'http://127.0.0.1:3100',
-    trace: 'retain-on-failure',
-  },
   webServer: [
     {
       command:

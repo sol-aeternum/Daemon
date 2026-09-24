@@ -212,7 +212,7 @@ export default function VoiceTab() {
                 }`}
               >
                 <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  className={`inline-block h-4 w-4 transform rounded-full bg-[var(--color-bg-primary)] transition-transform ${
                     ttsSettings.autoPlay ? 'translate-x-6' : 'translate-x-1'
                   }`}
                 />
@@ -245,7 +245,7 @@ export default function VoiceTab() {
                 }`}
               >
                 <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  className={`inline-block h-4 w-4 transform rounded-full bg-[var(--color-bg-primary)] transition-transform ${
                     ttsSettings.enabled ? 'translate-x-6' : 'translate-x-1'
                   }`}
                 />
@@ -346,7 +346,7 @@ export default function VoiceTab() {
                     }%, var(--color-bg-tertiary) 100%)`,
                   }}
                 />
-                <span className="text-sm font-medium text-[var(--color-text-primary)] min-w-[3rem] text-right">
+                <span className="text-sm font-medium text-[var(--color-text-primary)] min-w-12 text-right">
                   {ttsSettings.speed.toFixed(1)}x
                 </span>
               </div>
@@ -481,7 +481,7 @@ export default function VoiceTab() {
                 }`}
               >
                 <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  className={`inline-block h-4 w-4 transform rounded-full bg-[var(--color-bg-primary)] transition-transform ${
                     sttSettings.enablePartials
                       ? 'translate-x-6'
                       : 'translate-x-1'
@@ -498,7 +498,7 @@ export default function VoiceTab() {
         <button
           type="submit"
           disabled={saveStatus === 'loading'}
-          className="inline-flex items-center gap-2 px-5 py-2.5 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] active:bg-[var(--color-accent-active)] text-white font-medium rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)]/50"
+          className="inline-flex items-center gap-2 px-5 py-2.5 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] active:bg-[var(--color-accent-active)] text-[var(--color-text-on-accent)] font-medium rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)]/50"
         >
           {saveStatus === 'loading' ? (
             <>

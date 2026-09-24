@@ -183,13 +183,13 @@ export function FilePreview({
         ) : null;
       case 'md':
         return content.type === 'text' ? (
-          <div className="bg-[var(--color-bg-tertiary)] rounded-xl border border-[var(--color-border-primary)] overflow-hidden max-h-[400px]">
+          <div className="bg-[var(--color-bg-tertiary)] rounded-xl border border-[var(--color-border-primary)] overflow-hidden max-h-file-preview">
             <div className="flex items-center justify-between px-4 py-3 bg-[var(--color-bg-secondary)] border-b border-[var(--color-border-primary)]">
               <span className="text-sm font-medium text-[var(--color-text-secondary)]">
                 Markdown Preview
               </span>
             </div>
-            <div className="overflow-auto max-h-[340px] p-4">
+            <div className="overflow-auto max-h-file-content p-4">
               <MarkdownRenderer content={content.content} compact={false} />
             </div>
           </div>

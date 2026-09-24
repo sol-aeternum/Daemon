@@ -92,7 +92,7 @@ export function PromptInput({
         rows={2}
         className="w-full resize-none rounded-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] px-3 py-2 text-sm text-[var(--color-text-primary)]"
       />
-      <p className="mt-1 text-right text-[10px] text-[var(--color-text-muted)]">
+      <p className="mt-1 text-right text-xs text-[var(--color-text-muted)]">
         {prompt.length} chars
       </p>
 

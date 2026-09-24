@@ -434,7 +434,7 @@ function VideoModeControls({
                   }`}
                 >
                   <span
-                    className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                    className={`inline-block h-3.5 w-3.5 transform rounded-full bg-[var(--color-bg-primary)] transition-transform ${
                       audioEnabled ? 'translate-x-5' : 'translate-x-1'
                     }`}
                   />
@@ -530,7 +530,7 @@ function VideoModeControls({
           </div>
 
           <div className="rounded-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] px-3 py-2">
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+            <p className="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
               Provider
             </p>
             <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
@@ -609,7 +609,7 @@ function StudioPageContent({
         </div>
       </details>
 
-      <div className="grid gap-4 md:grid-cols-[340px_1fr]">
+      <div className="grid gap-4 md:grid-cols-studio">
         <aside className="hidden md:block">
           <StudioControlPanel
             mode={mode}

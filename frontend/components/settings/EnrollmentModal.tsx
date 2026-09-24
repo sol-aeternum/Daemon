@@ -216,7 +216,7 @@ export default function EnrollmentModal({
           {state.status === 'ready' && (
             <div className="space-y-5">
               <div className="flex flex-col items-center">
-                <div className="p-4 bg-white rounded-xl border border-border-primary">
+                <div className="p-4 bg-[var(--color-bg-qr)] rounded-xl border border-border-primary">
                   <QRCodeSVG
                     value={`daemon-enroll://${state.pendingId}#${state.code}`}
                     size={192}

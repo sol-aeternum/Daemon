@@ -431,7 +431,7 @@ export default function MemoryTab() {
                         </p>
                       </div>
                     ) : (
-                      <div className="space-y-2 max-h-[400px] overflow-y-auto pr-2">
+                      <div className="space-y-2 max-h-memory-list overflow-y-auto pr-2">
                         {memories.map((memory) => (
                           <MemoryCard
                             key={memory.id}
@@ -482,7 +482,7 @@ export default function MemoryTab() {
                 disabled={
                   actionStatus === 'loading' || (stats?.total ?? 0) === 0
                 }
-                className="inline-flex items-center gap-2 px-4 py-2 bg-status-error-bg border border-status-error/50 text-status-error hover:bg-status-error hover:text-white font-medium rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-status-error/50"
+                className="inline-flex items-center gap-2 px-4 py-2 bg-status-error-bg border border-status-error/50 text-status-error hover:bg-status-error hover:text-[var(--color-text-on-status)] font-medium rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-status-error/50"
               >
                 {actionStatus === 'loading' ? (
                   <>
@@ -546,7 +546,7 @@ export default function MemoryTab() {
                   type="button"
                   onClick={handleClearMemories}
                   disabled={actionStatus === 'loading'}
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-status-error text-white font-medium rounded-md hover:bg-status-error/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-status-error/50"
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-status-error text-[var(--color-text-on-status)] font-medium rounded-md hover:bg-status-error/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-status-error/50"
                 >
                   {actionStatus === 'loading' ? (
                     <>

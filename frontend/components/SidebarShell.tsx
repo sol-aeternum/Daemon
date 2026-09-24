@@ -56,14 +56,14 @@ export function SidebarShell({
     <div className="flex h-screen bg-[var(--color-bg-tertiary)] overflow-hidden">
       {isSidebarOpen && (
         <div
-          className="fixed inset-0 bg-black/50 z-40 md:hidden transition-opacity"
+          className="fixed inset-0 bg-[var(--color-bg-overlay)] z-40 md:hidden transition-opacity"
           onClick={() => setIsSidebarOpen(false)}
         />
       )}
 
       <div
         className={`
-          fixed inset-y-0 left-0 z-50 w-[260px] bg-[var(--color-bg-secondary)] transform transition-transform duration-300
+          fixed inset-y-0 left-0 z-50 w-sidebar bg-[var(--color-bg-secondary)] transform transition-transform duration-300
           md:relative md:inset-auto md:z-0 md:w-auto md:translate-x-0
           ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
         `}

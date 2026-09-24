@@ -8,8 +8,8 @@ export default function LandingPage() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
             <div className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-daemon-accent rounded-lg flex items-center justify-center">
-                <Bot className="w-5 h-5 text-white" />
+              <div className="w-8 h-8 bg-[var(--color-accent-primary)] rounded-lg flex items-center justify-center">
+                <Bot className="w-5 h-5 text-[var(--color-text-on-accent)]" />
               </div>
               <span className="font-bold text-xl tracking-tight">Daemon</span>
             </div>
@@ -22,7 +22,7 @@ export default function LandingPage() {
               </Link>
               <Link
                 href="/auth"
-                className="text-sm font-medium bg-daemon-accent hover:bg-opacity-90 text-white px-4 py-2 rounded-md transition-all"
+                className="text-sm font-medium bg-[var(--color-accent-primary)] hover:bg-opacity-90 text-[var(--color-text-on-accent)] px-4 py-2 rounded-md transition-all"
               >
                 Sign up
               </Link>
@@ -38,7 +38,7 @@ export default function LandingPage() {
               <h1 className="text-5xl md:text-7xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-[var(--color-text-primary)] via-[var(--color-text-secondary)] to-[var(--color-text-muted)] pb-2">
                 Your AI, Your Rules.
               </h1>
-              <p className="text-xl md:text-2xl text-daemon-text-secondary max-w-2xl mx-auto leading-relaxed">
+              <p className="text-xl md:text-2xl text-[var(--color-text-secondary)] max-w-2xl mx-auto leading-relaxed">
                 Daemon is the open-source AI assistant that puts you in control.
                 Chat with any model, anywhere, anytime.
               </p>
@@ -49,7 +49,7 @@ export default function LandingPage() {
               >
                 <Link
                   href="/auth"
-                  className="w-full sm:w-auto px-8 py-4 bg-daemon-accent hover:bg-opacity-90 text-white rounded-lg font-semibold text-lg transition-all transform hover:scale-105 flex items-center justify-center gap-2 shadow-lg shadow-daemon-accent/20"
+                  className="w-full sm:w-auto px-8 py-4 bg-[var(--color-accent-primary)] hover:bg-opacity-90 text-[var(--color-text-on-accent)] rounded-lg font-semibold text-lg transition-all transform hover:scale-105 flex items-center justify-center gap-2 shadow-lg shadow-[var(--color-accent-primary)]/20"
                 >
                   Sign Up <ArrowRight className="w-5 h-5" />
                 </Link>
@@ -64,8 +64,8 @@ export default function LandingPage() {
           </div>
 
           <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-full max-w-7xl pointer-events-none opacity-20">
-            <div className="absolute top-20 left-20 w-72 h-72 bg-daemon-accent rounded-full blur-[128px]" />
-            <div className="absolute bottom-20 right-20 w-96 h-96 bg-[var(--color-accent-primary)] rounded-full blur-[128px]" />
+            <div className="absolute top-20 left-20 w-72 h-72 bg-[var(--color-accent-primary)] rounded-full blur-hero" />
+            <div className="absolute bottom-20 right-20 w-96 h-96 bg-[var(--color-accent-primary)] rounded-full blur-hero" />
           </div>
         </section>
 
@@ -77,12 +77,12 @@ export default function LandingPage() {
                 style={{ animationDelay: '200ms' }}
               >
                 <div className="w-12 h-12 bg-[var(--color-bg-hover)] rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform duration-300">
-                  <Zap className="w-6 h-6 text-daemon-accent" />
+                  <Zap className="w-6 h-6 text-[var(--color-accent-primary)]" />
                 </div>
                 <h3 className="text-xl font-bold mb-3 text-[var(--color-text-primary)]">
                   Model Agnostic
                 </h3>
-                <p className="text-daemon-text-secondary leading-relaxed">
+                <p className="text-[var(--color-text-secondary)] leading-relaxed">
                   Switch between OpenAI, Anthropic, and local models instantly.
                   Use the best tool for the job without vendor lock-in.
                 </p>
@@ -93,12 +93,12 @@ export default function LandingPage() {
                 style={{ animationDelay: '300ms' }}
               >
                 <div className="w-12 h-12 bg-[var(--color-bg-hover)] rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform duration-300">
-                  <Shield className="w-6 h-6 text-daemon-accent" />
+                  <Shield className="w-6 h-6 text-[var(--color-accent-primary)]" />
                 </div>
                 <h3 className="text-xl font-bold mb-3 text-[var(--color-text-primary)]">
                   Privacy First
                 </h3>
-                <p className="text-daemon-text-secondary leading-relaxed">
+                <p className="text-[var(--color-text-secondary)] leading-relaxed">
                   Your data stays yours. No hidden training, no tracking. Deploy
                   locally or in your private cloud for complete control.
                 </p>
@@ -109,12 +109,12 @@ export default function LandingPage() {
                 style={{ animationDelay: '400ms' }}
               >
                 <div className="w-12 h-12 bg-[var(--color-bg-hover)] rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform duration-300">
-                  <Code2 className="w-6 h-6 text-daemon-accent" />
+                  <Code2 className="w-6 h-6 text-[var(--color-accent-primary)]" />
                 </div>
                 <h3 className="text-xl font-bold mb-3 text-[var(--color-text-primary)]">
                   Developer Friendly
                 </h3>
-                <p className="text-daemon-text-secondary leading-relaxed">
+                <p className="text-[var(--color-text-secondary)] leading-relaxed">
                   Built with modern tech stack (Next.js, FastAPI, Python). Easy
                   to extend, customize, and integrate into your workflow.
                 </p>

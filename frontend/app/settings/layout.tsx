@@ -61,7 +61,7 @@ function ChatBackLink() {
   return (
     <Link
       href={href}
-      className="inline-flex min-h-[44px] items-center rounded-md px-3 py-2 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]"
+      className="inline-flex min-h-touch items-center rounded-md px-3 py-2 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]"
     >
       ← Chat
     </Link>
@@ -77,7 +77,7 @@ export default function SettingsLayout({
     <div className="flex h-screen overflow-hidden flex-col md:flex-row">
       <Suspense
         fallback={
-          <aside className="hidden h-screen w-[260px] border-r border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] md:block" />
+          <aside className="hidden h-screen w-sidebar border-r border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] md:block" />
         }
       >
         <SettingsSidebar />
@@ -90,7 +90,7 @@ export default function SettingsLayout({
               fallback={
                 <Link
                   href="/"
-                  className="inline-flex min-h-[44px] items-center rounded-md px-3 py-2 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]"
+                  className="inline-flex min-h-touch items-center rounded-md px-3 py-2 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]"
                 >
                   ← Chat
                 </Link>
@@ -104,7 +104,7 @@ export default function SettingsLayout({
             <div className="mb-2 px-2 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)] md:mb-3">
               Settings
             </div>
-            <Suspense fallback={<div className="min-h-[44px]" />}>
+            <Suspense fallback={<div className="min-h-touch" />}>
               <SettingsNav />
             </Suspense>
           </aside>

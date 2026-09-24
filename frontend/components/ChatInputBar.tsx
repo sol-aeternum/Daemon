@@ -141,7 +141,7 @@ export function ChatInputBar({
         }`}
       >
         {isDragOver && (
-          <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-2xl bg-[var(--color-bg-tertiary)]/85 backdrop-blur-[1px]">
+          <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-2xl bg-[var(--color-bg-tertiary)]/85 backdrop-blur-subtle">
             <div className="rounded-lg border border-[var(--color-accent-primary)]/40 bg-[var(--color-bg-secondary)] px-4 py-2 text-sm font-medium text-[var(--color-text-primary)] shadow-sm">
               Drop files to attach
             </div>
@@ -155,9 +155,9 @@ export function ChatInputBar({
 
             {/* Cloud/Local toggle */}
             {onToggleLocal && (
-              <div className="flex min-h-[44px] items-center gap-1.5 rounded-md border border-[var(--color-border-muted)] bg-[var(--color-bg-tertiary)] px-2 py-1">
+              <div className="flex min-h-touch items-center gap-1.5 rounded-md border border-[var(--color-border-muted)] bg-[var(--color-bg-tertiary)] px-2 py-1">
                 <span
-                  className={`hidden text-[10px] font-medium transition-colors sm:inline ${!isLocal ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'}`}
+                  className={`hidden text-xs font-medium transition-colors sm:inline ${!isLocal ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'}`}
                 >
                   Cloud
                 </span>
@@ -174,7 +174,7 @@ export function ChatInputBar({
                   />
                 </button>
                 <span
-                  className={`hidden text-[10px] font-medium transition-colors sm:inline ${isLocal ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'}`}
+                  className={`hidden text-xs font-medium transition-colors sm:inline ${isLocal ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'}`}
                 >
                   Local
                 </span>
@@ -190,7 +190,7 @@ export function ChatInputBar({
             type="button"
             onClick={handleAttachmentClick}
             aria-label="Attach file"
-            className="min-h-[44px] min-w-[44px] rounded-md p-1.5 text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+            className="min-h-touch min-w-touch rounded-md p-1.5 text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
             title="Attach file"
           >
             <Paperclip className="w-4 h-4" />
@@ -204,7 +204,7 @@ export function ChatInputBar({
                 key={attachment.id}
                 className="inline-flex items-center gap-2 rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-tertiary)] px-2 py-1 text-xs text-[var(--color-text-secondary)]"
               >
-                <span className="max-w-[180px] truncate">
+                <span className="max-w-attachment-label truncate">
                   {attachment.name}
                 </span>
                 <span className="text-[var(--color-text-muted)]">
@@ -232,7 +232,7 @@ export function ChatInputBar({
             onKeyDown={handleKeyDown}
             placeholder="Message Daemon — try /council, /image, /code"
             rows={1}
-            className="flex-1 bg-transparent text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] resize-none focus:outline-none py-2 max-h-[200px] overflow-y-auto scrollbar-thin scrollbar-thumb-[var(--color-border-secondary)] scrollbar-track-transparent"
+            className="flex-1 bg-transparent text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] resize-none focus:outline-none py-2 max-h-composer overflow-y-auto scrollbar-thin scrollbar-thumb-[var(--color-border-secondary)] scrollbar-track-transparent"
             style={{ minHeight: '24px' }}
           />
 
@@ -253,9 +253,9 @@ export function ChatInputBar({
                 type="submit"
                 aria-label="Send message"
                 disabled={!input.trim() && attachments.length === 0}
-                className={`min-h-[44px] min-w-[44px] rounded-xl p-2 transition-all duration-200 ${
+                className={`min-h-touch min-w-touch rounded-xl p-2 transition-all duration-200 ${
                   input.trim() || attachments.length > 0
-                    ? 'bg-[var(--color-accent-primary)] text-white hover:bg-[var(--color-accent-hover)] shadow-sm'
+                    ? 'bg-[var(--color-accent-primary)] text-[var(--color-text-on-accent)] hover:bg-[var(--color-accent-hover)] shadow-sm'
                     : 'bg-transparent text-[var(--color-text-muted)] cursor-not-allowed'
                 }`}
               >

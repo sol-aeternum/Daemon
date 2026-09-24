@@ -51,7 +51,7 @@ export function ConnectionStatus({
       {showReconnect && onReconnect && (
         <button
           onClick={onReconnect}
-          className="min-h-[44px] rounded bg-[var(--color-accent-primary)] px-3 py-1 text-xs text-white transition-colors hover:bg-[var(--color-accent-hover)]"
+          className="min-h-touch rounded bg-[var(--color-accent-primary)] px-3 py-1 text-xs text-[var(--color-text-on-accent)] transition-colors hover:bg-[var(--color-accent-hover)]"
         >
           Retry
         </button>

@@ -27,7 +27,7 @@ export function SettingsNav() {
           key={href}
           href={from ? `${href}?from=${encodeURIComponent(from)}` : href}
           aria-current={pathname === href ? 'page' : undefined}
-          className={`inline-flex min-h-[44px] w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors md:w-auto ${
+          className={`inline-flex min-h-touch w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors md:w-auto ${
             pathname === href
               ? 'bg-[var(--color-accent-subtle)] text-[var(--color-text-primary)]'
               : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'

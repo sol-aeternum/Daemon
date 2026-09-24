@@ -419,7 +419,7 @@ export default function AuthLanding({
             <div className="absolute inset-0 bg-[var(--color-accent-primary)] blur-xl opacity-30 rounded-full animate-pulse" />
             <div className="relative w-12 h-12 rounded-xl bg-gradient-to-br from-[var(--color-accent-primary)] to-[var(--color-accent-hover)] flex items-center justify-center shadow-lg">
               <Sparkles
-                className="w-6 h-6 text-white animate-spin"
+                className="w-6 h-6 text-[var(--color-text-on-accent)] animate-spin"
                 style={{ animationDuration: '2s' }}
               />
             </div>
@@ -439,7 +439,7 @@ export default function AuthLanding({
           <div className="relative">
             <div className="absolute inset-0 bg-[var(--color-accent-primary)] blur-xl opacity-30 rounded-full" />
             <div className="relative w-14 h-14 rounded-2xl bg-gradient-to-br from-[var(--color-accent-primary)] to-[var(--color-accent-hover)] flex items-center justify-center shadow-lg">
-              <Sparkles className="w-7 h-7 text-white" />
+              <Sparkles className="w-7 h-7 text-[var(--color-text-on-accent)]" />
             </div>
           </div>
           <div>
@@ -527,7 +527,7 @@ export default function AuthLanding({
                   <button
                     type="submit"
                     disabled={isEmailStarting || !email.trim()}
-                    className="w-full rounded-xl bg-[var(--color-accent-primary)] px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-[var(--color-accent-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    className="w-full rounded-xl bg-[var(--color-accent-primary)] px-4 py-3 text-sm font-semibold text-[var(--color-text-on-accent)] shadow-sm hover:bg-[var(--color-accent-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
                     {isEmailStarting
                       ? 'Sending code...'
@@ -566,7 +566,7 @@ export default function AuthLanding({
                   <button
                     type="submit"
                     disabled={isEmailCompleting || !emailCode.trim()}
-                    className="w-full rounded-xl bg-[var(--color-accent-primary)] px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-[var(--color-accent-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    className="w-full rounded-xl bg-[var(--color-accent-primary)] px-4 py-3 text-sm font-semibold text-[var(--color-text-on-accent)] shadow-sm hover:bg-[var(--color-accent-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
                     {isEmailCompleting ? 'Verifying...' : 'Verify and sign in'}
                   </button>
@@ -643,7 +643,7 @@ export default function AuthLanding({
             <button
               type="submit"
               disabled={isSubmitting || !setupToken.trim()}
-              className="w-full rounded-xl bg-[var(--color-accent-primary)] px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-[var(--color-accent-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="w-full rounded-xl bg-[var(--color-accent-primary)] px-4 py-3 text-sm font-semibold text-[var(--color-text-on-accent)] shadow-sm hover:bg-[var(--color-accent-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {isSubmitting ? 'Setting up...' : 'Complete Setup'}
             </button>
@@ -748,7 +748,7 @@ export default function AuthLanding({
             <button
               type="submit"
               disabled={isEnrolling}
-              className="w-full rounded-xl bg-[var(--color-accent-primary)] px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-[var(--color-accent-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="w-full rounded-xl bg-[var(--color-accent-primary)] px-4 py-3 text-sm font-semibold text-[var(--color-text-on-accent)] shadow-sm hover:bg-[var(--color-accent-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {isEnrolling ? 'Completing enrollment...' : 'Complete Enrollment'}
             </button>

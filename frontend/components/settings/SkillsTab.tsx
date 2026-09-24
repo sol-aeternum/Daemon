@@ -644,7 +644,7 @@ export default function SkillsTab() {
     const Icon = config.icon;
     return (
       <span
-        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider ${config.color}`}
+        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs uppercase tracking-wider ${config.color}`}
       >
         <Icon className="h-3 w-3" />
         {config.label}
@@ -694,7 +694,7 @@ export default function SkillsTab() {
         </div>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
+      <div className="grid gap-4 lg:grid-cols-skill-editor">
         <section className="rounded-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] p-3">
           <div className="mb-3 space-y-2">
             <div className="flex items-center justify-between">
@@ -704,7 +704,7 @@ export default function SkillsTab() {
               <div className="flex items-center gap-1">
                 <button
                   onClick={() => setShowFilters(!showFilters)}
-                  className={`inline-flex h-8 w-8 items-center justify-center rounded-md ${showFilters ? 'bg-[var(--color-accent-primary)] text-white' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)]'}`}
+                  className={`inline-flex h-8 w-8 items-center justify-center rounded-md ${showFilters ? 'bg-[var(--color-accent-primary)] text-[var(--color-text-on-accent)]' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)]'}`}
                   title="Toggle filters"
                 >
                   <Filter className="h-4 w-4" />
@@ -761,7 +761,7 @@ export default function SkillsTab() {
                     onClick={() => setFilterType(type)}
                     className={`px-2 py-1 rounded text-xs capitalize transition-colors ${
                       filterType === type
-                        ? 'bg-[var(--color-accent-primary)] text-white'
+                        ? 'bg-[var(--color-accent-primary)] text-[var(--color-text-on-accent)]'
                         : 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] hover:bg-[var(--color-border-primary)]'
                     }`}
                   >
@@ -780,7 +780,7 @@ export default function SkillsTab() {
             onChange={handleUploadFile}
           />
 
-          <div className="space-y-1 max-h-[500px] overflow-y-auto">
+          <div className="space-y-1 max-h-skill-details overflow-y-auto">
             {isLoadingList && (
               <div className="px-3 py-2 text-sm text-[var(--color-text-muted)]">
                 Loading skills...
@@ -1057,7 +1057,7 @@ export default function SkillsTab() {
                 <button
                   onClick={handleSave}
                   disabled={status === 'loading' || isLoadingDetail}
-                  className="inline-flex items-center gap-2 rounded-md bg-[var(--color-accent-primary)] px-4 py-2 text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-50"
+                  className="inline-flex items-center gap-2 rounded-md bg-[var(--color-accent-primary)] px-4 py-2 text-[var(--color-text-on-accent)] hover:bg-[var(--color-accent-hover)] disabled:opacity-50"
                 >
                   <Save className="h-4 w-4" />
                   {status === 'loading' ? 'Saving...' : 'Save skill'}

@@ -390,7 +390,7 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
           <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
             <a
               href={studioHref}
-              className="p-1.5 bg-black/50 hover:bg-black/70 text-white rounded-md backdrop-blur-sm transition-colors"
+              className="p-1.5 bg-media/50 hover:bg-media/70 text-on-media rounded-md backdrop-blur-sm transition-colors"
               title="Open in Studio"
               onClick={(e) => e.stopPropagation()}
             >
@@ -401,7 +401,7 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
                 e.stopPropagation();
                 setIsLightboxOpen(true);
               }}
-              className="p-1.5 bg-black/50 hover:bg-black/70 text-white rounded-md backdrop-blur-sm transition-colors"
+              className="p-1.5 bg-media/50 hover:bg-media/70 text-on-media rounded-md backdrop-blur-sm transition-colors"
               title="Expand"
             >
               <Maximize2 className="w-4 h-4" />
@@ -410,7 +410,7 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
               <a
                 href={imageBlobUrl}
                 download={imageDownloadName}
-                className="p-1.5 bg-black/50 hover:bg-black/70 text-white rounded-md backdrop-blur-sm transition-colors"
+                className="p-1.5 bg-media/50 hover:bg-media/70 text-on-media rounded-md backdrop-blur-sm transition-colors"
                 title="Download"
                 target="_blank"
                 rel="noopener noreferrer"
@@ -428,12 +428,12 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
             aria-modal="true"
             aria-label="Generated image preview"
             data-stop-shortcut-block="true"
-            className="fixed inset-0 z-[60] flex items-center justify-center bg-black/95 backdrop-blur-sm p-4 animate-in fade-in duration-200"
+            className="fixed inset-0 z-lightbox flex items-center justify-center bg-media/95 backdrop-blur-sm p-4 animate-in fade-in duration-200"
             onClick={() => setIsLightboxOpen(false)}
           >
             <button
               onClick={() => setIsLightboxOpen(false)}
-              className="absolute top-4 right-4 p-2 text-white/70 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-colors"
+              className="absolute top-4 right-4 p-2 text-on-media/70 hover:text-on-media bg-on-media/10 hover:bg-on-media/20 rounded-full transition-colors"
             >
               <X className="w-6 h-6" />
             </button>
@@ -449,9 +449,11 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
                 onClick={(e) => e.stopPropagation()}
               />
             ) : imageBlobLoadError ? (
-              <div className="text-white/70 text-sm">Failed to load image</div>
+              <div className="text-on-media/70 text-sm">
+                Failed to load image
+              </div>
             ) : (
-              <Loader2 className="w-8 h-8 text-white/50 animate-spin" />
+              <Loader2 className="w-8 h-8 text-on-media/50 animate-spin" />
             )}
 
             {imageBlobUrl && !imageBlobLoadError && (
@@ -612,7 +614,7 @@ export function ToolCallLog({ events }: ToolCallLogProps) {
           type="button"
           aria-expanded={showEarlier}
           onClick={() => setShowEarlier((previous) => !previous)}
-          className="min-h-[44px] text-sm text-[var(--color-accent-primary)] mb-2"
+          className="min-h-touch text-sm text-[var(--color-accent-primary)] mb-2"
         >
           {showEarlier ? 'Hide earlier' : 'Show earlier'} ({earlierSpawns.size})
         </button>
@@ -627,12 +629,12 @@ export function ToolCallLog({ events }: ToolCallLogProps) {
           return (
             <li key={`${toolName}-${idx}`} className="relative pl-8">
               {idx < executions.length - 1 && (
-                <span className="absolute left-[11px] top-7 bottom-[-14px] w-px bg-[var(--color-border-primary)]" />
+                <span className="absolute left-tool-step-center top-7 -bottom-3.5 w-px bg-[var(--color-border-primary)]" />
               )}
-              <span className="absolute left-0 top-1.5 flex h-[22px] w-[22px] items-center justify-center rounded-full border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-xs font-semibold text-[var(--color-text-muted)]">
+              <span className="absolute left-0 top-1.5 flex h-tool-step w-tool-step items-center justify-center rounded-full border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-xs font-semibold text-[var(--color-text-muted)]">
                 {idx + 1}
               </span>
-              <div className="mb-1 text-[11px] uppercase tracking-[0.08em] text-[var(--color-text-muted)]">
+              <div className="mb-1 text-xs uppercase tracking-tool-step text-[var(--color-text-muted)]">
                 Step {idx + 1}
                 {executions.length > 1 ? ` of ${executions.length}` : ''}
               </div>
@@ -708,7 +710,7 @@ function AudioPlayerBlock({ audioPath, prompt }: AudioPlayerBlockProps) {
         <button
           onClick={handlePlayPause}
           disabled={loading || error || !displayUrl}
-          className="flex-shrink-0 w-10 h-10 flex items-center justify-center bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-white rounded-full transition-colors"
+          className="flex-shrink-0 w-10 h-10 flex items-center justify-center bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-[var(--color-text-on-accent)] rounded-full transition-colors"
           title={
             error
               ? 'Audio failed to load'

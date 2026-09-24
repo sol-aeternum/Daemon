@@ -83,7 +83,7 @@ export function CollapsibleMessage({
             aria-expanded={!collapsed}
             aria-controls={contentId}
             onClick={() => setExpanded((previous) => !previous)}
-            className="min-h-[44px] text-sm font-medium text-[var(--color-accent-primary)]"
+            className="min-h-touch text-sm font-medium text-[var(--color-accent-primary)]"
           >
             {collapsed ? 'Show more' : 'Show less'}
           </button>

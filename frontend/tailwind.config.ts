@@ -6,6 +6,7 @@ const config: Config = {
     './pages/**/*.{js,ts,jsx,tsx,mdx}',
     './components/**/*.{js,ts,jsx,tsx,mdx}',
     './app/**/*.{js,ts,jsx,tsx,mdx}',
+    './src/components/**/*.{js,ts,jsx,tsx,mdx}',
   ],
   theme: {
     extend: {
@@ -24,6 +25,9 @@ const config: Config = {
         'bg-active': 'var(--color-bg-active)',
         'bg-overlay': 'var(--color-bg-overlay)',
         'bg-tooltip': 'var(--color-bg-tooltip)',
+
+        media: 'hsl(var(--color-media-bg) / <alpha-value>)',
+        'on-media': 'hsl(var(--color-media-fg) / <alpha-value>)',
 
         // Text colors
         'text-primary': 'var(--color-text-primary)',
@@ -57,23 +61,6 @@ const config: Config = {
         'status-error-bg': 'var(--color-status-error-bg)',
         'status-info': 'var(--color-status-info)',
         'status-info-bg': 'var(--color-status-info-bg)',
-
-        /* ==========================================================================
-           BACKWARD COMPATIBILITY - Legacy daemon-* namespace
-           ========================================================================== */
-        daemon: {
-          'bg-primary': 'var(--daemon-bg-primary)',
-          'bg-secondary': 'var(--daemon-bg-secondary)',
-          'bg-tertiary': 'var(--daemon-bg-tertiary)',
-          'bg-sidebar': 'var(--daemon-bg-sidebar)',
-          'text-primary': 'var(--daemon-text-primary)',
-          'text-secondary': 'var(--daemon-text-secondary)',
-          'text-muted': 'var(--daemon-text-muted)',
-          accent: 'var(--daemon-accent)',
-          'accent-hover': 'var(--daemon-accent-hover)',
-          'border-primary': 'var(--daemon-border-primary)',
-          'border-secondary': 'var(--daemon-border-secondary)',
-        },
       },
 
       /* ==========================================================================
@@ -98,6 +85,7 @@ const config: Config = {
         xl: 'var(--shadow-xl)',
         glow: 'var(--shadow-glow)',
         inner: 'var(--shadow-inner)',
+        stop: 'var(--shadow-stop)',
       },
 
       /* ==========================================================================
@@ -116,11 +104,54 @@ const config: Config = {
         '16': 'var(--space-16)',
         '20': 'var(--space-20)',
         '24': 'var(--space-24)',
+        sidebar: 'var(--size-sidebar)',
+        'tool-step': 'var(--size-tool-step)',
       },
 
       /* ==========================================================================
-         FONT FAMILY TOKENS
+         COMPONENT GEOMETRY TOKENS
          ========================================================================== */
+      minHeight: {
+        touch: 'var(--touch-min)',
+        'file-content': 'var(--height-file-content)',
+        'html-preview': 'var(--height-html-preview-min)',
+        'docx-preview': 'var(--height-docx-preview-min)',
+        'memory-editor': 'var(--height-memory-editor-min)',
+        'conversation-row': 'var(--height-conversation-row-min)',
+      },
+      minWidth: { touch: 'var(--touch-min)' },
+      maxHeight: {
+        'file-preview': 'var(--height-file-preview-max)',
+        'file-content': 'var(--height-file-content)',
+        composer: 'var(--height-composer-max)',
+        'memory-list': 'var(--height-memory-list-max)',
+        'skill-details': 'var(--height-skill-details-max)',
+        'media-preview': 'var(--height-media-preview-max)',
+        'agent-panel': 'var(--height-agent-panel-max)',
+        lightbox: 'var(--height-lightbox-max)',
+      },
+      maxWidth: {
+        'model-label': 'var(--width-model-label-max)',
+        'attachment-label': 'var(--width-attachment-label-max)',
+        'message-preview': 'var(--width-message-preview-max)',
+        'message-mobile': 'var(--width-message-mobile-max)',
+        'user-message': 'var(--width-user-message-max)',
+        'assistant-message': 'var(--width-assistant-message-max)',
+      },
+      inset: {
+        'tool-step-center': 'var(--offset-tool-step-center)',
+        'memory-trail': 'var(--offset-memory-trail)',
+      },
+      gridTemplateColumns: {
+        'skill-editor': 'var(--columns-skill-editor)',
+        'artifact-details': 'var(--columns-artifact-details)',
+        studio: 'var(--columns-studio)',
+      },
+      aspectRatio: { artifact: 'var(--aspect-artifact)' },
+      blur: { hero: 'var(--blur-hero)' },
+      backdropBlur: { subtle: 'var(--blur-subtle)' },
+      letterSpacing: { 'tool-step': 'var(--tracking-tool-step)' },
+
       fontFamily: {
         sans: ['var(--font-sans)'],
         display: ['var(--font-display)'],
@@ -153,6 +184,7 @@ const config: Config = {
          Z-INDEX TOKENS
          ========================================================================== */
       zIndex: {
+        lightbox: 'var(--z-lightbox)',
         base: '0',
         dropdown: '100',
         sticky: '200',

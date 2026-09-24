@@ -77,7 +77,7 @@ export default function MemoryFilters({ onFilterChange }: MemoryFiltersProps) {
     const baseClasses =
       'px-3 py-1 text-xs font-medium rounded-full cursor-pointer transition-colors whitespace-nowrap';
     if (isSelected) {
-      return `${baseClasses} bg-accent-primary text-white`;
+      return `${baseClasses} bg-accent-primary text-[var(--color-text-on-accent)]`;
     }
     return `${baseClasses} bg-bg-tertiary text-text-muted hover:text-text-secondary`;
   };

@@ -165,7 +165,7 @@ export function TrailView({ memoryId }: TrailViewProps) {
           {/* Vertical timeline line */}
           <div className="relative">
             {/* Connecting line */}
-            <div className="absolute left-[15px] top-6 bottom-6 w-px bg-border-primary" />
+            <div className="absolute left-memory-trail top-6 bottom-6 w-px bg-border-primary" />
 
             {/* Trail nodes */}
             <div className="space-y-4">
