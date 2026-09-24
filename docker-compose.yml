@@ -34,6 +34,7 @@ services:
       - XAI_API_KEY=${XAI_API_KEY}
       - FAL_KEY=${FAL_KEY}
       - MOCK_LLM=${MOCK_LLM:-false}
+      - DAEMON_FETCH_USER_AGENT=${DAEMON_FETCH_USER_AGENT:-Daemon (+https://github.com/sol-aeternum/Daemon)}
       - POSTGRES_USER=${POSTGRES_USER:-daemon}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       - POSTGRES_HOST=postgres
@@ -103,6 +104,7 @@ services:
       - XAI_API_KEY=${XAI_API_KEY}
       - FAL_KEY=${FAL_KEY}
       - MOCK_LLM=${MOCK_LLM:-false}
+      - DAEMON_FETCH_USER_AGENT=${DAEMON_FETCH_USER_AGENT:-Daemon (+https://github.com/sol-aeternum/Daemon)}
       - POSTGRES_USER=${POSTGRES_USER:-daemon}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       - POSTGRES_HOST=postgres
