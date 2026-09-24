@@ -19,7 +19,10 @@ import {
   type SidebarSection,
 } from '../components/ConversationList';
 import { ToolCallLog } from '../components/ToolCallBlock';
-import { CollapsibleMessage } from '../components/CollapsibleMessage';
+import {
+  COLLAPSE_MIN_CHARS,
+  CollapsibleMessage,
+} from '../components/CollapsibleMessage';
 import { useChatScroll } from '../hooks/useChatScroll';
 import { MobileHeader } from '../components/MobileHeader';
 import ChatSkeleton from '../components/ChatSkeleton';
@@ -1354,7 +1357,10 @@ function ChatContent() {
                         messageId={message.id}
                         title={`${message.role === 'user' ? 'You' : 'Daemon'} · message ${index + 1}`}
                         preview={formattedMessageContent}
-                        collapsible={index < messages.length - 5}
+                        collapsible={
+                          index < messages.length - 5 &&
+                          formattedMessageContent.length > COLLAPSE_MIN_CHARS
+                        }
                         childrenClassName={
                           message.role === 'user'
                             ? 'flex justify-end'

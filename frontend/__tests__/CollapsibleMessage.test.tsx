@@ -1,67 +1,99 @@
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CollapsibleMessage } from '../components/CollapsibleMessage';
 
+function contentOf(text: string) {
+  const element = screen.getByText(text).closest('[id]');
+  if (!element) throw new Error(`No content region for ${text}`);
+  return element;
+}
+
 describe('CollapsibleMessage', () => {
-  it('unmounts older rich content until requested and can collapse it again', () => {
+  describe('with hidden="until-found" support', () => {
+    // jsdom has no find-in-page; expose the feature-detection hook.
+    beforeEach(() => {
+      Object.defineProperty(HTMLElement.prototype, 'onbeforematch', {
+        configurable: true,
+        value: null,
+      });
+    });
+    afterEach(() => {
+      Reflect.deleteProperty(HTMLElement.prototype, 'onbeforematch');
+    });
+
+    it('keeps collapsed content in the DOM, hidden until found', () => {
+      render(
+        <CollapsibleMessage
+          messageId="old"
+          title="Daemon · message 1"
+          preview="Summary"
+          collapsible
+        >
+          <button>Download artifact</button>
+        </CollapsibleMessage>,
+      );
+      expect(screen.getByText('Summary')).toBeTruthy();
+      const content = contentOf('Download artifact');
+      expect(content.getAttribute('hidden')).toBe('until-found');
+      fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+      expect(content.hasAttribute('hidden')).toBe(false);
+      expect(
+        screen
+          .getByRole('button', { name: 'Show less' })
+          .getAttribute('aria-expanded'),
+      ).toBe('true');
+      fireEvent.click(screen.getByRole('button', { name: 'Show less' }));
+      expect(content.getAttribute('hidden')).toBe('until-found');
+    });
+
+    it('expands when browser find matches collapsed text', () => {
+      render(
+        <CollapsibleMessage
+          messageId="found"
+          title="You · message 2"
+          preview="Preview"
+          collapsible
+        >
+          <p>Searchable detail</p>
+        </CollapsibleMessage>,
+      );
+      const content = contentOf('Searchable detail');
+      act(() => {
+        content.dispatchEvent(new Event('beforematch'));
+      });
+      expect(content.hasAttribute('hidden')).toBe(false);
+      expect(screen.getByRole('button', { name: 'Show less' })).toBeTruthy();
+    });
+
+    it('keeps short or recent messages expanded without a toggle', () => {
+      render(
+        <CollapsibleMessage
+          messageId="short"
+          title="You · message 3"
+          preview="Short"
+          collapsible={false}
+        >
+          <p>Complete response</p>
+        </CollapsibleMessage>,
+      );
+      expect(contentOf('Complete response').hasAttribute('hidden')).toBe(false);
+      expect(screen.queryByRole('button')).toBeNull();
+    });
+  });
+
+  it('never collapses where hidden="until-found" is unsupported', () => {
     render(
       <CollapsibleMessage
-        messageId="old"
-        title="Daemon · message 1"
+        messageId="fallback"
+        title="Daemon · message 4"
         preview="Summary"
         collapsible
       >
-        <button>Download artifact</button>
+        <p>Always visible</p>
       </CollapsibleMessage>,
     );
-    expect(screen.getByText('Summary')).toBeTruthy();
-    expect(screen.queryByText('Download artifact')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
-    expect(screen.getByText('Download artifact')).toBeTruthy();
-    expect(
-      screen
-        .getByRole('button', { name: 'Show less' })
-        .getAttribute('aria-expanded'),
-    ).toBe('true');
-    fireEvent.click(screen.getByRole('button', { name: 'Show less' }));
-    expect(screen.queryByText('Download artifact')).toBeNull();
-  });
-
-  it('keeps recent messages expanded and collapses them when they age out', () => {
-    const message = (collapsible: boolean) => (
-      <CollapsibleMessage
-        messageId="recent"
-        title="You · message 2"
-        preview="Preview"
-        collapsible={collapsible}
-      >
-        <p>Complete response</p>
-      </CollapsibleMessage>
-    );
-    const { rerender } = render(message(false));
-    expect(screen.getByText('Complete response')).toBeTruthy();
+    expect(contentOf('Always visible').hasAttribute('hidden')).toBe(false);
     expect(screen.queryByRole('button')).toBeNull();
-    rerender(message(true));
-    expect(screen.queryByText('Complete response')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
-    rerender(message(true));
-    expect(screen.getByText('Complete response')).toBeTruthy();
-  });
-
-  it('provides a usable preview for messages containing only tool output', () => {
-    render(
-      <CollapsibleMessage
-        messageId="tools"
-        title="Daemon · message 3"
-        preview=""
-        collapsible
-      >
-        <p>Generated image</p>
-      </CollapsibleMessage>,
-    );
-    expect(screen.getByText('Tool activity or attachments')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
-    expect(screen.getByText('Generated image')).toBeTruthy();
   });
 });

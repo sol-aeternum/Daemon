@@ -42,7 +42,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | **Conversations** | — | — | — | — | — | — |
 | Recent Conversations List (search, pin, rename, delete) | Cross-client stable | Cross-client stable | Not started | Not started | GET /conversations, POST /conversations, DELETE /conversations/{id}, PATCH /conversations/{id} | Yes |
 | Conversation Switching | Cross-client stable | Cross-client stable | Not started | Not started | GET /conversations/{id} | No |
-| Long Conversation Controls | Mobile eligible | Mobile eligible | Not started | Not started | Client-side collapse outside the latest five messages, persisted tool-log visibility, recoverable spawn history, and jump-to-latest during streaming; virtual scrolling at 50+ loaded messages is deferred to [#298](https://github.com/sol-aeternum/Daemon/issues/298) | No |
+| Long Conversation Controls | Mobile eligible | Mobile eligible | Not started | Not started | Client-side collapse of messages over 1,200 characters outside the latest five, kept findable by browser search via `hidden="until-found"` (never collapsed where unsupported), persisted tool-log visibility, recoverable spawn history, and jump-to-latest during streaming; virtual scrolling at 50+ loaded messages is deferred to [#298](https://github.com/sol-aeternum/Daemon/issues/298) | No |
 | **Memory (user-visible)** | — | — | — | — | — | — |
 | Memory Read (semantic retrieval) | Cross-client stable | Cross-client stable | Not started | Not started | GET /memories | No |
 | Memory Write (explicit storage) | Backend stable | Backend stable | Not started | Not started | POST /memories | No |

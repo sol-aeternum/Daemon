@@ -18,7 +18,10 @@ const conversation = {
     ...Array.from({ length: 100 }, (_, index) => ({
       id: `message-${index + 1}`,
       role: index % 2 === 0 ? 'user' : 'assistant',
-      content: `Message ${index + 1} preview.\n\n${'Detailed discussion with useful context. '.repeat(40)}\n\nFull content ${index + 1}.`,
+      content:
+        index % 10 === 3
+          ? `Message ${index + 1} short note.`
+          : `Message ${index + 1} preview.\n\n${'Detailed discussion with useful context. '.repeat(40)}\n\nFull content ${index + 1}.`,
       ...(index === 99
         ? {
             tool_calls: [
@@ -84,7 +87,7 @@ test.beforeEach(async ({ page }) => {
   await mockApi(page);
 });
 
-test('a 100-message thread collapses old content and can expand it', async ({
+test('a 100-message thread collapses long older messages and can expand them', async ({
   page,
 }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -103,19 +106,24 @@ test('a 100-message thread collapses old content and can expand it', async ({
   );
   await expect(
     messages.getByRole('button', { name: 'Show more', exact: true }),
-  ).toHaveCount(95);
+  ).toHaveCount(85);
+  const short = messages.locator('[data-message-id="message-4"]');
+  await expect(short.getByText('Message 4 short note.')).toBeVisible();
+  await expect(short.getByRole('button', { name: 'Show more' })).toHaveCount(0);
   await expect(
     messages.locator('[data-message-id="message-100"]'),
   ).toContainText('Full content 100.');
   const old = messages.locator('[data-message-id="message-2"]');
+  const oldDetail = old.getByText('Full content 2.');
   await old.scrollIntoViewIfNeeded();
-  await expect(old).not.toContainText('Full content 2.');
+  await expect(old.locator('[hidden="until-found"]')).toHaveCount(1);
+  await expect(oldDetail).toBeHidden();
   await page.screenshot({ path: testInfo.outputPath('collapsed-message.png') });
   await old.getByRole('button', { name: 'Show more' }).click();
-  await expect(old).toContainText('Full content 2.');
+  await expect(oldDetail).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('expanded-message.png') });
   await old.getByRole('button', { name: 'Show less' }).click();
-  await expect(old).not.toContainText('Full content 2.');
+  await expect(oldDetail).toBeHidden();
 
   const fps = await messages.evaluate(
     (element) =>
@@ -135,6 +143,25 @@ test('a 100-message thread collapses old content and can expand it', async ({
   );
   console.log(`100-message scroll: ${fps.toFixed(1)} FPS`);
   expect(fps).toBeGreaterThan(30);
+});
+
+test('browser find reveals text inside a collapsed message', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto('/?id=conversation-1');
+  const messages = page.getByRole('main', { name: 'Conversation messages' });
+  await expect(messages.locator('article')).toHaveCount(100);
+  const old = messages.locator('[data-message-id="message-2"]');
+  const oldDetail = old.getByText('Full content 2.');
+  await expect(oldDetail).toBeHidden();
+  // Text fragments reveal hidden="until-found" content through the same
+  // beforematch path as Ctrl+F, which Playwright cannot drive directly.
+  await page.evaluate(() => {
+    location.hash = ':~:text=Full%20content%202.';
+  });
+  await expect(oldDetail).toBeVisible();
+  await expect(old.getByRole('button', { name: 'Show less' })).toBeVisible();
 });
 
 for (const width of [375, 1440]) {
