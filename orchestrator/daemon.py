@@ -10,10 +10,10 @@ import json
 import logging
 import uuid
 from typing import Any, cast
-from zoneinfo import ZoneInfo
 
 from orchestrator.config import ProviderConfig, Settings
 from orchestrator.services.fetch.url_extract import extract_urls
+from orchestrator.timezones import resolve_runtime_timezone
 from orchestrator.tools.builtin import create_default_registry
 from orchestrator.tools.completion import completion_with_tools
 
@@ -55,7 +55,6 @@ def create_chat_registry(**kwargs: Any) -> Any:
 
 
 _RUNTIME_DATETIME_MARKER = "<runtime-datetime-context>"
-_RUNTIME_DATETIME_ZONE = ZoneInfo("Australia/Adelaide")
 
 
 def now_rfc3339() -> str:
@@ -144,9 +143,17 @@ def build_openai_messages_from_history(
     return messages
 
 
-def with_runtime_datetime_context(system_prompt: str, now_utc: datetime | None = None) -> str:
+def with_runtime_datetime_context(
+    system_prompt: str,
+    now_utc: datetime | None = None,
+    *,
+    user_timezone: str | None = None,
+    default_timezone: str = "UTC",
+) -> str:
     current_utc = now_utc or datetime.now(timezone.utc)
-    current_local = current_utc.astimezone(_RUNTIME_DATETIME_ZONE)
+    current_local = current_utc.astimezone(
+        resolve_runtime_timezone(user_timezone, default_timezone)
+    )
 
     base_prompt = system_prompt
     if _RUNTIME_DATETIME_MARKER in base_prompt:
@@ -322,6 +329,7 @@ async def stream_sse_chat(
     db_pool: Any = None,
     trusted_spawn_context: dict[str, Any] | None = None,
     disable_memory_write: bool = False,
+    user_timezone: str | None = None,
 ) -> AsyncIterator[str]:
     provider, model = effective_provider_and_model(settings, provider_config)
     model_for_events = reported_model or actual_model or model
@@ -413,7 +421,11 @@ async def stream_sse_chat(
             "data": data,
         }
 
-    effective_system_prompt = with_runtime_datetime_context(system_prompt)
+    effective_system_prompt = with_runtime_datetime_context(
+        system_prompt,
+        user_timezone=user_timezone,
+        default_timezone=settings.daemon_default_timezone,
+    )
 
     if history_messages:
         messages = build_openai_messages_from_history(effective_system_prompt, history_messages)

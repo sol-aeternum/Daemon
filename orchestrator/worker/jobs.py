@@ -18,6 +18,7 @@ from arq.jobs import Job
 
 from orchestrator.artifacts import is_artifact_owner_namespace
 from orchestrator.config import Settings
+from orchestrator.timezones import extract_timezone_name as _extract_timezone_name
 from orchestrator.memory.dreaming import run_dreaming
 from orchestrator.memory.entities import (
     extract_and_resolve_entities,
@@ -191,27 +192,6 @@ def _as_uuid(value: str | uuid.UUID) -> uuid.UUID:
     if isinstance(value, uuid.UUID):
         return value
     return uuid.UUID(value)
-
-
-def _extract_timezone_name(user_settings: dict[str, Any]) -> str | None:
-    candidates = [
-        user_settings.get("timezone"),
-        user_settings.get("time_zone"),
-    ]
-
-    preferences = user_settings.get("preferences")
-    if isinstance(preferences, dict):
-        candidates.extend(
-            [
-                preferences.get("timezone"),
-                preferences.get("time_zone"),
-            ]
-        )
-
-    for candidate in candidates:
-        if isinstance(candidate, str) and candidate.strip():
-            return candidate.strip()
-    return None
 
 
 async def _user_matches_dream_schedule_hour(

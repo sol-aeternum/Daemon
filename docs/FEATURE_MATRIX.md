@@ -30,7 +30,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Feature | Web | Android PWA | Android native | iOS future | Backend dependency | Wedge required? |
 |---|---|---|---|---|---|---|
 | **Chat & Streaming** | — | — | — | — | — | — |
-| Chat Streaming + Reconnect | Cross-client stable | Cross-client stable | Not started | Not started | POST /chat SSE streaming service | Yes |
+| Chat Streaming + Reconnect | Cross-client stable | Cross-client stable | Not started | Not started | POST /chat SSE streaming service; prompt datetime uses saved user timezone, then configurable deployment default (UTC) | Yes |
 | File Upload | Cross-client stable | Cross-client stable | Not started | Not started | Client-side file attachments and chat serialization | No |
 | Stop/Cancel Streaming | Cross-client stable | Cross-client stable | Not started | Not started | Web/PWA composer exposes Stop and `Esc`, preserving partial output with a `(stopped)` label | No |
 | Copy Message | Not started | Not started | Not started | Not started | Pure client-side clipboard action not implemented | No |
@@ -38,7 +38,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Edit and Resubmit Message | Not started | Not started | Not started | Not started | Existing chat submission path; message edit UI not implemented | No |
 | Model Discovery | Cross-client stable | Cross-client stable | Not started | Not started | GET /v1/models, GET /v1/catalog | No |
 | Typed SSE Event Protocol | Cross-client stable | Cross-client stable | Not started | Not started | Chat and council streaming services | No |
-| OpenAI Chat Completions API | Backend stable | Backend stable | Not started | Not started | POST /v1/chat/completions compatibility endpoint | No |
+| OpenAI Chat Completions API | Backend stable | Backend stable | Not started | Not started | POST /v1/chat/completions compatibility endpoint; same user/deployment prompt timezone precedence as native chat | No |
 | **Conversations** | — | — | — | — | — | — |
 | Recent Conversations List (search, pin, rename, delete) | Cross-client stable | Cross-client stable | Not started | Not started | GET /conversations, POST /conversations, DELETE /conversations/{id}, PATCH /conversations/{id} | Yes |
 | Conversation Switching | Cross-client stable | Cross-client stable | Not started | Not started | GET /conversations/{id} | No |
@@ -59,7 +59,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | @reader (document analysis) — NOT IMPLEMENTED | Web experimental | Web experimental | Not started | Not started | Reserved subagent orchestration mode | No |
 | **Tools** | — | — | — | — | — | — |
 | Web Search (Brave Search API) | Backend stable | Backend stable | Not started | Not started | Web search service | No |
-| Web Fetch (multi-strategy URL fetcher) | Backend stable | Backend stable | Not started | Not started | URL fetch service | No |
+| Web Fetch (multi-strategy URL fetcher) | Backend stable | Backend stable | Not started | Not started | URL fetch service; direct requests use a stable Daemon identity with an operator-configurable User-Agent | No |
 | HTTP Request (generic) | Backend stable | Backend stable | Not started | Not started | HTTP request service | No |
 | Reminders (local JSON) | Backend stable | Backend stable | Not started | Not started | Reminder scheduling service | No |
 | Time & Math (get_time, calculate) | Backend stable | Backend stable | Not started | Not started | Utility tools service | No |
@@ -74,10 +74,10 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Sound Effects Generation (ElevenLabs) | Backend stable | Backend stable | Not started | Not started | POST /sound-effects | No |
 | Voice Settings (TTS voice/model/speed/format, STT language) | Cross-client stable | Cross-client stable | Not started | Not started | Client settings storage + PATCH /users/me/settings | No |
 | **Models & Routing** | — | — | — | — | — | — |
-| Model Selector UI (catalog + full search) | Cross-client stable | Cross-client stable | Not started | Not started | GET /v1/catalog, GET /v1/models | No |
+| Model Selector UI (catalog + full search) | Cross-client stable | Cross-client stable | Not started | Not started | GET /v1/catalog, GET /v1/models; desktop chat header shows the running model and active subagent count from the current response | No |
 | **Settings** | — | — | — | — | — | — |
 | Appearance Settings (Dark/Light/System theme) | Cross-client stable | Cross-client stable | Not started | Not started | Client theme settings (no backend) | No |
-| Enrollment & Profile Settings (display name, custom instructions) | Cross-client stable | Cross-client stable | Not started | Not started | GET /users/me/settings, PATCH /users/me/settings | Yes |
+| Enrollment & Profile Settings (display name, custom instructions) | Cross-client stable | Cross-client stable | Not started | Not started | GET /users/me/settings, PATCH /users/me/settings; desktop chat header shortcut and settings navigation preserve the return conversation | Yes |
 | Memory Management Settings | Cross-client stable | Cross-client stable | Not started | Not started | GET /memories, DELETE /memories/{id}, POST /memories/{id}/confirm, DELETE /memories?confirm=true | No |
 | **Auth & Sessions** | — | — | — | — | — | — |
 | First-boot Setup | Backend stable | Backend stable | Backend stable | Backend stable | Setup token: Postgres-shared one-time verifier, local 0600 operator token file, advisory lock, zero-active-device condition | Yes |
@@ -101,7 +101,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Document File Generation (.docx, .csv download) | Cross-client stable | Cross-client stable | Not started | Not started | Subagent orchestration service + /generated-files/{filename} | No |
 | **Council/Studio** | — | — | — | — | — | — |
 | Council Deliberation (multi-perspective LLM debate) | Cross-client stable | Cross-client stable | Not started | Not started | Council streaming service | No |
-| Council Interview Flow (roster, rounds, audit config) | Cross-client stable | Cross-client stable | Not started | Not started | /council command → interview flow | No |
+| Council Interview Flow (roster, rounds, audit config) | Cross-client stable | Cross-client stable | Not started | Not started | Welcome-screen Deliberate shortcut or /council command → interview flow | No |
 | Studio Image Generation (web UI) | Retired | Retired | Not started | Not started | Authenticated retired Studio image API surface returns 410; hosted-identity replacement tracked separately | No |
 | Studio Video Generation (web UI with credit check) | Cross-client stable | Cross-client stable | Not started | Not started | POST /video-credits/estimate + studio video generation route | No |
 | Video Credit Balance & Transactions | Cross-client stable | Cross-client stable | Not started | Not started | GET /video-credits/balance, GET /video-credits/transactions, GET /video-credits/estimate | No |
@@ -116,4 +116,4 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Local Pipeline Routing (/local flag) | Not started | Not started | Not started | Not started | Pre-router intent parsing and disabled Cloud/Local UI; local inference pending hardware | No |
 | **PWA / Offline** | — | — | — | — | — | — |
 | PWA Service Worker + Offline Indicator | Platform-specific permanent | Platform-specific permanent | Not started | Not started | Browser service worker (no backend) | No |
-| Mobile-Responsive Navigation (hamburger + sidebar) | Cross-client stable | Cross-client stable | Not started | Not started | Purely frontend responsive navigation | No |
+| Mobile-Responsive Navigation (hamburger + sidebar) | Cross-client stable | Cross-client stable | Not started | Not started | Purely frontend responsive navigation; settings sections form a vertical list on mobile with 44px minimum touch targets | No |
