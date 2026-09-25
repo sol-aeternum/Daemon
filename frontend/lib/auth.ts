@@ -518,10 +518,12 @@ export async function completeGoogleSignIn(
   idToken: string,
   devicePersistence: 'private' | 'temporary',
   inviteToken?: string,
+  signal?: AbortSignal,
 ): Promise<{ success: boolean; error?: string }> {
   try {
     const response = await _fetchAuthProxy('/google/complete', {
       method: 'POST',
+      signal,
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -536,6 +538,7 @@ export async function completeGoogleSignIn(
 
     if (response.ok) {
       const data = await response.json();
+      signal?.throwIfAborted();
       const accessToken = data.access_token as string;
       const expiresAt = data.expires_at as number;
       const expiresAtMs = expiresAt * 1000;
@@ -873,7 +876,7 @@ export async function attemptPageLoadRefresh(options?: {
       (options?.redirectOnExpiredSession ?? true) &&
       typeof window !== 'undefined'
     ) {
-      window.location.replace('/setup');
+      window.location.replace('/auth');
     }
     return false;
   }

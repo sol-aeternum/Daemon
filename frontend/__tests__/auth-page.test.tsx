@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 
 type TestAuthConfig = {
@@ -29,8 +29,9 @@ const selfHostedRuntimeConfig: TestAuthConfig = {
 };
 
 const mockRouterReplace = vi.hoisted(() => vi.fn());
+const mockRouter = { replace: mockRouterReplace };
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ replace: mockRouterReplace }),
+  useRouter: () => mockRouter,
 }));
 
 const mockAuthLanding = vi.fn();
@@ -48,12 +49,16 @@ vi.mock('../components/AuthLanding', () => ({
 const mockFetchAuthConfig = vi.fn<() => Promise<TestAuthConfigResult>>(() =>
   Promise.resolve({ status: 'resolved', config: runtimeConfig }),
 );
+const mockRefreshAuthConfig = vi.fn<() => Promise<TestAuthConfigResult>>(() =>
+  Promise.resolve({ status: 'resolved', config: runtimeConfig }),
+);
 const mockGetCachedAuthConfig = vi.fn<() => TestAuthConfig | undefined>(
   () => undefined,
 );
 const mockSubscribeAuthConfig = vi.fn((_cb: unknown) => () => {});
 vi.mock('../lib/auth-config', () => ({
   fetchAuthConfig: () => mockFetchAuthConfig(),
+  refreshAuthConfig: () => mockRefreshAuthConfig(),
   getCachedAuthConfig: () => mockGetCachedAuthConfig(),
   subscribeAuthConfig: (cb: unknown) => mockSubscribeAuthConfig(cb),
 }));
@@ -73,12 +78,17 @@ describe('AuthPage — /auth route composition', () => {
     mockAuthLanding.mockClear();
     mockRouterReplace.mockClear();
     mockFetchAuthConfig.mockClear();
+    mockRefreshAuthConfig.mockClear();
     mockGetCachedAuthConfig.mockClear();
     mockSubscribeAuthConfig.mockClear();
     mockGetDeploymentMode.mockClear();
     mockGetDeploymentMode.mockReturnValue('self-hosted');
     mockGetCachedAuthConfig.mockReturnValue(undefined);
     mockFetchAuthConfig.mockResolvedValue({
+      status: 'resolved',
+      config: runtimeConfig,
+    });
+    mockRefreshAuthConfig.mockResolvedValue({
       status: 'resolved',
       config: runtimeConfig,
     });
@@ -113,7 +123,6 @@ describe('AuthPage — /auth route composition', () => {
         expect.objectContaining({
           mode: 'hosted',
           runtimeConfig,
-          runtimeConfigLoading: false,
         }),
       );
     });
@@ -133,13 +142,27 @@ describe('AuthPage — /auth route composition', () => {
     expect(mockFetchAuthConfig).not.toHaveBeenCalled();
   });
 
-  it('falls back to /setup when runtime mode cannot be resolved', async () => {
+  it('shows a retryable /auth error when runtime config cannot be resolved', async () => {
     mockFetchAuthConfig.mockResolvedValue({ status: 'error' });
 
     render(<AuthPage />);
 
     await waitFor(() => {
-      expect(mockRouterReplace).toHaveBeenCalledWith('/setup');
+      expect(
+        screen.getByText(/sign-in is temporarily unavailable/i),
+      ).toBeTruthy();
+    });
+    expect(mockRouterReplace).not.toHaveBeenCalled();
+    expect(mockAuthLanding).not.toHaveBeenCalledWith(
+      expect.objectContaining({ runtimeConfig }),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /try again/i }));
+    await waitFor(() => {
+      expect(mockRefreshAuthConfig).toHaveBeenCalledTimes(1);
+      expect(mockAuthLanding).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'hosted', runtimeConfig }),
+      );
     });
   });
 });
@@ -147,18 +170,49 @@ describe('AuthPage — /auth route composition', () => {
 describe('SetupPage — /setup route composition', () => {
   beforeEach(() => {
     mockAuthLanding.mockClear();
-    mockGetDeploymentMode.mockClear();
+    mockRouterReplace.mockClear();
+    mockFetchAuthConfig.mockClear();
+    mockGetCachedAuthConfig.mockClear();
+    mockSubscribeAuthConfig.mockClear();
+    mockGetCachedAuthConfig.mockReturnValue(selfHostedRuntimeConfig);
+    mockFetchAuthConfig.mockResolvedValue({
+      status: 'resolved',
+      config: selfHostedRuntimeConfig,
+    });
   });
 
-  it('always renders the self-hosted setup flow without build-time mode checks', () => {
-    mockGetDeploymentMode.mockReturnValue('hosted');
+  it('renders the self-hosted setup and pairing flow when runtime mode is resolved', async () => {
+    render(<SetupPage />);
+
+    await waitFor(() => {
+      expect(mockAuthLanding).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'self-hosted' }),
+      );
+    });
+    expect(mockRouterReplace).not.toHaveBeenCalled();
+  });
+
+  it('redirects a direct hosted /setup visit to /auth', async () => {
+    mockGetCachedAuthConfig.mockReturnValue(runtimeConfig);
 
     render(<SetupPage />);
 
-    expect(mockAuthLanding).toHaveBeenCalledWith(
-      expect.objectContaining({ mode: 'self-hosted' }),
-    );
-    expect(mockGetDeploymentMode).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(mockRouterReplace).toHaveBeenCalledWith('/auth');
+    });
+    expect(mockAuthLanding).not.toHaveBeenCalled();
+  });
+
+  it('redirects /setup to /auth when runtime mode cannot be resolved', async () => {
+    mockGetCachedAuthConfig.mockReturnValue(undefined);
+    mockFetchAuthConfig.mockResolvedValue({ status: 'error' });
+
+    render(<SetupPage />);
+
+    await waitFor(() => {
+      expect(mockRouterReplace).toHaveBeenCalledWith('/auth');
+    });
+    expect(mockAuthLanding).not.toHaveBeenCalled();
   });
 });
 

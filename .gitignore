@@ -1,5 +1,6 @@
 # Secrets
 .env
+.daemon/
 
 # Virtualenvs
 .venv/

@@ -1,17 +1,18 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import {
+  act,
+  fireEvent,
   render,
   screen,
-  fireEvent,
   waitFor,
-  act,
 } from '@testing-library/react';
 
 const mockPush = vi.fn();
+const mockRouter = { push: mockPush };
 let mockSearchParams = new URLSearchParams();
 
 vi.mock('next/navigation', () => ({
-  useRouter: vi.fn(() => ({ push: mockPush })),
+  useRouter: vi.fn(() => mockRouter),
   useSearchParams: vi.fn(() => mockSearchParams),
 }));
 
@@ -39,76 +40,80 @@ vi.mock('../lib/auth', () => ({
 }));
 
 import {
-  refreshAccessToken,
-  completeSetup,
-  completeEnrollment,
-  startEmailSignIn,
   completeEmailSignIn,
-  startGoogleSignIn,
+  completeEnrollment,
   completeGoogleSignIn,
+  completeSetup,
+  refreshAccessToken,
+  startEmailSignIn,
+  startGoogleSignIn,
 } from '../lib/auth';
 import AuthLanding from '../components/AuthLanding';
 
-const mockedRefresh = vi.mocked(refreshAccessToken);
-const mockedCompleteSetup = vi.mocked(completeSetup);
-const mockedCompleteEnrollment = vi.mocked(completeEnrollment);
-const mockedStartEmail = vi.mocked(startEmailSignIn);
 const mockedCompleteEmail = vi.mocked(completeEmailSignIn);
-const mockedStartGoogle = vi.mocked(startGoogleSignIn);
+const mockedCompleteEnrollment = vi.mocked(completeEnrollment);
 const mockedCompleteGoogle = vi.mocked(completeGoogleSignIn);
-
-const hostedEmailRuntimeConfig = {
-  email: { enabled: true },
-  google: { enabled: false, clientId: '' },
-};
-
+const mockedCompleteSetup = vi.mocked(completeSetup);
+const mockedStartEmail = vi.mocked(startEmailSignIn);
+const mockedStartGoogle = vi.mocked(startGoogleSignIn);
 interface TestGoogleCredentialResponse {
   credential?: string;
 }
 
-interface TestGooglePromptNotification {
-  getMomentType?: () => 'display' | 'skipped' | 'dismissed' | string;
-  isNotDisplayed?: () => boolean;
-  isSkippedMoment?: () => boolean;
-  isDismissedMoment?: () => boolean;
-  getDismissedReason?: () => string | undefined;
+interface TestGoogleInitializeConfig {
+  client_id: string;
+  nonce: string;
+  callback: (response: TestGoogleCredentialResponse) => void;
+  auto_select?: boolean;
+  cancel_on_tap_outside?: boolean;
 }
 
 let capturedGoogleCallback:
   | ((response: TestGoogleCredentialResponse) => void)
   | null = null;
-let capturedPromptCallback:
-  | ((notification: TestGooglePromptNotification) => void)
-  | null = null;
-const mockGoogleInitialize = vi.fn(
-  (config: {
-    client_id: string;
-    nonce: string;
-    callback: (response: TestGoogleCredentialResponse) => void;
-  }) => {
-    capturedGoogleCallback = config.callback;
-  },
-);
-const mockGooglePrompt = vi.fn(
-  (cb?: (notification: TestGooglePromptNotification) => void) => {
-    capturedPromptCallback = cb ?? null;
-  },
-);
+const mockGoogleInitialize = vi.fn((config: TestGoogleInitializeConfig) => {
+  capturedGoogleCallback = config.callback;
+});
+const mockGoogleRenderButton = vi.fn((parent: HTMLElement) => {
+  const frame = document.createElement('iframe');
+  frame.dataset.testid = 'fake-google-iframe';
+  parent.appendChild(frame);
+});
+const mockGoogleCancel = vi.fn();
+const mockGooglePrompt = vi.fn();
 
 function installGoogleMock(): void {
   capturedGoogleCallback = null;
-  capturedPromptCallback = null;
   Object.defineProperty(window, 'google', {
     configurable: true,
     value: {
       accounts: {
         id: {
           initialize: mockGoogleInitialize,
+          renderButton: mockGoogleRenderButton,
+          cancel: mockGoogleCancel,
+          // This deliberately exists only to prove the UI does not depend on
+          // One Tap. The component's type intentionally has no prompt member.
           prompt: mockGooglePrompt,
         },
       },
     },
   });
+}
+
+function hostedConfig(
+  overrides: Partial<{
+    email: { enabled: boolean };
+    google: { enabled: boolean; clientId: string };
+  }> = {},
+) {
+  return {
+    email: overrides.email ?? { enabled: false },
+    google: overrides.google ?? {
+      enabled: true,
+      clientId: 'runtime-client-id',
+    },
+  };
 }
 
 beforeEach(() => {
@@ -117,15 +122,26 @@ beforeEach(() => {
   delete process.env.NEXT_PUBLIC_EMAIL_ENABLED;
   delete (window as Window & { google?: unknown }).google;
   capturedGoogleCallback = null;
-  capturedPromptCallback = null;
-  mockedRefresh.mockClear();
-  mockedCompleteSetup.mockClear();
-  mockedCompleteEnrollment.mockClear();
-  mockedStartEmail.mockClear();
-  mockedCompleteEmail.mockClear();
-  mockedStartGoogle.mockClear();
-  mockedCompleteGoogle.mockClear();
+  vi.clearAllMocks();
+  vi.mocked(refreshAccessToken).mockResolvedValue({ success: false });
+  vi.mocked(startGoogleSignIn).mockResolvedValue({
+    success: true,
+    challengeId: 'google-challenge',
+    nonce: 'server-nonce',
+    expiresAt: 1234567890,
+  });
+  vi.mocked(completeGoogleSignIn).mockResolvedValue({ success: true });
+  vi.mocked(completeSetup).mockResolvedValue({ success: true });
+  vi.mocked(completeEnrollment).mockResolvedValue({ success: true });
+  vi.mocked(startEmailSignIn).mockResolvedValue({
+    success: true,
+    challengeId: 'ch-123',
+    expiresAt: 1234567890,
+  });
+  vi.mocked(completeEmailSignIn).mockResolvedValue({ success: true });
   mockGoogleInitialize.mockClear();
+  mockGoogleRenderButton.mockClear();
+  mockGoogleCancel.mockClear();
   mockGooglePrompt.mockClear();
   mockPush.mockClear();
 });
@@ -136,177 +152,51 @@ async function waitForLoadingToFinish(): Promise<void> {
   });
 }
 
-describe('AuthLanding — hosted mode', () => {
-  it('renders identity entry points before enrollment', async () => {
-    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
-
-    render(
-      <AuthLanding
-        mode="hosted"
-        runtimeConfig={{
-          email: { enabled: true },
-          google: { enabled: true, clientId: 'public-client-id' },
-        }}
-      />,
-    );
-    await waitForLoadingToFinish();
-
-    const googleButton = screen.getByRole('button', {
-      name: /continue with google/i,
-    });
-    const emailInput = screen.getByLabelText(/email address/i);
-    const enrollmentHeading = screen.getByRole('heading', {
-      name: /continue enrollment/i,
-    });
-
-    expect(googleButton).toBeTruthy();
-    expect(emailInput).toBeTruthy();
-    expect(enrollmentHeading).toBeTruthy();
-
-    const googlePosition =
-      googleButton.compareDocumentPosition(enrollmentHeading);
-    expect(googlePosition & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
-      Node.DOCUMENT_POSITION_FOLLOWING,
-    );
+async function waitForGoogleButton(): Promise<HTMLElement> {
+  await waitFor(() => {
+    expect(screen.getByTestId('google-signin-button')).toBeTruthy();
+    expect(mockGoogleRenderButton).toHaveBeenCalled();
   });
+  return screen.getByTestId('google-signin-button');
+}
 
-  it('does not render an active Google button without a client ID', async () => {
-    render(<AuthLanding mode="hosted" />);
-    await waitForLoadingToFinish();
-
-    expect(
-      screen.queryByRole('button', {
-        name: /continue with google/i,
-      }),
-    ).toBeNull();
-
-    const unavailableButton = screen.getByRole('button', {
-      name: /google sign-in unavailable/i,
-    });
-
-    expect(unavailableButton.hasAttribute('disabled')).toBe(true);
-    expect(screen.getByText('No Google client ID configured')).toBeTruthy();
-  });
-
-  it('renders an active Google button when a client ID is configured', async () => {
-    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
-
-    render(<AuthLanding mode="hosted" />);
-    await waitForLoadingToFinish();
-
-    const googleButton = screen.getByRole('button', {
-      name: /continue with google/i,
-    });
-
-    expect(googleButton.hasAttribute('disabled')).toBe(false);
-  });
-
-  it('starts Google with a server nonce before completing with the GIS credential', async () => {
-    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
+describe('AuthLanding — hosted Google-first login', () => {
+  it('renders the official GIS button with a server nonce and completes privately', async () => {
     installGoogleMock();
-    mockedStartGoogle.mockResolvedValueOnce({
-      success: true,
-      challengeId: 'google-challenge',
-      nonce: 'server-nonce',
-      expiresAt: 1234567890,
-    });
-    mockedCompleteGoogle.mockResolvedValueOnce({ success: true });
-
-    render(<AuthLanding mode="hosted" />);
-    await waitForLoadingToFinish();
-
-    fireEvent.click(
-      screen.getByRole('button', { name: /continue with google/i }),
-    );
-
-    await waitFor(() => {
-      expect(mockedStartGoogle).toHaveBeenCalledTimes(1);
-      expect(mockGoogleInitialize).toHaveBeenCalledWith({
-        client_id: 'public-client-id',
-        nonce: 'server-nonce',
-        callback: expect.any(Function),
-      });
-      expect(mockedCompleteGoogle).not.toHaveBeenCalled();
-    });
-
-    await act(async () => {
-      capturedGoogleCallback?.({ credential: 'google-id-token' });
-    });
-
-    await waitFor(() => {
-      expect(mockedCompleteGoogle).toHaveBeenCalledWith(
-        'google-challenge',
-        'server-nonce',
-        'google-id-token',
-        'private',
-        undefined,
-      );
-    });
-    expect(mockPush).toHaveBeenCalledWith('/');
-  });
-
-  it('maps public computer choice to temporary persistence for Google', async () => {
-    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
-    installGoogleMock();
-    mockedStartGoogle.mockResolvedValueOnce({
-      success: true,
-      challengeId: 'google-challenge',
-      nonce: 'server-nonce',
-      expiresAt: 1234567890,
-    });
-    mockedCompleteGoogle.mockResolvedValueOnce({ success: true });
-
-    render(<AuthLanding mode="hosted" />);
-    await waitForLoadingToFinish();
-
-    fireEvent.click(screen.getByRole('radio', { name: /public/i }));
-    fireEvent.click(
-      screen.getByRole('button', { name: /continue with google/i }),
-    );
-
-    await waitFor(() => {
-      expect(mockGoogleInitialize).toHaveBeenCalled();
-    });
-    await act(async () => {
-      capturedGoogleCallback?.({ credential: 'google-id-token' });
-    });
-
-    await waitFor(() => {
-      expect(mockedCompleteGoogle).toHaveBeenCalledWith(
-        'google-challenge',
-        'server-nonce',
-        'google-id-token',
-        'temporary',
-        undefined,
-      );
-    });
-  });
-
-  it('passes invite token from URL query to Google completion without storing it', async () => {
     mockSearchParams = new URLSearchParams('invite=invite-secret');
-    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
-    installGoogleMock();
-    mockedStartGoogle.mockResolvedValueOnce({
-      success: true,
-      challengeId: 'google-challenge',
-      nonce: 'server-nonce',
-      expiresAt: 1234567890,
-    });
-    mockedCompleteGoogle.mockResolvedValueOnce({ success: true });
 
-    render(<AuthLanding mode="hosted" />);
+    render(<AuthLanding mode="hosted" runtimeConfig={hostedConfig()} />);
     await waitForLoadingToFinish();
+    await waitForGoogleButton();
 
-    fireEvent.click(
-      screen.getByRole('button', { name: /continue with google/i }),
-    );
-
-    await waitFor(() => {
-      expect(mockGoogleInitialize).toHaveBeenCalled();
+    expect(mockedStartGoogle).toHaveBeenCalledTimes(1);
+    expect(mockGoogleInitialize).toHaveBeenCalledWith({
+      client_id: 'runtime-client-id',
+      nonce: 'server-nonce',
+      callback: expect.any(Function),
+      auto_select: false,
+      cancel_on_tap_outside: false,
     });
+    expect(mockGoogleRenderButton).toHaveBeenCalledWith(
+      expect.any(HTMLElement),
+      {
+        type: 'standard',
+        theme: 'outline',
+        size: 'large',
+        text: 'continue_with',
+        shape: 'pill',
+        width: 400,
+        logo_alignment: 'left',
+      },
+    );
+    expect(mockGooglePrompt).not.toHaveBeenCalled();
+    expect(screen.queryByRole('radio')).toBeNull();
+    expect(screen.queryByText(/continue enrollment/i)).toBeNull();
+
     await act(async () => {
       capturedGoogleCallback?.({ credential: 'google-id-token' });
     });
+    expect(screen.queryByTestId('fake-google-iframe')).toBeNull();
 
     await waitFor(() => {
       expect(mockedCompleteGoogle).toHaveBeenCalledWith(
@@ -315,576 +205,271 @@ describe('AuthLanding — hosted mode', () => {
         'google-id-token',
         'private',
         'invite-secret',
+        expect.any(AbortSignal),
       );
     });
+    expect(mockPush).toHaveBeenCalledWith('/');
   });
 
-  it('shows a recoverable error when Google start fails', async () => {
-    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
-    installGoogleMock();
-    mockedStartGoogle.mockResolvedValueOnce({
-      success: false,
-      error: 'google_unavailable',
-    });
-
+  it('does not fall back to build-time Google configuration when runtime config is absent', async () => {
+    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'build-time-client-id';
     render(<AuthLanding mode="hosted" />);
     await waitForLoadingToFinish();
 
-    fireEvent.click(
-      screen.getByRole('button', { name: /continue with google/i }),
+    expect(screen.getByRole('alert').textContent || '').toMatch(
+      /temporarily unavailable/i,
     );
-
-    await waitFor(() => {
-      expect(screen.getByText('google_unavailable')).toBeTruthy();
-    });
-    expect(mockedCompleteGoogle).not.toHaveBeenCalled();
-    expect(
-      screen.getByRole('button', { name: /continue with google/i }),
-    ).toBeTruthy();
+    expect(screen.queryByText(/build-time-client-id/i)).toBeNull();
+    expect(mockedStartGoogle).not.toHaveBeenCalled();
   });
 
-  it('shows a recoverable error when GIS returns no credential', async () => {
-    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
-    installGoogleMock();
-    mockedStartGoogle.mockResolvedValueOnce({
-      success: true,
-      challengeId: 'google-challenge',
-      nonce: 'server-nonce',
-      expiresAt: 1234567890,
-    });
-
-    render(<AuthLanding mode="hosted" />);
-    await waitForLoadingToFinish();
-
-    fireEvent.click(
-      screen.getByRole('button', { name: /continue with google/i }),
-    );
-
-    await waitFor(() => {
-      expect(mockGoogleInitialize).toHaveBeenCalled();
-    });
-    await act(async () => {
-      capturedGoogleCallback?.({});
-    });
-
-    await waitFor(() => {
-      expect(
-        screen.getByText(/google sign-in was cancelled or unavailable/i),
-      ).toBeTruthy();
-    });
-    expect(mockedCompleteGoogle).not.toHaveBeenCalled();
-  });
-
-  it('shows a recoverable error when Google complete fails', async () => {
-    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
-    installGoogleMock();
-    mockedStartGoogle.mockResolvedValueOnce({
-      success: true,
-      challengeId: 'google-challenge',
-      nonce: 'server-nonce',
-      expiresAt: 1234567890,
-    });
-    mockedCompleteGoogle.mockResolvedValueOnce({
-      success: false,
-      error: 'Google sign-in failed. Please try again.',
-    });
-
-    render(<AuthLanding mode="hosted" />);
-    await waitForLoadingToFinish();
-
-    fireEvent.click(
-      screen.getByRole('button', { name: /continue with google/i }),
-    );
-
-    await waitFor(() => {
-      expect(mockGoogleInitialize).toHaveBeenCalled();
-    });
-    await act(async () => {
-      capturedGoogleCallback?.({ credential: 'google-id-token' });
-    });
-
-    await waitFor(() => {
-      expect(
-        screen.getByText('Google sign-in failed. Please try again.'),
-      ).toBeTruthy();
-    });
-    expect(mockPush).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    [
-      'not displayed',
-      {
-        getMomentType: () => 'display',
-        isNotDisplayed: () => true,
-      },
-    ],
-    [
-      'skipped',
-      {
-        getMomentType: () => 'skipped',
-        isSkippedMoment: () => true,
-      },
-    ],
-    [
-      'dismissed without credential',
-      {
-        getMomentType: () => 'dismissed',
-        isDismissedMoment: () => true,
-        getDismissedReason: () => 'cancel_called',
-      },
-    ],
-  ] satisfies Array<[string, TestGooglePromptNotification]>)(
-    'shows a recoverable error when the GIS prompt is %s',
-    async (_label, notification) => {
-      process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
-      installGoogleMock();
-      mockedStartGoogle.mockResolvedValueOnce({
-        success: true,
-        challengeId: 'google-challenge',
-        nonce: 'server-nonce',
-        expiresAt: 1234567890,
-      });
-
-      render(<AuthLanding mode="hosted" />);
-      await waitForLoadingToFinish();
-
-      fireEvent.click(
-        screen.getByRole('button', { name: /continue with google/i }),
-      );
-
-      await waitFor(() => {
-        expect(capturedPromptCallback).toBeTruthy();
-      });
-
-      await act(async () => {
-        capturedPromptCallback?.(notification);
-      });
-
-      await waitFor(() => {
-        expect(
-          screen.getByText(/google sign-in was cancelled or unavailable/i),
-        ).toBeTruthy();
-      });
-      expect(mockedCompleteGoogle).not.toHaveBeenCalled();
-      const recoveredButton = screen.getByRole('button', {
-        name: /continue with google/i,
-      });
-      expect(recoveredButton.hasAttribute('disabled')).toBe(false);
-    },
-  );
-
-  it('does not reject when GIS reports a credential_returned dismissed moment', async () => {
-    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = 'public-client-id';
-    installGoogleMock();
-    mockedStartGoogle.mockResolvedValueOnce({
-      success: true,
-      challengeId: 'google-challenge',
-      nonce: 'server-nonce',
-      expiresAt: 1234567890,
-    });
-    mockedCompleteGoogle.mockResolvedValueOnce({ success: true });
-
-    render(<AuthLanding mode="hosted" />);
-    await waitForLoadingToFinish();
-
-    fireEvent.click(
-      screen.getByRole('button', { name: /continue with google/i }),
-    );
-
-    await waitFor(() => {
-      expect(capturedPromptCallback).toBeTruthy();
-    });
-
-    await act(async () => {
-      capturedPromptCallback?.({
-        getMomentType: () => 'dismissed',
-        isDismissedMoment: () => true,
-        getDismissedReason: () => 'credential_returned',
-      });
-      capturedGoogleCallback?.({ credential: 'google-id-token' });
-    });
-
-    await waitFor(() => {
-      expect(mockedCompleteGoogle).toHaveBeenCalledWith(
-        'google-challenge',
-        'server-nonce',
-        'google-id-token',
-        'private',
-        undefined,
-      );
-    });
-    expect(
-      screen.queryByText(/google sign-in was cancelled or unavailable/i),
-    ).toBeNull();
-  });
-
-  it('does not render the self-hosted setup form in hosted mode', async () => {
-    render(<AuthLanding mode="hosted" />);
-    await waitForLoadingToFinish();
-
-    expect(screen.queryByLabelText(/setup token/i)).toBeNull();
-    expect(screen.queryByRole('button', { name: /advanced/i })).toBeNull();
-    expect(
-      screen.queryByRole('button', { name: /complete setup/i }),
-    ).toBeNull();
-  });
-
-  it('shows enrollment form in hosted mode', async () => {
-    render(<AuthLanding mode="hosted" />);
-    await waitForLoadingToFinish();
-
-    expect(screen.getByPlaceholderText(/paste daemon-enroll/i)).toBeTruthy();
-    expect(screen.getByPlaceholderText(/pending id/i)).toBeTruthy();
-    expect(screen.getByPlaceholderText(/^code$/i)).toBeTruthy();
-    expect(
-      screen.getByRole('button', { name: /complete enrollment/i }),
-    ).toBeTruthy();
-  });
-
-  it('uses runtime provider config instead of build-time provider flags', async () => {
-    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = '';
-    process.env.NEXT_PUBLIC_EMAIL_ENABLED = 'false';
-
+  it('hides a disabled Google provider behind a friendly retryable error', async () => {
     render(
       <AuthLanding
         mode="hosted"
-        runtimeConfig={{
-          email: { enabled: true },
-          google: { enabled: true, clientId: 'runtime-client-id' },
-        }}
+        runtimeConfig={hostedConfig({
+          google: { enabled: false, clientId: '' },
+        })}
       />,
     );
     await waitForLoadingToFinish();
 
-    expect(
-      screen.getByRole('button', { name: /continue with google/i }),
-    ).toBeTruthy();
-    expect(screen.getByLabelText(/email address/i)).toBeTruthy();
-  });
-
-  it('initializes Google sign-in with the runtime client ID', async () => {
-    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID = '';
-    installGoogleMock();
-    mockedStartGoogle.mockResolvedValueOnce({
-      success: true,
-      challengeId: 'google-challenge',
-      nonce: 'server-nonce',
-      expiresAt: 1234567890,
-    });
-    mockedCompleteGoogle.mockResolvedValueOnce({ success: true });
-
-    render(
-      <AuthLanding
-        mode="hosted"
-        runtimeConfig={{
-          email: { enabled: false },
-          google: { enabled: true, clientId: 'runtime-client-id' },
-        }}
-      />,
+    expect(screen.getByRole('alert').textContent || '').toMatch(
+      /Google sign-in is temporarily unavailable/i,
     );
-    await waitForLoadingToFinish();
-
-    fireEvent.click(
-      screen.getByRole('button', { name: /continue with google/i }),
-    );
-
-    await waitFor(() => {
-      expect(mockedStartGoogle).toHaveBeenCalledTimes(1);
-      expect(mockGoogleInitialize).toHaveBeenCalledWith({
-        client_id: 'runtime-client-id',
-        nonce: 'server-nonce',
-        callback: expect.any(Function),
-      });
-    });
-
-    await act(async () => {
-      capturedGoogleCallback?.({ credential: 'google-id-token' });
-    });
-
-    await waitFor(() => {
-      expect(mockedCompleteGoogle).toHaveBeenCalledWith(
-        'google-challenge',
-        'server-nonce',
-        'google-id-token',
-        'private',
-        undefined,
-      );
-    });
-  });
-
-  it('hides the hosted email form while runtime config is loading', async () => {
-    process.env.NEXT_PUBLIC_EMAIL_ENABLED = 'true';
-
-    render(<AuthLanding mode="hosted" runtimeConfigLoading />);
-    await waitForLoadingToFinish();
-
-    expect(screen.queryByLabelText(/email address/i)).toBeNull();
-    expect(
-      screen.queryByRole('button', { name: /send verification code/i }),
-    ).toBeNull();
-    expect(screen.queryByLabelText(/verification code/i)).toBeNull();
-  });
-
-  it('keeps the hosted email form hidden when runtime config is unavailable', async () => {
-    process.env.NEXT_PUBLIC_EMAIL_ENABLED = 'true';
-
-    render(<AuthLanding mode="hosted" />);
-    await waitForLoadingToFinish();
-
-    expect(screen.queryByLabelText(/email address/i)).toBeNull();
-    expect(
-      screen.queryByRole('button', { name: /send verification code/i }),
-    ).toBeNull();
-  });
-});
-
-describe('AuthLanding — self-hosted mode', () => {
-  it('renders setup token form before enrollment', async () => {
-    render(<AuthLanding mode="self-hosted" />);
-    await waitForLoadingToFinish();
-
-    const setupLabel = screen.getByLabelText(/setup token/i);
-    const enrollmentHeading = screen.getByRole('heading', {
-      name: /continue enrollment/i,
-    });
-
-    expect(setupLabel).toBeTruthy();
-    expect(enrollmentHeading).toBeTruthy();
-
-    const setupPosition = setupLabel.compareDocumentPosition(enrollmentHeading);
-    expect(setupPosition & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
-      Node.DOCUMENT_POSITION_FOLLOWING,
-    );
-  });
-
-  it('does not show identity cards in self-hosted mode', async () => {
-    render(<AuthLanding mode="self-hosted" />);
-    await waitForLoadingToFinish();
-
+    expect(screen.queryByText(/client id|disabled|configured/i)).toBeNull();
     expect(
       screen.queryByRole('button', { name: /continue with google/i }),
     ).toBeNull();
+    expect(mockedStartGoogle).not.toHaveBeenCalled();
+  });
+
+  it('shows a friendly error and starts a fresh challenge on retry', async () => {
+    installGoogleMock();
+    mockedStartGoogle
+      .mockResolvedValueOnce({ success: false, error: 'google_unavailable' })
+      .mockResolvedValueOnce({
+        success: true,
+        challengeId: 'second-challenge',
+        nonce: 'second-nonce',
+        expiresAt: 1234567890,
+      });
+
+    render(<AuthLanding mode="hosted" runtimeConfig={hostedConfig()} />);
+    await waitForLoadingToFinish();
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent || '').toMatch(
+        /temporarily unavailable/i,
+      );
+    });
+    expect(screen.queryByText('google_unavailable')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /try again/i }));
+    await waitFor(() => {
+      expect(mockedStartGoogle).toHaveBeenCalledTimes(2);
+      expect(mockGoogleInitialize).toHaveBeenCalledWith(
+        expect.objectContaining({ nonce: 'second-nonce' }),
+      );
+      expect(mockGoogleRenderButton).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('recovers from an empty GIS callback without an infinite loading state', async () => {
+    installGoogleMock();
+    mockedStartGoogle
+      .mockResolvedValueOnce({
+        success: true,
+        challengeId: 'first-challenge',
+        nonce: 'first-nonce',
+        expiresAt: 1234567890,
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        challengeId: 'second-challenge',
+        nonce: 'second-nonce',
+        expiresAt: 1234567890,
+      });
+
+    render(<AuthLanding mode="hosted" runtimeConfig={hostedConfig()} />);
+    await waitForLoadingToFinish();
+    await waitForGoogleButton();
+
+    await act(async () => {
+      capturedGoogleCallback?.({});
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent || '').toMatch(/cancelled/i);
+    });
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(mockedCompleteGoogle).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: /try again/i }));
+    await waitForGoogleButton();
+    expect(mockedStartGoogle).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows a friendly completion error and permits retry', async () => {
+    installGoogleMock();
+    mockedCompleteGoogle.mockResolvedValueOnce({ success: false });
+
+    render(<AuthLanding mode="hosted" runtimeConfig={hostedConfig()} />);
+    await waitForLoadingToFinish();
+    await waitForGoogleButton();
+
+    await act(async () => {
+      capturedGoogleCallback?.({ credential: 'google-id-token' });
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent || '').toMatch(
+        /temporarily unavailable/i,
+      );
+    });
+    expect(screen.queryByText(/failed: 500|invalid token|debug/i)).toBeNull();
+    expect(screen.getByRole('button', { name: /try again/i })).toBeTruthy();
+  });
+
+  it('ignores duplicate GIS callbacks after completion starts', async () => {
+    installGoogleMock();
+    render(<AuthLanding mode="hosted" runtimeConfig={hostedConfig()} />);
+    await waitForLoadingToFinish();
+    await waitForGoogleButton();
+
+    await act(async () => {
+      capturedGoogleCallback?.({ credential: 'first-id-token' });
+      capturedGoogleCallback?.({ credential: 'second-id-token' });
+    });
+
+    await waitFor(() => {
+      expect(mockedCompleteGoogle).toHaveBeenCalledTimes(1);
+    });
+    expect(mockedCompleteGoogle).toHaveBeenCalledWith(
+      'google-challenge',
+      'server-nonce',
+      'first-id-token',
+      'private',
+      undefined,
+      expect.any(AbortSignal),
+    );
+  });
+
+  it('ignores a late callback after the auth screen unmounts', async () => {
+    installGoogleMock();
+    const view = render(
+      <AuthLanding mode="hosted" runtimeConfig={hostedConfig()} />,
+    );
+    await waitForLoadingToFinish();
+    await waitForGoogleButton();
+    const lateCallback = capturedGoogleCallback;
+    expect(lateCallback).toBeTruthy();
+
+    view.unmount();
+    await act(async () => {
+      lateCallback?.({ credential: 'late-google-id-token' });
+    });
+
+    expect(mockedCompleteGoogle).not.toHaveBeenCalled();
+  });
+
+  it('passes the document CSP nonce to GIS and recovers from a script failure', async () => {
+    delete (window as Window & { google?: unknown }).google;
+    const nonceMeta = document.createElement('meta');
+    nonceMeta.name = 'csp-nonce';
+    nonceMeta.content = 'document-style-nonce';
+    document.head.appendChild(nonceMeta);
+    mockedStartGoogle.mockResolvedValue({
+      success: true,
+      challengeId: 'retry-challenge',
+      nonce: 'retry-nonce',
+      expiresAt: 1234567890,
+    });
+
+    render(<AuthLanding mode="hosted" runtimeConfig={hostedConfig()} />);
+    await waitForLoadingToFinish();
+
+    const script = document.querySelector<HTMLScriptElement>(
+      'script[src="https://accounts.google.com/gsi/client"]',
+    );
+    nonceMeta.remove();
+    expect(script).toBeTruthy();
+    expect(script?.nonce).toBe('document-style-nonce');
+    await act(async () => {
+      script?.dispatchEvent(new Event('error'));
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent || '').toMatch(
+        /temporarily unavailable/i,
+      );
+    });
+    expect(mockedStartGoogle).not.toHaveBeenCalled();
+    expect(script?.isConnected).toBe(false);
+
+    installGoogleMock();
+    fireEvent.click(screen.getByRole('button', { name: /try again/i }));
+    await waitFor(() => {
+      expect(mockGoogleRenderButton).toHaveBeenCalled();
+    });
+  });
+
+  it('keeps email hidden when the runtime provider is disabled', async () => {
+    render(
+      <AuthLanding
+        mode="hosted"
+        runtimeConfig={hostedConfig({
+          email: { enabled: false },
+          google: { enabled: true, clientId: 'runtime-client-id' },
+        })}
+      />,
+    );
+    await waitForLoadingToFinish();
+
+    expect(screen.queryByLabelText(/email address/i)).toBeNull();
     expect(
-      screen.queryByRole('button', { name: /continue with email/i }),
+      screen.queryByRole('button', { name: /send verification code/i }),
     ).toBeNull();
   });
 
-  it('shows enrollment form in self-hosted mode', async () => {
-    render(<AuthLanding mode="self-hosted" />);
+  it('keeps provider controls hidden while runtime config is loading', async () => {
+    render(<AuthLanding mode="hosted" runtimeConfigLoading />);
     await waitForLoadingToFinish();
 
-    expect(screen.getByPlaceholderText(/paste daemon-enroll/i)).toBeTruthy();
+    expect(screen.getByText(/loading sign-in providers/i)).toBeTruthy();
+    expect(screen.queryByLabelText(/email address/i)).toBeNull();
+    expect(screen.queryByTestId('google-signin-button')).toBeNull();
+    expect(mockedStartGoogle).not.toHaveBeenCalled();
+  });
+
+  it('keeps hosted enrollment and device choices out of the normal login', async () => {
+    render(
+      <AuthLanding
+        mode="hosted"
+        runtimeConfig={hostedConfig({
+          email: { enabled: true },
+        })}
+      />,
+    );
+    await waitForLoadingToFinish();
+
     expect(
-      screen.getByRole('button', { name: /complete enrollment/i }),
-    ).toBeTruthy();
-  });
-
-  it('shows the security notice about POST-only tokens', async () => {
-    render(<AuthLanding mode="self-hosted" />);
-    await waitForLoadingToFinish();
-
-    expect(screen.getByText(/why a form, not a url/i)).toBeTruthy();
-    expect(screen.getByText(/sent in a post body only/i)).toBeTruthy();
+      screen.queryByRole('heading', { name: /continue enrollment/i }),
+    ).toBeNull();
+    expect(screen.queryByPlaceholderText(/pending id/i)).toBeNull();
+    expect(screen.queryByRole('radio')).toBeNull();
+    expect(screen.queryByText(/this device is/i)).toBeNull();
+    expect(screen.queryByText(/public/i)).toBeNull();
   });
 });
 
-describe('AuthLanding — setup token submission', () => {
-  it('submits setup token in a POST body via completeSetup', async () => {
-    mockedCompleteSetup.mockResolvedValueOnce({ success: true });
-    mockPush.mockClear();
-
-    render(<AuthLanding mode="self-hosted" />);
-    await waitForLoadingToFinish();
-
-    const tokenInput = screen.getByLabelText(/setup token/i);
-    fireEvent.change(tokenInput, { target: { value: 'my-secret-token' } });
-
-    const submitButton = screen.getByRole('button', {
-      name: /complete setup/i,
-    });
-    fireEvent.click(submitButton);
-
-    await waitFor(() => {
-      expect(mockedCompleteSetup).toHaveBeenCalledWith(
-        'my-secret-token',
-        undefined,
-      );
-    });
-
-    expect(mockPush).toHaveBeenCalledWith('/');
-  });
-
-  it('shows setup error when completeSetup fails', async () => {
-    mockedCompleteSetup.mockResolvedValueOnce({
-      success: false,
-      error: 'Invalid setup token',
-    });
-    mockPush.mockClear();
-
-    render(<AuthLanding mode="self-hosted" />);
-    await waitForLoadingToFinish();
-
-    const tokenInput = screen.getByLabelText(/setup token/i);
-    fireEvent.change(tokenInput, { target: { value: 'bad-token' } });
-
-    const submitButton = screen.getByRole('button', {
-      name: /complete setup/i,
-    });
-    fireEvent.click(submitButton);
-
-    await waitFor(() => {
-      expect(screen.getByText('Invalid setup token')).toBeTruthy();
-    });
-
-    expect(mockPush).not.toHaveBeenCalled();
-  });
-});
-
-describe('AuthLanding — enrollment submission', () => {
-  it('submits enrollment via completeEnrollment with parsed payload', async () => {
-    mockedCompleteEnrollment.mockResolvedValueOnce({ success: true });
-    mockPush.mockClear();
-
-    render(<AuthLanding mode="hosted" />);
-    await waitForLoadingToFinish();
-
-    const payloadInput = screen.getByPlaceholderText(/paste daemon-enroll/i);
-    fireEvent.change(payloadInput, {
-      target: { value: 'daemon-enroll://abc123#xyz789' },
-    });
-
-    const submitButton = screen.getByRole('button', {
-      name: /complete enrollment/i,
-    });
-    fireEvent.click(submitButton);
-
-    await waitFor(() => {
-      expect(mockedCompleteEnrollment).toHaveBeenCalledWith('abc123', 'xyz789');
-    });
-
-    expect(mockPush).toHaveBeenCalledWith('/');
-  });
-
-  it('shows enrollment error when completeEnrollment fails', async () => {
-    mockedCompleteEnrollment.mockResolvedValueOnce({
-      success: false,
-      error: 'Invalid enrollment code',
-    });
-    mockPush.mockClear();
-
-    render(<AuthLanding mode="self-hosted" />);
-    await waitForLoadingToFinish();
-
-    const pendingInput = screen.getByPlaceholderText(/pending id/i);
-    const codeInput = screen.getByPlaceholderText(/^code$/i);
-    fireEvent.change(pendingInput, { target: { value: 'pid-1' } });
-    fireEvent.change(codeInput, { target: { value: 'wrong' } });
-
-    const submitButton = screen.getByRole('button', {
-      name: /complete enrollment/i,
-    });
-    fireEvent.click(submitButton);
-
-    await waitFor(() => {
-      expect(screen.getByText('Invalid enrollment code')).toBeTruthy();
-    });
-
-    expect(mockPush).not.toHaveBeenCalled();
-  });
-});
-
-describe('AuthLanding — email sign-in flow', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('starts email sign-in with generic user-facing behavior', async () => {
-    mockedStartEmail.mockResolvedValueOnce({
-      success: true,
-      challengeId: 'ch-abc',
-      expiresAt: 1234567890,
-    });
-
+describe('AuthLanding — optional hosted email flow', () => {
+  it('starts and completes email sign-in with private persistence and no chooser', async () => {
     render(
-      <AuthLanding mode="hosted" runtimeConfig={hostedEmailRuntimeConfig} />,
-    );
-    await waitForLoadingToFinish();
-
-    const emailInput = screen.getByLabelText(/email address/i);
-    fireEvent.change(emailInput, { target: { value: 'user@example.com' } });
-
-    const sendButton = screen.getByRole('button', {
-      name: /send verification code/i,
-    });
-    fireEvent.click(sendButton);
-
-    await waitFor(() => {
-      expect(mockedStartEmail).toHaveBeenCalledWith('user@example.com');
-    });
-
-    expect(screen.getByLabelText(/verification code/i)).toBeTruthy();
-    expect(screen.getByText(/web sign-in device/i)).toBeTruthy();
-  });
-
-  it('completes email sign-in and redirects on success', async () => {
-    mockedStartEmail.mockResolvedValueOnce({
-      success: true,
-      challengeId: 'ch-abc',
-      expiresAt: 1234567890,
-    });
-    mockedCompleteEmail.mockResolvedValueOnce({ success: true });
-    mockPush.mockClear();
-
-    render(
-      <AuthLanding mode="hosted" runtimeConfig={hostedEmailRuntimeConfig} />,
-    );
-    await waitForLoadingToFinish();
-
-    const emailInput = screen.getByLabelText(/email address/i);
-    fireEvent.change(emailInput, { target: { value: 'user@example.com' } });
-
-    const sendButton = screen.getByRole('button', {
-      name: /send verification code/i,
-    });
-    fireEvent.click(sendButton);
-
-    await waitFor(() => {
-      expect(screen.getByLabelText(/verification code/i)).toBeTruthy();
-    });
-    expect(screen.getByText(/web sign-in device/i)).toBeTruthy();
-
-    const codeInput = screen.getByLabelText(/verification code/i);
-    fireEvent.change(codeInput, { target: { value: '123456' } });
-
-    const verifyButton = screen.getByRole('button', {
-      name: /verify and sign in/i,
-    });
-    fireEvent.click(verifyButton);
-
-    await waitFor(() => {
-      expect(mockedCompleteEmail).toHaveBeenCalledWith(
-        'ch-abc',
-        '123456',
-        'private',
-        undefined,
-      );
-    });
-
-    expect(mockPush).toHaveBeenCalledWith('/');
-  });
-
-  it('passes invite token from URL query to email completion without storing it', async () => {
-    mockSearchParams = new URLSearchParams('invite_token=invite-secret');
-    mockedStartEmail.mockResolvedValueOnce({
-      success: true,
-      challengeId: 'ch-abc',
-      expiresAt: 1234567890,
-    });
-    mockedCompleteEmail.mockResolvedValueOnce({ success: true });
-
-    render(
-      <AuthLanding mode="hosted" runtimeConfig={hostedEmailRuntimeConfig} />,
+      <AuthLanding
+        mode="hosted"
+        runtimeConfig={hostedConfig({
+          email: { enabled: true },
+          google: { enabled: false, clientId: '' },
+        })}
+      />,
     );
     await waitForLoadingToFinish();
 
@@ -896,8 +481,11 @@ describe('AuthLanding — email sign-in flow', () => {
     );
 
     await waitFor(() => {
+      expect(mockedStartEmail).toHaveBeenCalledWith('user@example.com');
       expect(screen.getByLabelText(/verification code/i)).toBeTruthy();
     });
+    expect(screen.queryByRole('radio')).toBeNull();
+    expect(screen.queryByText(/web sign-in device/i)).toBeNull();
 
     fireEvent.change(screen.getByLabelText(/verification code/i), {
       target: { value: '123456' },
@@ -908,7 +496,47 @@ describe('AuthLanding — email sign-in flow', () => {
 
     await waitFor(() => {
       expect(mockedCompleteEmail).toHaveBeenCalledWith(
-        'ch-abc',
+        'ch-123',
+        '123456',
+        'private',
+        undefined,
+      );
+    });
+    expect(mockPush).toHaveBeenCalledWith('/');
+  });
+
+  it('passes an invite token without storing it in the form state', async () => {
+    mockSearchParams = new URLSearchParams('invite_token=invite-secret');
+    render(
+      <AuthLanding
+        mode="hosted"
+        runtimeConfig={hostedConfig({
+          email: { enabled: true },
+          google: { enabled: false, clientId: '' },
+        })}
+      />,
+    );
+    await waitForLoadingToFinish();
+
+    fireEvent.change(screen.getByLabelText(/email address/i), {
+      target: { value: 'user@example.com' },
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: /send verification code/i }),
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText(/verification code/i)).toBeTruthy(),
+    );
+    fireEvent.change(screen.getByLabelText(/verification code/i), {
+      target: { value: '123456' },
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: /verify and sign in/i }),
+    );
+
+    await waitFor(() => {
+      expect(mockedCompleteEmail).toHaveBeenCalledWith(
+        'ch-123',
         '123456',
         'private',
         'invite-secret',
@@ -916,150 +544,139 @@ describe('AuthLanding — email sign-in flow', () => {
     });
   });
 
-  it('maps public computer choice to temporary persistence', async () => {
+  it('shows email start and completion errors and allows switching email', async () => {
     mockedStartEmail.mockResolvedValueOnce({
-      success: true,
-      challengeId: 'ch-abc',
-      expiresAt: 1234567890,
+      success: false,
+      error: 'rate limited',
     });
-    mockedCompleteEmail.mockResolvedValueOnce({ success: true });
-
     render(
-      <AuthLanding mode="hosted" runtimeConfig={hostedEmailRuntimeConfig} />,
+      <AuthLanding
+        mode="hosted"
+        runtimeConfig={hostedConfig({
+          email: { enabled: true },
+          google: { enabled: false, clientId: '' },
+        })}
+      />,
     );
     await waitForLoadingToFinish();
 
-    const emailInput = screen.getByLabelText(/email address/i);
-    fireEvent.change(emailInput, { target: { value: 'user@example.com' } });
-
-    const sendButton = screen.getByRole('button', {
-      name: /send verification code/i,
+    fireEvent.change(screen.getByLabelText(/email address/i), {
+      target: { value: 'user@example.com' },
     });
-    fireEvent.click(sendButton);
-
+    fireEvent.click(
+      screen.getByRole('button', { name: /send verification code/i }),
+    );
     await waitFor(() => {
+      expect(screen.getByText('rate limited')).toBeTruthy();
+    });
+
+    mockedStartEmail.mockResolvedValueOnce({
+      success: true,
+      challengeId: 'new-email-challenge',
+      expiresAt: 1234567890,
+    });
+    fireEvent.change(screen.getByLabelText(/email address/i), {
+      target: { value: 'new@example.com' },
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: /send verification code/i }),
+    );
+    await waitFor(() => {
+      expect(mockedStartEmail).toHaveBeenLastCalledWith('new@example.com');
       expect(screen.getByLabelText(/verification code/i)).toBeTruthy();
     });
-    expect(screen.getByText(/web sign-in device/i)).toBeTruthy();
 
-    const publicRadio = screen.getByRole('radio', { name: /public/i });
-    fireEvent.click(publicRadio);
-
-    const codeInput = screen.getByLabelText(/verification code/i);
-    fireEvent.change(codeInput, { target: { value: '654321' } });
-
-    const verifyButton = screen.getByRole('button', {
-      name: /verify and sign in/i,
+    mockedCompleteEmail.mockResolvedValueOnce({
+      success: false,
+      error: 'bad code',
     });
-    fireEvent.click(verifyButton);
-
+    fireEvent.change(screen.getByLabelText(/verification code/i), {
+      target: { value: '000000' },
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: /verify and sign in/i }),
+    );
     await waitFor(() => {
-      expect(mockedCompleteEmail).toHaveBeenCalledWith(
-        'ch-abc',
-        '654321',
-        'temporary',
+      expect(screen.getByText('bad code')).toBeTruthy();
+    });
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /use a different email/i }),
+    );
+    expect(screen.getByLabelText(/email address/i)).toBeTruthy();
+  });
+});
+
+describe('AuthLanding — self-hosted setup and pairing', () => {
+  it('retains setup and enrollment forms in resolved self-hosted mode', async () => {
+    render(<AuthLanding mode="self-hosted" />);
+    await waitForLoadingToFinish();
+
+    expect(screen.getByLabelText(/setup token/i)).toBeTruthy();
+    expect(
+      screen.getByRole('heading', { name: /continue enrollment/i }),
+    ).toBeTruthy();
+    expect(screen.getByText(/why a form, not a url/i)).toBeTruthy();
+  });
+
+  it('surfaces setup and enrollment failures without exposing a hosted path', async () => {
+    mockedCompleteSetup.mockResolvedValueOnce({
+      success: false,
+      error: 'Invalid setup token',
+    });
+    mockedCompleteEnrollment.mockResolvedValueOnce({
+      success: false,
+      error: 'Invalid enrollment code',
+    });
+    render(<AuthLanding mode="self-hosted" />);
+    await waitForLoadingToFinish();
+
+    fireEvent.change(screen.getByLabelText(/setup token/i), {
+      target: { value: 'bad-setup-token' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /complete setup/i }));
+    await waitFor(() => {
+      expect(screen.getByText('Invalid setup token')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByPlaceholderText(/pending id/i), {
+      target: { value: 'bad-pending-id' },
+    });
+    fireEvent.change(screen.getByLabelText(/code/i), {
+      target: { value: 'bad-code' },
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: /complete enrollment/i }),
+    );
+    await waitFor(() => {
+      expect(screen.getByText('Invalid enrollment code')).toBeTruthy();
+    });
+    expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  it('submits setup and enrollment through their existing secure helpers', async () => {
+    render(<AuthLanding mode="self-hosted" />);
+    await waitForLoadingToFinish();
+
+    fireEvent.change(screen.getByLabelText(/setup token/i), {
+      target: { value: 'setup-secret' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /complete setup/i }));
+    await waitFor(() => {
+      expect(mockedCompleteSetup).toHaveBeenCalledWith(
+        'setup-secret',
         undefined,
       );
     });
-  });
 
-  it('shows generic error when email start fails', async () => {
-    mockedStartEmail.mockResolvedValueOnce({
-      success: false,
-      error: 'Rate limit exceeded',
+    fireEvent.change(screen.getByPlaceholderText(/paste daemon-enroll/i), {
+      target: { value: 'daemon-enroll://pending#code' },
     });
-
-    render(
-      <AuthLanding mode="hosted" runtimeConfig={hostedEmailRuntimeConfig} />,
+    fireEvent.click(
+      screen.getByRole('button', { name: /complete enrollment/i }),
     );
-    await waitForLoadingToFinish();
-
-    const emailInput = screen.getByLabelText(/email address/i);
-    fireEvent.change(emailInput, { target: { value: 'user@example.com' } });
-
-    const sendButton = screen.getByRole('button', {
-      name: /send verification code/i,
-    });
-    fireEvent.click(sendButton);
-
     await waitFor(() => {
-      expect(screen.getByText(/rate limit exceeded/i)).toBeTruthy();
+      expect(mockedCompleteEnrollment).toHaveBeenCalledWith('pending', 'code');
     });
-  });
-
-  it('shows generic error when email complete fails', async () => {
-    mockedStartEmail.mockResolvedValueOnce({
-      success: true,
-      challengeId: 'ch-abc',
-      expiresAt: 1234567890,
-    });
-    mockedCompleteEmail.mockResolvedValueOnce({
-      success: false,
-      error: 'Invalid or expired code. Please try again.',
-    });
-
-    render(
-      <AuthLanding mode="hosted" runtimeConfig={hostedEmailRuntimeConfig} />,
-    );
-    await waitForLoadingToFinish();
-
-    const emailInput = screen.getByLabelText(/email address/i);
-    fireEvent.change(emailInput, { target: { value: 'user@example.com' } });
-
-    const sendButton = screen.getByRole('button', {
-      name: /send verification code/i,
-    });
-    fireEvent.click(sendButton);
-
-    await waitFor(() => {
-      expect(screen.getByLabelText(/verification code/i)).toBeTruthy();
-    });
-    expect(screen.getByText(/web sign-in device/i)).toBeTruthy();
-
-    const codeInput = screen.getByLabelText(/verification code/i);
-    fireEvent.change(codeInput, { target: { value: '000000' } });
-
-    const verifyButton = screen.getByRole('button', {
-      name: /verify and sign in/i,
-    });
-    fireEvent.click(verifyButton);
-
-    await waitFor(() => {
-      expect(screen.getByText(/invalid or expired code/i)).toBeTruthy();
-    });
-  });
-
-  it('allows switching to a different email from code step', async () => {
-    mockedStartEmail.mockResolvedValueOnce({
-      success: true,
-      challengeId: 'ch-abc',
-      expiresAt: 1234567890,
-    });
-
-    render(
-      <AuthLanding mode="hosted" runtimeConfig={hostedEmailRuntimeConfig} />,
-    );
-    await waitForLoadingToFinish();
-
-    const emailInput = screen.getByLabelText(/email address/i);
-    fireEvent.change(emailInput, { target: { value: 'old@example.com' } });
-
-    const sendButton = screen.getByRole('button', {
-      name: /send verification code/i,
-    });
-    fireEvent.click(sendButton);
-
-    await waitFor(() => {
-      expect(screen.getByLabelText(/verification code/i)).toBeTruthy();
-    });
-
-    const switchButton = screen.getByRole('button', {
-      name: /use a different email/i,
-    });
-    await act(async () => {
-      fireEvent.click(switchButton);
-    });
-
-    expect(screen.getByLabelText(/email address/i)).toBeTruthy();
   });
 });

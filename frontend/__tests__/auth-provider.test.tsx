@@ -323,14 +323,14 @@ describe('AuthProvider mode-aware redirects', () => {
     });
   });
 
-  it('falls back to /setup when authConfig fetch errors', async () => {
+  it('routes to /auth when authConfig fetch errors', async () => {
     const { hrefSetter } = setupHrefSpy();
     mockRefresh.mockResolvedValue(false);
     renderProvider();
     await flush();
     await resolveConfig(undefined);
     await waitFor(() => {
-      expect(hrefSetter).toHaveBeenCalledWith('/setup');
+      expect(hrefSetter).toHaveBeenCalledWith('/auth');
     });
   });
 
