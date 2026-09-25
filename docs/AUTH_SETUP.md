@@ -2,7 +2,7 @@
 
 This guide covers Daemon's per-device authentication model for hosted and self-hosted deployments.
 
-Hosted deployments present configured identity providers only; Google-only deployments show a standard Google sign-in button without enrollment or device-persistence fields. Those providers prove account identity only: Google credentials, Google ID tokens, email codes, invite tokens, setup tokens, and enrollment tokens are never API credentials. Protected APIs trust only Daemon-issued device/session access tokens and rotating refresh tokens after identity proof, setup, or enrollment completes.
+Hosted deployments present configured identity providers only; Google-only deployments show a standard Google sign-in button without enrollment fields. A "Keep me signed in" checkbox, off by default, selects a long-lived `private` session; otherwise the session is `temporary` for shared or public computers. Those providers prove account identity only: Google credentials, Google ID tokens, email codes, invite tokens, setup tokens, and enrollment tokens are never API credentials. Protected APIs trust only Daemon-issued device/session access tokens and rotating refresh tokens after identity proof, setup, or enrollment completes.
 
 Self-hosted first-boot setup remains a separate operator path for deployments configured as `self_hosted`, including recovery from zero active devices.
 

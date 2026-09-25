@@ -161,7 +161,7 @@ async function waitForGoogleButton(): Promise<HTMLElement> {
 }
 
 describe('AuthLanding — hosted Google-first login', () => {
-  it('renders the official GIS button with a server nonce and completes privately', async () => {
+  it('renders the official GIS button with a server nonce and defaults to a temporary session', async () => {
     installGoogleMock();
     mockSearchParams = new URLSearchParams('invite=invite-secret');
 
@@ -203,7 +203,7 @@ describe('AuthLanding — hosted Google-first login', () => {
         'google-challenge',
         'server-nonce',
         'google-id-token',
-        'private',
+        'temporary',
         'invite-secret',
         expect.any(AbortSignal),
       );
@@ -217,13 +217,13 @@ describe('AuthLanding — hosted Google-first login', () => {
     await waitForLoadingToFinish();
 
     expect(screen.getByRole('alert').textContent || '').toMatch(
-      /temporarily unavailable/i,
+      /sign-in is not available right now/i,
     );
     expect(screen.queryByText(/build-time-client-id/i)).toBeNull();
     expect(mockedStartGoogle).not.toHaveBeenCalled();
   });
 
-  it('hides a disabled Google provider behind a friendly retryable error', async () => {
+  it('shows a neutral error when no sign-in provider is enabled', async () => {
     render(
       <AuthLanding
         mode="hosted"
@@ -235,8 +235,9 @@ describe('AuthLanding — hosted Google-first login', () => {
     await waitForLoadingToFinish();
 
     expect(screen.getByRole('alert').textContent || '').toMatch(
-      /Google sign-in is temporarily unavailable/i,
+      /sign-in is not available right now/i,
     );
+    expect(screen.queryByRole('checkbox')).toBeNull();
     expect(screen.queryByText(/client id|disabled|configured/i)).toBeNull();
     expect(
       screen.queryByRole('button', { name: /continue with google/i }),
@@ -305,8 +306,10 @@ describe('AuthLanding — hosted Google-first login', () => {
     expect(mockedCompleteGoogle).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: /try again/i }));
+    await waitFor(() => {
+      expect(mockedStartGoogle).toHaveBeenCalledTimes(2);
+    });
     await waitForGoogleButton();
-    expect(mockedStartGoogle).toHaveBeenCalledTimes(2);
   });
 
   it('shows a friendly completion error and permits retry', async () => {
@@ -347,7 +350,7 @@ describe('AuthLanding — hosted Google-first login', () => {
       'google-challenge',
       'server-nonce',
       'first-id-token',
-      'private',
+      'temporary',
       undefined,
       expect.any(AbortSignal),
     );
@@ -456,12 +459,13 @@ describe('AuthLanding — hosted Google-first login', () => {
     expect(screen.queryByPlaceholderText(/pending id/i)).toBeNull();
     expect(screen.queryByRole('radio')).toBeNull();
     expect(screen.queryByText(/this device is/i)).toBeNull();
-    expect(screen.queryByText(/public/i)).toBeNull();
+    // The only persistence control is the single unchecked opt-in.
+    expect(screen.getAllByRole('checkbox')).toHaveLength(1);
   });
 });
 
 describe('AuthLanding — optional hosted email flow', () => {
-  it('starts and completes email sign-in with private persistence and no chooser', async () => {
+  it('starts and completes email sign-in with temporary persistence by default', async () => {
     render(
       <AuthLanding
         mode="hosted"
@@ -498,7 +502,7 @@ describe('AuthLanding — optional hosted email flow', () => {
       expect(mockedCompleteEmail).toHaveBeenCalledWith(
         'ch-123',
         '123456',
-        'private',
+        'temporary',
         undefined,
       );
     });
@@ -538,7 +542,7 @@ describe('AuthLanding — optional hosted email flow', () => {
       expect(mockedCompleteEmail).toHaveBeenCalledWith(
         'ch-123',
         '123456',
-        'private',
+        'temporary',
         'invite-secret',
       );
     });
@@ -604,6 +608,165 @@ describe('AuthLanding — optional hosted email flow', () => {
       screen.getByRole('button', { name: /use a different email/i }),
     );
     expect(screen.getByLabelText(/email address/i)).toBeTruthy();
+  });
+});
+
+describe('AuthLanding — keep me signed in and provider availability', () => {
+  it('uses private persistence for Google when keep me signed in is checked without re-rendering the button', async () => {
+    installGoogleMock();
+    render(<AuthLanding mode="hosted" runtimeConfig={hostedConfig()} />);
+    await waitForLoadingToFinish();
+    await waitForGoogleButton();
+
+    const checkbox = screen.getByRole('checkbox', {
+      name: /keep me signed in/i,
+    }) as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+    expect(screen.getByText(/sign out of Google/i)).toBeTruthy();
+
+    fireEvent.click(checkbox);
+    expect(checkbox.checked).toBe(true);
+    expect(mockedStartGoogle).toHaveBeenCalledTimes(1);
+    expect(mockGoogleRenderButton).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      capturedGoogleCallback?.({ credential: 'google-id-token' });
+    });
+    await waitFor(() => {
+      expect(mockedCompleteGoogle).toHaveBeenCalledWith(
+        'google-challenge',
+        'server-nonce',
+        'google-id-token',
+        'private',
+        undefined,
+        expect.any(AbortSignal),
+      );
+    });
+  });
+
+  it('uses private persistence for email when keep me signed in is checked', async () => {
+    render(
+      <AuthLanding
+        mode="hosted"
+        runtimeConfig={hostedConfig({
+          email: { enabled: true },
+          google: { enabled: false, clientId: '' },
+        })}
+      />,
+    );
+    await waitForLoadingToFinish();
+
+    fireEvent.click(
+      screen.getByRole('checkbox', { name: /keep me signed in/i }),
+    );
+    fireEvent.change(screen.getByLabelText(/email address/i), {
+      target: { value: 'user@example.com' },
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: /send verification code/i }),
+    );
+    await waitFor(() => {
+      expect(screen.getByLabelText(/verification code/i)).toBeTruthy();
+    });
+    fireEvent.change(screen.getByLabelText(/verification code/i), {
+      target: { value: '123456' },
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: /verify and sign in/i }),
+    );
+
+    await waitFor(() => {
+      expect(mockedCompleteEmail).toHaveBeenCalledWith(
+        'ch-123',
+        '123456',
+        'private',
+        undefined,
+      );
+    });
+  });
+
+  it('shows email sign-in without a Google error when only email is enabled', async () => {
+    render(
+      <AuthLanding
+        mode="hosted"
+        runtimeConfig={hostedConfig({
+          email: { enabled: true },
+          google: { enabled: false, clientId: '' },
+        })}
+      />,
+    );
+    await waitForLoadingToFinish();
+
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText(/google/i)).toBeNull();
+    expect(screen.getByLabelText(/email address/i)).toBeTruthy();
+    expect(
+      screen.getByRole('checkbox', { name: /keep me signed in/i }),
+    ).toBeTruthy();
+    expect(mockedStartGoogle).not.toHaveBeenCalled();
+  });
+
+  it('resumes an existing session on retry instead of starting a new challenge', async () => {
+    installGoogleMock();
+    mockedCompleteGoogle.mockResolvedValueOnce({ success: false });
+
+    render(<AuthLanding mode="hosted" runtimeConfig={hostedConfig()} />);
+    await waitForLoadingToFinish();
+    await waitForGoogleButton();
+
+    await act(async () => {
+      capturedGoogleCallback?.({ credential: 'google-id-token' });
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /try again/i })).toBeTruthy();
+    });
+
+    vi.mocked(refreshAccessToken).mockResolvedValueOnce({ success: true });
+    fireEvent.click(screen.getByRole('button', { name: /try again/i }));
+
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalledWith('/');
+    });
+    expect(mockedStartGoogle).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders a fresh challenge before the current one expires', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      installGoogleMock();
+      const expiresAt = Math.floor(Date.now() / 1000) + 120;
+      mockedStartGoogle
+        .mockResolvedValueOnce({
+          success: true,
+          challengeId: 'first-challenge',
+          nonce: 'first-nonce',
+          expiresAt,
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          challengeId: 'second-challenge',
+          nonce: 'second-nonce',
+          expiresAt: expiresAt + 600,
+        });
+
+      render(<AuthLanding mode="hosted" runtimeConfig={hostedConfig()} />);
+      await waitForLoadingToFinish();
+      await waitForGoogleButton();
+      expect(mockedStartGoogle).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        vi.advanceTimersByTime(95_000);
+      });
+
+      await waitFor(() => {
+        expect(mockedStartGoogle).toHaveBeenCalledTimes(2);
+        expect(mockGoogleInitialize).toHaveBeenLastCalledWith(
+          expect.objectContaining({ nonce: 'second-nonce' }),
+        );
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

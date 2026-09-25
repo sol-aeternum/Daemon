@@ -17,7 +17,7 @@ function AuthConfigError({ onRetry }: { onRetry: () => void }) {
   return (
     <div className="flex min-h-screen w-full items-center justify-center bg-[var(--color-bg-tertiary)] px-4 py-12">
       <div className="w-full max-w-md rounded-2xl border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] p-6 text-center shadow-sm">
-        <AlertCircle className="mx-auto h-8 w-8 text-red-400" />
+        <AlertCircle className="mx-auto h-8 w-8 text-[var(--color-status-error)]" />
         <h1 className="mt-4 text-xl font-semibold text-[var(--color-text-primary)]">
           Sign-in is temporarily unavailable
         </h1>

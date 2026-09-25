@@ -12,7 +12,8 @@ user proves control of a Google account or email address, claims their personal 
 and enrolls the current browser or native app as a Daemon device.
 
 Self-hosted first-boot setup remains a separate operator path. The hosted sign-in
-screen does not show setup tokens, enrollment fields, or device-persistence choices.
+screen does not show setup tokens or enrollment fields. Its only persistence control is an
+unchecked "Keep me signed in" box (see below).
 Hosted identity retains refresh rotation and the backend enrollment capabilities.
 
 ## Locked Invariants
@@ -234,8 +235,11 @@ self-hosted setup-token flow remains available in `self_hosted` mode.
 ## Separate Self-Hosted Setup
 
 Hosted deployments present configured identity providers only. The Google-only profile
-shows Google's sign-in button and creates a normal private browser session automatically;
-email is absent when disabled. Setup and enrollment forms are not part of hosted login.
+shows Google's sign-in button. Sessions default to `temporary` (browser-session refresh
+cookie, server-side refresh cap of one hour without activity); checking "Keep me signed in"
+requests a `private` session instead. On shared computers the Google account itself can
+remain signed in to the browser, so the login screen also advises signing out of Google
+or using a guest window. Email is absent when disabled. Setup and enrollment forms are not part of hosted login.
 
 The self-hosted setup path keeps the existing security properties documented in
 [`docs/AUTH_SETUP.md`](AUTH_SETUP.md): setup tokens are pasted into a form body, never a
