@@ -50,9 +50,11 @@ interface AuthProviderProps {
 
 const PUBLIC_AUTH_PATHS = new Set(['/setup', '/auth']);
 
-function resolveLandingTarget(mode: AuthConfig['mode'] | 'unknown'): string {
-  if (mode === 'hosted') return '/auth';
-  return '/setup';
+function resolveLandingTarget(
+  mode: AuthConfig['mode'] | 'unknown' | 'error',
+): string {
+  if (mode === 'self_hosted') return '/setup';
+  return '/auth';
 }
 
 export function AuthProvider({ children }: AuthProviderProps) {
@@ -125,10 +127,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       if (resolvedMode === 'unknown') return;
       if (typeof window === 'undefined') return;
       if (PUBLIC_AUTH_PATHS.has(window.location.pathname)) return;
-      const target =
-        resolvedMode === 'error'
-          ? '/setup'
-          : resolveLandingTarget(resolvedMode);
+      const target = resolveLandingTarget(resolvedMode);
       doRedirect(target);
     }
 

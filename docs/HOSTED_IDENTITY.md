@@ -11,9 +11,10 @@ Hosted identity is for the public hosted onboarding path, such as `daemon.ai`, w
 user proves control of a Google account or email address, claims their personal tenant,
 and enrolls the current browser or native app as a Daemon device.
 
-Self-hosted first-boot setup remains available as the **Advanced** path. Hosted identity
-does not remove the setup-token flow, existing enrollment flow, refresh rotation, or
-self-hosted recovery guidance.
+Self-hosted first-boot setup remains a separate operator path. The hosted sign-in
+screen does not show setup tokens or enrollment fields. Its only persistence control is an
+unchecked "Keep me signed in" box (see below).
+Hosted identity retains refresh rotation and the backend enrollment capabilities.
 
 ## Locked Invariants
 
@@ -26,8 +27,9 @@ self-hosted recovery guidance.
 3. **Refresh transport stays split.** Web refresh uses a FastAPI-set HttpOnly cookie;
    native refresh uses JSON body tokens stored in the platform secure store. Mixed
    transport is rejected.
-4. **Signup is invite-only by default.** Hosted production does not create public accounts
-   unless a later explicit product decision changes the signup mode.
+4. **Signup is invite-only by default.** Operators can explicitly select `open` for
+   public account creation. The Google-first deployment uses `open`; Google project
+   audience and publishing restrictions apply independently.
 5. **One account owns one personal tenant.** The personal tenant is the default workspace
    for hosted identity. Ambiguous singleton backfill aborts rather than guessing.
 
@@ -64,7 +66,8 @@ nonce.
 2. The server generates a CSPRNG nonce, stores only a verifier or HMAC-bound challenge
    record with TTL and single-use state, and returns the nonce plus challenge reference.
 3. The frontend initializes GIS with the configured client ID, manual callback, and the
-   server-issued nonce.
+   server-issued nonce, then renders Google's standard sign-in button. Sign-in does not
+   depend on the One Tap prompt being available.
 4. GIS invokes the browser callback with a Google credential. The browser posts the
    credential, challenge reference, nonce, client kind, and device metadata to Daemon.
 5. Daemon verifies the ID token server-side: signature/library result, issuer, audience,
@@ -169,7 +172,8 @@ revocation; these controls reduce but do not eliminate user-targeted deception r
 > below are retained only for compatibility with existing images and
 > development tests; they are not the gating contract for the hosted landing
 > or Google button. If runtime config is unavailable or invalid, the frontend
-> fails closed to `/setup` rather than trusting build-time values.
+> shows a retryable sign-in error at `/auth` rather than trusting build-time values
+> or redirecting users into first-boot setup.
 
 Existing builds may still contain these legacy values, but operators do not
 need to keep them synchronized with the backend or rebuild the frontend to
@@ -216,7 +220,7 @@ audience allowlist, mail sender mode, refresh TTLs, pepper, or any other secret
 or secret-adjacent value. The `google.clientId` is the public OAuth client ID,
 not a secret. The frontend caches a successful response for at most 60 seconds
 and refreshes it while the auth provider remains mounted. An unavailable or
-invalid response retains the fail-safe unresolved-mode behavior (`/setup`).
+invalid response shows a retryable sign-in error (`/auth`).
 
 `mode` is sourced from `DAEMON_DEPLOYMENT_MODE` (default `self_hosted`).
 `email.enabled` is true only when both `DAEMON_HOSTED_IDENTITY_ENABLED` and
@@ -228,13 +232,16 @@ When `mode == "hosted"`, the legacy `POST /v1/auth/setup` endpoint refuses to
 initialize owner/admin state with `403 setup_disabled_in_hosted_mode`. The
 self-hosted setup-token flow remains available in `self_hosted` mode.
 
-## Self-Hosted Advanced Setup
+## Separate Self-Hosted Setup
 
-Hosted deployments should present Google and email code sign-in first. The self-hosted
-setup-token path remains available under **Advanced** for operators who run their own
-Daemon instance or need zero-active-device recovery.
+Hosted deployments present configured identity providers only. The Google-only profile
+shows Google's sign-in button. Sessions default to `temporary` (browser-session refresh
+cookie, server-side refresh cap of one hour without activity); checking "Keep me signed in"
+requests a `private` session instead. On shared computers the Google account itself can
+remain signed in to the browser, so the login screen also advises signing out of Google
+or using a guest window. Email is absent when disabled. Setup and enrollment forms are not part of hosted login.
 
-The Advanced setup path keeps the existing security properties documented in
+The self-hosted setup path keeps the existing security properties documented in
 [`docs/AUTH_SETUP.md`](AUTH_SETUP.md): setup tokens are pasted into a form body, never a
 URL; first-boot setup creates the first web device; additional devices can still use
 enrollment; and native clients continue to use JSON-body refresh tokens.

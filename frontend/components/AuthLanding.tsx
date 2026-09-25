@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   refreshAccessToken,
@@ -11,9 +11,14 @@ import {
   startGoogleSignIn,
   completeGoogleSignIn,
 } from '../lib/auth';
-import { getGoogleClientId } from '../lib/deployment';
 import type { AuthConfig } from '../lib/auth-config';
-import { Sparkles, Shield, AlertCircle, Chrome, Monitor } from 'lucide-react';
+import {
+  Sparkles,
+  Shield,
+  AlertCircle,
+  Loader2,
+  RefreshCw,
+} from 'lucide-react';
 
 export type DeploymentMode = 'hosted' | 'self-hosted';
 
@@ -21,27 +26,33 @@ interface GoogleCredentialResponse {
   credential?: string;
 }
 
-interface GooglePromptNotification {
-  getMomentType?: () => 'display' | 'skipped' | 'dismissed' | string;
-  isNotDisplayed?: () => boolean;
-  isSkippedMoment?: () => boolean;
-  isDismissedMoment?: () => boolean;
-  getNotDisplayedReason?: () => unknown;
-  getSkippedReason?: () => unknown;
-  getDismissedReason?: () => string | undefined;
+interface GoogleInitializeConfig {
+  client_id: string;
+  nonce: string;
+  callback: (response: GoogleCredentialResponse) => void;
+  auto_select?: boolean;
+  cancel_on_tap_outside?: boolean;
+}
+
+interface GoogleRenderButtonOptions {
+  type: 'standard';
+  theme: 'outline';
+  size: 'large';
+  text: 'continue_with';
+  shape: 'pill';
+  width: number;
+  logo_alignment: 'left';
 }
 
 interface GoogleIdentityServices {
   accounts: {
     id: {
-      initialize: (config: {
-        client_id: string;
-        nonce: string;
-        callback: (response: GoogleCredentialResponse) => void;
-      }) => void;
-      prompt?: (
-        callback?: (notification: GooglePromptNotification) => void,
+      initialize: (config: GoogleInitializeConfig) => void;
+      renderButton: (
+        parent: HTMLElement,
+        options: GoogleRenderButtonOptions,
       ) => void;
+      cancel?: () => void;
     };
   };
 }
@@ -53,6 +64,54 @@ declare global {
 }
 
 const GOOGLE_GIS_SCRIPT_SRC = 'https://accounts.google.com/gsi/client';
+const GOOGLE_SCRIPT_LOAD_TIMEOUT_MS = 10_000;
+const GOOGLE_CHALLENGE_TIMEOUT_MS = 10_000;
+const GOOGLE_COMPLETION_TIMEOUT_MS = 15_000;
+const GOOGLE_UNAVAILABLE_MESSAGE =
+  'Google sign-in is temporarily unavailable. Please try again.';
+const GOOGLE_CANCELLED_MESSAGE =
+  'Google sign-in was cancelled. Please try again.';
+const NO_PROVIDERS_MESSAGE =
+  'Sign-in is not available right now. Please try again later.';
+// Re-render the button with a fresh server challenge shortly before the
+// current nonce expires, so an idle login tab does not fail after the
+// account chooser. The floor bounds churn when the client clock runs ahead.
+const GOOGLE_CHALLENGE_REFRESH_MARGIN_MS = 30_000;
+const GOOGLE_CHALLENGE_REFRESH_MIN_MS = 60_000;
+
+let googleScriptPromise: Promise<GoogleIdentityServices> | null = null;
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+  onTimeout?: () => void,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      onTimeout?.();
+      reject(new Error(message));
+    }, timeoutMs);
+
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
 
 function loadGoogleIdentityServices(): Promise<GoogleIdentityServices> {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
@@ -61,38 +120,92 @@ function loadGoogleIdentityServices(): Promise<GoogleIdentityServices> {
   if (window.google?.accounts?.id) {
     return Promise.resolve(window.google);
   }
+  if (googleScriptPromise) {
+    return googleScriptPromise;
+  }
 
-  return new Promise((resolve, reject) => {
+  const promise = new Promise<GoogleIdentityServices>((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const existingScript = document.querySelector<HTMLScriptElement>(
       `script[src="${GOOGLE_GIS_SCRIPT_SRC}"]`,
     );
+    const script = existingScript ?? document.createElement('script');
+
+    const cleanup = () => {
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      script.removeEventListener('load', handleLoad);
+      script.removeEventListener('error', handleError);
+    };
+
+    const fail = (message: string) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      // A failed external script cannot be reused. Removing it lets the retry
+      // action install a fresh script instead of waiting forever on stale load
+      // listeners.
+      script.remove();
+      reject(new Error(message));
+    };
 
     const finish = () => {
+      if (settled) return;
       if (window.google?.accounts?.id) {
+        settled = true;
+        cleanup();
         resolve(window.google);
       } else {
-        reject(new Error('Google sign-in did not finish loading.'));
+        fail('Google sign-in did not finish loading.');
       }
     };
 
-    if (existingScript) {
-      existingScript.addEventListener('load', finish, { once: true });
-      existingScript.addEventListener(
-        'error',
-        () => reject(new Error('Google sign-in failed to load.')),
-        { once: true },
-      );
-      return;
+    function handleLoad() {
+      finish();
     }
 
-    const script = document.createElement('script');
-    script.src = GOOGLE_GIS_SCRIPT_SRC;
-    script.async = true;
-    script.defer = true;
-    script.onload = finish;
-    script.onerror = () => reject(new Error('Google sign-in failed to load.'));
-    document.head.appendChild(script);
+    function handleError() {
+      fail('Google sign-in failed to load.');
+    }
+
+    script.addEventListener('load', handleLoad);
+    script.addEventListener('error', handleError);
+    timer = setTimeout(
+      () => fail('Google sign-in timed out while loading.'),
+      GOOGLE_SCRIPT_LOAD_TIMEOUT_MS,
+    );
+
+    if (!existingScript) {
+      script.src = GOOGLE_GIS_SCRIPT_SRC;
+      // GIS copies currentScript.nonce onto its injected button stylesheet.
+      // Reuse the document nonce rather than weakening the style CSP.
+      const nonce = document.querySelector<HTMLMetaElement>(
+        'meta[name="csp-nonce"]',
+      )?.content;
+      if (nonce) script.nonce = nonce;
+      script.async = true;
+      script.defer = true;
+      document.head.appendChild(script);
+    }
   });
+
+  googleScriptPromise = promise;
+  void promise.then(
+    () => {
+      if (googleScriptPromise === promise) {
+        googleScriptPromise = null;
+      }
+    },
+    () => {
+      if (googleScriptPromise === promise) {
+        googleScriptPromise = null;
+      }
+    },
+  );
+  return promise;
 }
 
 interface AuthLandingProps {
@@ -107,6 +220,7 @@ export default function AuthLanding({
   runtimeConfigLoading = false,
 }: AuthLandingProps) {
   const router = useRouter();
+  const routerPushRef = useRef(router.push);
   const searchParams = useSearchParams();
   const [isChecking, setIsChecking] = useState(true);
 
@@ -129,23 +243,31 @@ export default function AuthLanding({
   const [isEmailStarting, setIsEmailStarting] = useState(false);
   const [isEmailCompleting, setIsEmailCompleting] = useState(false);
   const [googleError, setGoogleError] = useState<string | null>(null);
-  const [isGoogleStarting, setIsGoogleStarting] = useState(false);
-  const [devicePersistence, setDevicePersistence] = useState<
-    'private' | 'temporary'
-  >('private');
+  const [googleStatus, setGoogleStatus] = useState<
+    'idle' | 'loading' | 'ready' | 'completing' | 'error'
+  >('idle');
+  const [googleRetryToken, setGoogleRetryToken] = useState(0);
+  // Unchecked by default: sessions end when the browser closes and expire
+  // server-side after an hour without a refresh. The GIS callback reads the
+  // ref so toggling does not re-render the button or mint a new challenge.
+  const [keepSignedIn, setKeepSignedIn] = useState(false);
+  const keepSignedInRef = useRef(false);
+  const googleButtonHostRef = useRef<HTMLDivElement>(null);
+  const googleGenerationRef = useRef(0);
   const inviteToken =
     searchParams.get('invite_token')?.trim() ||
     searchParams.get('invite')?.trim() ||
     undefined;
   const isHosted = mode === 'hosted';
-  const googleClientId = isHosted
-    ? runtimeConfig
-      ? runtimeConfig.google.enabled
-        ? runtimeConfig.google.clientId
-        : ''
-      : getGoogleClientId(mode)
+  const googleEnabled = isHosted && runtimeConfig?.google.enabled === true;
+  const googleClientId = googleEnabled
+    ? (runtimeConfig?.google.clientId.trim() ?? '')
     : '';
   const emailEnabled = isHosted ? runtimeConfig?.email.enabled === true : false;
+
+  useEffect(() => {
+    routerPushRef.current = router.push;
+  }, [router]);
 
   useEffect(() => {
     let cancelled = false;
@@ -153,7 +275,7 @@ export default function AuthLanding({
     async function checkAuth() {
       const result = await refreshAccessToken().catch(() => null);
       if (!cancelled && result?.success) {
-        router.push('/');
+        routerPushRef.current('/');
         return;
       }
       if (!cancelled) {
@@ -166,106 +288,206 @@ export default function AuthLanding({
     return () => {
       cancelled = true;
     };
-  }, [router]);
+  }, []);
 
-  async function handleGoogleSignIn() {
-    if (!googleClientId) return;
+  useEffect(() => {
+    if (!isHosted || !googleClientId || isChecking || runtimeConfigLoading) {
+      googleGenerationRef.current += 1;
+      googleButtonHostRef.current?.replaceChildren();
+      setGoogleStatus('idle');
+      setGoogleError(null);
+      return;
+    }
 
+    const generation = ++googleGenerationRef.current;
+    const buttonHost = googleButtonHostRef.current;
+    let cancelled = false;
+    let completionStarted = false;
+    let loadedGoogle: GoogleIdentityServices | null = null;
+    let challengeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+    const completionController = new AbortController();
+
+    setGoogleStatus('loading');
     setGoogleError(null);
-    setIsGoogleStarting(true);
-    try {
-      const startResult = await startGoogleSignIn();
-      if (
-        !startResult.success ||
-        !startResult.challengeId ||
-        !startResult.nonce
-      ) {
-        setGoogleError(
-          startResult.error ||
-            'Unable to start Google sign-in. Please try again.',
-        );
-        return;
-      }
+    googleButtonHostRef.current?.replaceChildren();
 
-      const google = await loadGoogleIdentityServices();
-      const idToken = await new Promise<string>((resolve, reject) => {
-        let settled = false;
-        const resolveCredential = (credential: string) => {
-          if (settled) return;
-          settled = true;
-          resolve(credential);
-        };
-        const rejectGooglePrompt = () => {
-          if (settled) return;
-          settled = true;
-          reject(
-            new Error(
-              'Google sign-in was cancelled or unavailable. Please try again.',
+    async function prepareGoogleButton() {
+      try {
+        // Load the official client before asking the backend for a nonce. A
+        // blocked script must not leave an apparently usable button that can
+        // never complete, and it avoids creating an unused server challenge.
+        const google = await withTimeout(
+          loadGoogleIdentityServices(),
+          GOOGLE_SCRIPT_LOAD_TIMEOUT_MS,
+          'Google sign-in timed out while loading.',
+        );
+        loadedGoogle = google;
+        if (cancelled || generation !== googleGenerationRef.current) return;
+
+        const startResult = await withTimeout(
+          startGoogleSignIn(),
+          GOOGLE_CHALLENGE_TIMEOUT_MS,
+          'Google sign-in challenge timed out.',
+        );
+        if (cancelled || generation !== googleGenerationRef.current) return;
+
+        if (
+          !startResult.success ||
+          !startResult.challengeId ||
+          !startResult.nonce
+        ) {
+          setGoogleStatus('error');
+          setGoogleError(GOOGLE_UNAVAILABLE_MESSAGE);
+          return;
+        }
+
+        const challengeId = startResult.challengeId;
+        const nonce = startResult.nonce;
+        const callback = (response: GoogleCredentialResponse) => {
+          // Google can dispatch a callback after a retry or after the user
+          // navigates away. Only the challenge that owns the currently rendered
+          // button may complete a session.
+          if (
+            cancelled ||
+            generation !== googleGenerationRef.current ||
+            completionStarted
+          ) {
+            return;
+          }
+
+          const credential = response?.credential;
+          if (!credential) {
+            googleButtonHostRef.current?.replaceChildren();
+            setGoogleStatus('error');
+            setGoogleError(GOOGLE_CANCELLED_MESSAGE);
+            return;
+          }
+
+          completionStarted = true;
+          googleButtonHostRef.current?.replaceChildren();
+          setGoogleStatus('completing');
+          void withTimeout(
+            completeGoogleSignIn(
+              challengeId,
+              nonce,
+              credential,
+              keepSignedInRef.current ? 'private' : 'temporary',
+              inviteToken,
+              completionController.signal,
             ),
-          );
+            GOOGLE_COMPLETION_TIMEOUT_MS,
+            'Google sign-in completion timed out.',
+            () => completionController.abort(),
+          )
+            .then((result) => {
+              if (cancelled || generation !== googleGenerationRef.current) {
+                return;
+              }
+              if (result.success) {
+                routerPushRef.current('/');
+                return;
+              }
+              setGoogleStatus('error');
+              setGoogleError(GOOGLE_UNAVAILABLE_MESSAGE);
+            })
+            .catch(() => {
+              if (cancelled || generation !== googleGenerationRef.current) {
+                return;
+              }
+              setGoogleStatus('error');
+              setGoogleError(GOOGLE_UNAVAILABLE_MESSAGE);
+            });
         };
 
         google.accounts.id.initialize({
           client_id: googleClientId,
-          nonce: startResult.nonce!,
-          callback: (response) => {
-            if (response.credential) {
-              resolveCredential(response.credential);
-              return;
-            }
-            rejectGooglePrompt();
-          },
+          nonce,
+          callback,
+          // The rendered button is an explicit user action. Do not enable One
+          // Tap or auto-selection as a prerequisite for hosted login.
+          auto_select: false,
+          cancel_on_tap_outside: false,
         });
 
-        const promptFn = google.accounts.id.prompt;
-        if (typeof promptFn === 'function') {
-          promptFn((notification) => {
-            const momentType = notification.getMomentType?.();
-            const isNotDisplayed = notification.isNotDisplayed?.() ?? false;
-            const isSkipped =
-              notification.isSkippedMoment?.() ?? momentType === 'skipped';
-            const isDismissed =
-              notification.isDismissedMoment?.() ?? momentType === 'dismissed';
-
-            if (isNotDisplayed || isSkipped) {
-              rejectGooglePrompt();
-              return;
-            }
-
-            if (isDismissed) {
-              const dismissedReason = notification.getDismissedReason?.();
-              if (dismissedReason !== 'credential_returned') {
-                rejectGooglePrompt();
-              }
-              return;
-            }
-          });
+        const host = buttonHost;
+        if (!host) {
+          throw new Error('Google sign-in button host is unavailable.');
         }
-      });
+        host.replaceChildren();
+        google.accounts.id.renderButton(host, {
+          type: 'standard',
+          theme: 'outline',
+          size: 'large',
+          text: 'continue_with',
+          shape: 'pill',
+          width: Math.min(400, host.clientWidth || 400),
+          logo_alignment: 'left',
+        });
+        if (cancelled || generation !== googleGenerationRef.current) return;
+        setGoogleStatus('ready');
 
-      const completeResult = await completeGoogleSignIn(
-        startResult.challengeId,
-        startResult.nonce,
-        idToken,
-        devicePersistence,
-        inviteToken,
-      );
-      if (completeResult.success) {
-        router.push('/');
-      } else {
-        setGoogleError(
-          completeResult.error || 'Google sign-in failed. Please try again.',
-        );
+        if (startResult.expiresAt) {
+          const refreshInMs = Math.max(
+            startResult.expiresAt * 1000 -
+              Date.now() -
+              GOOGLE_CHALLENGE_REFRESH_MARGIN_MS,
+            GOOGLE_CHALLENGE_REFRESH_MIN_MS,
+          );
+          challengeRefreshTimer = setTimeout(() => {
+            if (
+              cancelled ||
+              completionStarted ||
+              generation !== googleGenerationRef.current
+            ) {
+              return;
+            }
+            setGoogleRetryToken((value) => value + 1);
+          }, refreshInMs);
+        }
+      } catch {
+        if (cancelled || generation !== googleGenerationRef.current) return;
+        setGoogleStatus('error');
+        setGoogleError(GOOGLE_UNAVAILABLE_MESSAGE);
       }
-    } catch (err) {
-      setGoogleError(
-        err instanceof Error
-          ? err.message
-          : 'Google sign-in failed. Please try again.',
-      );
-    } finally {
-      setIsGoogleStarting(false);
     }
+
+    void prepareGoogleButton();
+
+    return () => {
+      cancelled = true;
+      if (challengeRefreshTimer !== null) clearTimeout(challengeRefreshTimer);
+      completionController.abort();
+      if (generation === googleGenerationRef.current) {
+        googleGenerationRef.current += 1;
+      }
+      buttonHost?.replaceChildren();
+      loadedGoogle?.accounts.id.cancel?.();
+    };
+  }, [
+    googleClientId,
+    googleRetryToken,
+    inviteToken,
+    isChecking,
+    isHosted,
+    runtimeConfigLoading,
+  ]);
+
+  async function handleGoogleRetry() {
+    // A timed-out completion may still have set the refresh cookie
+    // server-side. Resume that session instead of asking the user to sign in
+    // again.
+    const result = await refreshAccessToken().catch(() => null);
+    if (result?.success) {
+      routerPushRef.current('/');
+      return;
+    }
+    setGoogleError(null);
+    setGoogleRetryToken((value) => value + 1);
+  }
+
+  function handleKeepSignedInChange(checked: boolean) {
+    keepSignedInRef.current = checked;
+    setKeepSignedIn(checked);
   }
 
   async function handleSetupSubmit(e: React.FormEvent) {
@@ -285,7 +507,7 @@ export default function AuthLanding({
         displayName.trim() || undefined,
       );
       if (result.success) {
-        router.push('/');
+        routerPushRef.current('/');
       } else {
         setSetupError(result.error || 'Setup failed. Please try again.');
       }
@@ -336,7 +558,7 @@ export default function AuthLanding({
     try {
       const result = await completeEnrollment(pendingId, code);
       if (result.success) {
-        router.push('/');
+        routerPushRef.current('/');
       } else {
         setEnrollmentError(
           result.error || 'Enrollment failed. Please try again.',
@@ -394,11 +616,11 @@ export default function AuthLanding({
       const result = await completeEmailSignIn(
         emailChallengeId,
         trimmedCode,
-        devicePersistence,
+        keepSignedInRef.current ? 'private' : 'temporary',
         inviteToken,
       );
       if (result.success) {
-        router.push('/');
+        routerPushRef.current('/');
       } else {
         setEmailError(result.error || 'Sign-in failed. Please try again.');
       }
@@ -455,43 +677,78 @@ export default function AuthLanding({
         </div>
 
         {isHosted && (
-          <div className="space-y-3">
+          <div className="space-y-4">
             {runtimeConfigLoading ? (
-              <IdentityCard
-                icon={<Chrome className="w-5 h-5" />}
-                label="Loading sign-in providers..."
-                disabled
-              />
-            ) : googleClientId ? (
-              <IdentityCard
-                icon={<Chrome className="w-5 h-5" />}
-                label={
-                  isGoogleStarting
-                    ? 'Starting Google sign-in...'
-                    : 'Continue with Google'
-                }
-                onClick={handleGoogleSignIn}
-                disabled={isGoogleStarting}
-              />
-            ) : (
-              <IdentityCard
-                icon={<Chrome className="w-5 h-5" />}
-                label="Google sign-in unavailable"
-                disabled
-                disabledReason="No Google client ID configured"
-              />
-            )}
+              <div
+                role="status"
+                className="flex items-center justify-center gap-2 rounded-xl border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-4 py-3 text-sm text-[var(--color-text-secondary)]"
+              >
+                <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent-primary)]" />
+                Loading sign-in providers...
+              </div>
+            ) : !googleClientId && !emailEnabled ? (
+              <div
+                role="alert"
+                className="flex items-start gap-2.5 rounded-lg border border-[var(--color-status-error)] bg-[var(--color-status-error-bg)] px-3 py-2.5"
+              >
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-status-error)]" />
+                <p className="text-sm text-[var(--color-text-primary)]">
+                  {NO_PROVIDERS_MESSAGE}
+                </p>
+              </div>
+            ) : !googleClientId ? null : (
+              <div className="space-y-3">
+                <div className="flex min-h-11 items-center justify-center">
+                  <div
+                    ref={googleButtonHostRef}
+                    data-testid="google-signin-button"
+                    aria-label="Continue with Google"
+                    aria-busy={
+                      googleStatus === 'loading' ||
+                      googleStatus === 'completing'
+                    }
+                    className="min-h-11 w-full max-w-sm"
+                    style={{ colorScheme: 'light' }}
+                  />
+                </div>
 
-            <DevicePersistenceChooser
-              devicePersistence={devicePersistence}
-              disabled={isGoogleStarting || isEmailCompleting}
-              onChange={setDevicePersistence}
-            />
-
-            {googleError && (
-              <div className="flex items-start gap-2.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5">
-                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
-                <p className="text-sm text-red-300">{googleError}</p>
+                {googleStatus === 'loading' && (
+                  <p
+                    role="status"
+                    className="text-center text-sm text-[var(--color-text-muted)]"
+                  >
+                    Preparing Google sign-in...
+                  </p>
+                )}
+                {googleStatus === 'completing' && (
+                  <p
+                    role="status"
+                    className="text-center text-sm text-[var(--color-text-muted)]"
+                  >
+                    Finishing sign-in...
+                  </p>
+                )}
+                {googleStatus === 'error' && (
+                  <div
+                    role="alert"
+                    className="flex items-start gap-2.5 rounded-lg border border-[var(--color-status-error)] bg-[var(--color-status-error-bg)] px-3 py-2.5"
+                  >
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-status-error)]" />
+                    <div className="flex-1 space-y-2">
+                      <p className="text-sm text-[var(--color-text-primary)]">
+                        {googleError || GOOGLE_UNAVAILABLE_MESSAGE}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => void handleGoogleRetry()}
+                        className="inline-flex items-center gap-1.5 text-sm font-medium text-[var(--color-status-error)] hover:text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-status-error)]"
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                        Try again
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -518,9 +775,11 @@ export default function AuthLanding({
                   </div>
 
                   {emailError && (
-                    <div className="flex items-start gap-2.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5">
-                      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
-                      <p className="text-sm text-red-300">{emailError}</p>
+                    <div className="flex items-start gap-2.5 rounded-lg border border-[var(--color-status-error)] bg-[var(--color-status-error-bg)] px-3 py-2.5">
+                      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-status-error)]" />
+                      <p className="text-sm text-[var(--color-text-primary)]">
+                        {emailError}
+                      </p>
                     </div>
                   )}
 
@@ -557,9 +816,11 @@ export default function AuthLanding({
                   </div>
 
                   {emailError && (
-                    <div className="flex items-start gap-2.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5">
-                      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
-                      <p className="text-sm text-red-300">{emailError}</p>
+                    <div className="flex items-start gap-2.5 rounded-lg border border-[var(--color-status-error)] bg-[var(--color-status-error-bg)] px-3 py-2.5">
+                      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-status-error)]" />
+                      <p className="text-sm text-[var(--color-text-primary)]">
+                        {emailError}
+                      </p>
                     </div>
                   )}
 
@@ -585,6 +846,28 @@ export default function AuthLanding({
                   </button>
                 </form>
               ))}
+
+            {!runtimeConfigLoading && (googleClientId || emailEnabled) && (
+              <div className="space-y-1.5">
+                <label className="flex items-center gap-2.5 text-sm text-[var(--color-text-secondary)]">
+                  <input
+                    type="checkbox"
+                    checked={keepSignedIn}
+                    onChange={(e) => handleKeepSignedInChange(e.target.checked)}
+                    disabled={
+                      googleStatus === 'completing' || isEmailCompleting
+                    }
+                    className="h-4 w-4 rounded border-[var(--color-border-primary)] accent-[var(--color-accent-primary)] disabled:opacity-50"
+                  />
+                  Keep me signed in
+                </label>
+                <p className="text-xs text-[var(--color-text-muted)] leading-relaxed">
+                  Leave this unchecked on shared or public computers.
+                  {googleClientId &&
+                    ' When you finish, sign out of Google too, or use a guest window.'}
+                </p>
+              </div>
+            )}
           </div>
         )}
 
@@ -634,9 +917,11 @@ export default function AuthLanding({
             </div>
 
             {setupError && (
-              <div className="flex items-start gap-2.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5">
-                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
-                <p className="text-sm text-red-300">{setupError}</p>
+              <div className="flex items-start gap-2.5 rounded-lg border border-[var(--color-status-error)] bg-[var(--color-status-error-bg)] px-3 py-2.5">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-status-error)]" />
+                <p className="text-sm text-[var(--color-text-primary)]">
+                  {setupError}
+                </p>
               </div>
             )}
 
@@ -670,197 +955,96 @@ export default function AuthLanding({
           </div>
         )}
 
-        <div className="border-t border-[var(--color-border-primary)] pt-6">
-          <h2 className="text-lg font-semibold text-[var(--color-text-primary)] mb-1">
-            Continue Enrollment
-          </h2>
-          <p className="text-sm text-[var(--color-text-muted)] mb-4">
-            Have a pending enrollment from another browser? Complete it here.
-          </p>
+        {!isHosted && (
+          <div className="border-t border-[var(--color-border-primary)] pt-6">
+            <h2 className="text-lg font-semibold text-[var(--color-text-primary)] mb-1">
+              Continue Enrollment
+            </h2>
+            <p className="text-sm text-[var(--color-text-muted)] mb-4">
+              Have a pending enrollment from another browser? Complete it here.
+            </p>
 
-          <form onSubmit={handleEnrollSubmit} className="space-y-4">
-            <div>
-              <label
-                htmlFor="enrollment-payload"
-                className="block text-sm font-medium text-[var(--color-text-secondary)] mb-1.5"
-              >
-                Enrollment Link or Token
-              </label>
-              <input
-                id="enrollment-payload"
-                type="text"
-                autoComplete="off"
-                placeholder="Paste daemon-enroll://... or leave empty for manual entry"
-                value={enrollmentPayload}
-                onChange={(e) => setEnrollmentPayload(e.target.value)}
+            <form onSubmit={handleEnrollSubmit} className="space-y-4">
+              <div>
+                <label
+                  htmlFor="enrollment-payload"
+                  className="block text-sm font-medium text-[var(--color-text-secondary)] mb-1.5"
+                >
+                  Enrollment Link or Token
+                </label>
+                <input
+                  id="enrollment-payload"
+                  type="text"
+                  autoComplete="off"
+                  placeholder="Paste daemon-enroll://... or leave empty for manual entry"
+                  value={enrollmentPayload}
+                  onChange={(e) => setEnrollmentPayload(e.target.value)}
+                  disabled={isEnrolling}
+                  className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label
+                    htmlFor="enrollment-pending-id"
+                    className="block text-sm font-medium text-[var(--color-text-secondary)] mb-1.5"
+                  >
+                    Pending ID
+                  </label>
+                  <input
+                    id="enrollment-pending-id"
+                    type="text"
+                    autoComplete="off"
+                    placeholder="Pending ID"
+                    value={enrollmentPendingId}
+                    onChange={(e) => setEnrollmentPendingId(e.target.value)}
+                    disabled={isEnrolling}
+                    className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="enrollment-code"
+                    className="block text-sm font-medium text-[var(--color-text-secondary)] mb-1.5"
+                  >
+                    Code
+                  </label>
+                  <input
+                    id="enrollment-code"
+                    type="text"
+                    autoComplete="off"
+                    placeholder="Code"
+                    value={enrollmentCode}
+                    onChange={(e) => setEnrollmentCode(e.target.value)}
+                    disabled={isEnrolling}
+                    className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
+                  />
+                </div>
+              </div>
+
+              {enrollmentError && (
+                <div className="flex items-start gap-2.5 rounded-lg border border-[var(--color-status-error)] bg-[var(--color-status-error-bg)] px-3 py-2.5">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-status-error)]" />
+                  <p className="text-sm text-[var(--color-text-primary)]">
+                    {enrollmentError}
+                  </p>
+                </div>
+              )}
+
+              <button
+                type="submit"
                 disabled={isEnrolling}
-                className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label
-                  htmlFor="enrollment-pending-id"
-                  className="block text-sm font-medium text-[var(--color-text-secondary)] mb-1.5"
-                >
-                  Pending ID
-                </label>
-                <input
-                  id="enrollment-pending-id"
-                  type="text"
-                  autoComplete="off"
-                  placeholder="Pending ID"
-                  value={enrollmentPendingId}
-                  onChange={(e) => setEnrollmentPendingId(e.target.value)}
-                  disabled={isEnrolling}
-                  className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
-                />
-              </div>
-
-              <div>
-                <label
-                  htmlFor="enrollment-code"
-                  className="block text-sm font-medium text-[var(--color-text-secondary)] mb-1.5"
-                >
-                  Code
-                </label>
-                <input
-                  id="enrollment-code"
-                  type="text"
-                  autoComplete="off"
-                  placeholder="Code"
-                  value={enrollmentCode}
-                  onChange={(e) => setEnrollmentCode(e.target.value)}
-                  disabled={isEnrolling}
-                  className="w-full rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
-                />
-              </div>
-            </div>
-
-            {enrollmentError && (
-              <div className="flex items-start gap-2.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5">
-                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
-                <p className="text-sm text-red-300">{enrollmentError}</p>
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={isEnrolling}
-              className="w-full rounded-xl bg-[var(--color-accent-primary)] px-4 py-3 text-sm font-semibold text-[var(--color-text-on-accent)] shadow-sm hover:bg-[var(--color-accent-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {isEnrolling ? 'Completing enrollment...' : 'Complete Enrollment'}
-            </button>
-          </form>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function IdentityCard({
-  icon,
-  label,
-  onClick,
-  disabled,
-  disabledReason,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  onClick?: () => void;
-  disabled?: boolean;
-  disabledReason?: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className="w-full flex items-center gap-3 rounded-xl border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-4 py-3 text-left hover:border-[var(--color-border-secondary)] hover:bg-[var(--color-bg-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-[var(--color-bg-secondary)] disabled:hover:border-[var(--color-border-primary)] transition-colors"
-    >
-      <div className="flex-shrink-0 text-[var(--color-accent-primary)]">
-        {icon}
-      </div>
-      <div className="flex-1">
-        <p className="text-sm font-medium text-[var(--color-text-primary)]">
-          {label}
-        </p>
-        {disabledReason && (
-          <p className="text-xs text-[var(--color-text-muted)]">
-            {disabledReason}
-          </p>
+                className="w-full rounded-xl bg-[var(--color-accent-primary)] px-4 py-3 text-sm font-semibold text-[var(--color-text-on-accent)] shadow-sm hover:bg-[var(--color-accent-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {isEnrolling
+                  ? 'Completing enrollment...'
+                  : 'Complete Enrollment'}
+              </button>
+            </form>
+          </div>
         )}
-      </div>
-    </button>
-  );
-}
-
-function DevicePersistenceChooser({
-  devicePersistence,
-  disabled,
-  onChange,
-}: {
-  devicePersistence: 'private' | 'temporary';
-  disabled: boolean;
-  onChange: (value: 'private' | 'temporary') => void;
-}) {
-  return (
-    <div className="space-y-2">
-      <div className="flex items-start gap-2 rounded-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2">
-        <Monitor className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-text-muted)]" />
-        <div>
-          <p className="text-xs font-medium text-[var(--color-text-secondary)]">
-            Device
-          </p>
-          <p className="text-xs text-[var(--color-text-muted)]">
-            Web Sign-In Device (this browser)
-          </p>
-        </div>
-      </div>
-
-      <p className="text-sm font-medium text-[var(--color-text-secondary)]">
-        This device is:
-      </p>
-      <div className="flex gap-3">
-        <label className="flex-1 flex items-center gap-2 rounded-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 cursor-pointer hover:border-[var(--color-border-secondary)] transition-colors">
-          <input
-            type="radio"
-            name="device-persistence"
-            value="private"
-            checked={devicePersistence === 'private'}
-            onChange={() => onChange('private')}
-            disabled={disabled}
-            className="text-[var(--color-accent-primary)] focus:ring-[var(--color-accent-primary)]"
-          />
-          <div>
-            <p className="text-sm font-medium text-[var(--color-text-primary)]">
-              Private
-            </p>
-            <p className="text-xs text-[var(--color-text-muted)]">
-              Stay signed in
-            </p>
-          </div>
-        </label>
-        <label className="flex-1 flex items-center gap-2 rounded-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2.5 cursor-pointer hover:border-[var(--color-border-secondary)] transition-colors">
-          <input
-            type="radio"
-            name="device-persistence"
-            value="temporary"
-            checked={devicePersistence === 'temporary'}
-            onChange={() => onChange('temporary')}
-            disabled={disabled}
-            className="text-[var(--color-accent-primary)] focus:ring-[var(--color-accent-primary)]"
-          />
-          <div>
-            <p className="text-sm font-medium text-[var(--color-text-primary)]">
-              Public
-            </p>
-            <p className="text-xs text-[var(--color-text-muted)]">
-              Forget when I leave
-            </p>
-          </div>
-        </label>
       </div>
     </div>
   );

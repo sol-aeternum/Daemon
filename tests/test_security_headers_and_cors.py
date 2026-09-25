@@ -253,12 +253,12 @@ def test_production_disables_fastapi_docs_endpoints() -> None:
     assert "openapi_url" not in fastapi_ctor_block_match.group(0)
 
 
-def test_proxy_csp_permits_gis_frame_and_connect() -> None:
+def test_proxy_csp_permits_gis_frame_connect_and_stylesheet() -> None:
     """Hosted Google sign-in (frontend/components/AuthLanding.tsx →
-    google.accounts.id.prompt()) renders an iframe pointed at
+    google.accounts.id.renderButton()) renders an iframe pointed at
     https://accounts.google.com and exchanges XHRs with that origin. The
-    strict CSP must allow Google in both frame-src and connect-src so
-    the GIS iframe prompt and its callbacks are not blocked.
+    strict CSP must allow Google in frame-src, connect-src, and the exact
+    GIS stylesheet URL so the official button and callbacks are not blocked.
     """
     source = (ROOT / "frontend" / "proxy.ts").read_text()
     # frame-src must include the GIS origin.
@@ -266,6 +266,7 @@ def test_proxy_csp_permits_gis_frame_and_connect() -> None:
     # connect-src must include the GIS origin (not just ElevenLabs /
     # NEXT_PUBLIC_API_URL). Both directives reference it.
     assert source.count("https://accounts.google.com") >= 3
+    assert "`style-src 'self' 'nonce-${nonce}' https://accounts.google.com/gsi/style`" in source
 
 
 def test_proxy_csp_permits_inline_style_attributes() -> None:
@@ -338,8 +339,10 @@ def test_docx_preview_nonces_styles_before_attaching_them() -> None:
         ROOT / "frontend" / "src" / "components" / "previews" / "DocxPreview.tsx"
     ).read_text()
 
-    assert "`style-src 'self' 'nonce-${nonce}'`" in proxy_source
-    assert "`style-src 'self' 'nonce-${nonce}' 'unsafe-inline'`" not in proxy_source
+    style_directive = re.search(r"`style-src [^`]+`", proxy_source)
+    assert style_directive is not None
+    assert "'self' 'nonce-${nonce}'" in style_directive.group(0)
+    assert "'unsafe-inline'" not in style_directive.group(0)
     create_style_container = re.search(r"document\.createElement\((['\"])div\1\)", preview_source)
     set_style_nonce = re.search(r"style\.setAttribute\((['\"])nonce\1, nonce\)", preview_source)
     assert create_style_container is not None

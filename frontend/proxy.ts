@@ -16,7 +16,7 @@ const STATIC_SECURITY_HEADERS: Record<string, string> = {
  */
 const SCRIPT_SRC_EXTERNAL_HOSTS = [
   // Google Identity Services — loaded by frontend/components/AuthLanding.tsx
-  // for hosted Google sign-in.
+  // for the official hosted Google sign-in button.
   'https://accounts.google.com',
 ];
 
@@ -24,16 +24,15 @@ const CONNECT_SRC_EXTERNAL_HOSTS = [
   // ElevenLabs streaming TTS and realtime STT — frontend/hooks/useStreamingTts.ts,
   // frontend/hooks/useStt.ts, frontend/components/TextToSpeechButton.tsx.
   'wss://api.elevenlabs.io',
-  // Google Identity Services — GIS communicates with this origin during
-  // hosted sign-in (AuthLanding.tsx → google.accounts.id.prompt()). Without
-  // this exception the GIS iframe prompt and its XHR callbacks are blocked
-  // by the strict connect-src policy.
+  // Google Identity Services — GIS communicates with this origin while the
+  // hosted sign-in button opens its account-chooser/popup and exchanges the
+  // callback. Without this exception the GIS flow is blocked by the strict
+  // connect-src policy.
   'https://accounts.google.com',
 ];
 
-// Hosts allowed in `frame-src` for the GIS iframe-based prompt
-// (google.accounts.id.prompt() in AuthLanding.tsx). The hosted Google
-// sign-in dialog renders inside an iframe pointed at this origin.
+// Hosts allowed in `frame-src` for the official Google Identity Services
+// rendered button. GIS uses an iframe for its account-chooser/popup bridge.
 const FRAME_SRC_GIS_HOSTS = ['https://accounts.google.com'];
 
 // `media-src` is required so provider-hosted video/audio (e.g. fal/xAI
@@ -49,8 +48,8 @@ const IMG_SRC_EXTERNAL_HOSTS = ['https:'];
 // `blob:` and `data:` URLs in `FilePreview.tsx` / `PdfPreview.tsx`) load
 // inside an `<iframe>`. Without this, `default-src 'self'` governs frames
 // and blocks the inline preview even though the document downloads. The GIS
-// host is also allowed so the hosted Google sign-in iframe prompt can
-// render inside its own iframe container.
+// host is also allowed so the official Google sign-in button can render its
+// account-chooser bridge.
 const FRAME_SRC_HOSTS = ["'self'", 'blob:', 'data:', ...FRAME_SRC_GIS_HOSTS];
 
 // Raw generated HTML needs inline scripts/styles to remain interactive, but
@@ -128,7 +127,8 @@ function buildContentSecurityPolicy(nonce: string): string {
   return [
     "default-src 'self'",
     `script-src ${scriptSrcParts.join(' ')}`.trim(),
-    `style-src 'self' 'nonce-${nonce}'`.trim(),
+    // GIS loads its button stylesheet from this exact Google endpoint.
+    `style-src 'self' 'nonce-${nonce}' https://accounts.google.com/gsi/style`.trim(),
     // `style-src-attr 'unsafe-inline'` is required because React's `style={{...}}`
     // attributes cannot be nonce-tagged (nonces authorize whole `<style>` tags
     // or external stylesheets, not inline attribute values). The repository

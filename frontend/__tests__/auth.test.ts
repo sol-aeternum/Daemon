@@ -622,6 +622,44 @@ describe('Google sign-in helpers', () => {
 
     vi.restoreAllMocks();
   });
+
+  it('does not store a Google access token when completion is aborted', async () => {
+    const mockFetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            access_token: 'must-not-be-stored',
+            expires_at: Math.floor(Date.now() / 1000) + 3600,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    globalThis.fetch = mockFetch;
+
+    const { completeGoogleSignIn, getAccessToken } =
+      await import('../lib/auth');
+    const controller = new AbortController();
+    const resultPromise = completeGoogleSignIn(
+      'ch-aborted',
+      'nonce-aborted',
+      'id-token-aborted',
+      'private',
+      undefined,
+      controller.signal,
+    );
+    controller.abort();
+
+    const result = await resultPromise;
+    expect(result.success).toBe(false);
+    expect(getAccessToken()).toBeNull();
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/v1/auth/google/complete',
+      expect.objectContaining({ signal: controller.signal }),
+    );
+
+    vi.restoreAllMocks();
+  });
 });
 
 describe('refreshAccessToken', () => {
@@ -1264,7 +1302,7 @@ describe('attemptPageLoadRefresh identity-session restore', () => {
     vi.restoreAllMocks();
   });
 
-  it('attemptPageLoadRefresh returns false and redirects to /setup on 401 for expired temporary sessions', async () => {
+  it('attemptPageLoadRefresh returns false and redirects to /auth on 401 for expired temporary sessions', async () => {
     Object.defineProperty(globalThis, 'navigator', {
       value: { locks: undefined },
       writable: true,
@@ -1292,7 +1330,7 @@ describe('attemptPageLoadRefresh identity-session restore', () => {
     const ok = await attemptPageLoadRefresh();
     expect(ok).toBe(false);
     expect(getAccessToken()).toBeNull();
-    expect(replace).toHaveBeenCalledWith('/setup');
+    expect(replace).toHaveBeenCalledWith('/auth');
 
     locationSpy.mockRestore();
     vi.restoreAllMocks();

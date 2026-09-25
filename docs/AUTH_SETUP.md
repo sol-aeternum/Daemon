@@ -2,9 +2,9 @@
 
 This guide covers Daemon's per-device authentication model for hosted and self-hosted deployments.
 
-Hosted deployments present Google and email identity sign-in first. Those providers prove account identity only: Google credentials, Google ID tokens, email codes, invite tokens, setup tokens, and enrollment tokens are never API credentials. Protected APIs trust only Daemon-issued device/session access tokens and rotating refresh tokens after identity proof, setup, or enrollment completes.
+Hosted deployments present configured identity providers only; Google-only deployments show a standard Google sign-in button without enrollment fields. A "Keep me signed in" checkbox, off by default, selects a long-lived `private` session; otherwise the session is `temporary` for shared or public computers. Those providers prove account identity only: Google credentials, Google ID tokens, email codes, invite tokens, setup tokens, and enrollment tokens are never API credentials. Protected APIs trust only Daemon-issued device/session access tokens and rotating refresh tokens after identity proof, setup, or enrollment completes.
 
-Self-hosted first-boot setup remains available as the **Advanced** hosted-UX path for operators running their own Daemon instance or recovering from zero active devices.
+Self-hosted first-boot setup remains a separate operator path for deployments configured as `self_hosted`, including recovery from zero active devices.
 
 ---
 
@@ -30,8 +30,8 @@ Hosted identity still has residual phishing and social-engineering risk: users c
 > `DAEMON_HOSTED_IDENTITY_ENABLED=true`, and the applicable provider settings
 > on the backend. The frontend picks up successful runtime changes within 60
 > seconds. If the endpoint is unavailable or returns invalid data, the
-> frontend fails closed to `/setup`; build-time values are not used as an
-> authentication fallback.
+> frontend shows a retryable error at `/auth`; neither first-boot setup nor
+> build-time values are used as an authentication fallback.
 
 The following legacy `NEXT_PUBLIC_*` build arguments remain accepted for
 compatibility with existing images and development tests, but they do not
@@ -63,9 +63,42 @@ client IP and ignore arbitrary forwarded headers.
 
 ---
 
+## Google-Only Local Setup
+
+Create a Google Auth Platform project with an External audience and a Web application
+OAuth client. Register `http://localhost` and `http://localhost:3000` as authorised
+JavaScript origins. No redirect URI or client secret is needed for the JavaScript
+callback integration.
+
+Set these backend environment variables and recreate the backend container:
+
+```dotenv
+DAEMON_DEPLOYMENT_MODE=hosted
+DAEMON_HOSTED_IDENTITY_ENABLED=true
+DAEMON_SIGNUP_MODE=open
+DAEMON_GOOGLE_ENABLED=true
+DAEMON_GOOGLE_CLIENT_ID=<your-web-client-id>.apps.googleusercontent.com
+DAEMON_EMAIL_ENABLED=false
+DAEMON_MAIL_SENDER_MODE=disabled
+```
+
+Keep the existing database, encryption key, and auth pepper configuration. No data reset
+is needed to enable Google sign-in. The first successful sign-in creates a Daemon account;
+later sign-ins with the same Google subject reuse that account and its data. Existing
+self-hosted test accounts are not automatically claimed by Google sign-in.
+
+Google's publishing status and audience controls apply separately from Daemon's `open`
+signup policy. While Google restricts the app to test users, add the intended tester in
+Google Auth Platform. General access requires completing Google's publishing requirements.
+Google-only sign-in does not need SMTP or an additional mail server.
+
+When moving to a public HTTPS domain, add the new JavaScript origin, complete Google's
+domain/branding requirements, and update Daemon's public origin, allowed origins/hosts,
+and secure-cookie configuration. Preserve the database and encryption/auth keys.
+
 ## First Boot Setup
 
-First-boot setup is primarily the self-hosted and recovery path. In hosted deployments, keep this behind **Advanced self-hosted setup** instead of presenting it as the default login path.
+First-boot setup is the self-hosted and recovery path. Hosted deployments direct users to identity sign-in instead; the hosted backend rejects first-boot setup requests.
 
 On a fresh Daemon installation with no active devices, the backend writes a one-time setup token to the local operator token file at startup. The default path is `.daemon/setup-token`; override it with `DAEMON_SETUP_TOKEN_FILE` if your deployment needs a different writable secret handoff path.
 
@@ -252,7 +285,7 @@ Daemon rejects requests that mix cookie-based and body-based refresh in the same
 | --------------- | ---------------------------------------------------------------------------------------------- |
 | Hosted identity | Google/email prove identity only; Daemon-issued device/session tokens are the API auth surface |
 | Google sign-in  | Server nonce challenge + manual GIS callback; no `login_uri` auto-post flow                    |
-| First boot      | Advanced self-hosted/recovery path; form-based one-time token from local 0600 file, never in URL |
+| First boot      | Separate self-hosted/recovery path; form-based one-time token from local 0600 file, never in URL |
 | Adding devices  | Hosted identity sign-in or enrollment QR/manual code; web cookie or native JSON-body token     |
 | Revoking        | Immediate session/token invalidation; current-device revoke clears cookie                      |
 | Recovery        | Zero active devices + restart -> shared setup token written to the local operator file          |
