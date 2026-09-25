@@ -71,6 +71,13 @@ const GOOGLE_UNAVAILABLE_MESSAGE =
   'Google sign-in is temporarily unavailable. Please try again.';
 const GOOGLE_CANCELLED_MESSAGE =
   'Google sign-in was cancelled. Please try again.';
+const NO_PROVIDERS_MESSAGE =
+  'Sign-in is not available right now. Please try again later.';
+// Re-render the button with a fresh server challenge shortly before the
+// current nonce expires, so an idle login tab does not fail after the
+// account chooser. The floor bounds churn when the client clock runs ahead.
+const GOOGLE_CHALLENGE_REFRESH_MARGIN_MS = 30_000;
+const GOOGLE_CHALLENGE_REFRESH_MIN_MS = 60_000;
 
 let googleScriptPromise: Promise<GoogleIdentityServices> | null = null;
 
@@ -240,6 +247,11 @@ export default function AuthLanding({
     'idle' | 'loading' | 'ready' | 'completing' | 'error'
   >('idle');
   const [googleRetryToken, setGoogleRetryToken] = useState(0);
+  // Unchecked by default: sessions end when the browser closes and expire
+  // server-side after an hour without a refresh. The GIS callback reads the
+  // ref so toggling does not re-render the button or mint a new challenge.
+  const [keepSignedIn, setKeepSignedIn] = useState(false);
+  const keepSignedInRef = useRef(false);
   const googleButtonHostRef = useRef<HTMLDivElement>(null);
   const googleGenerationRef = useRef(0);
   const inviteToken =
@@ -292,6 +304,7 @@ export default function AuthLanding({
     let cancelled = false;
     let completionStarted = false;
     let loadedGoogle: GoogleIdentityServices | null = null;
+    let challengeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
     const completionController = new AbortController();
 
     setGoogleStatus('loading');
@@ -358,7 +371,7 @@ export default function AuthLanding({
               challengeId,
               nonce,
               credential,
-              'private',
+              keepSignedInRef.current ? 'private' : 'temporary',
               inviteToken,
               completionController.signal,
             ),
@@ -412,6 +425,25 @@ export default function AuthLanding({
         });
         if (cancelled || generation !== googleGenerationRef.current) return;
         setGoogleStatus('ready');
+
+        if (startResult.expiresAt) {
+          const refreshInMs = Math.max(
+            startResult.expiresAt * 1000 -
+              Date.now() -
+              GOOGLE_CHALLENGE_REFRESH_MARGIN_MS,
+            GOOGLE_CHALLENGE_REFRESH_MIN_MS,
+          );
+          challengeRefreshTimer = setTimeout(() => {
+            if (
+              cancelled ||
+              completionStarted ||
+              generation !== googleGenerationRef.current
+            ) {
+              return;
+            }
+            setGoogleRetryToken((value) => value + 1);
+          }, refreshInMs);
+        }
       } catch {
         if (cancelled || generation !== googleGenerationRef.current) return;
         setGoogleStatus('error');
@@ -423,6 +455,7 @@ export default function AuthLanding({
 
     return () => {
       cancelled = true;
+      if (challengeRefreshTimer !== null) clearTimeout(challengeRefreshTimer);
       completionController.abort();
       if (generation === googleGenerationRef.current) {
         googleGenerationRef.current += 1;
@@ -439,9 +472,22 @@ export default function AuthLanding({
     runtimeConfigLoading,
   ]);
 
-  function handleGoogleRetry() {
+  async function handleGoogleRetry() {
+    // A timed-out completion may still have set the refresh cookie
+    // server-side. Resume that session instead of asking the user to sign in
+    // again.
+    const result = await refreshAccessToken().catch(() => null);
+    if (result?.success) {
+      routerPushRef.current('/');
+      return;
+    }
     setGoogleError(null);
     setGoogleRetryToken((value) => value + 1);
+  }
+
+  function handleKeepSignedInChange(checked: boolean) {
+    keepSignedInRef.current = checked;
+    setKeepSignedIn(checked);
   }
 
   async function handleSetupSubmit(e: React.FormEvent) {
@@ -570,7 +616,7 @@ export default function AuthLanding({
       const result = await completeEmailSignIn(
         emailChallengeId,
         trimmedCode,
-        'private',
+        keepSignedInRef.current ? 'private' : 'temporary',
         inviteToken,
       );
       if (result.success) {
@@ -640,17 +686,17 @@ export default function AuthLanding({
                 <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent-primary)]" />
                 Loading sign-in providers...
               </div>
-            ) : !googleClientId ? (
+            ) : !googleClientId && !emailEnabled ? (
               <div
                 role="alert"
-                className="flex items-start gap-2.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5"
+                className="flex items-start gap-2.5 rounded-lg border border-[var(--color-status-error)] bg-[var(--color-status-error-bg)] px-3 py-2.5"
               >
-                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
-                <p className="text-sm text-red-300">
-                  Google sign-in is temporarily unavailable. Please try again.
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-status-error)]" />
+                <p className="text-sm text-[var(--color-text-primary)]">
+                  {NO_PROVIDERS_MESSAGE}
                 </p>
               </div>
-            ) : (
+            ) : !googleClientId ? null : (
               <div className="space-y-3">
                 <div className="flex min-h-11 items-center justify-center">
                   <div
@@ -685,17 +731,17 @@ export default function AuthLanding({
                 {googleStatus === 'error' && (
                   <div
                     role="alert"
-                    className="flex items-start gap-2.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5"
+                    className="flex items-start gap-2.5 rounded-lg border border-[var(--color-status-error)] bg-[var(--color-status-error-bg)] px-3 py-2.5"
                   >
-                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-status-error)]" />
                     <div className="flex-1 space-y-2">
-                      <p className="text-sm text-red-300">
+                      <p className="text-sm text-[var(--color-text-primary)]">
                         {googleError || GOOGLE_UNAVAILABLE_MESSAGE}
                       </p>
                       <button
                         type="button"
-                        onClick={handleGoogleRetry}
-                        className="inline-flex items-center gap-1.5 text-sm font-medium text-red-200 hover:text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-red-300/50"
+                        onClick={() => void handleGoogleRetry()}
+                        className="inline-flex items-center gap-1.5 text-sm font-medium text-[var(--color-status-error)] hover:text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-status-error)]"
                       >
                         <RefreshCw className="h-3.5 w-3.5" />
                         Try again
@@ -729,9 +775,11 @@ export default function AuthLanding({
                   </div>
 
                   {emailError && (
-                    <div className="flex items-start gap-2.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5">
-                      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
-                      <p className="text-sm text-red-300">{emailError}</p>
+                    <div className="flex items-start gap-2.5 rounded-lg border border-[var(--color-status-error)] bg-[var(--color-status-error-bg)] px-3 py-2.5">
+                      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-status-error)]" />
+                      <p className="text-sm text-[var(--color-text-primary)]">
+                        {emailError}
+                      </p>
                     </div>
                   )}
 
@@ -768,9 +816,11 @@ export default function AuthLanding({
                   </div>
 
                   {emailError && (
-                    <div className="flex items-start gap-2.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5">
-                      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
-                      <p className="text-sm text-red-300">{emailError}</p>
+                    <div className="flex items-start gap-2.5 rounded-lg border border-[var(--color-status-error)] bg-[var(--color-status-error-bg)] px-3 py-2.5">
+                      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-status-error)]" />
+                      <p className="text-sm text-[var(--color-text-primary)]">
+                        {emailError}
+                      </p>
                     </div>
                   )}
 
@@ -796,6 +846,28 @@ export default function AuthLanding({
                   </button>
                 </form>
               ))}
+
+            {!runtimeConfigLoading && (googleClientId || emailEnabled) && (
+              <div className="space-y-1.5">
+                <label className="flex items-center gap-2.5 text-sm text-[var(--color-text-secondary)]">
+                  <input
+                    type="checkbox"
+                    checked={keepSignedIn}
+                    onChange={(e) => handleKeepSignedInChange(e.target.checked)}
+                    disabled={
+                      googleStatus === 'completing' || isEmailCompleting
+                    }
+                    className="h-4 w-4 rounded border-[var(--color-border-primary)] accent-[var(--color-accent-primary)] disabled:opacity-50"
+                  />
+                  Keep me signed in
+                </label>
+                <p className="text-xs text-[var(--color-text-muted)] leading-relaxed">
+                  Leave this unchecked on shared or public computers.
+                  {googleClientId &&
+                    ' When you finish, sign out of Google too, or use a guest window.'}
+                </p>
+              </div>
+            )}
           </div>
         )}
 
@@ -845,9 +917,11 @@ export default function AuthLanding({
             </div>
 
             {setupError && (
-              <div className="flex items-start gap-2.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5">
-                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
-                <p className="text-sm text-red-300">{setupError}</p>
+              <div className="flex items-start gap-2.5 rounded-lg border border-[var(--color-status-error)] bg-[var(--color-status-error-bg)] px-3 py-2.5">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-status-error)]" />
+                <p className="text-sm text-[var(--color-text-primary)]">
+                  {setupError}
+                </p>
               </div>
             )}
 
@@ -951,9 +1025,11 @@ export default function AuthLanding({
               </div>
 
               {enrollmentError && (
-                <div className="flex items-start gap-2.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5">
-                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
-                  <p className="text-sm text-red-300">{enrollmentError}</p>
+                <div className="flex items-start gap-2.5 rounded-lg border border-[var(--color-status-error)] bg-[var(--color-status-error-bg)] px-3 py-2.5">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-status-error)]" />
+                  <p className="text-sm text-[var(--color-text-primary)]">
+                    {enrollmentError}
+                  </p>
                 </div>
               )}
 
