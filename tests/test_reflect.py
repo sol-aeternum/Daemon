@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import uuid
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from orchestrator.memory.embedding import EmbeddingConfigurationError
+from orchestrator.memory.store import MemoryStore
 from orchestrator.tools.memory_reflect import MemoryReflectTool
 
 
@@ -28,6 +30,52 @@ class MockLitellmResponse:
 
     def dict(self):
         return self.model_dump()
+
+
+@pytest.fixture(autouse=True)
+def _mock_query_embedding():
+    with patch(
+        "orchestrator.tools.memory_reflect.embed_query_with_metadata",
+        new_callable=AsyncMock,
+        return_value=_query_result(),
+    ):
+        yield
+
+
+@pytest.mark.asyncio
+async def test_reflect_synthesizes_account_scoped_lexical_memories_when_embeddings_denied():
+    store = MagicMock(spec=MemoryStore)
+    user_id = uuid.uuid4()
+    memory_id = uuid.uuid4()
+    store.search_memories_bm25 = AsyncMock(
+        return_value=[{"id": memory_id, "content": "User plays guitar", "bm25_score": 1.0}]
+    )
+    store.get_l0_memories = AsyncMock(return_value=[])
+    store.bulk_touch_memories = AsyncMock()
+
+    with (
+        patch(
+            "orchestrator.tools.memory_reflect.embed_query_with_metadata",
+            AsyncMock(
+                side_effect=EmbeddingConfigurationError("Approved embedding route unavailable")
+            ),
+        ) as embed,
+        patch(
+            "orchestrator.tools.memory_reflect.guarded_completion",
+            AsyncMock(return_value=MockLitellmResponse("You play guitar.")),
+        ) as synthesize,
+        patch("orchestrator.tools.memory_reflect.get_settings") as settings,
+    ):
+        settings.return_value.get_provider_config.return_value.requires_auth = False
+        result = await MemoryReflectTool(store, user_id).execute(topic="guitar")
+
+    assert result == "You play guitar."
+    embed.assert_awaited_once()
+    store.search_memories.assert_not_awaited()
+    assert store.search_memories_bm25.await_args is not None
+    assert store.search_memories_bm25.await_args.kwargs["user_id"] == user_id
+    assert synthesize.await_args is not None
+    assert "User plays guitar" in synthesize.await_args.kwargs["messages"][1]["content"]
 
 
 @pytest.mark.asyncio
@@ -60,16 +108,13 @@ async def test_reflect_no_memories_found():
     store = AsyncMock()
     user_id = uuid.uuid4()
 
-    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
-        mock_embed.return_value = _query_result()
+    with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
+        mock_retrieve.return_value = []
 
-        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
-            mock_retrieve.return_value = []
+        tool = MemoryReflectTool(store, user_id)
+        result = await tool.execute(topic="my hobbies")
 
-            tool = MemoryReflectTool(store, user_id)
-            result = await tool.execute(topic="my hobbies")
-
-            assert "No relevant memories found" in result
+        assert "No relevant memories found" in result
 
 
 @pytest.mark.asyncio
@@ -95,29 +140,28 @@ async def test_reflect_successful_synthesis():
         },
     ]
 
-    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
-        mock_embed.return_value = _query_result()
+    with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
+        mock_retrieve.return_value = memories
 
-        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
-            mock_retrieve.return_value = memories
+        with patch("orchestrator.tools.memory_reflect.guarded_completion") as mock_llm:
+            mock_llm.return_value = MockLitellmResponse(
+                "Based on your memories, you have a passion for guitar playing and own quality equipment."
+            )
 
-            with patch("orchestrator.tools.memory_reflect.litellm.acompletion") as mock_llm:
-                mock_llm.return_value = MockLitellmResponse(
-                    "Based on your memories, you have a passion for guitar playing and own quality equipment."
-                )
+            with patch.object(
+                tool := MemoryReflectTool(store, user_id),
+                "_get_orchestrator_model",
+                return_value="openrouter/moonshotai/kimi-k2.5",
+            ):
+                with patch("orchestrator.tools.memory_reflect.get_settings") as mock_settings:
+                    mock_settings.return_value.background_reasoning_model = (
+                        "openrouter/moonshotai/kimi-k2.5"
+                    )
+                    mock_settings.return_value.get_provider_config.return_value.timeout_s = 60
 
-                with patch.object(
-                    tool := MemoryReflectTool(store, user_id),
-                    "_get_orchestrator_model",
-                    return_value="openrouter/moonshotai/kimi-k2.5",
-                ):
-                    with patch("orchestrator.tools.memory_reflect.get_settings") as mock_settings:
-                        mock_settings.return_value.get_tier_config.return_value.orchestrator.model = "openrouter/moonshotai/kimi-k2.5"
-                        mock_settings.return_value.get_provider_config.return_value.timeout_s = 60
+                    result = await tool.execute(topic="my musical interests")
 
-                        result = await tool.execute(topic="my musical interests")
-
-                        assert "Fender" in result or "guitar" in result.lower()
+                    assert "Fender" in result or "guitar" in result.lower()
 
 
 @pytest.mark.asyncio
@@ -134,21 +178,16 @@ async def test_reflect_includes_l0_memories():
         "source": "l0",
     }
 
-    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
-        mock_embed.return_value = _query_result()
+    with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
+        mock_retrieve.return_value = [l0_memory]
 
-        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
-            mock_retrieve.return_value = [l0_memory]
+        with patch("orchestrator.tools.memory_reflect.guarded_completion") as mock_llm:
+            mock_llm.return_value = MockLitellmResponse("The user has a strong coffee preference.")
 
-            with patch("orchestrator.tools.memory_reflect.litellm.acompletion") as mock_llm:
-                mock_llm.return_value = MockLitellmResponse(
-                    "The user has a strong coffee preference."
-                )
+            tool = MemoryReflectTool(store, user_id)
+            await tool.execute(topic="coffee preferences")
 
-                tool = MemoryReflectTool(store, user_id)
-                await tool.execute(topic="coffee preferences")
-
-                assert mock_retrieve.call_args.kwargs["include_l0"] is True
+            assert mock_retrieve.call_args.kwargs["include_l0"] is True
 
 
 @pytest.mark.asyncio
@@ -157,16 +196,13 @@ async def test_reflect_uses_expanded_retrieval_limit():
     store = AsyncMock()
     user_id = uuid.uuid4()
 
-    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
-        mock_embed.return_value = _query_result()
+    with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
+        mock_retrieve.return_value = []
 
-        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
-            mock_retrieve.return_value = []
+        tool = MemoryReflectTool(store, user_id)
+        await tool.execute(topic="anything")
 
-            tool = MemoryReflectTool(store, user_id)
-            await tool.execute(topic="anything")
-
-            assert mock_retrieve.call_args.kwargs["limit"] == 15
+        assert mock_retrieve.call_args.kwargs["limit"] == 15
 
 
 @pytest.mark.asyncio
@@ -175,16 +211,13 @@ async def test_reflect_custom_limit():
     store = AsyncMock()
     user_id = uuid.uuid4()
 
-    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
-        mock_embed.return_value = _query_result()
+    with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
+        mock_retrieve.return_value = []
 
-        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
-            mock_retrieve.return_value = []
+        tool = MemoryReflectTool(store, user_id)
+        await tool.execute(topic="anything", limit=25)
 
-            tool = MemoryReflectTool(store, user_id)
-            await tool.execute(topic="anything", limit=25)
-
-            assert mock_retrieve.call_args.kwargs["limit"] == 25
+        assert mock_retrieve.call_args.kwargs["limit"] == 25
 
 
 @pytest.mark.asyncio
@@ -203,27 +236,26 @@ async def test_reflect_llm_failure_returns_error():
         },
     ]
 
-    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
-        mock_embed.return_value = _query_result()
+    with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
+        mock_retrieve.return_value = memories
 
-        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
-            mock_retrieve.return_value = memories
+        with patch("orchestrator.tools.memory_reflect.guarded_completion") as mock_llm:
+            mock_llm.side_effect = Exception("LLM unavailable")
 
-            with patch("orchestrator.tools.memory_reflect.litellm.acompletion") as mock_llm:
-                mock_llm.side_effect = Exception("LLM unavailable")
+            with patch.object(
+                tool := MemoryReflectTool(store, user_id),
+                "_get_orchestrator_model",
+                return_value="openrouter/moonshotai/kimi-k2.5",
+            ):
+                with patch("orchestrator.tools.memory_reflect.get_settings") as mock_settings:
+                    mock_settings.return_value.background_reasoning_model = (
+                        "openrouter/moonshotai/kimi-k2.5"
+                    )
+                    mock_settings.return_value.get_provider_config.return_value.timeout_s = 60
 
-                with patch.object(
-                    tool := MemoryReflectTool(store, user_id),
-                    "_get_orchestrator_model",
-                    return_value="openrouter/moonshotai/kimi-k2.5",
-                ):
-                    with patch("orchestrator.tools.memory_reflect.get_settings") as mock_settings:
-                        mock_settings.return_value.get_tier_config.return_value.orchestrator.model = "openrouter/moonshotai/kimi-k2.5"
-                        mock_settings.return_value.get_provider_config.return_value.timeout_s = 60
+                    result = await tool.execute(topic="my hobbies")
 
-                        result = await tool.execute(topic="my hobbies")
-
-                        assert "Reflection synthesis failed" in result
+                    assert "Reflection synthesis failed" in result
 
 
 @pytest.mark.asyncio
@@ -232,19 +264,16 @@ async def test_reflect_is_non_persistent():
     store = AsyncMock()
     user_id = uuid.uuid4()
 
-    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
-        mock_embed.return_value = _query_result()
+    with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
+        mock_retrieve.return_value = []
 
-        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
-            mock_retrieve.return_value = []
+        tool = MemoryReflectTool(store, user_id)
+        await tool.execute(topic="test")
 
-            tool = MemoryReflectTool(store, user_id)
-            await tool.execute(topic="test")
-
-            store.insert_memory.assert_not_called()
-            store.update_memory.assert_not_called()
-            store.close_memory.assert_not_called()
-            store.delete_memory.assert_not_called()
+        store.insert_memory.assert_not_called()
+        store.update_memory.assert_not_called()
+        store.close_memory.assert_not_called()
+        store.delete_memory.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -309,16 +338,13 @@ async def test_reflect_truncates_limit_to_max_50():
     store = AsyncMock()
     user_id = uuid.uuid4()
 
-    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
-        mock_embed.return_value = _query_result()
+    with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
+        mock_retrieve.return_value = []
 
-        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
-            mock_retrieve.return_value = []
+        tool = MemoryReflectTool(store, user_id)
+        await tool.execute(topic="anything", limit=100)
 
-            tool = MemoryReflectTool(store, user_id)
-            await tool.execute(topic="anything", limit=100)
-
-            assert mock_retrieve.call_args.kwargs["limit"] == 50
+        assert mock_retrieve.call_args.kwargs["limit"] == 50
 
 
 @pytest.mark.asyncio
@@ -327,16 +353,13 @@ async def test_reflect_enforces_minimum_limit_of_1():
     store = AsyncMock()
     user_id = uuid.uuid4()
 
-    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
-        mock_embed.return_value = _query_result()
+    with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
+        mock_retrieve.return_value = []
 
-        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
-            mock_retrieve.return_value = []
+        tool = MemoryReflectTool(store, user_id)
+        await tool.execute(topic="anything", limit=0)
 
-            tool = MemoryReflectTool(store, user_id)
-            await tool.execute(topic="anything", limit=0)
-
-            assert mock_retrieve.call_args.kwargs["limit"] == 1
+        assert mock_retrieve.call_args.kwargs["limit"] == 1
 
 
 @pytest.mark.asyncio
@@ -355,35 +378,36 @@ async def test_reflect_passes_timeout_from_provider_config():
         },
     ]
 
-    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
-        mock_embed.return_value = _query_result()
+    with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
+        mock_retrieve.return_value = memories
 
-        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
-            mock_retrieve.return_value = memories
+        with patch("orchestrator.tools.memory_reflect.guarded_completion") as mock_llm:
+            mock_llm.return_value = MockLitellmResponse("Guitar hobby synthesis.")
 
-            with patch("orchestrator.tools.memory_reflect.litellm.acompletion") as mock_llm:
-                mock_llm.return_value = MockLitellmResponse("Guitar hobby synthesis.")
+            with patch.object(
+                tool := MemoryReflectTool(store, user_id),
+                "_get_orchestrator_model",
+                return_value="openrouter/moonshotai/kimi-k2.5",
+            ):
+                with patch("orchestrator.tools.memory_reflect.get_settings") as mock_settings:
+                    mock_settings.return_value.background_reasoning_model = (
+                        "openrouter/moonshotai/kimi-k2.5"
+                    )
+                    mock_settings.return_value.get_provider_config.return_value.timeout_s = 30.0
+                    mock_settings.return_value.get_provider_config.return_value.base_url = ""
+                    mock_settings.return_value.get_provider_config.return_value.api_key = None
+                    mock_settings.return_value.get_provider_config.return_value.extra_headers = {}
+                    mock_settings.return_value.get_provider_config.return_value.requires_auth = (
+                        False
+                    )
+                    mock_settings.return_value.get_provider_config.return_value.name = "test"
 
-                with patch.object(
-                    tool := MemoryReflectTool(store, user_id),
-                    "_get_orchestrator_model",
-                    return_value="openrouter/moonshotai/kimi-k2.5",
-                ):
-                    with patch("orchestrator.tools.memory_reflect.get_settings") as mock_settings:
-                        mock_settings.return_value.get_tier_config.return_value.orchestrator.model = "openrouter/moonshotai/kimi-k2.5"
-                        mock_settings.return_value.get_provider_config.return_value.timeout_s = 30.0
-                        mock_settings.return_value.get_provider_config.return_value.base_url = ""
-                        mock_settings.return_value.get_provider_config.return_value.api_key = None
-                        mock_settings.return_value.get_provider_config.return_value.extra_headers = {}
-                        mock_settings.return_value.get_provider_config.return_value.requires_auth = False
-                        mock_settings.return_value.get_provider_config.return_value.name = "test"
+                    result = await tool.execute(topic="my hobbies")  # noqa: F841
 
-                        result = await tool.execute(topic="my hobbies")  # noqa: F841
-
-                        mock_llm.assert_awaited_once()
-                        assert mock_llm.await_args is not None
-                        call_kwargs = mock_llm.await_args.kwargs
-                        assert call_kwargs["timeout"] == 30.0
+                    mock_llm.assert_awaited_once()
+                    assert mock_llm.await_args is not None
+                    call_kwargs = mock_llm.await_args.kwargs
+                    assert call_kwargs["timeout"] == 30.0
 
 
 @pytest.mark.asyncio
@@ -402,35 +426,36 @@ async def test_reflect_uses_zero_timeout_when_configured():
         },
     ]
 
-    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
-        mock_embed.return_value = _query_result()
+    with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
+        mock_retrieve.return_value = memories
 
-        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
-            mock_retrieve.return_value = memories
+        with patch("orchestrator.tools.memory_reflect.guarded_completion") as mock_llm:
+            mock_llm.return_value = MockLitellmResponse("Synthesis.")
 
-            with patch("orchestrator.tools.memory_reflect.litellm.acompletion") as mock_llm:
-                mock_llm.return_value = MockLitellmResponse("Synthesis.")
+            with patch.object(
+                tool := MemoryReflectTool(store, user_id),
+                "_get_orchestrator_model",
+                return_value="openrouter/moonshotai/kimi-k2.5",
+            ):
+                with patch("orchestrator.tools.memory_reflect.get_settings") as mock_settings:
+                    mock_settings.return_value.background_reasoning_model = (
+                        "openrouter/moonshotai/kimi-k2.5"
+                    )
+                    mock_settings.return_value.get_provider_config.return_value.timeout_s = 0.0
+                    mock_settings.return_value.get_provider_config.return_value.base_url = ""
+                    mock_settings.return_value.get_provider_config.return_value.api_key = None
+                    mock_settings.return_value.get_provider_config.return_value.extra_headers = {}
+                    mock_settings.return_value.get_provider_config.return_value.requires_auth = (
+                        False
+                    )
+                    mock_settings.return_value.get_provider_config.return_value.name = "test"
 
-                with patch.object(
-                    tool := MemoryReflectTool(store, user_id),
-                    "_get_orchestrator_model",
-                    return_value="openrouter/moonshotai/kimi-k2.5",
-                ):
-                    with patch("orchestrator.tools.memory_reflect.get_settings") as mock_settings:
-                        mock_settings.return_value.get_tier_config.return_value.orchestrator.model = "openrouter/moonshotai/kimi-k2.5"
-                        mock_settings.return_value.get_provider_config.return_value.timeout_s = 0.0
-                        mock_settings.return_value.get_provider_config.return_value.base_url = ""
-                        mock_settings.return_value.get_provider_config.return_value.api_key = None
-                        mock_settings.return_value.get_provider_config.return_value.extra_headers = {}
-                        mock_settings.return_value.get_provider_config.return_value.requires_auth = False
-                        mock_settings.return_value.get_provider_config.return_value.name = "test"
+                    result = await tool.execute(topic="my hobbies")  # noqa: F841
 
-                        result = await tool.execute(topic="my hobbies")  # noqa: F841
-
-                        mock_llm.assert_awaited_once()
-                        assert mock_llm.await_args is not None
-                        call_kwargs = mock_llm.await_args.kwargs
-                        assert call_kwargs["timeout"] == 0.0
+                    mock_llm.assert_awaited_once()
+                    assert mock_llm.await_args is not None
+                    call_kwargs = mock_llm.await_args.kwargs
+                    assert call_kwargs["timeout"] == 0.0
 
 
 @pytest.mark.asyncio
@@ -444,13 +469,10 @@ async def test_reflect_includes_dream_observations():
     store = AsyncMock()
     user_id = uuid.uuid4()
 
-    with patch("orchestrator.tools.memory_reflect.embed_query_with_metadata") as mock_embed:
-        mock_embed.return_value = _query_result()
+    with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
+        mock_retrieve.return_value = []
 
-        with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
-            mock_retrieve.return_value = []
+        tool = MemoryReflectTool(store, user_id)
+        await tool.execute(topic="my dreams and aspirations")
 
-            tool = MemoryReflectTool(store, user_id)
-            await tool.execute(topic="my dreams and aspirations")
-
-            assert mock_retrieve.call_args.kwargs.get("include_dream_observations") is True
+        assert mock_retrieve.call_args.kwargs.get("include_dream_observations") is True

@@ -494,6 +494,52 @@ async def test_list_memories_by_slot_family_excludes_dream_observations(
 
 
 @pytest.mark.asyncio
+async def test_insert_memory_without_vector_does_not_claim_embedding_model(
+    memory_store: MemoryStore, mock_db_pool: AsyncMock
+) -> None:
+    mock_db_pool.fetchrow.return_value = {"content": "User plays guitar"}
+    await memory_store.insert_memory(
+        uuid.uuid4(),
+        "User plays guitar",
+        "fact",
+        "user_created",
+        embedding=None,
+        embedding_model="voyage-4-large",
+    )
+    assert mock_db_pool.fetchrow.await_args.args[4] is None  # vector
+    assert mock_db_pool.fetchrow.await_args.args[5] is None  # provenance
+
+
+@pytest.mark.asyncio
+async def test_lexical_search_includes_unembedded_rows_in_model_scoped_query(
+    memory_store: MemoryStore, mock_db_pool: AsyncMock
+) -> None:
+    mock_db_pool.fetch.return_value = []
+    await memory_store.search_memories_bm25(
+        uuid.uuid4(), "guitar", embedding_models=["openrouter:voyageai/voyage-4-large"]
+    )
+
+    sql = mock_db_pool.fetch.await_args.args[0]
+    assert "embedding_model = ANY($9::text[]) OR embedding_model IS NULL" in sql
+    assert mock_db_pool.fetch.await_args.args[9] == ["openrouter:voyageai/voyage-4-large"]
+
+
+@pytest.mark.asyncio
+async def test_imported_memory_without_vector_remains_lexically_searchable(
+    memory_store: MemoryStore, mock_db_pool: AsyncMock
+) -> None:
+    await memory_store.import_memories(
+        uuid.uuid4(), [{"content": "User plays guitar", "category": "fact"}]
+    )
+
+    sql, *args = mock_db_pool.execute.await_args.args
+    assert "to_tsvector('english', $12)" in sql
+    assert args[3] is None  # no vector
+    assert args[4] is None  # no unearned embedding provenance
+    assert args[11] == "User plays guitar"  # plaintext used only to build tsvector
+
+
+@pytest.mark.asyncio
 async def test_get_recent_messages_excludes_streaming_status(
     memory_store: MemoryStore,
     mock_db_pool: AsyncMock,

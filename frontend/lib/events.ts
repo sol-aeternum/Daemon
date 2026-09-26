@@ -22,7 +22,7 @@ export type ChatEvent = BaseEvent &
   (
     | { type: 'text'; content: string }
     | ({ type: 'thinking'; content: string; agent?: string } & TraceMeta)
-    | { type: 'routing'; model: string; tier?: string; reason?: string }
+    | { type: 'routing'; model: string; route_class?: string; reason?: string }
     | { type: 'agent_spawn'; agent: string; agentType: string; task: string }
     | {
         type: 'agent_status';

@@ -26,6 +26,7 @@ from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.config import get_settings
 from orchestrator.db import AppState, get_app_state
 from orchestrator.main import app
+from tests.qualified_compute import install_qualified_compute
 
 
 def _parse_sse_frames(body: str) -> list[tuple[str, dict[str, Any]]]:
@@ -64,6 +65,7 @@ async def client(monkeypatch):
 
     settings = get_settings()
     app_state = AppState(settings=settings)
+    install_qualified_compute(monkeypatch)
 
     async def override_settings():
         return settings
@@ -88,9 +90,13 @@ async def client(monkeypatch):
 
     try:
         async with app.router.lifespan_context(app):
+            app_state.db_pool = object()  # type: ignore[assignment]
             transport = ASGITransport(app=app)
-            async with AsyncClient(transport=transport, base_url="http://test") as client:
-                yield client
+            try:
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    yield client
+            finally:
+                app_state.db_pool = None
     finally:
         app.dependency_overrides.clear()
 

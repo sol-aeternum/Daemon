@@ -28,6 +28,8 @@ Every markdown file in the repository is classified under this hierarchy to dete
 | `docs/PROJECT_CONTEXT.md` | T1 | Engineering | gated | `truth_set.md`, `docs/FEATURE_MATRIX.md` |
 | `docs/AUTH_ARCHITECTURE.md` | T1 | Engineering | gated | `orchestrator/auth*.py`, `orchestrator/routes/auth_setup.py`, `migrations/031_auth_device_model.sql`, `migrations/033_auth_runtime_state.sql` |
 | `docs/HOSTED_IDENTITY.md` | T1 | Engineering/Product | gated | `docs/AUTH_ARCHITECTURE.md`, hosted identity auth routes, hosted identity migrations |
+| `docs/SUBSCRIPTION_ARCHITECTURE.md` | T1 | Engineering/Product | gated | `config/commercial.json`, `config/inference_policy.json`, `orchestrator/entitlements/`, account compute migrations |
+| `docs/SUBSCRIPTION_MIGRATION_REPORT.md` | N/A | Engineering | raw-log | Dated migration validation and tracked blocker evidence |
 | `docs/AUTH_SETUP.md` | T1 | Engineering | gated | `orchestrator/routes/auth_setup.py`, `orchestrator/auth_cookies.py`, `orchestrator/auth_csrf.py` |
 | `docs/OPEN_QUESTIONS.md` | T1 | Engineering | gated | Decision log / `truth_set.md` |
 | `docs/MEMORY_UPGRADE_ROADMAP.md` | T1 | Engineering | gated | `MEMORY_LAYER.md`, Wave plans |
@@ -48,7 +50,7 @@ Every markdown file in the repository is classified under this hierarchy to dete
 Volatile facts are high-confidence data points that change as the project evolves. These are the primary targets for automated drift gating.
 
 ### Volatile Fact Classes
-- **Model Assignments**: Tier-to-model mappings in `config.py`.
+- **Model Assignments**: Workload configuration in `config.py` and qualified routes in `config/inference_policy.json`; commercial policy in `config/commercial.json`.
 - **Embeddings**: Model names and dimensions for document/query slots.
 - **Thresholds**: Vector similarity dedup and consolidation values.
 - **Migration Counts**: Total count and latest filename in `migrations/`.

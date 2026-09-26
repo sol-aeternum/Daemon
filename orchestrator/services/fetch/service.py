@@ -12,10 +12,7 @@ from orchestrator.services.fetch.models import (
     FetchResult,
     load_policy_from_env,
 )
-from orchestrator.services.fetch.strategies.archive import ArchiveOrgStrategy
-from orchestrator.services.fetch.strategies.crawl4ai import Crawl4AIStrategy
 from orchestrator.services.fetch.strategies.direct import DirectFetchStrategy
-from orchestrator.services.fetch.strategies.jina import JinaReaderStrategy
 from orchestrator.services.fetch.strategies.youtube import YouTubeTranscriptStrategy
 from orchestrator.tools.ssrf_guard import (
     MAX_URL_LENGTH,
@@ -67,9 +64,10 @@ class FetchService:
 
         self.youtube_strategy: FetchStrategy | None = YouTubeTranscriptStrategy(self.policy)
         self.direct_strategy: FetchStrategy | None = DirectFetchStrategy(self.policy)
-        self.jina_strategy: FetchStrategy | None = JinaReaderStrategy(self.policy)
-        self.crawl4ai_strategy: FetchStrategy | None = Crawl4AIStrategy(self.policy)
-        self.archive_strategy: FetchStrategy | None = ArchiveOrgStrategy(self.policy)
+        # Vendor-assisted extraction has no approved bounded adapter yet.
+        self.jina_strategy: FetchStrategy | None = None
+        self.crawl4ai_strategy: FetchStrategy | None = None
+        self.archive_strategy: FetchStrategy | None = None
 
     async def fetch(
         self,
@@ -187,11 +185,7 @@ class FetchService:
         return result
 
     def _default_strategy_chain(self) -> Sequence[tuple[str, FetchStrategy | None]]:
-        return (
-            ("direct", self.direct_strategy),
-            ("jina", self.jina_strategy),
-            ("archive", self.archive_strategy),
-        )
+        return (("direct", self.direct_strategy),)
 
     def _is_supported_url(self, url: str) -> bool:
         """Static (non-DNS) policy gate.

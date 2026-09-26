@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+
 from typing import Any
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+
 import uuid
 from unittest.mock import AsyncMock
 
@@ -42,6 +46,18 @@ async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncClient,
 
     settings = get_settings()
     app_state = AppState(settings=settings)
+    monkeypatch.setattr(
+        "orchestrator.main.choose_route",
+        lambda model=None: SimpleNamespace(model=model or "openrouter/test-approved"),
+    )
+
+    @asynccontextmanager
+    async def scoped_account(pool, user_id, **kwargs):
+        assert pool is app_state.db_pool
+        assert user_id == uuid.UUID("00000000-0000-0000-0000-000000000001")
+        yield None
+
+    monkeypatch.setattr("orchestrator.main.account_compute", scoped_account)
 
     async def override_settings():
         return settings
@@ -66,9 +82,13 @@ async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncClient,
 
     try:
         async with app.router.lifespan_context(app):
-            transport = ASGITransport(app=app)
-            async with AsyncClient(transport=transport, base_url="http://test") as http_client:
-                yield http_client
+            app_state.db_pool = object()  # type: ignore[assignment]
+            try:
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as http_client:
+                    yield http_client
+            finally:
+                app_state.db_pool = None
     finally:
         app.dependency_overrides.clear()
 
@@ -102,7 +122,7 @@ async def test_council_default_stream_emits_sse_flow(
         headers={"Content-Type": "application/json"},
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     body = response.text
     assert "event: council_progress" in body
     assert "event: council_output" in body

@@ -12,7 +12,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
-import litellm
+from orchestrator.compute_runtime import guarded_completion
 
 from orchestrator.config import get_settings
 from orchestrator.memory.encryption import ContentEncryption
@@ -289,8 +289,7 @@ Provide only the synthesized summary statements, no additional commentary."""
 def _get_orchestrator_model() -> str:
     """Get the orchestrator-tier model from settings."""
     settings = get_settings()
-    tier_config = settings.get_tier_config(settings.default_tier)
-    return tier_config.orchestrator.model
+    return settings.background_reasoning_model
 
 
 def _extract_content(response: Any) -> str:
@@ -432,7 +431,7 @@ async def consolidate_cluster(
 
     # Call LLM for synthesis
     try:
-        response = await litellm.acompletion(**call_params)
+        response = await guarded_completion(**call_params)
 
         # Extract synthesized text using robust extraction
         synthesized_text = _extract_content(response)

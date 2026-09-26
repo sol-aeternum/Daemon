@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from orchestrator.compute_runtime import guarded_completion
+
 # pyright: reportUnknownMemberType=false
 
 import re
 from collections.abc import Sequence
 from typing import Protocol, TypedDict, cast
 
-import litellm
 
 TITLE_GENERATION_PROMPT = """
 Generate a concise 3-5 word title for this conversation.
@@ -64,13 +65,13 @@ def _sanitize_title(text: str) -> str:
 
 async def generate_conversation_title(
     messages: Sequence[ConversationMessage],
-    model: str = "openrouter/openai/gpt-4o-mini",
+    model: str = "auto",
 ) -> str:
     excerpt = _prepare_excerpt(messages)
     if not excerpt:
         return "New Conversation"
 
-    response = await litellm.acompletion(
+    response = await guarded_completion(
         model=model,
         messages=[
             {"role": "system", "content": "You generate concise conversation titles."},

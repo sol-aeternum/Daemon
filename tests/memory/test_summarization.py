@@ -9,7 +9,7 @@ from orchestrator.memory.summarization import generate_summary
 async def test_generate_summary():
     mock_summary = "Test summary. Open: none"
     with patch(
-        "orchestrator.memory.summarization.litellm.acompletion", new_callable=AsyncMock
+        "orchestrator.memory.summarization.guarded_completion", new_callable=AsyncMock
     ) as mock:
         mock.return_value.choices = [
             type(

@@ -44,7 +44,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Conversation Switching | Cross-client stable | Cross-client stable | Not started | Not started | GET /conversations/{id} | No |
 | Long Conversation Controls | Mobile eligible | Mobile eligible | Not started | Not started | Client-side collapse of messages over 1,200 characters outside the latest five, kept findable by browser search via `hidden="until-found"` (never collapsed where unsupported), persisted tool-log visibility, recoverable spawn history, and jump-to-latest during streaming; virtual scrolling at 50+ loaded messages is deferred to [#298](https://github.com/sol-aeternum/Daemon/issues/298) | No |
 | **Memory (user-visible)** | — | — | — | — | — | — |
-| Memory Read (semantic retrieval) | Cross-client stable | Cross-client stable | Not started | Not started | GET /memories | No |
+| Memory Read (account-scoped retrieval) | Cross-client stable | Cross-client stable | Not started | Not started | GET /memories; lexical fallback while embeddings are unqualified | No |
 | Memory Write (explicit storage) | Backend stable | Backend stable | Not started | Not started | POST /memories | No |
 | Memory Correction | Cross-client stable | Cross-client stable | Not started | Not started | POST /memories/{id}/confirm | No |
 | Memory Export/Import | Backend stable | Backend stable | Not started | Not started | POST /memories/export, POST /memories/import | No |
@@ -52,9 +52,9 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Memory Clear All | Cross-client stable | Cross-client stable | Not started | Not started | DELETE /memories?confirm=true | No |
 | **Subagents** | — | — | — | — | — | — |
 | @research (web search + synthesis) | Cross-client stable | Cross-client stable | Not started | Not started | Subagent orchestration service + web search service | No |
-| @image (image generation) | Cross-client stable | Cross-client stable | Not started | Not started | Subagent orchestration service + image generation service | No |
-| @image Video Generation | Cross-client stable | Cross-client stable | Not started | Not started | Subagent orchestration service + video generation service + /video-credits | No |
-| @audio (ElevenLabs sound effects) | Cross-client stable | Cross-client stable | Not started | Not started | POST /sound-effects | No |
+| @image (image generation) | Retired | Retired | Not started | Not started | Unbounded vendor execution disabled; replacement requires a qualified, cost-reserving adapter | No |
+| @image Video Generation | Retired | Retired | Not started | Not started | Unbounded vendor execution disabled; retained video credits do not enable execution | No |
+| @audio (ElevenLabs sound effects) | Retired | Retired | Not started | Not started | POST /sound-effects denied pending a qualified, bounded adapter | No |
 | Document file generation (`generate_document`) | Cross-client stable | Cross-client stable | Not started | Not started | `generate_document` tool + /generated-files/{filename} | No |
 | @code (code generation) — NOT IMPLEMENTED | Web experimental | Web experimental | Not started | Not started | Reserved subagent orchestration mode | No |
 | @reader (document analysis) — NOT IMPLEMENTED | Web experimental | Web experimental | Not started | Not started | Reserved subagent orchestration mode | No |
@@ -70,13 +70,14 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Skill Management (CRUD) | Cross-client stable | Cross-client stable | Not started | Not started | GET/POST /skills, GET/PUT/DELETE /skills/{id}, PATCH endpoints, POST /skills/upload | No |
 | Interactive HTML Artifacts | Cross-client stable | Cross-client stable | Not started | Not started | Interactive artifact rendering service | No |
 | **Voice I/O** | — | — | — | — | — | — |
-| ElevenLabs TTS (streaming) | Cross-client stable | Cross-client stable | Not started | Not started | POST /tts, GET /audio/token | No |
-| ElevenLabs STT (streaming) | Cross-client stable | Cross-client stable | Not started | Not started | POST /stt, GET /audio/scribe-token | No |
-| Sound Effects Generation (ElevenLabs) | Backend stable | Backend stable | Not started | Not started | POST /sound-effects | No |
+| ElevenLabs TTS (streaming) | Retired | Retired | Not started | Not started | POST /tts and GET /audio/token denied pending bounded server-side execution | No |
+| ElevenLabs STT (streaming) | Retired | Retired | Not started | Not started | POST /stt and GET /audio/scribe-token denied; vendor tokens cannot bypass account budgets | No |
+| Sound Effects Generation (ElevenLabs) | Retired | Retired | Not started | Not started | POST /sound-effects denied pending a qualified, bounded adapter | No |
 | Voice Settings (TTS voice/model/speed/format, STT language) | Cross-client stable | Cross-client stable | Not started | Not started | Client settings storage + PATCH /users/me/settings | No |
 | **Models & Routing** | — | — | — | — | — | — |
 | Model Selector UI (catalog + full search) | Cross-client stable | Cross-client stable | Not started | Not started | GET /v1/catalog, GET /v1/models; desktop chat header shows the running model and active subagent count from the current response | No |
 | **Settings** | — | — | — | — | — | — |
+| Account Plan & Premium Trial Capacity | Web experimental | Web experimental | Not started | Not started | Authenticated /users/me/entitlements; centralized Free/Pro/Power policy and usage-based trial (deployment qualification required) | No |
 | Appearance Settings (Dark/Light/System theme) | Cross-client stable | Cross-client stable | Not started | Not started | Client theme settings (no backend) | No |
 | Enrollment & Profile Settings (display name, custom instructions) | Cross-client stable | Cross-client stable | Not started | Not started | GET /users/me/settings, PATCH /users/me/settings; desktop chat header shortcut and settings navigation preserve the return conversation | Yes |
 | Memory Management Settings | Cross-client stable | Cross-client stable | Not started | Not started | GET /memories, DELETE /memories/{id}, POST /memories/{id}/confirm, DELETE /memories?confirm=true | No |
@@ -104,10 +105,10 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Council Deliberation (multi-perspective LLM debate) | Cross-client stable | Cross-client stable | Not started | Not started | Council streaming service | No |
 | Council Interview Flow (roster, rounds, audit config) | Cross-client stable | Cross-client stable | Not started | Not started | Welcome-screen Deliberate shortcut or /council command → interview flow | No |
 | Studio Image Generation (web UI) | Retired | Retired | Not started | Not started | Authenticated retired Studio image API surface returns 410; hosted-identity replacement tracked separately | No |
-| Studio Video Generation (web UI with credit check) | Cross-client stable | Cross-client stable | Not started | Not started | POST /video-credits/estimate + studio video generation route | No |
+| Studio Video Generation (web UI with credit check) | Retired | Retired | Not started | Not started | UI retained; generation denied pending bounded provider integration; credit balances/history preserved | No |
 | Video Credit Balance & Transactions | Cross-client stable | Cross-client stable | Not started | Not started | GET /video-credits/balance, GET /video-credits/transactions, GET /video-credits/estimate | No |
 | **BYOK** | — | — | — | — | — | — |
-| BYOK (bring your own OpenRouter key) | Cross-client stable | Cross-client stable | Not started | Not started | User settings API + provider credential pass-through | No |
+| BYOK (bring your own inference credentials) | Not started | Not started | Not started | Not started | Future credential funding adapter; policy architecture reserves capability, no client plan or credit bypass | No |
 | **Projects** | — | — | — | — | — | — |
 | Projects Page (placeholder — not yet implemented) | Web experimental | Web experimental | Not started | Not started | No backend API yet | No |
 | **Mobile wedge targets** | — | — | — | — | — | — |

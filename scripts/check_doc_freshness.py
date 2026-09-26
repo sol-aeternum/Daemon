@@ -8,6 +8,32 @@ at runtime. Supports high-confidence structured-fact checks only:
   - embedding_document_model
   - dedup_thresholds (merge, supersede_generic, supersede_same_slot)
   - video_providers (source-derived from VALID_VIDEO_PROVIDERS)
+  - route / env_var / docker / subagent facts
+  - workload model declarations (auto_fast_model, auto_reasoning_model)
+  - commercial policy consistency, derived from ``config/commercial.json`` and
+    ``config/inference_policy.json``:
+      * commercial_plan        (documented plan set vs. declared plans)
+      * commercial_capability  (plan capability claims vs. granted capabilities)
+      * commercial_price       (documented display price vs. declared price)
+      * legacy_plan_map        (documented legacy-name mapping vs. declared map)
+      * inference_policy       (declared route/service ids, approval claims, and
+                                the transport flags a prescribed request must pin)
+
+The retired five-tier architecture (``TierConfig``, ``tier_*`` model slots,
+``list_available_tiers``) no longer has a T0 source, so the old baked tier-slot
+checks were removed rather than re-pointed. They are replaced by the commercial
+policy checks above, which read the same declared facts the runtime resolves.
+
+Precision limits (deliberate, to avoid false positives on narrative prose):
+  - Every check is a no-op when the document makes no matching structured claim.
+  - Unknown-plan detection fires only on bold/backticked plan names in an
+    anchored plan list or a plan-keyed table. Unbolded names are accepted.
+  - Capability detection fires only on snake_case identifiers (a vocabulary no
+    English prose shares) inside a plan-keyed table or after a
+    ``capabilities:``/``capability =`` label.
+  - This linter compares documentation against declared policy. It never
+    re-validates the policy files themselves: schema shape, capability
+    vocabulary, and budget sanity stay in ``orchestrator/entitlements/``.
 
 Exception syntax:
   <!-- DOC_FRESHNESS_EXCEPTION: <check_id> expires=YYYY-MM-DD reason="..." -->
@@ -123,57 +149,11 @@ def get_provider_facts(root: Path) -> dict[str, Any]:
     }
 
 
-# Tier model defaults extraction from config.py
-_TIER_MODEL_RE = re.compile(r'tier_([a-z]+)_([a-z_]+)_model\s*:\s*str\s*=\s*"([^"]*)"')
-_TIER_VIDEO_PROVIDER_RE = re.compile(r'tier_([a-z]+)_video_provider\s*:\s*str\s*=\s*"([^"]+)"')
-_TIER_IMAGE_PROVIDER_RE = re.compile(r'tier_([a-z]+)_image_provider\s*:\s*str\s*=\s*"([^"]+)"')
+# Workload model declarations that remain in orchestrator/config.py. Commercial
+# plan-to-model assignment is gone; these are deployment/workload slots that the
+# documentation still describes.
 _AUTO_FAST_MODEL_RE = re.compile(r'auto_fast_model\s*:\s*str\s*=\s*"([^"]+)"')
 _AUTO_REASONING_MODEL_RE = re.compile(r'auto_reasoning_model\s*:\s*str\s*=\s*"([^"]+)"')
-
-
-def get_tier_facts(root: Path) -> dict[str, Any]:
-    config_path = root / "orchestrator" / "config.py"
-    if not config_path.exists():
-        return {}
-    text = config_path.read_text(encoding="utf-8")
-    tiers: dict[str, dict[str, str]] = {}
-    for m in _TIER_MODEL_RE.finditer(text):
-        tier_name = m.group(1)
-        slot = m.group(2)
-        model = m.group(3)
-        if tier_name not in tiers:
-            tiers[tier_name] = {}
-        tiers[tier_name][slot] = model
-    video_providers: dict[str, str] = {}
-    for m in _TIER_VIDEO_PROVIDER_RE.finditer(text):
-        tier_name = m.group(1)
-        provider = m.group(2)
-        video_providers[tier_name] = provider
-    image_providers: dict[str, str] = {}
-    for m in _TIER_IMAGE_PROVIDER_RE.finditer(text):
-        tier_name = m.group(1)
-        provider = m.group(2)
-        image_providers[tier_name] = provider
-    video_enabled: dict[str, bool] = {}
-    current_tier: str | None = None
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("if tier_name ==") or stripped.startswith("elif tier_name =="):
-            m = re.search(r'==\s*"(\w+)"', stripped)
-            if m:
-                current_tier = m.group(1)
-        elif current_tier and "tier_video_enabled" in stripped and "=" in stripped:
-            if "False" in stripped:
-                video_enabled[current_tier] = False
-            elif "True" in stripped:
-                video_enabled[current_tier] = True
-            current_tier = None
-    return {
-        "tiers": tiers,
-        "video_providers": video_providers,
-        "image_providers": image_providers,
-        "video_enabled": video_enabled,
-    }
 
 
 def get_auto_routing_facts(root: Path) -> dict[str, str]:
@@ -186,6 +166,196 @@ def get_auto_routing_facts(root: Path) -> dict[str, str]:
     return {
         "auto_fast_model": fast.group(1) if fast else "",
         "auto_reasoning_model": reasoning.group(1) if reasoning else "",
+    }
+
+
+COMMERCIAL_CONFIG_RELPATH = Path("config") / "commercial.json"
+INFERENCE_POLICY_RELPATH = Path("config") / "inference_policy.json"
+
+
+def _read_policy_json(path: Path) -> dict[str, Any] | None:
+    """Read a policy JSON file, or None when it is absent or unreadable.
+
+    The linter is documentation-only tooling: it reports a doc that contradicts
+    policy, never a policy that is itself malformed. Runtime loading and
+    validation live in ``orchestrator/entitlements/policy.py``.
+    """
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _normalized_label(value: object) -> str:
+    return str(value).strip().strip("*`_").lower()
+
+
+def get_commercial_facts(root: Path) -> dict[str, Any]:
+    """Extract the commercial facts documentation is allowed to restate.
+
+    Only values that ``config/commercial.json`` itself declares are read:
+    plan ids, display labels, per-plan capabilities, display prices, billable
+    operations, and the legacy plan map used for explicit migration. Internal
+    consistency of that file is a runtime concern and is not re-checked here.
+    """
+    data = _read_policy_json(root / COMMERCIAL_CONFIG_RELPATH)
+    if data is None:
+        return {}
+
+    plans_raw = data.get("plans")
+    plans: dict[str, Any] = plans_raw if isinstance(plans_raw, dict) else {}
+
+    plan_ids: list[str] = []
+    labels: dict[str, str] = {}
+    capabilities: dict[str, list[str]] = {}
+    display: dict[str, dict[str, str]] = {}
+    capability_vocabulary: set[str] = set()
+    for raw_id, body in plans.items():
+        plan_id = str(raw_id).strip().lower()
+        if not plan_id:
+            continue
+        plan_ids.append(plan_id)
+        body_map: dict[str, Any] = body if isinstance(body, dict) else {}
+
+        display_raw = body_map.get("display")
+        display_map: dict[str, Any] = display_raw if isinstance(display_raw, dict) else {}
+        label = display_map.get("label")
+        if isinstance(label, str) and _normalized_label(label):
+            labels[_normalized_label(label)] = plan_id
+        currency = display_map.get("currency")
+        amount_minor = display_map.get("amount_minor")
+        if isinstance(currency, str) and isinstance(amount_minor, (int, float)):
+            display[plan_id] = {
+                "currency": currency.strip().upper(),
+                "amount_minor": str(amount_minor),
+            }
+
+        caps_raw = body_map.get("capabilities")
+        caps = sorted(
+            {
+                str(c).strip().lower()
+                for c in (caps_raw if isinstance(caps_raw, list) else [])
+                if isinstance(c, str) and str(c).strip()
+            }
+        )
+        capabilities[plan_id] = caps
+        capability_vocabulary.update(caps)
+
+    legacy_raw = data.get("legacy_plan_map")
+    legacy_plan_map: dict[str, str] = {}
+    if isinstance(legacy_raw, dict):
+        for key, value in legacy_raw.items():
+            # Only mapping entries are facts here. Keys such as "notes" whose
+            # value is prose are policy commentary, not a name mapping; a
+            # mapping to an undeclared plan is a policy problem, not doc drift.
+            if not isinstance(value, str) or not str(key).strip():
+                continue
+            target = _normalized_label(value)
+            if target in plan_ids:
+                legacy_plan_map[_normalized_label(key)] = target
+
+    operations_raw = data.get("operations")
+    operations = sorted(
+        {
+            str(o).strip().lower()
+            for o in (operations_raw if isinstance(operations_raw, list) else [])
+            if isinstance(o, str) and str(o).strip()
+        }
+    )
+
+    return {
+        "plan_ids": sorted(plan_ids),
+        "plan_labels": labels,
+        "capabilities": capabilities,
+        "capability_vocabulary": sorted(capability_vocabulary),
+        "operation_vocabulary": operations,
+        "display": display,
+        "legacy_plan_map": legacy_plan_map,
+    }
+
+
+# Requirement key in config/inference_policy.json -> transport keys that a
+# documented outbound provider request must pin when that requirement is on.
+# Values are the hardened contract the policy file states in prose
+# ("zdr true, data_collection deny, allow_fallbacks false, require_parameters
+# true"); they are recorded here so the linter can check documentation against
+# the documented contract instead of trusting prose.
+_REQUIREMENT_TRANSPORT_FLAGS: dict[str, tuple[str, ...]] = {
+    "require_pinned_transport": ("allow_fallbacks", "require_parameters"),
+    "require_zdr": ("zdr",),
+    "require_no_training": ("data_collection",),
+    "require_pinned_provider_selection": ("only", "order"),
+    "require_price_ceiling": ("max_price",),
+}
+_REQUIRED_TRANSPORT_VALUES: dict[str, Any] = {
+    "zdr": True,
+    "data_collection": "deny",
+    "allow_fallbacks": False,
+    "require_parameters": True,
+}
+_REQUIRED_MAX_PRICE_KEYS: tuple[str, ...] = ("prompt", "completion")
+
+
+def get_inference_policy_facts(root: Path) -> dict[str, Any]:
+    """Extract the inference-policy facts documentation is allowed to restate.
+
+    Route ids, tool-service ids, the default route, approval state, and the
+    transport flags required by ``requirements``. Qualification rules
+    themselves are enforced at runtime; this only supplies the T0 values that
+    documentation claims are compared against.
+    """
+    data = _read_policy_json(root / INFERENCE_POLICY_RELPATH)
+    if data is None:
+        return {}
+
+    def _entries(key: str, id_key: str) -> list[dict[str, Any]]:
+        raw = data.get(key)
+        if not isinstance(raw, list):
+            return []
+        return [entry for entry in raw if isinstance(entry, dict) and entry.get(id_key)]
+
+    route_entries = _entries("routes", "route_id")
+    service_entries = _entries("tool_services", "service_id")
+
+    def _collect(entries: list[dict[str, Any]], id_key: str) -> tuple[dict[str, bool], set[str]]:
+        ids: dict[str, bool] = {}
+        providers: set[str] = set()
+        for entry in entries:
+            entry_id = _normalized_label(entry.get(id_key))
+            if not entry_id:
+                continue
+            ids[entry_id] = entry.get("approved") is True
+            provider = entry.get("provider")
+            if isinstance(provider, str) and provider.strip():
+                providers.add(provider.strip().lower())
+        return ids, providers
+
+    route_ids, route_providers = _collect(route_entries, "route_id")
+    service_ids, service_providers = _collect(service_entries, "service_id")
+
+    requirements_raw = data.get("requirements")
+    requirements: dict[str, bool] = {}
+    if isinstance(requirements_raw, dict):
+        requirements = {str(k): v is True for k, v in requirements_raw.items()}
+
+    required_flags: list[tuple[str, Any]] = []
+    for requirement, flags in _REQUIREMENT_TRANSPORT_FLAGS.items():
+        if not requirements.get(requirement):
+            continue
+        for flag in flags:
+            required_flags.append((flag, _REQUIRED_TRANSPORT_VALUES.get(flag)))
+
+    default_route = data.get("default_route_id")
+    return {
+        "route_ids": route_ids,
+        "service_ids": service_ids,
+        "providers": sorted(route_providers | service_providers),
+        "requirements": requirements,
+        "required_flags": required_flags,
+        "default_route_id": _normalized_label(default_route) if default_route else None,
     }
 
 
@@ -255,6 +425,11 @@ _ROUTE_DEF_RE = re.compile(
     r'(@app\.|router\.)(get|post|put|patch|delete|options)\s*\(\s*["\']([^"\']*)["\']'
 )
 _ROUTER_PREFIX_RE = re.compile(r'router\s*=\s*APIRouter\s*\(\s*prefix\s*=\s*["\']([^"\']+)["\']')
+_INCLUDE_ROUTER_MODULE_RE = re.compile(r"app\.include_router\(\s*(\w+)\.router\s*\)")
+_INCLUDE_ROUTER_ALIAS_RE = re.compile(r"app\.include_router\(\s*(\w+)\s*\)")
+_ROUTER_ALIAS_IMPORT_RE = re.compile(
+    r"from\s+orchestrator\.routes\.(\w+)\s+import\s+router\s+as\s+(\w+)"
+)
 
 
 def _strip_trailing_slash(path: str) -> str:
@@ -264,10 +439,27 @@ def _strip_trailing_slash(path: str) -> str:
 def get_route_facts(root: Path) -> dict[str, Any]:
     main_path = root / "orchestrator" / "main.py"
     routes_dir = root / "orchestrator" / "routes"
-    image_gen_router = root / "backend" / "image_gen" / "router.py"
     routes: dict[str, list[str]] = {}
 
-    for path in [main_path] + sorted(routes_dir.glob("*.py")) + [image_gen_router]:
+    sources: list[Path] = [main_path]
+    sources.extend(sorted(routes_dir.glob("*.py")) if routes_dir.exists() else [])
+    if main_path.exists():
+        # Any router module main.py mounts is gated, including modules outside
+        # orchestrator/routes/. Resolving include_router() calls keeps this
+        # honest when routers move, instead of pinning one historical path.
+        main_text = main_path.read_text(encoding="utf-8")
+        aliases = dict(_ROUTER_ALIAS_IMPORT_RE.findall(main_text))
+        mounted: set[str] = set(_INCLUDE_ROUTER_MODULE_RE.findall(main_text))
+        for alias in _INCLUDE_ROUTER_ALIAS_RE.findall(main_text):
+            module = aliases.get(alias)
+            if module:
+                mounted.add(module)
+        for module in sorted(mounted):
+            candidate = routes_dir / f"{module}.py"
+            if candidate.exists() and candidate not in sources:
+                sources.append(candidate)
+
+    for path in sources:
         if not path.exists():
             continue
         text = path.read_text(encoding="utf-8")
@@ -303,24 +495,6 @@ def get_env_var_facts(root: Path) -> dict[str, list[str]]:
     return {"env_vars": sorted(env_vars)}
 
 
-_TIER_PRICE_RE = re.compile(r"#\s*Tier:\s*(FREE|STARTER|PRO|MAX|BYOK)\s*\(([^)]+)\)", re.IGNORECASE)
-
-
-def get_tier_prices(root: Path) -> dict[str, Any]:
-    config_path = root / "orchestrator" / "config.py"
-    text = config_path.read_text(encoding="utf-8")
-    prices: dict[str, str] = {}
-    for match in _TIER_PRICE_RE.finditer(text):
-        tier_id = match.group(1).lower()
-        price_val = match.group(2).strip()
-        if not price_val.startswith("$"):
-            price_val = f"${price_val}"
-        if not price_val.endswith("/mo"):
-            price_val = f"{price_val}/mo"
-        prices[tier_id] = price_val
-    return {"tier_prices": prices}
-
-
 def extract_all_facts(root: Path) -> dict[str, Any]:
     return {
         "migrations": get_migration_facts(root),
@@ -328,8 +502,8 @@ def extract_all_facts(root: Path) -> dict[str, Any]:
         "providers": get_provider_facts(root),
         "routes": get_route_facts(root),
         "env_vars": get_env_var_facts(root),
-        "tier_defaults": get_tier_facts(root),
-        "tier_prices": get_tier_prices(root),
+        "commercial": get_commercial_facts(root),
+        "inference_policy": get_inference_policy_facts(root),
         "auto_routing": get_auto_routing_facts(root),
         "docker": get_docker_facts(root),
         "subagents": get_subagent_facts(root),
@@ -377,10 +551,11 @@ class CheckId(str, Enum):
     DEDUP_SUPERSEDE_GENERIC = "dedup_supersede_generic_threshold"
     DEDUP_SUPERSEDE_SAME_SLOT = "dedup_supersede_same_slot_threshold"
     VIDEO_PROVIDERS = "video_providers"
-    TIER_MODEL = "tier_model"
-    TIER_VIDEO_PROVIDER = "tier_video_provider"
-    TIER_IMAGE_PROVIDER = "tier_image_provider"
-    TIER_PRICE = "tier_price"
+    COMMERCIAL_PLAN = "commercial_plan"
+    COMMERCIAL_CAPABILITY = "commercial_capability"
+    COMMERCIAL_PRICE = "commercial_price"
+    LEGACY_PLAN_MAP = "legacy_plan_map"
+    INFERENCE_POLICY = "inference_policy"
     ROUTE = "route"
     ENV_VAR = "env_var"
     AUTO_FAST_MODEL = "auto_fast_model"
@@ -464,43 +639,6 @@ class CheckResult:
     expected: str | None = None
     observed: str | None = None
     message: str | None = None
-
-
-_TIER_PRICE_TABLE_RE = re.compile(
-    r"^\|\s*\*\*([A-Za-z]+)\*\*\s*\|\s*(\$[\d]+/mo)\s*\|",
-    re.IGNORECASE,
-)
-
-
-def _check_tier_prices(doc_content: str, source_prices: dict[str, str]) -> CheckResult:
-    if not source_prices:
-        return CheckResult(CheckId.TIER_PRICE, True)
-    lines = doc_content.splitlines()
-    doc_prices: dict[str, str] = {}
-    for line in lines:
-        m = _TIER_PRICE_TABLE_RE.match(line.strip())
-        if m:
-            tier = m.group(1).lower()
-            price = m.group(2)
-            doc_prices[tier] = price
-    if not doc_prices:
-        return CheckResult(CheckId.TIER_PRICE, True)
-    mismatches = []
-    for tier, src_price in source_prices.items():
-        doc_price = doc_prices.get(tier)
-        if doc_price is None:
-            mismatches.append(f"{tier}: missing (source has {src_price})")
-        elif doc_price != src_price:
-            mismatches.append(f"{tier}: expected {src_price}, got {doc_price}")
-    if mismatches:
-        return CheckResult(
-            CheckId.TIER_PRICE,
-            False,
-            str(source_prices),
-            str(doc_prices),
-            "; ".join(mismatches),
-        )
-    return CheckResult(CheckId.TIER_PRICE, True)
 
 
 _ROUTE_TABLE_RE = re.compile(r"`(/[^`]+)`")
@@ -1096,42 +1234,8 @@ def _check_video_providers(doc_content: str, valid_providers: frozenset[str]) ->
     return CheckResult(CheckId.VIDEO_PROVIDERS, True)
 
 
-# Tier table row regex: | **TIER** | model | model | model | model | model | model |
-# Matches actual tier names (FREE, STARTER, PRO, MAX, BYOK) in any case variant
-_TIER_TABLE_ROW_RE = re.compile(
-    r"^\|\s*\*\*(FREE|STARTER|PRO|MAX|BYOK)\*\*\s*\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|",
-    re.IGNORECASE,
-)
-
-# Map from tier name in docs to tier name in config
-_TIER_NAME_MAP = {
-    "free": "free",
-    "starter": "starter",
-    "pro": "pro",
-    "max": "max",
-    "byok": "byok",
-}
-
-# Slot names in the tier table (order must match the regex above)
-_TIER_SLOTS = ["orchestrator", "research", "code", "image", "reader", "embeddings", "video"]
-
-
-# PROJECT_CONTEXT tier table: mixed-case tier names and 4 data columns (price, orchestrator, subagents, video)
-_TIER_TABLE_ROW_RE_PLAIN = re.compile(
-    r"^\|\s*\*\*(Free|Starter|Pro|Max|BYOK)\*\*\s*\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|",
-    re.IGNORECASE,
-)
-
-# Map for PROJECT_CONTEXT mixed-case tier names
-_TIER_NAME_MAP_PLAIN = {
-    "free": "free",
-    "starter": "starter",
-    "pro": "pro",
-    "max": "max",
-    "byok": "byok",
-}
-
-
+# Model names appear in documentation with and without provider prefixes and
+# modality suffixes, so both are normalized before comparison.
 def _normalize_model_name(model: str) -> str:
     normalized = model.lower()
     while True:
@@ -1159,350 +1263,634 @@ def _normalize_model_name(model: str) -> str:
     return normalized.strip()
 
 
-def _check_tier_defaults(
+_PLAN_ITEM = r"(?:\*\*[A-Za-z][A-Za-z0-9 _/-]{0,30}?\*\*|`[a-z][a-z0-9_-]*`|[A-Z][A-Za-z0-9_-]*)"
+_PLAN_LIST_RE = re.compile(
+    r"\s*"
+    + _PLAN_ITEM
+    + r"(?:\s*/\s*"
+    + _PLAN_ITEM
+    + r")*(?:\s*,\s*(?:and\s+|or\s+)?"
+    + _PLAN_ITEM
+    + r")*(?:\s+(?:and|or)\s+"
+    + _PLAN_ITEM
+    + r")*"
+)
+# Items keep track of emphasis: **Free** is a deliberate claim, a bare Free is
+# only a claim when the list is otherwise anchored to a declared plan.
+_PLAN_ITEM_TOKEN_RE = re.compile(
+    r"(?P<bold>\*\*[A-Za-z][A-Za-z0-9 _/-]{0,30}?\*\*)"
+    r"|(?P<code>`[a-z][a-z0-9_-]*`)"
+    r"|(?P<plain>[A-Z][A-Za-z0-9_-]*)"
+)
+# Anchors that make a following capitalized list a *plan* list rather than an
+# ordinary enumeration: a commercial/model noun, or a plans copula.
+_PLAN_SENTENCE_ANCHOR_RE = re.compile(
+    r"\b(?:commercial|durable|current|paid|subscription|account)\s+"
+    r"(?:plans?|models?|offerings?|tiers?)\b"
+    r"|\bplans?\s+(?:are|is)\b"
+    r"|\bplans?\s*:",
+    re.IGNORECASE,
+)
+_PLAN_ROW_LABEL_RE = re.compile(r"^\|\s*\**\s*([A-Za-z][A-Za-z0-9 _/-]{0,40}?)\s*\**\s*\|")
+_PLAN_TABLE_HEADER_RE = re.compile(r"^\|\s*\**\s*plans?\s*\**\s*\|", re.IGNORECASE)
+# A policy vocabulary claim must be a definition: the label at the start of a
+# line (optionally bulleted/bold). A mid-sentence "for vector operations: `x`"
+# is prose about something else entirely.
+_POLICY_LABEL_PREFIX = r"^[ \t]*(?:[-*+][ \t]+|\d+[.)][ \t]+)?(?:\*\*|__)?[ \t]*"
+_CAPABILITY_LABEL_RE = re.compile(
+    _POLICY_LABEL_PREFIX + r"capabilit(?:y|ies)(?:\*\*|__)?[ \t]*[:=][ \t]*([a-z0-9_, `]+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_OPERATION_LABEL_RE = re.compile(
+    _POLICY_LABEL_PREFIX + r"operations?(?:\*\*|__)?[ \t]*[:=][ \t]*([a-z0-9_, `]+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_PRICE_CLAIM_RE = re.compile(
+    r"(?P<currency>US\$|CA\$|AU\$|A\$|NZ\$|\$)\s?(?P<amount>\d+(?:\.\d{1,2})?)\s*(?:/|\s*per\s*)\s*"
+    r"(?P<period>mo\b|month|period|calendar month)",
+    re.IGNORECASE,
+)
+_CURRENCY_SYMBOLS: dict[str, str] = {
+    "USD": "$",
+    "CAD": "CA$",
+    "AUD": "A$",
+    "NZD": "NZ$",
+    "EUR": "€",
+    "GBP": "£",
+}
+
+
+def _after_plan_copula(line: str, pos: int) -> int:
+    """Advance past an optional "are"/"is"/":" between a plan anchor and its list."""
+    m = _PLAN_COPULA_RE.match(line, pos)
+    return m.end() if m else pos
+
+
+_PLAN_COPULA_RE = re.compile(r"\s*(?:are|is|:)\s*", re.IGNORECASE)
+
+
+def _plan_claims(
     doc_content: str,
-    tier_defaults: dict[str, dict[str, str]],
-    tier_video_providers: dict[str, str] | None = None,
-    tier_image_providers: dict[str, str] | None = None,
-    tier_video_enabled: dict[str, bool] | None = None,
-) -> list[CheckResult]:
+    known: frozenset[str] = frozenset(),
+    legacy_names: frozenset[str] = frozenset(),
+) -> dict[str, list[str]]:
+    """Extract plan identifiers a document claims exist.
+
+    Two high-confidence sources:
+    - a plan-keyed table whose header first cell is literally ``Plan``/``Plans``
+    - an anchored sentence ("commercial plans are ...", "the commercial model is
+      ...") whose trailing item list names two or more plans
+
+    A name only counts as a claim when it sits in one of those two structures
+    *and* the list is anchored: either a plan-keyed table, or a list where at
+    least one item is a declared plan name or is explicitly emphasized. So a
+    bold heading elsewhere in a gated document is never read as a plan, and an
+    ordinary capitalized enumeration after the word "plans" is left alone.
     """
-    Validate tier table model claims against config.py defaults.
+    claims: dict[str, list[str]] = {}
 
-    Two table formats are supported:
-    - TECHNICAL_SPECS: 6-slot columns (orchestrator, research, image, reader, embeddings, video)
-    - PROJECT_CONTEXT: 4-slot columns (orchestrator, subagents, video + embedded reader/embeddings)
+    def _record(plan: str, why: str) -> None:
+        claims.setdefault(plan, []).append(why)
 
-    For each tier-slot-model claim found, the doc model name must exactly match
-    the normalized config alias. Multi-option cells (e.g. "Claude 3.5 Sonnet / Opus 4.6")
-    are split on "/" and each option is validated against its corresponding slot.
-
-    Provider drift detection:
-    - Video: docs say "Disabled"/"n/a"/"—" but config has tier_X_video_provider → FAIL
-    - Image (only if doc has image column): docs say "_none_" or wrong provider but config has tier_X_image_provider → FAIL
-    """
-    results = []
     lines = doc_content.splitlines()
-
-    tier_claims: dict[str, dict[str, str | None]] = {}
-
-    for line in lines:
-        line_stripped = line.strip()
-        # Try TECHNICAL_SPECS 6-slot format first
-        m = _TIER_TABLE_ROW_RE.match(line_stripped)
-        if m:
-            tier_doc_name = m.group(1)
-            tier_config_name = _TIER_NAME_MAP.get(tier_doc_name.lower())
-            if tier_config_name:
-                raw = [g.strip() for g in m.groups()[1:]]
-                if " / " in raw[1]:
-                    parts = [x.strip() for x in raw[1].split(" / ")]
-                    p1, p2 = parts[0], parts[1]
-                    cells = [raw[0], p1, p2] + raw[2:]
-                else:
-                    cells = [raw[0], raw[1], None] + raw[2:]
-                tier_claims[tier_config_name] = dict(zip(_TIER_SLOTS, cells))
+    in_table = False
+    for lineno, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if _PLAN_TABLE_HEADER_RE.match(stripped):
+            in_table = True
             continue
-
-        m2 = _TIER_TABLE_ROW_RE_PLAIN.match(line_stripped)
-        if m2:
-            tier_doc_name = m2.group(1)
-            tier_config_name = _TIER_NAME_MAP_PLAIN.get(tier_doc_name.lower())
-            if not tier_config_name:
+        if in_table and stripped.startswith("|"):
+            if set(stripped) <= set("|-: "):
                 continue
-            _, orchestrator, _subagents, video = [g.strip() for g in m2.groups()[1:]]
-            tier_claims[tier_config_name] = {
-                "orchestrator": orchestrator.strip("`"),
-                "subagents": _subagents,
-                "video": video,
-            }
+            row = _PLAN_ROW_LABEL_RE.match(stripped)
+            if row:
+                label = row.group(1).strip()
+                if label and not set(label) <= set("-— "):
+                    _record(label.lower(), f"plan table row at line {lineno}")
+            continue
+        in_table = False
 
-    _PLACEHOLDER = {"", "—", "disabled", "n/a", "none"}
-    has_meaningful_tier_table = any(
-        any(v is not None and v.strip("*_`-").lower() not in _PLACEHOLDER for v in slots.values())
-        for slots in tier_claims.values()
-    )
-    if has_meaningful_tier_table:
-        for tier_name in tier_defaults:
-            if tier_name not in tier_claims:
-                results.append(
-                    CheckResult(
-                        CheckId.TIER_MODEL,
-                        False,
-                        tier_name,
-                        "(missing)",
-                        f"tier {tier_name} row missing from document tier table",
-                    )
-                )
+    for lineno, line in enumerate(lines, start=1):
+        if line.lstrip().startswith("|"):
+            continue
+        anchor = None
+        for m in _PLAN_SENTENCE_ANCHOR_RE.finditer(line):
+            anchor = m
+        if anchor is None:
+            continue
+        list_match = _PLAN_LIST_RE.match(line, _after_plan_copula(line, anchor.end()))
+        if not list_match:
+            continue
+        items: list[tuple[str, bool]] = []
+        for token in _PLAN_ITEM_TOKEN_RE.finditer(list_match.group(0)):
+            emphasized = token.group("bold") is not None or token.group("code") is not None
+            name = next(g for g in token.groups() if g)
+            items.append((name.strip("*`_ ").lower(), emphasized))
+        if len(items) < 2:
+            continue
+        if not any(
+            emphasized or name in known or name in legacy_names for name, emphasized in items
+        ):
+            continue
+        for name, _emphasized in items:
+            if name:
+                _record(name, f"plan list at line {lineno}")
 
-    for tier_name, slots in tier_defaults.items():
-        doc_slots = tier_claims.get(tier_name, {})
-        for slot, config_model in slots.items():
-            doc_model_raw = doc_slots.get(slot)
-            research_alias = _normalize_model_name(slots.get("research") or "")
-            code_alias = _normalize_model_name(slots.get("code") or "")
+    return claims
 
-            if (
-                doc_model_raw is None
-                and slot == "code"
-                and research_alias != code_alias
-                and config_model
-                and doc_slots.get("research") is not None
-            ):
-                results.append(
-                    CheckResult(
-                        CheckId.TIER_MODEL,
-                        False,
-                        config_model,
-                        "",
-                        f"tier {tier_name} {slot} mismatch: expected {config_model}",
-                    )
-                )
-                continue
 
-            if doc_model_raw is None:
-                continue
+def _check_commercial_plans(doc_content: str, commercial: dict[str, Any]) -> list[CheckResult]:
+    """Documented plan set vs. plans declared in config/commercial.json.
 
-            doc_model = doc_model_raw.strip("*_`")
-            if not doc_model or doc_model.lower() in ("_none_", "none", "disabled", "n/a", "—"):
-                doc_model = ""
+    Fails on:
+      - a documented plan that policy does not declare (typo, invented plan, or
+        a retired tier name presented as a current plan)
+      - a plan declared in policy that the document's plan set omits
+    """
+    plan_ids = [str(p).lower() for p in commercial.get("plan_ids", [])]
+    if not plan_ids:
+        return []
+    labels = {str(k).lower() for k in commercial.get("plan_labels", {})}
+    known = set(plan_ids) | labels
+    # Legacy names are legal in a mapping sentence, never as a current plan.
+    legacy_names = {str(k).lower() for k in commercial.get("legacy_plan_map", {})}
 
-            if not config_model:
-                if doc_model:
-                    # For image slot: if tier_image_provider is configured, the image column
-                    # shows a provider name (e.g. "openrouter") not a model name. The separate
-                    # image provider check handles this; skip the model-removal check.
-                    skip_for_image = (
-                        slot == "image"
-                        and tier_image_providers is not None
-                        and tier_image_providers.get(tier_name)
-                    )
-                    if not skip_for_image:
-                        results.append(
-                            CheckResult(
-                                CheckId.TIER_MODEL,
-                                False,
-                                "(cleared)",
-                                doc_model,
-                                f"tier {tier_name} {slot} model was removed from config but docs still show '{doc_model}'",
-                            )
-                        )
-                continue
-
-            config_alias = _normalize_model_name(config_model)
-
-            if doc_model:
-                doc_options = [opt.strip() for opt in doc_model.split("/")]
-                matched = any(
-                    _normalize_model_name(opt) == config_alias for opt in doc_options
-                ) or (
-                    len(doc_options) == 1
-                    and research_alias != code_alias
-                    and (
-                        _normalize_model_name(doc_options[0]) in (research_alias, code_alias)
-                        or (
-                            slot == "code"
-                            and (
-                                _normalize_model_name(doc_options[0]) == code_alias
-                                or code_alias.endswith(_normalize_model_name(doc_options[0]))
-                            )
-                        )
-                    )
-                )
-                if not matched:
-                    results.append(
-                        CheckResult(
-                            CheckId.TIER_MODEL,
-                            False,
-                            config_model,
-                            doc_model,
-                            f"tier {tier_name} {slot} mismatch: expected {config_model}",
-                        )
-                    )
-
-    if tier_video_providers and tier_claims:
-        for tier_name, config_provider in tier_video_providers.items():
-            if tier_name not in tier_claims:
-                continue
-            doc_slots = tier_claims.get(tier_name, {})
-            doc_raw = (doc_slots.get("video") or "").strip("` \t")
-            doc_lower = doc_raw.lower()
-            is_enabled = tier_video_enabled.get(tier_name) if tier_video_enabled else None
-            if doc_lower in ("disabled", "n/a", "—") or not doc_lower:
-                if is_enabled:
-                    observed = doc_raw if doc_raw else "(empty)"
-                    results.append(
-                        CheckResult(
-                            CheckId.TIER_VIDEO_PROVIDER,
-                            False,
-                            config_provider,
-                            observed,
-                            f"tier {tier_name} video: config has provider but docs say '{observed}'",
-                        )
-                    )
-                continue
-            if is_enabled is False:
-                results.append(
-                    CheckResult(
-                        CheckId.TIER_VIDEO_PROVIDER,
-                        False,
-                        config_provider,
-                        doc_raw,
-                        f"tier {tier_name} video: config disables video but docs say '{doc_raw}'",
-                    )
-                )
-                continue
-            embedded_m = re.search(r"\(([^)]+)\)", doc_raw)
-            provider_claimed = embedded_m.group(1).strip() if embedded_m else doc_raw
-            if provider_claimed.lower() != config_provider.lower():
-                results.append(
-                    CheckResult(
-                        CheckId.TIER_VIDEO_PROVIDER,
-                        False,
-                        config_provider,
-                        provider_claimed,
-                        f"tier {tier_name} video provider mismatch: expected {config_provider}",
-                    )
-                )
-                continue
-            embedded_m = re.search(r"\(([^)]+)\)", doc_raw)
-            provider_claimed = embedded_m.group(1).strip() if embedded_m else doc_raw
-            if is_enabled is False:
-                if "enabled" in doc_lower:
-                    results.append(
-                        CheckResult(
-                            CheckId.TIER_VIDEO_PROVIDER,
-                            False,
-                            config_provider,
-                            doc_raw,
-                            f"tier {tier_name} video: config disables video but docs say '{doc_raw}'",
-                        )
-                    )
-                continue
-            if provider_claimed.lower() != config_provider.lower():
-                results.append(
-                    CheckResult(
-                        CheckId.TIER_VIDEO_PROVIDER,
-                        False,
-                        config_provider,
-                        provider_claimed,
-                        f"tier {tier_name} video provider mismatch: expected {config_provider}",
-                    )
-                )
-
-    if tier_image_providers and tier_claims:
-        has_image_col = any(
-            (doc_slots.get("image") or "").strip() for doc_slots in tier_claims.values()
+    results: list[CheckResult] = []
+    claims = _plan_claims(doc_content, frozenset(known), frozenset(legacy_names))
+    for plan, whys in sorted(claims.items()):
+        if plan in known:
+            continue
+        hint = " (retired legacy name; see legacy_plan_map)" if plan in legacy_names else ""
+        results.append(
+            CheckResult(
+                CheckId.COMMERCIAL_PLAN,
+                False,
+                f"plans: {', '.join(sorted(known))}",
+                plan,
+                f"documented plan '{plan}' is not declared in config/commercial.json"
+                f"{hint} ({whys[0]})",
+            )
         )
-        if has_image_col:
-            for tier_name, config_provider in tier_image_providers.items():
-                if tier_name not in tier_claims:
+
+    if not claims or not claims.keys() <= known:
+        # No plan set, or an unknown plan already reported: coverage would be
+        # reported against a claim set that is itself wrong.
+        return results
+
+    documented = {plan for plan in claims if plan in known}
+    missing = [p for p in plan_ids if p not in documented]
+    if missing and documented:
+        results.append(
+            CheckResult(
+                CheckId.COMMERCIAL_PLAN,
+                False,
+                f"plans: {', '.join(plan_ids)}",
+                f"missing: {', '.join(missing)}",
+                f"plan(s) declared in config/commercial.json but absent from the "
+                f"documented plan set: {', '.join(missing)}",
+            )
+        )
+    return results
+
+
+def _check_commercial_capabilities(
+    doc_content: str, commercial: dict[str, Any]
+) -> list[CheckResult]:
+    """Documented capability/operation ids vs. config/commercial.json.
+
+    Only an explicit ``capability:``/``capabilities:`` (or ``operation(s):``)
+    label creates a claim, so prose that happens to discuss capabilities is not
+    gated. Per-plan capability grants are covered by the plan table check below.
+    """
+    vocabularies: list[tuple[str, Any, str]] = [
+        (
+            "capabilit",
+            {str(c).lower() for c in commercial.get("capability_vocabulary", [])},
+            "capability",
+        ),
+        (
+            "operation",
+            {str(c).lower() for c in commercial.get("operation_vocabulary", [])},
+            "operation",
+        ),
+    ]
+    results: list[CheckResult] = []
+    for label, vocabulary, noun in vocabularies:
+        if not vocabulary:
+            continue
+        pattern = _CAPABILITY_LABEL_RE if label == "capabilit" else _OPERATION_LABEL_RE
+        for m in pattern.finditer(doc_content):
+            for token in re.findall(r"[a-z][a-z0-9_]*", m.group(1)):
+                if token in vocabulary:
                     continue
-                doc_slots = tier_claims.get(tier_name, {})
-                doc_raw = (doc_slots.get("image") or "").strip("` \t")
-                doc_lower = doc_raw.lower()
-                if doc_lower in ("_none_", "none", ""):
-                    observed = doc_raw if doc_raw else "(empty)"
-                    results.append(
-                        CheckResult(
-                            CheckId.TIER_IMAGE_PROVIDER,
-                            False,
-                            config_provider,
-                            observed,
-                            f"tier {tier_name} image: config has provider but docs say '{observed}'",
-                        )
-                    )
-                elif " " in doc_raw or "/" in doc_raw:
-                    pass
-                elif doc_lower != config_provider.lower():
-                    results.append(
-                        CheckResult(
-                            CheckId.TIER_IMAGE_PROVIDER,
-                            False,
-                            config_provider,
-                            doc_raw,
-                            f"tier {tier_name} image provider mismatch: expected {config_provider}",
-                        )
-                    )
-
-    _PLACEHOLDER_SUBAGENTS = {
-        "",
-        "—",
-        "disabled",
-        "n/a",
-        "none",
-        "not applicable",
-        "user-configured",
-    }
-    for tier_name, doc_slots in tier_claims.items():
-        if "subagents" not in doc_slots:
-            continue
-        doc_subagents = (doc_slots.get("subagents") or "").strip()
-        tier_slot_vals = tier_defaults.get(tier_name, {})
-        has_research = bool(tier_slot_vals.get("research", "").strip())
-        has_code = bool(tier_slot_vals.get("code", "").strip())
-        has_image = bool(tier_slot_vals.get("image", "").strip())
-        has_reader = bool(tier_slot_vals.get("reader", "").strip())
-        has_any = has_research or has_code or has_image or has_reader
-        doc_lower = doc_subagents.lower()
-
-        if not has_any:
-            if not doc_subagents or doc_lower in _PLACEHOLDER_SUBAGENTS:
-                continue
-            results.append(
-                CheckResult(
-                    CheckId.TIER_MODEL,
-                    False,
-                    tier_name,
-                    doc_subagents,
-                    f"tier {tier_name} subagents: docs say '{doc_subagents}' but config has no research/code/image/reader models",
-                )
-            )
-            continue
-        if not doc_subagents or doc_lower in _PLACEHOLDER_SUBAGENTS:
-            results.append(
-                CheckResult(
-                    CheckId.TIER_MODEL,
-                    False,
-                    tier_name,
-                    doc_subagents or "(empty)",
-                    f"tier {tier_name} subagents: docs say '{doc_subagents or '(empty)'}' but config has research/code/image models",
-                )
-            )
-            continue
-        expected_keywords: list[str] = []
-        for slot, model in [
-            ("research", tier_slot_vals.get("research", "")),
-            ("code", tier_slot_vals.get("code", "")),
-            ("image", tier_slot_vals.get("image", "")),
-            ("reader", tier_slot_vals.get("reader", "")),
-        ]:
-            if model:
-                m_lower = model.lower()
-                if "sonnet" in m_lower:
-                    expected_keywords.append("sonnet")
-                if "gemini" in m_lower:
-                    expected_keywords.append("gemini")
-                if "claude" in m_lower:
-                    expected_keywords.append("claude")
-                if "kimi" in m_lower:
-                    expected_keywords.append("kimi")
-                if "grok" in m_lower:
-                    expected_keywords.append("grok")
-        if expected_keywords:
-            matched = any(kw in doc_lower for kw in expected_keywords)
-            if not matched:
                 results.append(
                     CheckResult(
-                        CheckId.TIER_MODEL,
+                        CheckId.COMMERCIAL_CAPABILITY,
                         False,
-                        tier_name,
-                        doc_subagents,
-                        f"tier {tier_name} subagents: docs say '{doc_subagents}' but expected one of {expected_keywords}",
+                        f"{noun}s: {', '.join(sorted(vocabulary))}",
+                        token,
+                        f"documented {noun} '{token}' is not declared in config/commercial.json",
                     )
                 )
 
+    plan_tables = _plan_tables(doc_content)
+    capabilities = commercial.get("capabilities", {})
+    for table in plan_tables:
+        for row in table["rows"]:
+            plan_id = _resolve_plan_id(row["label"], commercial)
+            if plan_id is None or table["cap_col"] is None:
+                continue
+            if table["cap_col"] >= len(row["cells"]):
+                continue
+            granted = {str(c).lower() for c in capabilities.get(plan_id, [])}
+            if not granted:
+                continue
+            tokens = {
+                t.lower()
+                for t in re.findall(r"[a-z][a-z0-9_]*_[a-z0-9_]+", row["cells"][table["cap_col"]])
+            }
+            for token in sorted(tokens - granted):
+                results.append(
+                    CheckResult(
+                        CheckId.COMMERCIAL_CAPABILITY,
+                        False,
+                        f"{plan_id}: {', '.join(sorted(granted))}",
+                        token,
+                        f"plan {plan_id} is documented with capability '{token}' which "
+                        f"config/commercial.json does not grant it",
+                    )
+                )
     return results
+
+
+def _resolve_plan_id(label: str, commercial: dict[str, Any]) -> str | None:
+    normalized = label.strip("*`_ ").lower()
+    if not normalized:
+        return None
+    if normalized in {str(p).lower() for p in commercial.get("plan_ids", [])}:
+        return normalized
+    return commercial.get("plan_labels", {}).get(normalized)
+
+
+def _plan_tables(doc_content: str) -> list[dict[str, Any]]:
+    """Return plan-keyed tables with their capability/price column indexes."""
+    tables: list[dict[str, Any]] = []
+    lines = doc_content.splitlines()
+    idx = 0
+    while idx < len(lines):
+        stripped = lines[idx].strip()
+        if not _PLAN_TABLE_HEADER_RE.match(stripped):
+            idx += 1
+            continue
+        header = [c.strip().lower() for c in stripped.strip("|").split("|")]
+        cap_col = next((i for i, c in enumerate(header) if "capabilit" in c), None)
+        price_col = next(
+            (i for i, c in enumerate(header) if any(k in c for k in ("price", "cost", "amount"))),
+            None,
+        )
+        rows: list[dict[str, Any]] = []
+        cursor = idx + 1
+        while cursor < len(lines) and lines[cursor].strip().startswith("|"):
+            row_text = lines[cursor].strip()
+            cursor += 1
+            if set(row_text) <= set("|-: "):
+                continue
+            cells = [c.strip() for c in row_text.strip("|").split("|")]
+            label_match = _PLAN_ROW_LABEL_RE.match(row_text)
+            if not label_match:
+                continue
+            label = label_match.group(1).strip()
+            if not label or set(label) <= set("-— "):
+                continue
+            rows.append({"line": cursor, "label": label, "cells": cells})
+        tables.append(
+            {"header_line": idx + 1, "cap_col": cap_col, "price_col": price_col, "rows": rows}
+        )
+        idx = cursor
+    return tables
+
+
+def _check_commercial_prices(doc_content: str, commercial: dict[str, Any]) -> list[CheckResult]:
+    """Documented plan prices vs. display prices in config/commercial.json.
+
+    Only explicit "<currency><amount> per <period>" claims attached to a plan on
+    the same row or line are checked, so narrative figures that merely mention
+    money are not gated.
+    """
+    display = commercial.get("display", {})
+    if not display:
+        return []
+
+    results: list[CheckResult] = []
+    for table in _plan_tables(doc_content):
+        for row in table["rows"]:
+            plan_id = _resolve_plan_id(row["label"], commercial)
+            if plan_id is None or table["price_col"] is None:
+                continue
+            cell = (
+                row["cells"][table["price_col"]] if table["price_col"] < len(row["cells"]) else ""
+            )
+            results.extend(
+                _price_results(cell, plan_id, display, f"plan table row at line {row['line']}")
+            )
+
+    for lineno, line in enumerate(doc_content.splitlines(), start=1):
+        if line.lstrip().startswith("|"):
+            continue
+        for label_match in re.finditer(r"\*\*([A-Za-z][A-Za-z0-9 _/-]{0,30}?)\*\*", line):
+            plan_id = _resolve_plan_id(label_match.group(1), commercial)
+            if plan_id is None:
+                continue
+            results.extend(_price_results(line, plan_id, display, f"line {lineno}"))
+    return results
+
+
+def _price_results(
+    text: str,
+    plan_id: str,
+    display: dict[str, dict[str, str]],
+    where: str,
+) -> list[CheckResult]:
+    declared = display.get(plan_id)
+    if not declared or declared.get("amount_minor") is None:
+        return []
+    try:
+        expected_value = int(declared["amount_minor"]) / 100
+    except ValueError:
+        return []
+    expected_amount = f"{expected_value:.2f}"
+    expected_symbol = _CURRENCY_SYMBOLS.get(declared.get("currency", ""), "")
+    results: list[CheckResult] = []
+    for price in _PRICE_CLAIM_RE.finditer(text):
+        observed_amount = price.group("amount")
+        try:
+            observed_value = float(observed_amount)
+        except ValueError:
+            continue
+        problems: list[str] = []
+        if abs(observed_value - expected_value) > 0.0049:
+            problems.append(
+                f"expected {expected_symbol}{expected_amount}, got "
+                f"{price.group('currency')}{observed_amount}"
+            )
+        elif expected_symbol and price.group("currency") != expected_symbol:
+            problems.append(
+                f"declared currency is {declared.get('currency')} ({expected_symbol}), "
+                f"doc uses {price.group('currency')}"
+            )
+        if problems:
+            results.append(
+                CheckResult(
+                    CheckId.COMMERCIAL_PRICE,
+                    False,
+                    f"{plan_id}: {expected_symbol}{expected_amount} {declared.get('currency')}",
+                    f"{price.group('currency')}{observed_amount}",
+                    f"plan {plan_id} price mismatch in {where}: {'; '.join(problems)}",
+                )
+            )
+    return results
+
+
+_LEGACY_MAP_KEYWORD_RE = re.compile(
+    r"\b(?:map|mapping|legacy|retired|renamed|migrate|migration)\b", re.IGNORECASE
+)
+_LEGACY_ARROW_RE = re.compile(
+    r"(?:^|[,;:()]|\band\b)\s*\**([A-Za-z][A-Za-z0-9_-]{0,30}?)\**\s*"
+    r"(?:\u2192|(?<!-)->(?!>))\s*\**([A-Za-z][A-Za-z0-9_-]{0,30})\**"
+)
+
+
+def _check_legacy_plan_map(doc_content: str, commercial: dict[str, Any]) -> list[CheckResult]:
+    """Documented legacy-name mapping vs. legacy_plan_map in config/commercial.json.
+
+    Legacy names are legitimate in prose as migration sources. What must not
+    drift is the mapping itself: "Max -> Power" documented as "Max -> Pro".
+    """
+    legacy_map = commercial.get("legacy_plan_map", {})
+    if not legacy_map:
+        return []
+    plan_ids = {str(p).lower() for p in commercial.get("plan_ids", [])}
+    if not plan_ids:
+        return []
+
+    results: list[CheckResult] = []
+    in_fence = False
+    for lineno, line in enumerate(doc_content.splitlines(), start=1):
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence or line.lstrip().startswith("|"):
+            continue
+        if not _LEGACY_MAP_KEYWORD_RE.search(line):
+            continue
+        for m in _LEGACY_ARROW_RE.finditer(line):
+            source = m.group(1).strip().lower()
+            target = m.group(2).strip().lower()
+            expected = legacy_map.get(source)
+            if expected is None:
+                if target in plan_ids or target in legacy_map:
+                    results.append(
+                        CheckResult(
+                            CheckId.LEGACY_PLAN_MAP,
+                            False,
+                            "declared legacy names: " + ", ".join(sorted(legacy_map)),
+                            f"{source} -> {target}",
+                            f"line {lineno} maps undocumented legacy name '{source}'",
+                        )
+                    )
+                continue
+            if target != expected:
+                results.append(
+                    CheckResult(
+                        CheckId.LEGACY_PLAN_MAP,
+                        False,
+                        f"{source} -> {expected}",
+                        f"{source} -> {target}",
+                        f"line {lineno} legacy plan map mismatch: expected "
+                        f"'{source}' to map to '{expected}', found '{target}'",
+                    )
+                )
+    return results
+
+
+_APPROVAL_LANGUAGE_RE = re.compile(
+    r"\b(?:approved|approval|qualified|enabled|available|cleared|in production)\b",
+    re.IGNORECASE,
+)
+# A requirement or negation in front of the approval word means the document is
+# describing what is *not* approved yet, which is the correct current state.
+_APPROVAL_NEGATION_RE = re.compile(
+    r"\b(?:not|never|no|without|pending|until|requires?|required|must|cannot|"
+    r"unapproved|fails?|disabled|before)\b",
+    re.IGNORECASE,
+)
+_ROUTE_LABEL_RE = re.compile(
+    r"(?:route|service)[ _-]?id\s*[:=]\s*`?([A-Za-z0-9][A-Za-z0-9._-]{1,60})`?",
+    re.IGNORECASE,
+)
+_DEFAULT_ROUTE_RE = re.compile(
+    r"default[ _-]?route(?:[ _-]?id)?\s*[:=]\s*`?([A-Za-z0-9][A-Za-z0-9._-]{1,60})`?",
+    re.IGNORECASE,
+)
+
+
+def _check_inference_policy(doc_content: str, policy: dict[str, Any]) -> list[CheckResult]:
+    """Documented inference-policy claims vs. config/inference_policy.json.
+
+    Deliberately narrow. It does NOT re-verify privacy qualification, operator
+    review, or budget ceilings at runtime; it only rejects documentation that
+    names a route/service policy does not declare, or that calls an unapproved
+    route approved, or that documents a default route when policy sets none.
+    """
+    route_ids = {str(k).lower(): v for k, v in policy.get("route_ids", {}).items()}
+    service_ids = {str(k).lower(): v for k, v in policy.get("service_ids", {}).items()}
+    if not route_ids and not service_ids:
+        return []
+
+    declared = {**route_ids, **service_ids}
+    results: list[CheckResult] = []
+
+    def _check_identifier(value: str, context: str) -> None:
+        ident = value.strip().lower()
+        if not ident or ident in declared:
+            return
+        results.append(
+            CheckResult(
+                CheckId.INFERENCE_POLICY,
+                False,
+                f"declared ids: {', '.join(sorted(declared))}",
+                ident,
+                f"{context} names inference policy id '{value}' which "
+                f"config/inference_policy.json does not declare",
+            )
+        )
+
+    for lineno, line in enumerate(doc_content.splitlines(), start=1):
+        if line.lstrip().startswith("|"):
+            continue
+        for m in _ROUTE_LABEL_RE.finditer(line):
+            _check_identifier(m.group(1), f"line {lineno}")
+
+        m_default = _DEFAULT_ROUTE_RE.search(line)
+        if m_default:
+            ident = m_default.group(1).strip().lower()
+            default_id = policy.get("default_route_id")
+            if not default_id or ident != str(default_id).lower():
+                results.append(
+                    CheckResult(
+                        CheckId.INFERENCE_POLICY,
+                        False,
+                        f"default route: {default_id or '(none declared)'}",
+                        ident,
+                        f"line {lineno} documents default route '{ident}' but "
+                        f"config/inference_policy.json declares "
+                        f"{default_id or 'no default route'}",
+                    )
+                )
+
+        approval = _APPROVAL_LANGUAGE_RE.search(line)
+        if not approval:
+            continue
+        # "is not approved", "requires approval", "pending review" describe the
+        # unapproved steady state and must not be read as an approval claim.
+        if _APPROVAL_NEGATION_RE.search(line[: approval.start()]):
+            continue
+        lowered = line.lower()
+        for ident, approved in declared.items():
+            if ident in lowered and not approved:
+                results.append(
+                    CheckResult(
+                        CheckId.INFERENCE_POLICY,
+                        False,
+                        f"{ident}: approved",
+                        f"{ident} described as approved/available",
+                        f"line {lineno} treats '{ident}' as approved but "
+                        f"config/inference_policy.json has approved=false",
+                    )
+                )
+
+    required_flags = policy.get("required_flags", [])
+    for fence in _json_fences(doc_content):
+        parsed = _try_json_object(fence["body"])
+        if parsed is None:
+            continue
+        provider = parsed.get("provider")
+        if not isinstance(provider, dict):
+            continue
+        for flag, expected_value in required_flags:
+            if flag not in provider:
+                results.append(
+                    CheckResult(
+                        CheckId.INFERENCE_POLICY,
+                        False,
+                        f"provider.{flag} required by policy",
+                        "(absent)",
+                        f"documented request at line {fence['line']} omits "
+                        f"provider.{flag}, which config/inference_policy.json requires",
+                    )
+                )
+                continue
+            if expected_value is not None and provider.get(flag) != expected_value:
+                results.append(
+                    CheckResult(
+                        CheckId.INFERENCE_POLICY,
+                        False,
+                        f"provider.{flag}={expected_value!r}",
+                        repr(provider.get(flag)),
+                        f"documented request at line {fence['line']} sets "
+                        f"provider.{flag}={provider.get(flag)!r}, policy requires "
+                        f"{expected_value!r}",
+                    )
+                )
+        max_price = provider.get("max_price")
+        if any(flag == "max_price" for flag, _ in required_flags) and isinstance(max_price, dict):
+            missing_keys = [k for k in _REQUIRED_MAX_PRICE_KEYS if k not in max_price]
+            if missing_keys:
+                results.append(
+                    CheckResult(
+                        CheckId.INFERENCE_POLICY,
+                        False,
+                        "provider.max_price: " + ", ".join(_REQUIRED_MAX_PRICE_KEYS),
+                        "missing: " + ", ".join(missing_keys),
+                        f"documented request at line {fence['line']} omits "
+                        f"provider.max_price.{', provider.max_price.'.join(missing_keys)}",
+                    )
+                )
+    return results
+
+
+def _json_fences(doc_content: str) -> list[dict[str, Any]]:
+    """Return fenced ```json blocks with their starting line numbers."""
+    fences: list[dict[str, Any]] = []
+    lines = doc_content.splitlines()
+    in_fence = False
+    fence_lang = ""
+    start_line = 0
+    body: list[str] = []
+    for lineno, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if not in_fence:
+                in_fence = True
+                fence_lang = stripped[3:].strip().lower()
+                start_line = lineno
+                body = []
+            else:
+                in_fence = False
+                if fence_lang in ("json", "jsonc", ""):
+                    fences.append({"line": start_line, "body": "\n".join(body)})
+            continue
+        if in_fence:
+            body.append(line)
+    return fences
+
+
+def _try_json_object(text: str) -> dict[str, Any] | None:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _check_auto_routing(doc_content: str, auto_facts: dict[str, str]) -> list[CheckResult]:
@@ -1652,6 +2040,37 @@ def _match_exception(
         if exc.check_id == check_id and exc.doc_path == doc_path:
             return exc
     return None
+
+
+def _collect_finding_list(
+    results: list[CheckResult],
+    exceptions: list[ExceptionEntry],
+    doc_path: Path,
+    lines: list[str],
+    today: date,
+    line_pat: str,
+) -> list[Finding]:
+    """Turn failed CheckResults into Findings, honouring active exceptions."""
+    collected: list[Finding] = []
+    for res in results:
+        if res.passed:
+            continue
+        exc = _match_exception(exceptions, res.check_id, str(doc_path))
+        if exc and exc.expires >= today:
+            exc.suppressed_finding = True
+            continue
+        collected.append(
+            Finding(
+                str(doc_path),
+                _find_line_with_fact(lines, line_pat),
+                res.check_id,
+                "mismatch",
+                res.expected,
+                res.observed,
+                res.message or f"{res.check_id} mismatch",
+            )
+        )
+    return collected
 
 
 def check_document(
@@ -1842,51 +2261,61 @@ def check_document(
                 )
             )
 
-    tier_defaults = facts.get("tier_defaults", {}).get("tiers", {})
-    tier_video_providers = facts.get("tier_defaults", {}).get("video_providers", {})
-    tier_image_providers = facts.get("tier_defaults", {}).get("image_providers", {})
-    tier_video_enabled = facts.get("tier_defaults", {}).get("video_enabled", {})
-    if tier_defaults and doc_path.name in ("TECHNICAL_SPECS.md", "PROJECT_CONTEXT.md"):
-        tier_results = _check_tier_defaults(
-            text, tier_defaults, tier_video_providers, tier_image_providers, tier_video_enabled
+    commercial = facts.get("commercial", {})
+    if commercial:
+        findings.extend(
+            _collect_finding_list(
+                _check_commercial_plans(text, commercial),
+                exceptions,
+                doc_path,
+                lines,
+                today,
+                r"\bplans?\b|\bcommercial model\b",
+            )
         )
-        for tres in tier_results:
-            if not tres.passed:
-                exc = _match_exception(exceptions, tres.check_id, str(doc_path))
-                if exc and exc.expires >= today:
-                    exc.suppressed_finding = True
-                else:
-                    findings.append(
-                        Finding(
-                            str(doc_path),
-                            _find_line_with_fact(lines, r"\*\*[A-Z]+\*\*"),
-                            tres.check_id,
-                            "mismatch",
-                            tres.expected,
-                            tres.observed,
-                            tres.message or f"{tres.check_id} mismatch",
-                        )
-                    )
+        findings.extend(
+            _collect_finding_list(
+                _check_commercial_capabilities(text, commercial),
+                exceptions,
+                doc_path,
+                lines,
+                today,
+                r"[`a-z0-9_]*capabilit",
+            )
+        )
+        findings.extend(
+            _collect_finding_list(
+                _check_commercial_prices(text, commercial),
+                exceptions,
+                doc_path,
+                lines,
+                today,
+                r"[$A-Z]{1,3}\d",
+            )
+        )
+        findings.extend(
+            _collect_finding_list(
+                _check_legacy_plan_map(text, commercial),
+                exceptions,
+                doc_path,
+                lines,
+                today,
+                r"[Ll]egacy|map",
+            )
+        )
 
-    tier_prices = facts.get("tier_prices", {}).get("tier_prices", {})
-    if tier_prices:
-        res = _check_tier_prices(text, tier_prices)
-        if not res.passed:
-            exc = _match_exception(exceptions, CheckId.TIER_PRICE, str(doc_path))
-            if exc and exc.expires >= today:
-                exc.suppressed_finding = True
-            else:
-                findings.append(
-                    Finding(
-                        str(doc_path),
-                        _find_line_with_fact(lines, r"\$\d+/mo"),
-                        CheckId.TIER_PRICE,
-                        "mismatch",
-                        res.expected,
-                        res.observed,
-                        res.message or "tier price mismatch",
-                    )
-                )
+    inference_policy = facts.get("inference_policy", {})
+    if inference_policy:
+        findings.extend(
+            _collect_finding_list(
+                _check_inference_policy(text, inference_policy),
+                exceptions,
+                doc_path,
+                lines,
+                today,
+                r"route|service|provider",
+            )
+        )
 
     route_facts = facts.get("routes", {}).get("routes", {})
     if route_facts:
@@ -2047,6 +2476,8 @@ def format_json(
             "embeddings": facts["embeddings"],
             "providers": facts["providers"],
             "routes": facts["routes"],
+            "commercial": facts.get("commercial", {}),
+            "inference_policy": facts.get("inference_policy", {}),
         },
         "findings": [
             {

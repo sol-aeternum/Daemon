@@ -57,10 +57,12 @@ class TestFanOut:
             "analyst": "anthropic/claude-opus-4.6",
             "auditor": "deepseek/deepseek-r1",
         }
-        with patch("orchestrator.council.engine.litellm") as mock_litellm:
+        with patch(
+            "orchestrator.council.engine.guarded_completion", new_callable=AsyncMock
+        ) as mock_completion:
             mock_response = MagicMock()
             mock_response.choices = [MagicMock(message=MagicMock(content="test"))]
-            mock_litellm.acompletion = AsyncMock(return_value=mock_response)
+            mock_completion.return_value = mock_response
 
             from orchestrator.council.engine import fan_out
 

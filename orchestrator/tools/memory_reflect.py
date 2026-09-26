@@ -5,10 +5,10 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-import litellm
+from orchestrator.compute_runtime import guarded_completion
 
 from orchestrator.config import get_settings
-from orchestrator.memory.embedding import embed_query_with_metadata
+from orchestrator.memory.embedding import EmbeddingConfigurationError, embed_query_with_metadata
 from orchestrator.memory.retrieval import retrieve_memories_for_text
 from orchestrator.memory.store import MemoryStore
 from orchestrator.tools.registry import Tool
@@ -58,19 +58,24 @@ class MemoryReflectTool(Tool):
         limit = kwargs.get("limit", 15)
         effective_limit = max(1, min(limit, 50))
 
-        query_result = await embed_query_with_metadata(topic)
+        try:
+            query_result = await embed_query_with_metadata(topic)
+        except EmbeddingConfigurationError:
+            query_result = None
         memories = await retrieve_memories_for_text(
             store=self.store,
             query_text=topic,
             user_id=self.user_id,
-            query_embedding=query_result.embedding,
+            query_embedding=query_result.embedding if query_result is not None else None,
             limit=effective_limit,
             include_local=True,
             include_historical=True,
             include_l0=True,
             include_dream_observations=True,
-            storage_embedding_model=query_result.storage_model,
-            query_embedding_model=query_result.model,
+            storage_embedding_model=query_result.storage_model
+            if query_result is not None
+            else None,
+            query_embedding_model=query_result.model if query_result is not None else None,
         )
 
         if not memories:
@@ -113,7 +118,7 @@ class MemoryReflectTool(Tool):
             call_params["extra_headers"] = provider_config.extra_headers
 
         try:
-            response = await litellm.acompletion(**call_params)
+            response = await guarded_completion(**call_params)
 
             content = self._extract_content(response)
             if content:
@@ -140,8 +145,7 @@ class MemoryReflectTool(Tool):
     def _get_orchestrator_model(self) -> str:
         """Get the orchestrator-tier model from settings."""
         settings = get_settings()
-        tier_config = settings.get_tier_config(settings.default_tier)
-        return tier_config.orchestrator.model
+        return settings.background_reasoning_model
 
     def _extract_content(self, response: Any) -> str:
         """Extract content from litellm response."""

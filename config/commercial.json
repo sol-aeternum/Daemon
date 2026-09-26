@@ -1,0 +1,145 @@
+{
+  "version": 1,
+  "notes": "Centralized commercial defaults for the entitlements layer. Internal budgets are integer microusd (1 USD = 1000000 microusd). Display prices are configured in AUD minor units (cents) and are never derived from internal budgets, so no FX conversion happens at runtime. The display prices and budgets below are development defaults and need commercial sign-off before any real billing is enabled. Every plan has a recurring Daemon-funded monthly budget, including free: the finite trial is an additional lifetime allowance that only premium routing draws on.",
+  "internal_currency": "USD",
+  "internal_unit": "microusd",
+  "display_currency": "AUD",
+  "period": "calendar_month_utc",
+  "operations": [
+    "chat",
+    "research",
+    "image",
+    "video",
+    "audio",
+    "agent",
+    "extended_agent"
+  ],
+  "trusted_subscription_sources": [
+    "subscription_import",
+    "admin",
+    "legacy_import"
+  ],
+  "trial": {
+    "enabled": true,
+    "granted_on_account_creation": true,
+    "budget_microusd": 1000000,
+    "extended_agents": 5,
+    "capabilities": [
+      "premium_routing",
+      "extended_agents",
+      "deep_research",
+      "scheduled_tasks",
+      "parallel_agents",
+      "large_file_processing",
+      "large_context",
+      "priority_execution",
+      "image_generation",
+      "video_generation",
+      "audio_generation"
+    ],
+    "limits": {
+      "max_context_tokens": 128000,
+      "max_output_tokens": 8000
+    },
+    "terminate_on_paid_plan": false,
+    "calendar_expiry_days": null,
+    "notes": "The trial is an independent entitlement, not a decoration on the free plan: it owns its own capabilities and its own premium limit overlay, and the resolver unions them only while the allowance lasts. Base free capabilities stay the durable core, so a free account stops reporting premium_routing the moment the trial is exhausted and the caller does not have to subtract anything. The trial is consumed by settled usage only and never expires on a calendar. Its extended agent count is a lifetime count, separate from any plan's per-period extended allowance. terminate_on_paid_plan is false on purpose: buying a plan does not consume the trial, so an unspent remainder is preserved across an upgrade and a later downgrade, and it is never refilled."
+  },
+  "legacy_plan_map": {
+    "free": "free",
+    "starter": "pro",
+    "pro": "pro",
+    "max": "power",
+    "byok": "pro",
+    "power": "power",
+    "notes": "Deterministic per-account migration map for the retired tier names. It is applied only through an explicit trusted per-user import; it is never used to infer paid state from the global DEFAULT_TIER setting, and the byok mapping does not grant the byok capability."
+  },
+  "plans": {
+    "free": {
+      "display": {
+        "label": "Free",
+        "currency": "AUD",
+        "amount_minor": 0
+      },
+      "capabilities": [
+        "chat",
+        "web_research"
+      ],
+      "limits": {
+        "max_concurrent_operations": 1,
+        "max_context_tokens": 32000,
+        "max_output_tokens": 4096,
+        "max_tool_loop_iterations": 4,
+        "requests_per_minute": 10,
+        "extended_agents_per_period": 0,
+        "extended_agent_budget_microusd": 0,
+        "monthly_budget_microusd": 250000
+      },
+      "notes": "Recurring Daemon-funded floor of 0.25 USD per UTC month for routine compute, which keeps working after the trial is gone. Base capabilities are the durable core only: premium_routing and extended_agents are granted by the trial while it lasts and disappear automatically when it is exhausted. Deliberately absent from the core: deep_research, scheduled_tasks, parallel_agents, large_context, priority_execution, large_file_processing, image/video/audio generation."
+    },
+    "pro": {
+      "display": {
+        "label": "Pro",
+        "currency": "AUD",
+        "amount_minor": 2900
+      },
+      "capabilities": [
+        "chat",
+        "web_research",
+        "deep_research",
+        "scheduled_tasks",
+        "parallel_agents",
+        "extended_agents",
+        "large_file_processing",
+        "large_context",
+        "priority_execution",
+        "premium_routing",
+        "image_generation",
+        "video_generation",
+        "audio_generation"
+      ],
+      "limits": {
+        "max_concurrent_operations": 4,
+        "max_context_tokens": 200000,
+        "max_output_tokens": 16000,
+        "max_tool_loop_iterations": 12,
+        "requests_per_minute": 60,
+        "extended_agents_per_period": 20,
+        "extended_agent_budget_microusd": 2000000,
+        "monthly_budget_microusd": 20000000
+      }
+    },
+    "power": {
+      "display": {
+        "label": "Power",
+        "currency": "AUD",
+        "amount_minor": 9900
+      },
+      "capabilities": [
+        "chat",
+        "web_research",
+        "deep_research",
+        "scheduled_tasks",
+        "parallel_agents",
+        "extended_agents",
+        "large_file_processing",
+        "large_context",
+        "priority_execution",
+        "premium_routing",
+        "image_generation",
+        "video_generation",
+        "audio_generation"
+      ],
+      "limits": {
+        "max_concurrent_operations": 8,
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 32000,
+        "max_tool_loop_iterations": 24,
+        "requests_per_minute": 240,
+        "extended_agents_per_period": 200,
+        "extended_agent_budget_microusd": 20000000,
+        "monthly_budget_microusd": 100000000
+      }
+    }
+  }
+}

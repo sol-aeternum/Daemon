@@ -15,7 +15,7 @@ import asyncpg
 from orchestrator.auth_pepper import validate_and_get_pepper
 from orchestrator.config import get_settings
 from orchestrator.memory.encryption import ContentEncryption
-from orchestrator.memory.embedding import embed_query_with_metadata
+from orchestrator.memory.embedding import EmbeddingConfigurationError, embed_query_with_metadata
 
 
 def is_explicit_memory(memory: dict[str, Any]) -> bool:
@@ -838,6 +838,7 @@ class MemoryStore:
         message_id: uuid.UUID,
         *,
         content: str | None = None,
+        model: str | None = None,
         status: str | None = None,
         metadata: dict[str, Any] | None = None,
         advisor_traces: dict[str, Any] | None = None,
@@ -868,7 +869,8 @@ class MemoryStore:
                 reasoning_text = COALESCE($7, reasoning_text),
                 reasoning_duration_secs = COALESCE($8, reasoning_duration_secs),
                 reasoning_model = COALESCE($9, reasoning_model),
-                advisor_traces = COALESCE($10, advisor_traces)
+                advisor_traces = COALESCE($10, advisor_traces),
+                model = COALESCE($11, model)
             WHERE id = $1
             RETURNING *
             """,
@@ -882,6 +884,7 @@ class MemoryStore:
             reasoning_duration_secs,
             reasoning_model,
             encrypted_advisor_traces,
+            model,
         )
         if not row:
             return None
@@ -949,7 +952,9 @@ class MemoryStore:
         encrypted_content = self._enc.encrypt(content)
         content_hash = compute_memory_content_hash(content)
         embedding_str = _format_vector(embedding) if embedding else None
-        effective_embedding_model = embedding_model or _default_embedding_model()
+        effective_embedding_model = (
+            (embedding_model or _default_embedding_model()) if embedding_str is not None else None
+        )
         metadata_json = json.dumps(metadata) if metadata is not None else None
 
         # When ``conn`` is supplied, every SQL call in this method runs
@@ -1429,7 +1434,9 @@ class MemoryStore:
         encrypted_content = self._enc.encrypt(new_content)
         content_hash = compute_memory_content_hash(new_content)
         embedding_str = _format_vector(embedding) if embedding else None
-        effective_embedding_model = embedding_model or _default_embedding_model()
+        effective_embedding_model = (
+            (embedding_model or _default_embedding_model()) if embedding_str is not None else None
+        )
         metadata_json = json.dumps(metadata) if metadata is not None else None
 
         async with self._pool.acquire() as conn:
@@ -1794,7 +1801,7 @@ class MemoryStore:
                   AND ($4::bool OR local_only = FALSE)
                   AND ($8::bool OR source_type != 'dream')
                   AND ($9::uuid[] IS NULL OR source_conversation_id = ANY($9::uuid[]))
-                  AND embedding_model = ANY($10::text[])
+                  AND (embedding_model = ANY($10::text[]) OR embedding_model IS NULL)
                   AND ($11::bool OR tier != 'l0')
                   AND content_tsv IS NOT NULL
                   AND content_tsv @@ plainto_tsquery('english', $2)
@@ -1827,7 +1834,7 @@ class MemoryStore:
                   AND ($4::bool OR local_only = FALSE)
                   AND ($7::bool OR source_type != 'dream')
                   AND ($8::uuid[] IS NULL OR source_conversation_id = ANY($8::uuid[]))
-                  AND embedding_model = ANY($9::text[])
+                  AND (embedding_model = ANY($9::text[]) OR embedding_model IS NULL)
                   AND ($10::bool OR tier != 'l0')
                   AND content_tsv IS NOT NULL
                   AND content_tsv @@ plainto_tsquery('english', $2)
@@ -1952,20 +1959,32 @@ class MemoryStore:
             List of memory dicts filtered by source_type
         """
         # Embed the text query
-        embedding_result = await embed_query_with_metadata(text)
-        # Call search_memories with the same params
-        results = await self.search_memories(
-            user_id,
-            embedding_result.embedding,
-            limit=limit,
-            min_similarity=min_similarity,
-            category=category,
-            include_local=include_local,
-            include_historical=include_historical,
-            memory_slot=memory_slot,
-            include_dream_observations=include_dream_observations,
-            embedding_model=embedding_result.storage_model,
-        )
+        try:
+            embedding_result = await embed_query_with_metadata(text)
+        except EmbeddingConfigurationError:
+            results = await self.search_memories_bm25(
+                user_id,
+                text,
+                limit=limit,
+                category=category,
+                include_local=include_local,
+                include_historical=include_historical,
+                memory_slot=memory_slot,
+                include_dream_observations=include_dream_observations,
+            )
+        else:
+            results = await self.search_memories(
+                user_id,
+                embedding_result.embedding,
+                limit=limit,
+                min_similarity=min_similarity,
+                category=category,
+                include_local=include_local,
+                include_historical=include_historical,
+                memory_slot=memory_slot,
+                include_dream_observations=include_dream_observations,
+                embedding_model=embedding_result.storage_model,
+            )
         # Filter by source_types if provided
         if source_types:
             results = [r for r in results if r.get("source_type") in source_types]
@@ -2966,7 +2985,11 @@ class MemoryStore:
             encrypted_content = self._enc.encrypt(content)
             content_hash = compute_memory_content_hash(content)
             embedding_str = _format_vector(mem["embedding"]) if mem.get("embedding") else None
-            embedding_model = mem.get("embedding_model") or _default_embedding_model()
+            embedding_model = (
+                (mem.get("embedding_model") or _default_embedding_model())
+                if embedding_str is not None
+                else None
+            )
             status = mem.get("status", "active")
             memory_slot = mem.get("memory_slot")
             try:
@@ -2974,8 +2997,10 @@ class MemoryStore:
                     """
                     INSERT INTO memories
                         (user_id, content, content_hash, embedding, embedding_model,
-                         category, source_type, local_only, confidence, status, memory_slot)
-                    VALUES ($1, $2, $3, $4::vector, $5, $6, $7, $8, $9, $10, $11)
+                         category, source_type, local_only, confidence, status, memory_slot,
+                         content_tsv)
+                    VALUES ($1, $2, $3, $4::vector, $5, $6, $7, $8, $9, $10, $11,
+                            to_tsvector('english', $12))
                     """,
                     user_id,
                     encrypted_content,
@@ -2988,6 +3013,7 @@ class MemoryStore:
                     mem.get("confidence", 1.0),
                     status,
                     memory_slot,
+                    content,
                 )
                 inserted += 1
             except asyncpg.UniqueViolationError:

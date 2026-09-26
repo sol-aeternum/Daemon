@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "notes": "Approved provider/model routes and billable tool services for commercial inference. This file is a policy gate, not a model catalog: a route is usable only when every requirement below passes, and the requirements are deliberately redundant. (1) Provider-side transport flags pinned per request: zdr true, data_collection deny, allow_fallbacks false, require_parameters true, provider only/order set to the single approved provider slug. (2) Account-side operator verification, because provider ZDR alone is not sufficient: prompt/completion logging must be disabled on the account and free models need a separate training opt-out. (3) A pinned https endpoint and pinned maximum prices, so spend is bounded without fetching a live price at request time. (4) A dated approval plus a dated operator review with recorded evidence. Tool services carry their own ceiling and review and are deny-by-default. As shipped, nothing is approved and no default route is set: that is the intended steady state until an operator has verified every condition for a specific route.",
+  "requirements": {
+    "require_approval": true,
+    "require_unexpired_approval": true,
+    "require_operator_review": true,
+    "require_unexpired_operator_review": true,
+    "require_verified_availability": true,
+    "require_zdr": true,
+    "require_no_training": true,
+    "require_account_logging_disabled": true,
+    "require_free_model_training_opt_out": true,
+    "require_price_ceiling": true,
+    "require_pinned_endpoint": true,
+    "require_pinned_transport": true,
+    "require_pinned_provider_selection": true
+  },
+  "default_route_id": null,
+  "routes": [
+    {
+      "route_id": "legacy-openrouter-unverified",
+      "provider": "openrouter",
+      "model": "openrouter/moonshotai/kimi-k2.5",
+      "endpoint": "https://openrouter.ai/api/v1",
+      "route_class": "routine",
+      "model_capabilities": [],
+      "max_context_tokens": 0,
+      "max_output_tokens": 0,
+      "approved": false,
+      "availability": "unverified",
+      "approval_expires_at": null,
+      "privacy": {
+        "transport": {
+          "provider_only": null,
+          "provider_order": null,
+          "allow_fallbacks": null,
+          "require_parameters": null,
+          "data_collection": null,
+          "zdr": null
+        },
+        "account_prompt_logging_disabled": null,
+        "free_model_training_opt_out": null
+      },
+      "operator_review": null,
+      "price_ceiling": null,
+      "notes": "Carried over from the pre-entitlements tier configuration and intentionally left unqualified. To approve: verify availability; pin the transport block above to the exact provider slug with zdr true, data_collection deny, allow_fallbacks false, require_parameters true; record that account-level prompt/completion logging is disabled and that free models are excluded from training; set max price ceilings in microusd per 1M prompt/completion tokens; then set approved true with an approval_expires_at, and record an operator_review with reviewer, evidence and review_expires_at."
+    }
+  ],
+  "tool_services": [
+    {
+      "service_id": "brave-web-search",
+      "service": "web_search",
+      "provider": "brave",
+      "unit": "call",
+      "approved": false,
+      "availability": "unverified",
+      "ceiling_microusd_per_unit": null,
+      "operator_review": null,
+      "notes": "Not approved. Deny-by-default: a tool service that is absent from this list, or present but unqualified, must not be callable, so an unconfigured service cannot become a bypass around the route rules."
+    },
+    {
+      "service_id": "voyage-embeddings",
+      "service": "embeddings",
+      "provider": "voyage",
+      "unit": "1k_tokens",
+      "approved": false,
+      "availability": "unverified",
+      "ceiling_microusd_per_unit": null,
+      "operator_review": null,
+      "notes": "Not approved. Memory content is encrypted at rest and the embedding text leaves the trust boundary, so this needs the same operator review and a per-unit ceiling before use."
+    }
+  ]
+}

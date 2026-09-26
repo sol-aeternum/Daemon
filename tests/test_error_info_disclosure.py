@@ -354,7 +354,7 @@ def test_main_py_no_new_detail_str_e_in_runtime_error_branches() -> None:
     # the unique anchor — the comment block above only appears in this
     # route's exception handler.
     match = re.search(
-        r"OpenAI-compatible chat completion failed.*?raise HTTPException\(\s*status_code=500,\s*detail=([^\n)]+)\)",
+        r"OpenAI-compatible chat completion failed.*?raise HTTPException\(\s*status_code=500,\s*detail=([^\n)]+)\s*\)",
         main_source,
         flags=re.DOTALL,
     )

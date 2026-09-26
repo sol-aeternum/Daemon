@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import litellm
+from orchestrator.compute_runtime import guarded_completion
 
 from orchestrator.memory.store import MemoryStore
 
@@ -55,11 +55,11 @@ async def generate_summary(
     )
 
     settings = settings or {}
-    model = settings.get("summary_model", "openrouter/openai/gpt-4o-mini")
+    model = settings.get("summary_model", "auto")
     temperature = settings.get("summary_temperature", 0.3)
     max_tokens = settings.get("summary_max_tokens", 300)
 
-    response = await litellm.acompletion(
+    response = await guarded_completion(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=temperature,

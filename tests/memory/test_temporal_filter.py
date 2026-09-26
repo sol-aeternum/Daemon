@@ -6,10 +6,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from orchestrator.memory.embedding import EmbeddingVectorResult
+from orchestrator.memory.embedding import EmbeddingConfigurationError, EmbeddingVectorResult
 from orchestrator.memory.retrieval import (
     _detect_temporal_query_window,
     retrieve_memories,
+    retrieve_memories_for_text,
 )
 
 
@@ -245,3 +246,59 @@ async def test_retrieve_memories_for_text_threads_reference_time() -> None:
         )
 
     assert captured["query_reference_time"] == "2023/07/01 (Sat) 02:36"
+
+
+@pytest.mark.asyncio
+async def test_denied_embeddings_keep_lexical_search_across_enabled_historical_spaces() -> None:
+    user_id = uuid.uuid4()
+    reference = dt.datetime(2023, 7, 1, tzinfo=dt.timezone.utc)
+    unembedded = _memory(
+        memory_id=uuid.uuid4(),
+        content="User attended the June BBQ",
+        similarity=0.0,
+        valid_from=reference - dt.timedelta(days=20),
+        valid_to=None,
+    )
+    historical = _memory(
+        memory_id=uuid.uuid4(),
+        content="User attended the first June BBQ",
+        similarity=0.0,
+        valid_from=reference - dt.timedelta(days=20),
+        valid_to=reference - dt.timedelta(days=10),
+    )
+    old_model = "openrouter:voyageai/voyage-4-large"
+    store = AsyncMock()
+    store.has_memories_with_embedding_model.return_value = True
+
+    async def lexical_search(**kwargs: object) -> list[dict[str, object]]:
+        assert kwargs["include_historical"] is True
+        if kwargs["embedding_models"] == [old_model]:
+            return [{**historical, "bm25_score": 1.0}]
+        return [{**unembedded, "bm25_score": 1.0}]
+
+    store.search_memories_bm25.side_effect = lexical_search
+    with (
+        patch(
+            "orchestrator.memory.retrieval.embed_query_for_configured_storage_models",
+            new=AsyncMock(side_effect=EmbeddingConfigurationError("route unavailable")),
+        ),
+        patch(
+            "orchestrator.memory.retrieval.get_configured_embedding_fallback_storage_models",
+            return_value=(old_model,),
+        ),
+        patch(
+            "orchestrator.memory.retrieval._get_entity_expanded_candidates",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        memories = await retrieve_memories_for_text(
+            store,
+            "first June BBQ",
+            user_id=user_id,
+            query_reference_time=reference,
+        )
+
+    assert {memory["id"] for memory in memories} == {unembedded["id"], historical["id"]}
+    store.search_memories.assert_not_awaited()
+    assert store.search_memories_bm25.await_count == 2
+    store.has_memories_with_embedding_model.assert_awaited_once()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from orchestrator.compute_runtime import guarded_completion
+
 # pyright: reportMissingImports=false, reportAny=false, reportExplicitAny=false
 
 import logging
@@ -11,10 +13,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 import asyncpg
-import litellm
 
 from orchestrator.config import get_settings
-from orchestrator.memory.embedding import embed_documents_with_metadata
+from orchestrator.memory.embedding import EmbeddingConfigurationError, embed_documents_with_metadata
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
 
@@ -257,7 +258,7 @@ async def dream_on_cluster(memories: list[dict[str, Any]]) -> list[dict[str, Any
     if provider_config.extra_headers:
         call_params["extra_headers"] = provider_config.extra_headers
 
-    response = await litellm.acompletion(**call_params)
+    response = await guarded_completion(**call_params)
     valid_source_memory_ids = {
         str(memory["id"]) for memory in memories if memory.get("id") is not None
     }
@@ -382,10 +383,16 @@ async def run_dreaming(
                     continue
 
                 observation_texts = [str(observation["content"]) for observation in observations]
-                embedding_result = await embed_documents_with_metadata(observation_texts)
+                try:
+                    embedding_result = await embed_documents_with_metadata(observation_texts)
+                except EmbeddingConfigurationError:
+                    embedding_result = None
 
                 for observation_payload, embedding in zip(
-                    observations, embedding_result.embeddings
+                    observations,
+                    embedding_result.embeddings
+                    if embedding_result is not None
+                    else [None] * len(observation_texts),
                 ):
                     observation_text = str(observation_payload["content"])
                     source_memory_ids = [
@@ -401,7 +408,9 @@ async def run_dreaming(
                         category="observation",
                         source_type="dream",
                         embedding=embedding,
-                        embedding_model=embedding_result.storage_model,
+                        embedding_model=(
+                            embedding_result.storage_model if embedding_result is not None else None
+                        ),
                         confidence=float(observation_payload["confidence"]),
                         memory_slot=f"{family}.observation",
                     )

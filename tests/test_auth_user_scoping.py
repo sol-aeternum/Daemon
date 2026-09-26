@@ -13,6 +13,7 @@ from orchestrator.auth import AuthenticatedDevice
 from orchestrator.config import get_settings
 from orchestrator.db import get_app_state
 from orchestrator.main import app
+from tests.qualified_compute import install_qualified_compute
 
 
 pytestmark = pytest.mark.filterwarnings("error::pytest.PytestUnraisableExceptionWarning")
@@ -29,6 +30,7 @@ async def authenticated_app(monkeypatch):
     monkeypatch.setenv("REDIS_URL", "")
     monkeypatch.setenv("MOCK_LLM", "true")
     get_settings.cache_clear()
+    install_qualified_compute(monkeypatch)
 
     settings = get_settings()
     connection = MagicMock()

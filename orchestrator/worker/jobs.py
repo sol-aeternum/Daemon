@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from orchestrator.compute_runtime import ComputeUnavailable, account_compute, guarded_completion
+
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportArgumentType=false, reportMissingImports=false
 
 import asyncio
@@ -46,6 +48,17 @@ MAX_EXTRACTION_CHUNKS_PER_JOB = 1
 # Leave one minute for arq to cancel the coroutine, record the retry, and
 # release resources before the worker's fixed 300-second timeout.
 EXTRACTION_JOB_DEADLINE_SECONDS = 240
+
+
+async def _conversation_owner(ctx: WorkerContext, conversation_id: uuid.UUID) -> uuid.UUID:
+    store = ctx.get("store")
+    if not isinstance(store, MemoryStore) or ctx.get("db_pool") is None:
+        raise ComputeUnavailable("account_unavailable", "Account compute unavailable")
+    conversation = await store.get_conversation(conversation_id)
+    owner = conversation.get("user_id") if conversation else None
+    if not isinstance(owner, uuid.UUID):
+        raise ComputeUnavailable("account_unavailable", "Conversation owner unavailable")
+    return owner
 
 
 class ConsolidationResults(TypedDict):
@@ -319,6 +332,9 @@ async def _extract_memories_once(
     store_obj = ctx.get("store")
     if not isinstance(store_obj, MemoryStore):
         return {"status": "skipped", "reason": "store_unavailable"}
+    owner = await _conversation_owner(ctx, _as_uuid(conversation_id))
+    if owner != _as_uuid(user_id):
+        raise ComputeUnavailable("account_unavailable", "Conversation owner mismatch")
 
     # Retry-recovery: if a previous attempt committed a summary with
     # ``summary_continuation_pending=true`` but failed to enqueue the
@@ -518,16 +534,17 @@ async def _extract_memories_once(
         raw_message_id = cursor_message.get("id") if advances_cursor else None
         chunk_last_message_id = str(raw_message_id) if raw_message_id is not None else None
 
-        chunk_success, chunk_new_memories, chunk_continuation = await process_extraction(
-            store=store_obj,
-            user_id=_as_uuid(user_id),
-            conversation_id=_as_uuid(conversation_id),
-            text=chunk_text,
-            last_message_observed_at=chunk_last_observed,
-            last_message_id=chunk_last_message_id,
-            chunk_index=chunk_index,
-            cursor_checkpoint=advances_cursor,
-        )
+        async with account_compute(ctx.get("db_pool"), owner, operation="agent", auto_route=True):
+            chunk_success, chunk_new_memories, chunk_continuation = await process_extraction(
+                store=store_obj,
+                user_id=_as_uuid(user_id),
+                conversation_id=_as_uuid(conversation_id),
+                text=chunk_text,
+                last_message_observed_at=chunk_last_observed,
+                last_message_id=chunk_last_message_id,
+                chunk_index=chunk_index,
+                cursor_checkpoint=advances_cursor,
+            )
         if not chunk_success:
             # Earlier chunks may already have committed memories and cursor
             # checkpoints. Queue their entity projection before retrying the
@@ -740,9 +757,11 @@ async def generate_title(
 
     settings_obj = ctx.get("settings")
     settings = settings_obj if isinstance(settings_obj, Settings) else None
-    title_model = (settings.title_model if settings else None) or "openrouter/openai/gpt-4o-mini"
+    title_model = (settings.title_model if settings else None) or "auto"
 
-    title = await generate_conversation_title(messages, model=title_model)
+    owner = await _conversation_owner(ctx, _as_uuid(conversation_id))
+    async with account_compute(ctx.get("db_pool"), owner, operation="agent", auto_route=True):
+        title = await generate_conversation_title(messages, model=title_model)
     if isinstance(store_obj, MemoryStore):
         try:
             _ = await store_obj.update_conversation(_as_uuid(conversation_id), title=title)
@@ -786,8 +805,10 @@ async def generate_conversation_title_job(
 
     settings_obj = ctx.get("settings")
     settings = settings_obj if isinstance(settings_obj, Settings) else None
-    title_model = (settings.title_model if settings else None) or "openrouter/openai/gpt-4o-mini"
-    title = await generate_conversation_title(messages, model=title_model)
+    title_model = (settings.title_model if settings else None) or "auto"
+    owner = await _conversation_owner(ctx, conv_id)
+    async with account_compute(ctx.get("db_pool"), owner, operation="agent", auto_route=True):
+        title = await generate_conversation_title(messages, model=title_model)
 
     try:
         _ = await store_obj.update_conversation(conv_id, title=title)
@@ -880,7 +901,9 @@ async def generate_summary_job(
     if not messages:
         return {"status": "skipped", "reason": "up_to_date"}
 
-    summary = await generate_summary(messages, previous_summary, settings)
+    owner = await _conversation_owner(ctx, conv_id)
+    async with account_compute(ctx.get("db_pool"), owner, operation="agent", auto_route=True):
+        summary = await generate_summary(messages, previous_summary, settings)
     if not summary.strip():
         raise Retry(defer=5)
 
@@ -1083,7 +1106,8 @@ async def run_dreaming_job(
             ):
                 continue
 
-            dream_result = await run_dreaming(uid, store=store_obj)
+            async with account_compute(ctx.get("db_pool"), uid, operation="agent", auto_route=True):
+                dream_result = await run_dreaming(uid, store=store_obj)
             results["users_processed"] += 1
             results["observations_created"] += int(dream_result.get("observations_created", 0) or 0)
 
@@ -1226,7 +1250,10 @@ async def consolidate_memories(
                         logger.debug(f"Cluster too small, skipping: {len(cluster)} members")
                         continue
 
-                    created = await consolidate_cluster(cluster, store, uid)
+                    async with account_compute(
+                        ctx.get("db_pool"), uid, operation="agent", auto_route=True
+                    ):
+                        created = await consolidate_cluster(cluster, store, uid)
 
                     if created:
                         results["clusters_processed"] += 1
@@ -1322,7 +1349,11 @@ async def run_skill_evaluation_job(
     )
 
     try:
-        result = await evaluator.evaluate_completed_turn(request)
+        owner = await _conversation_owner(ctx, request.conversation_id)
+        if owner != request.user_id:
+            raise ComputeUnavailable("account_unavailable", "Conversation owner mismatch")
+        async with account_compute(db_pool, owner, operation="agent", auto_route=True):
+            result = await evaluator.evaluate_completed_turn(request)
 
         return SkillEvaluationJobResult(
             status="ok",
@@ -1500,7 +1531,7 @@ async def run_consolidation_nudge_job(
 
     store_obj = ctx.get("store")
     settings_obj = ctx.get("settings")
-    db_pool = ctx.get("db_pool")  # noqa: F841
+    db_pool = ctx.get("db_pool")
 
     if not isinstance(store_obj, MemoryStore):
         return ConsolidationNudgeResults(
@@ -1552,7 +1583,7 @@ async def run_consolidation_nudge_job(
     for uid in user_ids:
         try:
             user_result = await _process_user_consolidation_nudge(
-                uid, store_obj, interval, stale_days, min_skills
+                uid, store_obj, interval, stale_days, min_skills, db_pool
             )
             results["user_id"] = str(uid)
             results["skills_reviewed"] += user_result["skills_reviewed"]
@@ -1579,6 +1610,7 @@ async def _process_user_consolidation_nudge(
     interval: int,
     stale_days: int,
     min_skills: int,
+    db_pool: Any,
 ) -> dict[str, Any]:
     from orchestrator.consolidation_nudge_prompts import (
         build_consolidation_nudge_prompt,
@@ -1626,7 +1658,8 @@ async def _process_user_consolidation_nudge(
         user_context=None,
     )
 
-    model_actions = await _call_consolidation_model(prompt)
+    async with account_compute(db_pool, user_id, operation="agent", auto_route=True):
+        model_actions = await _call_consolidation_model(prompt)
 
     autonomous_skill_ids = {s["skill_id"] for s in autonomous_skills}
 
@@ -1803,7 +1836,6 @@ async def _process_user_consolidation_nudge(
 
 async def _call_consolidation_model(prompt: str) -> list[dict[str, Any]]:
     from orchestrator.config import get_settings
-    import litellm
 
     settings = get_settings()
     provider_config = settings.get_provider_config("openrouter")
@@ -1833,7 +1865,7 @@ async def _call_consolidation_model(prompt: str) -> list[dict[str, Any]]:
         call_params["extra_headers"] = provider_config.extra_headers
 
     try:
-        response = await litellm.acompletion(**call_params)
+        response = await guarded_completion(**call_params)
         content = _extract_response_content(response)
         if content:
             from orchestrator.consolidation_nudge_prompts import (

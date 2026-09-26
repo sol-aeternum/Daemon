@@ -66,7 +66,7 @@ class TestCouncilCompletionWithTools:
 
         mock_acompletion = AsyncMock(side_effect=[tool_call_response, final_response])
 
-        with patch("orchestrator.council.tools.litellm.acompletion", mock_acompletion):
+        with patch("orchestrator.council.tools.guarded_completion", mock_acompletion):
             # Create a mock tool executor object with an execute method
             tool_executor = MagicMock()
             tool_executor.execute = AsyncMock(return_value="Sunny, 75°F")
@@ -125,7 +125,7 @@ class TestCouncilCompletionWithTools:
 
         mock_acompletion = AsyncMock(side_effect=responses)
 
-        with patch("orchestrator.council.tools.litellm.acompletion", mock_acompletion):
+        with patch("orchestrator.council.tools.guarded_completion", mock_acompletion):
             # Create a mock tool executor object with an execute method
             tool_executor = MagicMock()
             tool_executor.execute = AsyncMock(side_effect=["Result 1", "Result 2", "Result 3"])
@@ -201,7 +201,7 @@ class TestCouncilCompletionWithTools:
 
         mock_acompletion = AsyncMock(side_effect=responses)
 
-        with patch("orchestrator.council.tools.litellm.acompletion", mock_acompletion):
+        with patch("orchestrator.council.tools.guarded_completion", mock_acompletion):
             # Create a mock tool executor object with an execute method
             tool_executor = MagicMock()
             tool_executor.execute = AsyncMock(return_value="Step result")
@@ -243,7 +243,7 @@ class TestCouncilCompletionWithTools:
 
         mock_acompletion = AsyncMock(side_effect=[tool_call_response, final_response])
 
-        with patch("orchestrator.council.tools.litellm.acompletion", mock_acompletion):
+        with patch("orchestrator.council.tools.guarded_completion", mock_acompletion):
             # Create a mock tool executor object with an execute method that raises an exception
             tool_executor = MagicMock()
             tool_executor.execute = AsyncMock(side_effect=Exception("Tool error"))
@@ -268,7 +268,7 @@ class TestCouncilCompletionWithTools:
         """Test scenario 5: Timeout handling."""
         mock_acompletion = AsyncMock(side_effect=TimeoutError("Request timed out"))
 
-        with patch("orchestrator.council.tools.litellm.acompletion", mock_acompletion):
+        with patch("orchestrator.council.tools.guarded_completion", mock_acompletion):
             tool_executor = AsyncMock()
             messages = [{"role": "user", "content": "Slow request"}]
             tools = []
@@ -300,7 +300,7 @@ class TestCouncilCompletionWithTools:
 
         mock_acompletion = AsyncMock(return_value=response)
 
-        with patch("orchestrator.council.tools.litellm.acompletion", mock_acompletion):
+        with patch("orchestrator.council.tools.guarded_completion", mock_acompletion):
             tool_executor = AsyncMock()
             messages = [{"role": "user", "content": "Hi"}]
             tools = []

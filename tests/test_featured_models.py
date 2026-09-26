@@ -55,7 +55,7 @@ async def client(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", FEATURED_MODELS)
 async def test_featured_model_chat(client: AsyncClient, model: str):
-    """Test that each featured model can be used in chat completions."""
+    """Catalog names never grant provider approval in default-deny deployments."""
     response = await client.post(
         "/v1/chat/completions",
         json={
@@ -65,15 +65,12 @@ async def test_featured_model_chat(client: AsyncClient, model: str):
         },
         headers={"Content-Type": "application/json"},
     )
-    assert response.status_code == 200, f"Model {model} failed: {response.text}"
-    data = response.json()
-    assert "choices" in data
-    assert len(data["choices"]) > 0
+    assert response.status_code == 503, f"Model {model}: {response.text}"
+    assert response.json()["detail"]["code"] == "route_unavailable"
 
 
 @pytest.mark.asyncio
-async def test_catalog_endpoint_returns_featured():
-    """Test that /v1/catalog returns featured models."""
+async def test_catalog_endpoint_hides_unapproved_featured_models():
     from orchestrator.main import app
 
     transport = ASGITransport(app=app)
@@ -82,4 +79,5 @@ async def test_catalog_endpoint_returns_featured():
     assert response.status_code == 200
     data = response.json()
     assert "featured" in data
-    assert len(data["featured"]) == 7
+    assert data["featured"] == []
+    assert data["auto"]["id"] == "auto"

@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+
 import asyncio
-import hashlib
 import json
 import logging
+
 import sys
+
 import time
 import uuid
 
 import asyncpg
-import httpx
-import litellm
+
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -34,7 +36,6 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 
 from orchestrator.artifacts import (
     resolve_owned_artifact,
-    write_owned_artifact,
 )
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.auth_pepper import (
@@ -62,10 +63,12 @@ from orchestrator.config import (
     HostSecurityConfigError,
     HostedIdentityConfigError,
     InternalProxyConfigError,
-    ProviderConfig,
     Settings,
     get_settings,
 )
+from orchestrator.compute_runtime import ComputeUnavailable, account_compute, choose_route
+from orchestrator.entitlements.errors import PolicyError
+from orchestrator.entitlements.policy import load_inference_policy
 from orchestrator.daemon import (
     effective_provider_and_model,
     new_conversation_id,
@@ -100,6 +103,7 @@ from orchestrator.setup_token_delivery import (
 )
 from orchestrator.routes import (
     conversations,
+    entitlements,
     images,
     memories,
     skills,
@@ -570,35 +574,14 @@ if _allowed_hosts == ["*"]:
 app.add_middleware(CaseInsensitiveTrustedHostMiddleware, allowed_hosts=_allowed_hosts)
 
 
-VALID_BILLING_TIERS = {"free", "starter", "pro", "max", "byok"}
-
-
 def _build_trusted_spawn_context(
-    settings: Settings,
+    user_id: uuid.UUID,
     metadata: dict[str, Any] | None,
-    authenticated_user_id: uuid.UUID,
 ) -> dict[str, Any] | None:
     video_meta = metadata.get("video_generation") if isinstance(metadata, dict) else None
-
-    tier = settings.default_tier.lower().strip()
-    if tier not in VALID_BILLING_TIERS:
-        return None
-
-    # Billing identity and entitlement are trusted request context, regardless
-    # of whether Studio supplied optional video metadata. The model can choose
-    # to invoke video generation during any authenticated chat, so conditioning
-    # these values on metadata would let model-generated tool arguments select
-    # another account or an unbilled tier.
-    trusted_video: dict[str, Any] = {
-        "tier": tier,
-        "user_id": str(authenticated_user_id),
-    }
-
-    # Without Studio video metadata, carry only immutable billing fields. The
-    # spawn tool applies them if (and only if) the model requests video mode.
+    trusted_video: dict[str, Any] = {"user_id": str(user_id)}
     if not isinstance(video_meta, dict):
         return {"video": trusted_video}
-
     duration_raw = video_meta.get("duration")
     if isinstance(duration_raw, bool):
         duration = 5
@@ -611,9 +594,7 @@ def _build_trusted_spawn_context(
         duration = 5
     duration = max(duration, 1)
 
-    tier_config = settings.get_tier_config(tier)
-    if tier_config.tier_video_max_duration is not None:
-        duration = min(duration, tier_config.tier_video_max_duration)
+    duration = min(duration, 30)
 
     source_mode_raw = video_meta.get("source_mode")
     source_mode = (
@@ -778,60 +759,73 @@ def _build_user_content_from_attachments(
     return parts
 
 
-def _model_supports_vision(model_id: str) -> bool:
-    lowered = model_id.lower().strip()
-    if not lowered:
-        return False
-
-    positive_tokens = (
-        "gpt-4o",
-        "gpt-4.1",
-        "gpt-4.5",
-        "o1",
-        "o3",
-        "o4",
-        "gemini",
-        "claude-3",
-        "claude-4",
-        "vision",
-        "pixtral",
-        "llava",
-        "qwen-vl",
-    )
-    if any(token in lowered for token in positive_tokens):
-        return True
-
-    negative_tokens = ("embedding", "whisper", "tts", "audio")
-    if any(token in lowered for token in negative_tokens):
-        return False
-
-    return False
+async def _account_chat_frames(
+    scope_pool: Any, scope_user_id: uuid.UUID, *, auto_route: bool = False, **kwargs: Any
+) -> AsyncIterator[str]:
+    async for frame in _account_frames(
+        scope_pool,
+        scope_user_id,
+        lambda: stream_sse_chat(**kwargs),
+        auto_route=auto_route,
+    ):
+        yield frame
 
 
-def _normalize_model_for_provider(model_id: str, provider_config: ProviderConfig) -> str:
-    normalized = model_id.strip()
-    if not normalized:
-        return normalized
+async def _account_frames(
+    scope_pool: Any,
+    scope_user_id: uuid.UUID,
+    source: Callable[[], AsyncIterator[str]],
+    *,
+    auto_route: bool = False,
+    operation: str = "chat",
+    extended: bool = False,
+) -> AsyncIterator[str]:
+    # Keep the ContextVar scope inside one producer task. The keepalive bridge
+    # may resume its input generator in a different task for each frame.
+    frames: asyncio.Queue[tuple[str | None, Exception | None]] = asyncio.Queue(maxsize=1)
 
-    if provider_config.name == "openrouter":
-        if normalized.startswith("openrouter/"):
-            return normalized
-        if normalized.startswith("opencode/"):
-            return f"openrouter/{normalized[len('opencode/') :]}"
-        return f"openrouter/{normalized}"
+    async def produce() -> None:
+        try:
+            async with account_compute(
+                scope_pool,
+                scope_user_id,
+                auto_route=auto_route,
+                operation=operation,
+                extended=extended,
+            ):
+                async for frame in source():
+                    await frames.put((frame, None))
+        except Exception as exc:
+            await frames.put((None, exc))
+        finally:
+            await frames.put((None, None))
 
-    for prefix in ("openrouter/", "opencode/"):
-        if normalized.startswith(prefix):
-            return normalized[len(prefix) :]
+    producer = asyncio.create_task(produce())
+    try:
+        while True:
+            frame, error = await frames.get()
+            if error is not None:
+                raise error
+            if frame is None:
+                break
+            yield frame
+    finally:
+        if not producer.done():
+            producer.cancel()
+        try:
+            await producer
+        except asyncio.CancelledError:
+            pass
 
-    return normalized
 
-
-def _get_vision_fallback_model(settings: Settings, provider_config: ProviderConfig) -> str:
-    tier_config = settings.get_tier_config(settings.default_tier)
-    if tier_config.image_agent and tier_config.image_agent.model:
-        return _normalize_model_for_provider(tier_config.image_agent.model, provider_config)
-    return _normalize_model_for_provider(settings.auto_fast_model, provider_config)
+def _approved_chat_model(model: str | None = None) -> str:
+    try:
+        return choose_route(model).model
+    except ComputeUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
 
 
 def _extract_council_config_response(message: str) -> dict[str, Any] | None:
@@ -1001,71 +995,6 @@ def _build_council_assistant_content(council_events: list[dict[str, Any]]) -> st
     return "Council run completed."
 
 
-async def _summarize_images_for_fallback(
-    *,
-    fallback_model: str,
-    provider_config: ProviderConfig,
-    user_text: str,
-    image_parts: list[dict[str, Any]],
-) -> tuple[str | None, str]:
-    analysis_instruction = (
-        "You are a vision analysis assistant. Analyze all attached images for the user request and "
-        "return a concise summary another text-only model can use. Include only high-confidence details. "
-        "Respond with plain text only."
-    )
-    request_text = user_text.strip() or "Please describe the attached images."
-    analysis_content: list[dict[str, Any]] = [
-        {
-            "type": "text",
-            "text": f"User request:\n{request_text}\n\nProvide a concise factual summary.",
-        }
-    ]
-    analysis_content.extend(image_parts)
-
-    call_params: dict[str, Any] = {
-        "model": fallback_model,
-        "messages": [
-            {"role": "system", "content": analysis_instruction},
-            {"role": "user", "content": analysis_content},
-        ],
-        "stream": False,
-        "timeout": provider_config.timeout_s,
-    }
-
-    if provider_config.base_url:
-        call_params["api_base"] = provider_config.base_url
-    if provider_config.api_key:
-        call_params["api_key"] = provider_config.api_key
-    if provider_config.extra_headers:
-        call_params["extra_headers"] = provider_config.extra_headers
-
-    try:
-        response = await litellm.acompletion(**call_params)
-        choices = getattr(response, "choices", None)
-        if choices is None and isinstance(response, dict):
-            choices = response.get("choices", [])
-        if not choices:
-            return None, fallback_model
-
-        first_choice = choices[0]
-        message = getattr(first_choice, "message", None)
-        if message is None and isinstance(first_choice, dict):
-            message = first_choice.get("message", {})
-        if message is None:
-            message = {}
-
-        content = getattr(message, "content", None)
-        if content is None and isinstance(message, dict):
-            content = message.get("content")
-        summary = _extract_text_content(content)
-        if summary:
-            return summary, fallback_model
-        return None, fallback_model
-    except Exception:
-        logger.warning("Vision fallback analysis failed", exc_info=True)
-        return None, fallback_model
-
-
 # ============== Health & Info Endpoints ==============
 
 
@@ -1098,6 +1027,24 @@ async def list_providers(
 # ============== OpenAI Compatible Endpoints ==============
 
 
+def _selectable_model_ids() -> set[str]:
+    """Only reviewed, available text routes can be offered for manual selection."""
+    try:
+        policy = load_inference_policy()
+    except PolicyError:
+        return set()
+    return {
+        route.model
+        for route in policy.routes.values()
+        if route.provider == "openrouter"
+        and route.model.startswith("openrouter/")
+        and route.is_approved(policy.requirements)
+        and route.supports(
+            required_capabilities=frozenset({"text"}), input_tokens=1, output_tokens=1
+        )
+    }
+
+
 @app.get("/api/models")
 async def api_models_redirect(
     settings: Settings = Depends(get_settings),
@@ -1125,7 +1072,18 @@ async def openai_list_models(
     Fetches all available models from OpenRouter API dynamically with caching.
     Falls back to configured default model if OpenRouter API is unavailable.
     """
-    models = []
+    models = [
+        OpenAIModelInfo(
+            id="auto",
+            object="model",
+            created=int(time.time()),
+            owned_by="daemon",
+            metadata={"capabilities": ["chat", "streaming"]},
+        )
+    ]
+    selectable = _selectable_model_ids()
+    if not selectable:
+        return OpenAIModelList(data=models)
     timestamp = int(time.time())  # noqa: F841
 
     # Fetch OpenRouter models dynamically with caching
@@ -1137,6 +1095,11 @@ async def openai_list_models(
         # Add metadata and convert to OpenAIModelInfo format
         for model_data in openrouter_models:
             model_id = model_data["id"]
+            if not isinstance(model_id, str):
+                continue
+            model_id = model_id if model_id.startswith("openrouter/") else f"openrouter/{model_id}"
+            if model_id not in selectable:
+                continue
 
             # Build metadata dict
             metadata: dict[str, Any] = {
@@ -1161,37 +1124,7 @@ async def openai_list_models(
 
     except Exception as e:
         logger.warning(f"Failed to fetch OpenRouter models: {e}")
-        # Fallback to demo models when OpenRouter API fails
-        demo_models = [
-            OpenAIModelInfo(
-                id="openrouter/moonshotai/kimi-k2.5",
-                object="model",
-                created=int(time.time()),
-                owned_by="openrouter",
-                metadata={
-                    "capabilities": ["chat", "streaming"],
-                },
-            ),
-            OpenAIModelInfo(
-                id="openrouter/anthropic/claude-opus-4.6",
-                object="model",
-                created=int(time.time()),
-                owned_by="openrouter",
-                metadata={
-                    "capabilities": ["chat", "streaming"],
-                },
-            ),
-            OpenAIModelInfo(
-                id="openrouter/google/gemini-2.5-flash",
-                object="model",
-                created=int(time.time()),
-                owned_by="openrouter",
-                metadata={
-                    "capabilities": ["chat", "streaming"],
-                },
-            ),
-        ]
-        models.extend(demo_models)
+        # Public catalog availability is not an inference approval signal.
 
     return OpenAIModelList(data=models)
 
@@ -1203,6 +1136,7 @@ async def get_model_catalog() -> dict[str, Any]:
     from orchestrator.models_cache import get_cached_models
 
     catalog = get_catalog()
+    selectable = _selectable_model_ids()
 
     # Add dynamic new models from cache
     cached = get_cached_models()
@@ -1211,16 +1145,24 @@ async def get_model_catalog() -> dict[str, Any]:
     # Get models that are new and not already in featured
     dynamic_new = [
         {
-            "id": m["id"],
+            "id": m["id"] if m["id"].startswith("openrouter/") else f"openrouter/{m['id']}",
             "name": m.get("name", m["id"]),
             "tagline": "Newly added",
             "badges": ["new"],
         }
         for m in cached
-        if m.get("is_new") and m["id"] not in featured_ids
+        if isinstance(m.get("id"), str)
+        and m.get("is_new")
+        and m["id"] not in featured_ids
+        and (m["id"] if m["id"].startswith("openrouter/") else f"openrouter/{m['id']}")
+        in selectable
     ][:2]
 
-    featured = cast(list[Any], catalog["featured"])
+    featured = [
+        model
+        for model in cast(list[dict[str, Any]], catalog["featured"])
+        if model["id"] in selectable
+    ]
     featured.extend(dynamic_new)
 
     return {
@@ -1291,11 +1233,7 @@ async def openai_chat_completions(
         provider_name = "openrouter"
 
     provider_config = settings.get_provider_config(provider_name)
-    trusted_spawn_context = _build_trusted_spawn_context(
-        settings,
-        None,
-        authenticated_user_id=auth.user_id,
-    )
+    trusted_spawn_context = _build_trusted_spawn_context(auth.user_id, None)
 
     # Strip provider prefix to get actual model ID
     actual_model = payload.model
@@ -1304,8 +1242,11 @@ async def openai_chat_completions(
             if actual_model.startswith(prefix):
                 actual_model = actual_model[len(prefix) :]
                 break
-    if actual_model == payload.model and actual_model in {"default", "", "kimi"}:
-        actual_model = provider_config.model
+    if actual_model in {"default", "", "kimi", "auto"}:
+        actual_model = ""
+    actual_model = _approved_chat_model(
+        actual_model if actual_model not in {"default", "", "kimi", "auto"} else None
+    )
 
     system_prompts = [
         _extract_text_content(m.content)
@@ -1347,8 +1288,12 @@ async def openai_chat_completions(
                 # Stream chunks
                 token_count = 0  # noqa: F841
                 content_buffer = ""
+                reported_model = actual_model
 
-                async for frame in stream_sse_chat(
+                async for frame in _account_chat_frames(
+                    getattr(request.app.state.app_state, "db_pool", None),
+                    auth.user_id,
+                    auto_route=payload.model in {"default", "", "kimi", "auto"},
                     settings=settings,
                     provider_config=provider_config,
                     system_prompt=system_prompt,
@@ -1362,6 +1307,11 @@ async def openai_chat_completions(
                     trusted_spawn_context=trusted_spawn_context,
                     user_timezone=user_timezone,
                 ):
+                    if frame.startswith("event: routing") or frame.startswith("event: final"):
+                        _, envelope = _parse_sse_frame(frame)
+                        candidate = (envelope or {}).get("data", {}).get("model")
+                        if isinstance(candidate, str) and candidate.startswith("openrouter/"):
+                            reported_model = candidate
                     # Parse the SSE frame
                     if frame.startswith("event: token"):
                         # Extract content from data: line
@@ -1376,7 +1326,7 @@ async def openai_chat_completions(
                                         chunk = OpenAIChatStreamChunk(
                                             id=chunk_id,
                                             created=timestamp,
-                                            model=payload.model,
+                                            model=reported_model,
                                             choices=[
                                                 OpenAIChoice(
                                                     index=0,
@@ -1397,7 +1347,7 @@ async def openai_chat_completions(
                         chunk = OpenAIChatStreamChunk(
                             id=chunk_id,
                             created=timestamp,
-                            model=payload.model,
+                            model=reported_model,
                             choices=[
                                 OpenAIChoice(
                                     index=0,
@@ -1420,6 +1370,7 @@ async def openai_chat_completions(
                     request_id_local,
                     e,
                 )
+
                 error_chunk = OpenAIChatStreamChunk(
                     id=f"chatcmpl-{new_request_id()}",
                     created=int(time.time()),
@@ -1450,13 +1401,17 @@ async def openai_chat_completions(
         # Non-streaming response
         # Collect all content
         content_parts = []
+        reported_model = actual_model
 
         try:
 
             async def is_disconnected() -> bool:
                 return False
 
-            async for frame in stream_sse_chat(
+            async for frame in _account_chat_frames(
+                getattr(request.app.state.app_state, "db_pool", None),
+                auth.user_id,
+                auto_route=payload.model in {"default", "", "kimi", "auto"},
                 settings=settings,
                 provider_config=provider_config,
                 system_prompt=system_prompt,
@@ -1470,6 +1425,11 @@ async def openai_chat_completions(
                 trusted_spawn_context=trusted_spawn_context,
                 user_timezone=user_timezone,
             ):
+                if frame.startswith("event: routing") or frame.startswith("event: final"):
+                    _, envelope = _parse_sse_frame(frame)
+                    candidate = (envelope or {}).get("data", {}).get("model")
+                    if isinstance(candidate, str) and candidate.startswith("openrouter/"):
+                        reported_model = candidate
                 if frame.startswith("event: token"):
                     lines = frame.split("\n")
                     for line in lines:
@@ -1494,7 +1454,7 @@ async def openai_chat_completions(
             return OpenAIChatResponse(
                 id=f"chatcmpl-{request_id}",
                 created=int(time.time()),
-                model=payload.model,
+                model=reported_model,
                 choices=[
                     OpenAIChoice(
                         index=0,
@@ -1508,17 +1468,14 @@ async def openai_chat_completions(
                     total_tokens=(len(system_prompt) + len(last_message) + len(final_content)) // 4,
                 ),
             )
-        except Exception as e:
-            # Log the full traceback server-side; the client receives a
-            # generic message so we do not leak Python exception text,
-            # file paths, or asyncpg / httpx error details to the caller.
-            logger.exception(
-                "OpenAI-compatible chat completion failed (request_id=%s, client_request_id=%s): %s",
-                get_request_id(request),
-                get_client_request_id(request),
-                e,
-            )
-            raise HTTPException(status_code=500, detail=_GENERIC_INTERNAL_ERROR)
+
+        except ComputeUnavailable as exc:
+            raise HTTPException(
+                status_code=503, detail={"code": exc.code, "message": exc.message}
+            ) from exc
+        except Exception as exc:
+            logger.exception("OpenAI-compatible chat completion failed (request_id=%s)", request_id)
+            raise HTTPException(status_code=500, detail=_GENERIC_INTERNAL_ERROR) from exc
 
 
 # ============== Generated Images Static Serving ==============
@@ -1610,76 +1567,10 @@ async def text_to_speech(
     if not text:
         raise HTTPException(status_code=400, detail="Text is required")
 
-    model = payload.model or "eleven_flash_v2_5"
-    voice = payload.voice or "Xb7hH8MSUJpSbSDYk0k2"
-    speed = payload.speed or 1.0
-    fmt = payload.format or "mp3"
-    use_cache = payload.cache is not False
-
-    cache_key = hashlib.sha256(f"{model}|{voice}|{speed}|{fmt}|{text}".encode("utf-8")).hexdigest()
-    filename = f"{cache_key}.{fmt}"
-    cached_filepath = resolve_owned_artifact(TTS_CACHE_DIR, auth.user_id, filename)
-    if use_cache and cached_filepath is not None:
-        return {
-            "audio_path": f"/generated-audio/{filename}",
-            "cached": True,
-            "model": model,
-            "voice": voice,
-            "format": fmt,
-        }
-
-    eleven_api_key = settings.elevenlabs_api_key
-    if not eleven_api_key:
-        raise HTTPException(status_code=500, detail="ElevenLabs API key missing")
-
-    voice_id = voice
-
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-    headers = {
-        "xi-api-key": eleven_api_key,
-        "Content-Type": "application/json",
-    }
-
-    format_map = {
-        "mp3": "mp3_22050_32",
-        "opus": "opus_48000_32",
-        "wav": "wav_22050",
-    }
-    output_format = format_map[fmt]
-
-    request_body: dict[str, Any] = {
-        "text": text,
-        "model_id": model if model.startswith("eleven") else "eleven_multilingual_v2",
-    }
-    if speed and speed != 1.0:
-        request_body["voice_settings"] = {
-            "stability": 0.5,
-            "similarity_boost": 0.75,
-            "style": 0.0 if speed >= 1.0 else 0.5,
-            "use_speaker_boost": True,
-        }
-
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            url,
-            params={"output_format": output_format},
-            json=request_body,
-            headers=headers,
-        )
-        if response.status_code != 200:
-            raise HTTPException(
-                status_code=502,
-                detail=f"ElevenLabs TTS request failed: {response.text}",
-            )
-        write_owned_artifact(TTS_CACHE_DIR, auth.user_id, filename, response.content)
-
-    return {
-        "audio_path": f"/generated-audio/{filename}",
-        "cached": False,
-        "model": model,
-        "voice": voice,
-        "format": fmt,
-    }
+    raise HTTPException(
+        status_code=503,
+        detail={"code": "route_unavailable", "message": "Approved audio route unavailable"},
+    )
 
 
 @app.get("/audio/token")
@@ -1696,31 +1587,11 @@ async def get_audio_token(
     Returns a scoped single-use token instead of the raw API key
     to prevent key exposure in the browser.
     """
-    eleven_api_key = settings.elevenlabs_api_key
-    if not eleven_api_key:
-        raise HTTPException(status_code=500, detail="ElevenLabs API key not configured")
 
-    # Generate scoped token for TTS WebSocket
-    url = "https://api.elevenlabs.io/v1/single-use-token/tts_websocket"
-    headers = {"xi-api-key": eleven_api_key}
-
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.post(url, headers=headers)
-        if response.status_code != 200:
-            raise HTTPException(
-                status_code=502,
-                detail=f"ElevenLabs TTS token request failed: {response.text}",
-            )
-
-    data = response.json()
-    token = data.get("token")
-    if not token:
-        raise HTTPException(status_code=502, detail="ElevenLabs TTS token missing")
-
-    return {
-        "token": token,
-        "expires_in": 900,  # 15 minutes, scoped token TTL
-    }
+    raise HTTPException(
+        status_code=503,
+        detail={"code": "route_unavailable", "message": "Approved audio route unavailable"},
+    )
 
 
 @app.get("/audio/scribe-token")
@@ -1728,30 +1599,11 @@ async def get_scribe_token(
     settings: Settings = Depends(get_settings),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> dict[str, Any]:
-    eleven_api_key = settings.elevenlabs_api_key
-    if not eleven_api_key:
-        raise HTTPException(status_code=500, detail="ElevenLabs API key not configured")
 
-    url = "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe"
-    headers = {"xi-api-key": eleven_api_key}
-
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.post(url, headers=headers)
-        if response.status_code != 200:
-            raise HTTPException(
-                status_code=502,
-                detail=f"ElevenLabs Scribe token request failed: {response.text}",
-            )
-
-    data = response.json()
-    token = data.get("token")
-    if not token:
-        raise HTTPException(status_code=502, detail="ElevenLabs Scribe token missing")
-
-    return {
-        "token": token,
-        "expires_in": 900,
-    }
+    raise HTTPException(
+        status_code=503,
+        detail={"code": "route_unavailable", "message": "Approved audio route unavailable"},
+    )
 
 
 @app.post("/stt", responses=REQUEST_BODY_TOO_LARGE_RESPONSES)
@@ -1762,40 +1614,11 @@ async def speech_to_text(
     settings: Settings = Depends(get_settings),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> dict[str, Any]:
-    eleven_api_key = settings.elevenlabs_api_key
-    if not eleven_api_key:
-        raise HTTPException(status_code=500, detail="ElevenLabs API key missing")
 
-    url = "https://api.elevenlabs.io/v1/speech-to-text"
-    headers = {"xi-api-key": eleven_api_key}
-
-    file_content = await audio_file.read()
-    files = {
-        "file": (
-            audio_file.filename or "audio.mp3",
-            file_content,
-            audio_file.content_type or "audio/mpeg",
-        )
-    }
-    data = {"model_id": model}
-    if language:
-        data["language_code"] = language
-
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(url, headers=headers, data=data, files=files)
-        if response.status_code != 200:
-            raise HTTPException(
-                status_code=502,
-                detail=f"STT request failed: {response.text}",
-            )
-        result = response.json()
-
-    return {
-        "text": result.get("text", ""),
-        "language": result.get("language_code"),
-        "confidence": result.get("confidence", 0.0),
-        "words": result.get("words", []),
-    }
+    raise HTTPException(
+        status_code=503,
+        detail={"code": "route_unavailable", "message": "Approved audio route unavailable"},
+    )
 
 
 @app.post("/sound-effects")
@@ -1805,36 +1628,11 @@ async def generate_sound_effect(
     settings: Settings = Depends(get_settings),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> FileResponse:
-    eleven_api_key = settings.elevenlabs_api_key
-    if not eleven_api_key:
-        raise HTTPException(status_code=500, detail="ElevenLabs API key missing")
 
-    cache_key = hashlib.sha256(f"{text}|{duration_seconds}".encode("utf-8")).hexdigest()
-    filename = f"{cache_key}.mp3"
-    cached_filepath = resolve_owned_artifact(TTS_CACHE_DIR, auth.user_id, filename)
-    if cached_filepath is not None:
-        return FileResponse(cached_filepath, media_type="audio/mpeg")
-
-    url = "https://api.elevenlabs.io/v1/sound-generation"
-    headers = {
-        "xi-api-key": eleven_api_key,
-        "Content-Type": "application/json",
-    }
-    request_body = {
-        "text": text,
-        "duration_seconds": min(max(duration_seconds, 0.5), 22.0),
-    }
-
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(url, json=request_body, headers=headers)
-        if response.status_code != 200:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Sound effects request failed: {response.text}",
-            )
-        filepath = write_owned_artifact(TTS_CACHE_DIR, auth.user_id, filename, response.content)
-
-    return FileResponse(filepath, media_type="audio/mpeg")
+    raise HTTPException(
+        status_code=503,
+        detail={"code": "route_unavailable", "message": "Approved audio route unavailable"},
+    )
 
 
 # ============== Legacy Daemon Endpoint ==============
@@ -1995,6 +1793,11 @@ async def chat(
 
     # Get provider configuration from request or default
     provider_config = settings.get_provider_config(payload.provider)
+    if app_state.db_pool is None:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "account_unavailable", "message": "Account compute unavailable"},
+        )
 
     incoming_messages = payload.messages or []
     attachments = payload.attachments or []
@@ -2058,6 +1861,9 @@ async def chat(
         selected_model = settings.auto_reasoning_model
     else:
         selected_model = provider_config.model
+    selected_model = _approved_chat_model(
+        selected_model if model_decision.tier == "explicit" else None
+    )
 
     actual_model = selected_model
     if provider_config.name != "openrouter":
@@ -2067,57 +1873,17 @@ async def chat(
                 break
 
     routing_info: dict[str, Any] = {
-        "model": selected_model,
+        "model": selected_model if model_decision.tier == "explicit" else "auto",
         "tier": model_decision.tier,
         "reason": model_decision.reason,
     }
 
     has_image_input = _content_has_image(prepared_user_content)
-    enforce_direct_vision_voice = False
-    if has_image_input and not _model_supports_vision(selected_model):
-        image_parts = _extract_image_parts(prepared_user_content)
-        if image_parts:
-            fallback_model = _get_vision_fallback_model(settings, provider_config)
-            fallback_summary, fallback_model = await _summarize_images_for_fallback(
-                fallback_model=fallback_model,
-                provider_config=provider_config,
-                user_text=user_message,
-                image_parts=image_parts,
-            )
-            if fallback_summary:
-                summary_block = fallback_summary.strip()
-                if user_message:
-                    user_message = (f"{user_message}\n\nVisual findings:\n{summary_block}").strip()
-                else:
-                    user_message = f"Visual findings:\n{summary_block}"
-                prepared_user_content = user_message
-                enforce_direct_vision_voice = True
-                routing_info["vision_fallback"] = {
-                    "used": True,
-                    "mode": "summary",
-                    "model": fallback_model,
-                    "summary_available": True,
-                }
-            else:
-                selected_model = fallback_model
-                actual_model = fallback_model
-                if provider_config.name != "openrouter":
-                    for prefix in ["openrouter/", "opencode/"]:
-                        if actual_model.startswith(prefix):
-                            actual_model = actual_model[len(prefix) :]
-                            break
-                routing_info["model"] = selected_model
-                routing_info["vision_fallback"] = {
-                    "used": True,
-                    "mode": "handoff",
-                    "model": fallback_model,
-                    "summary_available": False,
-                }
-    elif has_image_input:
-        routing_info["vision_fallback"] = {
-            "used": False,
-            "model": selected_model,
-        }
+    if has_image_input:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "modality_unavailable", "message": "Multimodal compute unavailable"},
+        )
 
     # Initialize persistence with graceful degradation
     store = app_state.memory_store if app_state else None
@@ -2275,14 +2041,6 @@ async def chat(
     if skills_block and skills_block not in assembled_system_prompt:
         assembled_system_prompt = f"{assembled_system_prompt.rstrip()}\n\n{skills_block}"
 
-    if enforce_direct_vision_voice:
-        assembled_system_prompt = (
-            f"{assembled_system_prompt.rstrip()}\n\n"
-            "When visual findings are provided in the user message, treat them as your own direct visual observations. "
-            "Do not mention fallback models, intermediary summaries, or that the image was described to you. "
-            "Answer as if you directly viewed the image."
-        )
-
     async def is_disconnected() -> bool:
         return await request.is_disconnected()
 
@@ -2303,11 +2061,18 @@ async def chat(
                         },
                     )
 
-                async for frame in stream_council_interview_response(
-                    user_message=user_message,
-                    conversation_id=conversation_id,
-                    request_id=request_id,
-                    stored_config=council_config_response,
+                async for frame in _account_frames(
+                    app_state.db_pool,
+                    auth.user_id,
+                    lambda: stream_council_interview_response(
+                        user_message=user_message,
+                        conversation_id=conversation_id,
+                        request_id=request_id,
+                        stored_config=council_config_response,
+                    ),
+                    operation="agent",
+                    auto_route=True,
+                    extended=True,
                 ):
                     parsed_event = _extract_council_event_for_persistence(frame)
                     if parsed_event is not None:
@@ -2371,10 +2136,17 @@ async def chat(
                         },
                     )
 
-                async for frame in stream_council(
-                    user_message=user_message,
-                    conversation_id=conversation_id,
-                    request_id=request_id,
+                async for frame in _account_frames(
+                    app_state.db_pool,
+                    auth.user_id,
+                    lambda: stream_council(
+                        user_message=user_message,
+                        conversation_id=conversation_id,
+                        request_id=request_id,
+                    ),
+                    operation="agent",
+                    auto_route=True,
+                    extended=True,
                 ):
                     parsed_event = _extract_council_event_for_persistence(frame)
                     if parsed_event is not None:
@@ -2423,12 +2195,11 @@ async def chat(
                 )
                 return
 
-            trusted_spawn_context = _build_trusted_spawn_context(
-                settings,
-                payload.metadata,
-                authenticated_user_id=auth.user_id,
-            )
-            async for frame in stream_sse_chat(
+            trusted_spawn_context = _build_trusted_spawn_context(auth.user_id, payload.metadata)
+            async for frame in _account_chat_frames(
+                app_state.db_pool,
+                auth.user_id,
+                auto_route=model_decision.tier != "explicit",
                 settings=settings,
                 provider_config=provider_config,
                 system_prompt=assembled_system_prompt,
@@ -2439,7 +2210,7 @@ async def chat(
                 ping_interval_s=settings.sse_keepalive_interval_s,
                 is_disconnected=is_disconnected,
                 actual_model=actual_model,
-                reported_model=selected_model,
+                reported_model=selected_model if model_decision.tier == "explicit" else "auto",
                 routing_info=routing_info,
                 memory_store=store,
                 user_id=user_id,
@@ -2451,7 +2222,9 @@ async def chat(
                 user_timezone=user_timezone,
             ):
                 yield frame
-        except Exception as e:
+        except Exception as exc:
+            if not isinstance(exc, ComputeUnavailable):
+                logger.exception("Chat stream failed")
             ts = now_rfc3339()
             provider, model = effective_provider_and_model(settings, provider_config)
             model_for_events = selected_model or actual_model or model
@@ -2461,7 +2234,7 @@ async def chat(
             logger.exception(
                 "Native /chat streaming error (request_id=%s): %s",
                 request_id,
-                e,
+                exc,
             )
             # Emit a minimal `final` + `error` + `done` sequence to keep the SSE contract stable.
             yield sse(
@@ -2529,6 +2302,7 @@ async def chat(
 
 
 app.include_router(conversations.router)
+app.include_router(entitlements.router)
 app.include_router(images.router)
 app.include_router(memories.router)
 app.include_router(skills.router)

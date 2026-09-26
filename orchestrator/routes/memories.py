@@ -12,7 +12,7 @@ from orchestrator.auth import (
     require_device_auth,
 )
 from orchestrator.db import get_app_state, AppState
-from orchestrator.memory.embedding import embed_documents_with_metadata
+from orchestrator.memory.embedding import EmbeddingConfigurationError, embed_documents_with_metadata
 from orchestrator.memory.store import MemoryContentConflictError
 
 router = APIRouter(prefix="/memories", tags=["memories"])
@@ -160,7 +160,16 @@ async def reembed_memories(
         if not valid_texts:
             continue
 
-        embedding_result = await embed_documents_with_metadata(valid_texts)
+        try:
+            embedding_result = await embed_documents_with_metadata(valid_texts)
+        except EmbeddingConfigurationError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "route_unavailable",
+                    "message": "Approved embedding route unavailable",
+                },
+            ) from exc
 
         for mem, embedding in zip(valid_batch, embedding_result.embeddings):
             await store.update_memory_embedding(

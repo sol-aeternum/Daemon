@@ -12,6 +12,7 @@ from typing import cast
 
 from orchestrator.config import get_settings
 from orchestrator.memory.embedding import (
+    EmbeddingConfigurationError,
     EmbeddingVectorResult,
     get_configured_embedding_fallback_storage_models,
     embed_query_for_configured_storage_models,
@@ -463,10 +464,32 @@ async def retrieve_memories_for_text(
             include_historical=effective_include_historical_for_spaces,
         )
         if effective_embedding is None:
-            embedding_results = await embed_query_for_configured_storage_models(
-                normalized_query,
-                fallback_storage_models=fallback_storage_models,
-            )
+            try:
+                embedding_results = await embed_query_for_configured_storage_models(
+                    normalized_query,
+                    fallback_storage_models=fallback_storage_models,
+                )
+            except EmbeddingConfigurationError:
+                # A denied external route cannot prevent lexical retrieval of
+                # unembedded rows or historical vectors in enabled spaces.
+                settings = get_settings()
+                embedding_results = [
+                    EmbeddingVectorResult(
+                        embedding=[],
+                        provider="none",
+                        model=settings.embedding_query_model,
+                        storage_model=settings.embedding_document_model,
+                    )
+                ]
+                embedding_results.extend(
+                    EmbeddingVectorResult(
+                        embedding=[],
+                        provider="none",
+                        model=storage_model,
+                        storage_model=storage_model,
+                    )
+                    for storage_model in sorted(fallback_storage_models)
+                )
         else:
             settings = get_settings()
             inferred_query_model = _embedding_metadata_value(effective_embedding, "model")
@@ -775,8 +798,6 @@ async def retrieve_memories(
     touch_results: bool = True,
     scored_candidates_out: list[dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
-    if not query_embedding:
-        return []
     if allowed_source_conversation_ids is not None and len(allowed_source_conversation_ids) == 0:
         return []
 
@@ -820,20 +841,22 @@ async def retrieve_memories(
     target_limit = max(1, limit)
     vector_limit = max(INITIAL_VECTOR_CANDIDATES, target_limit)
 
-    vector_candidates = cast(
-        list[dict[str, object]],
-        await store.search_memories(
-            user_id=effective_user_id,
-            query_embedding=query_embedding,
-            limit=vector_limit,
-            include_local=effective_include_local,
-            include_historical=effective_include_historical,
-            memory_slot=normalized_slot,
-            include_dream_observations=include_dream_observations,
-            source_conversation_ids=allowed_source_conversation_ids,
-            embedding_model=effective_embedding_model,
-        ),
-    )
+    vector_candidates: list[dict[str, object]] = []
+    if query_embedding:
+        vector_candidates = cast(
+            list[dict[str, object]],
+            await store.search_memories(
+                user_id=effective_user_id,
+                query_embedding=query_embedding,
+                limit=vector_limit,
+                include_local=effective_include_local,
+                include_historical=effective_include_historical,
+                memory_slot=normalized_slot,
+                include_dream_observations=include_dream_observations,
+                source_conversation_ids=allowed_source_conversation_ids,
+                embedding_model=effective_embedding_model,
+            ),
+        )
 
     bm25_candidates: list[dict[str, object]] = []
     if normalized_query:

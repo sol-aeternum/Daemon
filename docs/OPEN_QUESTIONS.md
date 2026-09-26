@@ -33,17 +33,13 @@
 **Recommendation**: Start always-on. Consider WoL if local usage stays <1%.
 
 ### 3. Fallback Chains
-**Question**: What happens when tier model quota exhausted or provider down?
+**Question**: What happens when premium capacity is exhausted or a provider is down?
 
-**Status**: **OPEN**
-**Context**: No concrete source evidence of general quota/provider fallback behavior.
-
-**Options**:
-- Auto-downgrade to next tier's model
-- Notify user, let them choose
-- Route to local Qwen (if available)
-
-**Recommendation**: Auto-downgrade with subtle indicator. OpenRouter catalog provides multiple fallback options via tier config.
+**Status**: **PRODUCT POLICY RESOLVED; deployment qualification required**
+Use the cheapest capable privacy-qualified route within account budgets, and
+communicate meaningful reductions. Free zero-cost capacity can remain available
+after subsidized compute is consumed. If no qualifying route exists, fail closed.
+See `SUBSCRIPTION_ARCHITECTURE.md`; a model catalog entry is not privacy approval.
 
 ---
 
@@ -54,7 +50,7 @@
 - Per-conversation cost display?
 - Budget alerts?
 - Usage dashboard?
-- **Note**: `/video-credits` exists for video generation, but general LLM cost tracking is not implemented.
+- **Note**: Video credits remain separate. Account compute accounting and launch verification are tracked in `SUBSCRIPTION_ARCHITECTURE.md`; user-facing dollar/token dashboards are not required.
 
 ### 5. Frontend Polish
 **Status**: **OPEN**
@@ -76,7 +72,7 @@
 | Question | Resolution | Source |
 |----------|------------|--------|
 | Memory Promotion Strategy | **RESOLVED**: Extraction pipeline now writes `status="active"`. | `truth_set.md` (Task 2 conflict note) |
-| Model Identity | **RESOLVED**: Abstracted as "Daemon". Underlying models are implementation details managed by the tier system. | `orchestrator/prompts.py`, `orchestrator/config.py` |
+| Model Identity | **RESOLVED**: Abstracted as "Daemon". Routing consumes account policy and independent provider qualification. | `docs/SUBSCRIPTION_ARCHITECTURE.md` |
 | Project name | Daemon | Phase 1 |
 | Frontend choice | Next.js 16 + Vercel AI SDK | Phase 1 |
 | Cloud search | Brave Search API | Phase 1 |
@@ -93,4 +89,4 @@
 | Memory encryption | Fernet at rest | Phase 2 |
 | Embeddings | voyage-4-large (documents) + voyage-4-lite (queries), 1024d vectors | Phase 2 |
 | Chat persistence | Backend PostgreSQL + frontend API integration | Phase 2 |
-| Tier architecture | 5 tiers (free/starter/pro/max/byok), env-var model slots | Phase 2 |
+| Commercial architecture | Free / Pro / Power, independent usage-based premium trial, capabilities and hard compute ceilings | `docs/SUBSCRIPTION_ARCHITECTURE.md` |

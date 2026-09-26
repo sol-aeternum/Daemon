@@ -2,7 +2,7 @@
 
 **Multi-provider LLM orchestration platform with intelligent routing, persistent memory, and subagent architecture.**
 
-Daemon is an orchestration layer that sits between multiple LLM providers and a custom Next.js frontend, adding capabilities that no single provider offers: tiered cross-provider routing with failover, persistent conversational memory via pgvector, specialised subagents for task decomposition, and a typed SSE event surface for real-time streaming.
+Daemon is an orchestration layer that sits between multiple LLM providers and a custom Next.js frontend, adding capabilities that no single provider offers: capability-aware routing, persistent conversational memory via pgvector, specialised subagents for task decomposition, and a typed SSE event surface for real-time streaming.
 
 ## Why This Exists
 
@@ -41,7 +41,7 @@ Commercial LLM products lock you into a single provider, a single model, and the
 
 ### Key Design Decisions
 
-**Tiered multi-provider routing.** LiteLLM abstracts provider differences. The tier system assigns models per pricing level via environment variables — no code changes to swap models. Default tier is Pro; Free tier is rate-limited with no subagents.
+**Account entitlements and bounded compute.** Free, Pro, and Power resolve into capabilities and compute limits, with a separate usage-based premium trial. Privacy qualification is independent of plan and price. See [the migration and architecture guide](docs/SUBSCRIPTION_ARCHITECTURE.md) for provider approval, configuration, and deployment requirements.
 
 **Persistent memory via pgvector.** Conversations are embedded and stored in PostgreSQL with vector similarity search. The memory pipeline uses Voyage AI asymmetric embeddings (`voyage-4-large` for documents, `voyage-4-lite` for queries). See [MEMORY_LAYER.md](MEMORY_LAYER.md).
 
@@ -59,7 +59,7 @@ Daemon/
 │                       #   memory, tools, routes, worker)
 │   ├── main.py         # FastAPI app + OpenAI-compatible + SSE endpoints
 │   ├── daemon.py       # Core orchestration loop (stream_sse_chat)
-│   ├── config.py       # Tier system + env-var model configuration
+│   ├── config.py       # Deployment + workload model configuration
 │   ├── prompts.py      # System prompt (v1)
 │   ├── memory/         # Full memory pipeline (store, extraction, dedup,
 │                       #   retrieval, injection, embedding, encryption)
@@ -116,7 +116,7 @@ Benchmarking runs from the host shell against localhost-exposed container servic
 ### Chat & Routing
 - Native `/chat` endpoint with SSE streaming (typed events)
 - OpenAI-compatible `/v1/chat/completions` and `/v1/models`
-- Tier-based model routing with auto-classification (`fast` vs `reasoning`)
+- Capability-aware model routing with task classification (`fast` vs `reasoning`)
 - Per-request model override
 
 ### Memory

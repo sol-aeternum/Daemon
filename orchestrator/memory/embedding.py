@@ -240,6 +240,9 @@ async def _post_embeddings(
     input_type: str,
     output_dimension: int,
 ) -> dict[str, Any]:
+    # Voyage has no approved, bounded-cost private-data route in the current
+    # inference policy. Keep lexical/non-embedding memory functionality local.
+    raise EmbeddingConfigurationError("Approved embedding route unavailable")
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
             "https://api.voyageai.com/v1/embeddings",
@@ -265,6 +268,7 @@ async def _post_openai_embeddings(
     model: str,
     output_dimension: int,
 ) -> dict[str, Any]:
+    raise EmbeddingConfigurationError("Approved embedding route unavailable")
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
             "https://api.openai.com/v1/embeddings",
@@ -290,6 +294,7 @@ async def _post_openrouter_embeddings(
     input_type: str,
     output_dimension: int,
 ) -> dict[str, Any]:
+    raise EmbeddingConfigurationError("Approved embedding route unavailable")
     settings = get_settings()
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -375,6 +380,8 @@ async def _embed_with_voyage_retry(
                 texts_count=len(texts),
                 output_dimension=output_dimension,
             )
+        except EmbeddingConfigurationError:
+            raise
         except Exception as error:
             last_error = error
             if attempt < MAX_RETRIES - 1:
@@ -419,6 +426,8 @@ async def _embed_with_openai_retry(
                 texts_count=len(texts),
                 output_dimension=output_dimension,
             )
+        except EmbeddingConfigurationError:
+            raise
         except Exception as error:
             last_error = error
             if attempt < MAX_RETRIES - 1:
@@ -465,6 +474,8 @@ async def _embed_with_openrouter_retry(
                 texts_count=len(texts),
                 output_dimension=output_dimension,
             )
+        except EmbeddingConfigurationError:
+            raise
         except Exception as error:
             last_error = error
             if attempt < MAX_RETRIES - 1:
@@ -532,6 +543,8 @@ async def _embed_texts(
                 model=model,
                 storage_model=model,
             )
+        except EmbeddingConfigurationError:
+            raise
         except Exception as error:
             _record_provider_failure("voyage")
             logger.warning("Voyage embedding provider failed; trying fallback", exc_info=True)
@@ -553,6 +566,8 @@ async def _embed_texts(
                     valid_texts,
                     input_type=input_type,
                 )
+        except EmbeddingConfigurationError:
+            raise
         except Exception as error:
             last_error = error
             provider_errors.append(f"{provider}: {error}")

@@ -7,7 +7,7 @@ import random
 import uuid
 from typing import Any
 
-import litellm
+from orchestrator.compute_runtime import guarded_completion
 
 from orchestrator.council.models import (
     CouncilConfig,
@@ -23,23 +23,18 @@ from orchestrator.council.config import (
 )
 from orchestrator.council import prompts as council_prompts
 from orchestrator.council.tools import council_completion_with_tools
-from orchestrator.config import get_settings
-from orchestrator.tools.builtin import create_council_readonly_registry
+
+from orchestrator.tools.builtin import create_advisor_registry
+
 from orchestrator.tools.executor import ToolExecutor
 
 
-_council_tool_registry = None
-_council_tool_executor = None
-
-
 def _get_council_tools():
-    global _council_tool_registry, _council_tool_executor
-    if _council_tool_registry is None:
-        _council_tool_registry = create_council_readonly_registry(
-            brave_api_key=get_settings().brave_api_key,
-        )
-        _council_tool_executor = ToolExecutor(_council_tool_registry)
-    return _council_tool_registry.list_schemas(), _council_tool_executor
+
+    # A fresh, purely local tool registry for each deliberation. No singleton
+    # can retain another account's memory, credentials or stateful tools.
+    registry = create_advisor_registry()
+    return registry.list_schemas(), ToolExecutor(registry)
 
 
 def generate_agent_ids(roster: dict[str, str]) -> dict[str, str]:
@@ -271,7 +266,7 @@ async def _call_model(
 
     try:
         response = await asyncio.wait_for(
-            litellm.acompletion(**params),
+            guarded_completion(**params),
             timeout=timeout_s + 5,
         )
     except Exception as exc:
@@ -281,7 +276,7 @@ async def _call_model(
             fallback_params.pop("include_reasoning", None)
             try:
                 response = await asyncio.wait_for(
-                    litellm.acompletion(**fallback_params),
+                    guarded_completion(**fallback_params),
                     timeout=timeout_s + 5,
                 )
             except asyncio.TimeoutError:

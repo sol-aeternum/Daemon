@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 import hashlib
 from pathlib import Path
-from typing import Any
 import uuid
 
 import pytest
@@ -19,7 +18,6 @@ from orchestrator.artifacts import (
     write_owned_artifact,
 )
 from orchestrator.auth import AuthenticatedDevice, require_device_auth
-from orchestrator.config import get_settings
 from orchestrator.main import app
 from orchestrator.tools.builtin import create_default_registry
 
@@ -148,168 +146,66 @@ def test_default_tool_registry_propagates_authenticated_owner() -> None:
         assert getattr(tool, "_user_id") == USER_A
 
 
-class _FakeAudioResponse:
-    status_code = 200
-    text = ""
-
-    def __init__(self, content: bytes) -> None:
-        self.content = content
-
-
 @pytest.mark.asyncio
-async def test_tts_cache_isolated_per_user(
+async def test_cached_tts_is_denied_even_to_its_owner(
     artifact_roots: dict[str, Path],
     switching_owner_client: tuple[AsyncClient, dict[str, uuid.UUID]],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, current_owner = switching_owner_client
-    provider_calls: list[str] = []
-
-    class FakeAsyncClient:
-        def __init__(self, **_kwargs: Any) -> None:
-            pass
-
-        async def __aenter__(self) -> FakeAsyncClient:
-            return self
-
-        async def __aexit__(self, *_args: Any) -> None:
-            pass
-
-        async def post(self, url: str, **_kwargs: Any) -> _FakeAudioResponse:
-            provider_calls.append(url)
-            return _FakeAudioResponse(f"tts-{len(provider_calls)}".encode())
-
-    monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
-    monkeypatch.setattr(main_module.httpx, "AsyncClient", FakeAsyncClient)
-    settings = get_settings()
-
-    async def override_settings():
-        return settings
-
-    app.dependency_overrides[main_module.get_settings] = override_settings
-    try:
-        current_owner["user_id"] = USER_A
-        first = await client.post("/tts", json={"text": "same text"})
-        cached = await client.post("/tts", json={"text": "same text"})
-        current_owner["user_id"] = USER_B
-        second_owner = await client.post("/tts", json={"text": "same text"})
-    finally:
-        app.dependency_overrides.pop(main_module.get_settings, None)
-
-    assert first.status_code == 200
-    assert first.json()["cached"] is False
-    assert cached.status_code == 200
-    assert cached.json()["cached"] is True
-    assert second_owner.status_code == 200
-    assert second_owner.json()["cached"] is False
-    assert len(provider_calls) == 2
-
-    filename = first.json()["audio_path"].rsplit("/", maxsplit=1)[-1]
-    assert second_owner.json()["audio_path"].endswith(filename)
-    user_a_file = (
-        user_artifact_directory(artifact_roots["TTS_CACHE_DIR"], USER_A, create=False) / filename
+    text = "same text"
+    cache_key = hashlib.sha256(
+        f"eleven_flash_v2_5|Xb7hH8MSUJpSbSDYk0k2|1.0|mp3|{text}".encode()
+    ).hexdigest()
+    filename = f"{cache_key}.mp3"
+    owner_file = (
+        user_artifact_directory(artifact_roots["TTS_CACHE_DIR"], USER_A, create=True) / filename
     )
-    user_b_file = (
-        user_artifact_directory(artifact_roots["TTS_CACHE_DIR"], USER_B, create=False) / filename
-    )
-    assert user_a_file.read_bytes() == b"tts-1"
-    assert user_b_file.read_bytes() == b"tts-2"
+    owner_file.write_bytes(b"legacy cached audio")
+
+    for owner in (USER_A, USER_B):
+        current_owner["user_id"] = owner
+        response = await client.post("/tts", json={"text": text})
+        assert response.status_code == 503
+        assert response.json()["detail"]["code"] == "route_unavailable"
+    assert owner_file.read_bytes() == b"legacy cached audio"
+    assert list(artifact_roots["TTS_CACHE_DIR"].iterdir()) == [owner_file.parent]
 
 
 @pytest.mark.asyncio
-async def test_sound_effect_cache_isolated_per_user(
+async def test_sound_effects_denied_for_both_owners_without_cache_write(
     artifact_roots: dict[str, Path],
     switching_owner_client: tuple[AsyncClient, dict[str, uuid.UUID]],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _ = artifact_roots
     client, current_owner = switching_owner_client
-    provider_calls = 0
-
-    class FakeAsyncClient:
-        def __init__(self, **_kwargs: Any) -> None:
-            pass
-
-        async def __aenter__(self) -> FakeAsyncClient:
-            return self
-
-        async def __aexit__(self, *_args: Any) -> None:
-            pass
-
-        async def post(self, _url: str, **_kwargs: Any) -> _FakeAudioResponse:
-            nonlocal provider_calls
-            provider_calls += 1
-            return _FakeAudioResponse(f"sfx-{provider_calls}".encode())
-
-    monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
-    monkeypatch.setattr(main_module.httpx, "AsyncClient", FakeAsyncClient)
-
-    current_owner["user_id"] = USER_A
-    first = await client.post(
-        "/sound-effects",
-        data={"text": "same effect", "duration_seconds": "2"},
-    )
-    cached = await client.post(
-        "/sound-effects",
-        data={"text": "same effect", "duration_seconds": "2"},
-    )
-    current_owner["user_id"] = USER_B
-    second_owner = await client.post(
-        "/sound-effects",
-        data={"text": "same effect", "duration_seconds": "2"},
-    )
-
-    assert first.status_code == 200
-    assert first.content == b"sfx-1"
-    assert cached.status_code == 200
-    assert cached.content == b"sfx-1"
-    assert second_owner.status_code == 200
-    assert second_owner.content == b"sfx-2"
-    assert provider_calls == 2
+    for owner in (USER_A, USER_B):
+        current_owner["user_id"] = owner
+        response = await client.post(
+            "/sound-effects", data={"text": "same effect", "duration_seconds": "2"}
+        )
+        assert response.status_code == 503
+        assert response.json()["detail"]["code"] == "route_unavailable"
+    assert not artifact_roots["TTS_CACHE_DIR"].exists()
 
 
 @pytest.mark.asyncio
-async def test_sound_effect_cache_write_replaces_symlink_without_following_it(
+async def test_sound_effect_denial_does_not_follow_cached_symlink(
     artifact_roots: dict[str, Path],
     switching_owner_client: tuple[AsyncClient, dict[str, uuid.UUID]],
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     client, current_owner = switching_owner_client
-
-    class FakeAsyncClient:
-        def __init__(self, **_kwargs: Any) -> None:
-            pass
-
-        async def __aenter__(self) -> FakeAsyncClient:
-            return self
-
-        async def __aexit__(self, *_args: Any) -> None:
-            pass
-
-        async def post(self, _url: str, **_kwargs: Any) -> _FakeAudioResponse:
-            return _FakeAudioResponse(b"safe-audio")
-
     text = "symlink-safe effect"
-    duration = 2.0
-    cache_key = hashlib.sha256(f"{text}|{duration}".encode()).hexdigest()
+    cache_key = hashlib.sha256(f"{text}|2.0".encode()).hexdigest()
     filename = f"{cache_key}.mp3"
     owner_dir = user_artifact_directory(artifact_roots["TTS_CACHE_DIR"], USER_A, create=True)
     outside_file = tmp_path / "outside-audio.mp3"
     outside_file.write_bytes(b"do-not-overwrite")
     (owner_dir / filename).symlink_to(outside_file)
-
-    monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
-    monkeypatch.setattr(main_module.httpx, "AsyncClient", FakeAsyncClient)
     current_owner["user_id"] = USER_A
 
-    response = await client.post(
-        "/sound-effects",
-        data={"text": text, "duration_seconds": str(duration)},
-    )
+    response = await client.post("/sound-effects", data={"text": text, "duration_seconds": "2.0"})
 
-    assert response.status_code == 200
-    assert response.content == b"safe-audio"
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "route_unavailable"
     assert outside_file.read_bytes() == b"do-not-overwrite"
-    assert not (owner_dir / filename).is_symlink()
-    assert (owner_dir / filename).read_bytes() == b"safe-audio"
+    assert (owner_dir / filename).is_symlink()

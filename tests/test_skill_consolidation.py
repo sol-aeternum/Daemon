@@ -9,6 +9,7 @@ import pytest
 
 from orchestrator.config import Settings
 from orchestrator.memory.store import MemoryStore
+from tests.qualified_compute import install_qualified_compute
 from orchestrator.worker.jobs import (
     ConsolidationNudgeAction,
     ConsolidationNudgeResults,
@@ -561,8 +562,9 @@ class TestApplyDeleteAction:
 
 class TestModelDrivenConsolidationFlow:
     @pytest.mark.asyncio
-    async def test_model_called_with_prompt(self) -> None:
+    async def test_model_called_with_prompt(self, monkeypatch: pytest.MonkeyPatch) -> None:
         user_id = uuid.uuid4()
+        install_qualified_compute(monkeypatch)
 
         class FakeMemoryStore(MemoryStore):
             def __init__(self) -> None:
@@ -618,10 +620,12 @@ class TestModelDrivenConsolidationFlow:
         ctx: dict[str, object] = {
             "store": FakeMemoryStore(),
             "settings": test_settings,
-            "db_pool": None,
+            "db_pool": object(),
         }
 
-        with patch("litellm.acompletion", AsyncMock(return_value=mock_response)):
+        with patch(
+            "orchestrator.worker.jobs.guarded_completion", AsyncMock(return_value=mock_response)
+        ):
             result = await run_consolidation_nudge_job(ctx, str(user_id))
 
             assert result["status"] == "ok"

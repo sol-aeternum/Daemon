@@ -20,9 +20,7 @@ DURATION_30S = 30
 
 
 class VideoPricingConfig(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=".env", env_prefix="VIDEO_", extra="ignore"
-    )
+    model_config = SettingsConfigDict(env_file=".env", env_prefix="VIDEO_", extra="ignore")
 
     credits_per_second: int = 1
     cost_5s: int = 5
@@ -30,10 +28,6 @@ class VideoPricingConfig(BaseSettings):
     cost_15s: int = 15
     cost_20s: int = 20
     cost_30s: int = 30
-
-    tier_pro_discount: float = 1.0
-    tier_max_discount: float = 0.8
-    tier_byok_discount: float = 0.0
 
 
 _pricing_config: VideoPricingConfig | None = None
@@ -57,7 +51,6 @@ DURATION_COSTS: dict[int, int] = {
 
 def estimate_cost(
     duration_seconds: int,
-    tier: str = "pro",
     provider: str = "xai",
     resolution: str | None = None,
     kling_model: str = "o3-pro",
@@ -67,7 +60,6 @@ def estimate_cost(
 
     Args:
         duration_seconds: Video duration in seconds
-        tier: User tier (free, starter, pro, max, byok)
         provider: Video provider (xai, fal)
         resolution: Optional resolution parameter
         kling_model: Kling model type (o3-pro, v3-pro) for fal provider
@@ -109,29 +101,4 @@ def estimate_cost(
         else:
             base_cost = duration_seconds * config.credits_per_second
 
-    # Apply tier discount
-    tier_name = tier.lower()
-    if tier_name == "pro":
-        discount = config.tier_pro_discount
-    elif tier_name == "max":
-        discount = config.tier_max_discount
-    elif tier_name == "byok":
-        discount = config.tier_byok_discount
-    else:
-        discount = config.tier_pro_discount
-
-    return int(base_cost * discount)
-
-
-def get_tier_discount(tier: str) -> float:
-    config = get_pricing_config()
-    tier_name = tier.lower()
-
-    if tier_name == "pro":
-        return config.tier_pro_discount
-    elif tier_name == "max":
-        return config.tier_max_discount
-    elif tier_name == "byok":
-        return config.tier_byok_discount
-
-    return config.tier_pro_discount
+    return base_cost

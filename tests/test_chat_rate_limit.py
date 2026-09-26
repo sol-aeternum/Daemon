@@ -24,6 +24,7 @@ from orchestrator.config import get_settings
 from orchestrator.db import AppState, get_app_state
 from orchestrator.main import app
 from tests.test_identity_rate_limiter import FakeRedis
+from tests.qualified_compute import install_qualified_compute
 
 
 # Two distinct fixtures so per-user isolation is observable in tests:
@@ -45,13 +46,13 @@ def _make_chat_payload() -> dict[str, Any]:
     return {
         "message": "hello",
         "provider": "openrouter",
-        "model": "openai/gpt-4o-mini",
+        "model": "openrouter/google/gemini-2.5-flash",
     }
 
 
 def _make_openai_payload() -> dict[str, Any]:
     return {
-        "model": "openai/gpt-4o-mini",
+        "model": "openrouter/google/gemini-2.5-flash",
         "messages": [{"role": "user", "content": "hello"}],
         "stream": False,
     }
@@ -76,6 +77,8 @@ async def chat_client(monkeypatch):
     settings = get_settings()
     fake_redis = FakeRedis()
     app_state = AppState(settings=settings, redis=fake_redis)  # type: ignore[arg-type]
+    app_state.db_pool = object()  # type: ignore[assignment]
+    install_qualified_compute(monkeypatch)
 
     async def override_settings():
         return get_settings()

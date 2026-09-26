@@ -1,16 +1,36 @@
 from __future__ import annotations
 
+from orchestrator.compute_runtime import guarded_completion
+from orchestrator.compute_runtime import ComputeUnavailable
+from orchestrator.entitlements.errors import EntitlementsError
+
 import json
+import logging
+from contextlib import asynccontextmanager
+
 import re
+
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any, AsyncIterator, cast
 
-import litellm
 
 from orchestrator.config import ProviderConfig, Settings
 from orchestrator.guardrails import strip_reasoning_fields_from_message
 from orchestrator.tools.registry import ToolRegistry
 from orchestrator.tools.executor import ToolExecutor
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _closing_stream(stream: AsyncIterator[Any]) -> AsyncIterator[AsyncIterator[Any]]:
+    try:
+        yield stream
+    finally:
+        close = getattr(stream, "aclose", None)
+        if callable(close):
+            await cast(Callable[[], Awaitable[None]], close)()
 
 
 # Tool results reach the LLM as plain text. Adversarial tool outputs (web pages,
@@ -377,87 +397,93 @@ async def completion_with_tools(
         content_buffer: list[str] = []
 
         try:
-            response_stream = await litellm.acompletion(**call_params)
+            response_stream = await guarded_completion(**call_params)
             stream_iter = cast(AsyncIterator[Any], response_stream)
 
-            async for chunk in stream_iter:
-                choices = getattr(chunk, "choices", None) or chunk.get("choices", [])
-                if not choices:
-                    continue
+            async with _closing_stream(stream_iter):
+                async for chunk in stream_iter:
+                    choices = getattr(chunk, "choices", None) or chunk.get("choices", [])
+                    if not choices:
+                        continue
 
-                delta = getattr(choices[0], "delta", None) or choices[0].get("delta", {})
-                if not delta:
-                    continue
+                    delta = getattr(choices[0], "delta", None) or choices[0].get("delta", {})
+                    if not delta:
+                        continue
 
-                # 1. Handle Thinking/Reasoning (if present)
-                # Some providers emit `reasoning_content` / `thinking`, others stream `reasoning_details`.
-                reasoning = (
-                    getattr(delta, "reasoning_content", None)
-                    or (delta.get("reasoning_content") if isinstance(delta, dict) else None)
-                    or getattr(delta, "thinking", None)
-                    or (delta.get("thinking") if isinstance(delta, dict) else None)
-                )
-                if not reasoning:
-                    reasoning_details = getattr(delta, "reasoning_details", None) or (
-                        delta.get("reasoning_details") if isinstance(delta, dict) else None
+                    # 1. Handle Thinking/Reasoning (if present)
+                    # Some providers emit `reasoning_content` / `thinking`, others stream `reasoning_details`.
+                    reasoning = (
+                        getattr(delta, "reasoning_content", None)
+                        or (delta.get("reasoning_content") if isinstance(delta, dict) else None)
+                        or getattr(delta, "thinking", None)
+                        or (delta.get("thinking") if isinstance(delta, dict) else None)
                     )
-                    reasoning = _reasoning_text_from_details(reasoning_details)
-
-                if reasoning:
-                    yield {
-                        "type": "thinking",
-                        "content": reasoning,
-                        "id": str(uuid.uuid4()),
-                    }
-
-                # 2. Handle Content
-                content_chunk = getattr(delta, "content", None) or delta.get("content")
-                if content_chunk:
-                    content_buffer.append(content_chunk)
-                    # Yield incremental delta for real-time streaming
-                    yield {
-                        "type": "content_delta",
-                        "content": content_chunk,
-                        "id": str(uuid.uuid4()),
-                    }
-
-                # 3. Handle Tool Calls
-                tool_calls_chunk = getattr(delta, "tool_calls", None) or delta.get("tool_calls")
-                if tool_calls_chunk:
-                    for tc in tool_calls_chunk:
-                        idx = (
-                            getattr(tc, "index", 0) if hasattr(tc, "index") else tc.get("index", 0)
+                    if not reasoning:
+                        reasoning_details = getattr(delta, "reasoning_details", None) or (
+                            delta.get("reasoning_details") if isinstance(delta, dict) else None
                         )
+                        reasoning = _reasoning_text_from_details(reasoning_details)
 
-                        if idx not in tool_calls_buffer:
-                            tc_id = getattr(tc, "id", None) or tc.get("id", "")
-                            tool_calls_buffer[idx] = {
-                                "id": tc_id,
-                                "type": "function",
-                                "function": {"name": "", "arguments": ""},
-                            }
+                    if reasoning:
+                        yield {
+                            "type": "thinking",
+                            "content": reasoning,
+                            "id": str(uuid.uuid4()),
+                        }
 
-                        func = getattr(tc, "function", None) or tc.get("function", {})
-                        func_name = getattr(func, "name", None) or func.get("name")
-                        func_args = getattr(func, "arguments", None) or func.get("arguments")
+                    # 2. Handle Content
+                    content_chunk = getattr(delta, "content", None) or delta.get("content")
+                    if content_chunk:
+                        content_buffer.append(content_chunk)
+                        # Yield incremental delta for real-time streaming
+                        yield {
+                            "type": "content_delta",
+                            "content": content_chunk,
+                            "id": str(uuid.uuid4()),
+                        }
 
-                        if func_name:
-                            tool_calls_buffer[idx]["function"]["name"] = func_name
-                        if func_args:
-                            tool_calls_buffer[idx]["function"]["arguments"] += func_args
+                    # 3. Handle Tool Calls
+                    tool_calls_chunk = getattr(delta, "tool_calls", None) or delta.get("tool_calls")
+                    if tool_calls_chunk:
+                        for tc in tool_calls_chunk:
+                            idx = (
+                                getattr(tc, "index", 0)
+                                if hasattr(tc, "index")
+                                else tc.get("index", 0)
+                            )
 
+                            if idx not in tool_calls_buffer:
+                                tc_id = getattr(tc, "id", None) or tc.get("id", "")
+                                tool_calls_buffer[idx] = {
+                                    "id": tc_id,
+                                    "type": "function",
+                                    "function": {"name": "", "arguments": ""},
+                                }
+
+                            func = getattr(tc, "function", None) or tc.get("function", {})
+                            func_name = getattr(func, "name", None) or func.get("name")
+                            func_args = getattr(func, "arguments", None) or func.get("arguments")
+
+                            if func_name:
+                                tool_calls_buffer[idx]["function"]["name"] = func_name
+                            if func_args:
+                                tool_calls_buffer[idx]["function"]["arguments"] += func_args
+
+        except (ComputeUnavailable, EntitlementsError):
+            raise
         except Exception as e:
+            logger.warning("Streaming completion failed", exc_info=True)
             # Fallback for errors (including tool unsupported errors in streaming mode)
             if native_tools_enabled and _looks_like_tools_unsupported_error(e):
                 # ... (Fallback logic would be complex to stream, let's keep it simple for now and yield error)
                 yield {
                     "type": "error",
-                    "error": f"Streaming tool error: {str(e)}",
+                    "error": "Streaming tool unavailable",
                     "id": str(uuid.uuid4()),
                 }
                 return
             else:
-                yield {"type": "error", "error": str(e), "id": str(uuid.uuid4())}
+                yield {"type": "error", "error": "Request failed", "id": str(uuid.uuid4())}
                 return
 
         # End of stream for this round
@@ -685,48 +711,51 @@ async def completion_with_tools(
             stream=True,
         )
 
-        synthesis_stream = await litellm.acompletion(**synthesis_params)
+        synthesis_stream = await guarded_completion(**synthesis_params)
         synthesis_iter = cast(AsyncIterator[Any], synthesis_stream)
 
-        async for chunk in synthesis_iter:
-            choices = getattr(chunk, "choices", None) or chunk.get("choices", [])
-            if not choices:
-                continue
+        async with _closing_stream(synthesis_iter):
+            async for chunk in synthesis_iter:
+                choices = getattr(chunk, "choices", None) or chunk.get("choices", [])
+                if not choices:
+                    continue
 
-            delta = getattr(choices[0], "delta", None) or choices[0].get("delta", {})
-            if not delta:
-                continue
+                delta = getattr(choices[0], "delta", None) or choices[0].get("delta", {})
+                if not delta:
+                    continue
 
-            reasoning = (
-                getattr(delta, "reasoning_content", None)
-                or (delta.get("reasoning_content") if isinstance(delta, dict) else None)
-                or getattr(delta, "thinking", None)
-                or (delta.get("thinking") if isinstance(delta, dict) else None)
-            )
-            if not reasoning:
-                reasoning_details = getattr(delta, "reasoning_details", None) or (
-                    delta.get("reasoning_details") if isinstance(delta, dict) else None
+                reasoning = (
+                    getattr(delta, "reasoning_content", None)
+                    or (delta.get("reasoning_content") if isinstance(delta, dict) else None)
+                    or getattr(delta, "thinking", None)
+                    or (delta.get("thinking") if isinstance(delta, dict) else None)
                 )
-                reasoning = _reasoning_text_from_details(reasoning_details)
+                if not reasoning:
+                    reasoning_details = getattr(delta, "reasoning_details", None) or (
+                        delta.get("reasoning_details") if isinstance(delta, dict) else None
+                    )
+                    reasoning = _reasoning_text_from_details(reasoning_details)
 
-            if reasoning:
-                yield {
-                    "type": "thinking",
-                    "content": reasoning,
-                    "id": str(uuid.uuid4()),
-                }
+                if reasoning:
+                    yield {
+                        "type": "thinking",
+                        "content": reasoning,
+                        "id": str(uuid.uuid4()),
+                    }
 
-            content_chunk = getattr(delta, "content", None) or (
-                delta.get("content") if isinstance(delta, dict) else None
-            )
-            if content_chunk:
-                synthesis_content_buffer.append(content_chunk)
-                yield {
-                    "type": "content_delta",
-                    "content": content_chunk,
-                    "id": str(uuid.uuid4()),
-                }
+                content_chunk = getattr(delta, "content", None) or (
+                    delta.get("content") if isinstance(delta, dict) else None
+                )
+                if content_chunk:
+                    synthesis_content_buffer.append(content_chunk)
+                    yield {
+                        "type": "content_delta",
+                        "content": content_chunk,
+                        "id": str(uuid.uuid4()),
+                    }
 
+    except (ComputeUnavailable, EntitlementsError):
+        raise
     except Exception as e:
         fallback_message = (
             "I completed the tool runs, but I hit a synthesis error while preparing "

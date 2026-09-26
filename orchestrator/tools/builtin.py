@@ -7,7 +7,6 @@ from typing import Any, TypeAlias
 from zoneinfo import ZoneInfo
 
 from orchestrator.tools.registry import Tool
-from orchestrator.tools.web_search import WebSearchTool
 from orchestrator.tools.web_fetch import WebFetchTool
 
 
@@ -255,7 +254,8 @@ def create_default_registry(
     registry = ToolRegistry()
     registry.register(GetTimeTool())
     registry.register(CalculateTool())
-    registry.register(WebSearchTool(api_key=brave_api_key))
+    # Brave's per-query spend is not priced in the account reservation ledger.
+    # Do not expose an unbounded paid tool to model-generated tool calls.
     registry.register(WebFetchTool())
     registry.register(HttpRequestTool())
     registry.register(NotificationSendTool())
@@ -305,7 +305,7 @@ def create_council_readonly_registry(brave_api_key: str | None = None):
     registry = ToolRegistry()
     registry.register(GetTimeTool())
     registry.register(CalculateTool())
-    registry.register(WebSearchTool(api_key=brave_api_key))
+    # Web search is metered and unavailable without a reserved cost.
     registry.register(WebFetchTool())
     return registry
 

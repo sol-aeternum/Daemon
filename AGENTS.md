@@ -53,7 +53,7 @@ No task is complete until it passes the project's automated gates. Run them befo
 orchestrator/           # FastAPI backend
   main.py               # Routes, SSE streaming, chat endpoint
   daemon.py             # Core orchestration loop (stream_sse_chat)
-  config.py             # Tier system, env-var model slots
+  config.py             # Deployment and workload model configuration
   prompts.py            # System prompt (v1)
   memory/               # Full memory pipeline
     store.py            # PostgreSQL CRUD (973 lines)
@@ -81,7 +81,7 @@ migrations/             # PostgreSQL migrations
 - Backend uses `asyncpg` directly — no ORM. Raw SQL in store.py.
 - All message/memory content encrypted at rest via Fernet. Embeddings are plaintext for pgvector.
 - SSE events are typed: token, thinking, routing, tool_call, tool_result, final, error, done.
-- Tier model assignments are env-var configurable. Don't hardcode model strings in logic.
+- Commercial plans resolve centrally into entitlements and compute budgets. Provider qualification is independent of plans; see `docs/SUBSCRIPTION_ARCHITECTURE.md`. Don't hardcode model strings or plan checks in execution logic.
 - Frontend uses `useChat` from Vercel AI SDK — ErrorBoundary wraps ChatContent for crash recovery.
  - Backend tests use pytest + pytest-asyncio; frontend tests use Vitest and Playwright.
  - **Test suite is growing** (pytest + pytest-asyncio backend; Playwright planned for frontend). New backend code ships with tests; new frontend behaviour ships with at least a smoke test.
@@ -139,7 +139,7 @@ Local gate runner and PR wrapper live in `scripts/`:
 ## What NOT to Do
 - Don't add Open WebUI references — it's being removed
 - Don't reference OpenCode Zen provider — legacy, being removed
-- Don't use `gpt-4o` as a default anywhere — backend uses tier-based auto-routing
+- Don't use `gpt-4o` as a default anywhere — backend uses privacy-qualified, capability-aware routing
 - Don't put secrets in code or docs — everything goes through env vars; commit `.env.example` only, never `.env`. gitleaks runs in pre-commit and CI.
 - Don't create new Docker services without discussing architecture impact
 - **Don't weaken a gate to make CI pass.** If strictness surfaces debt that blocks you, surface it for a decision — do not loosen `ruff`/`mypy`/`tsconfig` config silently.

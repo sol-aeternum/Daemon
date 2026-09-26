@@ -13,14 +13,13 @@ The test asserts:
 3. POST `/tts` with an invalid `format` returns 422 and writes no file
    to TTS_CACHE_DIR (verified by listing the directory before/after).
 4. Generated-file resolution stays inside its configured base directory.
-5. Supported formats are sent through ElevenLabs' documented query parameter.
+5. Supported formats remain denied without a bounded adapter and write no cache file.
 """
 
 from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -152,48 +151,16 @@ async def test_tts_endpoint_rejects_invalid_format(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("requested_format", "expected_provider_format"),
-    [
-        (None, "mp3_22050_32"),
-        ("mp3", "mp3_22050_32"),
-        ("opus", "opus_48000_32"),
-        ("wav", "wav_22050"),
-    ],
-)
-async def test_tts_endpoint_maps_supported_formats(
+@pytest.mark.parametrize("requested_format", (None, "mp3", "opus", "wav"))
+async def test_tts_endpoint_denies_supported_formats_without_writing_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     requested_format: str | None,
-    expected_provider_format: str,
 ) -> None:
-    """Supported client formats map to ElevenLabs' output-format query parameter."""
+    """Supported format and cache flags do not authorize unpriced TTS execution."""
     cache_dir = tmp_path / "tts_cache"
     cache_dir.mkdir()
     monkeypatch.setattr("orchestrator.main.TTS_CACHE_DIR", cache_dir)
-    monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
-    posted_json: dict[str, Any] = {}
-    posted_params: dict[str, Any] = {}
-
-    class FakeResponse:
-        status_code = 200
-        content = b"audio-data"
-        text = ""
-
-    class FakeAsyncClient:
-        def __init__(self, **_kwargs: Any) -> None:
-            pass
-
-        async def __aenter__(self) -> FakeAsyncClient:
-            return self
-
-        async def __aexit__(self, *_args: Any) -> None:
-            pass
-
-        async def post(self, _url: str, **kwargs: Any) -> FakeResponse:
-            posted_json.update(kwargs["json"])
-            posted_params.update(kwargs["params"])
-            return FakeResponse()
 
     async def override_auth() -> AuthenticatedDevice:
         return AuthenticatedDevice(
@@ -202,31 +169,19 @@ async def test_tts_endpoint_maps_supported_formats(
             session_id=uuid.UUID("00000000-0000-0000-0000-000000000003"),
         )
 
-    settings = get_settings()
-
-    async def override_settings():
-        return settings
-
-    monkeypatch.setattr("orchestrator.main.httpx.AsyncClient", FakeAsyncClient)
     app.dependency_overrides[require_device_auth] = override_auth
-    app.dependency_overrides[get_settings] = override_settings
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            request_json: dict[str, Any] = {"text": "hello", "cache": False}
+            request_json: dict[str, object] = {"text": "hello", "cache": False}
             if requested_format is not None:
                 request_json["format"] = requested_format
             response = await client.post("/tts", json=request_json)
-        expected_extension = requested_format or "mp3"
-        assert response.status_code == 200, response.text
-        assert posted_params["output_format"] == expected_provider_format
-        assert "output_format" not in posted_json
-        assert response.json()["audio_path"].endswith(f".{expected_extension}")
-        owner_dir = user_artifact_directory(cache_dir, TEST_USER_ID, create=False)
-        assert next(owner_dir.glob(f"*.{expected_extension}")).read_bytes() == b"audio-data"
+        assert response.status_code == 503, response.text
+        assert response.json()["detail"]["code"] == "route_unavailable"
+        assert not list(cache_dir.iterdir())
     finally:
         app.dependency_overrides.pop(require_device_auth, None)
-        app.dependency_overrides.pop(get_settings, None)
 
 
 def test_tts_request_validation_error_payload_is_shape_only() -> None:

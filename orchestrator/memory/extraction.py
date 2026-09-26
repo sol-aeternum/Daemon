@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from orchestrator.compute_runtime import guarded_completion
+
 import json
 import logging
 import re
@@ -11,14 +13,13 @@ logger = logging.getLogger(__name__)
 from dataclasses import dataclass  # noqa: E402
 from typing import Any  # noqa: E402
 
-import litellm  # noqa: E402
 
 from orchestrator.config import get_settings  # noqa: E402
 from orchestrator.memory.store import MemoryStore  # noqa: E402
 
 
 def _get_provider_call_params(model: str) -> dict[str, Any]:
-    """Get provider configuration for litellm.acompletion call.
+    """Get provider configuration for guarded_completion call.
 
     Returns call parameters including api_base, api_key, extra_headers.
     """
@@ -52,6 +53,7 @@ EXTRACTION_TOP_P = 1.0
 EXTRACTION_MAX_TOKENS = 2000
 BENCHMARK_SEED = 42
 BENCHMARK_EXTRACTION_MODEL = "openrouter/openai/gpt-4o-mini-2024-07-18"
+# Historical benchmark scripts assign this name; it is not transport authority.
 BENCHMARK_EXTRACTION_ENDPOINT_SLUG = BENCHMARK_EXTRACTION_MODEL
 BENCHMARK_MODE = False
 HEDGE_OVERRIDE_CONFIDENCE = 0.65
@@ -443,7 +445,7 @@ def validate_fact(fact: ExtractedFact) -> bool:
 
 async def extract_facts_from_text(
     text: str,
-    model: str = "openrouter/openai/gpt-4o-mini",
+    model: str = "auto",
     *,
     summary: str | None = None,
     retry_hint: str | None = None,
@@ -487,15 +489,9 @@ async def extract_facts_from_text(
         if is_benchmark:
             call_params["temperature"] = 0.0
             call_params["seed"] = BENCHMARK_SEED
-            call_params["extra_body"] = {
-                "provider": {
-                    "order": [BENCHMARK_EXTRACTION_ENDPOINT_SLUG],
-                    "allow_fallbacks": False,
-                }
-            }
 
         try:
-            response = await litellm.acompletion(**call_params)
+            response = await guarded_completion(**call_params)
         except Exception as exc:
             if is_benchmark:
                 raise BenchmarkProviderError(
@@ -682,7 +678,7 @@ async def process_extraction(
     if conversation:
         summary = conversation.get("summary")
 
-    model = "openrouter/openai/gpt-4o-mini"
+    model = "auto"
     outcome = await extract_facts_from_text(text, model=model, summary=summary)
     retry_used = False
 

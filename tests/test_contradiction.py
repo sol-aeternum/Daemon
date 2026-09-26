@@ -7,7 +7,7 @@ import asyncpg
 import pytest
 
 from orchestrator.memory.dedup import check_contradiction, deduplicate_facts
-from orchestrator.memory.embedding import EmbeddingBatchResult
+from orchestrator.memory.embedding import EmbeddingBatchResult, EmbeddingConfigurationError
 from orchestrator.memory.extraction import ExtractedFact
 
 
@@ -48,7 +48,7 @@ def _mock_trust_signal():
 
 @pytest.mark.asyncio
 async def test_check_contradiction_yes() -> None:
-    with patch("orchestrator.memory.dedup.litellm.acompletion") as mock:
+    with patch("orchestrator.memory.dedup.guarded_completion") as mock:
         mock.return_value = MockLitellmResponse("YES. Fact B states the opposite of Fact A.")
         contradiction, explanation = await check_contradiction(
             "User drives a Tesla",
@@ -60,7 +60,7 @@ async def test_check_contradiction_yes() -> None:
 
 @pytest.mark.asyncio
 async def test_check_contradiction_no() -> None:
-    with patch("orchestrator.memory.dedup.litellm.acompletion") as mock:
+    with patch("orchestrator.memory.dedup.guarded_completion") as mock:
         mock.return_value = MockLitellmResponse("NO. Both facts can be true simultaneously.")
         contradiction, explanation = await check_contradiction(
             "User drives a Tesla",
@@ -72,7 +72,7 @@ async def test_check_contradiction_no() -> None:
 
 @pytest.mark.asyncio
 async def test_check_contradiction_llm_failure() -> None:
-    with patch("orchestrator.memory.dedup.litellm.acompletion") as mock:
+    with patch("orchestrator.memory.dedup.guarded_completion") as mock:
         mock.side_effect = Exception("LLM unavailable")
         contradiction, explanation = await check_contradiction(
             "User drives a Tesla",
@@ -108,7 +108,7 @@ async def test_dedup_supersession_with_contradiction() -> None:
             "orchestrator.memory.dedup.embed_documents_with_metadata",
             new_callable=AsyncMock,
         ) as embed,
-        patch("orchestrator.memory.dedup.litellm.acompletion") as litellm_mock,
+        patch("orchestrator.memory.dedup.guarded_completion") as litellm_mock,
     ):
         embed.return_value = _embedding_result([0.01, 0.02])
         litellm_mock.return_value = MockLitellmResponse("YES. Fact B directly contradicts Fact A.")
@@ -135,7 +135,7 @@ async def test_check_contradiction_uses_background_reasoning_model() -> None:
 
     with (
         patch("orchestrator.memory.dedup.get_settings", return_value=mock_settings),
-        patch("orchestrator.memory.dedup.litellm.acompletion") as litellm_mock,
+        patch("orchestrator.memory.dedup.guarded_completion") as litellm_mock,
     ):
         litellm_mock.return_value = MockLitellmResponse("NO. The facts are consistent.")
         await check_contradiction("Fact A", "Fact B")
@@ -154,7 +154,7 @@ async def test_check_contradiction_empty_model_string_passed_directly() -> None:
 
     with (
         patch("orchestrator.memory.dedup.get_settings", return_value=mock_settings),
-        patch("orchestrator.memory.dedup.litellm.acompletion") as litellm_mock,
+        patch("orchestrator.memory.dedup.guarded_completion") as litellm_mock,
     ):
         litellm_mock.return_value = MockLitellmResponse("NO. The facts are consistent.")
         await check_contradiction("Fact A", "Fact B")
@@ -173,7 +173,7 @@ async def test_check_contradiction_whitespace_model_string_passed_directly() -> 
 
     with (
         patch("orchestrator.memory.dedup.get_settings", return_value=mock_settings),
-        patch("orchestrator.memory.dedup.litellm.acompletion") as litellm_mock,
+        patch("orchestrator.memory.dedup.guarded_completion") as litellm_mock,
     ):
         litellm_mock.return_value = MockLitellmResponse("NO. The facts are consistent.")
         await check_contradiction("Fact A", "Fact B")
@@ -192,7 +192,7 @@ async def test_check_contradiction_none_model_passed_directly() -> None:
 
     with (
         patch("orchestrator.memory.dedup.get_settings", return_value=mock_settings),
-        patch("orchestrator.memory.dedup.litellm.acompletion") as litellm_mock,
+        patch("orchestrator.memory.dedup.guarded_completion") as litellm_mock,
     ):
         litellm_mock.side_effect = Exception("Model not found")
         contradiction, explanation = await check_contradiction("Fact A", "Fact B")
@@ -231,7 +231,7 @@ async def test_dedup_supersession_retries_without_metadata_column() -> None:
             "orchestrator.memory.dedup.embed_documents_with_metadata",
             new_callable=AsyncMock,
         ) as embed,
-        patch("orchestrator.memory.dedup.litellm.acompletion") as litellm_mock,
+        patch("orchestrator.memory.dedup.guarded_completion") as litellm_mock,
     ):
         embed.return_value = _embedding_result([0.01, 0.02])
         litellm_mock.return_value = MockLitellmResponse("YES. Fact B directly contradicts Fact A.")
@@ -276,7 +276,7 @@ async def test_dedup_supersession_proceeds_on_llm_failure() -> None:
             "orchestrator.memory.dedup.embed_documents_with_metadata",
             new_callable=AsyncMock,
         ) as embed,
-        patch("orchestrator.memory.dedup.litellm.acompletion") as litellm_mock,
+        patch("orchestrator.memory.dedup.guarded_completion") as litellm_mock,
     ):
         embed.return_value = _embedding_result([0.01, 0.02])
         litellm_mock.side_effect = Exception("LLM unavailable")
@@ -291,3 +291,36 @@ async def test_dedup_supersession_proceeds_on_llm_failure() -> None:
     store.supersede_memory.assert_awaited_once()
     call_kwargs = store.supersede_memory.await_args.kwargs
     assert call_kwargs["metadata"] is None
+
+
+@pytest.mark.asyncio
+async def test_denied_embeddings_merge_exact_fact_on_cap_lock_connection() -> None:
+    store = AsyncMock()
+    user_id = uuid.uuid4()
+    lock_conn = AsyncMock()
+    existing = {
+        "id": uuid.uuid4(),
+        "content": "User plays guitar",
+        "memory_slot": "hobby.current",
+        "source_type": "extracted",
+        "category": "fact",
+        "status": "active",
+        "valid_to": None,
+    }
+    store.search_memories_bm25.return_value = [existing]
+    with patch(
+        "orchestrator.memory.dedup.embed_documents_with_metadata",
+        new=AsyncMock(side_effect=EmbeddingConfigurationError("route unavailable")),
+    ):
+        result = await deduplicate_facts(
+            store,
+            user_id,
+            [_new_fact(existing["content"], existing["memory_slot"])],
+            conversation_id=None,
+            lock_conn=lock_conn,
+        )
+
+    assert result.merged == [existing]
+    store.search_memories.assert_not_awaited()
+    store.insert_memory.assert_not_awaited()
+    assert store.search_memories_bm25.await_args.kwargs["conn"] is lock_conn

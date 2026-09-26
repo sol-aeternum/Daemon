@@ -15,6 +15,7 @@ from orchestrator.memory.embedding import EmbeddingBatchResult
 from orchestrator.memory.retrieval import retrieve_memories
 from orchestrator.memory.store import MemoryStore
 from orchestrator.worker.jobs import run_dreaming_job, _user_matches_dream_schedule_hour
+from tests.qualified_compute import install_qualified_compute
 
 
 def _embedding_result(vector: list[float]) -> EmbeddingBatchResult:
@@ -61,7 +62,7 @@ async def test_dream_on_cluster_uses_background_reasoning_model() -> None:
     ]
 
     with patch("orchestrator.memory.dreaming.get_settings", return_value=settings):
-        with patch("orchestrator.memory.dreaming.litellm.acompletion") as mock_llm:
+        with patch("orchestrator.memory.dreaming.guarded_completion") as mock_llm:
             mock_llm.return_value = MockLitellmResponse(
                 '{"observations": ['
                 '{"content": "keeps cycling as a stable weekly routine.", "confidence": 0.86, "source_memory_ids": ["'
@@ -188,7 +189,10 @@ async def test_run_dreaming_returns_skipped_when_disabled() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_dreaming_job_processes_all_candidate_users() -> None:
+async def test_run_dreaming_job_processes_all_candidate_users(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_qualified_compute(monkeypatch)
     user_ids = [uuid.uuid4(), uuid.uuid4()]
     store = object.__new__(MemoryStore)
     store.get_users_with_dream_candidates = AsyncMock(return_value=user_ids)
@@ -203,7 +207,7 @@ async def test_run_dreaming_job_processes_all_candidate_users() -> None:
             ]
         ),
     ):
-        result = await run_dreaming_job({"store": store, "settings": settings})
+        result = await run_dreaming_job({"store": store, "settings": settings, "db_pool": object()})
 
     assert result["status"] == "ok"
     assert result["users_processed"] == 2
@@ -246,7 +250,10 @@ async def test_dreaming_schedule_uses_user_timezone_when_present() -> None:
 
 
 @pytest.mark.asyncio
-async def test_scheduled_dreaming_job_skips_users_outside_local_hour() -> None:
+async def test_scheduled_dreaming_job_skips_users_outside_local_hour(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_qualified_compute(monkeypatch)
     user_ids = [uuid.uuid4(), uuid.uuid4()]
     store = object.__new__(MemoryStore)
     store.get_users_with_dream_candidates = AsyncMock(return_value=user_ids)
@@ -263,7 +270,7 @@ async def test_scheduled_dreaming_job_skips_users_outside_local_hour() -> None:
         AsyncMock(return_value={"status": "completed", "observations_created": 1}),
     ) as mock_run:
         result = await run_dreaming_job(
-            {"store": store, "settings": settings},
+            {"store": store, "settings": settings, "db_pool": object()},
             scheduled=True,
             now_utc=datetime(2026, 4, 10, 17, 30, tzinfo=timezone.utc),
         )
