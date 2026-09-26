@@ -96,6 +96,9 @@ uv run uvicorn orchestrator.main:app --reload --host 0.0.0.0 --port 8000
 # Docker (full stack, production server commands)
 cp .env.example .env    # Configure providers
 # Edit .env and set a unique POSTGRES_PASSWORD before first startup.
+# The copied file starts in production mode (DAEMON_AUTH_PEPPER and
+# DAEMON_ALLOWED_HOSTS required). For a local stack over plain HTTP, uncomment
+# DAEMON_ENVIRONMENT=development and DAEMON_COOKIE_SECURE=false instead.
 docker compose up --build
 ```
 
@@ -159,7 +162,7 @@ Benchmarking runs from the host shell against localhost-exposed container servic
 
 ## Status
 
-Cloud pipeline fully operational: FastAPI backend, Next.js frontend, PostgreSQL+pgvector memory, Redis+arq worker queue, typed SSE, subagent system, Studio/video, Council deliberation system, Skills loader, Fetch service, tiered model routing, and voice I/O.
+Cloud pipeline fully operational: FastAPI backend, Next.js frontend, PostgreSQL+pgvector memory, Redis+arq worker queue, typed SSE, subagent system, Studio/video, Council deliberation system, Skills loader, Fetch service, privacy-qualified model routing, and voice I/O.
 
 **Phase 3 (local pipeline)** is blocked on hardware (RTX 5090 acquisition). The `/local` flag is parsed but all local inference code is unimplemented.
 
