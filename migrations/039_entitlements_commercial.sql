@@ -131,6 +131,9 @@ CREATE TABLE IF NOT EXISTS entitlement_reservations (
     charge_kind TEXT NOT NULL CHECK (charge_kind IN ('trial', 'plan', 'external')),
     premium BOOLEAN NOT NULL DEFAULT FALSE,
     extended BOOLEAN NOT NULL DEFAULT FALSE,
+    extended_run BOOLEAN NOT NULL DEFAULT FALSE,
+    background BOOLEAN NOT NULL DEFAULT FALSE,
+    scope_id UUID,
     status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'settled', 'released')),
     reserved_microusd BIGINT NOT NULL CHECK (reserved_microusd >= 0),
     actual_microusd BIGINT CHECK (actual_microusd IS NULL OR actual_microusd >= 0),
@@ -142,6 +145,7 @@ CREATE TABLE IF NOT EXISTS entitlement_reservations (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     settled_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT entitlement_reservations_run_is_extended CHECK (NOT extended_run OR extended),
     CONSTRAINT entitlement_reservations_settlement_consistent CHECK (
         (status = 'open' AND actual_microusd IS NULL AND settled_at IS NULL)
         OR (status IN ('settled', 'released') AND actual_microusd IS NOT NULL
@@ -165,6 +169,22 @@ COMMENT ON COLUMN entitlement_reservations.overage_microusd IS
     'ceiling. A truthful record must never leave a reservation open, because an '
     'open reservation also holds a concurrency slot.';
 
+COMMENT ON COLUMN entitlement_reservations.extended IS
+    'The reservation is charged against the extended-agent budget.';
+
+COMMENT ON COLUMN entitlement_reservations.extended_run IS
+    'The reservation started an extended run and holds one extended-run slot. '
+    'Only the first call of an extended run sets this; every call sets extended.';
+
+COMMENT ON COLUMN entitlement_reservations.background IS
+    'Background work (worker jobs) is charged to the budget but takes no rate '
+    'or concurrency slot, so it cannot block interactive requests.';
+
+COMMENT ON COLUMN entitlement_reservations.scope_id IS
+    'Account compute scope (one user-visible operation). Open reservations '
+    'sharing a scope_id hold a single concurrency slot. NULL means the '
+    'reservation is its own operation.';
+
 COMMENT ON COLUMN entitlement_reservations.route_id IS
     'Inference policy route id that served the operation, for joining against the '
     'approved route policy.';
@@ -173,8 +193,8 @@ COMMENT ON COLUMN entitlement_reservations.usage IS
     'Scalar usage counters only (tokens, tool calls, duration). Keys are '
     'allowlisted in code; never prompt, context or message content.';
 
--- Open reservations are the concurrency accounting unit: a user may hold at
--- most `max_concurrent_operations` of them at once.
+-- Open foreground reservations, grouped by scope_id, are the concurrency
+-- accounting unit: a user may hold at most `max_concurrent_operations` of them.
 CREATE INDEX IF NOT EXISTS idx_entitlement_reservations_open
     ON entitlement_reservations(user_id)
     WHERE status = 'open';

@@ -97,14 +97,35 @@ class ReservationRequest:
     """The admission request for one billable operation."""
 
     amount_microusd: Microusd
+    #: The money counts against the extended-agent budget.
     extended: bool = False
     charge_kind: ChargeKind = ChargeKind.PLAN
+    #: This reservation starts an extended run and takes a run slot. ``None``
+    #: means "same as ``extended``" for single-call extended operations; an
+    #: extended scope passes ``False`` for every call after its first.
+    extended_run: bool | None = None
+    #: Background work is charged to the budget but takes no rate or
+    #: concurrency slot, so it can never block interactive requests.
+    background: bool = False
+    #: Another open reservation of the same operation (account scope) already
+    #: holds this request's concurrency slot.
+    joins_open_operation: bool = False
+
+    @property
+    def starts_run(self) -> bool:
+        return self.extended if self.extended_run is None else self.extended_run
 
     def validate(self) -> None:
         try:
             require_microusd(self.amount_microusd, field="amount_microusd")
         except ValueError as exc:
             raise PolicyError(str(exc)) from exc
+        if self.starts_run and not self.extended:
+            raise PolicyError("an extended run must also be charged as extended")
+
+    @property
+    def takes_concurrency_slot(self) -> bool:
+        return not self.background and not self.joins_open_operation
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,7 +234,10 @@ def admit(
     request.validate()
     limits = context.limits
 
-    if effective_rate_requests(state, context.now) >= limits.requests_per_minute:
+    if (
+        not request.background
+        and effective_rate_requests(state, context.now) >= limits.requests_per_minute
+    ):
         return Admission(
             admitted=False,
             denial_code="rate_limited",
@@ -223,19 +247,22 @@ def admit(
             ),
         )
 
-    if state.open_reservations >= limits.max_concurrent_operations:
+    if (
+        request.takes_concurrency_slot
+        and state.open_reservations >= limits.max_concurrent_operations
+    ):
         return Admission(
             admitted=False,
             denial_code="concurrency_exceeded",
             reason=(
-                f"{state.open_reservations} open reservations of "
+                f"{state.open_reservations} open operations of "
                 f"{limits.max_concurrent_operations} allowed"
             ),
         )
 
     if request.extended and context.extended_uses_period_allowance():
         extended_total = state.extended_agents_used + state.extended_agents_reserved
-        if extended_total >= limits.extended_agents_per_period:
+        if request.starts_run and extended_total >= limits.extended_agents_per_period:
             return Admission(
                 admitted=False,
                 denial_code="extended_agents_exceeded",
@@ -260,7 +287,7 @@ def admit(
                     ),
                 )
 
-    if request.extended and context.charge_kind is ChargeKind.TRIAL:
+    if request.starts_run and context.charge_kind is ChargeKind.TRIAL:
         if context.trial_extended_agents_remaining <= 0:
             return Admission(
                 admitted=False,
@@ -305,8 +332,11 @@ def apply_reservation(
     concurrency slot and a rate slot, but the period row must not take the
     money, because the trial counters on the account own it.
     """
-    if _window_is_stale(state, now):
-        window_started_at: datetime | None = now
+    if request.background:
+        window_started_at = state.window_started_at
+        requests_in_window = state.requests_in_window
+    elif _window_is_stale(state, now):
+        window_started_at = now
         requests_in_window = 1
     else:
         window_started_at = state.window_started_at
@@ -326,10 +356,10 @@ def apply_reservation(
         ),
         extended_agents_reserved=(
             state.extended_agents_reserved + 1
-            if request.extended and context_uses_period_extended(request)
+            if request.starts_run and context_uses_period_extended(request)
             else state.extended_agents_reserved
         ),
-        open_reservations=state.open_reservations + 1,
+        open_reservations=state.open_reservations + (1 if request.takes_concurrency_slot else 0),
         requests_in_window=requests_in_window,
         window_started_at=window_started_at,
     )
@@ -350,6 +380,8 @@ def settle_state(
     period_money: bool = True,
     ceiling_microusd: Microusd | None = None,
     consumed: bool = True,
+    extended_run: bool | None = None,
+    releases_slot: bool = True,
 ) -> PeriodState:
     """Return ``state`` after a reservation settles at ``actual_microusd``.
 
@@ -368,6 +400,7 @@ def settle_state(
     """
     require_microusd(reserved_microusd, field="reserved_microusd")
     require_microusd(actual_microusd, field="actual_microusd")
+    run = extended if extended_run is None else extended_run
     if period_money and reserved_microusd > state.reserved_microusd:
         raise PolicyError(
             f"cannot settle {reserved_microusd} against {state.reserved_microusd} reserved"
@@ -395,10 +428,10 @@ def settle_state(
             else state.extended_reserved_microusd
         ),
         extended_agents_used=state.extended_agents_used
-        + (1 if extended and period_money and consumed else 0),
+        + (1 if run and period_money and consumed else 0),
         extended_agents_reserved=state.extended_agents_reserved
-        - (1 if extended and period_money else 0),
-        open_reservations=max(0, state.open_reservations - 1),
+        - (1 if run and period_money else 0),
+        open_reservations=max(0, state.open_reservations - (1 if releases_slot else 0)),
         requests_in_window=state.requests_in_window,
         window_started_at=state.window_started_at,
     )

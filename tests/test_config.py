@@ -234,7 +234,6 @@ def test_legacy_tier_env_cannot_override_workload_provider(monkeypatch) -> None:
     monkeypatch.setenv("TIER_PRO_VIDEO_PROVIDER", "xai")
     settings = Settings()
 
-    assert settings.video_provider == "fal"
     assert "default_tier" not in type(settings).model_fields
     assert "tier_pro_video_provider" not in type(settings).model_fields
     assert not hasattr(settings, "get_video_provider_for_tier")

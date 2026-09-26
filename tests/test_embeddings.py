@@ -131,3 +131,33 @@ async def test_embed_query_dispatches_correct_model_and_input_type():
     kwargs = post.call_args.kwargs
     assert kwargs["model"] == "voyage-4-lite"
     assert kwargs["input_type"] == "query"
+
+
+def test_embedding_providers_follow_inference_policy_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from orchestrator.entitlements.errors import PolicyError
+    from orchestrator.memory import embedding
+
+    approved: set[str] = set()
+    monkeypatch.setattr(
+        embedding,
+        "load_inference_policy",
+        lambda: SimpleNamespace(is_tool_service_approved=lambda service_id: service_id in approved),
+    )
+    with pytest.raises(embedding.EmbeddingConfigurationError):
+        embedding._require_approved_embedding_service("voyage")
+
+    approved.add("voyage-embeddings")
+    embedding._require_approved_embedding_service("voyage")
+    # Providers without a reviewed tool service stay denied by default.
+    for provider in ("openai", "openrouter"):
+        with pytest.raises(embedding.EmbeddingConfigurationError):
+            embedding._require_approved_embedding_service(provider)
+
+    def broken_policy():
+        raise PolicyError("invalid")
+
+    monkeypatch.setattr(embedding, "load_inference_policy", broken_policy)
+    with pytest.raises(embedding.EmbeddingConfigurationError):
+        embedding._require_approved_embedding_service("voyage")

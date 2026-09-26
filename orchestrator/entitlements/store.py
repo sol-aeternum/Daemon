@@ -51,7 +51,7 @@ _ACCOUNT_COLUMNS: Final[str] = """
 
 _RESERVATION_COLUMNS: Final[str] = """
     id, user_id, period_key, plan, operation, charge_kind, premium, extended,
-    status, reserved_microusd, actual_microusd, overage_microusd, provider, model, route_id,
+    extended_run, background, scope_id, status, reserved_microusd, actual_microusd, overage_microusd, provider, model, route_id,
     usage, created_at, settled_at
 """
 
@@ -66,8 +66,8 @@ _PERIOD_STATE_SQL: Final[str] = """
         p.requests_in_window,
         p.window_started_at,
         (
-            SELECT count(*) FROM entitlement_reservations r
-            WHERE r.user_id = a.user_id AND r.status = 'open'
+            SELECT count(DISTINCT COALESCE(r.scope_id, r.id)) FROM entitlement_reservations r
+            WHERE r.user_id = a.user_id AND r.status = 'open' AND NOT r.background
         ) AS open_reservations
     FROM entitlement_accounts a
     LEFT JOIN entitlement_usage_periods p ON p.user_id = a.user_id AND p.period_key = $2
@@ -78,6 +78,10 @@ _PERIOD_STATE_SQL: Final[str] = """
 # $11 is period_money: only plan-funded work is accounted in the period row, so
 # a trial-funded hold occupies a concurrency/rate slot without taking money that
 # the account's lifetime counters already own.
+# $4 charges the extended budget; $13 additionally takes an extended-run slot.
+# $14 marks background work: charged, but it takes no rate or concurrency slot.
+# $15 is the account scope: a scope with an open reservation already holds its
+# concurrency slot, so its later calls (tool loops, council roles) share it.
 _HOLD_SQL: Final[str] = """
     UPDATE entitlement_usage_periods AS p
     SET reserved_microusd = p.reserved_microusd
@@ -85,14 +89,16 @@ _HOLD_SQL: Final[str] = """
         extended_reserved_microusd = p.extended_reserved_microusd
             + CASE WHEN $11::boolean AND $4::boolean THEN $3 ELSE 0 END,
         extended_agents_reserved = p.extended_agents_reserved
-            + CASE WHEN $11::boolean AND $4::boolean THEN 1 ELSE 0 END,
+            + CASE WHEN $11::boolean AND $13::boolean THEN 1 ELSE 0 END,
         requests_in_window = CASE
+            WHEN $14::boolean THEN p.requests_in_window
             WHEN p.window_started_at IS NULL
                  OR $5 - p.window_started_at >= $12::interval
             THEN 1
             ELSE p.requests_in_window + 1
         END,
         window_started_at = CASE
+            WHEN $14::boolean THEN p.window_started_at
             WHEN p.window_started_at IS NULL
                  OR $5 - p.window_started_at >= $12::interval
             THEN $5
@@ -110,18 +116,28 @@ _HOLD_SQL: Final[str] = """
             OR (p.extended_spent_microusd + p.extended_reserved_microusd + $3) <= $7
       )
       AND (
-            NOT ($11::boolean AND $4::boolean)
+            NOT ($11::boolean AND $13::boolean)
             OR (p.extended_agents_used + p.extended_agents_reserved + 1) <= $10
       )
       AND (
-            p.window_started_at IS NULL
+            $14::boolean
+            OR p.window_started_at IS NULL
             OR $5 - p.window_started_at >= $12::interval
             OR p.requests_in_window < $8
       )
       AND (
-            SELECT count(*) FROM entitlement_reservations r
-            WHERE r.user_id = p.user_id AND r.status = 'open'
-        ) < $9
+            $14::boolean
+            OR EXISTS (
+                SELECT 1 FROM entitlement_reservations r
+                WHERE r.user_id = p.user_id AND r.status = 'open'
+                  AND NOT r.background AND r.scope_id = $15::uuid
+            )
+            OR (
+                SELECT count(DISTINCT COALESCE(r.scope_id, r.id))
+                FROM entitlement_reservations r
+                WHERE r.user_id = p.user_id AND r.status = 'open' AND NOT r.background
+            ) < $9
+      )
     RETURNING
         p.spent_microusd,
         p.reserved_microusd,
@@ -154,14 +170,14 @@ _SETTLE_PERIOD_SQL: Final[str] = """
         extended_reserved_microusd = p.extended_reserved_microusd
             - CASE WHEN $8::boolean AND $5::boolean THEN $4 ELSE 0 END,
         extended_agents_used = p.extended_agents_used
-            + CASE WHEN $8::boolean AND $5::boolean AND $9::boolean THEN 1 ELSE 0 END,
+            + CASE WHEN $8::boolean AND $10::boolean AND $9::boolean THEN 1 ELSE 0 END,
         extended_agents_reserved = p.extended_agents_reserved
-            - CASE WHEN $8::boolean AND $5::boolean THEN 1 ELSE 0 END,
+            - CASE WHEN $8::boolean AND $10::boolean THEN 1 ELSE 0 END,
         updated_at = $6
     WHERE p.user_id = $1 AND p.period_key = $2
       AND (NOT $8::boolean OR p.reserved_microusd >= $4)
-      AND (NOT ($8::boolean AND $5::boolean) OR
-           (p.extended_reserved_microusd >= $4 AND p.extended_agents_reserved >= 1))
+      AND (NOT ($8::boolean AND $5::boolean) OR p.extended_reserved_microusd >= $4)
+      AND (NOT ($8::boolean AND $10::boolean) OR p.extended_agents_reserved >= 1)
     RETURNING p.spent_microusd, p.reserved_microusd
 """
 
@@ -316,6 +332,16 @@ class EntitlementStore:
         )
         return _account_from_row(row) if row is not None else None
 
+    async def set_status(
+        self, conn: Connection, *, user_id: uuid.UUID, status: AccountStatus, now: datetime
+    ) -> None:
+        await conn.execute(
+            "UPDATE entitlement_accounts SET status = $2, updated_at = $3 WHERE user_id = $1",
+            user_id,
+            status.value,
+            now,
+        )
+
     async def set_plan(
         self,
         conn: Connection,
@@ -392,6 +418,26 @@ class EntitlementStore:
         row = await conn.fetchrow(_PERIOD_STATE_SQL, user_id, period_key)
         return period_state_from_row(row, period_key)
 
+    async def operation_is_open(
+        self, conn: Connection, *, user_id: uuid.UUID, scope_id: uuid.UUID | None
+    ) -> bool:
+        """Whether ``scope_id`` already holds a concurrency slot for ``user_id``."""
+        if scope_id is None:
+            return False
+        return bool(
+            await conn.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM entitlement_reservations r
+                    WHERE r.user_id = $1 AND r.status = 'open'
+                      AND NOT r.background AND r.scope_id = $2
+                )
+                """,
+                user_id,
+                scope_id,
+            )
+        )
+
     async def hold(
         self,
         conn: Connection,
@@ -407,6 +453,9 @@ class EntitlementStore:
         concurrency_limit: int,
         extended_run_limit: int,
         money_applies: bool,
+        extended_run: bool | None = None,
+        background: bool = False,
+        scope_id: uuid.UUID | None = None,
     ) -> Mapping[str, Any] | None:
         """Place the hold if every ceiling holds. ``None`` means refused.
 
@@ -426,6 +475,9 @@ class EntitlementStore:
             extended_run_limit,
             money_applies,
             timedelta(seconds=RATE_WINDOW_SECONDS),
+            extended if extended_run is None else extended_run,
+            background,
+            scope_id,
         )
 
     async def settle_period(
@@ -441,6 +493,7 @@ class EntitlementStore:
         ceiling: int,
         period_money: bool,
         consumed: bool,
+        extended_run: bool | None = None,
     ) -> None:
         row = await conn.fetchrow(
             _SETTLE_PERIOD_SQL,
@@ -453,6 +506,7 @@ class EntitlementStore:
             ceiling,
             period_money,
             consumed,
+            extended if extended_run is None else extended_run,
         )
         if row is None:
             raise RuntimeError("period hold missing during settlement")
@@ -474,15 +528,19 @@ class EntitlementStore:
         provider: str | None = None,
         model: str | None = None,
         route_id: str | None = None,
+        extended_run: bool | None = None,
+        background: bool = False,
+        scope_id: uuid.UUID | None = None,
     ) -> Mapping[str, Any]:
         row = await conn.fetchrow(
             f"""
             INSERT INTO entitlement_reservations (
                 user_id, period_key, plan, operation, charge_kind,
                 premium, extended, reserved_microusd,
-                provider, model, route_id, created_at, updated_at
+                provider, model, route_id, created_at, updated_at,
+                extended_run, background, scope_id
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12, $13, $14, $15)
             RETURNING {_RESERVATION_COLUMNS}
             """,
             user_id,
@@ -497,6 +555,9 @@ class EntitlementStore:
             model,
             route_id,
             now,
+            extended if extended_run is None else extended_run,
+            background,
+            scope_id,
         )
         if row is None:  # pragma: no cover - INSERT ... RETURNING always yields a row
             raise RuntimeError("reservation insert returned no row")

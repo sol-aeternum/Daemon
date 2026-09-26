@@ -38,7 +38,6 @@ async def test_subagents():
         "brave_api_key": settings.brave_api_key,
         "openrouter_api_key": settings.openrouter_api_key,
         "openrouter_base_url": settings.openrouter_base_url,
-        "image_model": settings.image_agent_model,
     }
 
     # Check if ElevenLabs key exists

@@ -12,7 +12,7 @@ Personal multi-agent AI assistant. FastAPI backend orchestrates LLM calls via Op
 ## Rules of Engagement
 - **Ask before making design decisions.** If a task has multiple valid approaches, present options with tradeoffs. Do not pick one autonomously.
 - **Clarify ambiguity, don't assume.** If the spec is unclear, ask. Wrong assumptions cost more than a question.
-- **No silent architecture changes.** Changing data models, API contracts, SSE event types, or tier config requires explicit approval.
+- **No silent architecture changes.** Changing data models, API contracts, SSE event types, or plan/entitlement config requires explicit approval.
 - **Update docs with code.** If you fix a bug tracked by a GitHub issue, close it (or comment the resolution) in the same change; if you complete a ROADMAP.md item, update the doc.
 - **Don't add dependencies without asking.** Especially frontend — bundle size matters for PWA.
 - **Done means the gates pass.** No task is complete until it satisfies the Definition of Done below.
@@ -141,6 +141,12 @@ Local gate runner and PR wrapper live in `scripts/`:
 - Don't reference OpenCode Zen provider — legacy, being removed
 - Don't use `gpt-4o` as a default anywhere — backend uses privacy-qualified, capability-aware routing
 - Don't put secrets in code or docs — everything goes through env vars; commit `.env.example` only, never `.env`. gitleaks runs in pre-commit and CI.
+- **Keep the env surface in sync in the same commit.** Adding, renaming, removing, or changing the scope of an environment variable means one commit that updates every surface it touches. Scope-aware minimums:
+  - **Shared app-runtime variable** (read by both the backend and the worker, e.g. a `Settings`/`VideoPricingConfig` field both services construct): declare the field, document it exactly once in `.env.example`, and inject it into **both** the `backend` and `worker` service environments in `docker-compose.yml`. An explicit per-service exclusion needs a written reason in the PR — the current set is `SERVICE_ROLE_EXCEPTIONS` in `tests/test_env_surface_parity.py`, which is the single source for the backend-only keys.
+  - **Frontend-only, Compose-only, or standalone-script variable** (e.g. `NEXT_PUBLIC_*` build arguments, Compose interpolation names such as `POSTGRES_USER`/`POSTGRES_DB`, resolver or maintenance-script names such as `POSTGRES_HOST`/`POSTGRES_PORT`/`BACKUP_DIR`): it has no backend settings field, so document it exactly once in `.env.example` and wire it to its own surface only. Do not force it into both Python service environments.
+  - **Never** document a name in two places in `.env.example` (a commented line still counts as a declaration), and never leave a declaration without an identified consumer: a declared settings field, a Compose interpolation, a frontend source read, or an explicitly allowlisted script with a `file:line` attribution. Any exemption from example coverage goes through the explicit enumerated allowlist in `tests/test_env_surface_parity.py`, never a prefix wildcard.
+  - Existing dotenv-only inputs are frozen in the parity gate's explicit `LEGACY_DOTENV_ONLY` inventory to preserve their precedence. They are not a blanket exemption for new fields; changing their injection channel requires explicit review.
+  - **Renames and removals** additionally require a `MIGRATION:` line in the PR description and a migration section in `docs/ENV_SURFACE_MIGRATION.md` in the same PR, covering the exact production keys to add, change, or drop, the resulting fallback behavior, and the conditional case where a name's absence means something different from an empty value. Do not recommend deleting a variable that still has a consumer.
 - Don't create new Docker services without discussing architecture impact
 - **Don't weaken a gate to make CI pass.** If strictness surfaces debt that blocks you, surface it for a decision — do not loosen `ruff`/`mypy`/`tsconfig` config silently.
 - **Don't hand-edit lockfiles or `pip install` ad hoc.** Dependency changes go through the package manager (and need approval, per Rules of Engagement).

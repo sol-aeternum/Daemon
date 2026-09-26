@@ -170,14 +170,6 @@ class Settings(BaseSettings):
             else self.stream_ping_interval_s
         )
 
-    # Workload-specific models; account entitlements are resolved from the database.
-    image_agent_model: str = "google/gemini-2.5-flash-image"
-    image_provider: str = "openrouter"
-    video_provider: str = "fal"
-    research_agent_model: str = "openrouter/anthropic/claude-3.5-sonnet"
-    code_agent_model: str = "openrouter/anthropic/claude-3.5-sonnet"
-    reader_agent_model: str = "openrouter/google/gemini-2.0-pro-exp"
-
     # CORS configuration
     cors_allowed_origins: str = "http://localhost:3000,http://frontend:3000"
 
