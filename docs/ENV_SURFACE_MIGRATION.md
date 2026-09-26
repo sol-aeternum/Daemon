@@ -46,6 +46,21 @@ remain opt-ins and are unchanged.
 | `DAEMON_ENVIRONMENT` | `development` in backend and worker | `production` in backend and worker | Unchanged; still passed through verbatim. |
 | `DAEMON_COOKIE_SECURE` | `false` in backend | `true` in backend | Unchanged; still passed through verbatim. |
 
+`.env.example` leaves both names commented, so a freshly copied file takes the
+production fallbacks. Existing `.env` files are not rewritten; a local
+development stack opts back in by uncommenting `DAEMON_ENVIRONMENT=development`
+and `DAEMON_COOKIE_SECURE=false`.
+
+**Existing sessions end on upgrade when the cookie fallback applies.** The
+refresh cookie is named `daemon_refresh` when insecure and
+`__Host-daemon_refresh` when secure, and the backend reads only the name that
+matches its current mode. A deployment that omitted `DAEMON_COOKIE_SECURE` (and
+so ran insecure) switches to the secure name, so every signed-in user must sign
+in again after the first refresh fails. A deployment reached over plain HTTP on
+a host other than `localhost` cannot keep a session at all afterwards, because
+browsers drop `Secure` cookies there; serve it over HTTPS or set
+`DAEMON_COOKIE_SECURE=false` together with `DAEMON_ENVIRONMENT=development`.
+
 Two rules that make this class of edit easy to get wrong:
 
 - **Absent is not the same as empty.** `KEY=${KEY}` injects an empty string

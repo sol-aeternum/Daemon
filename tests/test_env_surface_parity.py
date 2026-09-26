@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import fnmatch
 import functools
+import os
 import re
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
@@ -505,6 +506,7 @@ class ComposeInventory:
 
 
 _ENV_ITEM_RE = re.compile(r"^(?P<key>[A-Za-z_][A-Za-z0-9_]*)(?:=(?P<value>.*))?$", re.S)
+_UNBRACED_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _INTERPOLATION_RE = re.compile(
     r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?P<op>:?[-?+]?)(?P<rest>.*)$", re.S
 )
@@ -514,8 +516,9 @@ def iter_compose_interpolations(text: str) -> Iterable[tuple[str, str, str, int]
     """Yield ``(name, operator, operand, lineno)`` for every ``${...}`` in ``text``.
 
     ``$$`` is a Compose escape for a literal ``$``, so ``$${NAME}`` yields
-    nothing. Operators are reported verbatim because ``:-`` (default when unset
-    *or* empty), ``-`` (default when unset), ``:?``/``?`` (required) and
+    nothing. An unbraced ``$NAME`` is also interpolated by Compose and is
+    yielded with an empty operator, like a bare ``${NAME}``. Operators are
+    reported verbatim because ``:-`` (default when unset *or* empty), ``-`` (default when unset), ``:?``/``?`` (required) and
     ``:+``/``+``/``:`` are not interchangeable, and a bare ``${NAME}`` injects an
     empty value rather than deferring to a code default.
     """
@@ -530,7 +533,12 @@ def iter_compose_interpolations(text: str) -> Iterable[tuple[str, str, str, int]
             index += 2
             continue
         if following != "{":
-            index += 1
+            unbraced = _UNBRACED_NAME_RE.match(text, index + 1)
+            if unbraced is not None:
+                yield (unbraced.group(0), "", "", text.count("\n", 0, index) + 1)
+                index = unbraced.end()
+            else:
+                index += 1
             continue
         depth = 0
         cursor = index + 1
@@ -961,13 +969,14 @@ def read_frontend_sources(root: Path) -> tuple[tuple[str, str], ...]:
     """
     tracked = _git_tracked(root)
     if tracked is None:
-        relative_paths = [
-            str(path.relative_to(root))
-            for path in root.rglob("*")
-            if path.is_file()
-            and _FRONTEND_SKIP_DIRS.isdisjoint(path.relative_to(root).parts)
-            and not any(fnmatch.fnmatch(path.name, pattern) for pattern in _FRONTEND_SKIP_GLOBS)
-        ]
+        relative_paths: list[str] = []
+        for dirpath, dirnames, filenames in os.walk(root / FRONTEND_DIRNAME):
+            dirnames[:] = [name for name in dirnames if name not in _FRONTEND_SKIP_DIRS]
+            relative_paths.extend(
+                str((Path(dirpath) / filename).relative_to(root))
+                for filename in filenames
+                if not any(fnmatch.fnmatch(filename, pattern) for pattern in _FRONTEND_SKIP_GLOBS)
+            )
     else:
         relative_paths = list(tracked)
     sources: list[tuple[str, str]] = []
@@ -1305,13 +1314,16 @@ def effective_compose_default(raw: str, name: str) -> tuple[bool, str]:
     A bare ``${NAME}`` has no default: Compose injects an empty value when the
     host key is absent, and the empty process value overrides both the code
     default and the bind-mounted dotenv file. That is not a deferral to code.
+    ``${NAME-default}`` is rejected for the same reason: it only applies the
+    default when the host key is unset, so an explicitly empty host value is
+    still injected. Only ``:-`` covers both cases.
     """
     stripped = raw.strip()
     if stripped.startswith("$") and "{" in stripped and stripped.endswith("}"):
         inner = stripped[stripped.index("{") + 1 : stripped.rindex("}")].strip()
         match = _INTERPOLATION_RE.match(inner)
         if match is not None and match.group("name") == name:
-            if match.group("op") in {":-", "-"}:
+            if match.group("op") == ":-":
                 return True, match.group("rest")
             return False, ""
         return False, ""
@@ -1497,21 +1509,30 @@ def frontend_coverage_violations(surface: Surface) -> list[str]:
     return violations
 
 
-def frontend_unresolved_violations(surface: Surface) -> list[str]:
+def _unresolved_site_key(site: str) -> str:
+    """Return the ``path:line`` allowlist key of a ``path:line: snippet`` site."""
+    return site.split(": ", 1)[0]
+
+
+def frontend_unresolved_violations(
+    surface: Surface, allowlist: Mapping[str, str] = FRONTEND_UNRESOLVED_SITE_ALLOWLIST
+) -> list[str]:
     violations: list[str] = []
     for site in surface.frontend.unresolved:
-        if site in FRONTEND_UNRESOLVED_SITE_ALLOWLIST:
-            if not FRONTEND_UNRESOLVED_SITE_ALLOWLIST[site].strip():
-                violations.append(f"FRONTEND_UNRESOLVED_SITE_ALLOWLIST[{site}] has no reason")
+        key = _unresolved_site_key(site)
+        if key in allowlist:
+            if not allowlist[key].strip():
+                violations.append(f"FRONTEND_UNRESOLVED_SITE_ALLOWLIST[{key}] has no reason")
             continue
         violations.append(
             f"unresolved frontend environment access at {site}; resolve it to a literal name or "
             "record an explicit FRONTEND_UNRESOLVED_SITE_ALLOWLIST entry with a reason"
         )
-    for site in sorted(FRONTEND_UNRESOLVED_SITE_ALLOWLIST):
-        if site not in surface.frontend.unresolved:
+    scanned_keys = {_unresolved_site_key(site) for site in surface.frontend.unresolved}
+    for key in sorted(allowlist):
+        if key not in scanned_keys:
             violations.append(
-                f"FRONTEND_UNRESOLVED_SITE_ALLOWLIST[{site}] no longer matches a scanned site; "
+                f"FRONTEND_UNRESOLVED_SITE_ALLOWLIST[{key}] no longer matches a scanned site; "
                 "remove the stale entry"
             )
     return violations
@@ -1754,8 +1775,10 @@ def test_compose_interpolation_forms_and_escapes() -> None:
         "      - NESTED=${NESTED:-${DASHED}}\n"
         "      - LITERAL=$${LITERAL}\n"
         "      - PASSTHROUGH\n"
+        "      - UNBRACED=$UNBRACED\n"
         "    ports:\n"
         '      - "${HOST_PORT}:8000"\n'
+        '      - "$BARE_PORT:9000"\n'
     )
     inventory = parse_compose(text)
     assert inventory.unsupported_forms == ()
@@ -1768,6 +1791,7 @@ def test_compose_interpolation_forms_and_escapes() -> None:
         "ALT": "${ALT:+set}",
         "NESTED": "${NESTED:-${DASHED}}",
         "LITERAL": "$${LITERAL}",
+        "UNBRACED": "$UNBRACED",
         "PASSTHROUGH": "${PASSTHROUGH}",
     }
     assert set(inventory.host_names) == {
@@ -1779,10 +1803,13 @@ def test_compose_interpolation_forms_and_escapes() -> None:
         "ALT",
         "NESTED",
         "HOST_PORT",
+        "UNBRACED",
+        "BARE_PORT",
         "PASSTHROUGH",
     }
     # `$$` escapes a literal `$`; the escaped name needs no documentation.
     assert "LITERAL" not in inventory.host_names
+    assert "LITERAL" not in {name for name, *_ in iter_compose_interpolations("A=$$LITERAL")}
 
 
 def test_compose_parser_refuses_forms_it_does_not_understand() -> None:
@@ -1811,6 +1838,11 @@ def test_security_critical_names_are_still_covered_by_the_gate() -> None:
     # A bare reference injects an empty value: it is not a deferral to code.
     assert effective_compose_default("${DAEMON_ENVIRONMENT}", "DAEMON_ENVIRONMENT") == (False, "")
     assert effective_compose_default("${DAEMON_ENVIRONMENT:?}", "DAEMON_ENVIRONMENT")[0] is False
+    # `-` defaults only an unset key; an explicitly empty host value is still injected.
+    assert effective_compose_default("${DAEMON_ENVIRONMENT-production}", "DAEMON_ENVIRONMENT") == (
+        False,
+        "",
+    )
     assert effective_compose_default("${DAEMON_ENVIRONMENT:-production}", "DAEMON_ENVIRONMENT") == (
         True,
         "production",
@@ -1833,6 +1865,8 @@ def test_security_critical_detects_a_weakened_default() -> None:
         ("DAEMON_COOKIE_SECURE", "${DAEMON_COOKIE_SECURE:-false}"),
         ("DAEMON_ENVIRONMENT", "${DAEMON_ENVIRONMENT:-development}"),
         ("DAEMON_ENVIRONMENT", "${DAEMON_ENVIRONMENT}"),
+        ("DAEMON_ENVIRONMENT", "${DAEMON_ENVIRONMENT-production}"),
+        ("DAEMON_COOKIE_SECURE", "${DAEMON_COOKIE_SECURE-true}"),
     ):
         weakened = Surface(
             root=surface.root,
@@ -1930,6 +1964,28 @@ def test_frontend_has_no_unresolved_env_accesses() -> None:
         frontend_unresolved_violations(real_surface()),
         "unresolved frontend env access must be resolved, not skipped",
     )
+
+
+def test_frontend_unresolved_allowlist_is_keyed_by_path_and_line() -> None:
+    surface = real_surface()
+    site = "frontend/lib/x.ts:12: process.env[key]"
+    dynamic = replace(surface, frontend=replace(surface.frontend, unresolved=(site,)))
+    assert frontend_unresolved_violations(dynamic, {})
+    assert frontend_unresolved_violations(dynamic, {"frontend/lib/x.ts:12": "reviewed"}) == []
+    assert frontend_unresolved_violations(dynamic, {"frontend/lib/x.ts:12": " "}) != []
+    stale = frontend_unresolved_violations(dynamic, {"frontend/lib/x.ts:13": "moved"})
+    assert any("no longer matches" in violation for violation in stale)
+
+
+def test_frontend_filesystem_fallback_walks_only_frontend_sources(tmp_path: Path) -> None:
+    (tmp_path / "frontend" / "lib").mkdir(parents=True)
+    (tmp_path / "frontend" / "node_modules" / "pkg").mkdir(parents=True)
+    (tmp_path / "other").mkdir()
+    (tmp_path / "frontend" / "lib" / "a.ts").write_text("process.env.A\n", encoding="utf-8")
+    (tmp_path / "frontend" / "node_modules" / "pkg" / "b.js").write_text("x", encoding="utf-8")
+    (tmp_path / "frontend" / "sw.js").write_text("x", encoding="utf-8")
+    (tmp_path / "other" / "c.ts").write_text("x", encoding="utf-8")
+    assert [relpath for relpath, _text in read_frontend_sources(tmp_path)] == ["frontend/lib/a.ts"]
 
 
 def test_frontend_scan_covers_all_tracked_js_ts_sources() -> None:
