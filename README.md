@@ -96,6 +96,9 @@ uv run uvicorn orchestrator.main:app --reload --host 0.0.0.0 --port 8000
 # Docker (full stack, production server commands)
 cp .env.example .env    # Configure providers
 # Edit .env and set a unique POSTGRES_PASSWORD before first startup.
+# The copied file starts in production mode (DAEMON_AUTH_PEPPER and
+# DAEMON_ALLOWED_HOSTS required). For a local stack over plain HTTP, uncomment
+# DAEMON_ENVIRONMENT=development and DAEMON_COOKIE_SECURE=false instead.
 docker compose up --build
 ```
 
