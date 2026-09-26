@@ -390,9 +390,13 @@ describe('AuthLanding — hosted Google-first login', () => {
     render(<AuthLanding mode="hosted" runtimeConfig={hostedConfig()} />);
     await waitForLoadingToFinish();
 
-    const script = document.querySelector<HTMLScriptElement>(
-      'script[src="https://accounts.google.com/gsi/client"]',
-    );
+    const script = await waitFor(() => {
+      const element = document.querySelector<HTMLScriptElement>(
+        'script[src="https://accounts.google.com/gsi/client"]',
+      );
+      expect(element).toBeTruthy();
+      return element;
+    });
     nonceMeta.remove();
     expect(script).toBeTruthy();
     expect(script?.nonce).toBe('document-style-nonce');

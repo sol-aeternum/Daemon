@@ -36,12 +36,14 @@ Daemon provides a comprehensive suite of features for advanced AI assistance.
 
 - **Chat & Routing**: Real-time token streaming with typed SSE events, supporting both native and OpenAI-compatible endpoints. The Free / Pro / Power migration separates commercial plans from model selection; see `SUBSCRIPTION_ARCHITECTURE.md` for deployment requirements.
 - **Persistent Memory**: Automated fact extraction, hybrid semantic/lexical retrieval, and bitemporal memory management. Detailed in [../MEMORY_LAYER.md](../MEMORY_LAYER.md).
-- **Subagent Framework**: Specialized agents for web research (`@research`), image and video generation (`@image`), audio processing (`@audio`). Document generation via `generate_document` tool (deterministic CSV/DOCX).
+- **Subagent Framework**: Research is subject to qualified provider/service routes; deterministic CSV/DOCX generation exists. Image/video/audio execution is retired pending qualified bounded adapters.
 - **Council Deliberation**: Multi-perspective advisory debate with a read-only tool subset; council models can gather context but cannot send notifications, create reminders, spawn agents, write memory, or generate files.
-- **Multimodal Studio**: Dedicated interfaces for high-fidelity media generation with integrated credit management.
-- **Voice Interaction**: Streaming text-to-speech and speech-to-text for a hands-free assistant experience.
+- **Multimodal Studio**: Retained interfaces and video-credit history; generation remains denied pending bounded integration.
+- **Voice Interaction**: Settings/UI remain; speech execution and direct vendor tokens are denied pending bounded server-side adapters.
 
 Current feature implementation status across all platforms is maintained in the [FEATURE_MATRIX.md](FEATURE_MATRIX.md).
+
+The product direction is [a persistent, cloud-first workspace with broad assistant continuity](DAEMON_VISION.md), with [explicit interview decisions](DAEMON_VISION_DECISIONS.md). The narrative above describes the existing foundation; it does not claim durable user-task execution or device-companion access is implemented.
 
 ## Documentation & Sources of Truth
 
