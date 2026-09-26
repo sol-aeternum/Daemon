@@ -28,7 +28,7 @@ Daemon is a multi-provider LLM orchestration platform with intelligent routing, 
 │       │                                              │
 │  ┌────▼────────────┐  ┌──────────────────────────┐  │
 │  │ Memory Layer    │  │ Subagent Orchestrator    │  │
-│  │ (pgvector)      │  │ Research & bounded tools │  │
+│  │ (pgvector)      │  │ Bounded tools            │  │
 │  │                 │  │ Qualified routes only    │  │
 │  └─────────────────┘  └──────────────────────────┘  │
 └──────────────────────────────────────────────────────┘

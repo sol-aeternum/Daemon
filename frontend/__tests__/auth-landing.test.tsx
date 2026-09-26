@@ -390,15 +390,18 @@ describe('AuthLanding — hosted Google-first login', () => {
     render(<AuthLanding mode="hosted" runtimeConfig={hostedConfig()} />);
     await waitForLoadingToFinish();
 
-    const script = await waitFor(() => {
-      const element = document.querySelector<HTMLScriptElement>(
-        'script[src="https://accounts.google.com/gsi/client"]',
-      );
-      expect(element).toBeTruthy();
-      return element;
-    });
-    nonceMeta.remove();
-    expect(script).toBeTruthy();
+    let script: HTMLScriptElement | null;
+    try {
+      script = await waitFor(() => {
+        const element = document.querySelector<HTMLScriptElement>(
+          'script[src="https://accounts.google.com/gsi/client"]',
+        );
+        expect(element).toBeTruthy();
+        return element;
+      });
+    } finally {
+      nonceMeta.remove();
+    }
     expect(script?.nonce).toBe('document-style-nonce');
     await act(async () => {
       script?.dispatchEvent(new Event('error'));

@@ -483,7 +483,7 @@ async def test_disconnect_after_partial_content_keeps_partial_row_available() ->
 
 
 @pytest.mark.asyncio
-async def test_disconnect_with_interrupted_tool_call_skips_skill_evaluation() -> None:
+async def test_disconnect_after_tool_calls_skips_skill_evaluation() -> None:
     async def completion() -> AsyncIterator[dict[str, Any]]:
         for index in range(6):
             yield {"type": "content_delta", "content": "x"}
@@ -512,6 +512,7 @@ async def test_disconnect_with_interrupted_tool_call_skips_skill_evaluation() ->
     assert sum(event_type == "tool_call" for event_type, _ in _parse_frames(frames)) == 6
     assert [attempt["args"][0] for attempt in queue.attempts] == []
     assert "final" not in [event_type for event_type, _ in _parse_frames(frames)]
+    assert _terminal_data(frames)["status"] == "cancelled"
 
 
 @pytest.mark.asyncio
