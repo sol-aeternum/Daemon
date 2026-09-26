@@ -51,7 +51,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Memory Reflect (non-persistent synthesis) | Backend stable | Backend stable | Not started | Not started | Memory reflection service | No |
 | Memory Clear All | Cross-client stable | Cross-client stable | Not started | Not started | DELETE /memories?confirm=true | No |
 | **Subagents** | — | — | — | — | — | — |
-| @research (web search + synthesis) | Cross-client stable | Cross-client stable | Not started | Not started | Retained client/framework integration; registered spawn dispatch currently returns capacity_unavailable pending qualified bounded adapters | No |
+| @research (web search + synthesis) | Retired | Retired | Not started | Not started | Retained client/framework integration; registered spawn dispatch currently returns capacity_unavailable pending qualified bounded adapters | No |
 | @image (image generation) | Retired | Retired | Not started | Not started | Unbounded vendor execution disabled; replacement requires a qualified, cost-reserving adapter | No |
 | @image Video Generation | Retired | Retired | Not started | Not started | Unbounded vendor execution disabled; retained video credits do not enable execution | No |
 | @audio (ElevenLabs sound effects) | Retired | Retired | Not started | Not started | POST /sound-effects denied pending a qualified, bounded adapter | No |
@@ -65,7 +65,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Reminders (local JSON) | Backend stable | Backend stable | Not started | Not started | Reminder scheduling service | No |
 | Time & Math (get_time, calculate) | Backend stable | Backend stable | Not started | Not started | Utility tools service | No |
 | Consult Advisor (domain expert escalation) | Not started | Not started | Not started | Not started | No advisor tool is registered in the shared tool registry, so there is no user-invokable client affordance; advisor SSE event and stored-trace compatibility is retained alongside generic tool activity, and council roles are separate | No |
-| Spawn Agent / Spawn Multiple | Backend stable | Backend stable | Not started | Not started | Registered tool interfaces retained; execution currently returns capacity_unavailable before dispatch pending qualified bounded adapters | No |
+| Spawn Agent / Spawn Multiple | Retired | Retired | Not started | Not started | Registered tool interfaces retained; execution currently returns capacity_unavailable before dispatch pending qualified bounded adapters | No |
 | Memory Organization Controls | Backend stable | Backend stable | Not started | Not started | Memory management API | No |
 | Skill Management (CRUD) | Cross-client stable | Cross-client stable | Not started | Not started | GET/POST /skills, GET/PUT/DELETE /skills/{id}, PATCH endpoints, POST /skills/upload | No |
 | Interactive HTML Artifacts | Cross-client stable | Cross-client stable | Not started | Not started | Interactive artifact rendering service | No |

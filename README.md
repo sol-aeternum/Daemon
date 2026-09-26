@@ -6,7 +6,7 @@ Daemon is being built as one persistent assistant that carries your work forward
 
 **The work belongs to you—not to a device, chat thread, model, or execution environment.**
 
-This is the product direction. Today's repository provides the hosted assistant foundation: a web/PWA client, account identity, saved conversations, memory, research and document tools, and bounded provider routing. General durable task execution, reusable owned workspace resources and resource-scoped device companions remain in development planning. See [current status](#status) before treating the vision as shipped capability.
+This is the product direction. Today's repository provides the hosted assistant foundation: a web/PWA client, account identity, saved conversations, memory, document generation, bounded tools (research dispatch currently disabled) and bounded provider routing. General durable task execution, reusable owned workspace resources and resource-scoped device companions remain in development planning. See [current status](#status) before treating the vision as shipped capability.
 
 ## Why This Exists
 
@@ -158,9 +158,9 @@ Execution remains subject to account capacity and provider/service qualification
 - Per-request model override
 
 ### Memory
-- Encrypted conversation storage with pgvector similarity search
-- Background fact extraction through configured, policy-qualified models, followed by embedding, deduplication and storage
-- Composite scoring retrieval (similarity × recency × confidence)
+- Encrypted conversation and memory storage; pgvector schema retained with nullable vectors while provider embedding is disabled
+- Background fact extraction through configured, policy-qualified models, followed by deduplication and storage
+- Hybrid retrieval (vector similarity + BM25 + recency × confidence × trust); account-scoped lexical retrieval while no embedding route is approved
 - Memory injection into system prompt per conversation
 - `memory_read` / `memory_write` tools available to the orchestrator
 
