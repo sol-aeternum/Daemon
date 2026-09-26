@@ -11,18 +11,16 @@ import { ImageGallery } from './components/ImageGallery';
 import { PromptInput } from './components/PromptInput';
 import { ReferenceUpload } from './components/ReferenceUpload';
 import { useVideoGeneration } from './hooks/useVideoGeneration';
+import { useEntitlements } from '@/hooks/useEntitlements';
+import { PLAN_SURFACE, type PlanId } from '@/lib/entitlements';
 import { ensureAuthHeader } from '@/lib/auth';
 
 const DEFAULT_STUDIO_USER_ID = '00000000-0000-0000-0000-000000000001';
-const VALID_VIDEO_TIERS = ['free', 'starter', 'pro', 'max', 'byok'] as const;
-const VIDEO_ENABLED_TIERS = ['starter', 'pro', 'max', 'byok'] as const;
 
 type StudioMode = 'image' | 'video';
 type VideoSourceMode = 'text-to-video' | 'image-to-video';
 type VideoProvider = 'xai' | 'kling';
 type KlingModel = 'kling-v3-pro' | 'kling-o3-pro';
-type VideoTier = (typeof VALID_VIDEO_TIERS)[number];
-type VideoEnabledTier = (typeof VIDEO_ENABLED_TIERS)[number];
 
 type EstimateResponse = {
   credits_required?: number;
@@ -45,10 +43,6 @@ async function getAuthHeaders(): Promise<HeadersInit> {
   const header = await ensureAuthHeader();
   if (!header) return {};
   return { Authorization: header };
-}
-
-function isVideoEnabledTier(value: VideoTier): value is VideoEnabledTier {
-  return VIDEO_ENABLED_TIERS.includes(value as VideoEnabledTier);
 }
 
 function StudioHydration() {
@@ -89,8 +83,8 @@ function RetiredImageModePanel() {
         image workflow will return under the hosted-identity auth model.
       </p>
       <p className="mt-2 text-xs text-[var(--color-text-muted)]">
-        Video generation remains available on Starter and higher tiers. Existing
-        generated images can still appear in the gallery.
+        Video generation also requires a qualified, bounded provider before it
+        can run. Existing generated images can still appear in the gallery.
       </p>
     </section>
   );
@@ -134,7 +128,7 @@ function StudioModeToggle({
           title={
             videoEnabled
               ? ''
-              : 'Video generation is available on Starter and above'
+              : 'Video generation is not available on your account'
           }
         >
           <Film className="h-4 w-4" />
@@ -145,18 +139,19 @@ function StudioModeToggle({
   );
 }
 
-function RestrictedVideoModePanel({ tier }: { tier: VideoTier }) {
+function RestrictedVideoModePanel({ plan }: { plan: PlanId | null }) {
   return (
     <div className="space-y-4">
       <section className="rounded-2xl border border-[var(--color-status-warning)]/40 bg-[var(--color-status-warning-bg)]/30 p-4">
         <h2 className="text-sm font-semibold text-[var(--color-status-warning)]">
-          Upgrade required for video mode
+          Video mode is unavailable
         </h2>
         <p className="mt-2 text-xs text-[var(--color-text-secondary)]">
-          Video generation is disabled on the{' '}
-          <strong className="font-semibold">{tier}</strong> tier. Upgrade to{' '}
-          <strong className="font-semibold">Starter</strong> or higher to unlock
-          video creation.
+          {plan
+            ? `Video generation is not currently available for your ${PLAN_SURFACE[plan].label} account.`
+            : 'Your plan could not be confirmed, so video mode is hidden.'}{' '}
+          Chat and memory keep working. Video availability is decided by the
+          server on every request.
         </p>
       </section>
 
@@ -165,7 +160,7 @@ function RestrictedVideoModePanel({ tier }: { tier: VideoTier }) {
           Video options
         </h2>
         <p className="text-xs text-[var(--color-text-muted)]">
-          Video controls are unavailable for this tier.
+          Video controls are unavailable for this account.
         </p>
       </section>
     </div>
@@ -175,13 +170,7 @@ function RestrictedVideoModePanel({ tier }: { tier: VideoTier }) {
 const DURATION_CHOICES = [5, 10, 15, 20, 30] as const;
 const MAX_DURATION = 30;
 
-function VideoModeControls({
-  userId,
-  tier,
-}: {
-  userId: string;
-  tier: VideoEnabledTier;
-}) {
+function VideoModeControls({ userId }: { userId: string }) {
   const { referenceImage } = useStudio();
   const { generateVideo } = useVideoGeneration();
   const [duration, setDuration] = useState<number>(5);
@@ -210,9 +199,10 @@ function VideoModeControls({
     setIsEstimating(true);
     setEstimateError(null);
 
+    // No client-asserted plan: the server derives pricing and eligibility from
+    // the authenticated account.
     const query = new URLSearchParams({
       duration: String(duration),
-      tier,
       user_id: userId,
       provider: videoProvider,
     });
@@ -271,15 +261,7 @@ function VideoModeControls({
     }
 
     setIsEstimating(false);
-  }, [
-    apiBaseUrl,
-    duration,
-    tier,
-    userId,
-    videoProvider,
-    klingModel,
-    audioEnabled,
-  ]);
+  }, [apiBaseUrl, duration, userId, videoProvider, klingModel, audioEnabled]);
 
   useEffect(() => {
     void loadEstimate();
@@ -305,7 +287,6 @@ function VideoModeControls({
     await generateVideo({
       duration,
       sourceMode,
-      tier,
       userId,
       provider: videoProvider,
       estimatedCredits: estimate?.required,
@@ -317,7 +298,6 @@ function VideoModeControls({
     estimate?.required,
     generateVideo,
     sourceMode,
-    tier,
     userId,
     videoProvider,
     klingModel,
@@ -548,32 +528,33 @@ function VideoModeControls({
 function StudioControlPanel({
   mode,
   userId,
-  tier,
+  plan,
   videoEnabled,
 }: {
   mode: StudioMode;
   userId: string;
-  tier: VideoTier;
+  plan: PlanId | null;
   videoEnabled: boolean;
 }) {
   if (mode === 'image') {
     return <RetiredImageModePanel />;
   }
-  if (!videoEnabled || !isVideoEnabledTier(tier)) {
-    return <RestrictedVideoModePanel tier={tier} />;
+  if (!videoEnabled) {
+    return <RestrictedVideoModePanel plan={plan} />;
   }
-  return <VideoModeControls userId={userId} tier={tier} />;
+  return <VideoModeControls userId={userId} />;
 }
 
 function StudioPageContent({
   userId,
-  tier,
+  plan,
+  videoEnabled,
 }: {
   userId: string;
-  tier: VideoTier;
+  plan: PlanId | null;
+  videoEnabled: boolean;
 }) {
   const [mode, setMode] = useState<StudioMode>('image');
-  const videoEnabled = isVideoEnabledTier(tier);
 
   return (
     <div className="mx-auto w-full max-w-7xl px-4 py-6 md:px-6 md:py-8">
@@ -588,9 +569,8 @@ function StudioPageContent({
       {!videoEnabled && (
         <section className="mb-4 rounded-xl border border-[var(--color-status-warning)]/40 bg-[var(--color-status-warning-bg)]/30 px-3 py-2">
           <p className="text-xs text-[var(--color-text-secondary)]">
-            Video mode is locked on your current tier. Upgrade to{' '}
-            <strong className="font-semibold">Starter</strong> or above to
-            enable video generation.
+            Video generation is unavailable for this account, so its controls
+            are hidden. Chat and memory are unaffected.
           </p>
         </section>
       )}
@@ -603,7 +583,7 @@ function StudioPageContent({
           <StudioControlPanel
             mode={mode}
             userId={userId}
-            tier={tier}
+            plan={plan}
             videoEnabled={videoEnabled}
           />
         </div>
@@ -614,7 +594,7 @@ function StudioPageContent({
           <StudioControlPanel
             mode={mode}
             userId={userId}
-            tier={tier}
+            plan={plan}
             videoEnabled={videoEnabled}
           />
         </aside>
@@ -628,9 +608,8 @@ function StudioPageContent({
 
 function StudioView() {
   const userId = DEFAULT_STUDIO_USER_ID;
-  const tier: VideoTier = 'starter';
-  const videoEnabled = isVideoEnabledTier(tier);
-
+  const { plan, can } = useEntitlements();
+  const videoEnabled = can('video_generation');
   return (
     <SidebarShell
       section="studio"
@@ -644,13 +623,17 @@ function StudioView() {
           />
         ) : (
           <span className="rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-2 py-1 text-xs text-[var(--color-text-muted)]">
-            Video locked
+            Video unavailable
           </span>
         )
       }
     >
       <StudioProvider>
-        <StudioPageContent userId={userId} tier={tier} />
+        <StudioPageContent
+          userId={userId}
+          plan={plan}
+          videoEnabled={videoEnabled}
+        />
       </StudioProvider>
     </SidebarShell>
   );

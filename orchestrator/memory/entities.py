@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-import litellm
+from orchestrator.compute_runtime import guarded_completion
 
 from orchestrator.config import get_settings
 from orchestrator.memory.embedding import embed_query
@@ -242,7 +242,7 @@ def _extract_from_slot(text: str) -> str | None:
 
 
 def _get_provider_call_params(model: str) -> dict[str, Any]:
-    """Get provider configuration for litellm.acompletion call."""
+    """Get provider configuration for guarded_completion call."""
     settings = get_settings()
     provider_config = settings.get_provider_config("openrouter")
 
@@ -732,7 +732,7 @@ async def confirm_merge_llm(
             }
         )
 
-        response = await litellm.acompletion(**call_params)
+        response = await guarded_completion(**call_params)
 
         response_data: Any = response
         model_dump = getattr(response, "model_dump", None)

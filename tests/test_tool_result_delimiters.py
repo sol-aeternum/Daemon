@@ -351,7 +351,7 @@ async def test_tool_result_is_wrapped_when_native_tools_enabled(
 
         return _stream_tool_round()
 
-    monkeypatch.setattr("orchestrator.tools.completion.litellm.acompletion", _capturing_acompletion)
+    monkeypatch.setattr("orchestrator.tools.completion.guarded_completion", _capturing_acompletion)
 
     events = [
         event
@@ -444,7 +444,7 @@ async def test_tool_result_is_wrapped_in_legacy_assistant_path(
     legacy_registry = _LegacyToolRegistry()
     legacy_registry.register(_EchoTool())
 
-    monkeypatch.setattr("orchestrator.tools.completion.litellm.acompletion", _legacy_acompletion)
+    monkeypatch.setattr("orchestrator.tools.completion.guarded_completion", _legacy_acompletion)
 
     events = [
         event

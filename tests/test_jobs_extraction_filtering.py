@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import json
 import uuid
+
 from datetime import datetime, timezone
 from typing import cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
 
 import pytest
 
 from orchestrator.memory.extraction import messages_to_extraction_text
 from orchestrator.memory.store import MemoryStore
 from orchestrator.worker.jobs import _is_memory_write_artifact, extract_memories
+from tests.qualified_compute import install_qualified_compute
 
 
 def test_is_memory_write_artifact_detects_tool_calls() -> None:
@@ -31,11 +34,15 @@ def test_is_memory_write_artifact_ignores_regular_messages() -> None:
 
 
 @pytest.mark.asyncio
-async def test_extract_memories_filters_memory_write_artifacts() -> None:
-    store = AsyncMock()
-    ctx = cast(dict[str, object], {"store": store})
+async def test_extract_memories_filters_memory_write_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_qualified_compute(monkeypatch)
     user_id = uuid.uuid4()
     conversation_id = uuid.uuid4()
+    store = MagicMock(spec=MemoryStore)
+    store.get_conversation = AsyncMock(return_value={"user_id": user_id})
+    ctx: dict[str, object] = {"store": store, "db_pool": object()}
 
     messages_json = json.dumps(
         [
@@ -93,6 +100,9 @@ def test_extraction_text_uses_bracketed_role_markers() -> None:
 @pytest.mark.asyncio
 async def test_artifact_only_page_advances_filter_checkpoint() -> None:
     store = object.__new__(MemoryStore)
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    store.get_conversation = AsyncMock(return_value={"user_id": user_id})
     store.consume_summary_continuation_pending = AsyncMock(return_value=False)
     store.get_last_extraction_cursor = AsyncMock(return_value=(None, None))
     store.get_messages_after_cursor = AsyncMock(
@@ -107,13 +117,13 @@ async def test_artifact_only_page_advances_filter_checkpoint() -> None:
         ]
     )
     store.log_extraction = AsyncMock(return_value={"id": "checkpoint"})
-    ctx = cast(dict[str, object], {"store": store})
+    ctx = cast(dict[str, object], {"store": store, "db_pool": object()})
 
     with (
         patch("orchestrator.worker.jobs.MemoryStore", object),
         patch("orchestrator.worker.jobs.process_extraction", new_callable=AsyncMock) as process,
     ):
-        result = await extract_memories(ctx, uuid.uuid4(), uuid.uuid4())
+        result = await extract_memories(ctx, user_id, conversation_id)
 
     process.assert_not_awaited()
     store.log_extraction.assert_awaited_once()

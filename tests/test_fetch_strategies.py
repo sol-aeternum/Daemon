@@ -86,8 +86,22 @@ def fetch_cache():
 
 
 @pytest.fixture
-def fetch_service(fetch_policy, fetch_cache):
+def fetch_service(fetch_policy, fetch_cache, monkeypatch):
     service = FetchService(policy=fetch_policy, cache=fetch_cache)
+    # Exercise legacy strategy-chain SSRF boundaries with injected test doubles;
+    # production's default chain deliberately exposes direct fetch only.
+    service.jina_strategy = JinaReaderStrategy(fetch_policy)
+    service.crawl4ai_strategy = MagicMock()
+    service.archive_strategy = ArchiveOrgStrategy(fetch_policy)
+    monkeypatch.setattr(
+        service,
+        "_default_strategy_chain",
+        lambda: (
+            ("direct", service.direct_strategy),
+            ("jina", service.jina_strategy),
+            ("archive", service.archive_strategy),
+        ),
+    )
     return service
 
 
@@ -1321,8 +1335,9 @@ class TestUrlExtraction:
 
 class TestFetchService:
     @pytest.mark.asyncio
-    async def test_strategy_chain_fallback(self, fetch_service):
-        # Mock strategies to fail except the last one
+    async def test_unpriced_assisted_fetch_is_not_a_fallback(self, fetch_policy, fetch_cache):
+        # A failed direct fetch cannot trigger vendor-assisted extraction.
+        fetch_service = FetchService(policy=fetch_policy, cache=fetch_cache)
         fetch_service.direct_strategy = MagicMock()
         fetch_service.direct_strategy.fetch = AsyncMock(return_value=None)
 
@@ -1352,12 +1367,12 @@ class TestFetchService:
 
         result = await fetch_service.fetch("https://example.com")
 
-        assert result is not None
-        assert result.strategy_used == "archive"
+        assert result is None
         fetch_service.direct_strategy.fetch.assert_called_once_with("https://example.com")
-        fetch_service.jina_strategy.fetch.assert_called_once_with("https://example.com")
+
+        fetch_service.jina_strategy.fetch.assert_not_called()
         fetch_service.crawl4ai_strategy.fetch.assert_not_called()
-        fetch_service.archive_strategy.fetch.assert_called_once_with("https://example.com")
+        fetch_service.archive_strategy.fetch.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_ssrf_violation_stops_fallback_chain(self, fetch_service):
@@ -1532,6 +1547,13 @@ class TestFetchService:
     @pytest.mark.asyncio
     async def test_youtube_url_shortcircuit(self, fetch_service):
         # Mock YouTube strategy to succeed
+        for strategy in (
+            fetch_service.direct_strategy,
+            fetch_service.jina_strategy,
+            fetch_service.crawl4ai_strategy,
+            fetch_service.archive_strategy,
+        ):
+            strategy.fetch = AsyncMock()
         fetch_service.youtube_strategy = MagicMock()
         fetch_service.youtube_strategy.fetch = AsyncMock(
             return_value=FetchResult(
@@ -1553,11 +1575,14 @@ class TestFetchService:
 
         assert result is not None
         assert result.strategy_used == "youtube"
-        # Ensure other strategies were not called (they should be None for YouTube URLs)
-        assert fetch_service.direct_strategy is not None
-        assert fetch_service.jina_strategy is not None
-        assert fetch_service.crawl4ai_strategy is not None
-        assert fetch_service.archive_strategy is not None
+        # YouTube skips all other configured test strategies.
+        for strategy in (
+            fetch_service.direct_strategy,
+            fetch_service.jina_strategy,
+            fetch_service.crawl4ai_strategy,
+            fetch_service.archive_strategy,
+        ):
+            strategy.fetch.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_youtube_url_shortcircuit_with_text_extract(self, fetch_service):

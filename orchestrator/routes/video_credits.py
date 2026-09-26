@@ -11,7 +11,7 @@ from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.db import get_app_state, AppState
 from db.video_credits import Transaction
 from orchestrator.config import Settings, get_settings
-from config.video_pricing import estimate_cost
+from orchestrator.entitlements import EntitlementService
 
 router = APIRouter(prefix="/video-credits", tags=["video_credits"])
 
@@ -24,13 +24,6 @@ def require_admin_api_key(settings: Settings, authorization: str | None) -> None
     token = authorization.removeprefix("Bearer ").strip()
     if not hmac.compare_digest(token.encode(), settings.daemon_admin_api_key.encode()):
         raise HTTPException(status_code=403, detail="Invalid admin bearer token")
-
-
-def get_bound_tier(settings: Settings) -> str:
-    tier = settings.default_tier.lower().strip()
-    if tier not in VALID_TIERS:
-        raise HTTPException(status_code=500, detail="Invalid configured default tier")
-    return tier
 
 
 class BalanceResponse(BaseModel):
@@ -156,26 +149,20 @@ async def grant_credits(
     }
 
 
-VALID_TIERS = {"free", "starter", "pro", "max", "byok"}
 VALID_VIDEO_PROVIDERS = {"xai", "fal"}
 
 
 @router.get("/estimate", response_model=EstimateResponse)
 async def estimate_video_cost(
     duration: int = Query(..., description="Video duration in seconds", ge=1),
-    tier: str = Query(..., description="User tier (free, starter, pro, max, or byok)"),
     provider: str = Query("xai", description="Video provider (xai, kling)"),
     resolution: str | None = Query(None, description="Requested output resolution"),
     kling_model: str | None = Query(None, description="Kling model (kling-o3-pro, kling-v3-pro)"),
     audio_enabled: bool = Query(False, description="Whether audio is enabled for Kling"),
     app_state: AppState = Depends(get_app_state),
-    settings: Settings = Depends(get_settings),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ):
-    """Estimate credits required for a video of given duration and tier."""
-    tier_lower = tier.lower().strip()
-    if tier_lower not in VALID_TIERS:
-        raise HTTPException(status_code=400, detail="Invalid tier")
+    """Estimate credits for the authenticated account's video entitlement."""
 
     provider_name = provider.lower().strip()
     if provider_name not in VALID_VIDEO_PROVIDERS and provider_name != "kling":
@@ -183,47 +170,15 @@ async def estimate_video_cost(
 
     if app_state.video_credits_dal is None:
         raise HTTPException(status_code=503, detail="Video credits service unavailable")
-
-    tier_config = settings.get_tier_config(tier_lower)
-    if not tier_config.tier_video_enabled:
+    if app_state.db_pool is None:
+        raise HTTPException(status_code=503, detail="Entitlements unavailable")
+    policy = await EntitlementService(app_state.db_pool).resolve(auth.user_id)
+    if "video_generation" not in policy.capabilities:
         raise HTTPException(
             status_code=403,
-            detail=f"Video generation is not available for {tier_lower.capitalize()} tier",
+            detail={"code": "capability_unavailable", "message": "Video generation unavailable"},
         )
-
-    if (
-        tier_config.tier_video_max_duration is not None
-        and duration > tier_config.tier_video_max_duration
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=(f"Duration exceeds tier limit ({tier_config.tier_video_max_duration}s)"),
-        )
-
-    normalized_kling_model = "o3-pro"
-    if kling_model:
-        model_lower = kling_model.lower().strip()
-        if model_lower == "kling-v3-pro":
-            normalized_kling_model = "v3-pro"
-        elif model_lower in ("kling-o3-pro", "o3-pro"):
-            normalized_kling_model = "o3-pro"
-
-    # Get user's current balance
-    current_balance = await app_state.video_credits_dal.get_balance(auth.user_id)
-
-    # Calculate credits required
-    pricing_provider = "fal" if provider_name == "kling" else provider_name
-    credits_required = estimate_cost(
-        duration_seconds=duration,
-        tier=tier_lower,
-        provider=pricing_provider,
-        resolution=resolution,
-        kling_model=normalized_kling_model,
-        audio_enabled=audio_enabled,
-    )
-
-    return EstimateResponse(
-        credits_required=credits_required,
-        current_balance=current_balance,
-        sufficient=current_balance >= credits_required,
+    raise HTTPException(
+        status_code=503,
+        detail={"code": "route_unavailable", "message": "Approved video route unavailable"},
     )

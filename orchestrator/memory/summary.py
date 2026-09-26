@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-import litellm
+from orchestrator.compute_runtime import guarded_completion
 
 from orchestrator.config import get_settings
 from orchestrator.memory.store import MemoryStore
@@ -238,7 +238,7 @@ async def _generate_or_update_summary_result(
             )
             pre_persist_continuation = finalizing_after > (persisted_baseline + len(messages))
 
-        response = await litellm.acompletion(**call_params)
+        response = await guarded_completion(**call_params)
 
         # Extract content
         content = _extract_content(response)

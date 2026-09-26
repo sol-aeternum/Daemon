@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import base64
 import binascii
 import hashlib
@@ -11,15 +12,12 @@ import os
 import stat
 from collections.abc import Callable
 from pathlib import Path
+
 from typing import Any
 
 from orchestrator.artifacts import ArtifactOwnerError, user_artifact_directory
 from orchestrator.tools.registry import Tool
-from orchestrator.config import get_settings
-from orchestrator.subagents.base import SubagentType, SubagentManager
-from orchestrator.subagents.research import ResearchSubagent
-from orchestrator.subagents.image import ImageSubagent
-from orchestrator.subagents.audio import AudioSubagent
+
 
 logger = logging.getLogger(__name__)
 
@@ -296,45 +294,6 @@ def _persist_audio_result(
     return result_dict
 
 
-# Global subagent manager instance
-_subagent_manager: SubagentManager | None = None
-
-
-def get_subagent_manager(db_pool: Any | None = None) -> SubagentManager:
-    """Get or initialize the global subagent manager."""
-    global _subagent_manager
-    if _subagent_manager is None:
-        settings = get_settings()
-        tier_config = settings.get_tier_config()
-        image_model = (
-            tier_config.image_agent.model
-            if tier_config.image_agent
-            else settings.tier_pro_image_model
-        )
-        shared_config = {
-            "brave_api_key": settings.brave_api_key,
-            "elevenlabs_api_key": settings.elevenlabs_api_key,
-            "openrouter_api_key": settings.openrouter_api_key,
-            "openrouter_base_url": settings.openrouter_base_url,
-            "openrouter_image_model": settings.openrouter_image_model,
-            "image_model": image_model,
-            "xai_api_key": settings.xai_api_key,
-            "fal_api_key": settings.fal_key,
-            "tier_config": tier_config,  # Pass tier config for video generation checks
-            "db_pool": db_pool,
-        }
-        _subagent_manager = SubagentManager()
-        # Register default subagents
-        _subagent_manager.register(ResearchSubagent(shared_config))
-        _subagent_manager.register(ImageSubagent(shared_config))
-        _subagent_manager.register(AudioSubagent(shared_config))
-    elif db_pool is not None:
-        image_agent = _subagent_manager.get(SubagentType.IMAGE)
-        if image_agent is not None:
-            image_agent.config["db_pool"] = db_pool
-    return _subagent_manager
-
-
 class SpawnAgentTool(Tool):
     """Tool to spawn specialized subagents for complex tasks."""
 
@@ -382,74 +341,21 @@ class SpawnAgentTool(Tool):
         self,
         *,
         db_pool: Any | None = None,
-        user_id: Any = None,
         trusted_spawn_context: dict[str, Any] | None = None,
+        user_id: Any | None = None,
     ) -> None:
         self._db_pool = db_pool
         self._user_id = user_id
         self._trusted_spawn_context = trusted_spawn_context or {}
 
-    def _apply_trusted_context(
-        self,
-        agent_type: SubagentType,
-        context: dict[str, Any] | None,
-    ) -> dict[str, Any] | None:
-        if agent_type == SubagentType.IMAGE:
-            merged_context: dict[str, Any] = dict(context or {})
-            trusted_video = self._trusted_spawn_context.get("video")
-            video_requested = merged_context.get("mode") == "video"
-            metadata_requested = (
-                isinstance(trusted_video, dict) and trusted_video.get("mode") == "video"
-            )
-            if isinstance(trusted_video, dict) and (video_requested or metadata_requested):
-                merged_context["mode"] = "video"
-                for key in (
-                    "duration",
-                    "tier",
-                    "user_id",
-                    "source_mode",
-                    "reference_image_url",
-                    "reference_image_id",
-                    "video_provider",
-                    "kling_model",
-                    "audio_enabled",
-                ):
-                    value = trusted_video.get(key)
-                    if value is not None:
-                        merged_context[key] = value
-                reference_image_url = trusted_video.get("reference_image_url")
-                if reference_image_url is not None:
-                    merged_context["source_image_url"] = reference_image_url
-            return merged_context
-        return context
-
     async def execute(self, **kwargs: Any) -> str:
         """Execute the spawn agent tool."""
-        agent_type = kwargs.get("agent_type", "")
-        task = kwargs.get("task", "")
-        context = kwargs.get("context")
-        session_id = kwargs.get("session_id")
-
-        try:
-            subagent_type = SubagentType(agent_type.lower())
-        except ValueError:
-            available = [t.value for t in SubagentType]
-            return json.dumps(
-                {
-                    "error": f"Unknown agent_type: {agent_type}",
-                    "available_types": available,
-                }
-            )
-
-        context = self._apply_trusted_context(subagent_type, context)
-
-        manager = get_subagent_manager(db_pool=self._db_pool)
-        result = await manager.spawn(subagent_type, task, context, session_id)
-        result_dict = result.to_dict()
-        result_dict = _persist_image_result(result_dict, self._user_id)
-        result_dict = _persist_audio_result(result_dict, self._user_id)
-
-        return json.dumps(result_dict)
+        # Subagent side effects (search, image, audio, video) have independent
+        # provider prices. Until those routes carry priced reservations, fail
+        # before dispatch rather than bypassing the account budget.
+        return json.dumps(
+            {"error": "Subagent compute capacity unavailable", "code": "capacity_unavailable"}
+        )
 
 
 class SpawnMultipleTool(Tool):
@@ -491,115 +397,16 @@ class SpawnMultipleTool(Tool):
         self,
         *,
         db_pool: Any | None = None,
-        user_id: Any = None,
         trusted_spawn_context: dict[str, Any] | None = None,
+        user_id: Any | None = None,
     ) -> None:
         self._db_pool = db_pool
         self._user_id = user_id
         self._trusted_spawn_context = trusted_spawn_context or {}
 
-    def _apply_trusted_context(
-        self,
-        agent_type: SubagentType,
-        context: dict[str, Any] | None,
-    ) -> dict[str, Any] | None:
-        if agent_type == SubagentType.IMAGE:
-            merged_context: dict[str, Any] = dict(context or {})
-            trusted_video = self._trusted_spawn_context.get("video")
-            video_requested = merged_context.get("mode") == "video"
-            metadata_requested = (
-                isinstance(trusted_video, dict) and trusted_video.get("mode") == "video"
-            )
-            if isinstance(trusted_video, dict) and (video_requested or metadata_requested):
-                merged_context["mode"] = "video"
-                for key in (
-                    "duration",
-                    "tier",
-                    "user_id",
-                    "source_mode",
-                    "reference_image_url",
-                    "reference_image_id",
-                    "video_provider",
-                    "kling_model",
-                    "audio_enabled",
-                ):
-                    value = trusted_video.get(key)
-                    if value is not None:
-                        merged_context[key] = value
-                reference_image_url = trusted_video.get("reference_image_url")
-                if reference_image_url is not None:
-                    merged_context["source_image_url"] = reference_image_url
-            return merged_context
-        return context
-
     async def execute(self, **kwargs: Any) -> str:
         """Execute multiple subagents in parallel."""
-        agents = kwargs.get("agents", [])
-
-        spawns: list[tuple[SubagentType, str, dict[str, Any] | None, str | None]] = []
-        for agent_spec in agents:
-            agent_type_str = agent_spec.get("agent_type", "")
-            try:
-                agent_type = SubagentType(agent_type_str.lower())
-            except ValueError:
-                spawns.append(
-                    (
-                        SubagentType.IMAGE,
-                        "",
-                        {
-                            "_spawn_error": f"Unknown agent_type: {agent_type_str}",
-                            "_orig_agent_type": agent_type_str,
-                        },
-                        None,
-                    )
-                )
-                continue
-            task = agent_spec.get("task", "")
-            context = self._apply_trusted_context(agent_type, agent_spec.get("context"))
-            session_id = agent_spec.get("session_id")
-            spawns.append((agent_type, task, context, session_id))
-
-        valid_spawns = [
-            (at, t, c, sid)
-            for at, t, c, sid in spawns
-            if not (isinstance(c, dict) and ("_spawn_error" in c or "_spawn_rejected" in c))
-        ]
-
-        rejected = [
-            {
-                "agent_type": c.get("_orig_agent_type", at.value),
-                "task": t,
-                "session_id": sid,
-                "result": c,
-            }
-            for at, t, c, sid in spawns
-            if isinstance(c, dict) and ("_spawn_error" in c or "_spawn_rejected" in c)
-        ]
-
-        if not valid_spawns:
-            return json.dumps(
-                {
-                    "error": "No valid agents to spawn",
-                    "agents_spawned": 0,
-                    "rejected": rejected,
-                    "results": [],
-                }
-            )
-
-        manager = get_subagent_manager(db_pool=self._db_pool)
-        results = []
-        for agent_type, task, context, session_id in valid_spawns:
-            result = await manager.spawn(agent_type, task, context, session_id)
-            result_dict = result.to_dict()
-            result_dict = _persist_image_result(result_dict, self._user_id)
-            result_dict = _persist_audio_result(result_dict, self._user_id)
-            results.append(result_dict)
 
         return json.dumps(
-            {
-                "parallel_execution": True,
-                "agents_spawned": len(results),
-                "rejected": rejected,
-                "results": results,
-            }
+            {"error": "Parallel compute capacity unavailable", "code": "capacity_unavailable"}
         )

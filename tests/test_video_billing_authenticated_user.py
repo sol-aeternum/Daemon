@@ -1,14 +1,11 @@
-"""Regression tests for authenticated video billing (issue #232).
-
-Billing identity and tier must come from trusted request state on every video
-tool invocation, including invocations chosen by the model without Studio's
-optional video metadata.
-"""
+"""Authenticated account scope and disabled vendor generation cannot be overridden."""
 
 from __future__ import annotations
 
 import inspect
+import json
 import uuid
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -20,163 +17,89 @@ from orchestrator import main as orchestrator_main
 from orchestrator.auth import AuthenticatedDevice
 from orchestrator.config import get_settings
 from orchestrator.models import OpenAIChatRequest, OpenAIMessage
-from orchestrator.subagents.base import SubagentType
 from orchestrator.tools.spawn import SpawnAgentTool, SpawnMultipleTool
+from tests.qualified_compute import install_qualified_compute
 
 
-def _video_metadata(**overrides):
-    """Return a minimal, tier-eligible video_generation metadata block."""
-    base = {
-        "duration": 5,
-        "source_mode": "text-to-video",
-        "provider": "kling",
-        "kling_model": "kling-v3-pro",
-    }
-    base.update(overrides)
-    return {"video_generation": base}
-
-
-def test_build_trusted_spawn_context_uses_authenticated_user_id():
-    """When authenticated_user_id is supplied, the trust context reflects it."""
-    settings = get_settings()
+def test_spawn_context_binds_authenticated_user_without_metadata() -> None:
     authenticated = uuid.uuid4()
-
-    context = orchestrator_main._build_trusted_spawn_context(
-        settings,
-        _video_metadata(),
-        authenticated_user_id=authenticated,
-    )
-
+    context = orchestrator_main._build_trusted_spawn_context(authenticated, None)
     assert context is not None
-    assert context["video"]["user_id"] == str(authenticated)
+    assert context == {"video": {"user_id": str(authenticated)}}
+    assert "tier" not in context["video"]
 
 
-def test_build_trusted_spawn_context_binds_identity_without_video_metadata():
-    """Ordinary chat requests still carry immutable video billing identity.
-
-    The model may decide to invoke video generation without Studio's optional
-    ``metadata.video_generation`` block, so authentication cannot be conditional
-    on that metadata being present.
-    """
-    settings = get_settings()
+def test_spawn_context_cannot_take_identity_or_tier_from_video_metadata() -> None:
     authenticated = uuid.uuid4()
-
+    forged = uuid.uuid4()
     context = orchestrator_main._build_trusted_spawn_context(
-        settings,
-        None,
-        authenticated_user_id=authenticated,
+        authenticated,
+        {"video_generation": {"user_id": str(forged), "tier": "byok", "duration": 7}},
     )
-
-    assert context is not None
-    assert context["video"]["user_id"] == str(authenticated)
-    assert context["video"]["tier"] == settings.default_tier.lower().strip()
-    assert "mode" not in context["video"]
-
-
-def test_authenticated_user_id_overrides_default_when_supplied():
-    """Authenticated identity strictly wins over any model-supplied identity."""
-    settings = get_settings()
-    authenticated = uuid.UUID("11111111-2222-3333-4444-555555555555")
-
-    context = orchestrator_main._build_trusted_spawn_context(
-        settings,
-        _video_metadata(duration=7),
-        authenticated_user_id=authenticated,
-    )
-
     assert context is not None
     assert context["video"]["user_id"] == str(authenticated)
     assert context["video"]["duration"] == 7
+    assert "tier" not in context["video"]
 
 
-def test_build_trusted_spawn_context_requires_authenticated_user():
-    """There is no hosted/default-account fallback for generation billing."""
+def test_spawn_context_requires_authenticated_identity() -> None:
     parameter = inspect.signature(orchestrator_main._build_trusted_spawn_context).parameters[
-        "authenticated_user_id"
+        "user_id"
     ]
-
     assert parameter.default is inspect.Parameter.empty
 
 
-def test_spawn_agent_overrides_untrusted_video_billing_context():
-    authenticated = uuid.uuid4()
-    trusted = {"video": {"user_id": str(authenticated), "tier": "pro"}}
-    tool = SpawnAgentTool(trusted_spawn_context=trusted)
-
-    context = tool._apply_trusted_context(
-        SubagentType.IMAGE,
-        {
-            "mode": "video",
-            "user_id": str(uuid.uuid4()),
-            "tier": "byok",
-            "duration": 5,
-        },
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_type", [SpawnAgentTool, SpawnMultipleTool])
+@pytest.mark.parametrize("mode", ["video", "image"])
+@pytest.mark.parametrize("tier", ["pro", "byok"])
+async def test_spawn_tools_deny_forged_vendor_billing_context(tool_type, mode, tier) -> None:
+    owner = uuid.uuid4()
+    forged = uuid.uuid4()
+    tool = tool_type(
+        user_id=owner,
+        trusted_spawn_context={"video": {"user_id": str(owner)}},
     )
-
-    assert context is not None
-    assert context["mode"] == "video"
-    assert context["user_id"] == str(authenticated)
-    assert context["tier"] == "pro"
-
-
-def test_spawn_multiple_overrides_untrusted_video_billing_context():
-    authenticated = uuid.uuid4()
-    trusted = {"video": {"user_id": str(authenticated), "tier": "starter"}}
-    tool = SpawnMultipleTool(trusted_spawn_context=trusted)
-
-    context = tool._apply_trusted_context(
-        SubagentType.IMAGE,
-        {"mode": "video", "user_id": str(uuid.uuid4()), "tier": "byok"},
-    )
-
-    assert context is not None
-    assert context["user_id"] == str(authenticated)
-    assert context["tier"] == "starter"
-
-
-def test_trusted_billing_context_does_not_turn_image_request_into_video():
-    trusted = {"video": {"user_id": str(uuid.uuid4()), "tier": "pro"}}
-    tool = SpawnAgentTool(trusted_spawn_context=trusted)
-
-    context = tool._apply_trusted_context(SubagentType.IMAGE, {"mode": "image"})
-
-    assert context == {"mode": "image"}
-
-
-def test_trusted_billing_context_allows_byok_without_charging_another_user():
-    authenticated = uuid.uuid4()
-    trusted = {"video": {"user_id": str(authenticated), "tier": "byok"}}
-    tool = SpawnAgentTool(trusted_spawn_context=trusted)
-
-    context = tool._apply_trusted_context(
-        SubagentType.IMAGE,
-        {"mode": "video", "user_id": str(uuid.uuid4()), "tier": "pro"},
-    )
-
-    assert context is not None
-    assert context["user_id"] == str(authenticated)
-    assert context["tier"] == "byok"
+    forged_context = {"mode": mode, "user_id": str(forged), "tier": tier}
+    if tool_type is SpawnAgentTool:
+        result = await tool.execute(agent_type="image", task="generate", context=forged_context)
+    else:
+        result = await tool.execute(
+            agents=[{"agent_type": "image", "task": "generate", "context": forged_context}]
+        )
+    assert json.loads(result)["code"] == "capacity_unavailable"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [True, False])
-async def test_openai_chat_completions_threads_authenticated_billing_context(monkeypatch, stream):
+async def test_openai_chat_completions_threads_authenticated_account_context(
+    monkeypatch: pytest.MonkeyPatch, stream: bool
+) -> None:
     authenticated = uuid.uuid4()
     auth = AuthenticatedDevice(
         user_id=authenticated,
         device_id=uuid.uuid4(),
         session_id=uuid.uuid4(),
     )
+    install_qualified_compute(monkeypatch)
     captured: list[dict[str, Any]] = []
 
-    async def fake_stream_sse_chat(**kwargs):
+    async def fake_account_chat_frames(pool, owner, **kwargs):
+        assert pool is not None
+        assert owner == authenticated
         captured.append(kwargs)
         yield 'event: token\ndata: {"data":{"delta":"ok"}}\n\n'
         yield 'event: final\ndata: {"data":{}}\n\n'
 
-    monkeypatch.setattr(orchestrator_main, "stream_sse_chat", fake_stream_sse_chat)
+    monkeypatch.setattr(orchestrator_main, "_account_chat_frames", fake_account_chat_frames)
     monkeypatch.setattr(orchestrator_main, "build_skill_index", AsyncMock(return_value=""))
     monkeypatch.setattr(orchestrator_main, "_enforce_chat_rate_limit", AsyncMock())
+    monkeypatch.setattr(
+        orchestrator_main.app.state,
+        "app_state",
+        SimpleNamespace(db_pool=object(), memory_store=None),
+        raising=False,
+    )
 
     request = Request(
         {
@@ -189,16 +112,12 @@ async def test_openai_chat_completions_threads_authenticated_billing_context(mon
         }
     )
     payload = OpenAIChatRequest(
-        model="default",
+        model="openrouter/google/gemini-2.5-flash",
         messages=[OpenAIMessage(role="user", content="generate a video")],
         stream=stream,
     )
-
     response = await orchestrator_main.openai_chat_completions(
-        payload,
-        request,
-        get_settings(),
-        auth,
+        payload, request, get_settings(), auth
     )
     if stream:
         assert isinstance(response, StreamingResponse)
@@ -207,8 +126,4 @@ async def test_openai_chat_completions_threads_authenticated_billing_context(mon
 
     assert len(captured) == 1
     assert captured[0]["user_id"] == authenticated
-    trusted_context = captured[0]["trusted_spawn_context"]
-    assert isinstance(trusted_context, dict)
-    video_context = trusted_context["video"]
-    assert isinstance(video_context, dict)
-    assert video_context["user_id"] == str(authenticated)
+    assert captured[0]["trusted_spawn_context"] == {"video": {"user_id": str(authenticated)}}

@@ -11,6 +11,8 @@ from typing import Any
 import httpx
 
 from orchestrator.config import get_settings
+from orchestrator.entitlements.errors import PolicyError
+from orchestrator.entitlements.policy import load_inference_policy
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +234,26 @@ def _openrouter_model_identity(model: str) -> str:
     return f"openrouter:{model}"
 
 
+#: Inference-policy tool service that must be approved before private memory
+#: text is sent to each embedding provider. A provider without an entry has no
+#: qualified route and is denied, like any tool service absent from the policy.
+_EMBEDDING_TOOL_SERVICES: dict[str, str] = {"voyage": "voyage-embeddings"}
+
+
+def _require_approved_embedding_service(provider: str) -> None:
+    """Deny unless the inference policy currently approves ``provider``'s service."""
+    service_id = _EMBEDDING_TOOL_SERVICES.get(provider)
+    try:
+        approved = service_id is not None and load_inference_policy().is_tool_service_approved(
+            service_id
+        )
+    except PolicyError:
+        approved = False
+    if not approved:
+        # Lexical memory retrieval stays available without embeddings.
+        raise EmbeddingConfigurationError("Approved embedding route unavailable")
+
+
 async def _post_embeddings(
     *,
     api_key: str,
@@ -240,6 +262,7 @@ async def _post_embeddings(
     input_type: str,
     output_dimension: int,
 ) -> dict[str, Any]:
+    _require_approved_embedding_service("voyage")
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
             "https://api.voyageai.com/v1/embeddings",
@@ -265,6 +288,7 @@ async def _post_openai_embeddings(
     model: str,
     output_dimension: int,
 ) -> dict[str, Any]:
+    _require_approved_embedding_service("openai")
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
             "https://api.openai.com/v1/embeddings",
@@ -290,6 +314,7 @@ async def _post_openrouter_embeddings(
     input_type: str,
     output_dimension: int,
 ) -> dict[str, Any]:
+    _require_approved_embedding_service("openrouter")
     settings = get_settings()
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -375,6 +400,8 @@ async def _embed_with_voyage_retry(
                 texts_count=len(texts),
                 output_dimension=output_dimension,
             )
+        except EmbeddingConfigurationError:
+            raise
         except Exception as error:
             last_error = error
             if attempt < MAX_RETRIES - 1:
@@ -419,6 +446,8 @@ async def _embed_with_openai_retry(
                 texts_count=len(texts),
                 output_dimension=output_dimension,
             )
+        except EmbeddingConfigurationError:
+            raise
         except Exception as error:
             last_error = error
             if attempt < MAX_RETRIES - 1:
@@ -465,6 +494,8 @@ async def _embed_with_openrouter_retry(
                 texts_count=len(texts),
                 output_dimension=output_dimension,
             )
+        except EmbeddingConfigurationError:
+            raise
         except Exception as error:
             last_error = error
             if attempt < MAX_RETRIES - 1:
@@ -532,6 +563,8 @@ async def _embed_texts(
                 model=model,
                 storage_model=model,
             )
+        except EmbeddingConfigurationError:
+            raise
         except Exception as error:
             _record_provider_failure("voyage")
             logger.warning("Voyage embedding provider failed; trying fallback", exc_info=True)
@@ -553,6 +586,8 @@ async def _embed_texts(
                     valid_texts,
                     input_type=input_type,
                 )
+        except EmbeddingConfigurationError:
+            raise
         except Exception as error:
             last_error = error
             provider_errors.append(f"{provider}: {error}")

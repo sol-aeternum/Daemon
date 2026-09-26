@@ -429,7 +429,7 @@ async def test_concurrent_debit_allows_only_one_success(
     assert sum(1 for tx in fake_state.transactions if tx["type"] == "spend") == 1
 
 
-def test_estimate_cost_applies_tier_discounts() -> None:
-    assert estimate_cost(5, tier="pro") == 5
-    assert estimate_cost(10, tier="max") == 8
-    assert estimate_cost(15, tier="byok") == 0
+def test_estimate_cost_does_not_grant_plan_discount() -> None:
+    assert estimate_cost(5) == 5
+    assert estimate_cost(10) == 10
+    assert estimate_cost(15) == 15

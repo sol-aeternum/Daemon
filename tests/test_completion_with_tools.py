@@ -93,7 +93,7 @@ async def test_completion_with_tools_forces_synthesis_after_max_rounds(monkeypat
             return stream_synthesis_round()
         return stream_tool_round()
 
-    monkeypatch.setattr("orchestrator.tools.completion.litellm.acompletion", fake_acompletion)
+    monkeypatch.setattr("orchestrator.tools.completion.guarded_completion", fake_acompletion)
 
     messages = [{"role": "user", "content": "Compare Galaxy S26 Ultra vs OnePlus 15"}]
     events = [

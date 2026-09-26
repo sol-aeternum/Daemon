@@ -17,6 +17,7 @@ from orchestrator.config import get_settings
 from orchestrator.db import AppState, get_app_state
 import orchestrator.daemon as daemon_module
 from orchestrator.main import app
+from tests.qualified_compute import install_qualified_compute
 
 
 @pytest_asyncio.fixture
@@ -29,6 +30,8 @@ async def client(monkeypatch):
 
     settings = get_settings()
     app_state = AppState(settings=settings)
+    app_state.db_pool = object()  # type: ignore[assignment]
+    install_qualified_compute(monkeypatch)
 
     async def override_settings():
         return get_settings()
@@ -312,7 +315,7 @@ async def test_openai_chat_completions_streaming_mock_mode(client, monkeypatch):
     response = await client.post(
         "/v1/chat/completions",
         json={
-            "model": "openrouter-uncensored",
+            "model": "auto",
             "messages": [{"role": "user", "content": "Hello"}],
             "stream": True,
         },
@@ -341,7 +344,7 @@ async def test_openai_chat_completions_non_streaming_mock_mode(client, monkeypat
     response = await client.post(
         "/v1/chat/completions",
         json={
-            "model": "openrouter-uncensored",
+            "model": "auto",
             "messages": [{"role": "user", "content": "Hello"}],
             "stream": False,
         },
@@ -382,7 +385,9 @@ async def test_chat_with_provider_selection_mock_mode(client, monkeypatch):
 
     assert response.status_code == 200
     body = response.text
-    assert "openrouter" in body  # Should show provider in response
+    assert "event: routing" in body
+    assert "event: final" in body
+    assert "event: error" not in body
 
 
 @pytest.mark.asyncio

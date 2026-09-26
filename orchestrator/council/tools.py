@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from orchestrator.compute_runtime import guarded_completion
+
 import inspect
 import json
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Protocol, TypedDict, cast
 
-import litellm
 
 from orchestrator.tools.completion import _wrap_tool_result_untrusted
 
@@ -328,7 +329,7 @@ async def council_completion_with_tools(
         "cost_usd": 0.0,
     }
     tool_rounds = 0
-    acompletion = cast(CompletionCallable, litellm.acompletion)
+    acompletion = cast(CompletionCallable, guarded_completion)
 
     while True:
         try:

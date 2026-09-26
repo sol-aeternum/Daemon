@@ -13,9 +13,8 @@ from orchestrator.tools.executor import ToolExecutor
 READONLY_COUNCIL_TOOL_NAMES = {
     "calculate",
     "get_time",
-    "web_fetch",
-    "web_search",
 }
+LOCAL_READONLY_TOOL_NAMES = READONLY_COUNCIL_TOOL_NAMES | {"web_fetch"}
 
 FORBIDDEN_COUNCIL_TOOL_NAMES = {
     "generate_document",
@@ -29,6 +28,7 @@ FORBIDDEN_COUNCIL_TOOL_NAMES = {
     "skill_manage",
     "spawn_agent",
     "spawn_multiple",
+    "web_search",
 }
 
 
@@ -46,68 +46,37 @@ def test_council_registry_is_strictly_readonly() -> None:
 
     names = _schema_names(registry.list_schemas())
 
-    assert names == READONLY_COUNCIL_TOOL_NAMES
+    assert names == LOCAL_READONLY_TOOL_NAMES
     assert names.isdisjoint(FORBIDDEN_COUNCIL_TOOL_NAMES)
 
 
-def test_council_registry_threads_brave_api_key_from_settings(
+def test_council_registry_does_not_expose_unpriced_search_or_retain_account_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression test for #83 / PR #264 Codex P2 #1.
+    from orchestrator.tools.registry import ToolRegistry
 
-    ``_get_council_tools`` must pass ``get_settings().brave_api_key`` into
-    ``create_council_readonly_registry`` so the registered WebSearchTool
-    receives the same key the chat path uses. Without this, when
-    ``BRAVE_API_KEY`` is configured but the env var is not separately read
-    in ``WebSearchTool.__init__`` (which is the whole point of routing env
-    access through Settings), the council's web_search tool reports the
-    key is missing.
+    registries: list[ToolRegistry] = []
+    original = engine.create_advisor_registry
 
-    Regression for the round-5 Codex P2: a sentinel ``brave_api_key``
-    value is patched onto ``get_settings()`` and the test asserts the
-    captured kwargs equal that sentinel exactly. A previous version of
-    this test only checked the keyword was present, which let
-    ``brave_api_key=None`` (or any other incorrect value) silently pass
-    while the council's web_search tool still reported an unconfigured
-    key at runtime.
-    """
-    from orchestrator.tools import builtin as builtin_module
+    def capture_registry() -> ToolRegistry:
+        registry = original()
+        registries.append(registry)
+        return registry
 
-    monkeypatch.setattr(engine, "_council_tool_registry", None)
-    monkeypatch.setattr(engine, "_council_tool_executor", None)
-    sentinel_key = "sentinel-brave-key-from-settings-12345"
-    settings_stub = type(
-        "SettingsStub",
-        (),
-        {"brave_api_key": sentinel_key},
-    )()
-    monkeypatch.setattr(engine, "get_settings", lambda: settings_stub)
+    monkeypatch.setattr(engine, "create_advisor_registry", capture_registry)
+    first_schemas, _ = engine._get_council_tools()
+    second_schemas, _ = engine._get_council_tools()
 
-    captured_kwargs: dict[str, Any] = {}
-
-    def _fake_registry(**kwargs: Any) -> Any:
-        captured_kwargs.update(kwargs)
-        # Return a stub registry object with the minimum surface the
-        # engine exercises after construction (list_schemas is the only
-        # call we need; ToolExecutor is built from it).
-        stub = type("StubRegistry", (), {"list_schemas": staticmethod(lambda: [])})()
-        return stub
-
-    monkeypatch.setattr(engine, "create_council_readonly_registry", _fake_registry)
-    monkeypatch.setattr(builtin_module, "create_council_readonly_registry", _fake_registry)
-
-    engine._get_council_tools()
-
-    assert captured_kwargs == {"brave_api_key": sentinel_key}
+    assert registries[0] is not registries[1]
+    assert (
+        _schema_names(first_schemas) == _schema_names(second_schemas) == READONLY_COUNCIL_TOOL_NAMES
+    )
 
 
 @pytest.mark.asyncio
 async def test_council_executor_cannot_call_side_effect_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(engine, "_council_tool_registry", None)
-    monkeypatch.setattr(engine, "_council_tool_executor", None)
-
     schemas, executor = engine._get_council_tools()
     names = _schema_names(schemas)
 

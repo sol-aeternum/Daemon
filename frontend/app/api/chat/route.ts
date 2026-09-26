@@ -72,6 +72,57 @@ function extractTextContent(content: unknown): string {
   return '';
 }
 
+function readOptionalString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function toRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+/**
+ * Pulls the backend's sanitized capacity detail ({ code, message }) out of a
+ * response body, accepting either the top-level or `detail`-wrapped shape. The
+ * backend decides what is safe to show; nothing here invents user-facing detail.
+ */
+function readCapacityDetail(payload: unknown): {
+  code?: string;
+  message?: string;
+} {
+  const record = toRecord(payload);
+  if (!record) return {};
+
+  const detail = toRecord(record.detail) ?? record;
+
+  return {
+    code: readOptionalString(detail.code) ?? readOptionalString(record.code),
+    message: readOptionalString(detail.message),
+  };
+}
+
+function formatCapacityMessage(
+  detail: { code?: string; message?: string },
+  fallback: string,
+): string {
+  const message = detail.message ?? fallback;
+  return detail.code ? `${message} (code: ${detail.code})` : message;
+}
+
+async function readCapacityDetailFromResponse(
+  response: Response,
+): Promise<{ code?: string; message?: string }> {
+  try {
+    return readCapacityDetail(await response.json());
+  } catch {
+    return {};
+  }
+}
+
 export async function POST(req: Request) {
   const { messages, id, model, attachments, metadata, provider } =
     await req.json();
@@ -92,7 +143,6 @@ export async function POST(req: Request) {
   const proxyHeaders = buildProxyHeaders(req);
 
   let backendRes: Response | null = null;
-  let lastError: Error | null = null;
 
   for (const apiUrl of API_URLS) {
     try {
@@ -115,8 +165,9 @@ export async function POST(req: Request) {
         }),
       });
       break;
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
+    } catch {
+      // Try the next configured backend. A transport error can name internal
+      // hosts and ports, so nothing from it is surfaced to the browser.
     }
   }
 
@@ -134,6 +185,7 @@ export async function POST(req: Request) {
       const textPartId = 'assistant-text';
       let textPartStarted = false;
       let streamFailed = false;
+      let errorText = 'Backend stream ended unexpectedly.';
 
       const writeText = (delta: string) => {
         if (!textPartStarted) {
@@ -151,13 +203,18 @@ export async function POST(req: Request) {
 
       try {
         if (!backendRes) {
-          writeText(
-            `Backend error (network): ${lastError?.message || 'unknown error'}.`,
-          );
+          errorText = 'Could not reach the chat service. Please try again.';
+          streamFailed = true;
           return;
         }
 
         if (backendRes.status === 429) {
+          const detail = await readCapacityDetailFromResponse(backendRes);
+          if (detail.code && detail.code !== 'rate_limited') {
+            errorText = formatCapacityMessage(detail, 'Chat request failed.');
+            streamFailed = true;
+            return;
+          }
           // Backend per-user/per-session/per-IP rate limit fired
           // (issue #38). Surface the typed event so the chat UI can
           // show a retryable error with the correct backoff instead
@@ -189,9 +246,12 @@ export async function POST(req: Request) {
         }
 
         if (!backendRes.ok || !backendRes.body) {
-          writeText(
+          const detail = await readCapacityDetailFromResponse(backendRes);
+          errorText = formatCapacityMessage(
+            detail,
             `Backend error (${backendRes.status}): unable to stream response.`,
           );
+          streamFailed = true;
           return;
         }
 
@@ -283,7 +343,13 @@ export async function POST(req: Request) {
                     {
                       type: 'routing',
                       model: modelId,
-                      tier: payload?.data?.tier,
+                      ...(readOptionalString(payload?.data?.route_class)
+                        ? {
+                            route_class: readOptionalString(
+                              payload?.data?.route_class,
+                            ),
+                          }
+                        : {}),
                       reason: payload?.data?.reason,
                       id: payload?.id ?? payload?.data?.id,
                       request_id:
@@ -360,6 +426,14 @@ export async function POST(req: Request) {
                       payload?.request_id ?? payload?.data?.request_id,
                   } as ChatEvent,
                 ]);
+              } else if (eventType === 'error') {
+                const detail = readCapacityDetail(payload?.data ?? payload);
+                errorText = formatCapacityMessage(
+                  detail,
+                  'Chat request failed.',
+                );
+                streamFailed = true;
+                return;
               } else if (eventType === 'video_generating') {
                 const requestId =
                   payload?.data?.request_id ?? payload?.request_id;
@@ -490,7 +564,7 @@ export async function POST(req: Request) {
         } else if (streamFailed) {
           writer.write({
             type: 'error',
-            errorText: 'Backend stream ended unexpectedly.',
+            errorText,
           });
         } else {
           writer.write({ type: 'finish', finishReason: 'stop' });

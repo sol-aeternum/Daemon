@@ -12,6 +12,8 @@ import uuid
 from typing import Any, cast
 
 from orchestrator.config import ProviderConfig, Settings
+from orchestrator.compute_runtime import compute_error
+from orchestrator.compute_runtime import selected_model as active_compute_model
 from orchestrator.services.fetch.url_extract import extract_urls
 from orchestrator.timezones import resolve_runtime_timezone
 from orchestrator.tools.builtin import create_default_registry
@@ -302,10 +304,7 @@ def effective_provider_and_model(
     provider = provider_config.name or settings.default_provider
     model = provider_config.model
     if not model:
-        tier_config = settings.get_tier_config(settings.default_tier)
-        model = tier_config.orchestrator.model
-    if not model:
-        model = "gpt-4o-mini"
+        model = settings.auto_reasoning_model
     return provider, model
 
 
@@ -453,11 +452,13 @@ async def stream_sse_chat(
             ),
         )
 
-    if routing_info:
+    routing_emitted = False
+    if routing_info and (routing_info.get("model") != "auto" or settings.mock_llm):
         yield sse(
             "routing",
             make_envelope("routing", routing_info, evt_id="evt_routing"),
         )
+        routing_emitted = True
 
     # Mock mode uses the simple token stream for deterministic tests.
     try:
@@ -526,6 +527,15 @@ async def stream_sse_chat(
 
                     now = asyncio.get_event_loop().time()
                     event_type = str(event.get("type") or "")
+                    approved_model = active_compute_model()
+                    if approved_model:
+                        model_for_events = approved_model
+                        if routing_info and (
+                            not routing_emitted or routing_info.get("model") != approved_model
+                        ):
+                            routing_info = {**routing_info, "model": approved_model}
+                            yield sse("routing", make_envelope("routing", routing_info))
+                            routing_emitted = True
 
                     if event_type == "content_delta":
                         delta_text = event.get("content")
@@ -863,7 +873,15 @@ async def stream_sse_chat(
             terminal_reason = "Request was cancelled"
             raise
         except Exception as e:
+            capacity = compute_error(e)
+            if capacity is not None:
+                # Account capacity refusals carry a sanitized code the caller
+                # maps onto its own protocol (SSE error, HTTP 503).
+                forced_terminal_status = "error"
+                terminal_reason = capacity.code
+                raise capacity from None
             forced_terminal_status = "error"
+
             # Sanitized SSE error — never emit `str(e)` to the client
             # (issue #79 round-1 finding). Server-side gets the full
             # exception with the request id; the SSE error envelope
@@ -874,6 +892,7 @@ async def stream_sse_chat(
                 request_id,
                 e,
             )
+
             yield sse(
                 "error",
                 make_envelope(
@@ -928,7 +947,7 @@ async def stream_sse_chat(
         if memory_store and conversation_uuid and user_id:
             try:
                 content = final_text
-                model_name = actual_model or model
+                model_name = active_compute_model() or actual_model or model
                 reasoning_text = "\n".join(reasoning_parts).strip() or None
                 reasoning_duration_secs: int | None = None
                 if (
@@ -960,6 +979,7 @@ async def stream_sse_chat(
                         reasoning_text=reasoning_text,
                         reasoning_duration_secs=reasoning_duration_secs,
                         reasoning_model=model_name,
+                        model=model_name,
                         status=persisted_status,
                         metadata=final_metadata or None,
                     )
@@ -1078,6 +1098,10 @@ async def stream_sse_chat(
 
     except Exception as e:
         forced_terminal_status = "error"
+        capacity = compute_error(e)
+        if capacity is not None:
+            terminal_reason = capacity.code
+            raise capacity from None
         terminal_reason = _SSE_INTERNAL_ERROR_TOKEN
         logger.error("Unexpected error in stream_sse_chat: %s", e, exc_info=True)
         yield sse(

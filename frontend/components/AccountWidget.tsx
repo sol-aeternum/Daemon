@@ -2,20 +2,161 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useTheme } from 'next-themes';
-import { Settings, LogOut, Sun, Moon, Monitor, ChevronUp } from 'lucide-react';
+import {
+  Settings,
+  LogOut,
+  Sun,
+  Moon,
+  Monitor,
+  ChevronUp,
+  Loader2,
+  RefreshCw,
+} from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/components/AuthProvider';
 import { useClientMounted } from '@/hooks/useClientMounted';
+import { useEntitlements } from '@/hooks/useEntitlements';
+import { PLAN_ORDER, PLAN_SURFACE, TRIAL_SURFACE } from '@/lib/entitlements';
+import type { EntitlementsResult } from '@/hooks/useEntitlements';
 
 interface AccountWidgetProps {
   displayName?: string;
-  tier?: string;
 }
 
-export function AccountWidget({
-  displayName = 'User',
-  tier = 'Pro',
-}: AccountWidgetProps) {
+function PlanStatusLine({ plan }: { plan: EntitlementsResult }) {
+  if (plan.status === 'loading') {
+    return (
+      <p
+        className="flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]"
+        aria-live="polite"
+        aria-busy="true"
+      >
+        <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+        Checking plan...
+      </p>
+    );
+  }
+
+  if (plan.status === 'error' || !plan.entitlements) {
+    return (
+      <p
+        className="text-xs text-[var(--color-text-muted)]"
+        aria-live="polite"
+        role="status"
+      >
+        Plan unavailable
+      </p>
+    );
+  }
+
+  return (
+    <p
+      className="truncate text-xs text-[var(--color-text-muted)]"
+      aria-live="polite"
+    >
+      {PLAN_SURFACE[plan.entitlements.plan].label}
+    </p>
+  );
+}
+
+function PlanDetails({ plan }: { plan: EntitlementsResult }) {
+  const { entitlements, status, error, refresh } = plan;
+
+  return (
+    <section
+      className="border-t border-[var(--color-border-muted)] px-3 py-2"
+      aria-labelledby="account-plan-heading"
+    >
+      <p
+        id="account-plan-heading"
+        className="mb-1 text-xs uppercase tracking-wide text-[var(--color-text-muted)]"
+      >
+        Plan
+      </p>
+
+      {status === 'loading' && (
+        <p
+          className="text-xs text-[var(--color-text-muted)]"
+          aria-live="polite"
+          aria-busy="true"
+        >
+          Checking plan...
+        </p>
+      )}
+
+      {status === 'error' && (
+        <div className="text-xs" role="status">
+          <p className="text-[var(--color-text-secondary)]">{error}</p>
+          <button
+            type="button"
+            onClick={() => {
+              void refresh();
+            }}
+            className="mt-1 inline-flex min-h-touch items-center gap-1 rounded text-[var(--color-accent-primary)] hover:text-[var(--color-accent-hover)]"
+          >
+            <RefreshCw className="h-3 w-3" aria-hidden="true" />
+            Retry
+          </button>
+        </div>
+      )}
+
+      {status === 'ready' && entitlements && (
+        <div className="space-y-2">
+          <div>
+            <p className="text-sm font-medium text-[var(--color-text-primary)]">
+              {PLAN_SURFACE[entitlements.plan].headline}
+            </p>
+            <p className="mt-0.5 text-xs text-[var(--color-text-secondary)]">
+              {PLAN_SURFACE[entitlements.plan].blurb}
+            </p>
+          </div>
+
+          {entitlements.trial && (
+            <p
+              className="text-xs text-[var(--color-text-secondary)]"
+              role="status"
+            >
+              <span className="font-medium text-[var(--color-text-primary)]">
+                {TRIAL_SURFACE[entitlements.trial.state].status}.
+              </span>{' '}
+              {TRIAL_SURFACE[entitlements.trial.state].detail}
+            </p>
+          )}
+
+          <ul className="space-y-1">
+            {PLAN_ORDER.map((planId) => {
+              const isCurrent = planId === entitlements.plan;
+              return (
+                <li key={planId} className="flex items-baseline gap-2 text-xs">
+                  <span
+                    className={
+                      isCurrent
+                        ? 'font-medium text-[var(--color-text-primary)]'
+                        : 'text-[var(--color-text-muted)]'
+                    }
+                  >
+                    {PLAN_SURFACE[planId].headline}
+                  </span>
+                  {isCurrent && (
+                    <span className="text-xs uppercase tracking-wide text-[var(--color-text-muted)]">
+                      Current plan
+                    </span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+
+          <p className="text-xs text-[var(--color-text-muted)]">
+            Plan changes and billing are not available in this build.
+          </p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+export function AccountWidget({ displayName = 'User' }: AccountWidgetProps) {
   const [isOpen, setIsOpen] = useState(false);
   const mounted = useClientMounted();
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -23,11 +164,14 @@ export function AccountWidget({
   const { theme, setTheme } = useTheme();
   const router = useRouter();
   const { logout } = useAuth();
+  const plan = useEntitlements();
 
-  // Close dropdown when clicking outside or pressing Escape. Without the
-  // Escape handler, the `data-stop-shortcut-block` attribute also blocks
-  // the global Stop shortcut, so an open dropdown leaves Escape inert.
+  // Dismiss the dropdown on outside click or Escape. This is a simple
+  // disclosure, so no focus trap: the toggle keeps focus and aria-expanded
+  // tells assistive tech whether the panel is showing.
   useEffect(() => {
+    if (!isOpen) return;
+
     const handleClickOutside = (event: MouseEvent) => {
       if (
         dropdownRef.current &&
@@ -42,14 +186,13 @@ export function AccountWidget({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && isOpen) {
         setIsOpen(false);
+        buttonRef.current?.focus();
         event.stopPropagation();
       }
     };
 
-    if (isOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-      document.addEventListener('keydown', handleKeyDown);
-    }
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
 
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
@@ -119,7 +262,7 @@ export function AccountWidget({
             <p className="text-sm font-medium text-[var(--color-text-primary)] truncate">
               {displayName}
             </p>
-            <p className="text-xs text-[var(--color-text-muted)]">{tier}</p>
+            <PlanStatusLine plan={plan} />
           </div>
         </div>
       </div>
@@ -132,6 +275,8 @@ export function AccountWidget({
       <button
         ref={buttonRef}
         onClick={() => setIsOpen(!isOpen)}
+        aria-expanded={isOpen}
+        aria-controls="account-menu"
         className={`w-full border-t border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-4 py-3 flex items-center gap-3 hover:bg-[var(--color-bg-hover)] transition-colors ${
           isOpen ? 'bg-[var(--color-bg-hover)]' : ''
         }`}
@@ -144,12 +289,12 @@ export function AccountWidget({
           {initials}
         </div>
 
-        {/* Name and tier */}
+        {/* Name and server-confirmed plan */}
         <div className="flex-1 min-w-0 text-left">
           <p className="text-sm font-medium text-[var(--color-text-primary)] truncate">
             {displayName}
           </p>
-          <p className="text-xs text-[var(--color-text-muted)]">{tier}</p>
+          <PlanStatusLine plan={plan} />
         </div>
 
         {/* Chevron */}
@@ -164,9 +309,12 @@ export function AccountWidget({
       {isOpen && (
         <div
           data-stop-shortcut-block="true"
+          id="account-menu"
           className="absolute bottom-full left-0 right-0 mb-1 bg-[var(--color-bg-secondary)] rounded-lg shadow-lg border border-[var(--color-border-muted)] py-1 z-50 animate-fade-in"
           style={{ animationDuration: '150ms' }}
         >
+          <PlanDetails plan={plan} />
+
           {/* Settings option */}
           <button
             onClick={handleSettings}

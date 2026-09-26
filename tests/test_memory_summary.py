@@ -24,15 +24,15 @@ def _build_settings(provider: SimpleNamespace) -> SimpleNamespace:
     )
 
 
-def _patch_litellm(
+def _patch_guarded_completion(
     monkeypatch: pytest.MonkeyPatch,
     content: str,
 ) -> AsyncMock:
-    acompletion = AsyncMock(
+    completion = AsyncMock(
         return_value=SimpleNamespace(choices=[{"message": {"content": content}}])
     )
-    monkeypatch.setattr(summary_module.litellm, "acompletion", acompletion)
-    return acompletion
+    monkeypatch.setattr(summary_module, "guarded_completion", completion)
+    return completion
 
 
 @pytest.mark.asyncio
@@ -63,11 +63,12 @@ async def test_extraction_summary_advances_same_persisted_baseline(
 
     provider = _build_provider()
     monkeypatch.setattr(summary_module, "get_settings", lambda: _build_settings(provider))
-    _patch_litellm(monkeypatch, "Updated summary.")
+    completion = _patch_guarded_completion(monkeypatch, "Updated summary.")
 
     result = await summary_module.generate_or_update_summary(conversation_id, store)
 
     assert result == "Updated summary."
+    completion.assert_awaited_once()
     assert store.get_summary_message_batch.await_count == 1
     batch_args = store.get_summary_message_batch.await_args
     assert batch_args is not None
@@ -111,7 +112,7 @@ async def test_inline_summary_signals_continuation_when_batch_full(
     store.update_conversation_summary = AsyncMock(return_value=True)
 
     monkeypatch.setattr(summary_module, "get_settings", lambda: _build_settings(_build_provider()))
-    _patch_litellm(monkeypatch, "Updated summary.")
+    _patch_guarded_completion(monkeypatch, "Updated summary.")
 
     result = await summary_module._generate_or_update_summary_result(conversation_id, store)
 
@@ -139,7 +140,7 @@ async def test_inline_summary_no_continuation_when_tail_drained(
     store.update_conversation_summary = AsyncMock(return_value=True)
 
     monkeypatch.setattr(summary_module, "get_settings", lambda: _build_settings(_build_provider()))
-    _patch_litellm(monkeypatch, "Summary.")
+    _patch_guarded_completion(monkeypatch, "Summary.")
 
     result = await summary_module._generate_or_update_summary_result(conversation_id, store)
 
@@ -184,7 +185,7 @@ async def test_inline_summary_uses_contiguous_baseline_when_streaming_row_comple
     store.update_conversation_summary = AsyncMock(return_value=True)
 
     monkeypatch.setattr(summary_module, "get_settings", lambda: _build_settings(_build_provider()))
-    _patch_litellm(monkeypatch, "irrelevant")
+    completion = _patch_guarded_completion(monkeypatch, "irrelevant")
 
     result = await summary_module._generate_or_update_summary_result(conversation_id, store)
 
@@ -194,6 +195,7 @@ async def test_inline_summary_uses_contiguous_baseline_when_streaming_row_comple
     # the batch is empty).
     assert result.summary == "prior"
     assert result.continuation_needed is False
+    completion.assert_not_awaited()
     fetch_args = store.get_summary_message_batch.await_args
     assert fetch_args is not None
     assert fetch_args.kwargs["offset"] == 20
@@ -223,7 +225,7 @@ async def test_inline_summary_signals_continuation_on_optimistic_conflict(
     store.update_conversation_summary = AsyncMock(return_value=False)
 
     monkeypatch.setattr(summary_module, "get_settings", lambda: _build_settings(_build_provider()))
-    _patch_litellm(monkeypatch, "Updated summary.")
+    _patch_guarded_completion(monkeypatch, "Updated summary.")
 
     result = await summary_module._generate_or_update_summary_result(conversation_id, store)
 
@@ -257,7 +259,7 @@ async def test_inline_summary_signals_continuation_on_transient_storage_error(
     store.update_conversation_summary = AsyncMock(side_effect=RuntimeError("transient"))
 
     monkeypatch.setattr(summary_module, "get_settings", lambda: _build_settings(_build_provider()))
-    _patch_litellm(monkeypatch, "Updated summary.")
+    _patch_guarded_completion(monkeypatch, "Updated summary.")
 
     result = await summary_module._generate_or_update_summary_result(conversation_id, store)
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from orchestrator.compute_runtime import guarded_completion
+
 # pyright: reportAny=false, reportExplicitAny=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
 
 from collections.abc import Awaitable, Callable
@@ -10,10 +12,8 @@ import uuid
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
-import litellm
-
 from orchestrator.config import get_settings
-from orchestrator.memory.embedding import embed_query
+from orchestrator.memory.embedding import EmbeddingConfigurationError, embed_query
 from orchestrator.skill_evaluator_prompts import (
     build_skill_creation_prompt,
     build_skill_refinement_prompt,
@@ -420,7 +420,7 @@ class SkillEvaluator:
         *,
         projection_store: SkillProjectionProtocol | None = None,
         skill_manage_tool: SkillManageProtocol | None = None,
-        completion_callable: CompletionCallable = litellm.acompletion,
+        completion_callable: CompletionCallable = guarded_completion,
         query_embedder: EmbeddingCallable = embed_query,
     ) -> None:
         self._store: ConversationStoreProtocol = store
@@ -578,7 +578,12 @@ class SkillEvaluator:
         projection_store = self._projection_store
         if projection_store is None:
             return None
-        query_embedding = await self._query_embedder(_build_dedup_query_text(draft))
+        try:
+            query_embedding = await self._query_embedder(_build_dedup_query_text(draft))
+        except EmbeddingConfigurationError:
+            # Without an approved embedding route, a semantic match cannot be
+            # proven. Creation can still persist a projection with no vector.
+            return None
         matches = await projection_store.search_by_embedding(
             query_embedding,
             limit=5,

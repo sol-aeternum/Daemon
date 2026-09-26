@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from abc import ABC, abstractmethod
@@ -13,9 +12,6 @@ import httpx
 
 from orchestrator.subagents.base import BaseSubagent, SubagentResult, SubagentType
 from providers.xai_imagine import XAIImagineClient, XAIImagineError
-from db.video_credits import VideoCreditsDAL
-from config.video_pricing import estimate_cost
-from orchestrator.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -370,31 +366,19 @@ class ImageSubagent(BaseSubagent):
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         """Initialize image subagent.
 
-        All env vars are read via Settings (`get_settings()`) — `config_dict`
-        is populated from Settings in `spawn.get_subagent_manager`. Direct
-        `os.environ.get` access is intentionally absent to keep the config
-        validation and prefix convention centralised.
+        All env vars are read via Settings (`get_settings()`). Direct
+        `os.environ.get` access is intentionally absent to keep config
+        validation centralised.
         """
         super().__init__(config)
 
         config_dict = config or {}
+
+        from orchestrator.config import get_settings
+
         settings = get_settings()
-
-        # Per-tier image provider (defaults to PRO tier when unset).
-        config_provider = (
-            config_dict.get("image_provider") or settings.tier_pro_image_provider
-        ).lower()
-        self.provider_name = config_provider
-
-        # A tier's built-in `fal` default is not an explicit override. Let
-        # Settings distinguish configured tier values from defaults before
-        # applying the legacy PRO-tier fallback.
-        video_provider_value = (
-            config_dict.get("video_provider")
-            or settings.get_video_provider_for_tier()
-            or config_provider
-        )
-        self.video_provider_name = video_provider_value.lower()
+        self.provider_name = (config_dict.get("image_provider") or "openrouter").lower()
+        self.video_provider_name = (config_dict.get("video_provider") or self.provider_name).lower()
 
         if self.provider_name == "xai":
             xai_api_key = (
@@ -450,70 +434,22 @@ class ImageSubagent(BaseSubagent):
             return await self._generate_image(enhanced_prompt, context_payload)
 
     async def _generate_image(self, prompt: str, context: dict[str, Any]) -> SubagentResult:
-        try:
-            size = context.get("size", "1024x1024")
-            image_result = await self.provider.generate_image(prompt, size)
-
-            image_base64 = image_result.get("base64", "")
-            image_url = image_result.get("url", "")
-            provider = image_result.get("provider", self.provider_name)
-            width = image_result.get("width", 1024)
-            height = image_result.get("height", 1024)
-
-            if image_base64 or image_url:
-                return self._create_result(
-                    success=True,
-                    data={
-                        "prompt": prompt,
-                        "enhanced_prompt": prompt,
-                        "image_base64": image_base64,
-                        "image_url": image_url,
-                        "width": width,
-                        "height": height,
-                        "format": "png",
-                    },
-                    metadata={
-                        "provider": provider,
-                        "size": size,
-                    },
-                )
-            else:
-                return self._create_result(
-                    success=False,
-                    error="Image generation returned empty result",
-                )
-
-        except Exception as e:
-            return self._create_result(
-                success=False,
-                error=f"Image generation failed: {str(e)}",
-            )
+        # Unpriced per-image costs cannot be bounded by the text inference ledger.
+        return self._create_result(success=False, error="Image generation capacity unavailable")
 
     async def _generate_video(self, prompt: str, context: dict[str, Any]) -> SubagentResult:
-        # Get user ID and tier from context
+        # User ID originates in the authenticated tool context, never the LLM.
         user_id_str = context.get("user_id")
-        tier = context.get("tier", "free").lower()
-
-        # Get tier configuration
-        settings = get_settings()
-        tier_config = settings.get_tier_config(tier)
-
-        # Validate tier - Check if video generation is enabled for this tier
-        if not tier_config.tier_video_enabled:
-            return self._create_result(
-                success=False,
-                error=f"Video generation is not available for {tier.capitalize()} tier users. Please upgrade to a higher tier.",
-            )
 
         # Get duration from context, default to 5 seconds
         duration_seconds = context.get("duration", 5)
 
-        # Enforce duration limits per tier
         if (
-            tier_config.tier_video_max_duration is not None
-            and duration_seconds > tier_config.tier_video_max_duration
+            not isinstance(duration_seconds, int)
+            or isinstance(duration_seconds, bool)
+            or not 1 <= duration_seconds <= 30
         ):
-            duration_seconds = tier_config.tier_video_max_duration
+            return self._create_result(success=False, error="Invalid video duration")
 
         # Get video credits DAL from config
         db_pool = self.config.get("db_pool") if self.config else None
@@ -522,8 +458,6 @@ class ImageSubagent(BaseSubagent):
                 success=False,
                 error="Database pool not configured for video credit operations",
             )
-
-        video_credits_dal = VideoCreditsDAL(db_pool)
 
         # Convert user_id to UUID
         try:
@@ -540,163 +474,24 @@ class ImageSubagent(BaseSubagent):
                 error="User ID is required for video generation",
             )
 
-        # Determine video provider based on context or tier config
-        video_provider_name = self.video_provider_name
-        if context.get("video_provider"):
-            video_provider_name = context["video_provider"].lower()
+        from orchestrator.compute_runtime import current_scope
+        from orchestrator.entitlements import EntitlementService
 
-        # Calculate cost AFTER determining provider
-        cost_int = estimate_cost(
-            duration_seconds=duration_seconds,
-            tier=tier,
-            provider=video_provider_name,
-            resolution=context.get("resolution"),
-            kling_model=context.get("kling_model", "o3-pro"),
-            audio_enabled=context.get("audio_enabled", False),
-        )
-
-        # BYOK tier uses own API key, skip credit check/debit
-        transaction_id = None
-        if cost_int > 0:
-            balance = await video_credits_dal.get_balance(user_id)
-            if balance < cost_int:
-                return self._create_result(
-                    success=False,
-                    error=f"Insufficient video credits. Required: {cost_int}, Available: {balance}",
-                )
-
-            debit_result = await video_credits_dal.debit_credits(
-                user_id, cost_int, f"Video generation: {prompt[:50]}...", None
-            )
-
-            if not debit_result.success:
-                return self._create_result(
-                    success=False,
-                    error=f"Failed to debit video credits: {debit_result.message}",
-                )
-
-            transaction_id = debit_result.transaction_id
-
-        # Compensation boundary: the debit is committed, so any failure from here
-        # (provider construction, provider error, or task cancellation during the
-        # provider await) must refund the transaction before returning/raising.
-
-        async def _run_refund(reason: str) -> Any:
-            """Attempt compensation without masking cancellation with a DB error."""
-            if transaction_id is None:
-                return None
-            refund_task = asyncio.create_task(video_credits_dal.refund_transaction(transaction_id))
-            cancellation = None
-            while True:
-                try:
-                    result = await asyncio.shield(refund_task)
-                    break
-                except asyncio.CancelledError as exc:
-                    # Keep shielding on repeated cancellation, and retain the task
-                    # until its result/exception is observed. Do not loop if the
-                    # refund task itself was cancelled (e.g. event-loop shutdown).
-                    if refund_task.cancelled():
-                        raise
-                    cancellation = exc
-                except Exception:
-                    logger.exception(
-                        "Failed to refund video-credit transaction %s (%s)",
-                        transaction_id,
-                        reason,
-                    )
-                    result = None
-                    break
-            if cancellation is not None:
-                raise cancellation
-            return result
-
-        # Create appropriate video provider if needed
         try:
-            video_provider = self.provider
-            if video_provider_name != self.provider_name:
-                settings = get_settings()
-                if video_provider_name == "xai":
-                    xai_api_key = (
-                        self.config.get("xai_api_key") if self.config else None
-                    ) or settings.xai_api_key
-                    video_provider = XAIImageProvider(xai_api_key)
-                elif video_provider_name == "fal":
-                    fal_api_key = (
-                        self.config.get("fal_api_key") if self.config else None
-                    ) or settings.fal_key
-                    video_provider = FalKlingProvider(fal_api_key)
-                else:
-                    # Fallback to current provider
-                    video_provider = self.provider
+            scope = current_scope()
+        except Exception:
+            return self._create_result(success=False, error="Account compute unavailable")
+        if scope.user_id != user_id:
+            return self._create_result(success=False, error="Account identity mismatch")
+        policy = await EntitlementService(db_pool).resolve(user_id)
+        if "video_generation" not in policy.capabilities:
+            return self._create_result(success=False, error="Video generation unavailable")
 
-            # Check if the selected provider supports video generation
-
-            # Prepare kwargs for video generation
-            video_kwargs = {
-                "resolution": context.get("resolution"),
-            }
-
-            # Add fal-specific parameters if using fal provider
-            if video_provider_name == "fal":
-                video_kwargs["source_image_url"] = context.get("source_image_url")
-                video_kwargs["kling_model"] = context.get("kling_model", "o3-pro")
-                video_kwargs["audio_enabled"] = context.get("audio_enabled", False)
-
-            video_result = await video_provider.generate_video(
-                prompt=prompt,
-                duration=duration_seconds,
-                **video_kwargs,
-            )
-        except NotImplementedError:
-            refund_result = await _run_refund("video not supported by provider")
-            return self._create_result(
-                success=False,
-                error=f"Video generation is not supported with {video_provider_name} provider",
-                data={"refunded": bool(refund_result and refund_result.success)},
-                metadata={
-                    "provider": video_provider_name,
-                    "refunded": bool(refund_result and refund_result.success),
-                    "refund_message": refund_result.message if refund_result else None,
-                    "cost": cost_int,
-                },
-            )
-        except Exception as e:
-            # Refund credits on failure; propagate if cancellation landed during refund.
-            refund_result = await _run_refund("video generation failure")
-
-            return self._create_result(
-                success=False,
-                error=f"Video generation failed: {str(e)}",
-                data={"refunded": bool(refund_result and refund_result.success)},
-                metadata={
-                    "provider": video_provider_name,
-                    "duration": duration_seconds,
-                    "cost": cost_int,
-                    "refunded": bool(refund_result and refund_result.success),
-                    "refund_message": refund_result.message if refund_result else None,
-                },
-            )
-        except asyncio.CancelledError:
-            # CancelledError does not derive from Exception on Python 3.11: compensate
-            # for the committed debit, then re-raise so cancellation propagates.
-            await _run_refund("task cancelled during video generation")
-            raise
-
-        # Return video metadata in result
-        return self._create_result(
-            success=True,
-            data={
-                "prompt": prompt,
-                "video_url": video_result["url"],
-                "duration_seconds": duration_seconds,
-                "format": "mp4",
-            },
-            metadata={
-                "provider": video_result["provider"],
-                "duration": duration_seconds,
-                "cost": cost_int,
-            },
-        )
+        # The inference policy currently approves no external image/video
+        # provider. Credits authorize payment but do not assert privacy or
+        # provider availability. Do not dispatch a private prompt until a
+        # dedicated reviewed media route and cost bound are configured.
+        return self._create_result(success=False, error="Approved video route unavailable")
 
     def _enhance_prompt(self, task: str, context: dict[str, Any]) -> str:
         """Enhance user prompt with style/size preferences from context."""

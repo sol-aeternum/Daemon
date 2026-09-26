@@ -20,7 +20,10 @@ export interface StudioModel {
   supports_resolution: boolean;
   supported_resolutions: string[];
   pricing_info: string;
-  tier_minimum: 'free' | 'starter' | 'pro' | 'max' | 'byok';
+  /**
+   * Server-decided availability. The client does not model a plan ladder here:
+   * entitlement gating comes from the account capabilities response.
+   */
   is_locked?: boolean;
   notes?: string;
   input_cost_per_million?: number;

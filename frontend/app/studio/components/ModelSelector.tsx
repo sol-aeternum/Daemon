@@ -5,16 +5,6 @@ import { useStudio } from '../StudioProvider';
 import type { StudioModel } from '../types';
 import { ensureAuthHeader } from '@/lib/auth';
 
-const DEFAULT_USER_TIER: StudioModel['tier_minimum'] = 'starter';
-
-const TIER_LABELS: Record<StudioModel['tier_minimum'], string> = {
-  free: 'Free',
-  starter: 'Starter',
-  pro: 'Pro',
-  max: 'Max',
-  byok: 'BYOK',
-};
-
 export function ModelSelector() {
   const {
     availableModels,
@@ -25,7 +15,6 @@ export function ModelSelector() {
   } = useStudio();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const userTier = DEFAULT_USER_TIER;
 
   useEffect(() => {
     let mounted = true;
@@ -33,16 +22,15 @@ export function ModelSelector() {
       setIsLoading(true);
       setError(null);
       try {
+        // Availability is decided by the authenticated session on the backend;
+        // the client never asserts a plan, tier, or capability hint.
         const authHeader = await ensureAuthHeader();
         const headers = new Headers();
-        headers.set('X-Daemon-Tier', userTier);
         if (authHeader) headers.set('Authorization', authHeader);
-        const response = await fetch(
-          `/api/images/models?tier=${encodeURIComponent(userTier)}`,
-          {
-            headers,
-          },
-        );
+        const response = await fetch('/api/images/models', {
+          headers,
+          cache: 'no-store',
+        });
         if (!response.ok) {
           throw new Error(`Failed to load models (${response.status})`);
         }
@@ -68,7 +56,7 @@ export function ModelSelector() {
     return () => {
       mounted = false;
     };
-  }, [setAvailableModels, userTier]);
+  }, [setAvailableModels]);
 
   const grouped = useMemo(() => {
     const groups = availableModels.reduce<Record<string, StudioModel[]>>(
@@ -164,7 +152,7 @@ export function ModelSelector() {
                   } ${disabled ? 'cursor-not-allowed opacity-60' : 'hover:bg-[var(--color-bg-hover)]'}`}
                   title={
                     isLocked
-                      ? `Requires ${TIER_LABELS[model.tier_minimum]} tier`
+                      ? 'Not available on your account'
                       : model.pricing_info
                   }
                 >
@@ -190,7 +178,7 @@ export function ModelSelector() {
                     </p>
                     {isLocked && (
                       <p className="mt-1 text-xs text-amber-400">
-                        🔒 Requires {TIER_LABELS[model.tier_minimum]} tier
+                        🔒 Not available on your account
                       </p>
                     )}
                   </div>

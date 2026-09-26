@@ -3,7 +3,6 @@
 
 import asyncio
 import sys
-import os
 
 
 if "pytest" in sys.modules:
@@ -31,7 +30,6 @@ async def test_subagents():
     print("=" * 60)
 
     settings = get_settings()
-    tier_config = settings.get_tier_config()
 
     # Initialize subagent manager
     manager = SubagentManager()
@@ -40,9 +38,6 @@ async def test_subagents():
         "brave_api_key": settings.brave_api_key,
         "openrouter_api_key": settings.openrouter_api_key,
         "openrouter_base_url": settings.openrouter_base_url,
-        "image_model": tier_config.image_agent.model
-        if tier_config.image_agent
-        else settings.tier_pro_image_model,
     }
 
     # Check if ElevenLabs key exists
@@ -136,9 +131,7 @@ async def test_subagents():
     for agent_type in [SubagentType.CODE, SubagentType.READER]:
         try:
             result = await manager.spawn(agent_type, "test task")
-            status = (
-                "✅ Implemented" if result.success else "❌ Not implemented (expected)"
-            )
+            status = "✅ Implemented" if result.success else "❌ Not implemented (expected)"
             print(f"   {agent_type.value.upper()}: {status}")
         except Exception as e:
             print(f"   {agent_type.value.upper()}: ❌ Error - {e}")
@@ -148,15 +141,13 @@ async def test_subagents():
     print("TEST SUMMARY")
     print("=" * 60)
     for name, status in results:
-        icon = "✅" if status == True else "⚠️" if status == "skipped" else "❌"
-        status_str = (
-            status if isinstance(status, str) else ("PASS" if status else "FAIL")
-        )
+        icon = "⚠️" if status == "skipped" else "✅" if status is True else "❌"
+        status_str = status if isinstance(status, str) else ("PASS" if status else "FAIL")
         print(f"{icon} {name}: {status_str}")
 
-    passed = sum(1 for _, s in results if s == True)
+    passed = sum(1 for _, s in results if s is True)
     skipped = sum(1 for _, s in results if s == "skipped")
-    failed = sum(1 for _, s in results if s == False)
+    failed = sum(1 for _, s in results if s is False)
 
     print(f"\nTotal: {passed} passed, {skipped} skipped, {failed} failed")
     print("=" * 60)

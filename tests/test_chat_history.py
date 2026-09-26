@@ -23,6 +23,7 @@ from orchestrator.config import get_settings
 from orchestrator.daemon import stream_sse_chat, with_runtime_datetime_context
 from orchestrator.db import AppState, get_app_state
 from orchestrator.main import app
+from tests.qualified_compute import install_qualified_compute
 
 
 @pytest_asyncio.fixture
@@ -37,6 +38,7 @@ async def client(monkeypatch):
 
     settings = get_settings()
     initial_app_state = AppState(settings=settings)
+    install_qualified_compute(monkeypatch)
 
     async def override_settings():
         return settings
@@ -66,9 +68,13 @@ async def client(monkeypatch):
 
     try:
         async with app.router.lifespan_context(app):
+            initial_app_state.db_pool = object()  # type: ignore[assignment]
             transport = ASGITransport(app=app)
-            async with AsyncClient(transport=transport, base_url="http://test") as client:
-                yield client
+            try:
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    yield client
+            finally:
+                initial_app_state.db_pool = None
     finally:
         app.dependency_overrides.clear()
 
@@ -80,6 +86,7 @@ def create_mock_app_state(mock_store: AsyncMock | None = None) -> AppState:
     app_state = MagicMock(spec=AppState)
     app_state.memory_store = mock_store
     app_state.redis = None
+    app_state.db_pool = object()
     return app_state
 
 

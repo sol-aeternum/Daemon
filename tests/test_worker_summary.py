@@ -1,15 +1,31 @@
 import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import cast
 from unittest.mock import AsyncMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
+from orchestrator.compute_runtime import current_scope
 from orchestrator.memory.store import MemoryStore
 from orchestrator.memory import summarization
 from orchestrator.worker import jobs
+from tests.qualified_compute import install_qualified_compute
+
+
+def _account_context(
+    monkeypatch: pytest.MonkeyPatch,
+    store: MemoryStore,
+    user_id: UUID,
+    *,
+    queue: object | None = None,
+) -> dict[str, object]:
+    install_qualified_compute(monkeypatch)
+    store.get_conversation = AsyncMock(return_value={"user_id": user_id})
+    ctx: dict[str, object] = {"store": store, "db_pool": object()}
+    if queue is not None:
+        ctx["redis"] = queue
+    return ctx
 
 
 @pytest.mark.asyncio
@@ -87,9 +103,15 @@ async def test_generate_summary_job_enqueues_continuation_for_full_batch(
     continuation with the advanced baseline as the job-id suffix.
     """
     conversation_id = uuid4()
+    user_id = uuid4()
     store = object.__new__(MemoryStore)
     store.get_conversation = AsyncMock(
-        return_value={"summary": None, "summary_updated_at": None, "metadata": {}}
+        return_value={
+            "user_id": user_id,
+            "summary": None,
+            "summary_updated_at": None,
+            "metadata": {},
+        }
     )
     store.count_summary_messages = AsyncMock(return_value=100)
     # All 100 rows are in the contiguous-finalized prefix at the
@@ -101,13 +123,21 @@ async def test_generate_summary_job_enqueues_continuation_for_full_batch(
     )
     store.update_conversation_summary = AsyncMock(return_value=True)
 
-    monkeypatch.setattr(summarization, "generate_summary", AsyncMock(return_value="summary"))
+    async def summarize_in_account_scope(*_args: object, **_kwargs: object) -> str:
+        assert current_scope().user_id == user_id
+        return "summary"
+
+    monkeypatch.setattr(
+        summarization, "generate_summary", AsyncMock(side_effect=summarize_in_account_scope)
+    )
     enqueue = AsyncMock(return_value=SimpleNamespace())
     monkeypatch.setattr(jobs, "enqueue_with_debounce", enqueue)
     queue = object()
 
+    install_qualified_compute(monkeypatch)
+
     result = await jobs.generate_summary_job(
-        {"store": store, "redis": queue},
+        {"store": store, "db_pool": object(), "redis": queue},
         str(conversation_id),
         True,
     )
@@ -201,15 +231,13 @@ async def test_extract_memories_enqueues_summary_continuation(
     enqueue = AsyncMock(return_value=SimpleNamespace())
     monkeypatch.setattr(jobs, "enqueue_with_debounce", enqueue)
     queue = SimpleNamespace(enqueue_job=AsyncMock())
-
-    ctx = cast(dict[str, object], {"store": store, "redis": queue})
+    ctx = _account_context(monkeypatch, store, user_id, queue=queue)
 
     messages_json = json.dumps([{"role": "user", "content": "msg"}])
 
     with patch("orchestrator.worker.jobs.process_extraction", new_callable=AsyncMock) as proc:
         proc.return_value = (True, [], True)  # success, no new memories, continuation_needed
-        with patch("orchestrator.worker.jobs.MemoryStore", object):
-            await jobs.extract_memories(ctx, user_id, conversation_id, messages_json)
+        await jobs.extract_memories(ctx, user_id, conversation_id, messages_json)
 
     # Only the summary continuation is expected (the resolve_entities enqueue is
     # gated on new_memories, which is empty here).
@@ -237,15 +265,13 @@ async def test_extract_memories_skips_continuation_when_not_needed(
     enqueue = AsyncMock()
     monkeypatch.setattr(jobs, "enqueue_with_debounce", enqueue)
     queue = SimpleNamespace(enqueue_job=AsyncMock())
-
-    ctx = cast(dict[str, object], {"store": store, "redis": queue})
+    ctx = _account_context(monkeypatch, store, user_id, queue=queue)
 
     messages_json = json.dumps([{"role": "user", "content": "msg"}])
 
     with patch("orchestrator.worker.jobs.process_extraction", new_callable=AsyncMock) as proc:
         proc.return_value = (True, [], False)  # no continuation
-        with patch("orchestrator.worker.jobs.MemoryStore", object):
-            await jobs.extract_memories(ctx, user_id, conversation_id, messages_json)
+        await jobs.extract_memories(ctx, user_id, conversation_id, messages_json)
 
     assert enqueue.await_count == 0
 
@@ -276,14 +302,12 @@ async def test_extract_memories_recovers_pending_continuation_on_retry(
     enqueue = AsyncMock(return_value=SimpleNamespace())
     monkeypatch.setattr(jobs, "enqueue_with_debounce", enqueue)
     queue = SimpleNamespace(enqueue_job=AsyncMock())
-
-    ctx = cast(dict[str, object], {"store": store, "redis": queue})
+    ctx = _account_context(monkeypatch, store, user_id, queue=queue)
 
     with patch("orchestrator.worker.jobs.process_extraction", new_callable=AsyncMock) as proc:
-        with patch("orchestrator.worker.jobs.MemoryStore", object):
-            # Even with no messages, the recovery path enqueues the
-            # continuation because the pending flag was set.
-            await jobs.extract_memories(ctx, user_id, conversation_id, messages_json=None)
+        # Even with no messages, the recovery path enqueues the
+        # continuation because the pending flag was set.
+        await jobs.extract_memories(ctx, user_id, conversation_id, messages_json=None)
         # process_extraction must NOT have been called because the
         # messages path returned early
         proc.assert_not_called()
@@ -317,12 +341,10 @@ async def test_extract_memories_does_not_recover_when_flag_unset(
     enqueue = AsyncMock(return_value=SimpleNamespace())
     monkeypatch.setattr(jobs, "enqueue_with_debounce", enqueue)
     queue = SimpleNamespace(enqueue_job=AsyncMock())
-
-    ctx = cast(dict[str, object], {"store": store, "redis": queue})
+    ctx = _account_context(monkeypatch, store, user_id, queue=queue)
 
     with patch("orchestrator.worker.jobs.process_extraction", new_callable=AsyncMock) as proc:
-        with patch("orchestrator.worker.jobs.MemoryStore", object):
-            await jobs.extract_memories(ctx, user_id, conversation_id, messages_json=None)
+        await jobs.extract_memories(ctx, user_id, conversation_id, messages_json=None)
 
     # Flag was checked (and returned False)
     store.consume_summary_continuation_pending.assert_awaited_once()

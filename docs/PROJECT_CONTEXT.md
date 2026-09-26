@@ -43,44 +43,43 @@ Daemon is a multi-provider LLM orchestration platform with intelligent routing, 
 - **Frontend**: Next.js 16 with Vercel AI SDK and React 19.
 - **Memory**: PostgreSQL with `pgvector` for semantic search and Fernet encryption for content at rest.
 - **Worker**: Redis + `arq` for background jobs (memory extraction, consolidation, dreaming).
-- **Fetch**: Public HTTP(S) `direct` strategy with Jina and Archive.org fallbacks. (Crawl4AI is no longer in the fetch strategy chain; the `crawl4ai` docker service remains running but unused by `web_fetch`.)
+- **Fetch**: Public HTTP(S) `direct` strategy retains upstream URL/redirect protections. Vendor-assisted fallbacks are disabled pending qualified bounded adapters; the `crawl4ai` docker service remains unused by `web_fetch`.
 
-## Tier System
+## Account Plans and Compute
 
-Daemon uses a tier-based model configuration system. Specific model assignments are env-var configurable in `orchestrator/config.py`.
+The commercial model is Free / Pro / Power with a separate finite, usage-based
+premium trial. Plans resolve into capabilities and bounded compute budgets;
+provider qualification and workload model configuration are independent of plans.
+Privacy and persistent memory belong to every plan. BYOK is a future funding
+mode, not a subscription plan or an accounting bypass.
 
-| Tier | Price | Orchestrator Model (Default) | Subagents | Video |
-|------|-------|------------------------------|-----------|-------|
-| **Free** | $0/mo | `kimi-k2.5` | None | Disabled |
-| **Starter** | $9/mo | `kimi-k2.5` | Sonnet 3.5, Gemini Flash | Enabled (fal) |
-| **Pro** | $19/mo | `kimi-k2.5` | Sonnet 3.5, Gemini Flash | Enabled (fal) |
-| **Max** | $29/mo | `claude-opus-4.6` | Sonnet 3.5, Gemini Flash | Enabled (fal) |
-| **BYOK** | $9/mo | `kimi-k2.5` | User-configured | Enabled (fal) |
-
-*Note: Default video provider is `fal` (Kling) via config.py; runtime selection depends on `video_provider` propagation. BYOK users bypass credits using their own keys.*
+See [Account entitlements and compute policy](SUBSCRIPTION_ARCHITECTURE.md) for
+the audited legacy inventory, migration behavior, and implementation status.
+Commercial defaults live in `config/commercial.json`; provider qualification
+lives in `config/inference_policy.json`. Video-credit balances remain separate.
 
 ## Implementation Status
 
 ### Phase 1: Cloud Orchestration ✅
 - **SSE Streaming**: Typed events (`token`, `thinking`, `routing`, `tool_call`, `tool_result`, `final`, `error`, `done`).
-- **Subagents**: `@research` (Brave), `@image` (OpenRouter/Gemini for images; xAI, fal for video), `@audio` (ElevenLabs).
+- **Subagents**: Execution is subject to account capabilities, provider qualification and bounded adapters. Unbounded image/video/audio vendor paths are disabled.
 - **Tools**: `generate_document` (deterministic CSV/DOCX generation).
 - **Tools**: `web_search`, `http_request`, `calculate`, `get_time`, `notifications`, `reminders`, `memory_read`, `memory_write`.
 
 ### Phase 2: Memory System ✅
-- **Storage**: PostgreSQL + pgvector with 39 migrations applied (latest: `038_extraction_watermark.sql`).
-- **Pipeline**: Extraction (GPT-4o-mini) → Embedding (Voyage 4) → Dedup → Retrieval (Hybrid).
-- **Pipeline**: Extraction (GPT-4o-mini) → Embedding (Voyage 4) → Dedup → Retrieval (Hybrid).- **Encryption**: Fernet for messages and memories.
+- **Storage**: PostgreSQL + pgvector; migration inventory is derived from `migrations/`. Account entitlements require the new commercial migration before deploying the replacement runtime.
+- **Pipeline**: Account-funded extraction → deduplication → retrieval; denied embeddings use nullable vectors and lexical retrieval.
+- **Encryption**: Fernet for messages and memories.
 - **Background Jobs**: Extraction, summary, consolidation, dreaming.
 
-### Video Generation + Credits ✅
-- **Providers**: `fal` (Kling) as default; `xai` (Imagine) also supported.
+### Video Credits and Pending Bounded Generation
+- **Generation**: Disabled pending qualified, cost-reserving vendor adapters.
 - **Credits**: Prepaid system with atomic debit/refund. Balance and transactions via `/video-credits`.
 - **Studio**: Dedicated UI for video generation. Legacy image mode is retired; `/api/images/models`, `/api/images/generate`, and `/api/images/upload-reference` remain authenticated 410 routes until the hosted-identity image replacement lands.
 
 ### Frontend ✅
 - **Chat**: Streaming via Vercel AI SDK `useChat`.
-- **Voice**: ElevenLabs TTS/STT with push-to-talk.
+- **Voice**: Settings and controls remain; vendor execution and direct vendor tokens are disabled pending bounded adapters.
 - **Settings**: Voice preferences, model selector, memory management.
 
 ### Phase 3: Local Pipeline (Blocked)
@@ -102,7 +101,7 @@ Daemon uses a tier-based model configuration system. Specific model assignments 
 
 For detailed architecture, see [MEMORY_LAYER.md](../MEMORY_LAYER.md).
 
-- **Embeddings**: Direct Voyage `voyage-4-large` (1024d) for documents, and `voyage-4-lite` (1024d) for queries, with opt-in OpenRouter Voyage and OpenAI fallback routes. Each fallback is isolated under its own storage identity and queried only when enabled matching rows exist for the user; routed Voyage is not assumed vector-identical to the direct API.
+- **Embeddings**: Provider execution is denied until a qualified bounded adapter exists. Existing provider/model storage identities remain isolated; configured Voyage/OpenRouter/OpenAI fallback settings do not bypass qualification. Lexical retrieval and memory persistence remain available.
 - **Dedup Thresholds**:
   - Merge: ≥ 0.90
   - Supersede (generic): ≥ 0.82
@@ -114,8 +113,8 @@ For detailed architecture, see [MEMORY_LAYER.md](../MEMORY_LAYER.md).
 | Subagent | Status | Implementation |
 |----------|--------|----------------|
 | `@research` | Implemented | Brave Search + synthesis |
-| `@image` | Implemented | OpenRouter/Gemini image subagent remains; Studio image API is retired; xAI/fal video remains |
-| `@audio` | Implemented | ElevenLabs SFX |
+| `@image` | Unavailable | Unbounded vendor execution retired pending qualified bounded adapters |
+| `@audio` | Unavailable | Vendor execution disabled pending qualified bounded adapters |
 | `generate_document` | Implemented | Deterministic CSV/DOCX generation via `generate_document` tool |
 | `@code` | **Reserved** | Not implemented |
 | `@reader` | **Reserved** | Not implemented |
@@ -134,5 +133,5 @@ For detailed architecture, see [MEMORY_LAYER.md](../MEMORY_LAYER.md).
 ## Caveats & Cleanup
 - **Local Pipeline**: Blocked on hardware (RTX 5090); cloud pipeline runs independently.
 - **Linter Scope**: `check_doc_freshness.py` gates high-confidence structured facts only.
-- **Model Assignments**: Tier-to-model mappings are env-var configurable in `config.py`.
-- **Migrations**: 39 migrations applied.
+- **Model Assignments**: Workload configuration and approved inference routes are separate from account plans; see `SUBSCRIPTION_ARCHITECTURE.md`.
+- **Migrations**: Repository files do not prove production application; run the migration gate before deployment.

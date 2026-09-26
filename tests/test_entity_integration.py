@@ -27,7 +27,7 @@ class TestProcessExtractionReturnsTuple:
         mock_store.get_messages = AsyncMock(return_value=[])
         mock_store.log_extraction = AsyncMock()
 
-        with patch("orchestrator.memory.extraction.litellm.acompletion") as mock_llm:
+        with patch("orchestrator.memory.extraction.guarded_completion") as mock_llm:
             mock_response = MagicMock()
             mock_response.model_dump = MagicMock(
                 return_value={"choices": [{"message": {"content": '{"facts": []}'}}]}

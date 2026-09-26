@@ -70,7 +70,7 @@ class TestExtractionBenchmarkSampling:
     ) -> None:
         """Extraction passes temperature=0.0 in benchmark mode."""
         litellm_mock = AsyncMock(return_value=MockResponse('{"facts": []}'))
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.extraction.guarded_completion", litellm_mock)
 
         await extract_facts_from_text(
             "I love Python",
@@ -86,7 +86,7 @@ class TestExtractionBenchmarkSampling:
     ) -> None:
         """Extraction passes seed=BENCHMARK_SEED in benchmark mode."""
         litellm_mock = AsyncMock(return_value=MockResponse('{"facts": []}'))
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.extraction.guarded_completion", litellm_mock)
 
         await extract_facts_from_text(
             "I love Python",
@@ -108,7 +108,7 @@ class TestExtractionBenchmarkSampling:
                 system_fingerprint="fp_extraction_abc",
             )
         )
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.extraction.guarded_completion", litellm_mock)
 
         await extract_facts_from_text(
             "I love Python",
@@ -144,7 +144,7 @@ class TestExtractionBenchmarkSampling:
                 )
 
         litellm_mock = AsyncMock(side_effect=fake_completion)
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.extraction.guarded_completion", litellm_mock)
 
         await extract_facts_from_text(
             "I love Python",
@@ -164,7 +164,7 @@ class TestExtractionBenchmarkSampling:
     async def test_extraction_non_benchmark_no_seed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Non-benchmark extraction does not inject seed."""
         litellm_mock = AsyncMock(return_value=MockResponse('{"facts": []}'))
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.extraction.guarded_completion", litellm_mock)
 
         await extract_facts_from_text(
             "I love Python",
@@ -186,7 +186,7 @@ class TestExtractionBenchmarkSampling:
                 system_fingerprint="fp_xyz",
             )
         )
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.extraction.guarded_completion", litellm_mock)
 
         await extract_facts_from_text(
             "I love Python",
@@ -215,7 +215,7 @@ class TestDedupContradictionBenchmarkSampling:
     ) -> None:
         """Dedup contradiction uses temperature=0.0 in benchmark mode (overriding CONTRADICTION_TEMPERATURE)."""
         litellm_mock = AsyncMock(return_value=MockResponse("NO"))
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.dedup.guarded_completion", litellm_mock)
 
         await check_contradiction(
             "User likes Python",
@@ -232,7 +232,7 @@ class TestDedupContradictionBenchmarkSampling:
     ) -> None:
         """Dedup contradiction uses CONTRADICTION_TEMPERATURE=0.1 when not in benchmark mode."""
         litellm_mock = AsyncMock(return_value=MockResponse("NO"))
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.dedup.guarded_completion", litellm_mock)
 
         await check_contradiction(
             "User likes Python",
@@ -249,7 +249,7 @@ class TestDedupContradictionBenchmarkSampling:
     ) -> None:
         """Dedup contradiction passes seed=DEDUP_BENCHMARK_SEED in benchmark mode."""
         litellm_mock = AsyncMock(return_value=MockResponse("NO"))
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.dedup.guarded_completion", litellm_mock)
 
         await check_contradiction(
             "User likes Python",
@@ -272,7 +272,7 @@ class TestDedupContradictionBenchmarkSampling:
                 system_fingerprint="fp_dedup_xyz",
             )
         )
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.dedup.guarded_completion", litellm_mock)
 
         await check_contradiction(
             "User likes Python",
@@ -309,7 +309,7 @@ class TestDedupContradictionBenchmarkSampling:
                 )
 
         litellm_mock = AsyncMock(side_effect=fake_completion)
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.dedup.guarded_completion", litellm_mock)
 
         await check_contradiction(
             "User likes Python",
@@ -339,7 +339,7 @@ class TestDedupContradictionBenchmarkSampling:
                 system_fingerprint="fp_dedup_abc",
             )
         )
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.dedup.guarded_completion", litellm_mock)
 
         await check_contradiction(
             "User likes Python",
@@ -377,7 +377,7 @@ class TestExtractionBenchmarkModeActivation:
                 system_fingerprint="fp_activation_abc",
             )
         )
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.extraction.guarded_completion", litellm_mock)
         monkeypatch.setattr(
             extraction_module,
             "BENCHMARK_MODE",
@@ -402,7 +402,7 @@ class TestExtractionBenchmarkModeActivation:
         import orchestrator.memory.extraction as extraction_module
 
         litellm_mock = AsyncMock(return_value=MockResponse('{"facts": []}'))
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.extraction.guarded_completion", litellm_mock)
         monkeypatch.setattr(
             extraction_module,
             "BENCHMARK_MODE",
@@ -439,7 +439,7 @@ class TestDedupBenchmarkModeActivation:
                 system_fingerprint="fp_dedup_activation_xyz",
             )
         )
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.dedup.guarded_completion", litellm_mock)
         monkeypatch.setattr(
             dedup_module,
             "DEDUP_BENCHMARK_MODE",
@@ -467,7 +467,7 @@ class TestDedupBenchmarkModeActivation:
         import orchestrator.memory.dedup as dedup_module
 
         litellm_mock = AsyncMock(return_value=MockResponse("NO"))
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.dedup.guarded_completion", litellm_mock)
         monkeypatch.setattr(
             dedup_module,
             "DEDUP_BENCHMARK_MODE",

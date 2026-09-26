@@ -5,14 +5,12 @@ import { useStudio } from '../StudioProvider';
 import { ensureAuthHeader } from '@/lib/auth';
 
 type VideoSourceMode = 'text-to-video' | 'image-to-video';
-type VideoTier = 'starter' | 'pro' | 'max' | 'byok';
 type VideoProvider = 'xai' | 'kling';
 type KlingModel = 'kling-v3-pro' | 'kling-o3-pro';
 
 interface GenerateVideoOptions {
   duration: number;
   sourceMode: VideoSourceMode;
-  tier: VideoTier;
   userId: string;
   provider?: VideoProvider;
   estimatedCredits?: number;
@@ -179,7 +177,6 @@ export function useVideoGeneration() {
     async ({
       duration,
       sourceMode,
-      tier,
       userId,
       provider,
       estimatedCredits,
@@ -257,7 +254,8 @@ export function useVideoGeneration() {
                   video_generation: {
                     duration,
                     source_mode: sourceMode,
-                    tier,
+                    // Plan, pricing, and eligibility are resolved server-side from
+                    // the authenticated account, never from client metadata.
                     user_id: userId,
                     provider,
                     reference_image_url: referenceImageUrl,

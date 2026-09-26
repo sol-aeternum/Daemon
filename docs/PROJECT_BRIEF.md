@@ -14,7 +14,7 @@ Daemon is built for users who prioritize ownership and flexibility in their AI i
 
 - **Provider Independence**: Switch between LLM providers (via OpenRouter) without losing conversation history or changing your interface.
 - **Persistent Memory**: Own your conversational context with a pgvector-backed memory pipeline that extracts and retrieves facts across sessions.
-- **Intelligent Routing**: Automatically route queries to the most appropriate model based on complexity, cost, and capability tiers.
+- **Intelligent Routing**: Route queries by task requirements, privacy qualification, account capabilities, and bounded compute cost.
 - **Specialized Subagents**: Delegate complex tasks to dedicated agents for research, media generation, and document processing.
 - **Privacy & Control**: Run the entire stack via Docker, with encrypted-at-rest storage and a clear path toward local inference.
 
@@ -34,7 +34,7 @@ For detailed technical specifications and infrastructure details, refer to [PROJ
 
 Daemon provides a comprehensive suite of features for advanced AI assistance.
 
-- **Chat & Routing**: Real-time token streaming with typed SSE events, supporting both native and OpenAI-compatible endpoints with tier-based model assignment.
+- **Chat & Routing**: Real-time token streaming with typed SSE events, supporting both native and OpenAI-compatible endpoints. The Free / Pro / Power migration separates commercial plans from model selection; see `SUBSCRIPTION_ARCHITECTURE.md` for deployment requirements.
 - **Persistent Memory**: Automated fact extraction, hybrid semantic/lexical retrieval, and bitemporal memory management. Detailed in [../MEMORY_LAYER.md](../MEMORY_LAYER.md).
 - **Subagent Framework**: Specialized agents for web research (`@research`), image and video generation (`@image`), audio processing (`@audio`). Document generation via `generate_document` tool (deterministic CSV/DOCX).
 - **Council Deliberation**: Multi-perspective advisory debate with a read-only tool subset; council models can gather context but cannot send notifications, create reminders, spawn agents, write memory, or generate files.

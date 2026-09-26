@@ -55,33 +55,25 @@ after changing the setting. A non-default value emits a warning when the direct 
 is initialized; the header value itself is not copied into that warning. Docker Compose
 passes the setting to both the backend and worker.
 
-Sites may return different content or reject the new default identifier. The existing
-fetch fallback chain remains available. This identifies direct fetch traffic; it does
+Sites may return different content or reject the new default identifier. Vendor-assisted
+fallbacks are disabled pending qualified bounded adapters. This identifies direct fetch traffic; it does
 not add robots.txt enforcement or change SSRF protections, cookie scoping, or timeouts.
 Sources: `orchestrator/services/fetch/strategies/direct.py` and
 `orchestrator/services/fetch/service.py`.
 
 ---
 
-## Tier Configuration
+## Account Entitlements and Routing
 
-All model assignments are env-var overridable via `TIER_{NAME}_{SLOT}_MODEL`.
+Commercial plans are Free, Pro, and Power. A lifetime premium trial is a separate
+usage-based entitlement on Free. Central policy resolves capabilities and limits;
+execution must enforce privacy-qualified routes and atomic account cost ceilings.
+Commercial numbers and provider approvals are separately configurable in
+`config/commercial.json` and `config/inference_policy.json`.
 
-### Current Defaults (config.py)
-
-| Tier | Orchestrator | Research/Code | Image | Reader | Embeddings | Video |
-|------|--------------|---------------|-------|--------|------------|-------|
-| **FREE** | Kimi K2.5 | _none_ | openrouter | _none_ | _none_ | Disabled |
-| **STARTER** | Kimi K2.5 | Claude 3.5 Sonnet | Gemini 2.5 Flash | Gemini 2.0 Pro Exp | Voyage 4 Large | fal |
-| **PRO** | Kimi K2.5 | Claude 3.5 Sonnet | Gemini 2.5 Flash | Gemini 2.0 Pro Exp | Voyage 4 Large | fal |
-| **MAX** | Claude Opus 4.6 | Claude 3.5 Sonnet / Claude Opus 4.6 | Gemini 2.5 Flash | Gemini 2.0 Pro Exp | Voyage 4 Large | fal |
-| **BYOK** | Kimi K2.5 | _none_ | openrouter | _none_ | _none_ | fal |
-
-*Note: Image models are accessed via OpenRouter. Video provider `fal` uses Kling models.*
-
-### Auto-Routing (within tiers)
-- `auto_fast_model`: `openrouter/google/gemini-2.5-flash`
-- `auto_reasoning_model`: `openrouter/moonshotai/kimi-k2.5`
+See [SUBSCRIPTION_ARCHITECTURE.md](SUBSCRIPTION_ARCHITECTURE.md) for the account,
+trial, usage, migration, and routing contracts. Model availability alone is not
+privacy approval. Unknown qualification fails closed on every plan.
 
 ---
 
@@ -93,7 +85,7 @@ The `/chat` endpoint streams Server-Sent Events with typed frames:
 |------------|-------------|-------------|
 | `token` | `data.text` | Incremental text token (compat: `data.delta` accepted by bridge) |
 | `thinking` | `data.content`, `id` | Model thinking/reasoning content |
-| `routing` | `data.model`, `data.tier` | Model selection notification |
+| `routing` | `data.model`, `data.route_class` | Model selection notification |
 | `tool_call` | `data.name`, `data.arguments` | Tool invocation |
 | `tool_result` | `data.name`, `data.result` | Tool response |
 | `final` | `data.text`, `data.model`, `data.finish_reason`, `data.usage` (optional), `data.timing` (optional) | Completed response |
@@ -104,7 +96,7 @@ The `/chat` endpoint streams Server-Sent Events with typed frames:
 
 ## Database Schema
 
-PostgreSQL 16 with pgvector extension. 39 migrations in the `migrations/` directory.
+PostgreSQL 16 with pgvector extension. Migration inventory is maintained in `migrations/`.
 
 ### Core Tables
 - **`users`**: Settings and profile data.
@@ -117,7 +109,7 @@ PostgreSQL 16 with pgvector extension. 39 migrations in the `migrations/` direct
 - **`dream_log`**: Logs for background consolidation and dreaming jobs.
 - **`skill_projections`**: Mapping of skills to conversation context.
 
-Latest migration: `038_extraction_watermark.sql`.
+Account entitlement schema and usage ledgers are introduced by the commercial migration in `migrations/`; see `SUBSCRIPTION_ARCHITECTURE.md` for rollout requirements.
 ---
 
 ## Memory Pipeline
@@ -125,6 +117,11 @@ Latest migration: `038_extraction_watermark.sql`.
 Daemon uses a multi-stage pipeline for durable fact management. See [MEMORY_LAYER.md](../MEMORY_LAYER.md) for full architecture.
 
 ### Extraction & Dedup
+Provider embedding execution is currently denied pending a qualified, budget-bounded
+adapter. The configured identities below remain distinct for existing stored vectors;
+fallback settings cannot grant approval. Core writes and retrieval degrade to nullable
+vectors and account-scoped lexical search.
+
 - **Extraction**: GPT-4o-mini extracts facts from conversation turns.
 - **Embeddings**: Direct Voyage `voyage-4-large` (1024d) for documents, and `voyage-4-lite` (1024d) for queries, with an explicit ordered fallback chain configured by `EMBEDDING_FALLBACK_PROVIDERS`. Supported fallbacks are the corresponding Voyage models through OpenRouter (reusing `OPENROUTER_API_KEY`) and OpenAI `text-embedding-3-small`. Routed Voyage parity is unproven, so fallback vectors retain distinct `openrouter:<model>` or `openai:<model>` storage identities. Vector/BM25 retrieval only searches enabled identities with stored rows for that user, including inferred historical windows; dedup reconciles spaces lexically/by slot without cross-provider vector comparisons and excludes L0/dream rows.
 - **Dedup Thresholds**:

@@ -193,7 +193,7 @@ class TestExtractionProviderFailFast:
         )
 
         litellm_mock = AsyncMock(side_effect=Exception("credit limit exceeded"))
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.extraction.guarded_completion", litellm_mock)
 
         with pytest.raises(BenchmarkProviderError) as exc_info:
             await extract_facts_from_text(
@@ -215,7 +215,7 @@ class TestExtractionProviderFailFast:
         )
 
         litellm_mock = AsyncMock(side_effect=Exception("connection reset"))
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.extraction.guarded_completion", litellm_mock)
 
         result = await extract_facts_from_text(
             "I love Python",
@@ -252,7 +252,7 @@ class TestDedupProviderFailFast:
         )
 
         litellm_mock = AsyncMock(side_effect=Exception("rate limit"))
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.dedup.guarded_completion", litellm_mock)
 
         with pytest.raises(DedupBenchmarkProviderError) as exc_info:
             await check_contradiction(
@@ -272,7 +272,7 @@ class TestDedupProviderFailFast:
         from orchestrator.memory.dedup import check_contradiction
 
         litellm_mock = AsyncMock(side_effect=Exception("network unreachable"))
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.dedup.guarded_completion", litellm_mock)
 
         result = await check_contradiction(
             "User likes Python",
@@ -460,7 +460,7 @@ class TestEvaluateExtraBodyContract:
 
 
 class TestExtractionExtraBodyContract:
-    """Verify extraction sends extra_body in benchmark mode."""
+    """Verify extraction uses approved policy transport in benchmark mode."""
 
     @pytest.fixture(autouse=True)
     def setup(self) -> None:
@@ -469,11 +469,20 @@ class TestExtractionExtraBodyContract:
         reset_benchmark_tracking()
 
     @pytest.mark.asyncio
-    async def test_extraction_benchmark_includes_extra_body(
+    async def test_extraction_benchmark_uses_guarded_policy_transport(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Extraction benchmark mode includes extra_body.provider.order."""
+        import uuid
+
+        from orchestrator import compute_runtime
+        from orchestrator.memory.extraction import (
+            BENCHMARK_EXTRACTION_MODEL,
+            extract_facts_from_text,
+        )
+        from tests.qualified_compute import install_qualified_compute
+
+        install_qualified_compute(monkeypatch, models=(BENCHMARK_EXTRACTION_MODEL,))
         litellm_mock = AsyncMock(
             return_value=MockResponseWithMetadata(
                 content='{"facts": []}',
@@ -481,21 +490,19 @@ class TestExtractionExtraBodyContract:
                 system_fingerprint="fp_extraction",
             )
         )
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr(compute_runtime.litellm, "acompletion", litellm_mock)
 
-        from orchestrator.memory.extraction import extract_facts_from_text
+        async with compute_runtime.account_compute(object(), uuid.uuid4()):
+            result = await extract_facts_from_text("I love Python", benchmark_mode=True)
 
-        await extract_facts_from_text(
-            "I love Python",
-            benchmark_mode=True,
-        )
-
+        assert result.facts == []
+        litellm_mock.assert_awaited_once()
         litellm_kwargs = litellm_mock.call_args_list[0].kwargs
-        assert "extra_body" in litellm_kwargs
-        assert litellm_kwargs["extra_body"]["provider"]["order"] == [
-            "openrouter/openai/gpt-4o-mini-2024-07-18"
-        ]
+        assert litellm_kwargs["extra_body"]["provider"]["order"] == ["test-reviewed"]
+        assert litellm_kwargs["extra_body"]["provider"]["only"] == ["test-reviewed"]
         assert litellm_kwargs["extra_body"]["provider"]["allow_fallbacks"] is False
+        assert litellm_kwargs["extra_body"]["provider"]["zdr"] is True
+        assert litellm_kwargs["num_retries"] == 0
 
     @pytest.mark.asyncio
     async def test_extraction_non_benchmark_excludes_extra_body(
@@ -504,7 +511,7 @@ class TestExtractionExtraBodyContract:
     ) -> None:
         """Extraction non-benchmark mode does not include extra_body."""
         litellm_mock = AsyncMock(return_value=MockResponse('{"facts": []}'))
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.extraction.guarded_completion", litellm_mock)
 
         from orchestrator.memory.extraction import extract_facts_from_text
 
@@ -529,7 +536,7 @@ class TestExtractionExtraBodyContract:
                 system_fingerprint="fp_extraction",
             )
         )
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.extraction.guarded_completion", litellm_mock)
 
         from orchestrator.memory.extraction import extract_facts_from_text
 
@@ -543,7 +550,7 @@ class TestExtractionExtraBodyContract:
 
 
 class TestDedupExtraBodyContract:
-    """Verify dedup contradiction check sends extra_body in benchmark mode."""
+    """Verify benchmark pinning comes from approved policy, not caller transport overrides."""
 
     @pytest.fixture(autouse=True)
     def setup(self) -> None:
@@ -552,34 +559,73 @@ class TestDedupExtraBodyContract:
         reset_dedup_benchmark_tracking()
 
     @pytest.mark.asyncio
-    async def test_contradiction_benchmark_includes_extra_body(
+    async def test_contradiction_benchmark_uses_guarded_policy_transport(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Dedup contradiction benchmark mode includes extra_body.provider.order."""
-        litellm_mock = AsyncMock(
+        import uuid
+
+        from orchestrator import compute_runtime
+        from orchestrator.memory.dedup import BENCHMARK_CONTRADICTION_MODEL, check_contradiction
+        from tests.qualified_compute import install_qualified_compute
+
+        install_qualified_compute(monkeypatch, models=(BENCHMARK_CONTRADICTION_MODEL,))
+        sdk = AsyncMock(
             return_value=MockResponseWithMetadata(
                 content="NO",
-                model="openrouter/deepseek/deepseek-chat-v3-5",
+                model=BENCHMARK_CONTRADICTION_MODEL,
                 system_fingerprint="fp_dedup",
             )
         )
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr(compute_runtime.litellm, "acompletion", sdk)
 
-        from orchestrator.memory.dedup import check_contradiction
+        async with compute_runtime.account_compute(object(), uuid.uuid4()):
+            contradiction, _ = await check_contradiction(
+                "User likes Python",
+                "User loves Python",
+                benchmark_mode=True,
+            )
 
-        await check_contradiction(
-            "User likes Python",
-            "User loves Python",
-            benchmark_mode=True,
+        assert contradiction is False
+        sdk.assert_awaited_once()
+        assert sdk.await_args is not None
+        sent = sdk.await_args.kwargs
+        assert sent["model"] == BENCHMARK_CONTRADICTION_MODEL
+        assert sent["max_tokens"] == 50
+        assert sent["seed"] == 42
+        assert sent["extra_body"]["provider"]["only"] == ["test-reviewed"]
+        assert sent["extra_body"]["provider"]["order"] == ["test-reviewed"]
+        assert sent["extra_body"]["provider"]["allow_fallbacks"] is False
+        assert sent["extra_body"]["provider"]["zdr"] is True
+        assert sent["num_retries"] == 0
+
+    @pytest.mark.asyncio
+    async def test_unapproved_benchmark_route_fails_before_provider(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import uuid
+        from types import SimpleNamespace
+
+        from orchestrator import compute_runtime
+        from orchestrator.memory.dedup import DedupBenchmarkProviderError, check_contradiction
+        from tests.qualified_compute import install_qualified_compute
+
+        install_qualified_compute(monkeypatch)
+        monkeypatch.setattr(
+            compute_runtime,
+            "load_inference_policy",
+            lambda: SimpleNamespace(routes={}, requirements=object()),
         )
+        sdk = AsyncMock()
+        monkeypatch.setattr(compute_runtime.litellm, "acompletion", sdk)
 
-        litellm_kwargs = litellm_mock.call_args_list[0].kwargs
-        assert "extra_body" in litellm_kwargs
-        assert litellm_kwargs["extra_body"]["provider"]["order"] == [
-            "openrouter/deepseek/deepseek-chat-v3-5"
-        ]
-        assert litellm_kwargs["extra_body"]["provider"]["allow_fallbacks"] is False
+        async with compute_runtime.account_compute(object(), uuid.uuid4()):
+            with pytest.raises(DedupBenchmarkProviderError, match="Approved inference route"):
+                await check_contradiction(
+                    "User likes Python", "User loves Python", benchmark_mode=True
+                )
+        sdk.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_contradiction_non_benchmark_excludes_extra_body(
@@ -588,7 +634,7 @@ class TestDedupExtraBodyContract:
     ) -> None:
         """Dedup contradiction non-benchmark mode does not include extra_body."""
         litellm_mock = AsyncMock(return_value=MockResponse("NO"))
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.dedup.guarded_completion", litellm_mock)
 
         from orchestrator.memory.dedup import check_contradiction
 
@@ -614,7 +660,7 @@ class TestDedupExtraBodyContract:
                 system_fingerprint="fp_dedup",
             )
         )
-        monkeypatch.setattr("litellm.acompletion", litellm_mock)
+        monkeypatch.setattr("orchestrator.memory.dedup.guarded_completion", litellm_mock)
 
         from orchestrator.memory.dedup import check_contradiction
 

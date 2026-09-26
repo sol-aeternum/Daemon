@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 import asyncpg
 
-from orchestrator.memory.embedding import embed_documents
+from orchestrator.memory.embedding import EmbeddingConfigurationError, embed_documents
 
 logger = logging.getLogger(__name__)
 
@@ -361,7 +361,12 @@ class SkillProjectionStore:
         return result == "UPDATE 1"
 
 
-async def embed_skill_content(name: str, description: str, content: str) -> list[float]:
+async def embed_skill_content(name: str, description: str, content: str) -> list[float] | None:
     text_for_embedding = f"{name}\n{description}\n{content[:2000]}"
-    embeddings = await embed_documents([text_for_embedding])
-    return embeddings[0] if embeddings else []
+    try:
+        embeddings = await embed_documents([text_for_embedding])
+    except EmbeddingConfigurationError:
+        # Projection metadata is local and useful even without an approved
+        # remote embedding route. The store accepts a NULL vector.
+        return None
+    return embeddings[0] if embeddings else None

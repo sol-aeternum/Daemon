@@ -218,7 +218,7 @@ describe('Council Event Type Guards', () => {
     const nonCouncilEvents: ChatEvent[] = [
       { type: 'text', content: 'hello' },
       { type: 'thinking', content: 'thinking...' },
-      { type: 'routing', model: 'gpt-4', tier: 'auto' },
+      { type: 'routing', model: 'gpt-4', route_class: 'balanced' },
       {
         type: 'agent_spawn',
         agent: 'research',

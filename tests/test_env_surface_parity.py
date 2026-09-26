@@ -81,7 +81,7 @@ from pydantic import AliasChoices, AliasPath, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from config.video_pricing import VideoPricingConfig
-from orchestrator.config import ModelSlotConfig, ProviderConfig, Settings, TierConfig
+from orchestrator.config import ModelSlotConfig, ProviderConfig, Settings
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_FILENAME = ".env.example"
@@ -105,87 +105,21 @@ APP_SETTINGS_CLASSES: tuple[type[BaseSettings], ...] = (Settings, VideoPricingCo
 AMBIENT_SUBCONFIG_CLASSES: tuple[type[BaseSettings], ...] = (
     ProviderConfig,
     ModelSlotConfig,
-    TierConfig,
 )
 
 # Inventory pins. A change here is a deliberate review trigger: the coverage
 # test reports the resolved name of the new field in the same run.
-EXPECTED_SETTINGS_FIELD_COUNT = 175
-EXPECTED_VIDEO_PRICING_FIELD_COUNT = 9
+EXPECTED_SETTINGS_FIELD_COUNT = 117
+EXPECTED_VIDEO_PRICING_FIELD_COUNT = 6
 
 # --------------------------------------------------------------------------
 # Reviewed exclusions from .env.example documentation
 # --------------------------------------------------------------------------
 
-_TIER_OVERRIDE_REASON = (
-    "tier model/provider/temperature override; stays env-configurable, but documenting "
-    "and restructuring every tier slot is explicitly out of scope for this audit, so the "
-    "name is enumerated here instead of being declared"
-)
-
-# Enumerated, never a ``TIER_*`` prefix wildcard: a new tier field must fail the
-# coverage test until someone decides whether to declare or exclude it.
-UNDOCUMENTED_APP_CONFIG: dict[str, str] = {
-    "TIER_FREE_ORCHESTRATOR_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_FREE_ORCHESTRATOR_TEMP": _TIER_OVERRIDE_REASON,
-    "TIER_FREE_RESEARCH_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_FREE_CODE_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_FREE_IMAGE_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_FREE_IMAGE_PROVIDER": _TIER_OVERRIDE_REASON,
-    "TIER_FREE_VIDEO_PROVIDER": _TIER_OVERRIDE_REASON,
-    "TIER_FREE_READER_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_FREE_EMBEDDINGS_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_STARTER_ORCHESTRATOR_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_STARTER_ORCHESTRATOR_TEMP": _TIER_OVERRIDE_REASON,
-    "TIER_STARTER_RESEARCH_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_STARTER_RESEARCH_TEMP": _TIER_OVERRIDE_REASON,
-    "TIER_STARTER_CODE_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_STARTER_CODE_TEMP": _TIER_OVERRIDE_REASON,
-    "TIER_STARTER_IMAGE_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_STARTER_IMAGE_TEMP": _TIER_OVERRIDE_REASON,
-    "TIER_STARTER_IMAGE_PROVIDER": _TIER_OVERRIDE_REASON,
-    "TIER_STARTER_VIDEO_PROVIDER": _TIER_OVERRIDE_REASON,
-    "TIER_STARTER_READER_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_STARTER_READER_TEMP": _TIER_OVERRIDE_REASON,
-    "TIER_STARTER_EMBEDDINGS_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_PRO_ORCHESTRATOR_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_PRO_ORCHESTRATOR_TEMP": _TIER_OVERRIDE_REASON,
-    "TIER_PRO_RESEARCH_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_PRO_RESEARCH_TEMP": _TIER_OVERRIDE_REASON,
-    "TIER_PRO_CODE_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_PRO_CODE_TEMP": _TIER_OVERRIDE_REASON,
-    "TIER_PRO_IMAGE_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_PRO_IMAGE_TEMP": _TIER_OVERRIDE_REASON,
-    "TIER_PRO_IMAGE_PROVIDER": _TIER_OVERRIDE_REASON,
-    "TIER_PRO_VIDEO_PROVIDER": _TIER_OVERRIDE_REASON,
-    "TIER_PRO_READER_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_PRO_READER_TEMP": _TIER_OVERRIDE_REASON,
-    "TIER_PRO_EMBEDDINGS_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_MAX_ORCHESTRATOR_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_MAX_ORCHESTRATOR_TEMP": _TIER_OVERRIDE_REASON,
-    "TIER_MAX_ORCHESTRATOR_MODEL_GROK": _TIER_OVERRIDE_REASON,
-    "TIER_MAX_ORCHESTRATOR_MODEL_GROK_TEMP": _TIER_OVERRIDE_REASON,
-    "TIER_MAX_RESEARCH_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_MAX_RESEARCH_TEMP": _TIER_OVERRIDE_REASON,
-    "TIER_MAX_CODE_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_MAX_CODE_TEMP": _TIER_OVERRIDE_REASON,
-    "TIER_MAX_IMAGE_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_MAX_IMAGE_TEMP": _TIER_OVERRIDE_REASON,
-    "TIER_MAX_IMAGE_PROVIDER": _TIER_OVERRIDE_REASON,
-    "TIER_MAX_VIDEO_PROVIDER": _TIER_OVERRIDE_REASON,
-    "TIER_MAX_READER_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_MAX_READER_TEMP": _TIER_OVERRIDE_REASON,
-    "TIER_MAX_EMBEDDINGS_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_BYOK_ORCHESTRATOR_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_BYOK_ORCHESTRATOR_TEMP": _TIER_OVERRIDE_REASON,
-    "TIER_BYOK_RESEARCH_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_BYOK_CODE_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_BYOK_IMAGE_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_BYOK_IMAGE_PROVIDER": _TIER_OVERRIDE_REASON,
-    "TIER_BYOK_VIDEO_PROVIDER": _TIER_OVERRIDE_REASON,
-    "TIER_BYOK_READER_MODEL": _TIER_OVERRIDE_REASON,
-    "TIER_BYOK_EMBEDDINGS_MODEL": _TIER_OVERRIDE_REASON,
-}
+# Enumerated names only, never a prefix wildcard: a new field must fail the
+# coverage test until someone decides whether to declare or exclude it. The
+# former TIER_* model overrides were removed with the global tier system.
+UNDOCUMENTED_APP_CONFIG: dict[str, str] = {}
 
 _AMBIENT_SUBCONFIG_REASON = (
     "ambient BaseSettings input of a nested per-provider/per-slot/per-tier config object: "
@@ -193,9 +127,6 @@ _AMBIENT_SUBCONFIG_REASON = (
     "bare name is not a supported deployment knob and is not advertised in .env.example"
 )
 
-# ``TIER_VIDEO_*`` below belong to TierConfig, not to the ``TIER_*`` Settings
-# overrides, which is exactly why the tier list above is enumerated instead of
-# prefix-matched.
 UNDOCUMENTED_AMBIENT_CONFIG: dict[str, str] = {
     "API_KEY": _AMBIENT_SUBCONFIG_REASON,
     "BASE_URL": _AMBIENT_SUBCONFIG_REASON,
@@ -207,15 +138,6 @@ UNDOCUMENTED_AMBIENT_CONFIG: dict[str, str] = {
     "EXTRA_PARAMS": _AMBIENT_SUBCONFIG_REASON,
     "MAX_TOKENS": _AMBIENT_SUBCONFIG_REASON,
     "TEMPERATURE": _AMBIENT_SUBCONFIG_REASON,
-    "CODE_AGENT": _AMBIENT_SUBCONFIG_REASON,
-    "EMBEDDINGS": _AMBIENT_SUBCONFIG_REASON,
-    "IMAGE_AGENT": _AMBIENT_SUBCONFIG_REASON,
-    "ORCHESTRATOR": _AMBIENT_SUBCONFIG_REASON,
-    "READER_AGENT": _AMBIENT_SUBCONFIG_REASON,
-    "RESEARCH_AGENT": _AMBIENT_SUBCONFIG_REASON,
-    "TIER_VIDEO_CREDIT_DISCOUNT": _AMBIENT_SUBCONFIG_REASON,
-    "TIER_VIDEO_ENABLED": _AMBIENT_SUBCONFIG_REASON,
-    "TIER_VIDEO_MAX_DURATION": _AMBIENT_SUBCONFIG_REASON,
 }
 
 # Names the audit approved for deletion from ``.env.example``. They are listed
@@ -246,6 +168,10 @@ APPROVED_REMOVED_EXAMPLE_NAMES: dict[str, str] = {
     "PROVIDER_CUSTOM_API_KEY": "non-functional declaration; see PROVIDER_CUSTOM_BASE_URL",
     "PROVIDER_CUSTOM_MODEL": "non-functional declaration; see PROVIDER_CUSTOM_BASE_URL",
     "PROVIDER_CUSTOM_REQUIRES_AUTH": "non-functional declaration; see PROVIDER_CUSTOM_BASE_URL",
+    "DEFAULT_TIER": "global tier removed; plans resolve per account (docs/ENV_SURFACE_MIGRATION.md)",
+    "VIDEO_TIER_PRO_DISCOUNT": "tier video discounts removed with the global tier system",
+    "VIDEO_TIER_MAX_DISCOUNT": "tier video discounts removed with the global tier system",
+    "VIDEO_TIER_BYOK_DISCOUNT": "tier video discounts removed with the global tier system",
 }
 
 
@@ -1409,7 +1335,7 @@ LEGACY_DOTENV_ONLY = frozenset(
     DAEMON_SESSION_CLEANUP_MAX_DELETE_FRACTION DAEMON_SETUP_TOKEN_FILE
     DAEMON_SSE_KEEPALIVE_INTERVAL_S DAEMON_WORKER_FAILURE_ALERT_EMAIL
     DEDUP_MERGE_THRESHOLD DEDUP_SUPERSEDE_SAME_SLOT_THRESHOLD DEDUP_SUPERSEDE_THRESHOLD
-    DEFAULT_PROVIDER DEFAULT_TIER DREAMING_ENABLED DREAM_MIN_CLUSTER_SIZE DREAM_SCHEDULE_HOUR
+    DEFAULT_PROVIDER DREAMING_ENABLED DREAM_MIN_CLUSTER_SIZE DREAM_SCHEDULE_HOUR
     EMBEDDING_DIMENSIONS EMBEDDING_DOCUMENT_MODEL EMBEDDING_FALLBACK_PROVIDERS
     EMBEDDING_OPENAI_FALLBACK_MODEL EMBEDDING_OPENROUTER_DOCUMENT_MODEL
     EMBEDDING_OPENROUTER_QUERY_MODEL EMBEDDING_QUERY_MODEL ENV
@@ -1419,8 +1345,7 @@ LEGACY_DOTENV_ONLY = frozenset(
     OPENROUTER_TITLE PGPASSWORD PROVIDER_EXTRA_PARAMS REQUEST_TIMEOUT_S
     RETRIEVAL_LOGGING_DEBUG RETRIEVAL_LOGGING_ENABLED STREAM_PING_INTERVAL_S TITLE_MODEL
     VIDEO_COST_10S VIDEO_COST_15S VIDEO_COST_20S VIDEO_COST_30S VIDEO_COST_5S
-    VIDEO_CREDITS_PER_SECOND VIDEO_TIER_BYOK_DISCOUNT VIDEO_TIER_MAX_DISCOUNT
-    VIDEO_TIER_PRO_DISCOUNT
+    VIDEO_CREDITS_PER_SECOND
     """.split()
 )
 
@@ -1638,17 +1563,12 @@ def test_resolution_handles_prefix_alias_and_alias_choices(
 def test_ambient_subconfig_names_are_inventoried() -> None:
     ambient = {name for cls in AMBIENT_SUBCONFIG_CLASSES for name in accepted_env_names(cls)}
     assert ambient == set(UNDOCUMENTED_AMBIENT_CONFIG)
-    # TierConfig's TIER_VIDEO_* fields are *not* Settings tier overrides. Keeping
-    # them in the ambient table rather than the Settings allowlist is what stops a
-    # TIER_-prefix wildcard from silently exempting the wrong family.
-    assert "TIER_VIDEO_ENABLED" in ambient
-    assert "TIER_VIDEO_ENABLED" not in UNDOCUMENTED_APP_CONFIG
     assert UNDOCUMENTED_APP_CONFIG.keys() & set(ambient) == set()
-    # 59 Settings tier overrides + 3 ambient TierConfig TIER_* names = the 62
-    # TIER_-prefixed env names a reviewer may count; they are two distinct
-    # families with two distinct allowlists, not one 62-entry list.
-    assert len(UNDOCUMENTED_APP_CONFIG) == 59
-    assert len([name for name in ambient if name.startswith("TIER_")]) == 3
+    # The global tier system is gone: plans resolve per account, so no TIER_*
+    # input may reappear in either family without review.
+    app = {name for cls in APP_SETTINGS_CLASSES for name in accepted_env_names(cls)}
+    names = ambient | set(UNDOCUMENTED_APP_CONFIG) | app
+    assert not [name for name in names if name.startswith("TIER_")]
 
 
 # --------------------------------------------------------------------------

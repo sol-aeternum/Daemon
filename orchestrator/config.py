@@ -83,22 +83,6 @@ class ModelSlotConfig(BaseSettings):
     extra_params: dict[str, object] = Field(default_factory=dict)
 
 
-class TierConfig(BaseSettings):
-    """Model assignments for a specific tier."""
-
-    orchestrator: ModelSlotConfig
-    research_agent: ModelSlotConfig | None = None
-    code_agent: ModelSlotConfig | None = None
-    image_agent: ModelSlotConfig | None = None
-    reader_agent: ModelSlotConfig | None = None
-    embeddings: ModelSlotConfig | None = None
-
-    # Video generation access controls
-    tier_video_enabled: bool = False
-    tier_video_max_duration: int | None = None
-    tier_video_credit_discount: float = 0.0
-
-
 class Settings(BaseSettings):
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -108,6 +92,10 @@ class Settings(BaseSettings):
     daemon_default_timezone: str = "UTC"
 
     daemon_admin_api_key: str | None = None
+
+    # Optional paths to deployment-owned commercial and provider policy files.
+    daemon_commercial_config: str | None = None
+    daemon_inference_policy: str | None = None
 
     daemon_max_grant_amount_per_request: int = 100
     daemon_min_grant_description_length: int = 5
@@ -182,87 +170,8 @@ class Settings(BaseSettings):
             else self.stream_ping_interval_s
         )
 
-    # ===== TIER-BASED MODEL CONFIGURATION =====
-    # Model tier to use by default (free, starter, pro, max, byok)
-    default_tier: str = "pro"
-
-    # Tier: FREE ($0)
-    # Uses Kimi K2.5 for orchestrator, limited/no subagents
-    tier_free_orchestrator_model: str = "openrouter/moonshotai/kimi-k2.5"
-    tier_free_orchestrator_temp: float = 0.7
-    tier_free_research_model: str = ""
-    tier_free_code_model: str = ""
-    tier_free_image_model: str = ""
-    tier_free_image_provider: str = "openrouter"
-    tier_free_video_provider: str = "fal"
-    tier_free_reader_model: str = ""
-    tier_free_embeddings_model: str = ""
-
     # CORS configuration
     cors_allowed_origins: str = "http://localhost:3000,http://frontend:3000"
-
-    # Tier: STARTER ($9/mo)
-    # Kimi K2.5 orchestrator, basic subagents
-    tier_starter_orchestrator_model: str = "openrouter/moonshotai/kimi-k2.5"
-    tier_starter_orchestrator_temp: float = 0.7
-    tier_starter_research_model: str = "openrouter/anthropic/claude-3.5-sonnet"
-    tier_starter_research_temp: float = 0.5
-    tier_starter_code_model: str = "openrouter/anthropic/claude-3.5-sonnet"
-    tier_starter_code_temp: float = 0.3
-    tier_starter_image_model: str = "google/gemini-2.5-flash-image"
-    tier_starter_image_temp: float = 0.8
-    tier_starter_image_provider: str = "openrouter"
-    tier_starter_video_provider: str = "fal"
-    tier_starter_reader_model: str = "openrouter/google/gemini-2.0-pro-exp"
-    tier_starter_reader_temp: float = 0.3
-    tier_starter_embeddings_model: str = "voyage-4-large"
-
-    # Tier: PRO ($19/mo)
-    # Kimi K2.5 orchestrator, full subagent suite
-    tier_pro_orchestrator_model: str = "openrouter/moonshotai/kimi-k2.5"
-    tier_pro_orchestrator_temp: float = 0.7
-    tier_pro_research_model: str = "openrouter/anthropic/claude-3.5-sonnet"
-    tier_pro_research_temp: float = 0.5
-    tier_pro_code_model: str = "openrouter/anthropic/claude-3.5-sonnet"
-    tier_pro_code_temp: float = 0.3
-    tier_pro_image_model: str = "google/gemini-2.5-flash-image"
-    tier_pro_image_temp: float = 0.8
-    tier_pro_image_provider: str = "openrouter"
-    tier_pro_video_provider: str = "fal"
-    tier_pro_reader_model: str = "openrouter/google/gemini-2.0-pro-exp"
-    tier_pro_reader_temp: float = 0.3
-    tier_pro_embeddings_model: str = "voyage-4-large"
-
-    # Tier: MAX ($29/mo)
-    # Opus 4.6 orchestrator, premium subagents
-    tier_max_orchestrator_model: str = "openrouter/anthropic/claude-opus-4.6"
-    tier_max_orchestrator_temp: float = 0.7
-    # Grok alternative for Max-tier orchestrator
-    tier_max_orchestrator_model_grok: str = "x-ai/grok-4"
-    tier_max_orchestrator_model_grok_temp: float = 0.7
-    tier_max_research_model: str = "openrouter/anthropic/claude-3.5-sonnet"
-    tier_max_research_temp: float = 0.5
-    tier_max_code_model: str = "openrouter/anthropic/claude-opus-4.6"
-    tier_max_code_temp: float = 0.3
-    tier_max_image_model: str = "google/gemini-2.5-flash-image"
-    tier_max_image_temp: float = 0.8
-    tier_max_image_provider: str = "openrouter"
-    tier_max_video_provider: str = "fal"
-    tier_max_reader_model: str = "openrouter/google/gemini-2.0-pro-exp"
-    tier_max_reader_temp: float = 0.3
-    tier_max_embeddings_model: str = "voyage-4-large"
-
-    # Tier: BYOK ($9/mo)
-    # User brings their own OpenRouter key
-    tier_byok_orchestrator_model: str = "openrouter/moonshotai/kimi-k2.5"
-    tier_byok_orchestrator_temp: float = 0.7
-    tier_byok_research_model: str = ""
-    tier_byok_code_model: str = ""
-    tier_byok_image_model: str = ""
-    tier_byok_image_provider: str = "openrouter"
-    tier_byok_video_provider: str = "fal"
-    tier_byok_reader_model: str = ""
-    tier_byok_embeddings_model: str = ""
 
     # ===== AUTO-ROUTING MODEL TIERS =====
     auto_fast_model: str = "openrouter/google/gemini-2.5-flash"
@@ -398,7 +307,7 @@ class Settings(BaseSettings):
     daemon_encryption_key: str | None = None
 
     # ===== TITLE GENERATION =====
-    title_model: str = "openrouter/openai/gpt-4o-mini"
+    title_model: str = "auto"
 
     # ===== BACKGROUND REASONING =====
     # Model used for background reasoning tasks (e.g., contradiction detection)
@@ -548,97 +457,16 @@ class Settings(BaseSettings):
     # It must never use a NEXT_PUBLIC_* name or reuse the auth pepper.
     daemon_internal_proxy_hmac_secret: str = ""
 
-    def get_video_provider_for_tier(self, tier: str | None = None) -> str:
-        """Resolve the tier video provider while preserving the PRO fallback.
-
-        A tier field's built-in ``fal`` value is a default, not an explicit
-        override. The legacy environment lookup fell back to
-        ``TIER_PRO_VIDEO_PROVIDER`` whenever the selected tier variable was
-        unset, so only fields supplied by configuration should take priority.
-        """
-        tier_name = (tier or self.default_tier).lower()
-        field_name = f"tier_{tier_name}_video_provider"
-        tier_override = getattr(self, field_name, "")
-        if field_name in self.model_fields_set and tier_override:
-            return tier_override
-        return self.tier_pro_video_provider
-
-    def get_tier_config(self, tier: str | None = None) -> TierConfig:
-        """Get model configuration for a specific tier.
-
-        Args:
-            tier: Tier name (free, starter, pro, max, byok). If None, uses default_tier.
-
-        Returns:
-            TierConfig with model assignments for all slots.
-        """
-        tier_name = (tier or self.default_tier).lower()
-        prefix = f"tier_{tier_name}_"
-
-        def get_slot_config(slot: str) -> ModelSlotConfig | None:
-            """Get config for a specific slot, returning None if model is empty."""
-            model = getattr(self, f"{prefix}{slot}_model", "")
-            if not model:
-                return None
-            return ModelSlotConfig(
-                model=model,
-                temperature=getattr(self, f"{prefix}{slot}_temp", 0.7),
-            )
-
-        # Set video access controls based on tier
-        if tier_name == "free":
-            tier_video_enabled = False
-            tier_video_max_duration = 0
-            tier_video_credit_discount = 0.0
-        elif tier_name == "starter":
-            tier_video_enabled = True
-            tier_video_max_duration = None
-            tier_video_credit_discount = 1.0
-        elif tier_name == "pro":
-            tier_video_enabled = True
-            tier_video_max_duration = None
-            tier_video_credit_discount = 1.0
-        elif tier_name == "max":
-            tier_video_enabled = True
-            tier_video_max_duration = None
-            tier_video_credit_discount = 0.8
-        elif tier_name == "byok":
-            tier_video_enabled = True
-            tier_video_max_duration = None
-            tier_video_credit_discount = 0.0
-        else:
-            # Default fallback
-            tier_video_enabled = False
-            tier_video_max_duration = 0
-            tier_video_credit_discount = 0.0
-
-        return TierConfig(
-            orchestrator=get_slot_config("orchestrator")
-            or ModelSlotConfig(model="openrouter/moonshotai/kimi-k2.5", temperature=0.7),
-            research_agent=get_slot_config("research"),
-            code_agent=get_slot_config("code"),
-            image_agent=get_slot_config("image"),
-            reader_agent=get_slot_config("reader"),
-            embeddings=get_slot_config("embeddings"),
-            tier_video_enabled=tier_video_enabled,
-            tier_video_max_duration=tier_video_max_duration,
-            tier_video_credit_discount=tier_video_credit_discount,
-        )
-
-    def get_provider_config(
-        self, provider_name: str | None = None, tier: str | None = None
-    ) -> ProviderConfig:
+    def get_provider_config(self, provider_name: str | None = None) -> ProviderConfig:
         """Get configuration for a specific provider.
 
         Args:
             provider_name: Name of the provider. If None, uses default_provider.
-            tier: Optional tier for BYOK mode (uses user's own API key).
 
         Returns:
             ProviderConfig for the specified provider.
         """
         name = provider_name or self.default_provider
-        tier_config = self.get_tier_config(tier)
 
         # Built-in providers
         if name == "openrouter":
@@ -650,7 +478,7 @@ class Settings(BaseSettings):
                 name="openrouter",
                 base_url=self.openrouter_base_url,
                 api_key=self.openrouter_api_key,
-                model=tier_config.orchestrator.model,
+                model=self.auto_reasoning_model,
                 extra_headers=extra_headers,
                 requires_auth=True,
                 timeout_s=self.request_timeout_s,
@@ -671,7 +499,7 @@ class Settings(BaseSettings):
             name="openrouter",
             base_url=self.openrouter_base_url,
             api_key=self.openrouter_api_key,
-            model=tier_config.orchestrator.model,
+            model=self.auto_reasoning_model,
             extra_headers={
                 "HTTP-Referer": self.openrouter_referer,
                 "X-Title": self.openrouter_title,
@@ -679,42 +507,6 @@ class Settings(BaseSettings):
             requires_auth=True,
             timeout_s=self.request_timeout_s,
         )
-
-    def list_available_tiers(self) -> list[dict[str, str | int]]:
-        """List all available tiers with their orchestrator models."""
-        tiers = [
-            {
-                "id": "free",
-                "name": "Free",
-                "price": 0,
-                "orchestrator": self.tier_free_orchestrator_model or "N/A",
-            },
-            {
-                "id": "starter",
-                "name": "Starter",
-                "price": 9,
-                "orchestrator": self.tier_starter_orchestrator_model,
-            },
-            {
-                "id": "pro",
-                "name": "Pro",
-                "price": 19,
-                "orchestrator": self.tier_pro_orchestrator_model,
-            },
-            {
-                "id": "max",
-                "name": "Max",
-                "price": 29,
-                "orchestrator": self.tier_max_orchestrator_model,
-            },
-            {
-                "id": "byok",
-                "name": "BYOK",
-                "price": 9,
-                "orchestrator": self.tier_byok_orchestrator_model,
-            },
-        ]
-        return tiers
 
     def list_available_providers(self) -> list[str]:
         """List all configured providers."""

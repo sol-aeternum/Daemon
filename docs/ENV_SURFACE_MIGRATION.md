@@ -142,7 +142,7 @@ and harmless to keep.
 | `LITELLM_MODEL` | No reader. Distinct from the live `LITELLM_MODE` used by tests. |
 | `OPENCODE_API_KEY`, `OPENCODE_BASE_URL`, `OPENCODE_MODEL` | No audited provider implementation reads them; the advertised provider option is not implemented in the audited code. |
 | `PROVIDER_CUSTOM_BASE_URL`, `PROVIDER_CUSTOM_API_KEY`, `PROVIDER_CUSTOM_MODEL`, `PROVIDER_CUSTOM_REQUIRES_AUTH` | The resolver looks for `PROVIDER_{NAME}_*` names, but undeclared fields are ignored when configuration is parsed, so these never took effect; an unknown provider name falls back to the `openrouter` configuration. The example now carries an accurate "not supported" note instead of a working-looking example. The resolver code is unchanged. |
-| `TIER_PRO_VIDEO_COST_PER_SEC`, `TIER_MAX_VIDEO_COST_PER_SEC` | Commented examples of names absent from the audited fields. **There is no value-preserving rename.** The real inputs are `VIDEO_COST_5S` … `VIDEO_COST_30S` (integer credit amounts) and `VIDEO_TIER_PRO_DISCOUNT` / `VIDEO_TIER_MAX_DISCOUNT` / `VIDEO_TIER_BYOK_DISCOUNT` (multipliers applied to those credits). A dollars-per-second figure and a credit-count or discount factor are different quantities, so port the intent manually instead of renaming. |
+| `TIER_PRO_VIDEO_COST_PER_SEC`, `TIER_MAX_VIDEO_COST_PER_SEC` | Commented examples of names absent from the audited fields. **There is no value-preserving rename.** The real inputs are `VIDEO_COST_5S` … `VIDEO_COST_30S` (integer credit amounts). A dollars-per-second figure and a credit count are different quantities, so port the intent manually instead of renaming. The per-tier discount multipliers were later removed; see "Account entitlements replace the global tier". |
 | `OPENAI_SORA_API_KEY` | No field, reader, or provider path. `OPENAI_API_KEY` is the live key and is unchanged. |
 
 ### Documentation only — no production change required
@@ -160,6 +160,24 @@ For names without a Compose environment entry, the audited path relies on the
 bind-mounted root `.env`. Both services read `/app/.env`, but any process
 environment value still outranks the file. Existing Compose injections remain
 authoritative for names they cover.
+
+## Account entitlements replace the global tier
+
+The commercial entitlements change removes the deployment-wide tier. Plans,
+trial grants and compute ceilings now resolve per account from the database and
+`config/commercial.json`; provider qualification comes from
+`config/inference_policy.json`. MIGRATION: drop `DEFAULT_TIER`, every
+`TIER_{FREE,STARTER,PRO,MAX,BYOK}_*` model/provider/temperature override, and
+`VIDEO_TIER_PRO_DISCOUNT` / `VIDEO_TIER_MAX_DISCOUNT` /
+`VIDEO_TIER_BYOK_DISCOUNT`; optionally add `DAEMON_COMMERCIAL_CONFIG` and
+`DAEMON_INFERENCE_POLICY`.
+
+| Key | Change | Result |
+|---|---|---|
+| `DEFAULT_TIER` | Removed. No field reads it. | **Not a harmless leftover.** A deployment that relied on `DEFAULT_TIER=pro` (or `max`) gave every user that tier. Without it, every account resolves from its own entitlement row, which starts on the Free plan with the lifetime trial. Import paid users from authoritative records (`EntitlementService.import_legacy_tier`, or trusted subscription events) *before* cutover; an absent local record does not mean an external subscriber is Free. |
+| `TIER_*_ORCHESTRATOR_MODEL`, `TIER_*_RESEARCH_MODEL`, `TIER_*_CODE_MODEL`, `TIER_*_IMAGE_MODEL`, `TIER_*_READER_MODEL`, `TIER_*_EMBEDDINGS_MODEL`, their `*_TEMP` companions, `TIER_*_IMAGE_PROVIDER`, `TIER_*_VIDEO_PROVIDER`, `TIER_MAX_ORCHESTRATOR_MODEL_GROK[_TEMP]` | Removed with the tier configuration objects. | Ignored if still present. Models are no longer chosen per tier: inference goes only to approved routes in `config/inference_policy.json`. There is no rename; express a model choice by qualifying its route there. |
+| `VIDEO_TIER_PRO_DISCOUNT`, `VIDEO_TIER_MAX_DISCOUNT`, `VIDEO_TIER_BYOK_DISCOUNT` | Removed from video pricing. | Ignored if still present. Video credits stay separate prepaid balances priced by `VIDEO_COST_*`; no per-tier multiplier applies. |
+| `DAEMON_COMMERCIAL_CONFIG`, `DAEMON_INFERENCE_POLICY` | Added, optional; injected into both `backend` and `worker`. | Absent and empty behave the same: the repository files `config/commercial.json` and `config/inference_policy.json` are used. Set both services to the same path, since the worker enforces the same budgets. |
 
 ## Frontend URLs
 
@@ -199,7 +217,6 @@ Deliberately deferred, each needing its own approval:
 - Repairing or removing the non-functional custom-provider resolver path ([#319](https://github.com/sol-aeternum/Daemon/issues/319)).
 - Converting credential settings fields to `SecretStr` so values stop appearing
   in reprs and logs.
-- Restructuring the tier model/provider/temperature configuration surface.
 - Forwarding `DAEMON_INTERNAL_API_URL` into the frontend service and reconciling
   the build-time versus runtime public API URL ([#320](https://github.com/sol-aeternum/Daemon/issues/320)).
 - Repairing the retrieval-quality diagnostic script so it stops reading a

@@ -19,7 +19,11 @@ from orchestrator.memory.dedup import (
     dedup_and_store,
     prepare_memory_embedding,
 )
-from orchestrator.memory.embedding import embed_documents_with_metadata, embed_query_with_metadata
+from orchestrator.memory.embedding import (
+    EmbeddingConfigurationError,
+    embed_documents_with_metadata,
+    embed_query_with_metadata,
+)
 from orchestrator.tools.registry import Tool
 
 logger = logging.getLogger(__name__)
@@ -192,18 +196,23 @@ class MemoryReadTool(Tool):
 
         if mode == "semantic":
             normalized_slot = slot if isinstance(slot, str) and slot.strip() else None
-            query_result = await embed_query_with_metadata(query)
+            try:
+                query_result = await embed_query_with_metadata(query)
+            except EmbeddingConfigurationError:
+                query_result = None
             memories = await retrieve_memories_for_text(
                 store=self.store,
                 query_text=query,
                 user_id=self.user_id,
-                query_embedding=query_result.embedding,
+                query_embedding=query_result.embedding if query_result is not None else None,
                 limit=limit,
                 include_local=True,
                 include_historical=history,
                 memory_slot=normalized_slot,
-                storage_embedding_model=query_result.storage_model,
-                query_embedding_model=query_result.model,
+                storage_embedding_model=query_result.storage_model
+                if query_result is not None
+                else None,
+                query_embedding_model=query_result.model if query_result is not None else None,
             )
         else:
             try:
@@ -603,7 +612,10 @@ class MemoryWriteTool(Tool):
             effective_slot = slot if isinstance(slot, str) else None
             # External embedding work must complete before BEGIN/advisory
             # lock so a slow provider cannot hold a database transaction.
-            embedding_result = await prepare_memory_embedding(content, effective_slot)
+            try:
+                embedding_result = await prepare_memory_embedding(content, effective_slot)
+            except EmbeddingConfigurationError:
+                embedding_result = None
             # Issue #221 — atomic active-row cap enforcement.
             #
             # `_check_write_quota` does a non-locked count + a
@@ -769,7 +781,10 @@ class MemoryWriteTool(Tool):
             # Compute the external embedding before opening the database
             # transaction, then serialize the authoritative count, close,
             # and replacement insert under one per-user advisory lock.
-            embedding_result = await prepare_memory_embedding(content, slot)
+            try:
+                embedding_result = await prepare_memory_embedding(content, slot)
+            except EmbeddingConfigurationError:
+                embedding_result = None
             cap_conn = None
             deferred_effects = []
             try:

@@ -37,6 +37,7 @@ from orchestrator.worker.jobs import (
     run_consolidation_nudge_job,
     run_skill_evaluation_job,
 )
+from tests.qualified_compute import install_qualified_compute
 
 
 class MockRecord:
@@ -449,17 +450,19 @@ class TestSkillLifecycleJobIntegration:
     """Integration tests for skill evaluation job wiring."""
 
     @pytest.mark.asyncio
-    async def test_job_executes_and_returns_result(self) -> None:
+    async def test_job_executes_and_returns_result(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Full job execution should return structured result."""
+        install_qualified_compute(monkeypatch)
         user_id = uuid.uuid4()
         conversation_id = uuid.uuid4()
         assistant_message_id = uuid.uuid4()
 
         mock_store = MagicMock(spec=MemoryStore)
+        mock_store.get_conversation = AsyncMock(return_value={"user_id": user_id})
 
         ctx: dict[str, object] = {
             "store": mock_store,
-            "db_pool": None,
+            "db_pool": object(),
         }
 
         with patch(
@@ -567,9 +570,10 @@ class TestSkillConsolidationIntegration:
 
     @pytest.mark.asyncio
     async def test_consolidation_nudge_merges_duplicate_autonomous_skills(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Consolidation nudge should merge duplicate autonomous skills."""
+        install_qualified_compute(monkeypatch)
         user_id = uuid.uuid4()
         mock_store, merge_tracker = self._make_consolidation_store()
 
@@ -604,10 +608,12 @@ class TestSkillConsolidationIntegration:
         ctx: dict[str, object] = {
             "store": mock_store,
             "settings": test_settings,
-            "db_pool": None,
+            "db_pool": object(),
         }
 
-        with patch("litellm.acompletion", AsyncMock(return_value=mock_response)):
+        with patch(
+            "orchestrator.worker.jobs.guarded_completion", AsyncMock(return_value=mock_response)
+        ):
             result = await run_consolidation_nudge_job(ctx, str(user_id))
 
         assert result["status"] == "ok"

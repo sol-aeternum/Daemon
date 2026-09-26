@@ -28,6 +28,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from arq import Retry
 
+from orchestrator.compute_runtime import current_scope
 from orchestrator.memory.extraction import (
     MAX_EXTRACTION_INPUT_CHARS,
     extract_facts_from_text,
@@ -38,6 +39,23 @@ from orchestrator.worker.jobs import (
     _chunk_messages_for_extraction,
     extract_memories,
 )
+from tests.qualified_compute import install_qualified_compute
+
+
+def _worker_context(
+    monkeypatch: pytest.MonkeyPatch,
+    store: MemoryStore,
+    user_id: uuid.UUID,
+    *,
+    queue: object | None = None,
+) -> dict[str, object]:
+    """Exercise the real owner lookup and account scope with test-qualified compute."""
+    install_qualified_compute(monkeypatch)
+    store.get_conversation = AsyncMock(return_value={"user_id": user_id})
+    ctx: dict[str, object] = {"store": store, "db_pool": object()}
+    if queue is not None:
+        ctx["redis"] = queue
+    return ctx
 
 
 # ---------------------------------------------------------------------------
@@ -175,16 +193,17 @@ async def test_store_cursor_skips_explicit_error_and_cancelled_rows() -> None:
 
 
 @pytest.mark.asyncio
-async def test_extract_memories_chunks_large_batch_and_advances_per_chunk() -> None:
+async def test_extract_memories_chunks_large_batch_and_advances_per_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """When the joined text exceeds the model budget, the worker must chunk
     oldest-first and pass the *chunk's* last_message_observed_at (not the
     batch-wide max) to ``process_extraction``.
     """
-    store = AsyncMock()
-    ctx = cast(dict[str, object], {"store": store})
-
     user_id = uuid.uuid4()
     conversation_id = uuid.uuid4()
+    store = object.__new__(MemoryStore)
+    ctx = _worker_context(monkeypatch, store, user_id)
 
     # Build six messages whose joined role-labeled text exceeds 4,000 chars.
     base = datetime(2026, 8, 11, 12, 0, 0, tzinfo=timezone.utc)
@@ -205,6 +224,7 @@ async def test_extract_memories_chunks_large_batch_and_advances_per_chunk() -> N
     async def fake_process_extraction(
         **kwargs: object,
     ) -> tuple[bool, list[dict[str, object]], bool]:
+        assert current_scope().user_id == user_id
         captured.append(dict(kwargs))
         return True, [], False
 
@@ -212,8 +232,7 @@ async def test_extract_memories_chunks_large_batch_and_advances_per_chunk() -> N
         "orchestrator.worker.jobs.process_extraction",
         side_effect=fake_process_extraction,
     ):
-        with patch("orchestrator.worker.jobs.MemoryStore", object):
-            result = await extract_memories(ctx, user_id, conversation_id, messages_json)
+        result = await extract_memories(ctx, user_id, conversation_id, messages_json)
 
     assert result["status"] == "ok"
     assert len(captured) >= 2, f"expected multiple extractor calls; got {len(captured)}"
@@ -256,10 +275,13 @@ async def test_extract_memories_chunks_large_batch_and_advances_per_chunk() -> N
 
 
 @pytest.mark.asyncio
-async def test_extract_memories_checkpoint_exception_is_retryable() -> None:
+async def test_extract_memories_checkpoint_exception_is_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     store = object.__new__(MemoryStore)
-    store.get_conversation = AsyncMock(return_value=None)
     store.log_extraction = AsyncMock(side_effect=RuntimeError("checkpoint write failed"))
+    user_id = uuid.uuid4()
+    ctx = _worker_context(monkeypatch, store, user_id)
 
     message = {
         "role": "user",
@@ -283,8 +305,8 @@ async def test_extract_memories_checkpoint_exception_is_retryable() -> None:
         extract_mock.return_value = _Outcome()
         with pytest.raises(Retry):
             await extract_memories(
-                {"store": store},
-                uuid.uuid4(),
+                ctx,
+                user_id,
                 uuid.uuid4(),
                 json.dumps([message]),
             )
@@ -424,10 +446,13 @@ async def test_process_extraction_checkpoint_failure_is_retryable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_failed_chunk_does_not_submit_later_chunks() -> None:
-    store = AsyncMock()
+async def test_failed_chunk_does_not_submit_later_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = object.__new__(MemoryStore)
     queue = SimpleNamespace(enqueue_job=AsyncMock())
-    ctx = cast(dict[str, object], {"store": store, "redis": queue})
+    user_id = uuid.uuid4()
+    ctx = _worker_context(monkeypatch, store, user_id, queue=queue)
     base = datetime(2026, 8, 11, 12, 0, 0, tzinfo=timezone.utc)
     messages = [
         {
@@ -454,7 +479,6 @@ async def test_failed_chunk_does_not_submit_later_chunks() -> None:
         side_effect=fail_second_chunk,
     ):
         with (
-            patch("orchestrator.worker.jobs.MemoryStore", object),
             patch("orchestrator.worker.jobs.ArqRedis", SimpleNamespace),
             patch("orchestrator.worker.jobs.MAX_EXTRACTION_CHUNKS_PER_JOB", 8),
             patch(
@@ -465,7 +489,7 @@ async def test_failed_chunk_does_not_submit_later_chunks() -> None:
             with pytest.raises(Exception):
                 await extract_memories(
                     ctx,
-                    uuid.uuid4(),
+                    user_id,
                     uuid.uuid4(),
                     json.dumps(messages, default=str),
                 )
@@ -475,8 +499,11 @@ async def test_failed_chunk_does_not_submit_later_chunks() -> None:
 
 
 @pytest.mark.asyncio
-async def test_full_oldest_batch_enqueues_extraction_continuation() -> None:
+async def test_full_oldest_batch_enqueues_extraction_continuation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     store = object.__new__(MemoryStore)
+    user_id = uuid.uuid4()
     store.consume_summary_continuation_pending = AsyncMock(return_value=False)
     store.get_last_extraction_cursor = AsyncMock(return_value=(None, None))
     timestamp = datetime(2026, 8, 11, 12, 0, 0, tzinfo=timezone.utc)
@@ -493,13 +520,13 @@ async def test_full_oldest_batch_enqueues_extraction_continuation() -> None:
     )
     store.encrypt_extraction_continuation = Mock(return_value="encrypted-continuation")
     queue = SimpleNamespace(enqueue_job=AsyncMock())
-    ctx = cast(dict[str, object], {"store": store, "redis": queue})
+    ctx = _worker_context(monkeypatch, store, user_id, queue=queue)
     enqueue = AsyncMock(return_value=SimpleNamespace())
 
     with patch("orchestrator.worker.jobs.process_extraction", new_callable=AsyncMock) as process:
         process.return_value = (True, [], False)
         with patch("orchestrator.worker.jobs.enqueue_with_debounce", enqueue):
-            result = await extract_memories(ctx, uuid.uuid4(), uuid.uuid4())
+            result = await extract_memories(ctx, user_id, uuid.uuid4())
 
     processed_messages = cast(int, result["processed_messages"])
     assert 0 < processed_messages < 250
@@ -546,7 +573,7 @@ async def test_provider_failure_never_advances_checkpoint() -> None:
 async def test_schema_invalid_response_is_not_successful() -> None:
     response = {"choices": [{"message": {"content": "{}"}}]}
     with patch(
-        "orchestrator.memory.extraction.litellm.acompletion",
+        "orchestrator.memory.extraction.guarded_completion",
         new_callable=AsyncMock,
         return_value=response,
     ):
@@ -560,7 +587,7 @@ async def test_schema_invalid_response_is_not_successful() -> None:
 async def test_malformed_fact_entry_is_not_successful() -> None:
     response = {"choices": [{"message": {"content": '{"facts":[{"error":"rate limited"}]}'}}]}
     with patch(
-        "orchestrator.memory.extraction.litellm.acompletion",
+        "orchestrator.memory.extraction.guarded_completion",
         new_callable=AsyncMock,
         return_value=response,
     ):
@@ -597,7 +624,7 @@ async def test_supported_category_alias_is_not_treated_as_malformed() -> None:
         ]
     }
     with patch(
-        "orchestrator.memory.extraction.litellm.acompletion",
+        "orchestrator.memory.extraction.guarded_completion",
         new_callable=AsyncMock,
         return_value=response,
     ):
@@ -635,7 +662,7 @@ async def test_numeric_string_confidence_is_not_treated_as_malformed() -> None:
         ]
     }
     with patch(
-        "orchestrator.memory.extraction.litellm.acompletion",
+        "orchestrator.memory.extraction.guarded_completion",
         new_callable=AsyncMock,
         return_value=response,
     ):
@@ -673,7 +700,7 @@ async def test_bool_confidence_is_still_rejected_as_malformed() -> None:
         ]
     }
     with patch(
-        "orchestrator.memory.extraction.litellm.acompletion",
+        "orchestrator.memory.extraction.guarded_completion",
         new_callable=AsyncMock,
         return_value=response,
     ):
@@ -684,7 +711,9 @@ async def test_bool_confidence_is_still_rejected_as_malformed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_oversized_message_continuation_key_is_stable_across_ciphertext() -> None:
+async def test_oversized_message_continuation_key_is_stable_across_ciphertext(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The continuation key embedded in the encrypted envelope must be derived
     from the plaintext fragment's ``_extraction_continuation_key`` so the next
     job enqueues under the same job id regardless of the randomized Fernet
@@ -707,7 +736,7 @@ async def test_oversized_message_continuation_key_is_stable_across_ciphertext() 
     )
     store.encrypt_extraction_continuation = Mock(return_value="ciphertext-token")
     queue = SimpleNamespace(enqueue_job=AsyncMock())
-    ctx = cast(dict[str, object], {"store": store, "redis": queue})
+    ctx = _worker_context(monkeypatch, store, user_id, queue=queue)
 
     captured_keys: list[str] = []
 
@@ -742,7 +771,9 @@ async def test_oversized_message_continuation_key_is_stable_across_ciphertext() 
 
 
 @pytest.mark.asyncio
-async def test_extract_memories_caps_chunks_and_enqueues_continuation() -> None:
+async def test_extract_memories_caps_chunks_and_enqueues_continuation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     user_id = uuid.uuid4()
     conversation_id = uuid.uuid4()
     base = datetime(2026, 8, 11, 12, 0, 0, tzinfo=timezone.utc)
@@ -756,10 +787,10 @@ async def test_extract_memories_caps_chunks_and_enqueues_continuation() -> None:
         for index in range(20)
     ]
     queue = SimpleNamespace(enqueue_job=AsyncMock())
-    ctx = cast(dict[str, object], {"store": object.__new__(MemoryStore), "redis": queue})
+    store = object.__new__(MemoryStore)
+    ctx = _worker_context(monkeypatch, store, user_id, queue=queue)
 
     with (
-        patch("orchestrator.worker.jobs.MemoryStore", object),
         patch(
             "orchestrator.worker.jobs.process_extraction",
             new_callable=AsyncMock,
@@ -788,7 +819,9 @@ async def test_extract_memories_caps_chunks_and_enqueues_continuation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_database_continuation_is_encrypted_before_enqueue() -> None:
+async def test_database_continuation_is_encrypted_before_enqueue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     user_id = uuid.uuid4()
     conversation_id = uuid.uuid4()
     store = object.__new__(MemoryStore)
@@ -806,7 +839,7 @@ async def test_database_continuation_is_encrypted_before_enqueue() -> None:
     )
     store.encrypt_extraction_continuation = Mock(return_value="ciphertext-token")
     queue = SimpleNamespace(enqueue_job=AsyncMock())
-    ctx = cast(dict[str, object], {"store": store, "redis": queue})
+    ctx = _worker_context(monkeypatch, store, user_id, queue=queue)
 
     with (
         patch(
@@ -837,9 +870,14 @@ async def test_database_continuation_is_encrypted_before_enqueue() -> None:
 
 
 @pytest.mark.asyncio
-async def test_oversized_message_continuation_resumes_at_fragment() -> None:
+async def test_oversized_message_continuation_resumes_at_fragment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     queue = SimpleNamespace(enqueue_job=AsyncMock())
-    ctx = cast(dict[str, object], {"store": object.__new__(MemoryStore), "redis": queue})
+    store = object.__new__(MemoryStore)
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    ctx = _worker_context(monkeypatch, store, user_id, queue=queue)
     message = _msg(
         "user",
         "x" * 80_000,
@@ -848,7 +886,6 @@ async def test_oversized_message_continuation_resumes_at_fragment() -> None:
     )
 
     with (
-        patch("orchestrator.worker.jobs.MemoryStore", object),
         patch(
             "orchestrator.worker.jobs.process_extraction",
             new_callable=AsyncMock,
@@ -862,8 +899,8 @@ async def test_oversized_message_continuation_resumes_at_fragment() -> None:
     ):
         await extract_memories(
             ctx,
-            uuid.uuid4(),
-            uuid.uuid4(),
+            user_id,
+            conversation_id,
             json.dumps([message], default=str),
         )
 
@@ -876,8 +913,13 @@ async def test_oversized_message_continuation_resumes_at_fragment() -> None:
 
 
 @pytest.mark.asyncio
-async def test_direct_caller_without_queue_completes_synchronously() -> None:
-    ctx = cast(dict[str, object], {"store": object.__new__(MemoryStore)})
+async def test_direct_caller_without_queue_completes_synchronously(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = object.__new__(MemoryStore)
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    ctx = _worker_context(monkeypatch, store, user_id)
     messages = [
         _msg(
             "user",
@@ -889,7 +931,6 @@ async def test_direct_caller_without_queue_completes_synchronously() -> None:
     ]
 
     with (
-        patch("orchestrator.worker.jobs.MemoryStore", object),
         patch(
             "orchestrator.worker.jobs.process_extraction",
             new_callable=AsyncMock,
@@ -898,8 +939,8 @@ async def test_direct_caller_without_queue_completes_synchronously() -> None:
     ):
         result = await extract_memories(
             ctx,
-            uuid.uuid4(),
-            uuid.uuid4(),
+            user_id,
+            conversation_id,
             json.dumps(messages, default=str),
         )
 

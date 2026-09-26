@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from orchestrator.compute_runtime import guarded_completion
+from orchestrator.memory.embedding import EmbeddingConfigurationError
+
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -8,7 +11,6 @@ from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 import asyncpg
-import litellm
 
 from orchestrator.config import get_settings
 from orchestrator.memory.embedding import (
@@ -86,6 +88,8 @@ EXPLICIT_SUPPRESSION_WINDOW = timedelta(minutes=5)
 CONTRADICTION_TEMPERATURE = 0.1
 DEDUP_BENCHMARK_SEED = 42
 BENCHMARK_CONTRADICTION_MODEL = "openrouter/deepseek/deepseek-chat-v3-5"
+# Historical benchmark scripts assign this name; transport ignores it and uses
+# only the reviewed inference policy. Remove when those archived scripts retire.
 BENCHMARK_CONTRADICTION_ENDPOINT_SLUG = BENCHMARK_CONTRADICTION_MODEL
 DEDUP_BENCHMARK_MODE = False
 
@@ -256,15 +260,9 @@ async def check_contradiction(
         }
         if is_benchmark:
             call_params["seed"] = DEDUP_BENCHMARK_SEED
-            call_params["extra_body"] = {
-                "provider": {
-                    "order": [BENCHMARK_CONTRADICTION_ENDPOINT_SLUG],
-                    "allow_fallbacks": False,
-                }
-            }
 
         try:
-            response = await litellm.acompletion(**call_params)
+            response = await guarded_completion(**call_params)
         except Exception as exc:
             if is_benchmark:
                 raise DedupBenchmarkProviderError(
@@ -457,14 +455,57 @@ async def deduplicate_facts(
         fact_slot = getattr(fact, "slot", None)
         fact_slot_family = _slot_family(fact_slot)
         current_like_slot = _is_current_like_slot(fact_slot)
+        embedding_input = _embedding_text(fact.content, fact_slot)
+        try:
+            embedding_result = (
+                prepared_embeddings[fact_index]
+                if prepared_embeddings is not None
+                else await embed_documents_with_metadata([embedding_input])
+            )
+        except EmbeddingConfigurationError:
+            # No semantic similarity score is available. Only identical active
+            # facts in the same slot/source/category can be merged safely;
+            # never close a slot family based on lexical similarity alone.
+            matches = await store.search_memories_bm25(
+                user_id=user_id,
+                query=fact.content,
+                limit=50,
+                include_local=True,
+                memory_slot=fact_slot,
+                conn=lock_conn,
+            )
+            exact = next(
+                (
+                    match
+                    for match in matches
+                    if match.get("content") == fact.content
+                    and match.get("memory_slot") == fact_slot
+                    and match.get("source_type") == source_type
+                    and match.get("category") == fact.category
+                    and match.get("status") == status
+                    and match.get("valid_to") is None
+                ),
+                None,
+            )
+            if exact is not None:
+                result.merged.append(exact)
+            else:
+                memory = await store.insert_memory(
+                    user_id=user_id,
+                    content=fact.content,
+                    category=fact.category,
+                    source_type=source_type,
+                    embedding=None,
+                    source_conversation_id=conversation_id,
+                    confidence=fact.confidence,
+                    status=status,
+                    memory_slot=fact_slot,
+                    conn=lock_conn,
+                )
+                result.new.append(memory)
+            continue
         if current_like_slot and fact_slot_family:
             current_slot_families.add(fact_slot_family)
-        embedding_input = _embedding_text(fact.content, fact_slot)
-        embedding_result = (
-            prepared_embeddings[fact_index]
-            if prepared_embeddings is not None
-            else await embed_documents_with_metadata([embedding_input])
-        )
         embedding = embedding_result.embeddings[0]
         document_model = embedding_result.storage_model
 
@@ -980,17 +1021,28 @@ async def dedup_and_store(
         # Fallback - create directly on the lock conn so the insert is
         # part of the cap-protected transaction.
         embedding_input = _embedding_text(content, slot)
-        effective_embedding_result = embedding_result or await embed_documents_with_metadata(
-            [embedding_input]
+        try:
+            effective_embedding_result = embedding_result or await embed_documents_with_metadata(
+                [embedding_input]
+            )
+        except EmbeddingConfigurationError:
+            effective_embedding_result = None
+        embedding = (
+            effective_embedding_result.embeddings[0]
+            if effective_embedding_result is not None
+            else None
         )
-        embedding = effective_embedding_result.embeddings[0]
         memory = await store.insert_memory(
             user_id=user_id,
             content=content,
             category=category,
             source_type=source_type,
             embedding=embedding,
-            embedding_model=effective_embedding_result.storage_model,
+            embedding_model=(
+                effective_embedding_result.storage_model
+                if effective_embedding_result is not None
+                else None
+            ),
             source_conversation_id=conversation_id,
             status=status,
             memory_slot=slot,

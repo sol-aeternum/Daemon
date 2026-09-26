@@ -15,6 +15,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from orchestrator.config import get_settings
+from tests.qualified_compute import install_qualified_compute
 
 
 def _payloads_from_frames(frames: list[str]) -> list[dict[str, Any]]:
@@ -56,6 +57,7 @@ async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncClient,
 
         settings = get_settings()
         app_state = AppState(settings=settings)
+        install_qualified_compute(monkeypatch)
 
         async def override_settings():
             return settings
@@ -79,12 +81,16 @@ async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncClient,
         app.dependency_overrides[require_device_auth] = override_auth
         try:
             async with app.router.lifespan_context(app):
+                app_state.db_pool = object()  # type: ignore[assignment]
                 transport = ASGITransport(app=app)
-                async with AsyncClient(
-                    transport=transport,
-                    base_url="http://test",
-                ) as http_client:
-                    yield http_client
+                try:
+                    async with AsyncClient(
+                        transport=transport,
+                        base_url="http://test",
+                    ) as http_client:
+                        yield http_client
+                finally:
+                    app_state.db_pool = None
         finally:
             app.dependency_overrides.clear()
 

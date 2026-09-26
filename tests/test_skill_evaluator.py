@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from orchestrator.memory.embedding import EmbeddingConfigurationError
 from orchestrator.skill_evaluator import (
     SkillDraft,
     SkillEvaluationRequest,
@@ -163,6 +164,48 @@ async def test_evaluator_creates_novel_autonomous_skill() -> None:
         trigger_conditions="Use when a bug requires repo tracing and validation.",
         complexity_origin=7,
     )
+
+
+@pytest.mark.asyncio
+async def test_denied_embedding_skips_semantic_matching_but_creates_skill() -> None:
+    assistant_message_id = uuid.uuid4()
+    request = SkillEvaluationRequest(
+        user_id=uuid.uuid4(),
+        conversation_id=uuid.uuid4(),
+        assistant_message_id=assistant_message_id,
+        tool_call_count=7,
+    )
+    projection_store = StubProjectionStore()
+    skill_manage_tool = StubSkillManageTool(
+        response=json.dumps({"skill_id": "debug-workflow", "created": True})
+    )
+    denied_embedder = AsyncMock(
+        side_effect=EmbeddingConfigurationError("Approved embedding route unavailable")
+    )
+    evaluator = SkillEvaluator(
+        store=StubStore(_build_messages(assistant_message_id)),
+        db_pool=None,
+        projection_store=projection_store,
+        skill_manage_tool=skill_manage_tool,
+        query_embedder=denied_embedder,
+    )
+    evaluator._generate_skill_draft = AsyncMock(
+        return_value=SkillDraft(
+            name="Debug Workflow",
+            description="Reusable debugging steps",
+            trigger_conditions="For repository debugging",
+            skill_markdown="# Debug Workflow\n\n## Purpose\n\nReusable steps.",
+        )
+    )
+
+    result = await evaluator.evaluate_completed_turn(request)
+
+    assert result.classification == "created"
+    assert result.created_skill_id == "debug-workflow"
+    denied_embedder.assert_awaited_once()
+    projection_store.search_by_embedding.assert_not_awaited()
+    skill_manage_tool.execute.assert_awaited_once()
+    projection_store.update_autonomous_metadata.assert_awaited_once()
 
 
 @pytest.mark.asyncio

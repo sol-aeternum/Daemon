@@ -13,6 +13,7 @@ from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.config import get_settings
 from orchestrator.db import AppState, get_app_state
 from orchestrator.main import app
+from tests.qualified_compute import install_qualified_compute
 
 
 @pytest_asyncio.fixture
@@ -24,6 +25,8 @@ async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[AsyncClient]:
 
     settings = get_settings()
     app_state = AppState(settings=settings)
+    app_state.db_pool = object()  # type: ignore[assignment]
+    install_qualified_compute(monkeypatch)
 
     async def override_settings():
         return get_settings()
@@ -92,7 +95,7 @@ async def test_chat_payload_model_override_respected(
     monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
     get_settings.cache_clear()
 
-    explicit_model = "claude-3-opus-20240229"
+    explicit_model = "openrouter/test/explicit-model"
 
     response = await client.post(
         "/chat",
