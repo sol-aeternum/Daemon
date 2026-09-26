@@ -534,7 +534,9 @@ async def _extract_memories_once(
         raw_message_id = cursor_message.get("id") if advances_cursor else None
         chunk_last_message_id = str(raw_message_id) if raw_message_id is not None else None
 
-        async with account_compute(ctx.get("db_pool"), owner, operation="agent", auto_route=True):
+        async with account_compute(
+            ctx.get("db_pool"), owner, operation="agent", auto_route=True, background=True
+        ):
             chunk_success, chunk_new_memories, chunk_continuation = await process_extraction(
                 store=store_obj,
                 user_id=_as_uuid(user_id),
@@ -760,7 +762,9 @@ async def generate_title(
     title_model = (settings.title_model if settings else None) or "auto"
 
     owner = await _conversation_owner(ctx, _as_uuid(conversation_id))
-    async with account_compute(ctx.get("db_pool"), owner, operation="agent", auto_route=True):
+    async with account_compute(
+        ctx.get("db_pool"), owner, operation="agent", auto_route=True, background=True
+    ):
         title = await generate_conversation_title(messages, model=title_model)
     if isinstance(store_obj, MemoryStore):
         try:
@@ -807,7 +811,9 @@ async def generate_conversation_title_job(
     settings = settings_obj if isinstance(settings_obj, Settings) else None
     title_model = (settings.title_model if settings else None) or "auto"
     owner = await _conversation_owner(ctx, conv_id)
-    async with account_compute(ctx.get("db_pool"), owner, operation="agent", auto_route=True):
+    async with account_compute(
+        ctx.get("db_pool"), owner, operation="agent", auto_route=True, background=True
+    ):
         title = await generate_conversation_title(messages, model=title_model)
 
     try:
@@ -902,7 +908,9 @@ async def generate_summary_job(
         return {"status": "skipped", "reason": "up_to_date"}
 
     owner = await _conversation_owner(ctx, conv_id)
-    async with account_compute(ctx.get("db_pool"), owner, operation="agent", auto_route=True):
+    async with account_compute(
+        ctx.get("db_pool"), owner, operation="agent", auto_route=True, background=True
+    ):
         summary = await generate_summary(messages, previous_summary, settings)
     if not summary.strip():
         raise Retry(defer=5)
@@ -1106,7 +1114,9 @@ async def run_dreaming_job(
             ):
                 continue
 
-            async with account_compute(ctx.get("db_pool"), uid, operation="agent", auto_route=True):
+            async with account_compute(
+                ctx.get("db_pool"), uid, operation="agent", auto_route=True, background=True
+            ):
                 dream_result = await run_dreaming(uid, store=store_obj)
             results["users_processed"] += 1
             results["observations_created"] += int(dream_result.get("observations_created", 0) or 0)
@@ -1251,7 +1261,7 @@ async def consolidate_memories(
                         continue
 
                     async with account_compute(
-                        ctx.get("db_pool"), uid, operation="agent", auto_route=True
+                        ctx.get("db_pool"), uid, operation="agent", auto_route=True, background=True
                     ):
                         created = await consolidate_cluster(cluster, store, uid)
 
@@ -1352,7 +1362,9 @@ async def run_skill_evaluation_job(
         owner = await _conversation_owner(ctx, request.conversation_id)
         if owner != request.user_id:
             raise ComputeUnavailable("account_unavailable", "Conversation owner mismatch")
-        async with account_compute(db_pool, owner, operation="agent", auto_route=True):
+        async with account_compute(
+            db_pool, owner, operation="agent", auto_route=True, background=True
+        ):
             result = await evaluator.evaluate_completed_turn(request)
 
         return SkillEvaluationJobResult(
@@ -1658,7 +1670,9 @@ async def _process_user_consolidation_nudge(
         user_context=None,
     )
 
-    async with account_compute(db_pool, user_id, operation="agent", auto_route=True):
+    async with account_compute(
+        db_pool, user_id, operation="agent", auto_route=True, background=True
+    ):
         model_actions = await _call_consolidation_model(prompt)
 
     autonomous_skill_ids = {s["skill_id"] for s in autonomous_skills}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 import runpy
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,12 @@ import pytest
 
 from orchestrator import compute_runtime as runtime
 from orchestrator.entitlements import EntitlementService
+from orchestrator.entitlements.errors import (
+    AccountSuspended,
+    BudgetExceeded,
+    ConcurrencyExceeded,
+    RateLimitExceeded,
+)
 from orchestrator.memory.store import MemoryStore
 
 
@@ -836,7 +843,12 @@ async def test_extended_root_consumes_one_unit_then_exhausted_next_root_denies(
                 model="openrouter/reviewed/model",
                 messages=[{"role": "user", "content": "hi"}],
             )
-    assert [call.kwargs["extended"] for call in service.reserve.await_args_list] == [True, False]
+    # Every call of the run is charged to the extended budget; only the first
+    # takes the extended-run slot, and both share the scope's concurrency slot.
+    reserves = service.reserve.await_args_list
+    assert [call.kwargs["extended"] for call in reserves] == [True, True]
+    assert [call.kwargs["extended_run"] for call in reserves] == [True, False]
+    assert reserves[0].kwargs["scope_id"] == reserves[1].kwargs["scope_id"]
     assert all(call.kwargs["premium"] for call in service.reserve.await_args_list)
     assert provider.await_count == 2
     with pytest.raises(runtime.ComputeUnavailable, match="normal chat is still available"):
@@ -862,10 +874,12 @@ async def test_background_title_job_uses_persisted_conversation_owner(
         update_conversation = AsyncMock(return_value={})
 
     @asynccontextmanager
-    async def checked_scope(scope_pool, scope_user_id, *, operation, auto_route):
+    async def checked_scope(scope_pool, scope_user_id, *, operation, auto_route, background):
         assert scope_pool is pool
         assert scope_user_id == owner
         assert operation == "agent" and auto_route is True
+        # Worker jobs never take the interactive rate or concurrency slots.
+        assert background is True
         yield None
 
     globals_map = title_job.__globals__
@@ -1132,3 +1146,188 @@ async def test_reembed_endpoint_fails_cleanly_without_approved_embedding_route(
     assert exc.value.status_code == 503
     assert cast(dict[str, str], exc.value.detail)["code"] == "route_unavailable"
     store.update_memory_embedding.assert_not_awaited()
+
+
+def _funded_service(*, max_context_tokens: int = 32000, max_output_tokens: int = 128, **extra):
+    limits = SimpleNamespace(
+        max_context_tokens=max_context_tokens, max_output_tokens=max_output_tokens
+    )
+    return SimpleNamespace(
+        reconcile_expired_reservations=AsyncMock(return_value=0),
+        resolve=AsyncMock(
+            return_value=SimpleNamespace(
+                capabilities={"chat"},
+                limits=limits,
+                limits_for=lambda premium: limits,
+                remaining_for=lambda premium: 1_000_000_000,
+            )
+        ),
+        reserve=AsyncMock(return_value="hold"),
+        settle=AsyncMock(),
+        **extra,
+    )
+
+
+@pytest.mark.asyncio
+async def test_account_frames_closing_mid_stream_does_not_hang(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from orchestrator import main
+
+    service = _funded_service()
+    monkeypatch.setattr(runtime, "EntitlementService", lambda pool: service)
+
+    async def source():
+        for index in range(10):
+            yield f"frame-{index}"
+
+    stream = main._account_frames(object(), uuid.uuid4(), source)
+    assert await anext(stream) == "frame-0"
+    # Let the producer fill the one-slot queue and block on the next put.
+    await asyncio.sleep(0.01)
+    # Not wait_for: its cancellation would be swallowed by the consumer's
+    # cleanup and hide a producer stuck forever on the full queue.
+    closing = asyncio.create_task(cast(AsyncGenerator[str, None], stream).aclose())
+    done, _ = await asyncio.wait({closing}, timeout=1)
+    if closing not in done:
+        closing.cancel()
+    assert closing in done
+
+
+@pytest.mark.asyncio
+async def test_stream_requests_usage_and_settles_at_reported_cost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qualified_policy(monkeypatch, route=_route())
+    service = _funded_service(max_output_tokens=4096)
+
+    async def chunks():
+        yield {"choices": [{"delta": {"content": "hi"}}]}
+        yield {"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+
+    provider = AsyncMock(return_value=chunks())
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    token = runtime._scope.set(
+        runtime.ComputeScope(uuid.uuid4(), cast(EntitlementService, service))
+    )
+    try:
+        stream = await runtime.guarded_completion(
+            model="openrouter/reviewed/model",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+            stream_options={"include_usage": False},
+        )
+        assert len([chunk async for chunk in stream]) == 2
+    finally:
+        runtime._scope.reset(token)
+    assert provider.await_args is not None
+    assert provider.await_args.kwargs["stream_options"] == {"include_usage": True}
+    service.settle.assert_awaited_once_with(
+        "hold", 15, usage={"input_tokens": 10, "output_tokens": 5}
+    )
+
+
+@pytest.mark.asyncio
+async def test_slow_consumer_near_deadline_is_not_a_silent_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qualified_policy(monkeypatch, route=_route())
+    settings = SimpleNamespace(
+        request_timeout_s=0.05,
+        openrouter_api_key=None,
+        get_provider_config=lambda name: SimpleNamespace(extra_headers=None),
+    )
+    monkeypatch.setattr(runtime, "get_settings", lambda: settings)
+    service = _funded_service()
+
+    async def chunks():
+        yield {"text": "first"}
+        yield {"text": "second"}
+
+    monkeypatch.setattr(runtime.litellm, "acompletion", AsyncMock(return_value=chunks()))
+    token = runtime._scope.set(
+        runtime.ComputeScope(uuid.uuid4(), cast(EntitlementService, service))
+    )
+    try:
+        stream = await runtime.guarded_completion(
+            model="openrouter/reviewed/model",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+        assert await anext(stream) == {"text": "first"}
+        # The consumer, not the provider, is slow: the deadline passes while
+        # this task is suspended outside the provider wait.
+        await asyncio.sleep(0.1)
+        with pytest.raises(runtime.ComputeUnavailable):
+            await anext(stream)
+    finally:
+        runtime._scope.reset(token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "code"),
+    [
+        (RateLimitExceeded(requests_in_window=10, ceiling=10), "rate_limited"),
+        (ConcurrencyExceeded(open_reservations=1, ceiling=1), "concurrency_exceeded"),
+        (AccountSuspended("suspended"), "account_suspended"),
+    ],
+)
+async def test_account_limits_keep_their_code_through_auto_routing(
+    monkeypatch: pytest.MonkeyPatch, error: Exception, code: str
+) -> None:
+    _qualified_policy(monkeypatch, route=_route())
+    service = _funded_service()
+    service.reserve = AsyncMock(side_effect=error)
+    provider = AsyncMock()
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    token = runtime._scope.set(
+        runtime.ComputeScope(uuid.uuid4(), cast(EntitlementService, service), auto_route=True)
+    )
+    try:
+        with pytest.raises(runtime.ComputeUnavailable) as raised:
+            await runtime.guarded_completion(messages=[{"role": "user", "content": "hi"}])
+    finally:
+        runtime._scope.reset(token)
+    assert raised.value.code == code
+    assert "ceiling" not in raised.value.message
+    provider.assert_not_awaited()
+
+
+def test_compute_error_sanitizes_ledger_details() -> None:
+    error = runtime.compute_error(
+        BudgetExceeded(requested=10, spent=250_000, reserved=0, ceiling=250_000)
+    )
+    assert error is not None
+    assert error.code == "budget_exceeded"
+    assert "250000" not in error.message
+    assert runtime.compute_error(ValueError("boom")) is None
+
+
+def test_context_admission_uses_estimate_while_hold_keeps_byte_bound() -> None:
+    text = "word " * 12_000  # 60 kB: over 32k "tokens" by bytes, ~20k by estimate
+    size = runtime._request_bound({"messages": [{"role": "user", "content": text}]})
+    assert size.bound >= len(text.encode("utf-8"))
+    assert size.estimate < 32_000 < size.bound
+
+    policy = SimpleNamespace(
+        capabilities={"chat"},
+        limits_for=lambda premium: SimpleNamespace(max_context_tokens=32000, max_output_tokens=128),
+        remaining_for=lambda premium: 1_000_000_000,
+    )
+    route = _route()
+    route.supports = lambda *, required_capabilities, input_tokens, output_tokens: True
+    import orchestrator.compute_runtime as module
+
+    original = module.load_inference_policy
+    module.load_inference_policy = lambda: SimpleNamespace(
+        routes={route.route_id: route}, requirements=object()
+    )
+    try:
+        [(bound, output_tokens, _, _)] = runtime._priced_candidates(
+            policy, size, {}, "openrouter/reviewed/model"
+        )
+    finally:
+        module.load_inference_policy = original
+    assert output_tokens == 128
+    assert bound == route.estimate_microusd(size.bound, output_tokens)

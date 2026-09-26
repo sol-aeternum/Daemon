@@ -127,6 +127,18 @@ not refunded as though no work happened. Recovery must use a cutoff beyond the
 enforced whole-call deadline, including stream consumption. A reported cost above
 the reserved quote closes the hold truthfully and suspends further execution for
 operator reconciliation; spare monthly capacity must not hide a broken quote.
+The quote's input side is priced at one token per UTF-8 byte plus per-message
+framing, which byte-level tokenizers cannot exceed; a separate ~3-bytes-per-token
+estimate only sizes the context window and output budget. After reconciling,
+an operator reinstates the account with `scripts/entitlements_reinstate.py`.
+
+Concurrency counts operations, not provider calls: reservations made inside one
+account compute scope (a chat turn's tool loop, a council's parallel roles) share
+one slot while any of them is open. Worker jobs (titles, summaries, extraction,
+evaluation, consolidation) are charged to the account but take no rate or
+concurrency slot, so background work never refuses the user's next message.
+Every call of an extended run is charged to the extended-agent budget; only the
+first takes an extended-run slot.
 
 The durable ledger records the plan at admission, operation, model/provider/route,
 reserved and settled cost, usage counters, and trial funding. Limit encounters

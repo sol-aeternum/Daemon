@@ -118,7 +118,10 @@ def test_hold_and_settle_sql_enforce_ceilings_in_the_database() -> None:
     assert "(p.spent_microusd + p.reserved_microusd + $3) <= $6" in store
     assert "p.extended_agents_used + p.extended_agents_reserved + 1) <= $10" in store
     assert "p.requests_in_window < $8" in store
-    assert "WHERE r.user_id = p.user_id AND r.status = 'open'\n        ) < $9" in store
+    # Concurrency counts open foreground operations (reservations grouped by
+    # account scope), not individual LLM calls.
+    assert "count(DISTINCT COALESCE(r.scope_id, r.id))" in store
+    assert "AND NOT r.background\n            ) < $9" in store
     # The per-user serialization point every reserve/settle transaction takes.
     assert "FROM entitlement_accounts WHERE user_id = $1 FOR UPDATE" in store
 

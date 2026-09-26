@@ -66,7 +66,13 @@ from orchestrator.config import (
     Settings,
     get_settings,
 )
-from orchestrator.compute_runtime import ComputeUnavailable, account_compute, choose_route
+from orchestrator.compute_runtime import (
+    RETRYABLE_COMPUTE_CODES,
+    ComputeUnavailable,
+    account_compute,
+    choose_route,
+    compute_error,
+)
 from orchestrator.entitlements.errors import PolicyError
 from orchestrator.entitlements.policy import load_inference_policy
 from orchestrator.daemon import (
@@ -785,6 +791,8 @@ async def _account_frames(
     frames: asyncio.Queue[tuple[str | None, Exception | None]] = asyncio.Queue(maxsize=1)
 
     async def produce() -> None:
+        # No await may follow a cancellation: once the consumer has gone, the
+        # queue can stay full forever, and the consumer is awaiting this task.
         try:
             async with account_compute(
                 scope_pool,
@@ -797,8 +805,8 @@ async def _account_frames(
                     await frames.put((frame, None))
         except Exception as exc:
             await frames.put((None, exc))
-        finally:
-            await frames.put((None, None))
+            return
+        await frames.put((None, None))
 
     producer = asyncio.create_task(produce())
     try:
@@ -1365,11 +1373,13 @@ async def openai_chat_completions(
                 # exception with the request id; the SSE error chunk
                 # carries the stable token plus the correlation handle.
                 request_id_local = get_request_id(request)
-                logger.exception(
-                    "Streaming chat completion error (request_id=%s): %s",
-                    request_id_local,
-                    e,
-                )
+                capacity = compute_error(e)
+                if capacity is None:
+                    logger.exception(
+                        "Streaming chat completion error (request_id=%s): %s",
+                        request_id_local,
+                        e,
+                    )
 
                 error_chunk = OpenAIChatStreamChunk(
                     id=f"chatcmpl-{new_request_id()}",
@@ -1379,7 +1389,11 @@ async def openai_chat_completions(
                         OpenAIChoice(
                             index=0,
                             delta=OpenAIDeltaMessage(
-                                content=_sse_error_message(request_id_local),
+                                content=(
+                                    f"{capacity.message} (code: {capacity.code})"
+                                    if capacity
+                                    else _sse_error_message(request_id_local)
+                                ),
                             ),
                             finish_reason="stop",
                         )
@@ -1469,11 +1483,12 @@ async def openai_chat_completions(
                 ),
             )
 
-        except ComputeUnavailable as exc:
-            raise HTTPException(
-                status_code=503, detail={"code": exc.code, "message": exc.message}
-            ) from exc
         except Exception as exc:
+            capacity = compute_error(exc)
+            if capacity is not None:
+                raise HTTPException(
+                    status_code=503, detail={"code": capacity.code, "message": capacity.message}
+                ) from exc
             logger.exception("OpenAI-compatible chat completion failed (request_id=%s)", request_id)
             raise HTTPException(status_code=500, detail=_GENERIC_INTERNAL_ERROR) from exc
 
@@ -2223,19 +2238,26 @@ async def chat(
             ):
                 yield frame
         except Exception as exc:
-            if not isinstance(exc, ComputeUnavailable):
-                logger.exception("Chat stream failed")
+            capacity = compute_error(exc)
             ts = now_rfc3339()
             provider, model = effective_provider_and_model(settings, provider_config)
             model_for_events = selected_model or actual_model or model
             # Sanitize the SSE error payload — never emit `str(e)` to the
             # client (issue #79 round-1 finding). The request id is the
             # correlation handle; the full exception is logged server-side.
-            logger.exception(
-                "Native /chat streaming error (request_id=%s): %s",
-                request_id,
-                exc,
-            )
+            # Capacity errors carry their own sanitized code and message.
+            if capacity is None:
+                logger.exception(
+                    "Native /chat streaming error (request_id=%s): %s",
+                    request_id,
+                    exc,
+                )
+            else:
+                logger.info(
+                    "Native /chat capacity refusal (request_id=%s code=%s)",
+                    request_id,
+                    capacity.code,
+                )
             # Emit a minimal `final` + `error` + `done` sequence to keep the SSE contract stable.
             yield sse(
                 "final",
@@ -2272,9 +2294,9 @@ async def chat(
                     "conversation_id": conversation_id,
                     "request_id": request_id,
                     "data": {
-                        "code": "internal_error",
-                        "message": _sse_error_message(request_id),
-                        "retryable": False,
+                        "code": capacity.code if capacity else "internal_error",
+                        "message": capacity.message if capacity else _sse_error_message(request_id),
+                        "retryable": bool(capacity and capacity.code in RETRYABLE_COMPUTE_CODES),
                     },
                 },
             )

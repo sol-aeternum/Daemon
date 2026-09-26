@@ -296,3 +296,124 @@ async def test_trusted_events_keep_metadata_replay_and_trial_grant(database):
     assert restored.trial.remaining_microusd == initial.trial.remaining_microusd
     assert restored.trial.extended_agents_remaining == initial.trial.extended_agents_remaining
     assert restored.charge_kind_for(True) is ChargeKind.TRIAL
+
+
+@pytest.mark.asyncio
+async def test_scope_shares_one_concurrency_slot_and_background_takes_none(database):
+    pool, user = database
+    service = EntitlementService(pool)
+    assert service.policy.plan(Plan.FREE).limits.max_concurrent_operations == 1
+    scope = uuid.uuid4()
+    first = await service.reserve(user, 1, operation="chat", scope_id=scope)
+    # A parallel call of the same operation (council role, tool loop) joins it.
+    second = await service.reserve(user, 1, operation="chat", scope_id=scope)
+    with pytest.raises(ConcurrencyExceeded):
+        await service.reserve(user, 1, operation="chat", scope_id=uuid.uuid4())
+    with pytest.raises(ConcurrencyExceeded):
+        await service.reserve(user, 1, operation="chat")
+    # Background work is charged but never blocked by, or blocks, interactive work.
+    background = await service.reserve(user, 5, operation="agent", background=True)
+    async with pool.acquire() as conn:
+        period = await conn.fetchrow(
+            "SELECT reserved_microusd, requests_in_window FROM entitlement_usage_periods "
+            "WHERE user_id=$1",
+            user,
+        )
+    assert period["reserved_microusd"] == 7
+    assert period["requests_in_window"] == 2
+    await service.settle(first, 1)
+    await service.settle(second, 1)
+    other = await service.reserve(user, 1, operation="chat", scope_id=uuid.uuid4())
+    await service.settle(background, 5)
+    await service.release(other)
+
+
+@pytest.mark.asyncio
+async def test_background_work_is_not_rate_limited(database):
+    pool, user = database
+    now = [datetime(2026, 1, 3, 12, tzinfo=timezone.utc)]
+    service = EntitlementService(pool, clock=lambda: now[0])
+    for _ in range(service.policy.plan(Plan.FREE).limits.requests_per_minute):
+        await service.release(await service.reserve(user, 0, operation="chat"))
+    await service.release(await service.reserve(user, 0, operation="agent", background=True))
+
+
+@pytest.mark.asyncio
+async def test_extended_scope_charges_every_call_but_counts_one_run(database):
+    pool, user = database
+    service = EntitlementService(pool)
+    await service.apply_subscription_event(
+        SubscriptionEvent(
+            event_id=f"paid-{uuid.uuid4()}", user_id=user, plan=Plan.PRO, source="admin"
+        )
+    )
+    scope = uuid.uuid4()
+    first = await service.reserve(
+        user, 100, operation="agent", premium=True, extended=True, scope_id=scope
+    )
+    later = await service.reserve(
+        user,
+        200,
+        operation="agent",
+        premium=True,
+        extended=True,
+        extended_run=False,
+        scope_id=scope,
+    )
+    period_sql = (
+        "SELECT extended_spent_microusd, extended_reserved_microusd, "
+        "extended_agents_used, extended_agents_reserved "
+        "FROM entitlement_usage_periods WHERE user_id=$1"
+    )
+    async with pool.acquire() as conn:
+        held = await conn.fetchrow(period_sql, user)
+    assert tuple(held) == (0, 300, 0, 1)
+    await service.settle(later, 150)
+    await service.settle(first, 90)
+    async with pool.acquire() as conn:
+        settled = await conn.fetchrow(period_sql, user)
+    assert tuple(settled) == (240, 0, 1, 0)
+
+
+@pytest.mark.asyncio
+async def test_extended_budget_binds_later_calls_of_a_run(database):
+    pool, user = database
+    service = EntitlementService(pool)
+    await service.apply_subscription_event(
+        SubscriptionEvent(
+            event_id=f"paid-{uuid.uuid4()}", user_id=user, plan=Plan.PRO, source="admin"
+        )
+    )
+    budget = service.policy.plan(Plan.PRO).limits.extended_agent_budget_microusd
+    scope = uuid.uuid4()
+    first = await service.reserve(
+        user, budget, operation="agent", premium=True, extended=True, scope_id=scope
+    )
+    from orchestrator.entitlements.errors import ExtendedBudgetExceeded
+
+    with pytest.raises(ExtendedBudgetExceeded):
+        await service.reserve(
+            user,
+            1,
+            operation="agent",
+            premium=True,
+            extended=True,
+            extended_run=False,
+            scope_id=scope,
+        )
+    await service.release(first)
+
+
+@pytest.mark.asyncio
+async def test_operator_reinstates_account_suspended_by_overrun(database):
+    pool, user = database
+    service = EntitlementService(pool)
+    hold = await service.reserve(user, 100, operation="chat")
+    await service.settle(hold, 101)
+    with pytest.raises(AccountSuspended):
+        await service.reserve(user, 0, operation="chat")
+    with pytest.raises(ValueError):
+        await service.reinstate(user, reason="  ")
+    assert await service.reinstate(user, reason="quote fixed in route policy")
+    assert not await service.reinstate(user, reason="already active")
+    await service.release(await service.reserve(user, 0, operation="chat"))

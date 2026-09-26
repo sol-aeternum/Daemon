@@ -1,3 +1,5 @@
+import { copyResponseHeaders } from '../_lib/cookies';
+
 const API_URLS = [
   process.env.DAEMON_INTERNAL_API_URL,
   process.env.NEXT_PUBLIC_API_URL,
@@ -82,13 +84,7 @@ export async function GET(req: Request): Promise<Response> {
   }
 
   const responseHeaders = new Headers();
-  backendRes.headers.forEach((value, key) => {
-    if (key.toLowerCase() === 'set-cookie') {
-      responseHeaders.append(key, value);
-    } else if (key.toLowerCase() !== 'content-encoding') {
-      responseHeaders.set(key, value);
-    }
-  });
+  copyResponseHeaders(backendRes.headers, responseHeaders);
 
   return new Response(backendRes.body, {
     status: backendRes.status,

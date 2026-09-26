@@ -307,3 +307,23 @@ def test_extract_memories_worker_registration_does_not_retain_result_key() -> No
     extract_function = worker.functions["extract_memories"]
 
     assert extract_function.keep_result_s == 0
+
+
+@pytest.mark.asyncio
+async def test_capacity_refusal_propagates_with_code_and_terminalizes_row() -> None:
+    from orchestrator.compute_runtime import ComputeUnavailable
+    from orchestrator.entitlements.errors import TrialExhausted
+
+    async def exhausted_completion() -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "content_delta", "content": "partial"}
+        raise TrialExhausted("trial allowance exhausted: requested 10 of ceiling 0")
+
+    store = FakeMemoryStore()
+    with pytest.raises(ComputeUnavailable) as raised:
+        await _collect_stream(store, exhausted_completion())
+
+    # The caller maps the sanitized code onto its protocol; no ledger detail leaks.
+    assert raised.value.code == "trial_exhausted"
+    assert "ceiling" not in raised.value.message
+    assert store.row is not None
+    assert store.row["status"] == "error"

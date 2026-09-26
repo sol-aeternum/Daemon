@@ -8,6 +8,7 @@ Unpriced modalities cannot be estimated by this text-token ledger and are denied
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 import asyncio
 from datetime import datetime, timedelta, timezone
@@ -21,8 +22,18 @@ import litellm
 
 from orchestrator.entitlements import EntitlementService
 from orchestrator.entitlements.policy import RoutePolicy, load_inference_policy
-from orchestrator.entitlements.errors import BudgetExceeded, PolicyError
+from orchestrator.entitlements.errors import (
+    AccessDenied,
+    AccountError,
+    AccountSuspended,
+    BudgetExceeded,
+    EntitlementsError,
+    LimitExceeded,
+    PolicyError,
+)
 from orchestrator.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class ComputeUnavailable(Exception):
@@ -32,6 +43,42 @@ class ComputeUnavailable(Exception):
         super().__init__(message)
 
 
+# Stable, user-safe messages for account ceilings. The raw entitlement errors
+# carry internal ledger numbers and must never reach a client.
+_LIMIT_MESSAGES: dict[str, str] = {
+    "budget_exceeded": "Compute budget for this period is used up",
+    "extended_budget_exceeded": "Extended agent budget for this period is used up",
+    "extended_agents_exceeded": "Extended agent runs for this period are used up",
+    "trial_exhausted": "Trial allowance is used up",
+    "trial_extended_agents_exhausted": "Trial extended agent allowance is used up",
+    "rate_limited": "Too many requests; try again shortly",
+    "concurrency_exceeded": "Another request is still running; try again when it finishes",
+}
+
+
+#: Capacity refusals that clear on their own; a client may retry them.
+RETRYABLE_COMPUTE_CODES: frozenset[str] = frozenset(
+    {"rate_limited", "concurrency_exceeded", "capacity_unavailable"}
+)
+
+
+def compute_error(exc: BaseException) -> ComputeUnavailable | None:
+    """Sanitized client-facing capacity error for ``exc``, or None if it is not one."""
+    if isinstance(exc, ComputeUnavailable):
+        return exc
+    if isinstance(exc, AccountSuspended):
+        return ComputeUnavailable("account_suspended", "Account compute is suspended")
+    if isinstance(exc, AccountError):
+        return ComputeUnavailable("account_unavailable", "Account compute unavailable")
+    if isinstance(exc, LimitExceeded):
+        return ComputeUnavailable(
+            exc.code, _LIMIT_MESSAGES.get(exc.code, "Compute capacity unavailable")
+        )
+    if isinstance(exc, AccessDenied):
+        return ComputeUnavailable("capability_unavailable", "Capability unavailable")
+    return None
+
+
 @dataclass
 class ComputeScope:
     user_id: uuid.UUID
@@ -39,16 +86,19 @@ class ComputeScope:
     operation: str = "chat"
     auto_route: bool = False
     extended: bool = False
+    background: bool = False
+    #: Groups this scope's reservations into one concurrency slot.
+    scope_id: uuid.UUID = field(default_factory=uuid.uuid4)
     extended_started: bool = False
     extended_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     selected_model: str | None = None
-    outstanding: dict[int, ReservationHold] = field(default_factory=dict)
-    settled: dict[int, int] = field(default_factory=dict)
+    outstanding: dict[Any, ReservationHold] = field(default_factory=dict)
+    settled: dict[Any, int] = field(default_factory=dict)
 
     async def settle(
         self, reservation: Any, amount: int, *, usage: dict[str, int] | None = None
     ) -> None:
-        key = id(reservation)
+        key = _hold_key(reservation)
         hold = self.outstanding.get(key)
         if hold is None:
             if self.settled.get(key) == amount:
@@ -83,6 +133,11 @@ class ReservationHold:
     actual: int | None = None
 
 
+def _hold_key(reservation: Any) -> Any:
+    """Stable identity of a reservation (its id; the value itself for bare ids)."""
+    return getattr(reservation, "id", reservation)
+
+
 _scope: ContextVar[ComputeScope | None] = ContextVar("compute_scope", default=None)
 
 
@@ -94,10 +149,20 @@ async def account_compute(
     operation: str = "chat",
     auto_route: bool = False,
     extended: bool = False,
+    background: bool = False,
 ) -> AsyncIterator[ComputeScope]:
+    """Account scope for one operation. ``background`` marks worker jobs: charged
+    to the budget, but never counted against rate or concurrency ceilings."""
     if pool is None or not isinstance(user_id, uuid.UUID):
         raise ComputeUnavailable("account_unavailable", "Account compute unavailable")
-    scope = ComputeScope(user_id, EntitlementService(pool), operation, auto_route, extended)
+    scope = ComputeScope(
+        user_id,
+        EntitlementService(pool),
+        operation,
+        auto_route,
+        extended,
+        background,
+    )
     await scope.service.reconcile_expired_reservations(
         user_id,
         before=datetime.now(timezone.utc) - timedelta(seconds=2 * get_settings().request_timeout_s),
@@ -175,12 +240,13 @@ def choose_route(model: str | None = None) -> RoutePolicy:
 
 def _priced_candidates(
     policy: Any,
-    input_tokens: int,
+    input_size: InputSize,
     params: dict[str, Any],
     requested_model: str | None,
     extended: bool = False,
 ) -> list[tuple[int, int, RoutePolicy, bool]]:
     """Choose only funded approved routes, ranked by this request's worst case."""
+    input_tokens = input_size.estimate
     try:
         inference = load_inference_policy()
     except PolicyError as exc:
@@ -236,7 +302,7 @@ def _priced_candidates(
             output_tokens=output_tokens,
         ):
             continue
-        bound = route.estimate_microusd(input_tokens, output_tokens)
+        bound = route.estimate_microusd(input_size.bound, output_tokens)
         if bound > policy.remaining_for(premium):
             continue
         candidates.append((bound, output_tokens, route, premium))
@@ -275,7 +341,38 @@ def _input_bound(messages: Any, tools: Any) -> int:
     encoded = json.dumps([messages, tools], ensure_ascii=False).encode("utf-8")
     if len(encoded) > 1_000_000:
         raise ComputeUnavailable("context_limit", "Context too large")
-    return max(1, len(encoded) + 512 * len(messages))
+    return len(encoded)
+
+
+@dataclass(frozen=True)
+class InputSize:
+    """Two views of a request's prompt size, in tokens.
+
+    ``bound`` prices the hold. Byte-level tokenizers emit at most one token per
+    UTF-8 byte, so bytes plus generous per-message framing cannot be exceeded:
+    a settlement above the hold suspends the account, so the quote must hold.
+
+    ``estimate`` sizes the context window and output budget. It is realistic
+    (~3 bytes per token, below the ~4 typical of English BPE) so ordinary
+    conversations are not refused at a fraction of the model's context.
+    """
+
+    bound: int
+    estimate: int
+
+
+_BOUND_TOKENS_PER_MESSAGE = 512
+_ESTIMATE_BYTES_PER_TOKEN = 3
+_ESTIMATE_TOKENS_PER_MESSAGE = 8
+
+
+def _input_size(size: int, messages: int) -> InputSize:
+    return InputSize(
+        bound=max(1, size + _BOUND_TOKENS_PER_MESSAGE * messages),
+        estimate=max(
+            1, -(-size // _ESTIMATE_BYTES_PER_TOKEN) + _ESTIMATE_TOKENS_PER_MESSAGE * messages
+        ),
+    )
 
 
 _COMPLETION_FIELDS = frozenset(
@@ -307,7 +404,7 @@ _COMPLETION_FIELDS = frozenset(
 _REASONING_EFFORTS = frozenset({"low", "medium", "high"})
 
 
-def _request_bound(params: dict[str, Any]) -> int:
+def _request_bound(params: dict[str, Any]) -> InputSize:
     unsupported = set(params) - _COMPLETION_FIELDS
     if unsupported:
         raise ComputeUnavailable("capacity_unavailable", "Unsupported completion parameters")
@@ -333,7 +430,10 @@ def _request_bound(params: dict[str, Any]) -> int:
         raise ComputeUnavailable(
             "capacity_unavailable", "Unsupported completion parameters"
         ) from exc
-    return text_bytes + len(serialized)
+    messages = params.get("messages")
+    return _input_size(
+        text_bytes + len(serialized), len(messages) if isinstance(messages, list) else 0
+    )
 
 
 def _usage_counts(usage: Any) -> dict[str, int] | None:
@@ -350,13 +450,33 @@ def _usage_counts(usage: Any) -> dict[str, int] | None:
     return {"input_tokens": prompt, "output_tokens": completion}
 
 
-def _usage_charge(usage: Any, route: RoutePolicy, bound: int) -> int | None:
-    """Ceiling-price charge from validated provider usage; None if untrusted."""
+def _usage_settlement(
+    usage: Any, route: RoutePolicy, bound: int
+) -> tuple[int, dict[str, int]] | None:
+    """Ceiling-price charge from validated provider usage; None if untrusted.
+
+    Deliberately not capped at the hold: a charge above the quote settles
+    truthfully and the ledger suspends the account for operator reconciliation.
+    """
     counts = _usage_counts(usage)
     if counts is None or route.price_ceiling is None:
         return None
     charge = route.estimate_microusd(counts["input_tokens"], counts["output_tokens"])
-    return charge
+    if charge > bound:
+        logger.warning(
+            "Provider usage exceeded reserved quote (route=%s charge=%s bound=%s)",
+            route.route_id,
+            charge,
+            bound,
+        )
+    return charge, counts
+
+
+def _chunk_usage(chunk: Any) -> Any:
+    return chunk.get("usage") if isinstance(chunk, dict) else getattr(chunk, "usage", None)
+
+
+_ESTIMATED: dict[str, int] = {"estimated_cost": True}
 
 
 async def guarded_completion(**params: Any) -> Any:
@@ -387,18 +507,22 @@ async def guarded_completion(**params: Any) -> Any:
         key in params for key in ("images", "audio", "video", "files", "attachments", "input_audio")
     ):
         raise ComputeUnavailable("modality_unavailable", "Multimodal compute unavailable")
+    stream = bool(params.get("stream"))
+    stream_options = params.get("stream_options")
+    if stream_options is not None and not isinstance(stream_options, dict):
+        raise ComputeUnavailable("capacity_unavailable", "Unsupported completion parameters")
 
-    input_tokens = _request_bound(params)
+    input_size = _request_bound(params)
     requested = params.get("model")
     model = requested if isinstance(requested, str) and not scope.auto_route else None
-    candidates = _priced_candidates(policy, input_tokens, params, model, scope.extended)
+    candidates = _priced_candidates(policy, input_size, params, model, scope.extended)
     if not candidates:
         if model:
             # Explicit choices are never silently downgraded.
             route = choose_route(model)
             if route.route_class == "premium" and "premium_routing" not in policy.capabilities:
                 raise ComputeUnavailable("capability_unavailable", "Premium routing unavailable")
-        elif input_tokens > policy.limits.max_context_tokens:
+        elif input_size.estimate > policy.limits.max_context_tokens:
             raise ComputeUnavailable("context_limit", "Context too large")
         else:
             choose_route()
@@ -422,26 +546,30 @@ async def guarded_completion(**params: Any) -> Any:
             "extra_headers": get_settings().get_provider_config("openrouter").extra_headers,
             **transport,
         }
-        try:
-            async with scope.extended_lock:
-                first_extended = scope.extended and not scope.extended_started
-                reservation = await scope.service.reserve(
-                    scope.user_id,
-                    bound,
-                    operation=scope.operation,
-                    provider=route.provider,
-                    model=route.model,
-                    route_id=route.route_id,
-                    premium=premium,
-                    extended=first_extended,
-                )
-                if first_extended:
-                    scope.extended_started = True
-        except BudgetExceeded:
-            # A concurrent request may have consumed the observed allowance.
-            # The caller may retry the next candidate with a fresh reservation.
-            raise
-        scope.outstanding[id(reservation)] = ReservationHold(reservation, bound)
+        if stream:
+            # Providers omit usage from streamed chunks unless asked; without it
+            # every stream would settle at its worst-case bound.
+            call["stream_options"] = {**(stream_options or {}), "include_usage": True}
+        async with scope.extended_lock:
+            # Every call of an extended scope is charged to the extended budget;
+            # only the first one takes the extended-run slot.
+            first_extended = scope.extended and not scope.extended_started
+            reservation = await scope.service.reserve(
+                scope.user_id,
+                bound,
+                operation=scope.operation,
+                provider=route.provider,
+                model=route.model,
+                route_id=route.route_id,
+                premium=premium,
+                extended=scope.extended,
+                extended_run=first_extended,
+                background=scope.background,
+                scope_id=scope.scope_id,
+            )
+            if first_extended:
+                scope.extended_started = True
+        scope.outstanding[_hold_key(reservation)] = ReservationHold(reservation, bound)
         try:
             response = await asyncio.wait_for(
                 litellm.acompletion(**call),
@@ -454,59 +582,76 @@ async def guarded_completion(**params: Any) -> Any:
         return response, reservation
 
     async def first_response(start: int) -> tuple[int, Any, Any]:
+        denial: ComputeUnavailable | None = None
         for index in range(start, len(candidates)):
             try:
                 response, reservation = await dispatch(candidates[index])
                 return index, response, reservation
-            except BudgetExceeded:
+            except BudgetExceeded as exc:
+                # Depends on this route's price: a cheaper candidate may fit.
+                denial = compute_error(exc) or ComputeUnavailable(
+                    "budget_exceeded", _LIMIT_MESSAGES["budget_exceeded"]
+                )
+                if not scope.auto_route:
+                    raise denial from None
+            except EntitlementsError as exc:
+                # Rate, concurrency and account status bind every route alike.
+                raise (
+                    compute_error(exc)
+                    or ComputeUnavailable("capacity_unavailable", "Compute capacity unavailable")
+                ) from None
+            except ComputeUnavailable as exc:
                 if not scope.auto_route:
                     raise
+                denial = exc
             except Exception:
                 if not scope.auto_route:
                     raise ComputeUnavailable(
                         "capacity_unavailable", "Qualified provider unavailable"
                     ) from None
-        raise ComputeUnavailable("capacity_unavailable", "No qualified route fits capacity")
+        raise denial or ComputeUnavailable(
+            "capacity_unavailable", "No qualified route fits capacity"
+        )
 
     index, response, reservation = await first_response(0)
-    if not params.get("stream"):
+    if not stream:
         bound, _, route, _ = candidates[index]
         usage = (
             response.get("usage")
             if isinstance(response, dict)
             else getattr(response, "usage", None)
         )
-        charge = _usage_charge(usage, route, bound)
-        await scope.settle(
-            reservation,
-            charge if charge is not None else bound,
-            usage=_usage_counts(usage) if charge is not None else {"estimated_cost": True},
-        )
+        amount, metadata = _usage_settlement(usage, route, bound) or (bound, _ESTIMATED)
+        await scope.settle(reservation, amount, usage=metadata)
         return response
 
     async def metered_stream() -> AsyncIterator[Any]:
         nonlocal index, response, reservation
         while True:
             bound, _, route, _ = candidates[index]
-            charge: int | None = None
-            usage_counts: dict[str, int] | None = None
+            settlement: tuple[int, dict[str, int]] | None = None
             completed = False
             emitted = False
             failed = False
+            chunks = aiter(cast(AsyncIterator[Any], response))
             try:
-                async with asyncio.timeout_at(deadline):
-                    async for chunk in cast(AsyncIterator[Any], response):
-                        chunk_usage = (
-                            chunk.get("usage")
-                            if isinstance(chunk, dict)
-                            else getattr(chunk, "usage", None)
-                        )
-                        parsed = _usage_charge(chunk_usage, route, bound)
-                        if parsed is not None:
-                            charge = parsed
-                            usage_counts = _usage_counts(chunk_usage)
-                        emitted = True
-                        yield chunk
+                while True:
+                    # The whole-call deadline covers stream consumption, but it
+                    # is enforced here rather than around the yield: a timeout
+                    # spanning the yield fires wherever the consumer happens to
+                    # be suspended and surfaces as a silent cancellation.
+                    if asyncio.get_running_loop().time() >= deadline:
+                        raise TimeoutError
+                    try:
+                        async with asyncio.timeout_at(deadline):
+                            chunk = await anext(chunks)
+                    except StopAsyncIteration:
+                        break
+                    parsed = _usage_settlement(_chunk_usage(chunk), route, bound)
+                    if parsed is not None:
+                        settlement = parsed
+                    emitted = True
+                    yield chunk
                 completed = True
             except Exception:
                 failed = True
@@ -515,13 +660,10 @@ async def guarded_completion(**params: Any) -> Any:
                         "capacity_unavailable", "Qualified provider unavailable"
                     ) from None
             finally:
-                await scope.settle(
-                    reservation,
-                    charge if completed and charge is not None else bound,
-                    usage=usage_counts
-                    if completed and charge is not None
-                    else {"estimated_cost": True},
+                amount, metadata = (
+                    settlement if completed and settlement is not None else (bound, _ESTIMATED)
                 )
+                await scope.settle(reservation, amount, usage=metadata)
             if not failed:
                 return
             index, response, reservation = await first_response(index + 1)

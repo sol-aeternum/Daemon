@@ -297,12 +297,22 @@ class EntitlementService:
         provider: str | None = None,
         model: str | None = None,
         route_id: str | None = None,
+        extended_run: bool | None = None,
+        background: bool = False,
+        scope_id: uuid.UUID | None = None,
     ) -> Reservation:
         """Hold ``amount_microusd`` for one in-flight operation.
 
         The hold is admitted only if every ceiling still holds at commit time:
         remaining budget, extended-run allowance, rate window and concurrency.
-        ``premium`` requires premium routing; ``extended`` requires extended agents.
+        ``premium`` requires premium routing. ``extended`` charges the extended
+        budget; ``extended_run`` (default: same as ``extended``) also takes an
+        extended-run slot and requires extended agents, so every call of one
+        extended run is charged while only its first counts as a run.
+
+        ``scope_id`` groups the calls of one operation: while any of them is
+        open, the others share its concurrency slot. ``background`` work is
+        charged to the budget but takes no rate or concurrency slot.
 
         ``provider``/``model``/``route_id`` are optional unit-economics labels
         recorded with the reservation. They are never interpreted here: which
@@ -327,6 +337,9 @@ class EntitlementService:
                 operation=operation,
                 premium=premium,
                 extended=extended,
+                extended_run=extended if extended_run is None else extended_run,
+                background=background,
+                scope_id=scope_id,
                 provider=provider,
                 model=model,
                 route_id=route_id,
@@ -351,6 +364,9 @@ class EntitlementService:
         operation: str,
         premium: bool,
         extended: bool,
+        extended_run: bool,
+        background: bool,
+        scope_id: uuid.UUID | None,
         provider: str | None,
         model: str | None,
         route_id: str | None,
@@ -364,7 +380,9 @@ class EntitlementService:
                 if record is None:  # pragma: no cover - locked row just ensured
                     raise UnknownAccount(str(uid))
                 resolved = resolve_account_policy(record, self._policy, period=period)
-                self._require_usable(record, resolved=resolved, premium=premium, extended=extended)
+                self._require_usable(
+                    record, resolved=resolved, premium=premium, extended=extended_run
+                )
                 kind = resolved.charge_kind_for(premium)
                 limits = resolved.limits_for(premium)
                 context = AdmissionContext(
@@ -378,6 +396,11 @@ class EntitlementService:
                     amount_microusd=amount,
                     extended=extended,
                     charge_kind=kind,
+                    extended_run=extended_run,
+                    background=background,
+                    joins_open_operation=await self._store.operation_is_open(
+                        conn, user_id=uid, scope_id=scope_id
+                    ),
                 )
 
                 state = await self._store.read_period_state(conn, user_id=uid, period_key=period)
@@ -404,6 +427,9 @@ class EntitlementService:
                     concurrency_limit=limits.max_concurrent_operations,
                     extended_run_limit=limits.extended_agents_per_period,
                     money_applies=context.period_owns_money(),
+                    extended_run=extended_run,
+                    background=background,
+                    scope_id=scope_id,
                 )
                 if held is None:
                     # Lost a race: re-read and report the reason the SQL used.
@@ -432,10 +458,13 @@ class EntitlementService:
                     provider=provider,
                     model=model,
                     route_id=route_id,
+                    extended_run=extended_run,
+                    background=background,
+                    scope_id=scope_id,
                 )
                 if kind is ChargeKind.TRIAL:
                     await self._store.hold_trial(
-                        conn, user_id=uid, amount=amount, extended=extended, now=now
+                        conn, user_id=uid, amount=amount, extended=extended_run, now=now
                     )
                 return _reservation_from_row(row)
 
@@ -563,6 +592,7 @@ class EntitlementService:
                     ),
                     period_money=kind is ChargeKind.PLAN,
                     consumed=not cancelled,
+                    extended_run=bool(current["extended_run"]),
                 )
                 if kind is ChargeKind.TRIAL:
                     await self._store.settle_trial(
@@ -570,7 +600,7 @@ class EntitlementService:
                         user_id=current["user_id"],
                         reserved=int(current["reserved_microusd"]),
                         actual=actual,
-                        extended=bool(current["extended"]),
+                        extended=bool(current["extended_run"]),
                         consumed=not cancelled,
                         now=now,
                     )
@@ -747,6 +777,32 @@ class EntitlementService:
             metadata={"legacy_tier": legacy_tier.strip().lower()},
         )
         return await self.apply_subscription_event(event)
+
+    async def reinstate(self, user_id: uuid.UUID | str, *, reason: str) -> bool:
+        """Operator reconciliation: return a suspended account to ``active``.
+
+        Settling above a reservation's quote suspends the account (see
+        :meth:`settle`) until an operator has reconciled the broken quote. This
+        is that operator step; it is never reachable from a request path.
+        Returns whether the status changed.
+        """
+        uid = coerce_user_id(user_id)
+        note = reason.strip() if isinstance(reason, str) else ""
+        if not note:
+            raise ValueError("a reconciliation reason is required")
+        now = self.now()
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                record = await self._store.lock_account(conn, uid)
+                if record is None:
+                    raise UnknownAccount(str(uid))
+                if record.status is AccountStatus.ACTIVE:
+                    return False
+                await self._store.set_status(
+                    conn, user_id=uid, status=AccountStatus.ACTIVE, now=now
+                )
+        logger.warning("Entitlement account %s reinstated by operator: %s", uid, note)
+        return True
 
     # ---------------------------------------------------------------- helpers
     async def _record_encounter(

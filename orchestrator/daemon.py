@@ -12,6 +12,7 @@ import uuid
 from typing import Any, cast
 
 from orchestrator.config import ProviderConfig, Settings
+from orchestrator.compute_runtime import compute_error
 from orchestrator.compute_runtime import selected_model as active_compute_model
 from orchestrator.services.fetch.url_extract import extract_urls
 from orchestrator.timezones import resolve_runtime_timezone
@@ -872,6 +873,13 @@ async def stream_sse_chat(
             terminal_reason = "Request was cancelled"
             raise
         except Exception as e:
+            capacity = compute_error(e)
+            if capacity is not None:
+                # Account capacity refusals carry a sanitized code the caller
+                # maps onto its own protocol (SSE error, HTTP 503).
+                forced_terminal_status = "error"
+                terminal_reason = capacity.code
+                raise capacity from None
             forced_terminal_status = "error"
 
             # Sanitized SSE error — never emit `str(e)` to the client
@@ -1090,6 +1098,10 @@ async def stream_sse_chat(
 
     except Exception as e:
         forced_terminal_status = "error"
+        capacity = compute_error(e)
+        if capacity is not None:
+            terminal_reason = capacity.code
+            raise capacity from None
         terminal_reason = _SSE_INTERNAL_ERROR_TOKEN
         logger.error("Unexpected error in stream_sse_chat: %s", e, exc_info=True)
         yield sse(
