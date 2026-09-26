@@ -28,14 +28,14 @@ Daemon is a multi-provider LLM orchestration platform with intelligent routing, 
 │       │                                              │
 │  ┌────▼────────────┐  ┌──────────────────────────┐  │
 │  │ Memory Layer    │  │ Subagent Orchestrator    │  │
-│  │ (pgvector)      │  │ @research @image @audio  │  │
-
+│  │ (pgvector)      │  │ Research & bounded tools │  │
+│  │                 │  │ Qualified routes only    │  │
 │  └─────────────────┘  └──────────────────────────┘  │
 └──────────────────────────────────────────────────────┘
                        │
 ┌──────────────────────▼──────────────────────────────┐
 │               LLM Providers                          │
-│  OpenRouter · xAI · fal.ai · ElevenLabs · Brave      │
+│       Policy-qualified inference providers          │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -60,9 +60,9 @@ lives in `config/inference_policy.json`. Video-credit balances remain separate.
 
 ## Implementation Status
 
-### Phase 1: Cloud Orchestration ✅
+### Hosted Orchestration Foundation
 - **SSE Streaming**: Typed events (`token`, `thinking`, `routing`, `tool_call`, `tool_result`, `final`, `error`, `done`).
-- **Subagents**: Execution is subject to account capabilities, provider qualification and bounded adapters. Unbounded image/video/audio vendor paths are disabled.
+- **Subagents**: Research remains subject to account capabilities and qualified service/model routes. Image/video/audio execution is retired pending qualified bounded adapters; retained implementation/UI does not establish availability.
 - **Tools**: `generate_document` (deterministic CSV/DOCX generation).
 - **Tools**: `web_search`, `http_request`, `calculate`, `get_time`, `notifications`, `reminders`, `memory_read`, `memory_write`.
 
@@ -72,14 +72,14 @@ lives in `config/inference_policy.json`. Video-credit balances remain separate.
 - **Encryption**: Fernet for messages and memories.
 - **Background Jobs**: Extraction, summary, consolidation, dreaming.
 
-### Video Credits and Pending Bounded Generation
-- **Generation**: Disabled pending qualified, cost-reserving vendor adapters.
+### Video Credits and Retired Generation
+- **Execution**: Video generation is denied pending a qualified bounded adapter. Preserved provider code is not an enabled route.
 - **Credits**: Prepaid system with atomic debit/refund. Balance and transactions via `/video-credits`.
-- **Studio**: Dedicated UI for video generation. Legacy image mode is retired; `/api/images/models`, `/api/images/generate`, and `/api/images/upload-reference` remain authenticated 410 routes until the hosted-identity image replacement lands.
+- **Studio**: Retained UI and credit history do not enable generation. Legacy image APIs (`/api/images/models`, `/api/images/generate`, `/api/images/upload-reference`) remain authenticated 410 routes until the hosted-identity image replacement lands.
 
 ### Frontend ✅
 - **Chat**: Streaming via Vercel AI SDK `useChat`.
-- **Voice**: Settings and controls remain; vendor execution and direct vendor tokens are disabled pending bounded adapters.
+- **Voice**: Settings/UI are retained; TTS/STT, sound effects and direct vendor tokens are denied pending bounded server-side execution.
 - **Settings**: Voice preferences, model selector, memory management.
 
 ### Phase 3: Local Pipeline (Blocked)
@@ -112,9 +112,9 @@ For detailed architecture, see [MEMORY_LAYER.md](../MEMORY_LAYER.md).
 
 | Subagent | Status | Implementation |
 |----------|--------|----------------|
-| `@research` | Implemented | Brave Search + synthesis |
-| `@image` | Unavailable | Unbounded vendor execution retired pending qualified bounded adapters |
-| `@audio` | Unavailable | Vendor execution disabled pending qualified bounded adapters |
+| `@research` | Retained implementation; dispatch unavailable | Brave Search + synthesis framework; registered spawn tools return capacity_unavailable pending qualified bounded adapters |
+| `@image` | Retired execution | Image/video generation denied pending qualified bounded adapters; legacy Studio image API returns 410 |
+| `@audio` | Retired execution | Audio generation denied pending a qualified bounded adapter |
 | `generate_document` | Implemented | Deterministic CSV/DOCX generation via `generate_document` tool |
 | `@code` | **Reserved** | Not implemented |
 | `@reader` | **Reserved** | Not implemented |
@@ -131,6 +131,7 @@ For detailed architecture, see [MEMORY_LAYER.md](../MEMORY_LAYER.md).
 | `/v1/chat/completions` | POST | OpenAI-compatible completions |
 
 ## Caveats & Cleanup
+- **Product direction versus status**: See [the vision](DAEMON_VISION.md), [approved decisions](DAEMON_VISION_DECISIONS.md) and [integration evidence](VISION_INTEGRATION_REPORT.md). The historical verification header is not certification of the current working tree. Broad accepted-request continuity and resource-scoped companions remain planned.
 - **Local Pipeline**: Blocked on hardware (RTX 5090); cloud pipeline runs independently.
 - **Linter Scope**: `check_doc_freshness.py` gates high-confidence structured facts only.
 - **Model Assignments**: Workload configuration and approved inference routes are separate from account plans; see `SUBSCRIPTION_ARCHITECTURE.md`.

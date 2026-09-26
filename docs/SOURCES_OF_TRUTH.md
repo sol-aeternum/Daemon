@@ -8,6 +8,8 @@ Daemon uses a tiered hierarchy to resolve contradictions. When two sources disag
 
 **Precedence: T0 > T1 > T2**
 
+This precedence governs **implementation facts**. Product direction and approved product decisions describe intended behaviour; missing implementation does not invalidate that intent or establish that it has shipped. `DAEMON_VISION.md` preserves Vision / Approved product decision / Proposed / Open labels. Existing accepted architecture and policy contracts remain in force until explicitly superseded; generated design drafts are not approval.
+
 | Tier | Label | Description | Examples |
 |------|-------|-------------|----------|
 | **T0** | **Code & Config** | The ultimate truth. If the code does X, any doc saying Y is stale. | `orchestrator/config.py`, `migrations/*.sql`, `docker-compose.yml`, `orchestrator/routes/*.py` |
@@ -30,6 +32,11 @@ Every markdown file in the repository is classified under this hierarchy to dete
 | `docs/HOSTED_IDENTITY.md` | T1 | Engineering/Product | gated | `docs/AUTH_ARCHITECTURE.md`, hosted identity auth routes, hosted identity migrations |
 | `docs/SUBSCRIPTION_ARCHITECTURE.md` | T1 | Engineering/Product | gated | `config/commercial.json`, `config/inference_policy.json`, `orchestrator/entitlements/`, account compute migrations |
 | `docs/SUBSCRIPTION_MIGRATION_REPORT.md` | N/A | Engineering | raw-log | Dated migration validation and tracked blocker evidence |
+| `docs/DAEMON_VISION.md` | N/A | Product | ungated-reference | Product direction and labelled proposals; implementation status lives in T0/T1 |
+| `docs/DAEMON_VISION_DECISIONS.md` | N/A | Product owner | ungated-reference | Explicit interview decisions; does not approve schemas or API contracts |
+| `docs/DAEMON_RECONCILIATION.md` | N/A | Engineering | raw-log | Dated Stage 0 working-tree assessment and verification limits |
+| `docs/DURABLE_REQUEST_DESIGN.md` | N/A | Engineering/Product | ungated-reference | Proposed continuity architecture; approval required before implementation |
+| `docs/VISION_INTEGRATION_REPORT.md` | N/A | Engineering | raw-log | Integration changes, current gate evidence and blockers |
 | `docs/AUTH_SETUP.md` | T1 | Engineering | gated | `orchestrator/routes/auth_setup.py`, `orchestrator/auth_cookies.py`, `orchestrator/auth_csrf.py` |
 | `docs/OPEN_QUESTIONS.md` | T1 | Engineering | gated | Decision log / `truth_set.md` |
 | `docs/MEMORY_UPGRADE_ROADMAP.md` | T1 | Engineering | gated | `MEMORY_LAYER.md`, Wave plans |

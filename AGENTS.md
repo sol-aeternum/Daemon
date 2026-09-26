@@ -9,6 +9,9 @@ Personal multi-agent AI assistant. FastAPI backend orchestrates LLM calls via Op
 3. Read `docs/SOURCES_OF_TRUTH.md` — documentation authority map
 4. Check recent commits and code comments for context on current state
 
+## Product Direction
+Read `docs/DAEMON_VISION.md` and `docs/DAEMON_VISION_DECISIONS.md` before planning product changes. Preserve Vision / Approved product decision / Proposed / Open distinctions. Use `docs/DAEMON_RECONCILIATION.md` as dated evidence, not current release status. Reference V/D/AC/DEC IDs; inspect code, tests and existing architecture contracts. Product approval does not authorise unrelated rewrites, deployments, expanded permissions, or unapproved schema/API changes.
+
 ## Rules of Engagement
 - **Ask before making design decisions.** If a task has multiple valid approaches, present options with tradeoffs. Do not pick one autonomously.
 - **Clarify ambiguity, don't assume.** If the spec is unclear, ask. Wrong assumptions cost more than a question.

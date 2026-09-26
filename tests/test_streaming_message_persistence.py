@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import timedelta
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -307,6 +308,336 @@ def test_extract_memories_worker_registration_does_not_retain_result_key() -> No
     extract_function = worker.functions["extract_memories"]
 
     assert extract_function.keep_result_s == 0
+
+
+# --- Explicit disconnect / cancellation must never look like a success (#316) ---
+#
+# Ported from the #316 repair. Assertions target this branch's lifecycle rather
+# than the older "leave the row streaming" convention: every interrupted exit
+# path is terminalized by ``terminalize_incomplete_assistant`` with a
+# non-complete status, so these tests assert the row is never promoted to
+# ``complete`` and that no success-only work runs.
+
+
+class RecordingTrustSignals:
+    """Stand-in for orchestrator.memory.trust_signals to observe call sites."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def apply_implicit_positive_signal(self, **kwargs: Any) -> None:
+        self.calls.append(kwargs)
+
+
+class DisconnectProbe:
+    """Return False for the first ``disconnect_after`` probes, then True."""
+
+    def __init__(self, disconnect_after: int) -> None:
+        self.disconnect_after = disconnect_after
+        self.calls = 0
+
+    async def __call__(self) -> bool:
+        self.calls += 1
+        return self.calls > self.disconnect_after
+
+
+def _build_stream(
+    store: FakeMemoryStore,
+    *,
+    is_disconnected: Any,
+    queue: FakeDedupQueue | None = None,
+    conversation_uuid: uuid.UUID | None = None,
+    user_id: uuid.UUID | None = None,
+    mock_llm: bool = False,
+) -> AsyncGenerator[str, None]:
+    effective_conversation_uuid = conversation_uuid or uuid.uuid4()
+    # stream_sse_chat is an async generator function annotated as AsyncIterator;
+    # callers that need aclose (client abort simulation) rely on the generator.
+    return cast(
+        AsyncGenerator[str, None],
+        stream_sse_chat(
+            settings=Settings(mock_llm=mock_llm),
+            provider_config=ProviderConfig(name="openrouter", model="test-model"),
+            system_prompt="system",
+            user_message="hello",
+            request_id="req_316",
+            conversation_id=f"conv_{effective_conversation_uuid.hex}",
+            is_disconnected=is_disconnected,
+            memory_store=store,
+            user_id=user_id or uuid.uuid4(),
+            conversation_uuid=effective_conversation_uuid,
+            queue=queue,
+        ),
+    )
+
+
+def _parse_frames(frames: list[str]) -> list[tuple[str, dict[str, Any]]]:
+    parsed: list[tuple[str, dict[str, Any]]] = []
+    for frame in frames:
+        event_type = ""
+        data: list[str] = []
+        for line in frame.splitlines():
+            if line.startswith("event: "):
+                event_type = line[len("event: ") :]
+            elif line.startswith("data: "):
+                data.append(line[len("data: ") :])
+        if event_type and data:
+            parsed.append((event_type, json.loads("".join(data))))
+    return parsed
+
+
+def _terminal_data(frames: list[str]) -> dict[str, Any]:
+    done_frames = [payload for event_type, payload in _parse_frames(frames) if event_type == "done"]
+    assert len(done_frames) == 1, f"expected exactly one done event, got {frames}"
+    return done_frames[0]["data"]
+
+
+def _complete_updates(store: FakeMemoryStore) -> list[dict[str, Any]]:
+    return [call for call in store.update_calls if call.get("status") == "complete"]
+
+
+@pytest.mark.asyncio
+async def test_disconnect_before_content_leaves_row_uncompleted_and_reports_cancelled() -> None:
+    async def completion() -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "content_delta", "content": "should never be streamed"}
+        yield {"type": "done", "finish_reason": "stop"}
+
+    store = FakeMemoryStore()
+    queue = FakeDedupQueue()
+    trust = RecordingTrustSignals()
+    probe = DisconnectProbe(disconnect_after=0)
+
+    async def fake_completion_with_tools(**_kwargs: Any) -> AsyncIterator[dict[str, Any]]:
+        async for event in completion():
+            yield event
+
+    frames: list[str] = []
+    with (
+        patch("orchestrator.daemon.completion_with_tools", fake_completion_with_tools),
+        patch("orchestrator.daemon._lazy_import_trust_signals", lambda: trust),
+    ):
+        async for frame in _build_stream(store, is_disconnected=probe, queue=queue):
+            frames.append(frame)
+
+    assert len(store.insert_calls) == 1
+    assert store.insert_calls[0]["status"] == "streaming"
+    assert store.row is not None
+    assert store.row["content"] == ""
+    assert store.row["status"] == "cancelled"
+    assert _complete_updates(store) == []
+    event_types = [event_type for event_type, _ in _parse_frames(frames)]
+    assert "final" not in event_types
+    assert "error" not in event_types
+    assert _terminal_data(frames) == {
+        "status": "cancelled",
+        "reason": "Client disconnected during streaming",
+    }
+    # No fabricated fallback answer is streamed on cancellation.
+    assert not any("I encountered issues while executing tools" in frame for frame in frames)
+    assert queue.attempts == []
+    assert trust.calls == []
+
+
+@pytest.mark.asyncio
+async def test_disconnect_after_partial_content_keeps_partial_row_available() -> None:
+    async def completion() -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "content_delta", "content": "par"}
+        yield {"type": "content_delta", "content": "tial"}
+        yield {"type": "done", "finish_reason": "stop"}
+
+    store = FakeMemoryStore()
+    queue = FakeDedupQueue()
+    trust = RecordingTrustSignals()
+    # Probe 1/2 see a live client, probe 3 (the "done" event) sees the disconnect.
+    probe = DisconnectProbe(disconnect_after=2)
+
+    async def fake_completion_with_tools(**_kwargs: Any) -> AsyncIterator[dict[str, Any]]:
+        async for event in completion():
+            yield event
+
+    frames: list[str] = []
+    with (
+        patch("orchestrator.daemon.completion_with_tools", fake_completion_with_tools),
+        patch("orchestrator.daemon._lazy_import_trust_signals", lambda: trust),
+    ):
+        async for frame in _build_stream(store, is_disconnected=probe, queue=queue):
+            frames.append(frame)
+
+    # Everything the client actually received stays on the row...
+    assert store.row is not None
+    assert store.row["content"] == "partial"
+    # ...but the interrupted turn is never promoted to complete.
+    assert store.row["status"] == "cancelled"
+    assert _complete_updates(store) == []
+    event_types = [event_type for event_type, _ in _parse_frames(frames)]
+    assert "final" not in event_types
+    token_texts = [
+        payload["data"]["text"]
+        for event_type, payload in _parse_frames(frames)
+        if event_type == "token"
+    ]
+    assert "".join(token_texts) == "partial"
+    assert _terminal_data(frames)["status"] == "cancelled"
+    assert queue.attempts == []
+    assert trust.calls == []
+
+
+@pytest.mark.asyncio
+async def test_disconnect_with_interrupted_tool_call_skips_skill_evaluation() -> None:
+    async def completion() -> AsyncIterator[dict[str, Any]]:
+        for index in range(6):
+            yield {"type": "content_delta", "content": "x"}
+            yield {"type": "tool_executing", "name": f"tool_{index}", "arguments": "{}"}
+        yield {"type": "done", "finish_reason": "stop"}
+
+    store = FakeMemoryStore()
+    queue = FakeDedupQueue()
+    # Accept all six tool calls, exceeding the skill-evaluation threshold, then
+    # disconnect before completion. This guards both success-only job paths.
+    probe = DisconnectProbe(disconnect_after=12)
+
+    async def fake_completion_with_tools(**_kwargs: Any) -> AsyncIterator[dict[str, Any]]:
+        async for event in completion():
+            yield event
+
+    frames: list[str] = []
+    with patch("orchestrator.daemon.completion_with_tools", fake_completion_with_tools):
+        async for frame in _build_stream(store, is_disconnected=probe, queue=queue):
+            frames.append(frame)
+
+    assert store.row is not None
+    assert store.row["status"] == "cancelled"
+    assert _complete_updates(store) == []
+    assert probe.calls == 13
+    assert sum(event_type == "tool_call" for event_type, _ in _parse_frames(frames)) == 6
+    assert [attempt["args"][0] for attempt in queue.attempts] == []
+    assert "final" not in [event_type for event_type, _ in _parse_frames(frames)]
+
+
+@pytest.mark.asyncio
+async def test_mock_mode_disconnect_does_not_persist_complete() -> None:
+    store = FakeMemoryStore()
+    queue = FakeDedupQueue()
+    # Mock mode probes once per emitted character; accept two, then disconnect.
+    probe = DisconnectProbe(disconnect_after=2)
+
+    frames: list[str] = []
+    async for frame in _build_stream(store, is_disconnected=probe, queue=queue, mock_llm=True):
+        frames.append(frame)
+
+    # The streamed characters are never assembled into a completed answer, so the
+    # pre-inserted row is never promoted to a completion.
+    assert store.row is not None
+    assert store.row["status"] == "cancelled"
+    assert _complete_updates(store) == []
+    assert "final" not in [event_type for event_type, _ in _parse_frames(frames)]
+    assert _terminal_data(frames)["status"] == "cancelled"
+    assert queue.attempts == []
+
+
+@pytest.mark.asyncio
+async def test_asyncio_cancellation_never_persists_complete() -> None:
+    release = asyncio.Event()
+    reached_blocking_await = asyncio.Event()
+
+    async def completion() -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "content_delta", "content": "half"}
+        reached_blocking_await.set()
+        await release.wait()
+        yield {"type": "done", "finish_reason": "stop"}
+
+    store = FakeMemoryStore()
+    queue = FakeDedupQueue()
+    frames: list[str] = []
+
+    async def fake_completion_with_tools(**_kwargs: Any) -> AsyncIterator[dict[str, Any]]:
+        async for event in completion():
+            yield event
+
+    async def consume() -> None:
+        async for frame in _build_stream(store, is_disconnected=_not_disconnected, queue=queue):
+            frames.append(frame)
+
+    with patch("orchestrator.daemon.completion_with_tools", fake_completion_with_tools):
+        task = asyncio.create_task(consume())
+        await asyncio.wait_for(reached_blocking_await.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert store.row is not None
+    assert store.row["content"] == "half"
+    assert store.row["status"] == "cancelled"
+    assert _complete_updates(store) == []
+    assert queue.attempts == []
+    assert "final" not in [event_type for event_type, _ in _parse_frames(frames)]
+    assert "done" not in [event_type for event_type, _ in _parse_frames(frames)]
+
+
+@pytest.mark.asyncio
+async def test_early_generator_close_never_persists_complete() -> None:
+    async def completion() -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "content_delta", "content": "par"}
+        yield {"type": "content_delta", "content": "tial"}
+        yield {"type": "done", "finish_reason": "stop"}
+
+    store = FakeMemoryStore()
+    queue = FakeDedupQueue()
+    frames: list[str] = []
+
+    async def fake_completion_with_tools(**_kwargs: Any) -> AsyncIterator[dict[str, Any]]:
+        async for event in completion():
+            yield event
+
+    with patch("orchestrator.daemon.completion_with_tools", fake_completion_with_tools):
+        stream = _build_stream(store, is_disconnected=_not_disconnected, queue=queue)
+        async for frame in stream:
+            frames.append(frame)
+            if "event: token" in frame:
+                break
+        await stream.aclose()
+
+    assert store.row is not None
+    # The finalizer preserves the received fragment even before periodic flush.
+    assert store.row["content"] == "par"
+    assert store.row["status"] == "cancelled"
+    assert _complete_updates(store) == []
+    assert queue.attempts == []
+    assert "final" not in [event_type for event_type, _ in _parse_frames(frames)]
+    assert "done" not in [event_type for event_type, _ in _parse_frames(frames)]
+
+
+@pytest.mark.asyncio
+async def test_successful_stream_still_finalises_and_applies_success_work() -> None:
+    async def completion() -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "content_delta", "content": "hello"}
+        yield {"type": "done", "finish_reason": "stop"}
+
+    store = FakeMemoryStore()
+    queue = FakeDedupQueue()
+    trust = RecordingTrustSignals()
+
+    async def fake_completion_with_tools(**_kwargs: Any) -> AsyncIterator[dict[str, Any]]:
+        async for event in completion():
+            yield event
+
+    frames: list[str] = []
+    with (
+        patch("orchestrator.daemon.completion_with_tools", fake_completion_with_tools),
+        patch("orchestrator.daemon._lazy_import_trust_signals", lambda: trust),
+    ):
+        async for frame in _build_stream(store, is_disconnected=_not_disconnected, queue=queue):
+            frames.append(frame)
+
+    assert store.row is not None
+    assert store.row["content"] == "hello"
+    assert store.row["status"] == "complete"
+    assert len(_complete_updates(store)) == 1
+    event_types = [event_type for event_type, _ in _parse_frames(frames)]
+    assert "final" in event_types
+    assert _terminal_data(frames) == {"status": "completed"}
+    assert [attempt["args"][0] for attempt in queue.attempts] == ["extract_memories"]
+    assert len(trust.calls) == 1
 
 
 @pytest.mark.asyncio
