@@ -18,8 +18,8 @@ These definitions distinguish product concepts from current implementations; the
 | **artifact** | A durable, owned output with identity and lineage | The current interactive HTML render or gallery item, or a file under `data/generated_*` that expires after 24h |
 | **role** | A routing slot (fast, orchestration, reasoning, coding, research, extraction, media) mapped to a model in config | A commercial plan |
 | **plan** | A commercial plan: Free, Pro or Power | Memory tier, or a Sisyphus PLAN.md |
-| **tier** | Memory L0/L1/L2 | A commercial plan |
-| **route** | A qualified provider + model + endpoint + retention class in `config/inference_policy.json` | A model catalogue entry |
+| **tier** | Memory L0/L1/L2 | A commercial plan, or a workload role. `orchestrator/model_router.py` still names fast/reasoning selection a `tier` (`select_model_tier`); in prose call that a role |
+| **route** | A qualified provider + model + endpoint in `config/inference_policy.json`, plus a DEC12 retention class (not yet a config field) | A model catalogue entry |
 | **retention class** | Z (zero retention, default), R (provider-retained, opt-in), T (trains; never used). See DEC12 | A plan feature |
 | **local** | Local inference (`/local`, parked) | Resources on a connected device |
 | **reconnect** | Currently re-runs the request (`regenerate()`) | Resuming a task. That arrives with Stage 1 |
