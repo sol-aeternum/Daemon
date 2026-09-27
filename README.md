@@ -87,7 +87,7 @@ Note: The top-level `backend/` directory contains only a Dockerfile for Docker b
 
 ## Quick Start
 
-**Prerequisites:** [uv](https://github.com/astral-sh/uv) installed.
+**Prerequisites:** [uv](https://github.com/astral-sh/uv) installed, at or above the `[tool.uv] required-version` floor in `pyproject.toml` (`uv self update` if older).
 
 ```bash
 # Local development (backend only, postgres/redis must be running)
