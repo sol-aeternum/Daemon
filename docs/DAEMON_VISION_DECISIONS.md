@@ -1,6 +1,6 @@
 # Daemon — Product decisions from the vision interview
 
-Date: 26 September 2026. Status: **product-owner decisions; implementation not certified**.
+Dates: 26–27 September 2026. Status: **ratified product-owner decisions; implementation not certified**.
 
 This records the product owner's direct answers following the vision review. It approves the stated product behaviour, not database schemas, API contracts, dependencies, provider changes or deployment. Stable DEC IDs match the interview record originally saved outside the repository. See [the vision](DAEMON_VISION.md) and [dated reconciliation](DAEMON_RECONCILIATION.md).
 
@@ -64,6 +64,20 @@ Prioritise reliable continuation/recovery across ordinary questions, research an
 
 Identify the supported operation set and test completion, failure, cancellation and recovery by operation. Retired/unqualified execution is not re-enabled. The decision neither selects a sandbox nor requires companion-device work first.
 
+## DEC11 — Product identity: one personal AI for everything, model-independent, user-owned context
+
+Daemon is one personal AI for everything, from quick questions to autonomous work that runs for days. It combines consumer-assistant breadth (chat, search, media, documents, schedules, reminders, integrations) with autonomous-agent follow-through (long tasks, code, cloud and device work). All of this comes from one conversational entry point, with no product or mode boundaries. Daemon is not tied to one model or model family: each role routes to the best qualified model through configuration. The user's context is portable, model-independent, and importable and exportable.
+
+This supersedes the v0.1 one-liner ("persistent agent workspace…") and the "multi-provider LLM orchestration platform" framing, which remain accurate only as descriptions of how Daemon works. The canonical statement is [DAEMON.md](DAEMON.md). "Spine before surface" and the build order in DAEMON.md remain **Proposed** sequencing, not ratified scope.
+
+## DEC12 — ZDR by default; provider-retained routes opt-in only
+
+Every role defaults to zero-data-retention (Z) routes. Provider-retained, no-training routes (R) are used only when the user opts in per model family, after seeing the provider and its retention period. R routes are never used for restricted-project data, and each use is recorded in the activity record. Routes that train on inputs (T) are never used. Privacy opt-in is independent of commercial plan. Daemon takes all reasonable steps to choose the best ZDR host per role and keeps its own dated evidence per route.
+
+**Supersedes:** the `docs/SUBSCRIPTION_ARCHITECTURE.md` privacy invariant ("Routes require explicit approval, ZDR, no training or retention…"), **for opt-in R routes only**. For every default route, the invariant is unchanged.
+
+**Not approved by this decision:** the schema for retention classes in `config/inference_policy.json`, the consent UX and storage, restricted-data enforcement, fallback behaviour between Z and R, and the activity-record format. These need an implementation design and approval before any R route can execute. Until then, the code stays Z-only, and that matches this decision's default.
+
 ## Subsequent baseline instruction
 
 During integration, the product owner explicitly chose **preserve the staged removals** of shared encryption-failure counters and advisor support. Repair dangling consumers and still-supported worker functions; do not restore removed features just to satisfy obsolete tests. This instruction does not relax quality gates or authorise removal of coverage for supported behaviour.
@@ -85,6 +99,6 @@ The product owner also required the README to retain the orchestration, routing 
 - Task/resource schemas, API/SSE contracts, acceptance transactions, worker strategy and operation-specific reconciliation.
 - Notification channels, freshness/expiry policy, cancellation/revocation bounds.
 - Companion identity/transport, supported desktop packaging and containment.
-- Changes to commercial/provider contracts or approval of live provider routes.
+- DEC12's retention-class schema, consent UX/storage, restricted-data enforcement, Z/R fallback and activity-record implementation; approval of live provider routes remains separate.
 
 Resolve these at the increment that needs them. See [the durable-request design draft](DURABLE_REQUEST_DESIGN.md) for the next architecture approval boundary.

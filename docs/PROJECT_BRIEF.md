@@ -1,12 +1,12 @@
 # Project Brief — Daemon
 
 > **Verified-against-commit**: `3155d69fa1eb1939cf5c737018242fc119480d6c`
-> **Last updated**: 2026-05-31
+> **Last updated**: 2026-09-27 (product identity; implementation verification pin above is historical)
 > **Upstream Sources**: `tests/benchmark_results/doc-alignment-regeneration/truth_set.md`, `docs/SOURCES_OF_TRUTH.md`, `docs/FEATURE_MATRIX.md`, `MEMORY_LAYER.md`, `orchestrator/config.py`, `docker-compose.yml`, `migrations/`
 
 ## Product Thesis
 
-Daemon is a multi-provider LLM orchestration platform designed to provide a unified, intelligent interface for personal AI assistance. It sits between multiple LLM providers and a custom frontend, adding critical capabilities that single-provider solutions lack: tiered cross-provider routing, persistent conversational memory, specialized subagent task decomposition, and a typed real-time event protocol.
+Read [DAEMON.md](DAEMON.md) first for the ratified product identity (DEC11): one personal AI for everything, with model-independent, user-owned context. The multi-provider orchestration described here is how Daemon works, not its product category. Its technical foundation includes capability-aware routing, persistent conversational memory, subagent task decomposition and a typed real-time event protocol; current availability remains governed by code and the feature matrix.
 
 ## Intended Audience & User Value
 

@@ -10,6 +10,8 @@ Daemon uses a tiered hierarchy to resolve contradictions. When two sources disag
 
 This precedence governs **implementation facts**. Product direction and approved product decisions describe intended behaviour; missing implementation does not invalidate that intent or establish that it has shipped. `DAEMON_VISION.md` preserves Vision / Approved product decision / Proposed / Open labels. Existing accepted architecture and policy contracts remain in force until explicitly superseded; generated design drafts are not approval.
 
+Read `DAEMON.md` first for canonical product identity and `GLOSSARY.md` for terminology. DEC11 supersedes the older workspace/platform identity framing; DEC12 supersedes the Z-only product requirement only for future opt-in R routes. Its implementation remains gated, so current runtime policy is still Z-only. Proposed sequencing in `DAEMON.md` is not ratified implementation scope.
+
 | Tier | Label | Description | Examples |
 |------|-------|-------------|----------|
 | **T0** | **Code & Config** | The ultimate truth. If the code does X, any doc saying Y is stale. | `orchestrator/config.py`, `migrations/*.sql`, `docker-compose.yml`, `orchestrator/routes/*.py` |
@@ -33,6 +35,8 @@ Every markdown file in the repository is classified under this hierarchy to dete
 | `docs/SUBSCRIPTION_ARCHITECTURE.md` | T1 | Engineering/Product | gated | `config/commercial.json`, `config/inference_policy.json`, `orchestrator/entitlements/`, account compute migrations |
 | `docs/SUBSCRIPTION_MIGRATION_REPORT.md` | N/A | Engineering | raw-log | Dated migration validation and tracked blocker evidence |
 | `docs/DAEMON_VISION.md` | N/A | Product | ungated-reference | Product direction and labelled proposals; implementation status lives in T0/T1 |
+| `docs/DAEMON.md` | N/A | Product owner | ungated-reference | Canonical product identity, promises and priorities; DEC11–DEC12 ratified, implementation and Proposed sequencing separate |
+| `docs/GLOSSARY.md` | N/A | Product/Engineering | ungated-reference | Shared terminology for product concepts and their distinction from current runtime names |
 | `docs/DAEMON_VISION_DECISIONS.md` | N/A | Product owner | ungated-reference | Explicit interview decisions; does not approve schemas or API contracts |
 | `docs/DAEMON_RECONCILIATION.md` | N/A | Engineering | raw-log | Dated Stage 0 working-tree assessment and verification limits |
 | `docs/DURABLE_REQUEST_DESIGN.md` | N/A | Engineering/Product | ungated-reference | Proposed continuity architecture; approval required before implementation |

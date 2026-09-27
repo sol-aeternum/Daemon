@@ -1,6 +1,10 @@
 # Daemon
 
-**Your persistent agent workspace — cloud-first, device-extended, task-centred, permission-bound.**
+**Daemon is one personal AI for everything, from a quick question to autonomous work that runs for days. It uses the best models available at any moment, and your context belongs to you rather than to any AI lab.**
+
+**One Daemon. Every model. Your context.**
+
+Read [What Daemon is](docs/DAEMON.md) for the canonical product identity and [the glossary](docs/GLOSSARY.md) for shared terms. This is direction, not implementation status; the technical architecture and current execution boundaries are documented below.
 
 Daemon is being built as one persistent assistant that carries your work forward wherever you access it. The hosted workspace is its default working environment; connected devices and services will extend what it can reach and do, within the permissions you grant.
 
@@ -16,7 +20,7 @@ Phone-only use is a complete intended endpoint: no paired computer or server adm
 
 ## Product Model
 
-The [vision](docs/DAEMON_VISION.md) and [approved product decisions](docs/DAEMON_VISION_DECISIONS.md) establish these behaviours to build toward:
+The [product identity](docs/DAEMON.md), [vision](docs/DAEMON_VISION.md) and [ratified product decisions](docs/DAEMON_VISION_DECISIONS.md) establish these behaviours to build toward:
 
 - **One personal workspace, optional projects.** Start immediately and organise when useful. Relevant context shares by default; restricted projects can use permitted workspace context while keeping their own information inside unless explicitly shared (DEC01–DEC03).
 - **Continuity for every accepted request.** Ordinary questions, research and supported tools continue after client closure within their permissions and budget. Acceptance means durably saved and tracked, not guaranteed success. Material ambiguity leads to useful independent progress, then a saved question or waiting state (DEC04–DEC06).
@@ -25,6 +29,8 @@ The [vision](docs/DAEMON_VISION.md) and [approved product decisions](docs/DAEMON
 - **Optional device extensions.** Supported companions will expose only authorised resources and operations. Device availability and platform constraints remain real boundaries (V04–V05).
 
 These are product commitments, not a claim that the corresponding lifecycle, project controls or companion APIs already exist. Proposed implementation choices remain labelled separately in the vision and design documents.
+
+DEC11 establishes the model-independent personal-AI identity. DEC12 ratifies ZDR by default with future per-model-family opt-in to bounded, no-training provider retention. **Runtime routing remains Z-only** until the retention schema, consent, restricted-data enforcement, fallback behaviour and activity records have an approved implementation. "Spine before surface" and the build order remain Proposed sequencing.
 
 ## Architecture
 
@@ -53,7 +59,7 @@ see the execution boundaries below.
 ### Request Path
 
 1. **Authenticate and rate limit.** Device/session auth, then Redis windows per session, per user and per client IP before any LLM-backed work.
-2. **Classify the turn.** `orchestrator/model_router.py` classifies the message (`trivial` / `standard` / `complex` from length, turn count, code blocks and complexity signals) into a `fast` or `reasoning` tier, unless the request carries an explicit model override.
+2. **Classify the turn.** `orchestrator/model_router.py` classifies the message (`trivial` / `standard` / `complex` from length, turn count, code blocks and complexity signals) into a `fast` or `reasoning` workload role, unless the request carries an explicit model override.
 3. **Assemble context.** The system prompt, runtime date/time, user preferences and retrieved memory are assembled per request; the per-request tool registry is built with authenticated ownership context.
 4. **Qualify and fund the route.** `orchestrator/compute_runtime.py` resolves the account's entitlements, selects only approved, unexpired, operator-reviewed routes whose pinned transport and price ceiling satisfy the request, reserves worst-case cost atomically, and dispatches with that route's pinned endpoint and transport flags.
 5. **Stream typed events.** Tokens, reasoning, routing, tool calls and results are emitted as typed SSE frames; tool calls are executed in-loop against the shared registry.
@@ -210,6 +216,7 @@ The vision's [delivery gates](docs/DAEMON_VISION.md#11-delivery-sequence-and-acc
 
 ## Documentation
 
+- [What Daemon is — read first](docs/DAEMON.md) and [glossary](docs/GLOSSARY.md)
 - [Product vision](docs/DAEMON_VISION.md) and [approved decisions](docs/DAEMON_VISION_DECISIONS.md)
 - [Stage 0 reconciliation](docs/DAEMON_RECONCILIATION.md) and [integration evidence](docs/VISION_INTEGRATION_REPORT.md)
 - [Durable-request design — proposed](docs/DURABLE_REQUEST_DESIGN.md)

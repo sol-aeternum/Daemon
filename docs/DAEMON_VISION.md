@@ -1,15 +1,15 @@
 ---
 title: Daemon — Product Vision and System Principles
-version: "0.2"
+version: "0.3"
 status: living-draft-with-approved-product-decisions
 created: 2026-09-26
-updated: 2026-09-26
+updated: 2026-09-27
 implementation_status: assessed-separately-not-release-certified
 ---
 
 # Daemon — Product Vision and System Principles
 
-> **Daemon is your persistent agent workspace. It works in the cloud by default, uses your connected devices and services when needed, and carries the same work forward wherever you access it.**
+Read [What Daemon is](DAEMON.md) first for the canonical product identity (DEC11): **one personal AI for everything, with model-independent, user-owned context**. The earlier "persistent agent workspace" description remains architectural context, not the primary product identity. This document retains the detailed principles and acceptance criteria.
 
 **The work belongs to the user—not to a device, chat thread, model, or execution environment.**
 
@@ -24,13 +24,15 @@ Four labels distinguish intent from unsettled design:
 | Label | Meaning |
 | --- | --- |
 | **Vision** | Direction explicitly supplied by the product owner in the originating discussion. Preserve unless explicitly revised. |
-| **Approved product decision** | A choice explicitly made in the follow-up interview, recorded in [DEC01–DEC10](DAEMON_VISION_DECISIONS.md). Approval is limited to the stated product behaviour, not its implementation architecture. |
+| **Approved product decision** | A choice explicitly ratified by the product owner, recorded in [DEC01–DEC12](DAEMON_VISION_DECISIONS.md). Approval is limited to the stated product behaviour, not its implementation architecture. |
 | **Proposed** | A recommended interpretation, design default, or delivery criterion. Not yet a ratified implementation decision. |
 | **Open** | A choice requiring further evidence or an explicit product/architecture decision. |
 
 Unless labelled **Vision**, **Approved product decision**, or identified as a sourced external constraint, the requirements and recommendations below are **Proposed**. Words such as *must* express the intended strength of a proposed requirement, not evidence that it is approved or implemented.
 
 This document governs product direction, not current implementation status. Follow [SOURCES_OF_TRUTH.md](SOURCES_OF_TRUTH.md) for implementation facts. Existing accepted architecture and policy decisions remain in force unless explicitly superseded. An Open item may be partly resolved: link its existing contract rather than silently reopening it. Uncommitted code is evidence of behaviour, not by itself evidence of approval. In particular, preserve the existing [commercial and provider-policy contract](SUBSCRIPTION_ARCHITECTURE.md).
+
+DEC12 explicitly supersedes the Z-only product invariant for future opt-in R routes only. Its retention schema, consent, restricted-data enforcement, fallback and activity-record implementation remain gated; current runtime routing stays Z-only. DEC11's "spine before surface" and build order remain Proposed sequencing. Use [GLOSSARY.md](GLOSSARY.md) to distinguish client enrollment from connected-device pairing and product concepts from current code names.
 
 **Fast reading path:** sections 2–4 describe the product; sections 5–10 describe operating boundaries; sections 11–14 guide delivery and future agents. Stable IDs reference principles, decisions, and acceptance criteria.
 
@@ -218,7 +220,7 @@ Hosted execution processes plaintext within authorised environments and may disc
 
 Document which parties process which data, purposes, storage locations, retention, training use and deletion. Policy eligibility precedes price/capability; fallback must not weaken policy. Do not claim zero retention, local-only processing or provider-invisible encryption without implementation and applicable contractual evidence.
 
-No free tier should be funded by undisclosed training use or data exploitation. The existing [provider qualification contract](SUBSCRIPTION_ARCHITECTURE.md#privacy-invariants) remains in force; live qualification and resource-specific policy require further evidence. The vision does not relax that contract.
+No free tier should be funded by undisclosed training use or data exploitation. The existing [provider qualification contract](SUBSCRIPTION_ARCHITECTURE.md#privacy-invariants) remains the current Z-only runtime contract. DEC12 ratifies a future opt-in R-route exception, but execution requires the separately approved design and enforcement. Live route qualification and resource-specific policy still require evidence; product ratification alone enables no route.
 
 ## 7. Durable context and resource semantics
 
@@ -383,6 +385,8 @@ Preserve IDs and mark superseded entries rather than renumbering. Record changes
 
 **Product provenance:** the product owner's originating discussion on 26 September 2026 established V01–V07. The follow-up interview established [DEC01–DEC10](DAEMON_VISION_DECISIONS.md). Other architecture and acceptance framing remains Proposed unless separately approved. The dated reconciliation records implementation evidence separately.
 
+On 26–27 September 2026, the product owner ratified DEC11–DEC12 and supplied the canonical [DAEMON.md](DAEMON.md) identity and [GLOSSARY.md](GLOSSARY.md). DEC11 supersedes the earlier one-liner; DEC12's limited policy supersession does not approve its implementation.
+
 **External verification:** the primary sources below were checked on 26 September 2026. They support the cited constraints, not the entire architecture or release approval. Policies/APIs can change.
 
 <a id="s1"></a>
@@ -416,3 +420,4 @@ Preserve IDs and mark superseded entries rather than renumbering. Record changes
 | --- | --- | --- |
 | 0.1 | 2026-09-26 | Initial external discussion-derived draft; implementation not assessed. |
 | 0.2 | 2026-09-26 | Repository integration after reconciliation/review/interview. Adds approved product decisions and shared-by-default projects, durable acceptance of all requests, retained uploads/scoped memory, controllable auto-resume and broad Stage 1 continuity. Preserves V/D/AC/O IDs and existing architecture authority; no claim of implemented continuity. |
+| 0.3 | 2026-09-27 | Links canonical identity and glossary; incorporates ratified DEC11–DEC12 with explicit supersession and an implementation gate for R routes. Stable V/D/AC/O IDs and current Z-only runtime remain unchanged. |

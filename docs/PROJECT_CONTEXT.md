@@ -1,12 +1,12 @@
 # Project Context — Daemon
 
 > **Verified-against-commit**: `3155d69fa1eb1939cf5c737018242fc119480d6c`
-> **Last updated**: 2026-05-31
+> **Last updated**: 2026-09-27 (product identity; implementation verification pin above is historical)
 > **Upstream Sources**: `tests/benchmark_results/doc-alignment-regeneration/truth_set.md`, `docs/SOURCES_OF_TRUTH.md`, `docs/FEATURE_MATRIX.md`, `MEMORY_LAYER.md`, `orchestrator/config.py`, `docker-compose.yml`, `migrations/`
 
 ## What Daemon Is
 
-Daemon is a multi-provider LLM orchestration platform with intelligent routing, persistent memory, and a subagent architecture. It provides a unified interface for multiple LLM providers (via OpenRouter), adding capabilities like tiered routing, persistent conversational memory via pgvector, specialized subagents, and a typed SSE event protocol for real-time streaming.
+Read [DAEMON.md](DAEMON.md) first for the ratified product identity (DEC11): one personal AI for everything, with model-independent, user-owned context. Multi-provider orchestration is its implementation machinery: capability-aware routing, persistent memory via pgvector, specialised subagents and a typed SSE event protocol. This context document describes that foundation, not an alternative product identity.
 
 ## Architecture
 

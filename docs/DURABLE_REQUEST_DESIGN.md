@@ -2,7 +2,7 @@
 
 Date: 26 September 2026. **Status: PROPOSED; schema, API and execution architecture not approved.**
 
-Product behaviour is approved in [DEC01–DEC10](DAEMON_VISION_DECISIONS.md). This draft translates it into architecture choices; it does not silently approve them. The dated working-tree assessment is in [DAEMON_RECONCILIATION.md](DAEMON_RECONCILIATION.md); [VISION_INTEGRATION_REPORT.md](VISION_INTEGRATION_REPORT.md) distinguishes that snapshot from current-main PR verification.
+Read [DAEMON.md](DAEMON.md) for canonical identity and [GLOSSARY.md](GLOSSARY.md) for terms. Product behaviour is ratified in [DEC01–DEC12](DAEMON_VISION_DECISIONS.md). This draft translates it into architecture choices; it does not silently approve them. DEC12's opt-in R routes remain implementation-gated; current runtime routing stays Z-only. The dated working-tree assessment is in [DAEMON_RECONCILIATION.md](DAEMON_RECONCILIATION.md); [VISION_INTEGRATION_REPORT.md](VISION_INTEGRATION_REPORT.md) distinguishes that snapshot from current-main PR verification.
 
 ## 1. Objective and scope
 
@@ -145,4 +145,4 @@ These steps are implementation ordering inside broad Stage 1, not a return to th
 
 **Pending:** A (durable authority/acceptance mechanism), B (API/client compatibility), C (resource storage/legacy access), task-budget composition, retention/notification details and exact state/event schema.
 
-**Already approved:** product defaults DEC01–DEC10 and the baseline instructions in the decision record, including the subsequent PR-port clarification preserving current main's working metrics and advisor-event compatibility. Baseline bug fixes can proceed without representing this draft as accepted architecture.
+**Already approved:** product decisions DEC01–DEC12 and the baseline instructions in the decision record, including the subsequent PR-port clarification preserving current main's working metrics and advisor-event compatibility. DEC12 approves direction, not the retention schema, consent, restricted-data enforcement, fallback or activity-record implementation; all remain gated. Baseline bug fixes can proceed without representing this draft as accepted architecture.

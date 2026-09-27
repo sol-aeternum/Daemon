@@ -91,7 +91,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Identity-Created Device Sessions | Cross-client stable | Cross-client stable | Backend stable | Backend stable | Hosted identity completion creates web or native devices and Daemon sessions; provider tokens are not API auth | Yes |
 | Device Management | Backend stable | Backend stable | Backend stable | Backend stable | GET /devices, DELETE /devices/{id} | No |
 | Hosted Identity Device Management | Cross-client stable | Cross-client stable | Not started | Not started | Identity-aware devices UI distinguishes web, native, enrollment-created, and identity-created devices | No |
-| Device Enrollment | Backend stable | Backend stable | Backend stable | Backend stable | POST /enroll/initiate (pending-id), POST /enroll/complete (pending-id lookup) | Yes |
+| Client device enrollment (auth) | Backend stable | Backend stable | Backend stable | Backend stable | POST /enroll/initiate (pending-id), POST /enroll/complete (pending-id lookup) | Yes |
 | Refresh Token Rotation | Backend stable | Backend stable | Backend stable | Backend stable | POST /refresh (cookie-backed web refresh, native JSON-body refresh, rotate on use) | Yes |
 | **Notifications** | — | — | — | — | — | — |
 | Push Completion Notifications (ntfy.sh) | Backend stable | Backend stable | Not started | Not started | Notification delivery service | Yes |
