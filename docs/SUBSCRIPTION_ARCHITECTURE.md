@@ -91,6 +91,8 @@ flowchart TD
 
 ## Privacy invariants
 
+**Product-direction update (27 September 2026):** [DEC12](DAEMON_VISION_DECISIONS.md#dec12--zdr-by-default-provider-retained-routes-opt-in-only) ratifies ZDR by default and future per-model-family opt-in R routes (bounded retention, no training), never for restricted-project data. It supersedes the invariant below **only for those future opt-in R routes**. Retention-class schema, consent UX/storage, restricted-data enforcement, Z/R fallback and activity-record format still need design approval before any R route can execute. The following remains the **current runtime contract**; this documentation update changes no code or policy configuration.
+
 Free Daemon gets cheaper and more constrained compute, not cheaper privacy.
 Zero price is not evidence of provider qualification. Routes require explicit
 approval, ZDR, no training or retention, the required request policy flags, and

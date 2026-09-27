@@ -17,9 +17,9 @@ Daemon is a personal AI assistant orchestration layer. The system prompt (v4) de
 - `get_time`, `calculate`, `web_search`, `web_fetch` (with transcript support), `http_request`, `notification_send`, `reminder_set`, `reminder_list`, `spawn_agent`, `spawn_multiple`, `generate_document`.
 
 **Subagent Dispatch:**
-- `@research`: News, fact-checking, market research.
-- `@image`: Image and video generation (mode="video").
-- `@audio`: Sound effects, audio clips.
+- `@research`: Retained news/fact-checking/research implementation; registered `spawn_agent` and `spawn_multiple` currently return `capacity_unavailable` before dispatch pending qualified bounded adapters.
+- `@image`: Image/video execution retired pending qualified bounded adapters; preserved code is not an enabled capability.
+- `@audio`: Audio execution retired pending a qualified bounded adapter.
 - `@code`: Review, debugging (reserved).
 - `@reader`: Document analysis (reserved).
 
@@ -30,6 +30,8 @@ Daemon is a personal AI assistant orchestration layer. The system prompt (v4) de
 - Tools: `memory_read` (semantic/temporal), `memory_reflect` (synthesis), `memory_write`.
 
 Full prompt in `orchestrator/prompts.py`.
+
+Current execution status is tracked in [FEATURE_MATRIX.md](FEATURE_MATRIX.md). Retained routes, prompts or UI labels do not establish provider qualification or enabled execution. [The product vision](DAEMON_VISION.md) describes intended continuity, not current schema/API behaviour.
 
 **Runtime date/time:** Native and OpenAI-compatible chat prompts use the authenticated user's
 saved `timezone` (or `time_zone`), including either key under `preferences`, before

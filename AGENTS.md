@@ -1,13 +1,16 @@
 # Daemon — Agent Instructions
 
 ## What This Is
-Personal multi-agent AI assistant. FastAPI backend orchestrates LLM calls via OpenRouter, spawning subagents (@research, @image, @audio, @code, @reader). Next.js 16 frontend with Vercel AI SDK. PostgreSQL + pgvector for memory. Redis + arq for background jobs.
+Read `docs/DAEMON.md` first: Daemon is one personal AI for everything, using the best qualified model per role with user-owned, portable context. Use `docs/GLOSSARY.md` terms. Product identity and ratified decisions govern direction; code and gated documentation govern implementation status. DEC12 does not enable R routes: runtime remains Z-only until its implementation design is approved.
 
 ## Before You Touch Anything
 1. Read `docs/FEATURE_MATRIX.md` (implemented/planned status) and `docs/PROJECT_CONTEXT.md` (regenerated context)
 2. If the task touches memory: read `MEMORY_LAYER.md` and `docs/TECHNICAL_SPECS.md`
 3. Read `docs/SOURCES_OF_TRUTH.md` — documentation authority map
 4. Check recent commits and code comments for context on current state
+
+## Product Direction
+After `docs/DAEMON.md`, read `docs/DAEMON_VISION.md` and `docs/DAEMON_VISION_DECISIONS.md` before planning product changes. Preserve Vision / Approved product decision / Proposed / Open distinctions. DEC11–DEC12 are ratified product decisions; "spine before surface" and build order remain Proposed sequencing. Use `docs/DAEMON_RECONCILIATION.md` as dated evidence, not current release status. Reference V/D/AC/DEC IDs; inspect code, tests and existing architecture contracts. Product approval does not authorise unrelated rewrites, deployments, expanded permissions, or unapproved schema/API changes.
 
 ## Rules of Engagement
 - **Ask before making design decisions.** If a task has multiple valid approaches, present options with tradeoffs. Do not pick one autonomously.

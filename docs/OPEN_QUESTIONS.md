@@ -6,6 +6,8 @@
 
 ## High Priority
 
+Current product direction and resolved interview choices are recorded in [DAEMON_VISION.md](DAEMON_VISION.md) and [DAEMON_VISION_DECISIONS.md](DAEMON_VISION_DECISIONS.md). The immediate architecture approval boundary is [DURABLE_REQUEST_DESIGN.md](DURABLE_REQUEST_DESIGN.md). Local-hardware questions below concern optional extensions, not prerequisites for broad hosted continuity.
+
 ### 1. Local Pipeline Complexity
 **Question**: Should `/local` route to full orchestration (Qwen + subagents + SearXNG + FLUX) or just "chat with Qwen, no frills"?
 

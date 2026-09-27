@@ -13,7 +13,8 @@ This document serves as a high-level index for Daemon's product direction and ac
 Active implementation work, including current waves and task-level tracking, is managed via Sisyphus plans.
 
 - **Active Plans**: [../.sisyphus/plans/](../.sisyphus/plans/)
-- **Current Focus**: Documentation alignment and regeneration.
+- **Product Direction**: [Daemon vision](DAEMON_VISION.md) and [approved interview decisions](DAEMON_VISION_DECISIONS.md).
+- **Current Focus**: Integrate the vision, stabilise continuity-critical baseline defects, then approve [durable-request architecture](DURABLE_REQUEST_DESIGN.md) before implementing broad assistant continuity. See [integration evidence](VISION_INTEGRATION_REPORT.md); this is not a completed feature milestone.
 
 ## 3. Memory Evolution
 
@@ -36,7 +37,7 @@ Evolving the pgvector-backed memory pipeline to provide seamless, long-term cont
 Expanding the assistant's ability to generate and process rich media, including high-fidelity images, video generation via providers like fal/Kling and xAI, and streaming audio I/O.
 
 ### Local Pipeline
-The long-term goal of transitioning inference to local hardware. While currently blocked on hardware acquisition, the architecture is designed to support a hybrid cloud/local model.
+Local inference is an optional extension, not a transition away from the hosted default or a prerequisite for phone-only use. Companion access and local inference are separate capabilities; see the product vision's non-goals and open decisions.
 
 ### Hardening & Governance
 Ensuring system reliability through improved test coverage, security hardening, and automated documentation freshness governance via the `check_doc_freshness.py` utility.
