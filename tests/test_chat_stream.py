@@ -160,6 +160,33 @@ async def test_chat_stream_emits_tool_events_via_completion_pipeline(client, mon
 
 
 @pytest.mark.asyncio
+async def test_chat_stream_takes_tool_rounds_from_the_account_plan(client, monkeypatch):
+    monkeypatch.setenv("MOCK_LLM", "false")
+    monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
+    get_settings.cache_clear()
+    seen: list[int] = []
+
+    async def fake_completion_with_tools(*_args, **kwargs):
+        seen.append(kwargs["max_tool_rounds"])
+        yield {"type": "content_delta", "content": "Done"}
+        yield {"type": "done"}
+
+    monkeypatch.setattr(daemon_module, "create_default_registry", lambda **_kwargs: object())
+    monkeypatch.setattr(daemon_module, "completion_with_tools", fake_completion_with_tools)
+
+    response = await client.post(
+        "/chat",
+        json={"message": "hello"},
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 200
+    # The shared account fake resolves a plan capped at six rounds per turn, a
+    # value distinct from the old hardcoded four.
+    assert seen == [6]
+
+
+@pytest.mark.asyncio
 async def test_chat_stream_handles_tool_pipeline_error_gracefully(client, monkeypatch):
     monkeypatch.setenv("MOCK_LLM", "false")
     monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")

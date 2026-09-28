@@ -48,6 +48,7 @@ from typing import Any, Final
 from orchestrator.entitlements.errors import PolicyError, RouteNotApproved
 from orchestrator.entitlements.money import MICRO_USD_PER_USD, Microusd, require_microusd
 from orchestrator.entitlements.plans import (
+    PER_TURN_LIMIT_FIELDS,
     Capability,
     Plan,
     PlanDefinition,
@@ -287,9 +288,14 @@ def _parse_limits(raw: object, *, plan: Plan) -> UsageLimits:
     if missing:
         raise PolicyError(f"plans.{plan.value}.limits is missing: {', '.join(missing)}")
 
-    values: dict[str, int] = {}
+    # Any: per-turn fields may be None, the rest are validated integers.
+    values: dict[str, Any] = {}
     for name in _LIMIT_FIELDS:
         value = mapping[name]
+        if value is None and name in PER_TURN_LIMIT_FIELDS:
+            # Whether this plan may be uncapped is UsageLimits.validate's rule.
+            values[name] = None
+            continue
         if name in ("extended_agent_budget_microusd", "monthly_budget_microusd"):
             values[name] = _require_microusd(value, field=f"plans.{plan.value}.limits.{name}")
         else:
