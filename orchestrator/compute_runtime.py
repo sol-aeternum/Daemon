@@ -43,6 +43,7 @@ from openai import APIError as OpenAIAPIError
 
 from orchestrator import model_routing
 from orchestrator.entitlements import EntitlementService
+from orchestrator.entitlements.plans import TOOL_ROUND_SAFETY_CEILING
 from orchestrator.entitlements.policy import RoutePolicy, load_inference_policy
 from orchestrator.entitlements.errors import (
     AccessDenied,
@@ -494,6 +495,30 @@ def selected_model() -> str | None:
     return scope.selected_model if scope else None
 
 
+#: Tool rounds for a turn outside any account scope. Such a turn cannot
+#: dispatch (``guarded_completion`` refuses it), so this only preserves the
+#: historic fixed limit for callers that stub the completion.
+UNSCOPED_TOOL_ROUNDS = 4
+
+
+async def tool_round_limit() -> int:
+    """Tool rounds one chat turn may run under the current account's plan.
+
+    A plan that caps tool rounds per turn gets exactly that cap. A plan that
+    leaves it uncapped (``None``) gets the global runaway-loop safety ceiling,
+    which is not a commercial limit and is the same for every uncapped plan.
+    The first round is the turn's own model call, so the limit is never below
+    one: a suspended account (zero limits) must still reach
+    ``guarded_completion`` and get its typed denial, not an empty reply.
+    """
+    scope = _scope.get()
+    if scope is None:
+        return UNSCOPED_TOOL_ROUNDS
+    policy = await scope.service.resolve(scope.user_id)
+    cap = policy.limits.max_tool_loop_iterations
+    return TOOL_ROUND_SAFETY_CEILING if cap is None else max(1, cap)
+
+
 def _profile_shortlist(profile: str) -> dict[str, tuple[int, int]]:
     """``model -> (group index, position)`` for one profile's acceptable models."""
     return {
@@ -592,6 +617,26 @@ def _requested_output(params: dict[str, Any]) -> int | None:
     return configured_max
 
 
+def _largest_approved_context() -> int:
+    """The largest context window among routes ``choose_route`` could select."""
+    try:
+        policy = load_inference_policy()
+    except PolicyError:
+        return 0
+    return max(
+        (
+            route.max_context_tokens
+            for route in policy.routes.values()
+            if route.is_approved(policy.requirements)
+            and route.provider == "openrouter"
+            and route.model.startswith("openrouter/")
+            and route.price_ceiling is not None
+            and getattr(route, "route_class", None) in {"routine", "premium"}
+        ),
+        default=0,
+    )
+
+
 def _priced_candidates(
     policy: Any,
     input_size: InputSize,
@@ -650,11 +695,14 @@ def _priced_candidates(
     # trial overlays remain available to extended scopes, while ordinary auto
     # routing cannot enlarge the request just because one route is premium.
     account_limits = policy.limits_for(extended)
-    account_output = min(
-        account_limits.max_output_tokens,
-        account_limits.max_context_tokens - input_tokens,
-    )
-    target_output = requested_output if requested_output is not None else account_output
+    # ``None`` is uncapped (paid plans sell period capacity, not a smaller turn):
+    # the automatic target is then whatever each candidate route can return.
+    account_output: int | None = account_limits.max_output_tokens
+    if account_limits.max_context_tokens is not None:
+        context_left = account_limits.max_context_tokens - input_tokens
+        account_output = (
+            context_left if account_output is None else min(account_output, context_left)
+        )
     requested_effort = params.get("reasoning_effort")
     required = {"text"}
     if params.get("tools"):
@@ -694,18 +742,29 @@ def _priced_candidates(
             if not workload.allow_premium or not account_allow_premium:
                 continue
         limits = policy.limits_for(premium)
-        if input_tokens > limits.max_context_tokens:
+        if limits.max_context_tokens is not None and input_tokens > limits.max_context_tokens:
             continue
-        # Explicit caller asks stay exact. Otherwise all automatic candidates
-        # compete for the same account target; the floor only filters suitability.
+        # Explicit caller asks stay exact. Otherwise every automatic candidate
+        # competes for the same account target, clamped to what its own route
+        # can return; the profile floor only filters suitability.
         available_output = min(
-            limits.max_output_tokens,
             route.max_output_tokens,
             route.max_context_tokens - input_tokens,
         )
-        budget = target_output if not explicit or requested_output is not None else available_output
-        if not explicit and requested_output is None and budget < workload.min_output_tokens:
-            continue
+        if limits.max_output_tokens is not None:
+            available_output = min(available_output, limits.max_output_tokens)
+        if requested_output is not None:
+            budget = requested_output
+        elif explicit:
+            budget = available_output
+        else:
+            budget = (
+                available_output
+                if account_output is None
+                else min(account_output, available_output)
+            )
+            if budget < workload.min_output_tokens:
+                continue
         if budget <= 0 or budget > available_output:
             continue
         output_tokens = budget
@@ -740,6 +799,13 @@ def _priced_candidates(
                 placement,
             )
         )
+    if not explicit and requested_output is None and account_output is not None:
+        # Automatic candidates compete for the same account target: a route that
+        # can only return less is not comparable while any route meets it. When
+        # none can, clamped routes still serve rather than refusing the request.
+        full = [entry for entry in candidates if entry[4] == account_output]
+        if full:
+            candidates = full
     # Group order first, then a soft preference inside the group, then the cheapest
     # route for *this* request, then a stable tie-break.
     candidates.sort(key=lambda entry: (entry[0], entry[1], entry[2], entry[3]))
@@ -1051,10 +1117,15 @@ async def guarded_completion(
             raise ComputeUnavailable(
                 "budget_exceeded", "No qualified route fits the account budget"
             )
-        context_limit = policy.limits.max_context_tokens
+        ceilings = [policy.limits.max_context_tokens]
         if "premium_routing" in policy.capabilities:
-            context_limit = max(context_limit, policy.limits_for(True).max_context_tokens)
-        if input_size.estimate > context_limit:
+            ceilings.append(policy.limits_for(True).max_context_tokens)
+        if None in ceilings:
+            # An uncapped plan's context ceiling is the largest approved route
+            # window: input no route can hold is a context error, not a budget one.
+            if input_size.estimate >= _largest_approved_context():
+                raise ComputeUnavailable("context_limit", "Context too large")
+        elif input_size.estimate > max(c for c in ceilings if c is not None):
             raise ComputeUnavailable("context_limit", "Context too large")
         raise ComputeUnavailable(
             "capacity_unavailable",

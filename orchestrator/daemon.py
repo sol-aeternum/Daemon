@@ -14,6 +14,7 @@ from typing import Any, cast
 from orchestrator.config import ProviderConfig, Settings
 from orchestrator.compute_runtime import compute_error
 from orchestrator.compute_runtime import selected_model as active_compute_model
+from orchestrator.compute_runtime import tool_round_limit
 from orchestrator.services.fetch.url_extract import extract_urls
 from orchestrator.timezones import resolve_runtime_timezone
 from orchestrator.tools.builtin import create_default_registry
@@ -512,6 +513,9 @@ async def stream_sse_chat(
                     disable_memory_write=disable_memory_write,
                 )
                 pending_tool_calls: list[str] = []
+                # Free plans cap tool rounds per turn; paid plans get the
+                # global safety ceiling instead of a per-turn commercial cap.
+                max_tool_rounds = await tool_round_limit()
 
                 async for event in completion_with_tools(
                     settings=settings,
@@ -519,7 +523,7 @@ async def stream_sse_chat(
                     messages=messages,
                     registry=registry,
                     actual_model=model_to_call,
-                    max_tool_rounds=4,
+                    max_tool_rounds=max_tool_rounds,
                 ):
                     if await is_disconnected():
                         forced_terminal_status = "cancelled"

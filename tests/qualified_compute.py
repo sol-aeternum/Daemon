@@ -70,7 +70,9 @@ def install_qualified_compute(monkeypatch, *, models: tuple[str, ...] = ()) -> N
 
         async def resolve(self, user_id):
             assert isinstance(user_id, uuid.UUID)
-            limits = SimpleNamespace(max_context_tokens=128000, max_output_tokens=4096)
+            limits = SimpleNamespace(
+                max_context_tokens=128000, max_output_tokens=4096, max_tool_loop_iterations=6
+            )
             return SimpleNamespace(
                 capabilities={"chat", "extended_agents"},
                 limits=limits,

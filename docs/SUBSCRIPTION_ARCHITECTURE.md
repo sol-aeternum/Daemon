@@ -9,6 +9,16 @@ persistent memory, conversation continuity, and account/device functionality are
 core product properties, not paid entitlements. Paid plans buy greater capacity
 and access to expensive workloads; they do not buy unlimited inference.
 
+Paid capacity is measured per period, not per turn. Only Free carries per-turn
+ceilings (`max_context_tokens`, `max_output_tokens`, `max_tool_loop_iterations`),
+and the loader rejects an uncapped Free plan. Pro and Power set these to `null`:
+a paid turn is bounded by the qualified route's own context and output limits,
+the global tool-round safety ceiling (`TOOL_ROUND_SAFETY_CEILING`, a runaway-loop
+guard rather than a commercial limit) and the recurring budget. The budget hold
+for an uncapped call is sized on the route's maximum output and settled to
+actual usage. The trial's premium overlay can raise a Free ceiling but never
+caps an uncapped plan.
+
 A premium trial is a finite, usage-based grant on an account whose base plan is
 Free. It has no calendar countdown. Consuming it must not change the plan, delete
 memory, or disable ordinary Free interaction. Commercial numbers are development

@@ -132,16 +132,26 @@ def trial_status(record: AccountRecord, trial: TrialPolicy) -> TrialStatus:
     )
 
 
+def _raise_ceiling(plan_ceiling: int | None, overlay: int) -> int | None:
+    """The higher of two ceilings, where ``None`` means uncapped."""
+    return None if plan_ceiling is None else max(plan_ceiling, overlay)
+
+
 def premium_limits(plan_limits: UsageLimits, trial: TrialPolicy) -> UsageLimits:
     """Overlay the trial's premium ceilings onto the plan's limits.
 
     The overlay can only raise a ceiling, never lower it: the plan is the floor
-    for what the account may ask for.
+    for what the account may ask for, and an uncapped (``None``) plan ceiling
+    stays uncapped.
     """
     return UsageLimits(
         max_concurrent_operations=plan_limits.max_concurrent_operations,
-        max_context_tokens=max(plan_limits.max_context_tokens, trial.limits.max_context_tokens),
-        max_output_tokens=max(plan_limits.max_output_tokens, trial.limits.max_output_tokens),
+        max_context_tokens=_raise_ceiling(
+            plan_limits.max_context_tokens, trial.limits.max_context_tokens
+        ),
+        max_output_tokens=_raise_ceiling(
+            plan_limits.max_output_tokens, trial.limits.max_output_tokens
+        ),
         max_tool_loop_iterations=plan_limits.max_tool_loop_iterations,
         requests_per_minute=plan_limits.requests_per_minute,
         extended_agents_per_period=plan_limits.extended_agents_per_period,
