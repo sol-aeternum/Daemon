@@ -716,6 +716,10 @@ def _priced_candidates(
     candidates: list[
         tuple[int, int, int, str, int, RoutePolicy, bool, model_routing.RoutedModel | None]
     ] = []
+    automatic_target = not explicit and requested_output is None
+    pending: dict[
+        int, list[tuple[RoutePolicy, bool, model_routing.RoutedModel | None, int, int]]
+    ] = {}
     for route in inference.routes.values():
         if (
             not route.is_approved(inference.requirements)
@@ -744,30 +748,14 @@ def _priced_candidates(
         limits = policy.limits_for(premium)
         if limits.max_context_tokens is not None and input_tokens > limits.max_context_tokens:
             continue
-        # Explicit caller asks stay exact. Otherwise every automatic candidate
-        # competes for the same account target, clamped to what its own route
-        # can return; the profile floor only filters suitability.
         available_output = min(
             route.max_output_tokens,
             route.max_context_tokens - input_tokens,
         )
         if limits.max_output_tokens is not None:
             available_output = min(available_output, limits.max_output_tokens)
-        if requested_output is not None:
-            budget = requested_output
-        elif explicit:
-            budget = available_output
-        else:
-            budget = (
-                available_output
-                if account_output is None
-                else min(account_output, available_output)
-            )
-            if budget < workload.min_output_tokens:
-                continue
-        if budget <= 0 or budget > available_output:
+        if available_output <= 0:
             continue
-        output_tokens = budget
         if requested_effort is not None and not model_routing.supports_reasoning_effort(
             route.model, str(requested_effort)
         ):
@@ -775,6 +763,25 @@ def _priced_candidates(
         if not model_routing.supports_sampling_parameters(
             route.model, params, allow_unknown=explicit
         ):
+            continue
+        group_index = placement.group_index if placement is not None else 0
+        preferred = 0 if route.model == state.preferred_model else 1
+        if automatic_target:
+            # Capability fit at the route's full capacity; the shared output
+            # target for the group is decided once every candidate is known.
+            if route.supports(
+                required_capabilities=frozenset(required),
+                input_tokens=input_tokens,
+                output_tokens=available_output,
+            ):
+                pending.setdefault(group_index, []).append(
+                    (route, premium, placement, available_output, preferred)
+                )
+            continue
+        # Explicit caller asks stay exact; an explicit model with no ask keeps
+        # its route/account's full available output.
+        output_tokens = requested_output if requested_output is not None else available_output
+        if output_tokens <= 0 or output_tokens > available_output:
             continue
         if not route.supports(
             required_capabilities=frozenset(required),
@@ -785,8 +792,6 @@ def _priced_candidates(
         bound = route.estimate_microusd(input_size.bound, output_tokens)
         if check_budget and bound > policy.remaining_for(premium):
             continue
-        group_index = placement.group_index if placement is not None else 0
-        preferred = 0 if route.model == state.preferred_model else 1
         candidates.append(
             (
                 group_index,
@@ -799,13 +804,42 @@ def _priced_candidates(
                 placement,
             )
         )
-    if not explicit and requested_output is None and account_output is not None:
-        # Automatic candidates compete for the same account target: a route that
-        # can only return less is not comparable while any route meets it. When
-        # none can, clamped routes still serve rather than refusing the request.
-        full = [entry for entry in candidates if entry[4] == account_output]
-        if full:
-            candidates = full
+    # Automatic candidates in one group compete for one common output target: the
+    # account target, capped by the largest eligible route capacity in that group.
+    # A smaller-cap route cannot win on price merely by offering a shorter answer,
+    # and a group whose routes all fall short of the account target still serves
+    # at its best feasible size instead of refusing or escalating to a later group.
+    for group_index, entries in pending.items():
+        remaining = entries
+        while remaining:
+            capacity = max(entry[3] for entry in remaining)
+            target = capacity if account_output is None else min(account_output, capacity)
+            if target <= 0 or target < workload.min_output_tokens:
+                break
+            meeting = [entry for entry in remaining if entry[3] >= target]
+            accepted = 0
+            for route, premium, placement, _available, preferred in meeting:
+                bound = route.estimate_microusd(input_size.bound, target)
+                if check_budget and bound > policy.remaining_for(premium):
+                    continue
+                candidates.append(
+                    (
+                        group_index,
+                        preferred,
+                        bound,
+                        route.route_id,
+                        target,
+                        route,
+                        premium,
+                        placement,
+                    )
+                )
+                accepted += 1
+            if accepted:
+                break
+            # Nothing at this size fits the budget: those routes are not eligible,
+            # so the group's feasible target falls to its next-largest capacity.
+            remaining = [entry for entry in remaining if entry[3] < target]
     # Group order first, then a soft preference inside the group, then the cheapest
     # route for *this* request, then a stable tie-break.
     candidates.sort(key=lambda entry: (entry[0], entry[1], entry[2], entry[3]))

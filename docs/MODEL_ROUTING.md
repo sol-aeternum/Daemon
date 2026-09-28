@@ -115,11 +115,17 @@ context/output fit and account funding. It compares bounded request cost within
 the acceptable preference group. A small model output ceiling must not make an
 otherwise inadequate response appear cheaper.
 
-For an automatic request without an explicit output limit, the comparison target
-is the account's existing output allowance, bounded by its remaining context.
-Every candidate must support that same target. The profile's `min_output_tokens`
-is a suitability floor, not the dispatched answer cap. Explicit caller output
-limits remain exact and still require route/account admission.
+For an automatic request without an explicit output limit, each preference group
+has one common comparison target: the account's output allowance (bounded by its
+remaining context; uncapped on paid plans), capped by the largest capacity of
+the group's eligible routes. Every candidate in the group must support that same
+target, so a smaller-cap route cannot win on price by offering a shorter answer,
+while a group whose routes all fall short of the account allowance still serves
+at its best feasible size rather than refusing or escalating. A route that cannot
+fit the budget at that size is ineligible, and the target falls to the group's
+next-largest capacity. The profile's `min_output_tokens` is a suitability floor,
+not the dispatched answer cap. Explicit caller output limits remain exact and
+still require route/account admission.
 
 Reasoning/council can consider their provisional premium candidates where profile
 and account capabilities permit them. Research retains its premium-capable flag,

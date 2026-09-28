@@ -8,7 +8,7 @@ import uuid
 import runpy
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 import httpx
 from litellm import exceptions as litellm
@@ -2720,3 +2720,100 @@ async def test_uncapped_plan_input_beyond_every_route_is_a_context_error(
     assert caught.value.code == "context_limit"
     provider.assert_not_awaited()
     service.reserve.assert_not_awaited()
+
+
+async def _auto_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    routes: list[Any],
+    routing: dict[str, Any],
+    *,
+    account_output: int | None,
+    remaining: int = 100000,
+) -> Mapping[str, Any]:
+    """Dispatch one automatic request and return the provider kwargs."""
+    _qualified_policy(monkeypatch, route=routes, routing=routing)
+    limits = SimpleNamespace(max_context_tokens=32000, max_output_tokens=account_output)
+    service = SimpleNamespace(
+        resolve=AsyncMock(
+            return_value=SimpleNamespace(
+                capabilities={"chat"},
+                limits=limits,
+                limits_for=lambda premium: limits,
+                remaining_for=lambda premium: remaining,
+            )
+        ),
+        reserve=AsyncMock(return_value="group-hold"),
+        settle=AsyncMock(),
+    )
+    provider = AsyncMock(return_value={"choices": []})
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    token = runtime._scope.set(
+        runtime.ComputeScope(uuid.uuid4(), cast(EntitlementService, service), auto_route=True)
+    )
+    try:
+        await runtime.guarded_completion(model="auto", messages=[{"role": "user", "content": "hi"}])
+    finally:
+        runtime._scope.reset(token)
+    assert provider.await_args is not None
+    return provider.await_args.kwargs
+
+
+def _capped(model: str, cap: int, price: int) -> Any:
+    route = _route(model=model, input_price=price)
+    route.route_id = model.rsplit("/", 1)[-1]
+    route.max_output_tokens = cap
+    return route
+
+
+@pytest.mark.asyncio
+async def test_shorter_output_route_cannot_win_a_group_on_price(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Account target 128 exceeds both caps; the group's common target is its
+    # largest capacity (64), so the cheaper 48-cap route is not comparable.
+    larger = _capped("openrouter/test/larger", 64, price=1000)
+    shorter = _capped("openrouter/test/shorter", 48, price=0)
+    kwargs = await _auto_dispatch(
+        monkeypatch,
+        [larger, shorter],
+        routing_document([larger.model, shorter.model], min_output_tokens=32),
+        account_output=128,
+    )
+    assert kwargs["model"] == larger.model
+    assert kwargs["max_tokens"] == 64
+
+
+@pytest.mark.asyncio
+async def test_first_group_serves_at_its_feasible_target_instead_of_escalating(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _capped("openrouter/test/first", 64, price=0)
+    later = _capped("openrouter/test/later", 128, price=1000)
+    routing = routing_document([first.model, later.model], min_output_tokens=32)
+    routine = next(entry for entry in routing["profiles"] if entry["profile"] == "routine")
+    routine["groups"] = [
+        {"group": "cheap", "models": [first.model]},
+        {"group": "step", "models": [later.model]},
+    ]
+    kwargs = await _auto_dispatch(monkeypatch, [first, later], routing, account_output=128)
+    assert kwargs["model"] == first.model
+    assert kwargs["max_tokens"] == 64
+
+
+@pytest.mark.asyncio
+async def test_unaffordable_largest_route_lowers_the_group_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The 128-cap route cannot fit the remaining budget at 128 output tokens, so
+    # it is not eligible and the group's target falls to the 64-cap route.
+    pricey = _capped("openrouter/test/pricey", 128, price=10_000_000)
+    modest = _capped("openrouter/test/modest", 64, price=1000)
+    kwargs = await _auto_dispatch(
+        monkeypatch,
+        [pricey, modest],
+        routing_document([pricey.model, modest.model], min_output_tokens=32),
+        account_output=None,
+        remaining=1000,
+    )
+    assert kwargs["model"] == modest.model
+    assert kwargs["max_tokens"] == 64
