@@ -1331,3 +1331,100 @@ def test_context_admission_uses_estimate_while_hold_keeps_byte_bound() -> None:
         module.load_inference_policy = original
     assert output_tokens == 128
     assert bound == route.estimate_microusd(size.bound, output_tokens)
+
+
+def _uncapped_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+    route: Any,
+    *,
+    max_context_tokens: int | None,
+    max_output_tokens: int | None,
+    text: str = "hi",
+) -> list[tuple[int, int, Any, bool]]:
+    limits = SimpleNamespace(
+        max_context_tokens=max_context_tokens, max_output_tokens=max_output_tokens
+    )
+    policy = SimpleNamespace(
+        capabilities={"chat"},
+        limits_for=lambda premium: limits,
+        remaining_for=lambda premium: 1_000_000_000,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "load_inference_policy",
+        lambda: SimpleNamespace(routes={route.route_id: route}, requirements=object()),
+    )
+    size = runtime._request_bound({"messages": [{"role": "user", "content": text}]})
+    return runtime._priced_candidates(policy, size, {}, route.model)
+
+
+def test_uncapped_plan_output_is_bounded_by_the_route_and_holds_its_maximum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    route = _route()
+    route.max_output_tokens = 8000
+
+    [(bound, output_tokens, _, _)] = _uncapped_candidates(
+        monkeypatch, route, max_context_tokens=None, max_output_tokens=None
+    )
+
+    assert output_tokens == 8000
+    size = runtime._request_bound({"messages": [{"role": "user", "content": "hi"}]})
+    assert bound == route.estimate_microusd(size.bound, 8000)
+
+
+def test_capped_plan_output_still_clamps_below_the_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    route = _route()
+    route.max_output_tokens = 8000
+
+    [(_, output_tokens, _, _)] = _uncapped_candidates(
+        monkeypatch, route, max_context_tokens=32000, max_output_tokens=4096
+    )
+
+    assert output_tokens == 4096
+
+
+def test_uncapped_context_admits_input_a_capped_plan_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    route = _route()
+    route.max_context_tokens = 200_000
+    route.supports = lambda *, required_capabilities, input_tokens, output_tokens: True
+    text = "word " * 30_000  # ~50k estimated tokens
+
+    assert (
+        _uncapped_candidates(
+            monkeypatch, route, max_context_tokens=32000, max_output_tokens=4096, text=text
+        )
+        == []
+    )
+    [(_, output_tokens, _, _)] = _uncapped_candidates(
+        monkeypatch, route, max_context_tokens=None, max_output_tokens=None, text=text
+    )
+    assert output_tokens == route.max_output_tokens
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("plan_cap", "expected"),
+    [(4, 4), (None, runtime.TOOL_ROUND_SAFETY_CEILING), (0, 1)],
+)
+async def test_tool_round_limit_follows_the_plan_or_the_safety_ceiling(
+    plan_cap: int | None, expected: int
+) -> None:
+    limits = SimpleNamespace(max_tool_loop_iterations=plan_cap)
+    service = SimpleNamespace(resolve=AsyncMock(return_value=SimpleNamespace(limits=limits)))
+    token = runtime._scope.set(
+        runtime.ComputeScope(uuid.uuid4(), cast(EntitlementService, service))
+    )
+    try:
+        assert await runtime.tool_round_limit() == expected
+    finally:
+        runtime._scope.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_tool_round_limit_outside_an_account_scope_keeps_the_historic_limit() -> None:
+    assert await runtime.tool_round_limit() == runtime.UNSCOPED_TOOL_ROUNDS == 4

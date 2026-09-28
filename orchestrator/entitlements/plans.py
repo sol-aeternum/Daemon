@@ -106,6 +106,17 @@ TRIAL_SOURCE_DISABLED = "disabled"
 #: Capabilities a plan may grant. Used to validate configuration.
 KNOWN_CAPABILITIES: frozenset[Capability] = frozenset(Capability)
 
+#: Per-turn ceilings a plan may leave uncapped (``null`` in commercial.json).
+#: Everything else is an account-level or period quantity and always numeric.
+PER_TURN_LIMIT_FIELDS: frozenset[str] = frozenset(
+    {"max_context_tokens", "max_output_tokens", "max_tool_loop_iterations"}
+)
+
+#: Tool rounds one chat turn may run when its plan sets no per-turn cap. This
+#: is a runaway-loop guard, not a commercial limit, so it is the same for
+#: every uncapped plan.
+TOOL_ROUND_SAFETY_CEILING = 24
+
 
 @dataclass(frozen=True, slots=True)
 class UsageLimits:
@@ -116,19 +127,25 @@ class UsageLimits:
     keeps routine compute working after the finite trial is gone. The finite
     trial is a separate, lifetime allowance tracked on the account row, and
     only a ``premium=True`` operation draws on it.
+
+    The per-turn ceilings (``PER_TURN_LIMIT_FIELDS``) may be ``None``, meaning
+    the plan imposes no per-turn cap: paid plans sell period capacity, not a
+    smaller turn. An uncapped call is still bounded by the qualified route's
+    own context and output limits, the global tool-round safety ceiling, and
+    the recurring budget.
     """
 
     max_concurrent_operations: int
-    max_context_tokens: int
-    max_output_tokens: int
-    max_tool_loop_iterations: int
+    max_context_tokens: int | None
+    max_output_tokens: int | None
+    max_tool_loop_iterations: int | None
     requests_per_minute: int
     extended_agents_per_period: int
     extended_agent_budget_microusd: Microusd
     monthly_budget_microusd: Microusd
 
-    def as_dict(self) -> dict[str, int]:
-        """JSON-safe mapping used by the public snapshot."""
+    def as_dict(self) -> dict[str, int | None]:
+        """JSON-safe mapping used by the public snapshot; ``None`` is uncapped."""
         return {
             "max_concurrent_operations": self.max_concurrent_operations,
             "max_context_tokens": self.max_context_tokens,
@@ -151,6 +168,8 @@ class UsageLimits:
             "extended_agents_per_period",
         ):
             value = getattr(self, name)
+            if value is None and name in PER_TURN_LIMIT_FIELDS:
+                continue
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 raise PolicyError(f"{plan.value}.limits.{name} must be a non-negative integer")
 
@@ -162,7 +181,11 @@ class UsageLimits:
 
         if self.max_concurrent_operations < 1:
             raise PolicyError(f"{plan.value}.limits.max_concurrent_operations must be >= 1")
-        if self.max_output_tokens > self.max_context_tokens:
+        if (
+            self.max_output_tokens is not None
+            and self.max_context_tokens is not None
+            and self.max_output_tokens > self.max_context_tokens
+        ):
             raise PolicyError(
                 f"{plan.value}.limits.max_output_tokens must not exceed max_context_tokens"
             )

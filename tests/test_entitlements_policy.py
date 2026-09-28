@@ -40,7 +40,7 @@ from orchestrator.entitlements.ledger import (
     settle_state,
 )
 from orchestrator.entitlements.models import AccountRecord
-from orchestrator.entitlements.plans import AccountStatus, TrialState
+from orchestrator.entitlements.plans import PER_TURN_LIMIT_FIELDS, AccountStatus, TrialState
 from orchestrator.entitlements.policy import (
     DEFAULT_COMMERCIAL_CONFIG,
     DEFAULT_INFERENCE_POLICY,
@@ -48,6 +48,7 @@ from orchestrator.entitlements.policy import (
 )
 from orchestrator.entitlements.resolver import (
     ZERO_LIMITS,
+    premium_limits,
     resolve_account_policy,
     trial_status,
 )
@@ -241,10 +242,80 @@ def test_extended_run_capability_and_allowance_must_agree() -> None:
 
 def test_output_tokens_cannot_exceed_context() -> None:
     raw = json.loads(DEFAULT_COMMERCIAL_CONFIG.read_text(encoding="utf-8"))
-    raw["plans"]["pro"]["limits"]["max_output_tokens"] = 10_000_000
+    raw["plans"]["free"]["limits"]["max_output_tokens"] = 10_000_000
 
     with pytest.raises(PolicyError, match="max_output_tokens"):
         parse_commercial_policy(raw)
+
+
+def test_paid_plans_have_no_per_turn_ceilings_and_free_keeps_them() -> None:
+    policy = load_policy()
+
+    free = policy.plan(Plan.FREE).limits
+    for field in PER_TURN_LIMIT_FIELDS:
+        assert isinstance(getattr(free, field), int)
+        assert getattr(free, field) > 0
+    for plan in (Plan.PRO, Plan.POWER):
+        limits = policy.plan(plan).limits
+        for field in PER_TURN_LIMIT_FIELDS:
+            assert getattr(limits, field) is None, (plan, field)
+        # Period and account-level quantities stay numeric on every plan.
+        assert limits.monthly_budget_microusd > 0
+        assert limits.max_concurrent_operations >= 1
+        assert limits.requests_per_minute > 0
+
+
+@pytest.mark.parametrize("field", sorted(PER_TURN_LIMIT_FIELDS))
+def test_free_plan_cannot_drop_its_per_turn_ceilings(field: str) -> None:
+    raw = json.loads(DEFAULT_COMMERCIAL_CONFIG.read_text(encoding="utf-8"))
+    raw["plans"]["free"]["limits"][field] = None
+
+    with pytest.raises(PolicyError, match=f"free.limits.{field}"):
+        parse_commercial_policy(raw)
+
+
+@pytest.mark.parametrize(
+    "field", ["max_concurrent_operations", "requests_per_minute", "extended_agents_per_period"]
+)
+def test_only_per_turn_ceilings_may_be_uncapped(field: str) -> None:
+    raw = json.loads(DEFAULT_COMMERCIAL_CONFIG.read_text(encoding="utf-8"))
+    raw["plans"]["pro"]["limits"][field] = None
+
+    with pytest.raises(PolicyError, match=f"pro.limits.{field}"):
+        parse_commercial_policy(raw)
+
+
+def test_a_capped_paid_output_is_valid_against_an_uncapped_context() -> None:
+    raw = json.loads(DEFAULT_COMMERCIAL_CONFIG.read_text(encoding="utf-8"))
+    raw["plans"]["pro"]["limits"]["max_output_tokens"] = 16_000
+
+    policy = parse_commercial_policy(raw)
+
+    assert policy.plan(Plan.PRO).limits.max_output_tokens == 16_000
+    assert policy.plan(Plan.PRO).limits.max_context_tokens is None
+
+
+def test_trial_overlay_raises_free_ceilings_but_never_caps_an_uncapped_plan() -> None:
+    policy = load_policy()
+    free = policy.plan(Plan.FREE).limits
+    trial = policy.trial.limits
+
+    raised = premium_limits(free, policy.trial)
+    assert raised.max_context_tokens == max(free.max_context_tokens or 0, trial.max_context_tokens)
+    assert raised.max_output_tokens == max(free.max_output_tokens or 0, trial.max_output_tokens)
+    assert raised.max_tool_loop_iterations == free.max_tool_loop_iterations
+
+    uncapped = premium_limits(policy.plan(Plan.PRO).limits, policy.trial)
+    for field in PER_TURN_LIMIT_FIELDS:
+        assert getattr(uncapped, field) is None
+
+
+def test_uncapped_limits_serialise_as_null() -> None:
+    payload = load_policy().plan(Plan.POWER).limits.as_dict()
+
+    for field in PER_TURN_LIMIT_FIELDS:
+        assert payload[field] is None
+    assert json.loads(json.dumps(payload))["max_output_tokens"] is None
 
 
 # --------------------------------------------------------------------------- #

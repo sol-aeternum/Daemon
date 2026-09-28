@@ -21,6 +21,7 @@ from typing import Any, cast
 import litellm
 
 from orchestrator.entitlements import EntitlementService
+from orchestrator.entitlements.plans import TOOL_ROUND_SAFETY_CEILING
 from orchestrator.entitlements.policy import RoutePolicy, load_inference_policy
 from orchestrator.entitlements.errors import (
     AccessDenied,
@@ -204,6 +205,30 @@ def selected_model() -> str | None:
     return scope.selected_model if scope else None
 
 
+#: Tool rounds for a turn outside any account scope. Such a turn cannot
+#: dispatch (``guarded_completion`` refuses it), so this only preserves the
+#: historic fixed limit for callers that stub the completion.
+UNSCOPED_TOOL_ROUNDS = 4
+
+
+async def tool_round_limit() -> int:
+    """Tool rounds one chat turn may run under the current account's plan.
+
+    A plan that caps tool rounds per turn gets exactly that cap. A plan that
+    leaves it uncapped (``None``) gets the global runaway-loop safety ceiling,
+    which is not a commercial limit and is the same for every uncapped plan.
+    The first round is the turn's own model call, so the limit is never below
+    one: a suspended account (zero limits) must still reach
+    ``guarded_completion`` and get its typed denial, not an empty reply.
+    """
+    scope = _scope.get()
+    if scope is None:
+        return UNSCOPED_TOOL_ROUNDS
+    policy = await scope.service.resolve(scope.user_id)
+    cap = policy.limits.max_tool_loop_iterations
+    return TOOL_ROUND_SAFETY_CEILING if cap is None else max(1, cap)
+
+
 def choose_route(model: str | None = None) -> RoutePolicy:
     try:
         policy = load_inference_policy()
@@ -274,13 +299,16 @@ def _priced_candidates(
         if premium_route and "premium_routing" not in policy.capabilities:
             continue
         limits = policy.limits_for(premium)
-        if input_tokens > limits.max_context_tokens:
+        if limits.max_context_tokens is not None and input_tokens > limits.max_context_tokens:
             continue
+        # A plan ceiling of None is uncapped: paid plans sell period capacity,
+        # so the call is bounded by the route's own limits and the budget hold.
         output_tokens = min(
-            limits.max_output_tokens,
             route.max_output_tokens,
             route.max_context_tokens - input_tokens,
         )
+        if limits.max_output_tokens is not None:
+            output_tokens = min(output_tokens, limits.max_output_tokens)
         configured_max = params.get("max_tokens")
         if configured_max is not None:
             if isinstance(configured_max, bool) or not isinstance(configured_max, int):
@@ -522,7 +550,10 @@ async def guarded_completion(**params: Any) -> Any:
             route = choose_route(model)
             if route.route_class == "premium" and "premium_routing" not in policy.capabilities:
                 raise ComputeUnavailable("capability_unavailable", "Premium routing unavailable")
-        elif input_size.estimate > policy.limits.max_context_tokens:
+        elif (
+            policy.limits.max_context_tokens is not None
+            and input_size.estimate > policy.limits.max_context_tokens
+        ):
             raise ComputeUnavailable("context_limit", "Context too large")
         else:
             choose_route()
