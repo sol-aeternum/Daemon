@@ -1148,7 +1148,9 @@ async def test_reembed_endpoint_fails_cleanly_without_approved_embedding_route(
     store.update_memory_embedding.assert_not_awaited()
 
 
-def _funded_service(*, max_context_tokens: int = 32000, max_output_tokens: int = 128, **extra):
+def _funded_service(
+    *, max_context_tokens: int | None = 32000, max_output_tokens: int | None = 128, **extra
+):
     limits = SimpleNamespace(
         max_context_tokens=max_context_tokens, max_output_tokens=max_output_tokens
     )
@@ -1428,3 +1430,26 @@ async def test_tool_round_limit_follows_the_plan_or_the_safety_ceiling(
 @pytest.mark.asyncio
 async def test_tool_round_limit_outside_an_account_scope_keeps_the_historic_limit() -> None:
     assert await runtime.tool_round_limit() == runtime.UNSCOPED_TOOL_ROUNDS == 4
+
+
+@pytest.mark.asyncio
+async def test_uncapped_plan_input_beyond_every_route_is_a_context_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qualified_policy(monkeypatch, route=_route())
+    service = _funded_service(max_context_tokens=None, max_output_tokens=None)
+    provider = AsyncMock()
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    token = runtime._scope.set(
+        runtime.ComputeScope(uuid.uuid4(), cast(EntitlementService, service), auto_route=True)
+    )
+    try:
+        with pytest.raises(runtime.ComputeUnavailable) as caught:
+            await runtime.guarded_completion(
+                messages=[{"role": "user", "content": "word " * 30_000}]
+            )
+    finally:
+        runtime._scope.reset(token)
+    assert caught.value.code == "context_limit"
+    provider.assert_not_awaited()
+    service.reserve.assert_not_awaited()

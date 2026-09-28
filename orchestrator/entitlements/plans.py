@@ -169,6 +169,13 @@ class UsageLimits:
         ):
             value = getattr(self, name)
             if value is None and name in PER_TURN_LIMIT_FIELDS:
+                # Free is the one plan whose per-turn ceilings bound
+                # Daemon-funded cost directly; paid plans sell period capacity.
+                if plan is Plan.FREE:
+                    raise PolicyError(
+                        f"{plan.value}.limits.{name} must be a non-negative integer: "
+                        f"the free plan keeps its per-turn ceilings"
+                    )
                 continue
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 raise PolicyError(f"{plan.value}.limits.{name} must be a non-negative integer")

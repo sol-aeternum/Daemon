@@ -263,6 +263,26 @@ def choose_route(model: str | None = None) -> RoutePolicy:
     raise ComputeUnavailable("route_unavailable", "Approved inference route unavailable")
 
 
+def _largest_approved_context() -> int:
+    """The largest context window among routes ``choose_route`` could select."""
+    try:
+        policy = load_inference_policy()
+    except PolicyError:
+        return 0
+    return max(
+        (
+            route.max_context_tokens
+            for route in policy.routes.values()
+            if route.is_approved(policy.requirements)
+            and route.provider == "openrouter"
+            and route.model.startswith("openrouter/")
+            and route.price_ceiling is not None
+            and getattr(route, "route_class", None) in {"routine", "premium"}
+        ),
+        default=0,
+    )
+
+
 def _priced_candidates(
     policy: Any,
     input_size: InputSize,
@@ -557,6 +577,13 @@ async def guarded_completion(**params: Any) -> Any:
             raise ComputeUnavailable("context_limit", "Context too large")
         else:
             choose_route()
+            # An uncapped plan's context ceiling is the largest approved route
+            # window: input no route can hold is a context error, not a budget one.
+            if (
+                policy.limits.max_context_tokens is None
+                and input_size.estimate >= _largest_approved_context()
+            ):
+                raise ComputeUnavailable("context_limit", "Context too large")
         raise ComputeUnavailable("budget_exceeded", "No qualified route fits the account budget")
 
     async def dispatch(candidate: tuple[int, int, RoutePolicy, bool]) -> tuple[Any, Any]:

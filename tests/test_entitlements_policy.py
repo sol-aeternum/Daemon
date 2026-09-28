@@ -8,6 +8,7 @@ without needing Postgres.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -272,6 +273,15 @@ def test_free_plan_cannot_drop_its_per_turn_ceilings(field: str) -> None:
 
     with pytest.raises(PolicyError, match=f"free.limits.{field}"):
         parse_commercial_policy(raw)
+
+
+@pytest.mark.parametrize("field", sorted(PER_TURN_LIMIT_FIELDS))
+def test_free_usage_limits_validate_rejects_an_uncapped_ceiling(field: str) -> None:
+    free = load_policy().plan(Plan.FREE)
+    uncapped = dataclasses.replace(free.limits, **{field: None})
+
+    with pytest.raises(PolicyError, match=f"free.limits.{field}"):
+        uncapped.validate(plan=Plan.FREE, capabilities=free.capabilities)
 
 
 @pytest.mark.parametrize(
