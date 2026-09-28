@@ -53,7 +53,9 @@ async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncClient,
     install_qualified_compute(monkeypatch)
     monkeypatch.setattr(
         "orchestrator.main.choose_route",
-        lambda model=None: SimpleNamespace(model=model or "openrouter/test-approved"),
+        lambda model=None, *, profile="routine": SimpleNamespace(
+            model=model or "openrouter/test-approved"
+        ),
     )
 
     @asynccontextmanager

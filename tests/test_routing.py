@@ -60,6 +60,16 @@ class TestClassifyMessage:
         """'analyze' signal → complex."""
         assert classify_message("analyze the pros and cons") == "complex"
 
+    def test_long_document_critique_uses_reasoning_for_the_task(self) -> None:
+        document = "Document evidence. " * 1500
+        assert select_model_tier(f"Summarise and critique this: {document}").profile == "reasoning"
+        assert select_model_tier("Critique this short argument.").profile == "reasoning"
+        assert select_model_tier(f"Summarise this: {document}").profile == "routine"
+
+    def test_british_analysis_and_critique_word_boundaries(self) -> None:
+        assert classify_message("Analyse the evidence") == "complex"
+        assert classify_message("The filename is autocritique.txt") == "standard"
+
     def test_code_block_complex(self) -> None:
         """Messages with code blocks are classified as complex regardless of content."""
         assert classify_message("explain this: ```def foo(): pass```") == "complex"

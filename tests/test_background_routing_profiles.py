@@ -27,7 +27,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from orchestrator.config import Settings
-from orchestrator.memory.dedup import BENCHMARK_CONTRADICTION_MODEL, check_contradiction
+from orchestrator.memory.dedup import (
+    AUTOMATIC_CONTRADICTION_MAX_TOKENS,
+    BENCHMARK_CONTRADICTION_MODEL,
+    BENCHMARK_CONTRADICTION_MAX_TOKENS,
+    check_contradiction,
+)
 from orchestrator.memory.dreaming import DREAM_PROFILE, dream_on_cluster
 from orchestrator.memory.entities import CandidateMention, EntityResolution, confirm_merge_llm
 from orchestrator.memory.extraction import (
@@ -219,8 +224,9 @@ async def test_contradiction_detection_uses_reasoning_profile() -> None:
     assert detected is False
     assert guard.profiles == ["reasoning"]
     assert "model" not in guard.last_call
-    # The YES/NO verdict bound stays a meaningful output contract.
-    assert guard.last_call["max_tokens"] == 50
+    # The automatic verdict uses the approved helper output budget: a
+    # reasoning-preset response must not be truncated into a false "NO".
+    assert guard.last_call["max_tokens"] == AUTOMATIC_CONTRADICTION_MAX_TOKENS
 
 
 @pytest.mark.asyncio
@@ -451,7 +457,7 @@ async def test_extraction_log_provenance_is_the_selected_route() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 3. Benchmark-only pinned models stay pinned and profile-exempt
+# 3. Benchmark-only pinned models stay pinned
 # ---------------------------------------------------------------------------
 
 
@@ -465,8 +471,9 @@ async def test_benchmark_extraction_stays_pinned_to_snapshot_model() -> None:
     assert guard.last_call["model"] == BENCHMARK_EXTRACTION_MODEL
     assert guard.last_call["seed"] == 42
     assert guard.last_call["temperature"] == 0.0
-    # Benchmark mode never enters a workload profile.
-    assert guard.profiles == ["routine"]
+    # The explicit pin bypasses the automatic shortlist but still attributes
+    # to the workload's own profile.
+    assert guard.profiles == ["background"]
 
 
 @pytest.mark.asyncio
@@ -479,6 +486,7 @@ async def test_benchmark_contradiction_stays_pinned_to_snapshot_model() -> None:
     assert guard.last_call["model"] == BENCHMARK_CONTRADICTION_MODEL
     assert guard.last_call["seed"] == 42
     assert guard.last_call["temperature"] == 0.0
+    assert guard.last_call["max_tokens"] == BENCHMARK_CONTRADICTION_MAX_TOKENS
     assert guard.profiles == ["routine"]
 
 

@@ -20,6 +20,7 @@ from typing import Any
 from orchestrator.compute_runtime import guarded_completion
 
 from orchestrator.config import get_settings
+from orchestrator.memory.completion import read_completeness
 from orchestrator.memory.embedding import embed_query
 from orchestrator.memory.store import MemoryStore
 from orchestrator.model_routing import routing_context
@@ -32,6 +33,11 @@ ENTITY_PROFILE = "background"
 # background request sends no temperature/top_p, because the approved automatic
 # background candidate declares seed-only sampling support.
 ENTITY_CONFIRM_TEMPERATURE = 0.1
+
+# Output caps for the merge-confirmation verdict. The automatic call uses the
+# approved helper output budget; an explicit pin keeps its historic cap.
+AUTOMATIC_CONFIRMATION_MAX_TOKENS = 4096
+EXPLICIT_CONFIRMATION_MAX_TOKENS = 100
 
 logger = logging.getLogger(__name__)
 
@@ -747,36 +753,37 @@ async def confirm_merge_llm(
                     }
                 ],
                 # A one-line verdict with a single sentence of justification.
-                "max_tokens": 100,
+                # The automatic call uses the approved helper output budget so
+                # a visible "YES" prefix cut off by the bound is never mistaken
+                # for a confirmation; the historic cap stays on explicit pins.
+                "max_tokens": (
+                    EXPLICIT_CONFIRMATION_MAX_TOKENS
+                    if model is not None
+                    else AUTOMATIC_CONFIRMATION_MAX_TOKENS
+                ),
             }
         )
         if model is not None:
             # An explicit pin is a caller-owned choice, so the historical
-            # sampling control travels with it. The automatic background call
-            # sends none, so the seed-only automatic candidate stays eligible.
+            # sampling control travels with it, and the guard honours the
+            # exact model inside an automatic account scope. The automatic
+            # background call sends none, so the seed-only automatic candidate
+            # stays eligible.
             call_params["temperature"] = ENTITY_CONFIRM_TEMPERATURE
+            call_params["_exact_model"] = True
 
         with routing_context(ENTITY_PROFILE, preferred_model=model):
             response = await guarded_completion(**call_params)
 
-        response_data: Any = response
-        model_dump = getattr(response, "model_dump", None)
-        if callable(model_dump):
-            response_data = model_dump()
-        else:
-            dict_method = getattr(response, "dict", None)
-            if callable(dict_method):
-                response_data = dict_method()
+        completeness = read_completeness(response)
+        # Truncation is checked before any verdict parsing: a visible "YES"
+        # fragment cut off by the output bound is not a confirmation.
+        if not completeness.complete:
+            logger.warning("Entity merge confirmation did not complete: %s", completeness.reason)
+            return False, f"Error: {completeness.reason}"
 
-        content = None
-        if isinstance(response_data, dict):
-            choices = response_data.get("choices")
-            if isinstance(choices, list) and choices:
-                message = choices[0].get("message") if isinstance(choices[0], dict) else None
-                if isinstance(message, dict):
-                    content = message.get("content")
-
-        if not isinstance(content, str) or not content:
+        content = completeness.content
+        if not content:
             return False, "LLM returned empty response"
 
         content_lower = content.lower().strip()

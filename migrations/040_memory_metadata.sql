@@ -16,7 +16,7 @@ ALTER TABLE memories
 COMMENT ON COLUMN memories.metadata IS
     'JSONB annotations attached to a memory (e.g. contradiction/merge evidence); defaults to an empty object.';
 
--- Existing rows were backfilled with the column default by the ADD COLUMN above.
-UPDATE memories SET metadata = '{}'::jsonb WHERE metadata IS NULL;
+-- Existing rows receive the column default from ADD COLUMN; NOT NULL already
+-- prevents nulls, so no redundant full-table UPDATE is needed.
 
 ANALYZE memories;

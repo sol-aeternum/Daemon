@@ -12,7 +12,7 @@ from functools import lru_cache
 from pydantic import BaseModel, Field, field_validator
 
 from orchestrator.council.config import load_roster
-from orchestrator.model_routing import RoutingError, developer_for_model
+from orchestrator.model_routing import RoutingError, read_model_identity
 
 
 # A council is only independent while several vendors are answering. Three is
@@ -20,11 +20,6 @@ from orchestrator.model_routing import RoutingError, developer_for_model
 # with each other, so it is the floor for both the planned roster and the models
 # that actually served a round.
 MIN_COUNCIL_DEVELOPERS = 3
-
-# Model ids are "<developer>/<model>" and may carry the serving prefix. The
-# developer is the vendor that builds the model, which is the unit of council
-# independence, so it is read with the routing module's own rule.
-_OPENROUTER_PREFIX = "openrouter"
 
 
 class CouncilDiversityError(RuntimeError):
@@ -40,31 +35,15 @@ class CouncilDiversityError(RuntimeError):
 def read_developer(model: str) -> str | None:
     """The developer that builds ``model``, or None when it cannot be read.
 
-    The routing helper rejects an empty or vendor-less id outright, and a roster
-    reaches the engine from more than one path (config file, interview, the
-    unvalidated preset assignment in the command layer), so an unreadable id
+    A roster reaches the engine from more than one path (config file, interview,
+    the unvalidated preset assignment in the command layer), so an unreadable id
     resolves to None here instead of raising mid-deliberation. A seat with no
     readable developer can never be counted towards council independence.
     """
     try:
-        return developer_for_model(model) or None
+        return read_model_identity(model).developer
     except RoutingError:
         return None
-
-
-def _model_developer(model: str) -> str | None:
-    """The developer that builds ``model``, or None when the id is malformed.
-
-    Deliberately stricter than the routing helper: a roster entry that cannot be
-    read as ``<developer>/<model>`` is a configuration error, not a model.
-    """
-    raw_segments = model.split("/")
-    if any(not segment for segment in raw_segments):
-        return None
-    segments = raw_segments[1:] if raw_segments[0] == _OPENROUTER_PREFIX else raw_segments
-    if len(segments) < 2:
-        return None
-    return read_developer(model)
 
 
 def roster_developers(roster: Mapping[str, str]) -> dict[str, str]:
@@ -137,7 +116,7 @@ class CouncilConfig(BaseModel):
                 raise ValueError("Council role names must be non-empty")
             if not model:
                 raise ValueError(f"Council role {role!r} has no model assigned")
-            developer = _model_developer(model)
+            developer = read_developer(model)
             if developer is None:
                 raise ValueError(
                     f"Council role {role!r} has a malformed model id {model!r}; "

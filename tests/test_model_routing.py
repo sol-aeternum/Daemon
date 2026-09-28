@@ -433,6 +433,220 @@ async def test_same_output_target_excludes_cheaper_model_with_inadequate_ceiling
 
 
 @pytest.mark.asyncio
+async def test_automatic_output_uses_shared_account_target_not_profile_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cheap = named_route(DEEPSEEK, price=0)
+    cheap.max_output_tokens = 512  # Meets floor, but not this account's output target.
+    sufficient = named_route(FLASH, price=1_000)
+    with dispatch_fixture(
+        monkeypatch,
+        [cheap, sufficient],
+        routing=routing_document([DEEPSEEK, FLASH], min_output_tokens=512),
+        max_output=2048,
+    ) as (service, provider, _):
+        with model_routing.routing_context("background"):
+            await runtime.guarded_completion(messages=[{"role": "user", "content": "title"}])
+        assert last_kwargs(provider)["model"] == FLASH
+        assert last_kwargs(provider)["max_tokens"] == 2048
+        assert service.reserve.await_args.kwargs["model"] == FLASH
+
+
+@pytest.mark.asyncio
+async def test_automatic_account_context_bounds_target_for_every_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A trial overlay can permit a larger premium route, but ordinary automatic
+    # work compares both classes against the base account's context-bound target.
+    routine = named_route(DEEPSEEK, price=0)
+    premium = named_route(OPUS, price=1_000, premium=True)
+    routing = routing_document([DEEPSEEK, OPUS], min_output_tokens=512)
+    _qualified_policy(monkeypatch, route=[routine, premium], routing=routing)
+    base = SimpleNamespace(max_context_tokens=1024, max_output_tokens=4096)
+    overlay = SimpleNamespace(max_context_tokens=32000, max_output_tokens=8000)
+    policy = SimpleNamespace(
+        capabilities={"chat", "premium_routing"},
+        limits=base,
+        limits_for=lambda premium: overlay if premium else base,
+        remaining_for=lambda premium: 1_000_000,
+    )
+    service = SimpleNamespace(
+        resolve=AsyncMock(return_value=policy),
+        reserve=AsyncMock(return_value="hold"),
+        settle=AsyncMock(),
+    )
+    provider = AsyncMock(return_value={"choices": []})
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    scope = runtime.ComputeScope(uuid.uuid4(), cast(EntitlementService, service), auto_route=True)
+    token = runtime._scope.set(scope)
+    try:
+        with model_routing.routing_context("reasoning"):
+            message = [{"role": "user", "content": "hello"}]
+            expected = (
+                base.max_context_tokens - runtime._request_bound({"messages": message}).estimate
+            )
+            await runtime.guarded_completion(messages=message)
+    finally:
+        runtime._scope.reset(token)
+    assert last_kwargs(provider)["model"] == routine.model
+    assert last_kwargs(provider)["max_tokens"] == expected
+    assert service.reserve.await_args.args[1] == routine.estimate_microusd(
+        runtime._request_bound({"messages": message}).bound, expected
+    )
+
+
+@pytest.mark.asyncio
+async def test_automatic_floor_unmet_denies_instead_of_shrinking_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    route = named_route(FLASH)
+    with dispatch_fixture(
+        monkeypatch,
+        [route],
+        routing=routing_document([FLASH], min_output_tokens=512),
+        max_output=256,
+    ) as (service, provider, _):
+        with model_routing.routing_context("background"):
+            with pytest.raises(runtime.ComputeUnavailable) as denied:
+                await runtime.guarded_completion(messages=[{"role": "user", "content": "title"}])
+        assert denied.value.code == "capacity_unavailable"
+        service.reserve.assert_not_awaited()
+        provider.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_explicit_output_limit_stays_exact_even_below_profile_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    route = named_route(FLASH)
+    route.max_output_tokens = 24
+    with dispatch_fixture(
+        monkeypatch, [route], routing=routing_document([FLASH], min_output_tokens=512)
+    ) as (service, provider, _):
+        with model_routing.routing_context("background"):
+            await runtime.guarded_completion(
+                messages=[{"role": "user", "content": "title"}], max_tokens=24
+            )
+        assert last_kwargs(provider)["max_tokens"] == 24
+        service.reserve.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exclude", ["model", "developer"])
+async def test_explicit_model_cannot_bypass_context_exclusions(
+    monkeypatch: pytest.MonkeyPatch, exclude: str
+) -> None:
+    # Sol is absent from routine's shortlist but has a qualified route. Exclusion
+    # applies to manual selection and the internal exact-model seam alike.
+    sol = named_route(SOL)
+    with dispatch_fixture(monkeypatch, [sol], auto_route=False) as (service, provider, scope):
+        options: dict[str, Any] = (
+            {"excluded_models": frozenset({SOL})}
+            if exclude == "model"
+            else {"excluded_developers": frozenset({"openai"})}
+        )
+        with model_routing.routing_context("routine", **options):
+            for exact in (False, True):
+                scope.auto_route = exact
+                with pytest.raises(runtime.ComputeUnavailable) as denied:
+                    await runtime.guarded_completion(
+                        model=SOL,
+                        _exact_model=exact,
+                        messages=[{"role": "user", "content": "review"}],
+                    )
+                assert denied.value.code == "route_unavailable"
+        service.reserve.assert_not_awaited()
+        provider.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_nested_routing_cannot_enable_premium_disallowed_by_account_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    premium = named_route(OPUS, premium=True)
+    _qualified_policy(monkeypatch, route=premium)
+    limits = SimpleNamespace(max_context_tokens=32000, max_output_tokens=4096)
+    service = SimpleNamespace(
+        reconcile_expired_reservations=AsyncMock(return_value=0),
+        resolve=AsyncMock(
+            return_value=SimpleNamespace(
+                capabilities={"chat", "premium_routing"},
+                limits=limits,
+                limits_for=lambda premium: limits,
+                remaining_for=lambda premium: 1_000_000,
+            )
+        ),
+        reserve=AsyncMock(return_value="hold"),
+        settle=AsyncMock(),
+    )
+    provider = AsyncMock(return_value={"choices": []})
+    monkeypatch.setattr(runtime, "EntitlementService", lambda pool: service)
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    for account_profile in ("routine", "background"):
+        async with runtime.account_compute(
+            object(), uuid.uuid4(), profile=account_profile
+        ) as scope:
+            assert scope.account_allow_premium is False
+            with model_routing.routing_context("reasoning"):
+                with pytest.raises(runtime.ComputeUnavailable):
+                    await runtime.guarded_completion(messages=[{"role": "user", "content": "hard"}])
+                # Explicit premium still uses the independent account capability.
+                await runtime.guarded_completion(
+                    model=OPUS, messages=[{"role": "user", "content": "explicit"}]
+                )
+    assert service.reserve.await_count == 2
+    assert provider.await_count == 2
+    assert all(call.kwargs["premium"] for call in service.reserve.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_auto_scope_exact_model_pin_obeys_qualification_and_does_not_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    luna = named_route(LUNA, price=0)
+    sol = named_route(SOL, price=1000)
+    with dispatch_fixture(monkeypatch, [luna, sol]) as (service, provider, scope):
+        with model_routing.routing_context("routine") as state:
+            await runtime.guarded_completion(
+                model=SOL, _exact_model=True, messages=[{"role": "user", "content": "benchmark"}]
+            )
+            assert (state.selected_model, state.explicit, runtime.selected_model()) == (
+                SOL,
+                True,
+                SOL,
+            )
+            assert scope.selected_model == SOL
+        assert last_kwargs(provider)["model"] == SOL
+        assert "_exact_model" not in last_kwargs(provider)
+        assert service.reserve.await_args.kwargs["model"] == SOL
+
+    failed = AsyncMock(side_effect=RuntimeError("unavailable"))
+    with dispatch_fixture(monkeypatch, [luna, sol], provider=failed) as (service, _, _):
+        with model_routing.routing_context("routine"):
+            with pytest.raises(runtime.ComputeUnavailable):
+                await runtime.guarded_completion(
+                    model=SOL,
+                    _exact_model=True,
+                    messages=[{"role": "user", "content": "benchmark"}],
+                )
+        assert service.reserve.await_count == 1
+        assert failed.await_count == 1
+        assert failed.await_args is not None
+        assert failed.await_args.kwargs["model"] == SOL
+
+    with dispatch_fixture(monkeypatch, [luna]) as (service, provider, _):
+        with model_routing.routing_context("routine"):
+            with pytest.raises(runtime.ComputeUnavailable):
+                await runtime.guarded_completion(
+                    model=SOL,
+                    _exact_model=True,
+                    messages=[{"role": "user", "content": "benchmark"}],
+                )
+        service.reserve.assert_not_awaited()
+        provider.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_explicit_short_title_output_is_not_blocked_by_background_profile_floor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -87,6 +87,13 @@ SAMPLING_PARAMETERS: Final[frozenset[str]] = frozenset(
 #: Preset name applied when a profile does not override a model's ``default``.
 DEFAULT_PRESET: Final[str] = "default"
 
+#: Width of one group's slice of the placement order. A model's position is
+#: ``group index * this + position in group``, so a single integer sorts
+#: group-major and then in configuration order. Placements wider than this are
+#: still read correctly; only their total order would interleave with the next
+#: group.
+PLACEMENT_GROUP_STRIDE: Final[int] = 1000
+
 
 class RoutingError(Exception):
     """A routing decision could not be made. Never a dispatch permission."""
@@ -129,6 +136,22 @@ class RoutingGroup:
 
 
 @dataclass(frozen=True, slots=True)
+class Placement:
+    """Where one placed model sits inside a profile's ordered groups.
+
+    Derived from the profile's own groups when the profile is built, so a
+    candidate lookup is a single map read instead of a rescan of every group.
+    ``order`` is the total sort key: group index first, then position in group.
+    """
+
+    model: str
+    group: str
+    group_index: int
+    position: int
+    order: int
+
+
+@dataclass(frozen=True, slots=True)
 class WorkloadProfile:
     """A workload class and the ordered groups of models acceptable for it.
 
@@ -145,6 +168,32 @@ class WorkloadProfile:
     groups: tuple[RoutingGroup, ...]
     distinct_developers: bool
     notes: str = ""
+    # Derived in __post_init__ from ``groups`` alone, so it is excluded from
+    # comparison and repr: two profiles with the same groups have the same
+    # placements, and the map is not a separately declared fact about the config.
+    _placements: Mapping[str, Placement] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        """Derive the ``model -> Placement`` map once, when the profile is built.
+
+        The map is read-only and derived, never a cache of mutable config: a
+        profile is frozen, so nothing can invalidate it after construction, and
+        rebuilding it per candidate is what made lookups scale with the number
+        of groups. ``init=False`` keeps the public constructor signature
+        unchanged, so every existing fixture and ``dataclasses.replace`` call
+        still builds the map for free.
+        """
+        placements: dict[str, Placement] = {}
+        for group in self.groups:
+            for position, model in enumerate(group.models):
+                placements[model] = Placement(
+                    model=model,
+                    group=group.name,
+                    group_index=group.index,
+                    position=position,
+                    order=group.index * PLACEMENT_GROUP_STRIDE + position,
+                )
+        object.__setattr__(self, "_placements", MappingProxyType(placements))
 
     def group_index(self, group_name: str) -> int:
         for group in self.groups:
@@ -155,13 +204,13 @@ class WorkloadProfile:
     def group_names(self) -> tuple[str, ...]:
         return tuple(group.name for group in self.groups)
 
+    def placement_of(self, model: str) -> Placement | None:
+        """Where ``model`` sits in this profile, or None when it is not placed."""
+        return self._placements.get(model)
+
     def placement(self) -> dict[str, int]:
         """``model -> (group index, position in group)`` for stable ordering."""
-        placement: dict[str, int] = {}
-        for group in self.groups:
-            for position, model in enumerate(group.models):
-                placement[model] = group.index * 1000 + position
-        return placement
+        return {model: entry.order for model, entry in self._placements.items()}
 
     def ranked_models(self) -> tuple[str, ...]:
         """All models in group order then configuration order within a group."""
@@ -231,6 +280,22 @@ def _require_bool(value: object, *, field_name: str) -> bool:
     return value
 
 
+@dataclass(frozen=True, slots=True)
+class ModelIdentity:
+    """The one validated reading of a model id: who builds it, and what it is.
+
+    ``developer`` is the vendor that builds the model, which is the unit of council
+    independence. ``model`` is the id with the developer and any serving prefix
+    removed, so two ids that name the same model read identically. ``namespaced``
+    records whether the id carried the ``openrouter/`` serving prefix, which is the
+    only difference between the two id forms Daemon accepts.
+    """
+
+    developer: str
+    model: str
+    namespaced: bool
+
+
 def developer_for_model(model: str) -> str:
     """The developer slug that owns ``model``, lowercased.
 
@@ -243,8 +308,10 @@ def developer_for_model(model: str) -> str:
         developer_for_model("openrouter/x-ai/grok-4.7") == "x-ai"
         developer_for_model("openrouter/openai/gpt-6-luna") == "openai"
 
-    A bare id with no vendor segment is returned as-is; callers that need a real
-    vendor slug should not rely on that case.
+    A bare id with no vendor segment is returned as-is. That leniency is retained for
+    existing callers; a caller that needs a *validated* vendor/model reading must use
+    :func:`read_model_identity`, which rejects a vendor-less or malformed id instead
+    of inventing a developer from it.
     """
     if not isinstance(model, str) or not model.strip():
         raise RoutingError("model_unknown", "model must be a non-empty string")
@@ -262,26 +329,73 @@ def developer_for_model(model: str) -> str:
     return vendor.lower()
 
 
+def read_model_identity(model: str, *, require_namespace: bool = False) -> ModelIdentity:
+    """The single validated reading of a model id, shared by every caller.
+
+    A model id is ``<developer>/<model>``, optionally behind the ``openrouter/``
+    serving prefix Daemon namespaces its own dispatch ids with, and optionally
+    carrying an OpenRouter variant suffix (``:free``). Both id forms are read here
+    once so the routing catalogue and a council roster cannot disagree about who
+    builds a model::
+
+        read_model_identity("openrouter/z-ai/glm-5.3").developer == "z-ai"
+        read_model_identity("z-ai/glm-5.3").developer == "z-ai"
+
+    Anything that is not a readable ``<developer>/<model>`` raises
+    :class:`RoutingError` rather than resolving to a guess: a vendor-less id, an
+    empty or whitespace-padded segment, a trailing separator, or a model segment that
+    is missing.
+
+    ``require_namespace`` is the single intentional difference between callers, not
+    a second parser. The routing catalogue sets it, because it records *dispatch* ids
+    and a bare placement there could never be dispatched; a council roster leaves it
+    off, because a seat preference is an operator's model name and the bare form is
+    the one they write.
+    """
+    if not isinstance(model, str) or not model.strip():
+        raise RoutingError("model_unknown", "model must be a non-empty string")
+    trimmed = model.strip()
+    namespaced = trimmed.startswith(OPENROUTER_PREFIX)
+    if require_namespace and not namespaced:
+        raise RoutingError(
+            "model_unnamespaced",
+            f"model id must begin with {OPENROUTER_PREFIX!r}, got {model!r}",
+        )
+    remainder = trimmed[len(OPENROUTER_PREFIX) :] if namespaced else trimmed
+    segments = remainder.split("/")
+    if len(segments) < 2 or any(not part or part.strip() != part for part in segments):
+        raise RoutingError("model_unknown", f"model has no developer segment: {model!r}")
+    developer = segments[0].split(":", 1)[0]
+    if not developer or developer.strip() != developer:
+        raise RoutingError("model_unknown", f"model has no developer segment: {model!r}")
+    return ModelIdentity(
+        developer=developer.lower(),
+        model="/".join(segments[1:]),
+        namespaced=namespaced,
+    )
+
+
 def _normalise_model_id(raw: object, *, field_name: str) -> str:
     """Accept only the namespaced id form the dispatch layer can actually route.
 
-    ``config/inference_policy.json`` records route models as ``openrouter/<vendor>/<id>``
-    and the dispatch layer refuses anything else, so a placement is written in that
-    same form. Writing the bare id here would be a placement that could never be
-    dispatched.
+    The strict wrapper around :func:`read_model_identity`: the routing catalogue
+    records route models as ``openrouter/<vendor>/<id>`` and the dispatch layer
+    refuses anything else, so a placement is written in that same form. Writing the
+    bare id here would be a placement that could never be dispatched. The shape
+    rules themselves are the shared helper's, so a catalogue id and a council roster
+    id are read the same way once both are valid.
     """
     model = _require_str(raw, field_name=field_name)
-    if not model.startswith(OPENROUTER_PREFIX):
-        raise PolicyError(
-            f"{field_name} must be a namespaced OpenRouter model id beginning with "
-            f"{OPENROUTER_PREFIX!r} (the form config/inference_policy.json records and the "
-            f"dispatch layer accepts), got {model!r}"
-        )
-    remainder = model[len(OPENROUTER_PREFIX) :]
-    if "/" not in remainder or any(
-        not part or part.strip() != part for part in remainder.split("/")
-    ):
-        raise PolicyError(f"{field_name} must name a vendor and a model, got {model!r}")
+    try:
+        read_model_identity(model, require_namespace=True)
+    except RoutingError as exc:
+        if exc.code == "model_unnamespaced":
+            raise PolicyError(
+                f"{field_name} must be a namespaced OpenRouter model id beginning with "
+                f"{OPENROUTER_PREFIX!r} (the form config/inference_policy.json records and "
+                f"the dispatch layer accepts), got {model!r}"
+            ) from exc
+        raise PolicyError(f"{field_name} must name a vendor and a model, got {model!r}") from exc
     return model
 
 
@@ -724,7 +838,6 @@ def profile_candidates(
         found = _lookup(routing, profile_name, model, excluded_models, excluded_developers)
         return (found,) if found is not None else None
     profile = routing.profile(profile_name)
-    placement = profile.placement()
     found_models: list[RoutedModel] = []
     for candidate in profile.ranked_models():
         entry = _lookup(routing, profile_name, candidate, excluded_models, excluded_developers)
@@ -732,7 +845,7 @@ def profile_candidates(
             found_models.append(entry)
     if not found_models:
         return None
-    return tuple(sorted(found_models, key=lambda entry: placement[entry.model]))
+    return tuple(sorted(found_models, key=lambda entry: entry.placement))
 
 
 def _lookup(
@@ -743,31 +856,23 @@ def _lookup(
     excluded_developers: frozenset[str],
 ) -> RoutedModel | None:
     profile = routing.profile(profile_name)
-    placement = profile.placement()
-    if model not in placement:
+    placed = profile.placement_of(model)
+    if placed is None:
         return None
     declared = routing.model(model)
     if declared is None or profile_name not in declared.suitability:
         return None
     if model in excluded_models or declared.developer in excluded_developers:
         return None
-    group_name, position = _group_of(profile, model)
     return RoutedModel(
         model=model,
         developer=declared.developer,
-        group=group_name,
-        group_index=profile.group_index(group_name),
-        position=position,
-        placement=placement[model],
+        group=placed.group,
+        group_index=placed.group_index,
+        position=placed.position,
+        placement=placed.order,
         reasoning_efforts=declared.reasoning_efforts,
     )
-
-
-def _group_of(profile: WorkloadProfile, model: str) -> tuple[str, int]:
-    for group in profile.groups:
-        if model in group.models:
-            return group.name, group.models.index(model)
-    raise RoutingError("profile_unknown_group", f"{profile.name} does not place {model!r}")
 
 
 def supports_reasoning_effort(model: str, effort: str) -> bool:
@@ -865,10 +970,13 @@ __all__ = [
     "DEFAULT_PRESET",
     "KNOWN_REASONING_EFFORTS",
     "MODEL_ROUTING_ENV",
+    "ModelIdentity",
     "ModelRouting",
     "OPENROUTER_PREFIX",
+    "PLACEMENT_GROUP_STRIDE",
     "PRESET_PARAMETERS",
     "ROUTING_PROFILES",
+    "Placement",
     "RoutedModel",
     "RoutingError",
     "RoutingGroup",
@@ -886,6 +994,7 @@ __all__ = [
     "profile",
     "profile_candidate",
     "profile_candidates",
+    "read_model_identity",
     "routing_context",
     "supports_reasoning_effort",
 ]

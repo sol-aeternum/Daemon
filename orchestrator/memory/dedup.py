@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from orchestrator.compute_runtime import guarded_completion
+from orchestrator.memory.completion import read_completeness
 from orchestrator.memory.embedding import EmbeddingConfigurationError
 
 import uuid
@@ -26,6 +27,14 @@ logger = logging.getLogger(__name__)
 # on the reasoning profile. Benchmark mode is exempt: it stays pinned to the
 # dated snapshot model and never enters workload-profile routing.
 CONTRADICTION_PROFILE = "reasoning"
+
+# The automatic verdict call must never mistake a fragment cut off by its own
+# output bound for a valid "NO", so it uses the approved helper output budget
+# instead of the historic 50-token cap.
+AUTOMATIC_CONTRADICTION_MAX_TOKENS = 4096
+
+# Historic benchmark cap: the pinned deterministic benchmark call keeps it.
+BENCHMARK_CONTRADICTION_MAX_TOKENS = 50
 
 # Dynamic import for trust signals to avoid circular imports
 _trust_signals = None
@@ -257,15 +266,24 @@ async def check_contradiction(
                 }
             ],
             "temperature": 0.0 if is_benchmark else CONTRADICTION_TEMPERATURE,
-            # A YES/NO verdict with one sentence of evidence. This bound is the
-            # real output contract, not a routing hint; the reasoning profile's
-            # min-output floor is a separate model-capability gate.
-            "max_tokens": 50,
+            # A YES/NO verdict with one sentence of evidence. The automatic
+            # call uses the approved helper output budget so a reasoning-preset
+            # response is not truncated into a false verdict; the historic
+            # benchmark cap stays on the pinned benchmark call. This bound is
+            # the real output contract, not a routing hint; the reasoning
+            # profile's min-output floor is a separate model-capability gate.
+            "max_tokens": (
+                BENCHMARK_CONTRADICTION_MAX_TOKENS
+                if is_benchmark
+                else AUTOMATIC_CONTRADICTION_MAX_TOKENS
+            ),
         }
         if is_benchmark:
-            # Benchmark isolation: pin the dated snapshot model and seed.
+            # Benchmark isolation: pin the dated snapshot model and seed, and
+            # tell the guard the pin is exact even inside an automatic scope.
             call_params["model"] = BENCHMARK_CONTRADICTION_MODEL
             call_params["seed"] = DEDUP_BENCHMARK_SEED
+            call_params["_exact_model"] = True
 
         try:
             if is_benchmark:
@@ -293,17 +311,20 @@ async def check_contradiction(
         if is_benchmark:
             _capture_dedup_benchmark_metadata(response_data, key="contradiction")
 
-        content = None
-        if isinstance(response_data, dict):
-            choices = response_data.get("choices")
-            if isinstance(choices, list) and choices:
-                message = choices[0].get("message") if isinstance(choices[0], dict) else None
-                if isinstance(message, dict):
-                    content = message.get("content")
+        completeness = read_completeness(response)
+        if not completeness.complete:
+            if is_benchmark:
+                # Historic benchmark semantics: an unusable reply is advisory
+                # silence, not an error signal.
+                return False, ""
+            # An empty or bound-truncated reply must not read as a legitimate
+            # "NO". Surface one content-free warning and a distinguishable
+            # reason; the advisory contract still proceeds on False.
+            reason = completeness.reason or "unreadable response"
+            logger.warning("Contradiction check did not complete: %s", reason)
+            return False, f"error: {reason}"
 
-        if not isinstance(content, str) or not content:
-            return False, ""
-
+        content = completeness.content
         contradiction_detected = content.lower().startswith("yes")
         explanation = content.strip() if contradiction_detected else ""
         return contradiction_detected, explanation

@@ -17,6 +17,16 @@ from orchestrator.main import app
 from orchestrator import main as main_module
 from tests.qualified_compute import install_qualified_compute
 
+# The stand-in deployment must qualify the profiles these tests dispatch under,
+# so admission is satisfied by the workload the classifier actually selected:
+# Luna serves routine/research/council, GLM-5.3 serves reasoning.
+OVERRIDE_FIXTURE_MODELS = (
+    "openrouter/openai/gpt-6-luna",
+    "openrouter/z-ai/glm-5.3",
+    "openrouter/moonshotai/kimi-k2.5",
+    "openrouter/test/explicit-model",
+)
+
 
 @pytest_asyncio.fixture
 async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[AsyncClient]:
@@ -28,7 +38,7 @@ async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[AsyncClient]:
     settings = get_settings()
     app_state = AppState(settings=settings)
     app_state.db_pool = object()  # type: ignore[assignment]
-    install_qualified_compute(monkeypatch)
+    install_qualified_compute(monkeypatch, models=OVERRIDE_FIXTURE_MODELS)
 
     async def override_settings():
         return get_settings()

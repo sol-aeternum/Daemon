@@ -109,6 +109,63 @@ class TestDeveloperFloor:
         assert len(set(roster_developers(config.roster).values())) == 3
 
 
+class TestIdFormsShareOneReader:
+    """Council and routing read a model id with the same rule.
+
+    The roster accepts the bare ``<developer>/<model>`` form an operator writes
+    and the namespaced ``openrouter/``-prefixed dispatch form, and both name the
+    same developer. A seat the shared reader cannot read is a configuration
+    error, not a model.
+    """
+
+    @pytest.mark.parametrize(
+        "model_id",
+        [
+            "openrouter/anthropic/claude-sonnet-5",
+            "anthropic/claude-sonnet-5",
+            "  openrouter/anthropic/claude-sonnet-5  ",
+        ],
+    )
+    def test_every_accepted_form_names_the_same_developer(self, model_id: str):
+        assert read_developer(model_id) == "anthropic"
+
+    @pytest.mark.parametrize("prefixed", [True, False])
+    def test_prefixed_and_bare_forms_agree_in_a_roster(self, prefixed: bool):
+        model_id = (
+            "openrouter/anthropic/claude-sonnet-5" if prefixed else "anthropic/claude-sonnet-5"
+        )
+        config = CouncilConfig(
+            roster={
+                "analyst": model_id,
+                "strategist": "openai/gpt-6-sol",
+                "skeptic": "openrouter/google/gemini-3.8-flash",
+            }
+        )
+        assert config.roster["analyst"] == model_id
+        assert set(roster_developers(config.roster).values()) == {"anthropic", "openai", "google"}
+
+    def test_a_variant_suffix_does_not_change_the_developer(self):
+        assert read_developer("openrouter/deepseek/deepseek-v4.1:free") == "deepseek"
+        assert read_developer("deepseek/deepseek-v4.1:free") == "deepseek"
+
+    def test_developer_is_lowercased_so_case_variants_are_one_voice(self):
+        assert read_developer("openrouter/Z-AI/GLM-5.3") == read_developer("z-ai/glm-5.3")
+
+    def test_deeper_model_paths_keep_their_vendor(self):
+        assert read_developer("openrouter/meta-llama/llama-3/70b-instruct") == "meta-llama"
+
+    def test_a_roster_written_bare_still_cannot_field_one_developer(self):
+        # The bare form is accepted as a *shape*; it is not a diversity waiver.
+        with pytest.raises(ValueError, match="at least 3 different model developers"):
+            CouncilConfig(
+                roster={
+                    "analyst": "anthropic/claude-sonnet-5",
+                    "strategist": "anthropic/claude-opus-4.6",
+                    "skeptic": "openrouter/anthropic/claude-haiku-4.5",
+                }
+            )
+
+
 class TestMalformedModelIds:
     @pytest.mark.parametrize(
         "model_id",
@@ -150,6 +207,19 @@ class TestMalformedModelIds:
                     "skeptic": "openrouter/google/gemini-3.8-flash",
                 }
             )
+
+    @pytest.mark.parametrize(
+        "model_id",
+        [
+            # A bare id with no vendor segment is not a developer, and guessing
+            # one from the model name would field a one-voice "council".
+            "claude-sonnet-5",
+            "openrouter/anthropic claude",
+            "openrouter/anthropic:free/",
+        ],
+    )
+    def test_a_vendorless_id_never_resolves_to_a_developer(self, model_id: str):
+        assert read_developer(model_id) is None
 
     def test_unreadable_model_never_counts_as_a_developer(self):
         assert read_developer("") is None

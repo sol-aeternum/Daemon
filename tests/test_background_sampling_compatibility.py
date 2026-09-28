@@ -40,6 +40,8 @@ import pytest
 from orchestrator import compute_runtime as runtime
 from orchestrator import model_routing
 from orchestrator.memory.dedup import (
+    AUTOMATIC_CONTRADICTION_MAX_TOKENS,
+    BENCHMARK_CONTRADICTION_MAX_TOKENS,
     BENCHMARK_CONTRADICTION_MODEL,
     CONTRADICTION_TEMPERATURE,
     DEDUP_BENCHMARK_SEED,
@@ -285,8 +287,9 @@ async def test_automatic_contradiction_check_keeps_reasoning_temperature(
     assert sent["temperature"] == CONTRADICTION_TEMPERATURE
     assert "top_p" not in sent
     assert sent["model"] == REASONING_MODEL
-    # The YES/NO verdict bound remains a real output contract.
-    assert sent["max_tokens"] == 50
+    # The automatic verdict uses the approved helper output budget: a
+    # reasoning-preset response must not be truncated into a false "NO".
+    assert sent["max_tokens"] == AUTOMATIC_CONTRADICTION_MAX_TOKENS
     assert "seed" not in sent
     assert service.reserve.await_count == 1
     assert service.settle.await_count == 1
@@ -469,14 +472,15 @@ async def test_benchmark_extraction_pins_its_deterministic_sampling(
     assert sent["top_p"] == EXTRACTION_TOP_P
     assert sent["seed"] == BENCHMARK_SEED
     assert sent["max_tokens"] == EXTRACTION_MAX_TOKENS
-    # Benchmark mode is profile-exempt: it borrows the default routine state and
-    # applies no reviewed preset, because the snapshot model is not placed.
+    # The explicit pin bypasses the automatic shortlist, not profile
+    # attribution: the call still binds the workload profile. No preset is
+    # applied because the snapshot model is not placed in the profile.
     assert "reasoning_effort" not in sent
     assert service.reserve.await_count == 1
     assert service.settle.await_count == 1
     assert service.reserve.await_args.kwargs["route_id"] == BENCHMARK_EXTRACTION_MODEL
-    # Provenance is the dated snapshot model, not an automatic route. Benchmark
-    # mode is profile-exempt, so attribution lands on the account scope.
+    # Provenance is the route the guard actually dispatched: the exact pin
+    # inside the workload profile, not an automatic shortlist pick.
     assert outcome.model_used == BENCHMARK_EXTRACTION_MODEL
     assert scope.selected_model == BENCHMARK_EXTRACTION_MODEL
 
@@ -506,7 +510,7 @@ async def test_benchmark_contradiction_pins_its_deterministic_sampling(
     assert sent["model"] == BENCHMARK_CONTRADICTION_MODEL
     assert sent["temperature"] == 0.0
     assert sent["seed"] == DEDUP_BENCHMARK_SEED
-    assert sent["max_tokens"] == 50
+    assert sent["max_tokens"] == BENCHMARK_CONTRADICTION_MAX_TOKENS
     assert service.reserve.await_count == 1
     assert service.settle.await_count == 1
     assert service.reserve.await_args.kwargs["route_id"] == BENCHMARK_CONTRADICTION_MODEL

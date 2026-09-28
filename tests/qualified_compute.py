@@ -17,6 +17,8 @@ def install_qualified_compute(monkeypatch, *, models: tuple[str, ...] = ()) -> N
     selected = models or (
         "openrouter/google/gemini-2.5-flash",
         "openrouter/moonshotai/kimi-k2.5",
+        "openrouter/openai/gpt-6-luna",
+        "openrouter/z-ai/glm-5.3",
         "openrouter/test/explicit-model",
     )
     routes = {}

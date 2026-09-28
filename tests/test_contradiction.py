@@ -7,6 +7,7 @@ import asyncpg
 import pytest
 
 from orchestrator.memory.dedup import (
+    AUTOMATIC_CONTRADICTION_MAX_TOKENS,
     CONTRADICTION_PROFILE,
     check_contradiction,
     deduplicate_facts,
@@ -171,14 +172,19 @@ async def test_check_contradiction_binds_reasoning_profile() -> None:
 
 @pytest.mark.asyncio
 async def test_check_contradiction_keeps_meaningful_output_bound() -> None:
-    """The YES/NO verdict bound is a real output contract, not a routing hint."""
+    """The verdict bound is a real output contract, not a routing hint.
+
+    The automatic call uses the approved helper output budget so a
+    reasoning-preset verdict is never truncated into a false "NO"; the
+    historic 50-token cap stays on the pinned benchmark call.
+    """
     with patch("orchestrator.memory.dedup.guarded_completion") as litellm_mock:
         litellm_mock.return_value = MockLitellmResponse("NO. The facts are consistent.")
         await check_contradiction("Fact A", "Fact B")
 
         assert litellm_mock.await_args is not None
         call_kwargs = litellm_mock.await_args.kwargs
-        assert call_kwargs["max_tokens"] == 50
+        assert call_kwargs["max_tokens"] == AUTOMATIC_CONTRADICTION_MAX_TOKENS
         assert call_kwargs["temperature"] == pytest.approx(0.1)
         # No benchmark seed leaks into a deployment call.
         assert "seed" not in call_kwargs

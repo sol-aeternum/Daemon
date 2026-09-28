@@ -504,6 +504,9 @@ async def extract_facts_from_text(
             }
         )
         if pinned_model is not None:
+            # Benchmark/test pins remain exact even inside an automatic worker's
+            # account scope; this private control never reaches the provider.
+            call_params["_exact_model"] = True
             call_params["temperature"] = EXTRACTION_TEMPERATURE
             call_params["top_p"] = EXTRACTION_TOP_P
         if is_benchmark:
@@ -511,15 +514,11 @@ async def extract_facts_from_text(
             call_params["seed"] = BENCHMARK_SEED
 
         try:
-            if is_benchmark:
-                # Benchmark runs stay pinned to the dated snapshot model and are
-                # never subject to workload-profile routing.
+            # The explicit pin bypasses the automatic shortlist, not account or
+            # endpoint checks. Attribution comes from dispatch in both modes.
+            with routing_context(EXTRACTION_PROFILE, preferred_model=pinned_model) as route:
                 response = await guarded_completion(**call_params)
-                model_used: str | None = BENCHMARK_EXTRACTION_MODEL
-            else:
-                with routing_context(EXTRACTION_PROFILE, preferred_model=model) as route:
-                    response = await guarded_completion(**call_params)
-                    model_used = route.selected_model
+                model_used = route.selected_model
         except Exception as exc:
             if is_benchmark:
                 raise BenchmarkProviderError(

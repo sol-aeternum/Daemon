@@ -22,6 +22,16 @@ benchmark/manual parameters remain request-local and validated. The historical
 cleanup inventory below predates this approved routing amendment. No actual
 deployment environment is modified by these repository changes.
 
+Existing values for **all ten retired keys above are ignored** by Settings
+(`extra="ignore"`): removing a key, leaving it empty, or retaining a nonempty old
+value has the same result. None restores the old model or sampling override.
+Automatic calls use the selected workload's reviewed catalog candidates and
+presets instead; an unavailable qualified candidate produces an unavailable
+result rather than falling back to a retired key. Operators should remove those
+stale keys and place reviewed replacements in the routing catalog. This applies
+only to the retired keys: `DAEMON_MODEL_ROUTING` still selects that catalog, with
+its absent/empty fallback described above.
+
 This note describes the repository's own `docker-compose.yml` path. **The actual
 production launch configuration is unproven.** No tracked file records which
 command, override file, or systemd unit the production host uses. Everything in

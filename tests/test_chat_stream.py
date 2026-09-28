@@ -19,6 +19,16 @@ import orchestrator.daemon as daemon_module
 from orchestrator.main import app
 from tests.qualified_compute import install_qualified_compute
 
+# These tests exercise the streaming plumbing, not admission, so the stand-in
+# deployment must actually qualify the profiles the fixtures dispatch under:
+# Luna serves routine/research/background/council and GLM-5.3 serves reasoning.
+STREAM_FIXTURE_MODELS = (
+    "openrouter/openai/gpt-6-luna",
+    "openrouter/z-ai/glm-5.3",
+    "openrouter/moonshotai/kimi-k2.5",
+    "openrouter/test/explicit-model",
+)
+
 
 @pytest_asyncio.fixture
 async def client(monkeypatch):
@@ -31,7 +41,7 @@ async def client(monkeypatch):
     settings = get_settings()
     app_state = AppState(settings=settings)
     app_state.db_pool = object()  # type: ignore[assignment]
-    install_qualified_compute(monkeypatch)
+    install_qualified_compute(monkeypatch, models=STREAM_FIXTURE_MODELS)
 
     async def override_settings():
         return get_settings()

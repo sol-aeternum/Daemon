@@ -22,6 +22,8 @@ COMPLEXITY_SIGNALS = {
     "should i",
     "which is better",
     "analyze",
+    "analyse",
+    "critique",
     "evaluate",
     "summarize everything",
     "help me decide",

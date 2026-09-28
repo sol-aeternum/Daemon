@@ -582,7 +582,7 @@ async def test_tool_request_skips_cheaper_text_only_route(
     )
     tools_route = _route(model="openrouter/test/tools", input_price=1000)
     tools_route.route_id = "tools"
-    tools_route.max_output_tokens = 32
+    tools_route.max_output_tokens = 128
     _qualified_policy(
         monkeypatch,
         route=[text_only, tools_route],
@@ -616,7 +616,7 @@ async def test_tool_request_skips_cheaper_text_only_route(
         runtime._scope.reset(token)
     assert provider.await_args is not None
     assert provider.await_args.kwargs["model"] == "openrouter/test/tools"
-    assert provider.await_args.kwargs["max_tokens"] == 32
+    assert provider.await_args.kwargs["max_tokens"] == 128
 
 
 @pytest.mark.asyncio
@@ -1864,6 +1864,38 @@ async def test_route_revoked_between_selection_and_dispatch_never_reserves(
     assert denied.value.code == "route_unavailable"
     assert denied.value.retryable is False
     _assert_nothing_dispatched(service, provider)
+
+
+@pytest.mark.asyncio
+async def test_automatic_walk_skips_only_the_revoked_candidate_before_reserving(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cheap = _route(model="openrouter/test/revoked", input_price=0)
+    cheap.route_id = "revoked"
+    next_route = _route(model="openrouter/test/available", input_price=1000)
+    next_route.route_id = "available"
+    _qualified_policy(monkeypatch, route=[cheap, next_route])
+    approved_policy = runtime.load_inference_policy()
+    loads = 0
+
+    def rotating_policy() -> Any:
+        nonlocal loads
+        loads += 1
+        if loads >= 2:
+            cheap.is_approved = lambda requirements: False
+        return approved_policy
+
+    monkeypatch.setattr(runtime, "load_inference_policy", rotating_policy)
+    service = _chat_service()
+    provider = AsyncMock(return_value={"choices": []})
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service, auto_route=True):
+        await runtime.guarded_completion(messages=[{"role": "user", "content": "hello"}])
+    assert service.reserve.await_count == 1
+    assert service.reserve.await_args.kwargs["model"] == next_route.model
+    assert provider.await_count == 1
+    assert provider.await_args is not None
+    assert provider.await_args.kwargs["model"] == next_route.model
 
 
 @pytest.mark.asyncio

@@ -834,15 +834,36 @@ async def _account_frames(
             pass
 
 
-def _approved_chat_model(model: str | None = None) -> str:
+def _qualified_profile_available(profile: str) -> bool:
+    """Whether ``profile`` has a qualified route in this deployment right now.
+
+    ``choose_route`` is the cheap, local qualification check: it reads the
+    validated routing metadata and the inference policy and nothing else. It
+    reserves no account budget and calls no provider, so it is safe to run
+    before admission. The route it names is deliberately discarded — the
+    profile's cheapest candidate is not a pin, and dispatch still picks the
+    route this account, request and budget may actually use.
+    """
+    try:
+        choose_route(profile=profile)
+    except ComputeUnavailable:
+        return False
+    return True
+
+
+def _approved_chat_model(model: str | None = None, *, profile: str = "routine") -> str:
     try:
         if model and model != "auto":
+            # An explicit selection is admitted against its own exact route, and
+            # is not a claim about what the automatic profile can serve.
             return choose_route(model).model
-        # Admission only checks deployment qualification. Account eligibility,
-        # workload capabilities and output bounds are checked at dispatch.
-        if _selectable_model_ids():
-            return "auto"
-        raise ComputeUnavailable("route_unavailable", "Approved inference route unavailable")
+        # Admission qualifies the exact profile this request will dispatch
+        # under. An approved route that no group of that profile may use is not
+        # a servable answer, so it must not buy a 200 here. Account eligibility,
+        # per-request capabilities, output bounds and budget stay at dispatch.
+        if not _qualified_profile_available(profile):
+            raise ComputeUnavailable("route_unavailable", "Approved inference route unavailable")
+        return "auto"
     except ComputeUnavailable as exc:
         raise HTTPException(
             status_code=503,
@@ -1358,10 +1379,14 @@ async def openai_chat_completions(
                 break
     if actual_model in {"default", "", "kimi", "auto"}:
         actual_model = ""
-    actual_model = _approved_chat_model(
-        actual_model if actual_model not in {"default", "", "kimi", "auto"} else None
-    )
+    # Classify before admission so the automatic choice is qualified against the
+    # exact workload profile this request will dispatch under, not against any
+    # approved route at all.
     workload = select_model_tier(last_message).profile
+    actual_model = _approved_chat_model(
+        actual_model if actual_model not in {"default", "", "kimi", "auto"} else None,
+        profile=workload,
+    )
 
     system_prompts = [
         _extract_text_content(m.content)
@@ -1977,8 +2002,16 @@ async def chat(
         user_override=user_model_choice,
     )
 
+    # A council run streams under the council profile, not under the profile the
+    # command's wording would classify to, so admit it against the profile it
+    # will actually dispatch under.
+    admission_profile = (
+        "council" if is_council_config_response or is_council_command else model_decision.profile
+    )
+
     selected_model = _approved_chat_model(
-        model_decision.model if model_decision.tier == "explicit" else None
+        model_decision.model if model_decision.tier == "explicit" else None,
+        profile=admission_profile,
     )
 
     actual_model = selected_model

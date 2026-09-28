@@ -115,6 +115,12 @@ context/output fit and account funding. It compares bounded request cost within
 the acceptable preference group. A small model output ceiling must not make an
 otherwise inadequate response appear cheaper.
 
+For an automatic request without an explicit output limit, the comparison target
+is the account's existing output allowance, bounded by its remaining context.
+Every candidate must support that same target. The profile's `min_output_tokens`
+is a suitability floor, not the dispatched answer cap. Explicit caller output
+limits remain exact and still require route/account admission.
+
 Reasoning/council can consider their provisional premium candidates where profile
 and account capabilities permit them. Research retains its premium-capable flag,
 but its sole automatic model is Luna; premium route classification remains an
@@ -123,6 +129,12 @@ account eligibility. Routine/background execution uses routine
 routes. Premium eligibility does not itself authorize spending: every attempt
 must reserve capacity. Explicit model selections stay exact and still pass
 capability, privacy and accounting checks.
+
+Nested automatic helpers inherit the enclosing account scope's premium ceiling:
+entering a reasoning profile inside a routine/background account scope cannot
+enable premium routes. Explicit authorized model pins still require account
+premium eligibility. Standalone reasoning/council account scopes retain their
+own configured ceilings.
 
 The approved candidate's parameter preset is applied **after selection**,
 including on fallback. Reasoning-effort vocabularies differ between models;
@@ -162,6 +174,15 @@ reasoning helpers use the reasoning profile. Nested routing contexts select a
 workload without creating a new account allowance. Model provenance comes from
 the dispatched route rather than a stale configured hint. Benchmark-specific
 model injections remain separate from deployment defaults.
+
+Automatic title generation, contradiction checks and entity confirmation reserve
+up to 4096 total output tokens, including reasoning, while retaining the selected
+model's reviewed effort preset. Empty or truncated helper responses are treated
+as incomplete results, not valid verdicts. Explicit/benchmark small output limits
+are preserved. Exact helper/benchmark pins remain exact even inside an automatic
+account scope; extraction attribution comes from the actual dispatch rather than
+the requested benchmark model constant. These PR-review changes were tested with
+mocked providers; they do not extend the earlier paid quality evaluation evidence.
 
 ## Model rotation and evaluation
 
@@ -260,3 +281,12 @@ Fresh review accepted the final terminal-provider-error classification correctio
 automatic exhaustion preserves typed failure details without changing the existing
 multi-candidate fallback contract. The optional evaluation-period guard remains
 opt-in. No production migration, route approval or deployment was performed.
+
+After addressing PR #340's review, the full wrapper again exited 0: backend
+3539 passed / 7 skipped, frontend 317 passed, 15 successful gates and zero
+blocking failures. Fresh independent review reported no findings. Bandit's
+non-blocking inventory was 8334 low / 7 medium / zero high. The fixes include
+the owner-approved shared account output target, 4096-token automatic small-helper
+bounds and inherited premium ceiling, plus exact benchmark pins, profile-aware
+admission, explicit exclusions and shared identity/placement lookup. No paid
+evaluation or production activation accompanied these fixes.
