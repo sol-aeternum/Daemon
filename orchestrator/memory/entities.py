@@ -3,7 +3,7 @@
 This module provides:
 - Candidate mention extraction from memory content (baseline regex + optional spaCy)
 - Entity resolution against canonical store
-- Batch LLM confirmation for ambiguous merges via BACKGROUND_REASONING_MODEL
+- Batch LLM confirmation for ambiguous merges on the background profile
 
 The baseline extraction works without spaCy. When spaCy is available, it may enrich
 candidate extraction with NER, but the feature degrades cleanly when spaCy is absent.
@@ -22,6 +22,16 @@ from orchestrator.compute_runtime import guarded_completion
 from orchestrator.config import get_settings
 from orchestrator.memory.embedding import embed_query
 from orchestrator.memory.store import MemoryStore
+from orchestrator.model_routing import routing_context
+
+# Entity resolution is a short unattended structured judgement, so it runs on
+# the background profile with no pinned model.
+ENTITY_PROFILE = "background"
+
+# Legacy sampling control, kept only for an explicit model pin. The automatic
+# background request sends no temperature/top_p, because the approved automatic
+# background candidate declares seed-only sampling support.
+ENTITY_CONFIRM_TEMPERATURE = 0.1
 
 logger = logging.getLogger(__name__)
 
@@ -241,20 +251,25 @@ def _extract_from_slot(text: str) -> str | None:
     return None
 
 
-def _get_provider_call_params(model: str) -> dict[str, Any]:
-    """Get provider configuration for guarded_completion call."""
+def _get_provider_call_params(model: str | None = None) -> dict[str, Any]:
+    """Get provider configuration for guarded_completion call.
+
+    ``model`` is an explicit injection point for tests and benchmark harnesses.
+    When it is ``None`` no model is sent, so the compute guard selects an
+    approved route for the entity workload profile.
+    """
     settings = get_settings()
     provider_config = settings.get_provider_config("openrouter")
 
-    if model.startswith("openrouter/"):
-        normalized_model = model
-    else:
-        normalized_model = f"openrouter/{model}"
-
     call_params: dict[str, Any] = {
-        "model": normalized_model,
         "timeout": provider_config.timeout_s,
     }
+
+    if model is not None:
+        if model.startswith("openrouter/"):
+            call_params["model"] = model
+        else:
+            call_params["model"] = f"openrouter/{model}"
 
     if provider_config.base_url:
         call_params["api_base"] = provider_config.base_url
@@ -701,18 +716,22 @@ Consider:
 
 async def confirm_merge_llm(
     resolution: EntityResolution,
+    *,
+    model: str | None = None,
 ) -> tuple[bool, str]:
     """Confirm or reject an ambiguous merge using LLM.
 
+    Entity resolution is a short unattended structured judgement, so it runs on
+    the background profile with no pinned model.
+
     Args:
         resolution: EntityResolution with ambiguous decision
+        model: Optional explicit model injection for tests/benchmarks only.
 
     Returns:
         (confirmed, explanation) tuple
     """
     try:
-        model = get_settings().background_reasoning_model
-
         call_params = _get_provider_call_params(model)
         call_params.update(
             {
@@ -727,12 +746,18 @@ async def confirm_merge_llm(
                         ),
                     }
                 ],
-                "temperature": 0.1,
+                # A one-line verdict with a single sentence of justification.
                 "max_tokens": 100,
             }
         )
+        if model is not None:
+            # An explicit pin is a caller-owned choice, so the historical
+            # sampling control travels with it. The automatic background call
+            # sends none, so the seed-only automatic candidate stays eligible.
+            call_params["temperature"] = ENTITY_CONFIRM_TEMPERATURE
 
-        response = await guarded_completion(**call_params)
+        with routing_context(ENTITY_PROFILE, preferred_model=model):
+            response = await guarded_completion(**call_params)
 
         response_data: Any = response
         model_dump = getattr(response, "model_dump", None)
@@ -770,7 +795,7 @@ async def confirm_merge_llm(
 async def batch_confirm_merges(
     resolutions: list[EntityResolution],
 ) -> list[EntityResolution]:
-    """Confirm ambiguous merges in batch using BACKGROUND_REASONING_MODEL.
+    """Confirm ambiguous merges in batch using the background profile.
 
     Processes up to BATCH_CONFIRMATION_MAX ambiguous candidates per batch.
     Updates merge_decision based on LLM response.

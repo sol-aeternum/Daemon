@@ -213,33 +213,6 @@ def _extract_last_user_message(messages: list[dict[str, Any]]) -> str | None:
 from orchestrator.tools.retry import is_retry_request  # noqa: E402
 
 
-def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    """Deep-merge two dicts without mutating inputs."""
-
-    merged: dict[str, Any] = dict(base)
-    for key, val in override.items():
-        if key in merged and isinstance(merged[key], dict) and isinstance(val, dict):
-            merged[key] = _deep_merge_dict(
-                cast(dict[str, Any], merged[key]), cast(dict[str, Any], val)
-            )
-        else:
-            merged[key] = val
-    return merged
-
-
-def _prefix_match_params(model: str, params_by_prefix: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """Return params for the most specific matching model prefix."""
-
-    if not model or not params_by_prefix:
-        return {}
-
-    for prefix in sorted(params_by_prefix.keys(), key=len, reverse=True):
-        if model.startswith(prefix):
-            params = params_by_prefix.get(prefix)
-            return dict(params) if isinstance(params, dict) else {}
-    return {}
-
-
 def _reasoning_text_from_details(reasoning_details: Any) -> str | None:
     """Extract human-readable reasoning text from streaming reasoning_details."""
 
@@ -307,16 +280,8 @@ def _prepare_call_params(
     if provider_config.extra_headers:
         call_params["extra_headers"] = provider_config.extra_headers
 
-    # Merge params into call_params as base -> provider -> model.
-    provider_defaults = _prefix_match_params(
-        model_to_use, getattr(settings, "provider_extra_params", {})
-    )
-    if provider_defaults:
-        call_params = _deep_merge_dict(call_params, provider_defaults)
-
-    model_overrides = getattr(settings, "model_extra_params", {}).get(model_to_use, {})
-    if isinstance(model_overrides, dict) and model_overrides:
-        call_params = _deep_merge_dict(call_params, model_overrides)
+    # Candidate-specific reasoning controls belong to guarded dispatch: auto
+    # selection or fallback can choose a different model from this caller hint.
 
     return call_params
 

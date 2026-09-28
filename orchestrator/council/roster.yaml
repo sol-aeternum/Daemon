@@ -1,34 +1,48 @@
 # Council Roster Configuration
-# Defines roles, model assignments, and preset configurations for the council system
+# Defines roles, model assignments, and preset configurations for the council system.
+#
+# The model ids below are seat *preferences*, one per role, in developer/model
+# form. They are not provider approvals and not the routing policy: the central
+# routing config owns which routes are qualified, which candidate pool a seat may
+# fall back to, and which model-specific parameters are legal. Selection is
+# capability-first, so a seat keeps its preference when it is eligible and
+# otherwise takes a qualified alternative.
+#
+# Council independence is a property of the *developers* serving the seats, not
+# of the model strings. Every seat below is planned on a different model
+# developer, and a seat never falls back onto a developer another seat is planned
+# for, so a substitution cannot quietly turn five perspectives into two. The
+# minimum is three distinct developers actually serving a round; a round that
+# cannot reach it is an error, never a "successful" council.
 
 roles:
   analyst:
     description: "Analyzes information critically, identifies patterns and inconsistencies"
-    model_id: "openrouter/anthropic/claude-opus-4.6"
+    model_id: "openrouter/anthropic/claude-sonnet-5"
     timeout_s: 120
     seat: 1
 
   strategist:
     description: "Plans long-term approaches, considers strategic implications"
-    model_id: "openrouter/openai/gpt-5.4"
+    model_id: "openrouter/openai/gpt-6-sol"
     timeout_s: 90
     seat: 2
 
   skeptic:
     description: "Questions assumptions, challenges conventional wisdom"
-    model_id: "openrouter/moonshotai/kimi-k2.5"
+    model_id: "openrouter/google/gemini-3.8-flash"
     timeout_s: 120
     seat: 3
 
   contrarian:
     description: "Takes opposing views, forces reconsideration of positions"
-    model_id: "openrouter/x-ai/grok-4"
+    model_id: "openrouter/x-ai/grok-4.7"
     timeout_s: 90
     seat: 4
 
   auditor:
     description: "Reviews decisions for errors, validates reasoning chains"
-    model_id: "openrouter/deepseek/deepseek-r1"
+    model_id: "openrouter/z-ai/glm-5.3"
     timeout_s: 120
     seat: 5
 

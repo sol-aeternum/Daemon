@@ -1,6 +1,7 @@
 """Conversation summary generation module for Daemon memory layer.
 
-Implements incremental summary generation using auto_fast_model.
+Incremental summary generation runs on the background inference profile: it is
+a short unattended workload, so no model is pinned here.
 """
 
 from __future__ import annotations
@@ -15,6 +16,14 @@ from orchestrator.compute_runtime import guarded_completion
 from orchestrator.config import get_settings
 from orchestrator.memory.store import MemoryStore
 from orchestrator.memory.summarization import validated_summary_baseline
+from orchestrator.model_routing import routing_context
+
+SUMMARY_PROFILE = "background"
+
+# Legacy sampling control, kept only for an explicit model pin. The automatic
+# background request sends no temperature/top_p, because the approved automatic
+# background candidate declares seed-only sampling support.
+SUMMARY_TEMPERATURE = 0.3
 
 
 # Default inline batch size for the post-extraction summary path. Kept
@@ -47,9 +56,10 @@ Updated Summary (2-3 sentences):"""
 
 
 def _normalize_model_for_provider(model_id: str) -> str:
-    """Normalize model ID for OpenRouter provider.
+    """Normalize an explicitly injected model ID for the OpenRouter provider.
 
-    Ensures model has proper openrouter/ prefix.
+    Only used by test/benchmark callers that pin a concrete model; deployment
+    leaves the model unset and lets the compute guard choose the route.
     """
     if model_id.startswith("openrouter/"):
         return model_id
@@ -61,6 +71,7 @@ def _normalize_model_for_provider(model_id: str) -> str:
 async def generate_or_update_summary(
     conversation_id: uuid.UUID,
     store: MemoryStore,
+    model: str | None = None,
 ) -> str | None:
     """Generate or incrementally update conversation summary.
 
@@ -77,11 +88,14 @@ async def generate_or_update_summary(
     Args:
         conversation_id: UUID of conversation to summarize
         store: MemoryStore instance
+        model: Optional explicit model injection for tests/benchmarks only.
+            Deployment leaves this ``None`` and lets the background profile
+            choose an approved route.
 
     Returns:
         New summary string or None if generation failed
     """
-    result = await _generate_or_update_summary_result(conversation_id, store)
+    result = await _generate_or_update_summary_result(conversation_id, store, model=model)
     return result.summary
 
 
@@ -107,8 +121,15 @@ class SummaryUpdateResult:
 async def _generate_or_update_summary_result(
     conversation_id: uuid.UUID,
     store: MemoryStore,
+    *,
+    model: str | None = None,
 ) -> SummaryUpdateResult:
-    """Worker-internal entry point that exposes the continuation flag."""
+    """Worker-internal entry point that exposes the continuation flag.
+
+    ``model`` is an explicit injection point for tests and benchmark harnesses
+    only; deployment leaves it ``None`` and lets the background profile choose
+    an approved route.
+    """
     # Get conversation to check for existing summary and persisted baseline.
     conversation = await store.get_conversation(conversation_id)
     if not conversation:
@@ -179,9 +200,6 @@ async def _generate_or_update_summary_result(
     settings = get_settings()
     provider_config = settings.get_provider_config("openrouter")
 
-    # Normalize model for provider
-    model = _normalize_model_for_provider(settings.auto_fast_model)
-
     # Build prompt
     prompt = SUMMARY_PROMPT.format(
         existing_summary=existing_summary if existing_summary else "No previous summary.",
@@ -190,12 +208,15 @@ async def _generate_or_update_summary_result(
 
     # Build call parameters matching the pattern in main.py
     call_params: dict[str, Any] = {
-        "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.3,
         "max_tokens": 200,
         "timeout": provider_config.timeout_s,
     }
+    if model is not None:
+        # An explicit pin is a caller-owned choice, so the historical sampling
+        # control travels with it. The automatic background call sends none.
+        call_params["model"] = _normalize_model_for_provider(model)
+        call_params["temperature"] = SUMMARY_TEMPERATURE
 
     # Add provider-specific configuration
     if provider_config.base_url:
@@ -238,7 +259,8 @@ async def _generate_or_update_summary_result(
             )
             pre_persist_continuation = finalizing_after > (persisted_baseline + len(messages))
 
-        response = await guarded_completion(**call_params)
+        with routing_context(SUMMARY_PROFILE, preferred_model=model):
+            response = await guarded_completion(**call_params)
 
         # Extract content
         content = _extract_content(response)

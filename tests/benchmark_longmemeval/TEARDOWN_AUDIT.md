@@ -1,13 +1,14 @@
 # LongMemEval Teardown Audit
 
-Date: 2026-04-21T11:58:58+00:00
+Date: 2026-09-28T11:45:53+00:00
 
 ## Scope
 
 This audit exercised the live benchmark code paths with deterministic local doubles for extraction, embeddings, answer generation, and judging so the only variable under test was database teardown behavior.
 
+- Both lanes ran against a disposable per-test schema on the isolated `ENTITLEMENTS_TEST_DATABASE_URL` server, created by replaying the shipped `migrations/*.sql`; the shared `public` schema of that server was neither read nor written, so the counts below are not affected by pre-existing data.
 - Canonical lane exercised `tests.longmemeval.ingest.ingest_session()` plus `tests.longmemeval.evaluate.evaluate_single()`, which are the concrete units looped by `orchestrator/eval/runner.py`.
-- Fast lane exercised `orchestrator.eval.longmemeval_fast.cleanup_benchmark_state()` plus `ingest_question_chunks()` plus `evaluate_single()`, mirroring the per-question loop in `LongMemEvalFastRunner.run()`.
+- Fast lane exercised `orchestrator.eval.chunk_harness.cleanup_benchmark_state()` plus `ingest_question_chunks()` plus `evaluate_single()`, mirroring the per-question loop in `LongMemEvalChunkRunner.run()`.
 
 ### Instrumentation note
 
@@ -18,8 +19,8 @@ The fast-lane audit deliberately held the background `store.log_retrieval()` tas
 | Snapshot | users | conversations | messages | memories | memory_extraction_log | retrieval_log | entities | dream_log | Notes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | baseline | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | fresh isolated audit user before case 1 |
-| after case 1 settled | 1 | 1 | 2 | 1 | 1 | 1 | 0 | 0 | no teardown ran after case 1 |
-| after case 2 settled | 1 | 2 | 4 | 2 | 2 | 2 | 0 | 0 | case 2 adds another full row-set on top of case 1 |
+| after case 1 settled | 1 | 1 | 2 | 0 | 0 | 1 | 0 | 0 | no teardown ran after case 1 |
+| after case 2 settled | 1 | 2 | 4 | 0 | 0 | 2 | 0 | 0 | case 2 adds another full row-set on top of case 1 |
 | after manual user delete | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | manual cleanup proves FK cascades work when invoked |
 
 ### Canonical interpretation
@@ -60,10 +61,10 @@ The fast-lane audit deliberately held the background `store.log_retrieval()` tas
 | --- | --- | --- | --- |
 | Canonical | Yes: `conversations`, `messages`, `memories`, `memory_extraction_log`, `retrieval_log` accumulate 1 -> 2 across the two cases | Missing teardown | Counts only reset after the audit manually deletes the whole user |
 | Fast | Yes, but only for `retrieval_log` when the delayed background write lands after cleanup | Async bleed | Post-case cleanup reaches zero, then a late `retrieval_log` row reappears with all other tables still at zero |
-| Fast end-of-run | No rows remain after `DELETE FROM users ...` | End-of-run user deletion | Final user delete returns the run-scoped user and every user-linked table to zero |
+| Fast end-of-run | No rows remain after deleting the benchmark user | End-of-run user deletion | Final user delete returns the run-scoped user and every user-linked table to zero |
 
 ## Bottom line
 
 - The canonical lane leaks benchmark state between cases because it never tears the benchmark user down between cases.
 - The fast lane cleans its synchronous benchmark tables, but retrieval evidence is vulnerable to async timing because the retrieval-log write is backgrounded.
-- End-of-run user deletion is a separate mechanism from per-case teardown: it is not what causes the leak, but it is what guarantees the last fast-lane stray row disappears.
+- End-of-run user deletion is a separate mechanism from per-case teardown: it is not what causes the leak, but it guarantees the last fast-lane stray row disappears.

@@ -11,7 +11,10 @@ from orchestrator.config import get_settings
 from orchestrator.memory.embedding import EmbeddingConfigurationError, embed_query_with_metadata
 from orchestrator.memory.retrieval import retrieve_memories_for_text
 from orchestrator.memory.store import MemoryStore
+from orchestrator.model_routing import routing_context
 from orchestrator.tools.registry import Tool
+
+REFLECT_PROFILE = "reasoning"
 
 REFLECT_SYNTHESIS_PROMPT = """You are a thoughtful memory analyst. Given the retrieved memories below, synthesize them into a coherent, nuanced reflection on the topic.
 
@@ -46,9 +49,10 @@ class MemoryReflectTool(Tool):
         "required": ["topic"],
     }
 
-    def __init__(self, store: MemoryStore, user_id: uuid.UUID) -> None:
+    def __init__(self, store: MemoryStore, user_id: uuid.UUID, *, model: str | None = None) -> None:
         self.store = store
         self.user_id = user_id
+        self.model = model
 
     async def execute(self, **kwargs: Any) -> str:
         topic = kwargs.get("topic", "")
@@ -87,7 +91,6 @@ class MemoryReflectTool(Tool):
         # Format memories for the LLM
         formatted_memories = self._format_memories(memories)
 
-        model = self._get_orchestrator_model()
         settings = get_settings()
         provider_config = settings.get_provider_config("openrouter")
 
@@ -100,11 +103,11 @@ class MemoryReflectTool(Tool):
         ]
 
         call_params: dict[str, Any] = {
-            "model": model,
             "messages": messages,
-            "temperature": 0.7,
             "timeout": provider_config.timeout_s,
         }
+        if self.model is not None:
+            call_params["model"] = self.model
 
         if provider_config.base_url:
             call_params["api_base"] = provider_config.base_url
@@ -118,7 +121,9 @@ class MemoryReflectTool(Tool):
             call_params["extra_headers"] = provider_config.extra_headers
 
         try:
-            response = await guarded_completion(**call_params)
+            # A helper inherits the parent's account budget, not its model pin.
+            with routing_context(REFLECT_PROFILE):
+                response = await guarded_completion(**call_params)
 
             content = self._extract_content(response)
             if content:
@@ -141,11 +146,6 @@ class MemoryReflectTool(Tool):
             lines.append(f"{i}. [{category.upper()}]{slot_text} [source={source}] {content}")
 
         return "\n".join(lines)
-
-    def _get_orchestrator_model(self) -> str:
-        """Get the orchestrator-tier model from settings."""
-        settings = get_settings()
-        return settings.background_reasoning_model
 
     def _extract_content(self, response: Any) -> str:
         """Extract content from litellm response."""

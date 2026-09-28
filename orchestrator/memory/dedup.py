@@ -18,8 +18,14 @@ from orchestrator.memory.embedding import (
     get_configured_embedding_fallback_storage_models,
 )
 from orchestrator.memory.store import MemoryStore
+from orchestrator.model_routing import routing_context
 
 logger = logging.getLogger(__name__)
+
+# Contradiction detection is a judgement call over two stored facts, so it runs
+# on the reasoning profile. Benchmark mode is exempt: it stays pinned to the
+# dated snapshot model and never enters workload-profile routing.
+CONTRADICTION_PROFILE = "reasoning"
 
 # Dynamic import for trust signals to avoid circular imports
 _trust_signals = None
@@ -240,11 +246,6 @@ async def check_contradiction(
     is_benchmark = DEDUP_BENCHMARK_MODE if benchmark_mode is None else bool(benchmark_mode)
     try:
         call_params: dict[str, Any] = {
-            "model": (
-                BENCHMARK_CONTRADICTION_MODEL
-                if is_benchmark
-                else get_settings().background_reasoning_model
-            ),
             "messages": [
                 {
                     "role": "user",
@@ -256,13 +257,23 @@ async def check_contradiction(
                 }
             ],
             "temperature": 0.0 if is_benchmark else CONTRADICTION_TEMPERATURE,
+            # A YES/NO verdict with one sentence of evidence. This bound is the
+            # real output contract, not a routing hint; the reasoning profile's
+            # min-output floor is a separate model-capability gate.
             "max_tokens": 50,
         }
         if is_benchmark:
+            # Benchmark isolation: pin the dated snapshot model and seed.
+            call_params["model"] = BENCHMARK_CONTRADICTION_MODEL
             call_params["seed"] = DEDUP_BENCHMARK_SEED
 
         try:
-            response = await guarded_completion(**call_params)
+            if is_benchmark:
+                response = await guarded_completion(**call_params)
+            else:
+                # No explicit model: the guard picks an approved reasoning route.
+                with routing_context(CONTRADICTION_PROFILE):
+                    response = await guarded_completion(**call_params)
         except Exception as exc:
             if is_benchmark:
                 raise DedupBenchmarkProviderError(

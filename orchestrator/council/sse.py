@@ -11,7 +11,7 @@ from orchestrator.commands.council import (
     handle_council_interview_response,
     run_council,
 )
-from orchestrator.council.config import load_roster
+from orchestrator.council.config import UnknownCouncilPreset, load_roster
 from orchestrator.council.models import CouncilConfig
 from orchestrator.daemon import now_rfc3339, sse
 
@@ -524,10 +524,28 @@ async def stream_council_interview_response(
         try:
             config_obj = CouncilConfig(**config_source) if config_source else CouncilConfig()
         except Exception:
-            config_obj = CouncilConfig()
+            yield sse(
+                "council_error",
+                make_envelope(
+                    "council_error",
+                    {"error": "Could not parse council config. Try 'default' or 'go'."},
+                    conversation_id,
+                    request_id,
+                ),
+            )
+            return
 
         if "roster" not in config_source:
-            config_obj.roster = load_roster(config_obj.preset_name)
+            try:
+                config_obj.roster = load_roster(config_obj.preset_name)
+            except UnknownCouncilPreset as exc:
+                yield sse(
+                    "council_error",
+                    make_envelope(
+                        "council_error", {"error": str(exc)}, conversation_id, request_id
+                    ),
+                )
+                return
 
         if isinstance(prompt_override, str) and prompt_override.strip():
             result = await run_council(

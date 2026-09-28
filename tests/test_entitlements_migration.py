@@ -19,7 +19,7 @@ def _sql() -> str:
     return MIGRATION.read_text(encoding="utf-8")
 
 
-def test_migration_number_is_the_next_free_one() -> None:
+def test_migration_number_is_unique_in_the_contiguous_chain() -> None:
     numbers = sorted(
         int(match.group(1))
         for path in (ROOT / "migrations").glob("*.sql")
@@ -30,7 +30,8 @@ def test_migration_number_is_the_next_free_one() -> None:
     # Preserve that history while checking continuity and our new prefix's uniqueness.
     assert sorted(set(numbers)) == list(range(1, max(numbers) + 1)), "migration numbering has a gap"
     assert numbers.count(max(numbers)) == 1, "new migration prefix is already occupied"
-    assert MIGRATION.name.startswith(f"{max(numbers):03d}_")
+    assert MIGRATION.is_file()
+    assert numbers.count(int(MIGRATION.name.split("_", 1)[0])) == 1
 
 
 def test_migration_is_additive_and_preserves_memory_and_credit_tables() -> None:

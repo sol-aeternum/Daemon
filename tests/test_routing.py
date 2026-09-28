@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from orchestrator.config import get_settings
 from orchestrator.model_router import (
     classify_message,
     select_model_tier,
@@ -34,15 +33,15 @@ class TestClassifyMessage:
         assert classify_message("what time is it") == "trivial"
 
     def test_whats_the_weather_standard(self) -> None:
-        """'what's the weather' matches STANDARD_SIMPLE_SIGNALS (weather) → standard."""
+        """Weather without a complexity signal is a routine workload."""
         assert classify_message("what's the weather") == "standard"
 
     def test_weather_alone_standard(self) -> None:
-        """'weather' alone is a standard simple signal."""
+        """Weather alone is standard."""
         assert classify_message("weather") == "standard"
 
     def test_generate_image_standard(self) -> None:
-        """'generate an image' is a standard simple signal."""
+        """Image text is classified as standard (modality gate still denies it)."""
         assert classify_message("generate an image") == "standard"
 
     def test_refactor_complex(self) -> None:
@@ -65,19 +64,26 @@ class TestClassifyMessage:
         """Messages with code blocks are classified as complex regardless of content."""
         assert classify_message("explain this: ```def foo(): pass```") == "complex"
 
-    def test_long_message_complex(self) -> None:
-        """Messages over 500 characters are classified as complex."""
+    def test_long_message_is_not_a_quality_requirement(self) -> None:
+        """Length is accounted for by context/output bounds, not model quality."""
         long_text = "a" * 501
-        assert classify_message(long_text) == "complex"
+        assert classify_message(long_text) == "standard"
 
-    def test_many_tokens_complex(self) -> None:
-        """Messages with more than 80 tokens are classified as complex."""
+    def test_many_tokens_is_not_a_quality_requirement(self) -> None:
+        """A long prompt alone does not upgrade to reasoning."""
         many_tokens = "word " * 81
-        assert classify_message(many_tokens) == "complex"
+        assert classify_message(many_tokens) == "standard"
 
-    def test_deep_conversation_complex(self) -> None:
-        """High turn count bumps to complex."""
-        assert classify_message("hello", turn_count=11) == "complex"
+    def test_deep_conversation_is_not_a_quality_requirement(self) -> None:
+        """Turn count does not upgrade a greeting to reasoning."""
+        assert classify_message("hello", turn_count=11) == "trivial"
+
+    def test_simple_prefix_does_not_hide_complex_work(self) -> None:
+        assert classify_message("search for and compare these architectures") == "complex"
+        assert classify_message("remember my strategy and evaluate the options") == "complex"
+
+    def test_signals_match_word_boundaries(self) -> None:
+        assert classify_message("the username is comparisondebugger") == "standard"
 
     def test_empty_message_trivial(self) -> None:
         """Empty message is trivially trivial."""
@@ -105,6 +111,18 @@ class TestSelectModelTier:
         decision = select_model_tier("help me refactor this auth module")
         assert decision.tier == "reasoning"
         assert decision.advisor_eligible is True
+        assert decision.profile == "reasoning"
+
+    def test_research_workload_profile(self) -> None:
+        decision = select_model_tier("search for recent weather reports")
+        assert decision.profile == "research"
+        assert decision.model == ""
+
+    def test_manual_model_is_exact(self) -> None:
+        model = "openrouter/z-ai/glm-5.3"
+        decision = select_model_tier("debug this parser", user_override=model)
+        assert decision.model == model
+        assert decision.tier == "explicit"
 
     def test_code_block_reasoning_advisor_eligible(self) -> None:
         """Code blocks route to reasoning with advisor eligible."""
@@ -170,27 +188,12 @@ class TestRouteMessageLocalFlag:
 
 
 class TestThreeTierRoutingIntegration:
-    """Integration tests verifying model selection against config defaults.
+    """Classification provides workload profiles; dispatch owns model selection."""
 
-    These tests verify the three-tier routing contract:
-    - trivial → auto_fast_model
-    - standard → auto_reasoning_model
-    - complex → auto_reasoning_model with advisor_eligible=True
-    """
+    def test_trivial_routes_to_routine(self) -> None:
+        assert select_model_tier("hi").profile == "routine"
 
-    def test_trivial_routes_to_flash_lite(self) -> None:
-        """Trivial messages should route to auto_fast_model."""
-        settings = get_settings()
-        expected = settings.auto_fast_model
-
-        classification = classify_message("hi")
-        assert classification == "trivial"
-
-        # The /chat path uses classification + auto_fast_model.
-        assert expected == settings.auto_fast_model
-
-    def test_complex_routes_to_m2_7_with_advisor(self) -> None:
-        """Complex messages should route to auto_reasoning_model with advisor_eligible=True."""
+    def test_complex_routes_to_reasoning(self) -> None:
         classification = classify_message("help me refactor this auth module")
         assert classification == "complex"
 
@@ -198,19 +201,17 @@ class TestThreeTierRoutingIntegration:
         assert decision.tier == "reasoning"
         assert decision.advisor_eligible is True
 
-        # Verify model is the configured reasoning model.
-        settings = get_settings()
-        expected = settings.auto_reasoning_model
-        assert expected == settings.auto_reasoning_model
+        assert decision.profile == "reasoning"
+        assert decision.model == ""
 
-    def test_standard_routes_to_m2_7_no_advisor(self) -> None:
-        """Standard messages route to auto_reasoning_model but advisor_eligible=False."""
+    def test_standard_routes_to_routine(self) -> None:
         classification = classify_message("what's the weather")
         assert classification == "standard"
 
         decision = select_model_tier("what's the weather")
         assert decision.tier == "fast"
         assert decision.advisor_eligible is False
+        assert decision.profile == "routine"
 
     def test_local_flag_preserves_stripped_message_for_classification(self) -> None:
         """/local stripped text is used for classification downstream."""
@@ -241,7 +242,7 @@ class TestRepresentativeCases:
         assert classify_message("help me refactor this auth module") == "complex"
 
     def test_whats_the_weather_standard(self) -> None:
-        """'what's the weather' → standard (STANDARD_SIMPLE_SIGNALS)."""
+        """'what's the weather' → standard."""
         assert classify_message("what's the weather") == "standard"
 
     def test_write_a_python_script_complex(self) -> None:
@@ -250,28 +251,26 @@ class TestRepresentativeCases:
             classify_message("write a Python script that downloads files from a URL") == "complex"
         )
 
-    def test_model_resolution_trivial_flash_lite(self) -> None:
-        """Trivial → configured fast model."""
-        settings = get_settings()
-        expected = settings.auto_fast_model
-        assert expected == settings.auto_fast_model
+    def test_model_resolution_trivial_routine(self) -> None:
+        """Trivial → routine profile without preselecting a model."""
+        decision = select_model_tier("hi")
+        assert decision.profile == "routine"
+        assert decision.model == ""
 
-    def test_model_resolution_complex_m2_7_advisor(self) -> None:
-        """Complex → configured reasoning model with advisor_eligible=True."""
+    def test_model_resolution_complex_reasoning(self) -> None:
+        """Complex → reasoning profile with advisor compatibility metadata."""
         decision = select_model_tier("help me refactor this auth module")
         assert decision.tier == "reasoning"
         assert decision.advisor_eligible is True
 
-        settings = get_settings()
-        expected = settings.auto_reasoning_model
-        assert expected == settings.auto_reasoning_model
+        assert decision.profile == "reasoning"
+        assert decision.model == ""
 
-    def test_model_resolution_standard_m2_7_no_advisor(self) -> None:
-        """Standard → configured reasoning model with advisor_eligible=False."""
+    def test_model_resolution_standard_routine(self) -> None:
+        """Standard → routine profile without preselecting a model."""
         decision = select_model_tier("what's the weather")
         assert decision.tier == "fast"
         assert decision.advisor_eligible is False
 
-        settings = get_settings()
-        expected = settings.auto_reasoning_model
-        assert expected == settings.auto_reasoning_model
+        assert decision.profile == "routine"
+        assert decision.model == ""

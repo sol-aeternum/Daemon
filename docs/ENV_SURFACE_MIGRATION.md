@@ -7,6 +7,21 @@ change is meant to enforce.
 
 ## Scope, and the condition everything below depends on
 
+### Luna-first routing amendment — 28 September 2026
+
+`DAEMON_MODEL_ROUTING` is an optional Settings-backed path to workload groups and
+model parameter presets. Absent or empty uses `config/model_routing.json`.
+Backend and worker receive the same override through Compose; the example leaves
+it commented. It grants no endpoint approval or account capacity.
+
+The former `AUTO_FAST_MODEL`, `AUTO_FAST_TEMP`, `AUTO_FAST_MODEL_GROK`,
+`AUTO_FAST_MODEL_GROK_TEMP`, `AUTO_REASONING_MODEL`, `AUTO_REASONING_TEMP`,
+`TITLE_MODEL`, `BACKGROUND_REASONING_MODEL`, `PROVIDER_EXTRA_PARAMS` and
+`MODEL_EXTRA_PARAMS` deployment inputs are retired in favor of that file. Explicit
+benchmark/manual parameters remain request-local and validated. The historical
+cleanup inventory below predates this approved routing amendment. No actual
+deployment environment is modified by these repository changes.
+
 This note describes the repository's own `docker-compose.yml` path. **The actual
 production launch configuration is unproven.** No tracked file records which
 command, override file, or systemd unit the production host uses. Everything in

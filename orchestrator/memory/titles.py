@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 from orchestrator.compute_runtime import guarded_completion
+from orchestrator.model_routing import routing_context
 
 # pyright: reportUnknownMemberType=false
 
 import re
 from collections.abc import Sequence
-from typing import Protocol, TypedDict, cast
+from typing import Any, Protocol, TypedDict, cast
+
+# Title generation is a short unattended background workload, so it is routed
+# by the background profile and never pinned to a deployment model ID.
+TITLE_PROFILE = "background"
+
+# Legacy sampling control, kept only for an explicit model pin. The automatic
+# background request sends no temperature/top_p, because the approved automatic
+# background candidate declares seed-only sampling support.
+TITLE_TEMPERATURE = 0.1
 
 
 TITLE_GENERATION_PROMPT = """
@@ -65,24 +75,37 @@ def _sanitize_title(text: str) -> str:
 
 async def generate_conversation_title(
     messages: Sequence[ConversationMessage],
-    model: str = "auto",
+    model: str | None = None,
 ) -> str:
+    """Generate a short conversation title under the background profile.
+
+    ``model`` is an explicit injection point for tests and benchmark harnesses
+    only. Deployment passes ``None`` so the compute guard picks a qualified
+    route from the background profile; there is no configured model default.
+    """
     excerpt = _prepare_excerpt(messages)
     if not excerpt:
         return "New Conversation"
 
-    response = await guarded_completion(
-        model=model,
-        messages=[
+    call_params: dict[str, Any] = {
+        "messages": [
             {"role": "system", "content": "You generate concise conversation titles."},
             {
                 "role": "user",
                 "content": TITLE_GENERATION_PROMPT.format(messages=excerpt),
             },
         ],
-        temperature=0.1,
-        max_tokens=24,
-    )
+        "max_tokens": 24,
+    }
+    if model is not None:
+        # An explicit pin is a caller-owned choice, so the historical sampling
+        # control travels with it. The automatic background call sends none.
+        call_params["model"] = model
+        call_params["temperature"] = TITLE_TEMPERATURE
+
+    with routing_context(TITLE_PROFILE, preferred_model=model):
+        response = await guarded_completion(**call_params)
+
     typed_response = cast(_CompletionResponse, cast(object, response))
     content = typed_response.choices[0].message.content or ""
     title = _sanitize_title(content)

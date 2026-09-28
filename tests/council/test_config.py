@@ -1,6 +1,8 @@
 """Tests for council config."""
 
-from orchestrator.council.config import load_roster
+import pytest
+
+from orchestrator.council.config import UnknownCouncilPreset, load_roster
 
 
 class TestLoadRoster:
@@ -24,9 +26,9 @@ class TestLoadRoster:
         assert "contrarian" in roster
         assert len(roster) == 3
 
-    def test_load_invalid_preset_fallback(self):
-        roster = load_roster("nonexistent")
-        assert len(roster) == 5
+    def test_load_invalid_preset_rejected(self):
+        with pytest.raises(UnknownCouncilPreset, match="Unknown council preset: nonexistent"):
+            load_roster("nonexistent")
 
     def test_roster_contains_model_ids(self):
         roster = load_roster("default")

@@ -232,18 +232,3 @@ def clear_models_cache() -> None:
     global _models_cache
     _models_cache["data"] = None
     _models_cache["timestamp"] = 0
-
-
-def get_fallback_model(
-    provider: str = "openrouter",
-    default_model: str = "kimi/kimi-k2.5",
-) -> dict[str, Any]:
-    """
-    Return a single fallback model when provider API is unavailable.
-    """
-    return {
-        "id": f"openrouter/{default_model}",
-        "object": "model",
-        "created": int(time.time()),
-        "owned_by": provider,
-    }

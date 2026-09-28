@@ -350,6 +350,7 @@ async def test_process_extraction_no_fact_writes_checkpoint() -> None:
         calibrated_count = 0
         rejected_count = 0
         slot_coverage: dict[str, int] = {}
+        model_used: str | None = None
 
     base_ts = datetime(2026, 8, 11, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -398,6 +399,7 @@ async def test_process_extraction_chunk_index_none_preserved_in_log() -> None:
         calibrated_count = 0
         rejected_count = 0
         slot_coverage: dict[str, int] = {}
+        model_used: str | None = None
 
     with patch(
         "orchestrator.memory.extraction.extract_facts_from_text",
@@ -429,6 +431,7 @@ async def test_process_extraction_checkpoint_failure_is_retryable() -> None:
         calibrated_count = 0
         rejected_count = 0
         slot_coverage: dict[str, int] = {}
+        model_used: str | None = None
 
     with patch(
         "orchestrator.memory.extraction.extract_facts_from_text",

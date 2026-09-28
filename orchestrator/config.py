@@ -3,6 +3,7 @@ from __future__ import annotations
 # pyright: reportMissingImports=false
 
 from functools import lru_cache
+import os
 from typing import ClassVar, Literal
 
 from pydantic import Field
@@ -96,6 +97,7 @@ class Settings(BaseSettings):
     # Optional paths to deployment-owned commercial and provider policy files.
     daemon_commercial_config: str | None = None
     daemon_inference_policy: str | None = None
+    daemon_model_routing: str | None = None
 
     daemon_max_grant_amount_per_request: int = 100
     daemon_min_grant_description_length: int = 5
@@ -173,51 +175,12 @@ class Settings(BaseSettings):
     # CORS configuration
     cors_allowed_origins: str = "http://localhost:3000,http://frontend:3000"
 
-    # ===== AUTO-ROUTING MODEL TIERS =====
-    auto_fast_model: str = "openrouter/google/gemini-2.5-flash"
-    auto_fast_temp: float = 0.7
-
-    # Grok alternatives for auto-fast model
-    auto_fast_model_grok: str = "x-ai/grok-4.1-fast"
-    auto_fast_model_grok_temp: float = 0.7
-
-    auto_reasoning_model: str = "openrouter/moonshotai/kimi-k2.5"
-    auto_reasoning_temp: float = 0.7
-
     # ===== PROVIDER CONFIGURATION =====
     # OpenRouter (primary provider)
     openrouter_api_key: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_referer: str = "https://daemon.ai"
     openrouter_title: str = "Daemon AI Assistant"
-
-    # Provider-level defaults for model-specific parameters (reasoning/thinking).
-    # Applied by model prefix and overridden by per-model `model_extra_params`.
-    provider_extra_params: dict[str, dict[str, object]] = Field(
-        default_factory=lambda: {
-            "openrouter/anthropic/": {"reasoning": {"enabled": True}},
-            "openrouter/openai/": {"reasoning_effort": "medium"},
-            "openrouter/google/": {"reasoning": {"max_tokens": 4096}},
-            "anthropic/": {"thinking": {"type": "adaptive", "effort": "medium"}},
-            "openai/responses/": {"reasoning_effort": "medium"},
-        }
-    )
-
-    # Per-model overrides (exact model id -> extra params). Overrides provider defaults.
-    model_extra_params: dict[str, dict[str, object]] = Field(
-        default_factory=lambda: {
-            # Claude 4.6 Opus/Sonnet: Use reasoning.max_tokens (effort is ignored - they use adaptive)
-            # See: https://openrouter.ai/docs/guides/model-migrations/claude-4-6
-            "openrouter/anthropic/claude-opus-4.6": {
-                "reasoning": {"max_tokens": 16000},
-                "verbosity": "max",
-            },
-            "openrouter/anthropic/claude-sonnet-4.6": {
-                "reasoning": {"max_tokens": 16000},
-                "verbosity": "max",
-            },
-        }
-    )
 
     # Legacy provider settings (for backward compatibility only)
 
@@ -305,13 +268,6 @@ class Settings(BaseSettings):
     database_url: str | None = None
     redis_url: str | None = None
     daemon_encryption_key: str | None = None
-
-    # ===== TITLE GENERATION =====
-    title_model: str = "auto"
-
-    # ===== BACKGROUND REASONING =====
-    # Model used for background reasoning tasks (e.g., contradiction detection)
-    background_reasoning_model: str = "openrouter/deepseek/deepseek-chat"
 
     # ===== DREAMING =====
     dreaming_enabled: bool = True
@@ -478,7 +434,7 @@ class Settings(BaseSettings):
                 name="openrouter",
                 base_url=self.openrouter_base_url,
                 api_key=self.openrouter_api_key,
-                model=self.auto_reasoning_model,
+                model="auto",
                 extra_headers=extra_headers,
                 requires_auth=True,
                 timeout_s=self.request_timeout_s,
@@ -499,7 +455,7 @@ class Settings(BaseSettings):
             name="openrouter",
             base_url=self.openrouter_base_url,
             api_key=self.openrouter_api_key,
-            model=self.auto_reasoning_model,
+            model="auto",
             extra_headers={
                 "HTTP-Referer": self.openrouter_referer,
                 "X-Title": self.openrouter_title,
@@ -507,6 +463,26 @@ class Settings(BaseSettings):
             requires_auth=True,
             timeout_s=self.request_timeout_s,
         )
+
+    @staticmethod
+    def explicit_evaluation_environment() -> dict[str, str]:
+        """CLI safety evidence: only explicitly exported evaluation paths.
+
+        Unlike resolved Settings defaults/dotenv values, this proves the operator
+        explicitly supplied the database and policy overrides for an isolated run.
+        Keep the allowlist here so standalone runners obey the Settings env boundary.
+        Values are never logged by this accessor (the database URL may be secret).
+        """
+        return {
+            key: os.environ[key]
+            for key in (
+                "DATABASE_URL",
+                "DAEMON_COMMERCIAL_CONFIG",
+                "DAEMON_INFERENCE_POLICY",
+                "DAEMON_MODEL_ROUTING",
+            )
+            if key in os.environ
+        }
 
     def list_available_providers(self) -> list[str]:
         """List all configured providers."""

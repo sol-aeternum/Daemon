@@ -5,7 +5,9 @@ from __future__ import annotations
 import uuid
 from typing import Any, Awaitable, Callable
 
-from orchestrator.council.config import load_role_timeouts, load_roster
+from pydantic import ValidationError
+
+from orchestrator.council.config import UnknownCouncilPreset, load_role_timeouts, load_roster
 from orchestrator.council.engine import (
     generate_agent_ids,
     run_round_1,
@@ -16,7 +18,12 @@ from orchestrator.council.interview import (
     render_interview_message,
     parse_interview_response,
 )
-from orchestrator.council.models import CouncilConfig, CouncilSession, CouncilRound
+from orchestrator.council.models import (
+    CouncilConfig,
+    CouncilDiversityError,
+    CouncilSession,
+    CouncilRound,
+)
 from orchestrator.council.output import CouncilOutputRenderer
 
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None]]
@@ -101,6 +108,21 @@ async def run_council(
     config: CouncilConfig | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
+    """Surface an unavailable diverse roster through the existing error contract."""
+    try:
+        return await _run_council(prompt, conversation_id, config, progress_callback)
+    except (CouncilDiversityError, UnknownCouncilPreset) as exc:
+        return {"type": "error", "content": str(exc)}
+    except ValidationError:
+        return {"type": "error", "content": "Council roster is invalid or lacks model diversity."}
+
+
+async def _run_council(
+    prompt: str,
+    conversation_id: str = "",
+    config: CouncilConfig | None = None,
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, Any]:
     """Run the full council deliberation."""
     if config is None:
         config = CouncilConfig()
@@ -108,7 +130,8 @@ async def run_council(
     explicit_fields = getattr(config, "model_fields_set", set())
     has_explicit_roster = isinstance(explicit_fields, set) and "roster" in explicit_fields
     roster = config.roster if has_explicit_roster else load_roster(config.preset_name)
-    config.roster = roster
+    # Preset/interview assignment must pass the same checks as an explicit roster.
+    config = CouncilConfig.model_validate({**config.model_dump(), "roster": roster})
     role_timeouts = load_role_timeouts(config.preset_name)
     agent_ids = generate_agent_ids(roster)
     debate_roles = [role for role in roster if role != "auditor"]

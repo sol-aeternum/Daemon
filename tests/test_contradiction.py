@@ -1,14 +1,34 @@
 from __future__ import annotations
 
 import uuid
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 
 import asyncpg
 import pytest
 
-from orchestrator.memory.dedup import check_contradiction, deduplicate_facts
+from orchestrator.memory.dedup import (
+    CONTRADICTION_PROFILE,
+    check_contradiction,
+    deduplicate_facts,
+)
 from orchestrator.memory.embedding import EmbeddingBatchResult, EmbeddingConfigurationError
 from orchestrator.memory.extraction import ExtractedFact
+from orchestrator.model_routing import routing_context
+
+
+class ProfileRecorder:
+    """Record the workload profile a helper binds, delegating to the real CM."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def __call__(self, profile: str, **kwargs: object):
+        self.calls.append((profile, kwargs))
+        return routing_context(profile, **kwargs)  # type: ignore[arg-type]
+
+    @property
+    def profiles(self) -> list[str]:
+        return [profile for profile, _ in self.calls]
 
 
 def _new_fact(content: str, slot: str | None = None) -> ExtractedFact:
@@ -128,13 +148,12 @@ async def test_dedup_supersession_with_contradiction() -> None:
 
 
 @pytest.mark.asyncio
-async def test_check_contradiction_uses_background_reasoning_model() -> None:
-    """Test that check_contradiction routes to BACKGROUND_REASONING_MODEL."""
-    mock_settings = Mock()
-    mock_settings.background_reasoning_model = "openrouter/deepseek/deepseek-chat"
+async def test_check_contradiction_binds_reasoning_profile() -> None:
+    """Contradiction detection routes on the reasoning profile, pinning no model."""
+    recorder = ProfileRecorder()
 
     with (
-        patch("orchestrator.memory.dedup.get_settings", return_value=mock_settings),
+        patch("orchestrator.memory.dedup.routing_context", new=recorder),
         patch("orchestrator.memory.dedup.guarded_completion") as litellm_mock,
     ):
         litellm_mock.return_value = MockLitellmResponse("NO. The facts are consistent.")
@@ -143,63 +162,44 @@ async def test_check_contradiction_uses_background_reasoning_model() -> None:
         litellm_mock.assert_awaited_once()
         assert litellm_mock.await_args is not None
         call_kwargs = litellm_mock.await_args.kwargs
-        assert call_kwargs["model"] == "openrouter/deepseek/deepseek-chat"
+        # No model hint at all, so the compute guard is free to select.
+        assert "model" not in call_kwargs
+        assert recorder.profiles == [CONTRADICTION_PROFILE]
+        # No stale exclusion/preference is injected by the workload.
+        assert recorder.calls[0][1] == {}
 
 
 @pytest.mark.asyncio
-async def test_check_contradiction_empty_model_string_passed_directly() -> None:
-    """Test that empty model string is passed through to LLM as-is."""
-    mock_settings = Mock()
-    mock_settings.background_reasoning_model = ""
-
-    with (
-        patch("orchestrator.memory.dedup.get_settings", return_value=mock_settings),
-        patch("orchestrator.memory.dedup.guarded_completion") as litellm_mock,
-    ):
+async def test_check_contradiction_keeps_meaningful_output_bound() -> None:
+    """The YES/NO verdict bound is a real output contract, not a routing hint."""
+    with patch("orchestrator.memory.dedup.guarded_completion") as litellm_mock:
         litellm_mock.return_value = MockLitellmResponse("NO. The facts are consistent.")
         await check_contradiction("Fact A", "Fact B")
 
-        litellm_mock.assert_awaited_once()
         assert litellm_mock.await_args is not None
         call_kwargs = litellm_mock.await_args.kwargs
-        assert call_kwargs["model"] == ""
+        assert call_kwargs["max_tokens"] == 50
+        assert call_kwargs["temperature"] == pytest.approx(0.1)
+        # No benchmark seed leaks into a deployment call.
+        assert "seed" not in call_kwargs
 
 
 @pytest.mark.asyncio
-async def test_check_contradiction_whitespace_model_string_passed_directly() -> None:
-    """Test that whitespace-only model string is passed through to LLM as-is."""
-    mock_settings = Mock()
-    mock_settings.background_reasoning_model = "   "
+async def test_check_contradiction_binds_profile_even_when_call_fails() -> None:
+    """A provider failure is still advisory, and the profile was still bound."""
+    recorder = ProfileRecorder()
 
     with (
-        patch("orchestrator.memory.dedup.get_settings", return_value=mock_settings),
+        patch("orchestrator.memory.dedup.routing_context", new=recorder),
         patch("orchestrator.memory.dedup.guarded_completion") as litellm_mock,
     ):
-        litellm_mock.return_value = MockLitellmResponse("NO. The facts are consistent.")
-        await check_contradiction("Fact A", "Fact B")
-
-        litellm_mock.assert_awaited_once()
-        assert litellm_mock.await_args is not None
-        call_kwargs = litellm_mock.await_args.kwargs
-        assert call_kwargs["model"] == "   "
-
-
-@pytest.mark.asyncio
-async def test_check_contradiction_none_model_passed_directly() -> None:
-    """Test that None model string is passed through to LLM as-is."""
-    mock_settings = Mock()
-    mock_settings.background_reasoning_model = None
-
-    with (
-        patch("orchestrator.memory.dedup.get_settings", return_value=mock_settings),
-        patch("orchestrator.memory.dedup.guarded_completion") as litellm_mock,
-    ):
-        litellm_mock.side_effect = Exception("Model not found")
+        litellm_mock.side_effect = Exception("Approved inference route unavailable")
         contradiction, explanation = await check_contradiction("Fact A", "Fact B")
 
         litellm_mock.assert_awaited_once()
         assert contradiction is False
         assert explanation == ""
+        assert recorder.profiles == [CONTRADICTION_PROFILE]
 
 
 @pytest.mark.asyncio

@@ -304,7 +304,7 @@ def effective_provider_and_model(
     provider = provider_config.name or settings.default_provider
     model = provider_config.model
     if not model:
-        model = settings.auto_reasoning_model
+        model = "auto"
     return provider, model
 
 
@@ -388,7 +388,8 @@ async def stream_sse_chat(
                 advisor_traces=advisor_traces or None,
                 reasoning_text=reasoning_text,
                 reasoning_duration_secs=reasoning_duration_secs,
-                reasoning_model=actual_model or model,
+                reasoning_model=active_compute_model() or actual_model or model,
+                model=active_compute_model() or actual_model or model,
                 status=status,
                 metadata=metadata,
             )

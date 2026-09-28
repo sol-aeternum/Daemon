@@ -139,6 +139,17 @@ class TestCommercialFactExtraction:
         assert not any(name.startswith("orchestrator") for name in imported)
 
 
+CONFIG = ROOT / "config" / "model_routing.json"
+
+
+def _profile_head_model(profile_name: str) -> str:
+    data = json.loads(CONFIG.read_text(encoding="utf-8"))
+    for profile in data["profiles"]:
+        if profile["profile"] == profile_name:
+            return profile["groups"][0]["models"][0]
+    return ""
+
+
 class TestRetiredTierChecksAreGone:
     def test_tier_check_ids_removed(self) -> None:
         values = {member.value for member in CheckId}
@@ -185,8 +196,13 @@ class TestRetiredTierChecksAreGone:
 
     def test_workload_model_declaration_support_preserved(self) -> None:
         auto = get_auto_routing_facts(ROOT)
-        assert auto["auto_fast_model"]
-        assert auto["auto_reasoning_model"]
+        # The routed workload declarations moved from the legacy Settings pins
+        # in orchestrator/config.py to the routing catalog; the gate extracts
+        # the ranked head of the routine and reasoning profiles.
+        assert auto["auto_fast_model"] == _profile_head_model("routine")
+        assert auto["auto_fast_model"].startswith("openrouter/")
+        assert auto["auto_reasoning_model"] == _profile_head_model("reasoning")
+        assert auto["auto_reasoning_model"].startswith("openrouter/")
         assert CheckId.AUTO_FAST_MODEL in CheckId
         assert CheckId.AUTO_REASONING_MODEL in CheckId
 
@@ -640,6 +656,8 @@ class TestGateIntegration:
         assert facts["docker"]["service_count"] > 0
         assert facts["subagents"]
         assert facts["auto_routing"]["auto_fast_model"]
+        assert facts["auto_routing"]["auto_fast_model"] == _profile_head_model("routine")
+        assert facts["auto_routing"]["auto_reasoning_model"] == _profile_head_model("reasoning")
 
     def test_migration_drift_still_fires(self, tmp_path: Path) -> None:
         facts = extract_all_facts(ROOT)

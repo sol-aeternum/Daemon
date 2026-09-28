@@ -8,6 +8,7 @@ import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
 import pytest
@@ -18,12 +19,35 @@ from orchestrator.entitlements.errors import (
     CapabilityDenied,
     ConcurrencyExceeded,
     ExtendedRunExceeded,
+    LimitExceeded,
     SettlementConflict,
     SubscriptionEventConflict,
 )
 from orchestrator.entitlements.models import SubscriptionEvent
 from orchestrator.entitlements.plans import ChargeKind, Plan, ReservationStatus
 from orchestrator.entitlements.service import EntitlementService
+
+
+@pytest.mark.asyncio
+async def test_expected_period_guard_uses_captured_month_before_reservation(monkeypatch):
+    clock = [datetime(2026, 9, 30, 23, 59, tzinfo=timezone.utc)]
+    service = EntitlementService(MagicMock(spec=asyncpg.Pool), clock=lambda: clock[0])
+
+    async def delayed(*args, **kwargs):
+        clock[0] += timedelta(minutes=2)
+        return kwargs["period"]
+
+    reserve = AsyncMock(side_effect=delayed)
+    monkeypatch.setattr(service, "_reserve", reserve)
+    assert (
+        await service.reserve(uuid.uuid4(), 1, operation="chat", expected_period="2026-09")
+        == "2026-09"
+    )
+    assert reserve.await_args is not None
+    assert reserve.await_args.kwargs["now"].month == 9
+    with pytest.raises(LimitExceeded, match="period changed"):
+        await service.reserve(uuid.uuid4(), 1, operation="chat", expected_period="2026-09")
+    reserve.assert_awaited_once()
 
 
 @pytest_asyncio.fixture
@@ -417,3 +441,40 @@ async def test_operator_reinstates_account_suspended_by_overrun(database):
     assert await service.reinstate(user, reason="quote fixed in route policy")
     assert not await service.reinstate(user, reason="already active")
     await service.release(await service.reserve(user, 0, operation="chat"))
+
+
+@pytest.mark.asyncio
+async def test_expected_period_rejects_new_month_before_database_reservation(database, monkeypatch):
+    pool, user = database
+    clock = [datetime(2026, 9, 30, 23, 59, tzinfo=timezone.utc)]
+    service = EntitlementService(pool, clock=lambda: clock[0])
+    old_period = service.current_period_key()
+    original_reserve = service._reserve
+
+    async def delayed_reserve(*args, **kwargs):
+        # The now/period captured by reserve must stay together even if an await
+        # (such as the account lock) crosses the month boundary.
+        clock[0] += timedelta(minutes=2)
+        return await original_reserve(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_reserve", delayed_reserve)
+    hold = await service.reserve(user, 1, operation="chat", expected_period=old_period)
+    assert hold.period_key == old_period
+    await service.release(hold)
+    with pytest.raises(LimitExceeded, match="period changed"):
+        await service.reserve(user, 1, operation="chat", expected_period=old_period)
+    async with pool.acquire() as conn:
+        assert (
+            await conn.fetchval(
+                "SELECT count(*) FROM entitlement_reservations WHERE user_id=$1", user
+            )
+            == 1
+        )
+        assert (
+            await conn.fetchval(
+                "SELECT count(*) FROM entitlement_usage_periods WHERE user_id=$1 AND period_key=$2",
+                user,
+                "2026-10",
+            )
+            == 0
+        )

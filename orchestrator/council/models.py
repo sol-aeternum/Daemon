@@ -3,11 +3,94 @@
 from __future__ import annotations
 
 from typing import Any
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime
+from functools import lru_cache
 
 from pydantic import BaseModel, Field, field_validator
+
+from orchestrator.council.config import load_roster
+from orchestrator.model_routing import RoutingError, developer_for_model
+
+
+# A council is only independent while several vendors are answering. Three is
+# the smallest number of *distinct model developers* that can still disagree
+# with each other, so it is the floor for both the planned roster and the models
+# that actually served a round.
+MIN_COUNCIL_DEVELOPERS = 3
+
+# Model ids are "<developer>/<model>" and may carry the serving prefix. The
+# developer is the vendor that builds the model, which is the unit of council
+# independence, so it is read with the routing module's own rule.
+_OPENROUTER_PREFIX = "openrouter"
+
+
+class CouncilDiversityError(RuntimeError):
+    """A council round could not field enough independent developers.
+
+    A council that cannot be served by at least ``MIN_COUNCIL_DEVELOPERS``
+    distinct model developers is not a deliberation, and reporting it as one
+    would be a fabricated consensus. The integration layer surfaces this through
+    the existing council error path; it is not a new event type.
+    """
+
+
+def read_developer(model: str) -> str | None:
+    """The developer that builds ``model``, or None when it cannot be read.
+
+    The routing helper rejects an empty or vendor-less id outright, and a roster
+    reaches the engine from more than one path (config file, interview, the
+    unvalidated preset assignment in the command layer), so an unreadable id
+    resolves to None here instead of raising mid-deliberation. A seat with no
+    readable developer can never be counted towards council independence.
+    """
+    try:
+        return developer_for_model(model) or None
+    except RoutingError:
+        return None
+
+
+def _model_developer(model: str) -> str | None:
+    """The developer that builds ``model``, or None when the id is malformed.
+
+    Deliberately stricter than the routing helper: a roster entry that cannot be
+    read as ``<developer>/<model>`` is a configuration error, not a model.
+    """
+    raw_segments = model.split("/")
+    if any(not segment for segment in raw_segments):
+        return None
+    segments = raw_segments[1:] if raw_segments[0] == _OPENROUTER_PREFIX else raw_segments
+    if len(segments) < 2:
+        return None
+    return read_developer(model)
+
+
+def roster_developers(roster: Mapping[str, str]) -> dict[str, str]:
+    """Map each role to the developer of its model, skipping unreadable ids.
+
+    The engine plans diversity with this and the validator enforces it, so both
+    agree on what "a different developer" means by construction.
+    """
+    developers: dict[str, str] = {}
+    for role, model_id in roster.items():
+        developer = read_developer(model_id.strip()) or ""
+        if developer:
+            developers[role] = developer
+    return developers
+
+
+@lru_cache(maxsize=1)
+def _default_roster() -> dict[str, str]:
+    # roster.yaml is the single source of truth for seat preferences; a copy is
+    # returned so a caller mutating one config's roster cannot poison the cache.
+    return dict(load_roster("default"))
+
+
+def default_roster() -> dict[str, str]:
+    """The shipped seat preferences, fresh per config."""
+    return dict(_default_roster())
 
 
 class PerspectiveType(Enum):
@@ -23,15 +106,10 @@ class PerspectiveType(Enum):
 class CouncilConfig(BaseModel):
     """Configuration for council deliberation with validation."""
 
-    roster: dict[str, str] = Field(
-        default_factory=lambda: {
-            "analyst": "openrouter/anthropic/claude-opus-4.6",
-            "strategist": "openrouter/openai/gpt-5.4",
-            "skeptic": "openrouter/moonshotai/kimi-k2.5",
-            "contrarian": "openrouter/x-ai/grok-4",
-            "auditor": "openrouter/deepseek/deepseek-r1",
-        }
-    )
+    # validate_default keeps the shipped roster honest: if roster.yaml ever plans
+    # fewer than MIN_COUNCIL_DEVELOPERS developers, every council fails loudly at
+    # construction instead of quietly running a one-voice "council".
+    roster: dict[str, str] = Field(default_factory=default_roster, validate_default=True)
     round_count: int = Field(default=2, ge=1, le=4)
     audit_enabled: bool = Field(default=False)
     interview_bypass: bool = Field(default=False)
@@ -40,19 +118,47 @@ class CouncilConfig(BaseModel):
 
     @field_validator("roster")
     @classmethod
-    def validate_heterogeneity(cls, v: dict[str, str]) -> dict[str, str]:
-        """Validate minimum 3 different providers in roster."""
-        providers = set()
-        for model_id in v.values():
-            # Extract provider from model_id like "anthropic/claude-opus-4.6"
-            if "/" in model_id:
-                provider = model_id.split("/")[0]
-                providers.add(provider)
-        if len(providers) < 3:
+    def validate_roster_diversity(cls, v: dict[str, str]) -> dict[str, str]:
+        """Require a roster that can field a genuinely independent council.
+
+        Diversity is counted in model developers, not in the first path segment:
+        serving-prefixed ids such as ``openrouter/anthropic/claude-sonnet-5``
+        name an Anthropic model, and reading them as a single "openrouter"
+        provider rejected valid rosters. Seats must also hold distinct models,
+        because one model answering twice is one voice counted twice.
+        """
+        roster: dict[str, str] = {}
+        developers: dict[str, str] = {}
+        assigned_models: dict[str, str] = {}
+
+        for role, model_id in v.items():
+            model = model_id.strip()
+            if not role.strip():
+                raise ValueError("Council role names must be non-empty")
+            if not model:
+                raise ValueError(f"Council role {role!r} has no model assigned")
+            developer = _model_developer(model)
+            if developer is None:
+                raise ValueError(
+                    f"Council role {role!r} has a malformed model id {model!r}; "
+                    "expected <developer>/<model>, optionally prefixed with openrouter/"
+                )
+            if model in assigned_models:
+                raise ValueError(
+                    f"Council roster assigns {model!r} to both {assigned_models[model]!r} and "
+                    f"{role!r}; every seat needs its own model to stay a separate voice"
+                )
+            roster[role] = model
+            assigned_models[model] = role
+            developers[role] = developer
+
+        distinct = set(developers.values())
+        if len(distinct) < MIN_COUNCIL_DEVELOPERS:
             raise ValueError(
-                f"Roster must have at least 3 different providers, got {len(providers)}: {providers}"
+                f"Council roster must plan at least {MIN_COUNCIL_DEVELOPERS} different model "
+                f"developers, got {len(distinct)}: {sorted(distinct)}"
             )
-        return v
+        return roster
 
 
 @dataclass
