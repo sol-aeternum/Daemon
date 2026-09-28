@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import uuid
 import runpy
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
+import httpx
+from litellm import exceptions as litellm
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock
@@ -15,7 +19,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from orchestrator import compute_runtime as runtime
+from orchestrator import model_routing
 from orchestrator.entitlements import EntitlementService
+from orchestrator.entitlements.errors import LimitExceeded
 from orchestrator.entitlements.errors import (
     AccountSuspended,
     BudgetExceeded,
@@ -73,13 +79,99 @@ def _route(
     )
 
 
-def _qualified_policy(monkeypatch: pytest.MonkeyPatch, *, route=None) -> None:
+def routing_document(
+    models: list[str],
+    *,
+    min_output_tokens: int = 1,
+    allow_premium: bool = True,
+    extra_profiles: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """An explicit routing config for these fake models.
+
+    The production placements name real models, so a fake route would never be
+    routable. Rather than weaken the production shortlist test, each fixture declares
+    exactly the fake models it approved and places them in every profile. The floors
+    are deliberately tiny so the numeric expectations in these tests are about token
+    accounting, not about the workload output budget, which
+    ``tests/test_model_routing.py`` exercises with real floors.
+    """
+    declared = models or ["openrouter/test/placeholder"]
+    profiles: list[dict[str, Any]] = [
+        {
+            "profile": "routine",
+            "min_output_tokens": min_output_tokens,
+            "allow_premium": False,
+            "groups": [{"group": "cheap", "models": list(declared)}],
+        },
+        {
+            "profile": "background",
+            "min_output_tokens": min_output_tokens,
+            "allow_premium": False,
+            "groups": [{"group": "cheap", "models": list(declared)}],
+        },
+        {
+            "profile": "reasoning",
+            "min_output_tokens": min_output_tokens,
+            "allow_premium": allow_premium,
+            "groups": [{"group": "demanding", "models": list(declared)}],
+        },
+        {
+            "profile": "research",
+            "min_output_tokens": min_output_tokens,
+            "allow_premium": allow_premium,
+            "groups": [{"group": "demanding", "models": list(declared)}],
+        },
+        {
+            "profile": "council",
+            "min_output_tokens": min_output_tokens,
+            "allow_premium": allow_premium,
+            "diversity": {"distinct_developers": True},
+            "groups": [{"group": "diverse", "models": list(declared)}],
+        },
+    ]
+    profiles.extend(extra_profiles or [])
+    return {
+        "version": 1,
+        "provisional": True,
+        "models": [
+            {
+                "model": model,
+                "developer": model_routing.developer_for_model(model),
+                "suitability": sorted(model_routing.ROUTING_PROFILES),
+                "reasoning_efforts": sorted(model_routing.KNOWN_REASONING_EFFORTS),
+                "sampling_parameters": sorted(model_routing.SAMPLING_PARAMETERS),
+                "parameter_presets": {
+                    "default": {"reasoning_effort": "low"},
+                    "council": {"reasoning_effort": "high", "include_reasoning": True},
+                },
+            }
+            for model in declared
+        ],
+        "profiles": profiles,
+    }
+
+
+def install_routing(monkeypatch: pytest.MonkeyPatch, document: dict[str, Any]) -> None:
+    """Point the routing module at an explicit test config."""
+    parsed = model_routing.parse_model_routing(document, source_path="<test>")
+    monkeypatch.setattr(model_routing, "load_model_routing", lambda *args, **kwargs: parsed)
+
+
+def _qualified_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    route=None,
+    routing: dict[str, Any] | None = None,
+) -> None:
     entries = route if isinstance(route, list) else [route] if route else []
     routes = {entry.route_id: entry for entry in entries}
     monkeypatch.setattr(
         runtime,
         "load_inference_policy",
         lambda: SimpleNamespace(routes=routes, requirements=object()),
+    )
+    install_routing(
+        monkeypatch, routing or routing_document(sorted({entry.model for entry in entries}))
     )
 
 
@@ -191,7 +283,7 @@ async def test_council_reasoning_round_uses_guarded_approved_transport(
     provider.assert_awaited_once()
     assert provider.await_args is not None
     call = provider.await_args.kwargs
-    assert call["reasoning_effort"] == "medium"
+    assert call["reasoning_effort"] == "high"
     assert call["include_reasoning"] is True
     assert call["max_tokens"] == 64
     assert call["num_retries"] == 0
@@ -245,8 +337,8 @@ async def test_unsafe_reasoning_options_never_reserve_or_dispatch(
 async def test_exhausted_funded_allowance_still_admits_qualified_zero_cost_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    funded = _route(model="openrouter/funded", input_price=100000)
-    zero = _route(model="openrouter/zero", input_price=0)
+    funded = _route(model="openrouter/test/funded", input_price=100000)
+    zero = _route(model="openrouter/test/zero", input_price=0)
     funded.route_id = "funded"
     zero.route_id = "zero"
     _qualified_policy(monkeypatch, route=[funded, zero])
@@ -271,23 +363,27 @@ async def test_exhausted_funded_allowance_still_admits_qualified_zero_cost_route
     )
     try:
         await runtime.guarded_completion(
-            model="openrouter/funded", messages=[{"role": "user", "content": "hi"}]
+            model="openrouter/test/funded", messages=[{"role": "user", "content": "hi"}]
         )
     finally:
         runtime._scope.reset(token)
     assert service.reserve.await_args.args[1] == 0
-    assert service.reserve.await_args.kwargs["model"] == "openrouter/zero"
+    assert service.reserve.await_args.kwargs["model"] == "openrouter/test/zero"
     service.settle.assert_awaited_once_with("zero-hold", 0, usage={"estimated_cost": True})
     assert provider.await_args is not None
-    assert provider.await_args.kwargs["model"] == "openrouter/zero"
+    assert provider.await_args.kwargs["model"] == "openrouter/test/zero"
 
 
 @pytest.mark.asyncio
 async def test_auto_route_price_weights_actual_request_and_falls_back_after_failed_attempt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cheap_input = _route(model="openrouter/cheap-input", input_price=1000, output_price=1_000_000)
-    cheap_output = _route(model="openrouter/cheap-output", input_price=500000, output_price=1000)
+    cheap_input = _route(
+        model="openrouter/test/cheap-input", input_price=1000, output_price=1_000_000
+    )
+    cheap_output = _route(
+        model="openrouter/test/cheap-output", input_price=500000, output_price=1000
+    )
     cheap_input.route_id = "cheap-input"
     cheap_output.route_id = "cheap-output"
     _qualified_policy(monkeypatch, route=[cheap_input, cheap_output])
@@ -311,14 +407,14 @@ async def test_auto_route_price_weights_actual_request_and_falls_back_after_fail
     )
     try:
         await runtime.guarded_completion(
-            model="openrouter/suggested-auto",
+            model="auto",
             messages=[{"role": "user", "content": "a" * 2000}],
         )
     finally:
         runtime._scope.reset(token)
     assert service.reserve.await_count == 2
-    assert service.reserve.await_args_list[0].kwargs["model"] == "openrouter/cheap-input"
-    assert service.reserve.await_args_list[1].kwargs["model"] == "openrouter/cheap-output"
+    assert service.reserve.await_args_list[0].kwargs["model"] == "openrouter/test/cheap-input"
+    assert service.reserve.await_args_list[1].kwargs["model"] == "openrouter/test/cheap-output"
     assert service.settle.await_args_list[0].args == (
         "first",
         service.reserve.await_args_list[0].args[1],
@@ -330,18 +426,168 @@ async def test_auto_route_price_weights_actual_request_and_falls_back_after_fail
 
 
 @pytest.mark.asyncio
+async def test_automatic_walk_still_serves_the_next_candidate_after_an_auth_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cheap = _route(model="openrouter/test/auth-cheap", input_price=1000, output_price=1000)
+    dearer = _route(model="openrouter/test/auth-dearer", input_price=5000, output_price=5000)
+    cheap.route_id = "auth-cheap"
+    dearer.route_id = "auth-dearer"
+    _qualified_policy(monkeypatch, route=[cheap, dearer])
+    service = _chat_service()
+    service.reserve = AsyncMock(side_effect=["auth-hold-a", "auth-hold-b"])
+    provider = AsyncMock(side_effect=[_status_error(401), {"choices": []}])
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        result = await runtime.guarded_completion(
+            model="auto",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+    # The walk rules are unchanged: a refused candidate returns normally from
+    # the next approved candidate, each attempt on its own settled hold.
+    assert result == {"choices": []}
+    assert service.reserve.await_count == 2
+    assert service.settle.await_count == 2
+    assert provider.await_args_list[0].kwargs["model"] == "openrouter/test/auth-cheap"
+    assert provider.await_args_list[1].kwargs["model"] == "openrouter/test/auth-dearer"
+    assert service.settle.await_args_list[0].args == (
+        "auth-hold-a",
+        service.reserve.await_args_list[0].args[1],
+    )
+    assert service.settle.await_args_list[1].args == (
+        "auth-hold-b",
+        service.reserve.await_args_list[1].args[1],
+    )
+
+
+@pytest.mark.asyncio
+async def test_automatic_walk_exhausted_by_auth_failures_carries_the_terminal_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cheap = _route(model="openrouter/test/auth-cheap", input_price=1000, output_price=1000)
+    dearer = _route(model="openrouter/test/auth-dearer", input_price=5000, output_price=5000)
+    cheap.route_id = "auth-cheap"
+    dearer.route_id = "auth-dearer"
+    _qualified_policy(monkeypatch, route=[cheap, dearer])
+    service = _chat_service()
+    service.reserve = AsyncMock(side_effect=["auth-hold-a", "auth-hold-b"])
+    provider = AsyncMock(side_effect=_status_error(401))
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        with pytest.raises(runtime.ComputeUnavailable) as denied:
+            await runtime.guarded_completion(
+                model="auto",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+    # Every candidate was still tried, each on its own hold settled at bound...
+    assert service.reserve.await_count == 2
+    assert service.settle.await_count == 2
+    assert service.settle.await_args_list[0].args == (
+        "auth-hold-a",
+        service.reserve.await_args_list[0].args[1],
+    )
+    assert service.settle.await_args_list[1].args == (
+        "auth-hold-b",
+        service.reserve.await_args_list[1].args[1],
+    )
+    # ...and the surfaced error is the last failure's typed verdict instead of
+    # a bare capacity message that invites retrying an authentication failure.
+    assert denied.value.code == "capacity_unavailable"
+    assert denied.value.message == "Qualified provider unavailable"
+    assert denied.value.category == "authentication_failed"
+    assert denied.value.status_code == 401
+    assert denied.value.retryable is False
+    assert denied.value.retry_after_seconds is None
+
+
+@pytest.mark.asyncio
+async def test_sole_automatic_candidate_auth_failure_carries_the_terminal_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qualified_policy(monkeypatch, route=_route(model="openrouter/test/only-auth"))
+    service = _chat_service()
+    provider = AsyncMock(side_effect=_status_error(401))
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        with pytest.raises(runtime.ComputeUnavailable) as denied:
+            await runtime.guarded_completion(
+                model="auto",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+    # One candidate means one dispatch; no second hold is ever taken.
+    assert service.reserve.await_count == 1
+    assert service.settle.await_args.args == (
+        "pooled-hold",
+        service.reserve.await_args.args[1],
+    )
+    assert denied.value.code == "capacity_unavailable"
+    assert denied.value.message == "Qualified provider unavailable"
+    assert denied.value.category == "authentication_failed"
+    assert denied.value.status_code == 401
+    assert denied.value.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_automatic_stream_walk_after_a_pre_output_failure_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cheap = _route(model="openrouter/test/stream-cheap", input_price=1000, output_price=1000)
+    dearer = _route(model="openrouter/test/stream-dearer", input_price=5000, output_price=5000)
+    cheap.route_id = "stream-cheap"
+    dearer.route_id = "stream-dearer"
+    _qualified_policy(monkeypatch, route=[cheap, dearer])
+    service = _chat_service()
+    service.reserve = AsyncMock(side_effect=["stream-hold-a", "stream-hold-b"])
+
+    async def failing_chunks() -> Any:
+        raise _status_error(401)
+        yield {}  # pragma: no cover - unreachable; marks this an async generator
+
+    async def ok_chunks() -> Any:
+        yield {"text": "recovered"}
+
+    provider = AsyncMock(side_effect=[failing_chunks(), ok_chunks()])
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        stream = await runtime.guarded_completion(
+            model="auto",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+        received = [chunk async for chunk in stream]
+    # Current stream behaviour, pinned: a pre-output failure still walks to the
+    # next candidate, the refused stream is closed and settled at its bound,
+    # and the surviving candidate serves the request on its own hold.
+    assert received == [{"text": "recovered"}]
+    assert service.reserve.await_count == 2
+    assert service.settle.await_count == 2
+    assert service.settle.await_args_list[0].args == (
+        "stream-hold-a",
+        service.reserve.await_args_list[0].args[1],
+    )
+    assert service.settle.await_args_list[1].args == (
+        "stream-hold-b",
+        service.reserve.await_args_list[1].args[1],
+    )
+
+
+@pytest.mark.asyncio
 async def test_tool_request_skips_cheaper_text_only_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    text_only = _route(model="openrouter/text", input_price=0)
+    text_only = _route(model="openrouter/test/text", input_price=0)
     text_only.route_id = "text"
     text_only.supports = lambda *, required_capabilities, input_tokens, output_tokens: (
         required_capabilities <= {"text"}
     )
-    tools_route = _route(model="openrouter/tools", input_price=1000)
+    tools_route = _route(model="openrouter/test/tools", input_price=1000)
     tools_route.route_id = "tools"
-    tools_route.max_output_tokens = 32
-    _qualified_policy(monkeypatch, route=[text_only, tools_route])
+    tools_route.max_output_tokens = 128
+    _qualified_policy(
+        monkeypatch,
+        route=[text_only, tools_route],
+        routing=routing_document([text_only.model, tools_route.model], min_output_tokens=32),
+    )
     limits = SimpleNamespace(max_context_tokens=32000, max_output_tokens=128)
     service = SimpleNamespace(
         resolve=AsyncMock(
@@ -369,8 +615,60 @@ async def test_tool_request_skips_cheaper_text_only_route(
     finally:
         runtime._scope.reset(token)
     assert provider.await_args is not None
-    assert provider.await_args.kwargs["model"] == "openrouter/tools"
-    assert provider.await_args.kwargs["max_tokens"] == 32
+    assert provider.await_args.kwargs["model"] == "openrouter/test/tools"
+    assert provider.await_args.kwargs["max_tokens"] == 128
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("account_context", "account_output", "expected"),
+    [
+        # A route capped below the account target still serves, at its own cap.
+        (32000, 128, 64),
+        # An uncapped (paid) account is bounded by the route alone.
+        (None, None, 64),
+        # An account target below the route cap still wins.
+        (32000, 48, 48),
+    ],
+)
+async def test_automatic_output_clamps_to_the_route_and_account(
+    monkeypatch: pytest.MonkeyPatch,
+    account_context: int | None,
+    account_output: int | None,
+    expected: int,
+) -> None:
+    route = _route(model="openrouter/test/capped")
+    route.route_id = "capped"
+    route.max_output_tokens = 64
+    _qualified_policy(
+        monkeypatch,
+        route=route,
+        routing=routing_document([route.model], min_output_tokens=32),
+    )
+    limits = SimpleNamespace(max_context_tokens=account_context, max_output_tokens=account_output)
+    service = SimpleNamespace(
+        resolve=AsyncMock(
+            return_value=SimpleNamespace(
+                capabilities={"chat"},
+                limits=limits,
+                limits_for=lambda premium: limits,
+                remaining_for=lambda premium: 100000,
+            )
+        ),
+        reserve=AsyncMock(return_value="capped-hold"),
+        settle=AsyncMock(),
+    )
+    provider = AsyncMock(return_value={"choices": []})
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    token = runtime._scope.set(
+        runtime.ComputeScope(uuid.uuid4(), cast(EntitlementService, service), auto_route=True)
+    )
+    try:
+        await runtime.guarded_completion(model="auto", messages=[{"role": "user", "content": "hi"}])
+    finally:
+        runtime._scope.reset(token)
+    assert provider.await_args is not None
+    assert provider.await_args.kwargs["max_tokens"] == expected
 
 
 @pytest.mark.asyncio
@@ -874,12 +1172,15 @@ async def test_background_title_job_uses_persisted_conversation_owner(
         update_conversation = AsyncMock(return_value={})
 
     @asynccontextmanager
-    async def checked_scope(scope_pool, scope_user_id, *, operation, auto_route, background):
+    async def checked_scope(
+        scope_pool, scope_user_id, *, operation, auto_route, background, profile
+    ):
         assert scope_pool is pool
         assert scope_user_id == owner
         assert operation == "agent" and auto_route is True
         # Worker jobs never take the interactive rate or concurrency slots.
         assert background is True
+        assert profile == "background"
         yield None
 
     globals_map = title_job.__globals__
@@ -1322,17 +1623,983 @@ def test_context_admission_uses_estimate_while_hold_keeps_byte_bound() -> None:
     import orchestrator.compute_runtime as module
 
     original = module.load_inference_policy
+    original_routing = model_routing.load_model_routing
     module.load_inference_policy = lambda: SimpleNamespace(
         routes={route.route_id: route}, requirements=object()
     )
+    model_routing.load_model_routing = lambda *args, **kwargs: model_routing.parse_model_routing(
+        routing_document([route.model])
+    )
     try:
-        [(bound, output_tokens, _, _)] = runtime._priced_candidates(
+        [(bound, output_tokens, _, _, _)] = runtime._priced_candidates(
             policy, size, {}, "openrouter/reviewed/model"
         )
     finally:
         module.load_inference_policy = original
+        model_routing.load_model_routing = original_routing
     assert output_tokens == 128
     assert bound == route.estimate_microusd(size.bound, output_tokens)
+
+
+# --------------------------------------------------------------------------- #
+# Exact-route dispatch seam.
+#
+# ``_route_id``/``_dispatch_timeout_s`` are an internal keyword-only seam: they
+# pin one approved route for one exact model and bound one dispatch, and they
+# never reach the transport as request parameters. The seam has no failover loop;
+# it reports a typed, sanitized failure and the caller owns the second call.
+# --------------------------------------------------------------------------- #
+PINNED_MODEL = "openrouter/test/pooled"
+
+
+def _pooled_route(route_id: str, *, provider: str, price: int, endpoint: str | None = None) -> Any:
+    """One approved route for :data:`PINNED_MODEL`, distinct at the wire."""
+    route = _route(model=PINNED_MODEL, input_price=price, output_price=price)
+    route.route_id = route_id
+    route.endpoint = endpoint or f"https://openrouter.ai/api/v1/{route_id}"
+    route.transport = SimpleNamespace(provider_only=(provider,))
+    route.transport_payload = lambda requirements: {
+        "extra_body": {
+            "provider": {
+                "only": [provider],
+                "order": [provider],
+                "allow_fallbacks": False,
+                "require_parameters": True,
+                "data_collection": "deny",
+                "zdr": True,
+                "max_price": {"prompt": price / 1_000_000, "completion": price / 1_000_000},
+            }
+        }
+    }
+    return route
+
+
+def _pooled_pool() -> list[Any]:
+    """Two approved routes for ONE exact model: a cheap one and a dearer one."""
+    return [
+        _pooled_route("pooled-cheap", provider="shared-provider", price=1000),
+        _pooled_route("pooled-dear", provider="alternate-provider", price=9000),
+    ]
+
+
+class _APIErrorWithResponse(litellm.APIError):
+    response: httpx.Response
+
+
+def _status_error(
+    status: int, *, message: str = "provider refused", headers: dict[str, str] | None = None
+) -> BaseException:
+    """A transport error whose only structured evidence is its HTTP status."""
+    response = httpx.Response(
+        status,
+        headers=headers,
+        request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"),
+    )
+    error = _APIErrorWithResponse(
+        status_code=status,
+        message=message,
+        llm_provider="openrouter",
+        model=PINNED_MODEL,
+    )
+    error.response = response
+    return error
+
+
+def _chat_service(**attributes: Any) -> Any:
+    limits = SimpleNamespace(max_context_tokens=32000, max_output_tokens=128)
+    service = SimpleNamespace(
+        resolve=AsyncMock(
+            return_value=SimpleNamespace(
+                capabilities={"chat"},
+                limits=limits,
+                limits_for=lambda premium: limits,
+                remaining_for=lambda premium: 1_000_000,
+            )
+        ),
+        reserve=AsyncMock(return_value="pooled-hold"),
+        settle=AsyncMock(),
+    )
+    for name, value in attributes.items():
+        setattr(service, name, value)
+    return service
+
+
+@asynccontextmanager
+async def _account_scope(service: Any, **attributes: Any) -> AsyncIterator[runtime.ComputeScope]:
+    scope = runtime.ComputeScope(uuid.uuid4(), cast(EntitlementService, service), **attributes)
+    token = runtime._scope.set(scope)
+    try:
+        yield scope
+    finally:
+        runtime._scope.reset(token)
+
+
+def _assert_nothing_dispatched(service: Any, provider: AsyncMock) -> None:
+    service.reserve.assert_not_awaited()
+    provider.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pinned_route_dispatches_exactly_one_of_two_same_model_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = _pooled_pool()
+    assert {route.model for route in pool} == {PINNED_MODEL}
+    assert len({route.route_id for route in pool}) == 2
+    _qualified_policy(monkeypatch, route=pool)
+    service = _chat_service()
+    provider = AsyncMock(return_value={"choices": []})
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        # Unpinned: the profile still picks the cheapest acceptable route.
+        await runtime.guarded_completion(
+            model=PINNED_MODEL, messages=[{"role": "user", "content": "hi"}]
+        )
+        cheap = provider.await_args
+        assert cheap is not None
+        assert cheap.kwargs["extra_body"]["provider"]["only"] == ["shared-provider"]
+        assert service.reserve.await_args.kwargs["route_id"] == "pooled-cheap"
+
+        # Pinned: the exact route wins over price, on the same exact model.
+        await runtime.guarded_completion(
+            model=PINNED_MODEL,
+            messages=[{"role": "user", "content": "hi"}],
+            _route_id="pooled-dear",
+        )
+    pinned = provider.await_args
+    assert pinned is not None
+    assert pinned.kwargs["model"] == PINNED_MODEL
+    assert pinned.kwargs["api_base"] == "https://openrouter.ai/api/v1/pooled-dear"
+    assert pinned.kwargs["extra_body"]["provider"] == {
+        **provider.await_args_list[0].kwargs["extra_body"]["provider"],
+        "only": ["alternate-provider"],
+        "order": ["alternate-provider"],
+        "max_price": {"prompt": 0.009, "completion": 0.009},
+    }
+    assert service.reserve.await_args.kwargs["route_id"] == "pooled-dear"
+    # The seam's own arguments are not request parameters and the SDK still never
+    # retries: a hidden retry would re-send a pinned route on unreserved budget.
+    assert not {"_route_id", "_dispatch_timeout_s"} & pinned.kwargs.keys()
+    assert pinned.kwargs["num_retries"] == 0
+    assert provider.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_pinned_route_failure_never_walks_another_route_of_the_same_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qualified_policy(monkeypatch, route=_pooled_pool())
+    service = _chat_service()
+    provider = AsyncMock(side_effect=RuntimeError("provider refused"))
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        with pytest.raises(runtime.ComputeUnavailable) as failed:
+            await runtime.guarded_completion(
+                model=PINNED_MODEL,
+                messages=[{"role": "user", "content": "hi"}],
+                _route_id="pooled-cheap",
+            )
+    assert failed.value.code == "capacity_unavailable"
+    # One reservation, one transport call: the dearer same-model route is a
+    # caller's decision, never a silent walk outward from a pin.
+    assert provider.await_count == 1
+    assert service.reserve.await_count == 1
+    assert service.settle.await_args.args == (
+        "pooled-hold",
+        service.reserve.await_args.args[1],
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route_id", ["pooled-unknown", "", "   ", 7])
+async def test_pinned_route_refuses_an_unusable_route_selector(
+    monkeypatch: pytest.MonkeyPatch, route_id: Any
+) -> None:
+    _qualified_policy(monkeypatch, route=_pooled_pool())
+    service = _chat_service()
+    provider = AsyncMock()
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        with pytest.raises(runtime.ComputeUnavailable) as denied:
+            await runtime.guarded_completion(
+                model=PINNED_MODEL,
+                messages=[{"role": "user", "content": "hi"}],
+                _route_id=route_id,
+            )
+    assert denied.value.code in {"route_unavailable", "capacity_unavailable"}
+    _assert_nothing_dispatched(service, provider)
+
+
+@pytest.mark.asyncio
+async def test_none_route_selector_preserves_default_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qualified_policy(monkeypatch, route=_pooled_pool())
+    service = _chat_service()
+    provider = AsyncMock(return_value={"choices": []})
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        await runtime.guarded_completion(
+            model=PINNED_MODEL,
+            messages=[{"role": "user", "content": "hi"}],
+            _route_id=None,
+        )
+    assert service.reserve.await_args.kwargs["route_id"] == "pooled-cheap"
+    provider.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_pinned_route_refuses_a_route_that_serves_another_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qualified_policy(monkeypatch, route=_pooled_pool())
+    service = _chat_service()
+    provider = AsyncMock()
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        with pytest.raises(runtime.ComputeUnavailable) as denied:
+            await runtime.guarded_completion(
+                model="openrouter/reviewed/model",
+                messages=[{"role": "user", "content": "hi"}],
+                _route_id="pooled-cheap",
+            )
+    assert denied.value.code == "route_unavailable"
+    _assert_nothing_dispatched(service, provider)
+
+
+@pytest.mark.asyncio
+async def test_pinned_route_refuses_an_unapproved_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = _pooled_pool()
+    pool[1].is_approved = lambda requirements: False
+    _qualified_policy(monkeypatch, route=pool)
+    service = _chat_service()
+    provider = AsyncMock()
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        with pytest.raises(runtime.ComputeUnavailable) as denied:
+            await runtime.guarded_completion(
+                model=PINNED_MODEL,
+                messages=[{"role": "user", "content": "hi"}],
+                _route_id="pooled-dear",
+            )
+    assert denied.value.code == "route_unavailable"
+    _assert_nothing_dispatched(service, provider)
+
+
+@pytest.mark.asyncio
+async def test_route_revoked_between_selection_and_dispatch_never_reserves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = _pooled_pool()
+    _qualified_policy(monkeypatch, route=pool)
+    approved_policy = runtime.load_inference_policy()
+    loads = 0
+
+    def rotating_policy() -> Any:
+        nonlocal loads
+        loads += 1
+        if loads >= 3:
+            pool[0].is_approved = lambda requirements: False
+        return approved_policy
+
+    monkeypatch.setattr(runtime, "load_inference_policy", rotating_policy)
+    service = _chat_service()
+    provider = AsyncMock()
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        with pytest.raises(runtime.ComputeUnavailable) as denied:
+            await runtime.guarded_completion(
+                model=PINNED_MODEL,
+                messages=[{"role": "user", "content": "hi"}],
+                _route_id="pooled-cheap",
+            )
+    assert denied.value.code == "route_unavailable"
+    assert denied.value.retryable is False
+    _assert_nothing_dispatched(service, provider)
+
+
+@pytest.mark.asyncio
+async def test_automatic_walk_skips_only_the_revoked_candidate_before_reserving(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cheap = _route(model="openrouter/test/revoked", input_price=0)
+    cheap.route_id = "revoked"
+    next_route = _route(model="openrouter/test/available", input_price=1000)
+    next_route.route_id = "available"
+    _qualified_policy(monkeypatch, route=[cheap, next_route])
+    approved_policy = runtime.load_inference_policy()
+    loads = 0
+
+    def rotating_policy() -> Any:
+        nonlocal loads
+        loads += 1
+        if loads >= 2:
+            cheap.is_approved = lambda requirements: False
+        return approved_policy
+
+    monkeypatch.setattr(runtime, "load_inference_policy", rotating_policy)
+    service = _chat_service()
+    provider = AsyncMock(return_value={"choices": []})
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service, auto_route=True):
+        await runtime.guarded_completion(messages=[{"role": "user", "content": "hello"}])
+    assert service.reserve.await_count == 1
+    assert service.reserve.await_args.kwargs["model"] == next_route.model
+    assert provider.await_count == 1
+    assert provider.await_args is not None
+    assert provider.await_args.kwargs["model"] == next_route.model
+
+
+@pytest.mark.asyncio
+async def test_pinned_route_refuses_a_route_that_cannot_serve_the_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Approved and on the right model, but text-only: a tools request is not a
+    # capability gap to be filled by dispatching the other route instead.
+    pool = _pooled_pool()
+    pool[0].supports = lambda *, required_capabilities, input_tokens, output_tokens: (
+        required_capabilities <= {"text"}
+    )
+    _qualified_policy(
+        monkeypatch,
+        route=pool,
+        routing=routing_document([PINNED_MODEL], min_output_tokens=32),
+    )
+    service = _chat_service()
+    provider = AsyncMock()
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        with pytest.raises(runtime.ComputeUnavailable) as denied:
+            await runtime.guarded_completion(
+                model=PINNED_MODEL,
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[{"type": "function", "function": {"name": "clock", "parameters": {}}}],
+                _route_id="pooled-cheap",
+            )
+    assert denied.value.code == "route_unavailable"
+    _assert_nothing_dispatched(service, provider)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["auto", "", None])
+async def test_pinned_route_requires_the_exact_selected_model(
+    monkeypatch: pytest.MonkeyPatch, model: Any
+) -> None:
+    _qualified_policy(monkeypatch, route=_pooled_pool())
+    service = _chat_service()
+    provider = AsyncMock()
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service, auto_route=True):
+        with pytest.raises(runtime.ComputeUnavailable) as denied:
+            await runtime.guarded_completion(
+                model=model,
+                messages=[{"role": "user", "content": "hi"}],
+                _route_id="pooled-cheap",
+            )
+    assert denied.value.code == "route_unavailable"
+    _assert_nothing_dispatched(service, provider)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_timeout_is_clipped_to_the_remaining_operation_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qualified_policy(monkeypatch, route=_pooled_pool())
+    settings = SimpleNamespace(
+        request_timeout_s=0.05,
+        openrouter_api_key=None,
+        get_provider_config=lambda name: SimpleNamespace(extra_headers=None),
+    )
+    monkeypatch.setattr(runtime, "get_settings", lambda: settings)
+    service = _chat_service()
+    provider = AsyncMock(return_value={"choices": []})
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        # A generous per-endpoint ask may never lengthen the operation's bound.
+        await runtime.guarded_completion(
+            model=PINNED_MODEL,
+            messages=[{"role": "user", "content": "hi"}],
+            _route_id="pooled-cheap",
+            _dispatch_timeout_s=45.0,
+        )
+    call = provider.await_args
+    assert call is not None
+    assert 0 < cast(float, call.kwargs["timeout"]) <= 0.05
+    assert "_dispatch_timeout_s" not in call.kwargs
+    assert call.kwargs["num_retries"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [1, 0.25])
+async def test_positive_finite_dispatch_timeout_bounds_the_dispatch(
+    monkeypatch: pytest.MonkeyPatch, value: Any
+) -> None:
+    _qualified_policy(monkeypatch, route=_pooled_pool())
+    service = _chat_service()
+    provider = AsyncMock(return_value={"choices": []})
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        await runtime.guarded_completion(
+            model=PINNED_MODEL,
+            messages=[{"role": "user", "content": "hi"}],
+            _route_id="pooled-cheap",
+            _dispatch_timeout_s=value,
+        )
+    call = provider.await_args
+    assert call is not None
+    assert 0 < call.kwargs["timeout"] <= value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value", [0, 0.0, -1, -0.5, math.nan, math.inf, -math.inf, True, False, "5", object()]
+)
+async def test_non_positive_or_non_finite_dispatch_timeout_is_denied(
+    monkeypatch: pytest.MonkeyPatch, value: Any
+) -> None:
+    _qualified_policy(monkeypatch, route=_pooled_pool())
+    service = _chat_service()
+    provider = AsyncMock()
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        with pytest.raises(runtime.ComputeUnavailable) as denied:
+            await runtime.guarded_completion(
+                model=PINNED_MODEL,
+                messages=[{"role": "user", "content": "hi"}],
+                _route_id="pooled-cheap",
+                _dispatch_timeout_s=value,
+            )
+    assert denied.value.code == "capacity_unavailable"
+    _assert_nothing_dispatched(service, provider)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "category", "status", "retryable"),
+    [
+        (_status_error(429), "rate_limited", 429, True),
+        (_status_error(502), "upstream_unavailable", 502, True),
+        (_status_error(503), "upstream_unavailable", 503, True),
+        (_status_error(504), "upstream_unavailable", 504, True),
+        (
+            litellm.RateLimitError(
+                message="slow down", llm_provider="openrouter", model=PINNED_MODEL
+            ),
+            "rate_limited",
+            429,
+            True,
+        ),
+        (
+            litellm.ServiceUnavailableError(
+                message="busy", llm_provider="openrouter", model=PINNED_MODEL
+            ),
+            "upstream_unavailable",
+            503,
+            True,
+        ),
+        (
+            litellm.Timeout(
+                model=PINNED_MODEL, message="read timed out", llm_provider="openrouter"
+            ),
+            "timeout",
+            None,
+            True,
+        ),
+        (
+            litellm.APIConnectionError(
+                model=PINNED_MODEL, message="connection reset", llm_provider="openrouter"
+            ),
+            "connection_failed",
+            None,
+            True,
+        ),
+        (httpx.ConnectError("no route to host"), "connection_failed", None, True),
+        (httpx.ReadTimeout("read timed out"), "timeout", None, True),
+        (_status_error(401), "authentication_failed", 401, False),
+        (_status_error(402), "payment_failed", 402, False),
+        (_status_error(403), "authentication_failed", 403, False),
+        (_status_error(400), "invalid_request", 400, False),
+        (_status_error(404), "invalid_request", 404, False),
+        (_status_error(422), "invalid_request", 422, False),
+        # An upstream timeout response is a timeout to read, but it is not one of
+        # the approved retryable statuses, so it stops.
+        (_status_error(408), "timeout", 408, False),
+        (_status_error(500), "unspecified", 500, False),
+        (_status_error(451), "invalid_request", 451, False),
+        # A message that merely looks retryable is not evidence of anything.
+        (RuntimeError("503 Service Unavailable: rate limit exceeded"), "unspecified", None, False),
+        (ValueError("401 Unauthorized: invalid api key sk-secret"), "unspecified", None, False),
+        (
+            litellm.BudgetExceededError(current_cost=2.0, max_budget=1.0),
+            "unspecified",
+            None,
+            False,
+        ),
+    ],
+)
+async def test_pinned_dispatch_failure_carries_a_typed_retry_classification(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException,
+    category: str,
+    status: int | None,
+    retryable: bool,
+) -> None:
+    _qualified_policy(monkeypatch, route=_pooled_pool())
+    service = _chat_service()
+    provider = AsyncMock(side_effect=failure)
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        with pytest.raises(runtime.ComputeUnavailable) as denied:
+            await runtime.guarded_completion(
+                model=PINNED_MODEL,
+                messages=[{"role": "user", "content": "hi"}],
+                _route_id="pooled-cheap",
+            )
+    assert denied.value.code == "capacity_unavailable"
+    assert denied.value.message == "Qualified provider unavailable"
+    assert denied.value.category == category
+    assert denied.value.status_code == status
+    assert denied.value.retryable is retryable
+    # The failed attempt is still charged its conservative bound, exactly once.
+    assert service.settle.await_args.args == (
+        "pooled-hold",
+        service.reserve.await_args.args[1],
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ({"Retry-After": "12"}, 12.0),
+        ({"retry-after": "0"}, 0.0),
+        ({"Retry-After": "-5"}, None),
+        ({"Retry-After": "not-a-number"}, None),
+        # Long provider delays are not silently shortened by the adapter.
+        ({"Retry-After": "999999"}, 999999.0),
+    ],
+)
+async def test_retry_guidance_is_validated_without_shortening_provider_delays(
+    monkeypatch: pytest.MonkeyPatch,
+    headers: dict[str, str],
+    expected: float | None,
+) -> None:
+    _qualified_policy(monkeypatch, route=_pooled_pool())
+    service = _chat_service()
+    provider = AsyncMock(side_effect=_status_error(429, headers=headers))
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        with pytest.raises(runtime.ComputeUnavailable) as denied:
+            await runtime.guarded_completion(
+                model=PINNED_MODEL,
+                messages=[{"role": "user", "content": "hi"}],
+                _route_id="pooled-cheap",
+            )
+    assert denied.value.retryable is True
+    assert denied.value.retry_after_seconds == expected
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        ("Wed, 21 Oct 2099 07:28:00 GMT", True),
+        ("Wed, 21 Oct 2020 07:28:00 GMT", False),
+    ],
+)
+def test_http_date_retry_guidance_respects_provider_wait(header: str, expected: bool) -> None:
+    failure = _status_error(429, headers={"Retry-After": header})
+    delay = runtime._provider_retry_after(failure)
+    assert delay is not None
+    assert (delay > 3600) is expected
+
+
+@pytest.mark.asyncio
+async def test_retry_guidance_is_absent_for_a_failure_that_must_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qualified_policy(monkeypatch, route=_pooled_pool())
+    service = _chat_service()
+    provider = AsyncMock(side_effect=_status_error(401, headers={"Retry-After": "3"}))
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        with pytest.raises(runtime.ComputeUnavailable) as denied:
+            await runtime.guarded_completion(
+                model=PINNED_MODEL,
+                messages=[{"role": "user", "content": "hi"}],
+                _route_id="pooled-cheap",
+            )
+    assert denied.value.category == "authentication_failed"
+    assert denied.value.retryable is False
+    assert denied.value.retry_after_seconds is None
+
+
+@pytest.mark.asyncio
+async def test_classified_failure_carries_no_provider_text_or_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qualified_policy(monkeypatch, route=_pooled_pool())
+    service = _chat_service()
+    provider = AsyncMock(
+        side_effect=_status_error(
+            503,
+            message="upstream x-openrouter-slug leaked sk-secret-token",
+            headers={
+                "x-openrouter-served-provider": "private-slug",
+                "authorization": "Bearer sk-secret-token",
+            },
+        )
+    )
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        with pytest.raises(runtime.ComputeUnavailable) as denied:
+            await runtime.guarded_completion(
+                model=PINNED_MODEL,
+                messages=[{"role": "user", "content": "hi"}],
+                _route_id="pooled-cheap",
+            )
+    assert denied.value.retryable is True
+    assert denied.value.status_code == 503
+    assert denied.value.retry_after_seconds is None
+    surfaced = f"{denied.value} {denied.value.category} {denied.value.message}"
+    for secret in ("sk-secret-token", "private-slug", "leaked", "openrouter.ai"):
+        assert secret not in surfaced
+    # The provider exception is not chained in, so its text cannot reach a log.
+    assert denied.value.__cause__ is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_timeout_before_output_is_retryable_and_charged_the_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qualified_policy(monkeypatch, route=_pooled_pool())
+    service = _chat_service()
+
+    async def never_answers(**call: Any) -> Any:
+        await asyncio.sleep(5)
+        raise AssertionError("the dispatch timeout must fire first")
+
+    provider = AsyncMock(side_effect=never_answers)
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        with pytest.raises(runtime.ComputeUnavailable) as denied:
+            await runtime.guarded_completion(
+                model=PINNED_MODEL,
+                messages=[{"role": "user", "content": "hi"}],
+                _route_id="pooled-cheap",
+                _dispatch_timeout_s=0.01,
+            )
+    assert denied.value.category == "timeout"
+    assert denied.value.status_code is None
+    assert denied.value.retryable is True
+    # A timeout may mean the endpoint did billed work, so the full held bound is
+    # charged rather than refunded.
+    assert service.settle.await_args.args == (
+        "pooled-hold",
+        service.reserve.await_args.args[1],
+    )
+
+
+@pytest.mark.asyncio
+async def test_exhausted_operation_deadline_is_not_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qualified_policy(monkeypatch, route=_pooled_pool())
+    settings = SimpleNamespace(
+        request_timeout_s=0.02,
+        openrouter_api_key=None,
+        get_provider_config=lambda name: SimpleNamespace(extra_headers=None),
+    )
+    monkeypatch.setattr(runtime, "get_settings", lambda: settings)
+    service = _chat_service()
+
+    async def never_answers(**call: Any) -> Any:
+        await asyncio.sleep(5)
+        raise AssertionError("the operation deadline must fire first")
+
+    provider = AsyncMock(side_effect=never_answers)
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        with pytest.raises(runtime.ComputeUnavailable) as denied:
+            await runtime.guarded_completion(
+                model=PINNED_MODEL, messages=[{"role": "user", "content": "hi"}]
+            )
+    # The operation's own budget, not this endpoint's: nothing is left to retry.
+    assert denied.value.category == "deadline_exceeded"
+    assert denied.value.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_upstream_429_after_operation_deadline_cannot_authorize_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qualified_policy(monkeypatch, route=_pooled_pool())
+    settings = SimpleNamespace(
+        request_timeout_s=0.02,
+        openrouter_api_key=None,
+        get_provider_config=lambda name: SimpleNamespace(extra_headers=None),
+    )
+    monkeypatch.setattr(runtime, "get_settings", lambda: settings)
+
+    async def late_429(**call: Any) -> Any:
+        await asyncio.sleep(0.02)
+        raise _status_error(429)
+
+    service = _chat_service()
+    monkeypatch.setattr(runtime.litellm, "acompletion", AsyncMock(side_effect=late_429))
+    async with _account_scope(service):
+        with pytest.raises(runtime.ComputeUnavailable) as denied:
+            await runtime.guarded_completion(
+                model=PINNED_MODEL,
+                messages=[{"role": "user", "content": "hi"}],
+                _route_id="pooled-cheap",
+            )
+    assert denied.value.retryable is False
+    assert denied.value.retry_after_seconds is None
+    assert service.settle.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_settlement_failure_is_never_masked_as_a_retryable_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qualified_policy(monkeypatch, route=_pooled_pool())
+    service = _chat_service(settle=AsyncMock(side_effect=RuntimeError("ledger unavailable")))
+    provider = AsyncMock(side_effect=_status_error(429))
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        with pytest.raises(runtime.ComputeUnavailable) as broken:
+            await runtime.guarded_completion(
+                model=PINNED_MODEL,
+                messages=[{"role": "user", "content": "hi"}],
+                _route_id="pooled-cheap",
+            )
+    # The retryable upstream verdict is replaced by the accounting failure, so a
+    # caller can never spend a second dispatch over an unsettled first one.
+    assert broken.value.code == "settlement_failed"
+    assert broken.value.category == "settlement_failed"
+    assert broken.value.retryable is False
+    assert "ledger unavailable" not in str(broken.value)
+    service.settle.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ledger_transport_looking_error_is_not_a_provider_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qualified_policy(monkeypatch, route=_pooled_pool())
+    service = _chat_service(settle=AsyncMock(side_effect=_status_error(503)))
+    provider = AsyncMock(side_effect=_status_error(429))
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        with pytest.raises(runtime.ComputeUnavailable) as denied:
+            await runtime.guarded_completion(
+                model=PINNED_MODEL,
+                messages=[{"role": "user", "content": "hi"}],
+                _route_id="pooled-cheap",
+            )
+    assert denied.value.category == "settlement_failed"
+    assert denied.value.retryable is False
+    assert denied.value.status_code is None
+    provider.assert_awaited_once()
+    service.settle.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_settlement_conflict_is_classified_and_not_retryable() -> None:
+    service = _chat_service()
+    scope = runtime.ComputeScope(uuid.uuid4(), cast(EntitlementService, service))
+    scope.outstanding[runtime._hold_key("reservation")] = runtime.ReservationHold("reservation", 7)
+    await scope.settle("reservation", 5)
+    with pytest.raises(runtime.ComputeUnavailable) as conflict:
+        await scope.settle("reservation", 7)
+    assert conflict.value.code == "settlement_conflict"
+    assert conflict.value.category == "settlement_failed"
+    assert conflict.value.retryable is False
+    assert conflict.value.status_code is None
+    assert conflict.value.retry_after_seconds is None
+
+
+@pytest.mark.asyncio
+async def test_cancellation_is_never_reported_as_a_retryable_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qualified_policy(monkeypatch, route=_pooled_pool())
+    service = _chat_service()
+
+    async def cancelled(**call: Any) -> Any:
+        raise asyncio.CancelledError
+
+    provider = AsyncMock(side_effect=cancelled)
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        with pytest.raises(asyncio.CancelledError):
+            await runtime.guarded_completion(
+                model=PINNED_MODEL,
+                messages=[{"role": "user", "content": "hi"}],
+                _route_id="pooled-cheap",
+            )
+    # Cancellation is not reclassified as a provider failure, and the reserved
+    # bound is still settled rather than left open.
+    service.settle.assert_awaited_once_with("pooled-hold", service.reserve.await_args.args[1])
+
+
+@pytest.mark.asyncio
+async def test_failed_pinned_dispatch_keeps_the_account_period_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qualified_policy(monkeypatch, route=_pooled_pool())
+    account = uuid.uuid4()
+    service = _chat_service(reconcile_expired_reservations=AsyncMock(return_value=0))
+    monkeypatch.setattr(runtime, "EntitlementService", lambda pool: service)
+    provider = AsyncMock(side_effect=_status_error(503))
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with runtime.account_compute(object(), account, expected_period="2026-09"):
+        with pytest.raises(runtime.ComputeUnavailable) as denied:
+            await runtime.guarded_completion(
+                model=PINNED_MODEL,
+                messages=[{"role": "user", "content": "hi"}],
+                _route_id="pooled-cheap",
+            )
+    assert denied.value.retryable is True
+    assert service.reserve.await_args.kwargs["expected_period"] == "2026-09"
+    assert service.settle.await_args.args == (
+        "pooled-hold",
+        service.reserve.await_args.args[1],
+    )
+
+
+@pytest.mark.asyncio
+async def test_stream_failure_after_released_output_is_not_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qualified_policy(monkeypatch, route=_pooled_pool())
+    service = _chat_service()
+
+    async def chunks() -> Any:
+        yield {"text": "partial"}
+        raise litellm.RateLimitError(
+            message="slow down", llm_provider="openrouter", model=PINNED_MODEL
+        )
+
+    provider = AsyncMock(return_value=chunks())
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        stream = await runtime.guarded_completion(
+            model=PINNED_MODEL,
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+            _route_id="pooled-cheap",
+        )
+        assert await anext(stream) == {"text": "partial"}
+        with pytest.raises(runtime.ComputeUnavailable) as denied:
+            await anext(stream)
+    # The same status that is retryable before output is not retryable once a
+    # token has been observed downstream.
+    assert denied.value.category == "rate_limited"
+    assert denied.value.status_code == 429
+    assert denied.value.retryable is False
+    assert service.settle.await_args.args == (
+        "pooled-hold",
+        service.reserve.await_args.args[1],
+    )
+
+
+@pytest.mark.asyncio
+async def test_pinned_dispatch_returns_the_normal_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qualified_policy(monkeypatch, route=_pooled_pool())
+    service = _chat_service()
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="pinned answer"))],
+        usage=None,
+        model=PINNED_MODEL,
+    )
+    provider = AsyncMock(return_value=response)
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service) as scope:
+        result = await runtime.guarded_completion(
+            model=PINNED_MODEL,
+            messages=[{"role": "user", "content": "hi"}],
+            _route_id="pooled-cheap",
+        )
+    assert result is response
+    assert scope.selected_model == PINNED_MODEL
+    assert scope.settled
+
+
+@pytest.mark.asyncio
+async def test_unpinned_caller_keeps_its_existing_failure_behaviour(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qualified_policy(monkeypatch, route=_pooled_pool())
+    service = _chat_service()
+    provider = AsyncMock(side_effect=RuntimeError("provider refused"))
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with _account_scope(service):
+        with pytest.raises(runtime.ComputeUnavailable) as denied:
+            await runtime.guarded_completion(
+                model=PINNED_MODEL, messages=[{"role": "user", "content": "hi"}]
+            )
+    # Without the seam an explicit model still stops, and now carries a
+    # classification that still says stop.
+    assert denied.value.code == "capacity_unavailable"
+    assert denied.value.message == "Qualified provider unavailable"
+    assert denied.value.retryable is False
+    assert service.reserve.await_args.kwargs["route_id"] == "pooled-cheap"
+
+
+@pytest.mark.asyncio
+async def test_expected_period_reaches_each_tool_loop_reservation_and_refuses_rollover(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    route = _route()
+    _qualified_policy(monkeypatch, route=route)
+    account = uuid.uuid4()
+    limits = SimpleNamespace(max_context_tokens=32000, max_output_tokens=128)
+    current = ["2026-09"]
+    reservation = object()
+
+    async def reserve(*args: Any, **kwargs: Any) -> object:
+        assert kwargs["expected_period"] == "2026-09"
+        if current[0] != kwargs["expected_period"]:
+            raise LimitExceeded("reservation period changed")
+        return reservation
+
+    service = SimpleNamespace(
+        reconcile_expired_reservations=AsyncMock(return_value=0),
+        resolve=AsyncMock(
+            return_value=SimpleNamespace(
+                capabilities={"chat"},
+                limits=limits,
+                limits_for=lambda premium: limits,
+                remaining_for=lambda premium: 100000,
+            )
+        ),
+        reserve=AsyncMock(side_effect=reserve),
+        settle=AsyncMock(),
+    )
+    monkeypatch.setattr(runtime, "EntitlementService", lambda pool: service)
+    provider = AsyncMock(return_value={"choices": []})
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async with runtime.account_compute(object(), account, expected_period="2026-09") as scope:
+        assert scope.expected_period == "2026-09"
+        await runtime.guarded_completion(
+            model=route.model,
+            messages=[{"role": "user", "content": "call tool"}],
+            tools=[{"type": "function", "function": {"name": "lookup", "parameters": {}}}],
+        )
+        current[0] = "2026-10"
+        with pytest.raises(runtime.ComputeUnavailable):
+            await runtime.guarded_completion(
+                model=route.model,
+                messages=[{"role": "tool", "content": "tool result"}],
+            )
+    assert service.reserve.await_count == 2
+    assert provider.await_count == 1
+    assert len(scope.settled) == 1
 
 
 def _uncapped_candidates(
@@ -1342,7 +2609,7 @@ def _uncapped_candidates(
     max_context_tokens: int | None,
     max_output_tokens: int | None,
     text: str = "hi",
-) -> list[tuple[int, int, Any, bool]]:
+) -> list[tuple[int, int, Any, bool, Any]]:
     limits = SimpleNamespace(
         max_context_tokens=max_context_tokens, max_output_tokens=max_output_tokens
     )
@@ -1366,7 +2633,7 @@ def test_uncapped_plan_output_is_bounded_by_the_route_and_holds_its_maximum(
     route = _route()
     route.max_output_tokens = 8000
 
-    [(bound, output_tokens, _, _)] = _uncapped_candidates(
+    [(bound, output_tokens, _, _, _)] = _uncapped_candidates(
         monkeypatch, route, max_context_tokens=None, max_output_tokens=None
     )
 
@@ -1381,7 +2648,7 @@ def test_capped_plan_output_still_clamps_below_the_route(
     route = _route()
     route.max_output_tokens = 8000
 
-    [(_, output_tokens, _, _)] = _uncapped_candidates(
+    [(_, output_tokens, _, _, _)] = _uncapped_candidates(
         monkeypatch, route, max_context_tokens=32000, max_output_tokens=4096
     )
 
@@ -1402,7 +2669,7 @@ def test_uncapped_context_admits_input_a_capped_plan_refuses(
         )
         == []
     )
-    [(_, output_tokens, _, _)] = _uncapped_candidates(
+    [(_, output_tokens, _, _, _)] = _uncapped_candidates(
         monkeypatch, route, max_context_tokens=None, max_output_tokens=None, text=text
     )
     assert output_tokens == route.max_output_tokens
@@ -1453,3 +2720,100 @@ async def test_uncapped_plan_input_beyond_every_route_is_a_context_error(
     assert caught.value.code == "context_limit"
     provider.assert_not_awaited()
     service.reserve.assert_not_awaited()
+
+
+async def _auto_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    routes: list[Any],
+    routing: dict[str, Any],
+    *,
+    account_output: int | None,
+    remaining: int = 100000,
+) -> Mapping[str, Any]:
+    """Dispatch one automatic request and return the provider kwargs."""
+    _qualified_policy(monkeypatch, route=routes, routing=routing)
+    limits = SimpleNamespace(max_context_tokens=32000, max_output_tokens=account_output)
+    service = SimpleNamespace(
+        resolve=AsyncMock(
+            return_value=SimpleNamespace(
+                capabilities={"chat"},
+                limits=limits,
+                limits_for=lambda premium: limits,
+                remaining_for=lambda premium: remaining,
+            )
+        ),
+        reserve=AsyncMock(return_value="group-hold"),
+        settle=AsyncMock(),
+    )
+    provider = AsyncMock(return_value={"choices": []})
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    token = runtime._scope.set(
+        runtime.ComputeScope(uuid.uuid4(), cast(EntitlementService, service), auto_route=True)
+    )
+    try:
+        await runtime.guarded_completion(model="auto", messages=[{"role": "user", "content": "hi"}])
+    finally:
+        runtime._scope.reset(token)
+    assert provider.await_args is not None
+    return provider.await_args.kwargs
+
+
+def _capped(model: str, cap: int, price: int) -> Any:
+    route = _route(model=model, input_price=price)
+    route.route_id = model.rsplit("/", 1)[-1]
+    route.max_output_tokens = cap
+    return route
+
+
+@pytest.mark.asyncio
+async def test_shorter_output_route_cannot_win_a_group_on_price(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Account target 128 exceeds both caps; the group's common target is its
+    # largest capacity (64), so the cheaper 48-cap route is not comparable.
+    larger = _capped("openrouter/test/larger", 64, price=1000)
+    shorter = _capped("openrouter/test/shorter", 48, price=0)
+    kwargs = await _auto_dispatch(
+        monkeypatch,
+        [larger, shorter],
+        routing_document([larger.model, shorter.model], min_output_tokens=32),
+        account_output=128,
+    )
+    assert kwargs["model"] == larger.model
+    assert kwargs["max_tokens"] == 64
+
+
+@pytest.mark.asyncio
+async def test_first_group_serves_at_its_feasible_target_instead_of_escalating(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _capped("openrouter/test/first", 64, price=0)
+    later = _capped("openrouter/test/later", 128, price=1000)
+    routing = routing_document([first.model, later.model], min_output_tokens=32)
+    routine = next(entry for entry in routing["profiles"] if entry["profile"] == "routine")
+    routine["groups"] = [
+        {"group": "cheap", "models": [first.model]},
+        {"group": "step", "models": [later.model]},
+    ]
+    kwargs = await _auto_dispatch(monkeypatch, [first, later], routing, account_output=128)
+    assert kwargs["model"] == first.model
+    assert kwargs["max_tokens"] == 64
+
+
+@pytest.mark.asyncio
+async def test_unaffordable_largest_route_lowers_the_group_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The 128-cap route cannot fit the remaining budget at 128 output tokens, so
+    # it is not eligible and the group's target falls to the 64-cap route.
+    pricey = _capped("openrouter/test/pricey", 128, price=10_000_000)
+    modest = _capped("openrouter/test/modest", 64, price=1000)
+    kwargs = await _auto_dispatch(
+        monkeypatch,
+        [pricey, modest],
+        routing_document([pricey.model, modest.model], min_output_tokens=32),
+        account_output=None,
+        remaining=1000,
+    )
+    assert kwargs["model"] == modest.model
+    assert kwargs["max_tokens"] == 64

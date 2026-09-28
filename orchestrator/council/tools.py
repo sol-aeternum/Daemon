@@ -321,6 +321,18 @@ async def council_completion_with_tools(
     timeout: int = 90,
     max_tool_rounds: int = 5,
 ) -> tuple[str, UsagePayload]:
+    """Run a seat's tool-calling loop and return its text plus accumulated usage.
+
+    ``model`` is the seat's *preference*, not a pinned model: this runs inside the
+    caller's per-seat routing context, so every round of the loop is resolved by
+    the runtime and the caller reports the route that was actually selected. The
+    loop therefore passes no model-specific parameters either — the central
+    routing presets own which options the selected model accepts.
+
+    This loop issues more than one completion under a single routing context.
+    Every iteration asks for the same preference under the same exclusions, so
+    they resolve to one route; the context's selection is the seat's served model.
+    """
     current_messages: list[MessagePayload] = list(messages)
     usage_metadata: UsagePayload = {
         "prompt_tokens": 0,

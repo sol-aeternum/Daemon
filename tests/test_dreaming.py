@@ -10,12 +10,43 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from orchestrator.config import Settings
-from orchestrator.memory.dreaming import dream_on_cluster, run_dreaming
+from orchestrator.memory.dreaming import DREAM_PROFILE, dream_on_cluster, run_dreaming
 from orchestrator.memory.embedding import EmbeddingBatchResult
 from orchestrator.memory.retrieval import retrieve_memories
 from orchestrator.memory.store import MemoryStore
+from orchestrator.model_routing import routing_context
 from orchestrator.worker.jobs import run_dreaming_job, _user_matches_dream_schedule_hour
 from tests.qualified_compute import install_qualified_compute
+
+
+def _dream_profile_recorder(selected_model: str | None):
+    """Bind the real routing context and report a fixed selected route.
+
+    This mirrors what the compute guard does to ``RoutingState.selected_model``
+    after dispatch, so callers can read genuine provenance in tests.
+    """
+
+    class Recorder:
+        def __init__(self) -> None:
+            self.profiles: list[str] = []
+
+        def __call__(self, profile: str, **kwargs: object):
+            self.profiles.append(profile)
+            return _selecting(profile, selected_model, **kwargs)
+
+    return Recorder()
+
+
+def _selecting(profile: str, selected_model: str | None, **_kwargs: object):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _cm():
+        with routing_context(profile) as state:
+            state.selected_model = selected_model
+            yield state
+
+    return _cm()
 
 
 def _embedding_result(vector: list[float]) -> EmbeddingBatchResult:
@@ -36,9 +67,8 @@ class MockLitellmResponse:
 
 
 @pytest.mark.asyncio
-async def test_dream_on_cluster_uses_background_reasoning_model() -> None:
+async def test_dream_on_cluster_binds_reasoning_profile_and_reports_route() -> None:
     settings = SimpleNamespace(
-        background_reasoning_model="openrouter/deepseek/deepseek-chat",
         get_provider_config=lambda _provider: SimpleNamespace(
             timeout_s=45,
             base_url="",
@@ -61,31 +91,47 @@ async def test_dream_on_cluster_uses_background_reasoning_model() -> None:
         },
     ]
 
+    recorder = _dream_profile_recorder("openrouter/z-ai/glm-5.3")
+
     with patch("orchestrator.memory.dreaming.get_settings", return_value=settings):
         with patch("orchestrator.memory.dreaming.guarded_completion") as mock_llm:
-            mock_llm.return_value = MockLitellmResponse(
-                '{"observations": ['
-                '{"content": "keeps cycling as a stable weekly routine.", "confidence": 0.86, "source_memory_ids": ["'
-                + str(memories[0]["id"])
-                + '", "'
-                + str(memories[1]["id"])
-                + '"]}, '
-                '{"content": "User treats bike commuting as both transportation and preference.", "confidence": 0.73, "source_memory_ids": ["'
-                + str(memories[1]["id"])
-                + '"]}'
-                "]}"
-            )
+            with patch("orchestrator.memory.dreaming.routing_context", new=recorder):
+                mock_llm.return_value = MockLitellmResponse(
+                    '{"observations": ['
+                    '{"content": "keeps cycling as a stable weekly routine.", "confidence": 0.86, "source_memory_ids": ["'
+                    + str(memories[0]["id"])
+                    + '", "'
+                    + str(memories[1]["id"])
+                    + '"]}, '
+                    '{"content": "User treats bike commuting as both transportation and preference.", "confidence": 0.73, "source_memory_ids": ["'
+                    + str(memories[1]["id"])
+                    + '"]}'
+                    "]}"
+                )
 
-            observations = await dream_on_cluster(memories)
+                observations, model_used = await dream_on_cluster(memories)
 
     assert len(observations) == 2
-    assert mock_llm.call_args.kwargs["model"] == settings.background_reasoning_model
+    # Dreaming pins no model; the guard picks, and provenance reports what it picked.
+    assert "model" not in mock_llm.call_args.kwargs
+    assert recorder.profiles == [DREAM_PROFILE]
+    assert model_used == "openrouter/z-ai/glm-5.3"
+    # The grounded-output bound stays meaningful.
+    assert mock_llm.call_args.kwargs["max_tokens"] == 300
     assert observations[0]["content"].startswith("User ")
     assert observations[0]["confidence"] == 0.86
     assert observations[0]["source_memory_ids"] == [
         str(memories[0]["id"]),
         str(memories[1]["id"]),
     ]
+
+
+@pytest.mark.asyncio
+async def test_dream_on_cluster_reports_no_route_when_nothing_to_synthesize() -> None:
+    observations, model_used = await dream_on_cluster([])
+
+    assert observations == []
+    assert model_used is None
 
 
 @pytest.mark.asyncio
@@ -98,7 +144,6 @@ async def test_run_dreaming_skips_unchanged_families_and_logs_run() -> None:
     settings = SimpleNamespace(
         dreaming_enabled=True,
         dream_min_cluster_size=2,
-        background_reasoning_model="openrouter/deepseek/deepseek-chat",
         embedding_document_model="voyage-4-large",
     )
     store = AsyncMock()
@@ -145,16 +190,19 @@ async def test_run_dreaming_skips_unchanged_families_and_logs_run() -> None:
         with patch(
             "orchestrator.memory.dreaming.dream_on_cluster",
             AsyncMock(
-                return_value=[
-                    {
-                        "content": "User has consistent coffee rituals and quality-focused preferences.",
-                        "confidence": 0.88,
-                        "source_memory_ids": [
-                            str(store.get_dream_candidate_memories.return_value[0]["id"]),
-                            str(store.get_dream_candidate_memories.return_value[1]["id"]),
-                        ],
-                    }
-                ]
+                return_value=(
+                    [
+                        {
+                            "content": "User has consistent coffee rituals and quality-focused preferences.",
+                            "confidence": 0.88,
+                            "source_memory_ids": [
+                                str(store.get_dream_candidate_memories.return_value[0]["id"]),
+                                str(store.get_dream_candidate_memories.return_value[1]["id"]),
+                            ],
+                        }
+                    ],
+                    "openrouter/z-ai/glm-5.3",
+                )
             ),
         ) as mock_dream:
             with patch(
@@ -176,6 +224,9 @@ async def test_run_dreaming_skips_unchanged_families_and_logs_run() -> None:
     metadata_call = store.update_memory_metadata.await_args.args[1]
     assert metadata_call["dream_family"] == "food.coffee"
     assert len(metadata_call["source_memory_ids"]) == 2
+    # Persisted provenance is the route the guard actually selected, never a
+    # configured model hint.
+    assert store.log_dream_run.await_args.kwargs["model_used"] == "openrouter/z-ai/glm-5.3"
 
 
 @pytest.mark.asyncio

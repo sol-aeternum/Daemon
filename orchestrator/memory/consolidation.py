@@ -17,6 +17,12 @@ from orchestrator.compute_runtime import guarded_completion
 from orchestrator.config import get_settings
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
+from orchestrator.model_routing import routing_context
+
+# Consolidation synthesizes a cluster of related memories into summary
+# statements. It is unattended but genuinely inferential, so it runs on the
+# reasoning profile rather than the cheap background profile.
+CONSOLIDATION_PROFILE = "reasoning"
 
 
 # Similarity threshold for clustering memories within the same slot family
@@ -286,12 +292,6 @@ Output format:
 Provide only the synthesized summary statements, no additional commentary."""
 
 
-def _get_orchestrator_model() -> str:
-    """Get the orchestrator-tier model from settings."""
-    settings = get_settings()
-    return settings.background_reasoning_model
-
-
 def _extract_content(response: Any) -> str:
     """Extract content from litellm response (handles multiple response types including Pydantic models)."""
     content: Any = None
@@ -369,7 +369,7 @@ async def consolidate_cluster(
     """Synthesize cluster memories into summary memories.
 
     Takes a cluster of related memories, generates 1-2 summary statements
-    using the orchestrator-tier model, creates new summary memories,
+    on the consolidation inference profile, creates new summary memories,
     and demotes source memories to tier='l2'.
 
     Args:
@@ -383,8 +383,6 @@ async def consolidate_cluster(
     if not cluster.members:
         return []
 
-    # Get orchestrator-tier model from settings
-    model = _get_orchestrator_model()
     settings = get_settings()
     provider_config = settings.get_provider_config("openrouter")
 
@@ -413,9 +411,9 @@ async def consolidate_cluster(
     # Build prompt
     prompt = CONSOLIDATION_PROMPT.format(facts=facts_text)
 
-    # Build call params with provider config
+    # Build call params with provider config. No explicit model: the compute
+    # guard selects an approved route for the consolidation profile.
     call_params: dict[str, Any] = {
-        "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
         "max_tokens": 2000,
@@ -431,7 +429,8 @@ async def consolidate_cluster(
 
     # Call LLM for synthesis
     try:
-        response = await guarded_completion(**call_params)
+        with routing_context(CONSOLIDATION_PROFILE):
+            response = await guarded_completion(**call_params)
 
         # Extract synthesized text using robust extraction
         synthesized_text = _extract_content(response)

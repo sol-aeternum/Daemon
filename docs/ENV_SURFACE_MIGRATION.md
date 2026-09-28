@@ -7,6 +7,31 @@ change is meant to enforce.
 
 ## Scope, and the condition everything below depends on
 
+### Luna-first routing amendment — 28 September 2026
+
+`DAEMON_MODEL_ROUTING` is an optional Settings-backed path to workload groups and
+model parameter presets. Absent or empty uses `config/model_routing.json`.
+Backend and worker receive the same override through Compose; the example leaves
+it commented. It grants no endpoint approval or account capacity.
+
+The former `AUTO_FAST_MODEL`, `AUTO_FAST_TEMP`, `AUTO_FAST_MODEL_GROK`,
+`AUTO_FAST_MODEL_GROK_TEMP`, `AUTO_REASONING_MODEL`, `AUTO_REASONING_TEMP`,
+`TITLE_MODEL`, `BACKGROUND_REASONING_MODEL`, `PROVIDER_EXTRA_PARAMS` and
+`MODEL_EXTRA_PARAMS` deployment inputs are retired in favor of that file. Explicit
+benchmark/manual parameters remain request-local and validated. The historical
+cleanup inventory below predates this approved routing amendment. No actual
+deployment environment is modified by these repository changes.
+
+Existing values for **all ten retired keys above are ignored** by Settings
+(`extra="ignore"`): removing a key, leaving it empty, or retaining a nonempty old
+value has the same result. None restores the old model or sampling override.
+Automatic calls use the selected workload's reviewed catalog candidates and
+presets instead; an unavailable qualified candidate produces an unavailable
+result rather than falling back to a retired key. Operators should remove those
+stale keys and place reviewed replacements in the routing catalog. This applies
+only to the retired keys: `DAEMON_MODEL_ROUTING` still selects that catalog, with
+its absent/empty fallback described above.
+
 This note describes the repository's own `docker-compose.yml` path. **The actual
 production launch configuration is unproven.** No tracked file records which
 command, override file, or systemd unit the production host uses. Everything in

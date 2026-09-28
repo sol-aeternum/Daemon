@@ -12,6 +12,10 @@ import yaml
 DEFAULT_ROLE_TIMEOUT_SECONDS = 90.0
 
 
+class UnknownCouncilPreset(ValueError):
+    """A requested preset must name a configured roster, never an implicit fallback."""
+
+
 @dataclass
 class PerspectiveConfig:
     """Configuration for a single perspective."""
@@ -85,8 +89,9 @@ def load_roster_with_metadata(preset: str = "default") -> dict[str, dict[str, An
 
     presets = data.get("presets", {}) if isinstance(data, dict) else {}
     roles = data.get("roles", {}) if isinstance(data, dict) else {}
-    default_preset = presets.get("default", {}) if isinstance(presets, dict) else {}
-    preset_config = presets.get(preset, default_preset) if isinstance(presets, dict) else {}
+    if not isinstance(presets, dict) or preset not in presets:
+        raise UnknownCouncilPreset(f"Unknown council preset: {preset}")
+    preset_config = presets[preset]
     active_seats = preset_config.get("active_seats", [])
 
     role_map: dict[str, dict[str, Any]] = {}

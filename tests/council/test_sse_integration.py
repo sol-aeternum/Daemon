@@ -17,6 +17,7 @@ from orchestrator.auth import AuthenticatedDevice, require_device_auth
 from orchestrator.config import get_settings
 from orchestrator.db import AppState, get_app_state
 from orchestrator.main import app
+from tests.qualified_compute import install_qualified_compute
 
 
 def _single_output_result() -> dict[str, Any]:
@@ -46,9 +47,15 @@ async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncClient,
 
     settings = get_settings()
     app_state = AppState(settings=settings)
+    # Admission requires at least one approved route, and production ships none
+    # on purpose, so these endpoint tests opt in explicitly like the progressive
+    # SSE suite does instead of stubbing the qualification check away.
+    install_qualified_compute(monkeypatch)
     monkeypatch.setattr(
         "orchestrator.main.choose_route",
-        lambda model=None: SimpleNamespace(model=model or "openrouter/test-approved"),
+        lambda model=None, *, profile="routine": SimpleNamespace(
+            model=model or "openrouter/test-approved"
+        ),
     )
 
     @asynccontextmanager

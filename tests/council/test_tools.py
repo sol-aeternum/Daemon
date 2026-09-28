@@ -318,3 +318,24 @@ class TestCouncilCompletionWithTools:
             assert usage["total_tokens"] == 20
             assert usage["cost_usd"] == 0.0005
             tool_executor.assert_not_awaited()
+
+
+def test_council_scoped_registry_excludes_spawn_and_advisor_tools() -> None:
+    """The minimal registry council runs with must stay free of spawn/advisor tools.
+
+    ``create_advisor_registry`` is the constrained registry the council engine
+    builds; despite the legacy name it is the council-scoped tool set. It must
+    expose only the side-effect-free utility tools.
+    """
+    from orchestrator.tools.builtin import create_advisor_registry
+
+    registry = create_advisor_registry()
+    tool_names = {schema["function"]["name"] for schema in registry.list_schemas()}
+
+    # Spawning further agents and advisor escalation are not available here.
+    assert "consult_advisor" not in tool_names
+    assert "spawn_agent" not in tool_names
+    assert "spawn_multiple" not in tool_names
+
+    # Only safe tools should be present.
+    assert "get_time" in tool_names or "calculate" in tool_names

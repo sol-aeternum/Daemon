@@ -80,16 +80,16 @@ For each advisor's final position, evaluate:
 Output format:
 
 **CRITICAL FINDINGS** (errors that could lead to a bad decision):
-- [{Agent-ID}] {Finding}
+- [{{Agent-ID}}] {{Finding}}
 
 **MODERATE FINDINGS** (weaknesses worth considering):
-- [{Agent-ID}] {Finding}
+- [{{Agent-ID}}] {{Finding}}
 
 **NOTES** (observations, not necessarily problems):
-- [{Agent-ID}] {Finding}
+- [{{Agent-ID}}] {{Finding}}
 
 **SHARED ASSUMPTIONS** (held by all advisors, unquestioned):
-- {Assumption}
+- {{Assumption}}
 
 Rules:
 - Be specific. "Argument is weak" is useless. "Agent-B claims property values rose 8% but their recommendation assumes 3% growth — these are inconsistent" is useful.

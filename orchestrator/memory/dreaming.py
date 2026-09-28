@@ -18,10 +18,16 @@ from orchestrator.config import get_settings
 from orchestrator.memory.embedding import EmbeddingConfigurationError, embed_documents_with_metadata
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
+from orchestrator.model_routing import routing_context
 
 logger = logging.getLogger(__name__)
 
 MAX_DREAM_OBSERVATIONS_PER_FAMILY = 2
+
+# Dreaming synthesizes higher-order observations across a cluster of memories.
+# It is unattended but genuinely inferential, so it runs on the reasoning
+# profile rather than the cheap background profile.
+DREAM_PROFILE = "reasoning"
 
 DREAM_SYNTHESIS_PROMPT = """You are synthesizing higher-level observations from related user memories.
 
@@ -209,6 +215,20 @@ def _coerce_datetime(value: object) -> datetime | None:
     return None
 
 
+def _summarize_models_used(models_used: list[str]) -> str | None:
+    """Render accurate provenance for a dream run.
+
+    A run may span several families and each call may land on a different
+    qualified route, so the audit records every route actually selected, in
+    first-seen order. No inference means no provenance, not a placeholder.
+    """
+    if not models_used:
+        return None
+    if len(models_used) == 1:
+        return models_used[0]
+    return ",".join(models_used)
+
+
 async def _build_local_store() -> tuple[MemoryStore | None, asyncpg.Pool | None]:
     settings = get_settings()
     if not settings.database_url or not settings.daemon_encryption_key:
@@ -236,21 +256,36 @@ def _format_cluster_memories(memories: Iterable[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-async def dream_on_cluster(memories: list[dict[str, Any]]) -> list[dict[str, Any]]:
+async def dream_on_cluster(
+    memories: list[dict[str, Any]],
+    *,
+    model: str | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Synthesize observations for one cluster on the dreaming profile.
+
+    Returns the normalized observations and the approved route the compute
+    guard actually selected, so callers can record accurate provenance instead
+    of a configured model hint. ``model`` is a test/benchmark injection point
+    only; deployment leaves it unset.
+    """
     if not memories:
-        return []
+        return [], None
 
     settings = get_settings()
     provider_config = settings.get_provider_config("openrouter")
     prompt = f"{DREAM_SYNTHESIS_PROMPT}\n\nSource memories:\n{_format_cluster_memories(memories)}"
 
     call_params: dict[str, Any] = {
-        "model": settings.background_reasoning_model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.2,
+        # A couple of short grounded observations. This is the real output
+        # contract, not a routing hint; the profile's min-output floor is a
+        # separate model-capability gate.
         "max_tokens": 300,
         "timeout": provider_config.timeout_s,
     }
+    if model is not None:
+        call_params["model"] = model
     if provider_config.base_url:
         call_params["api_base"] = provider_config.base_url
     if provider_config.api_key:
@@ -258,11 +293,14 @@ async def dream_on_cluster(memories: list[dict[str, Any]]) -> list[dict[str, Any
     if provider_config.extra_headers:
         call_params["extra_headers"] = provider_config.extra_headers
 
-    response = await guarded_completion(**call_params)
+    with routing_context(DREAM_PROFILE, preferred_model=model) as route:
+        response = await guarded_completion(**call_params)
+        model_used = route.selected_model
+
     valid_source_memory_ids = {
         str(memory["id"]) for memory in memories if memory.get("id") is not None
     }
-    return _normalize_observations(_extract_content(response), valid_source_memory_ids)
+    return _normalize_observations(_extract_content(response), valid_source_memory_ids), model_used
 
 
 async def run_dreaming(
@@ -284,6 +322,9 @@ async def run_dreaming(
 
     owned_pool: asyncpg.Pool | None = None
     active_store = store
+    # Declared before the run body so the failure path can still report the
+    # routes that were actually selected before the error.
+    models_used: list[str] = []
     if active_store is None:
         active_store, owned_pool = await _build_local_store()
     if active_store is None:
@@ -357,7 +398,8 @@ async def run_dreaming(
                 observations_created=0,
                 observation_memory_ids=[],
                 run_completed_at=datetime.now(timezone.utc),
-                model_used=settings.background_reasoning_model,
+                # No family ran, so no inference happened and no route exists.
+                model_used=None,
             )
             return {
                 "status": "skipped",
@@ -377,7 +419,12 @@ async def run_dreaming(
 
         for family, members in families_to_process.items():
             try:
-                observations = await dream_on_cluster(members)
+                observations, cluster_model = await dream_on_cluster(members)
+                # Provenance is the set of routes actually selected across the
+                # calls that succeeded, recorded in first-seen order. Never a
+                # config hint.
+                if cluster_model and cluster_model not in models_used:
+                    models_used.append(cluster_model)
                 if not observations:
                     skipped_families.append(family)
                     continue
@@ -452,7 +499,7 @@ async def run_dreaming(
             observation_memory_ids=created_memory_ids,
             error_message="; ".join(family_errors) if family_errors else None,
             run_completed_at=datetime.now(timezone.utc),
-            model_used=settings.background_reasoning_model,
+            model_used=_summarize_models_used(models_used),
         )
         return {
             "status": final_status,
@@ -478,7 +525,9 @@ async def run_dreaming(
                 observation_memory_ids=[],
                 error_message=str(error),
                 run_completed_at=datetime.now(timezone.utc),
-                model_used=settings.background_reasoning_model,
+                # The run failed, so only the routes recorded as selected
+                # before the error are claimable.
+                model_used=_summarize_models_used(models_used),
             )
             dream_run_id = str(dream_run["id"])
         except Exception:

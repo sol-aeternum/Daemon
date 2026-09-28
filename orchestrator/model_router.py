@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 
 @dataclass
@@ -9,6 +10,7 @@ class ModelDecision:
     model: str
     reason: str
     advisor_eligible: bool = False
+    profile: str = "routine"
 
 
 COMPLEXITY_SIGNALS = {
@@ -20,6 +22,8 @@ COMPLEXITY_SIGNALS = {
     "should i",
     "which is better",
     "analyze",
+    "analyse",
+    "critique",
     "evaluate",
     "summarize everything",
     "help me decide",
@@ -32,7 +36,19 @@ COMPLEXITY_SIGNALS = {
     "comprehensive",
     "walk me through",
     "debug",
+    "debugging",
     "refactor",
+    "refactoring",
+    "implement",
+    "implementation",
+    "write code",
+    "code review",
+    "review code",
+    "root cause",
+    "prove",
+    "derive",
+    "optimize",
+    "optimise",
     "write a python script",
     "architecture",
     "design pattern",
@@ -49,22 +65,11 @@ TRIVIAL_SIMPLE_SIGNALS = {
     "what date is it",
 }
 
-STANDARD_SIMPLE_SIGNALS = {
-    "what is my",
-    "what's my",
-    "remember that",
-    "remember my",
-    "what time",
-    "what date",
-    "weather",
-    "set a reminder",
-    "notify me",
-    "generate an image",
-    "make an image",
-    "search for",
-    "look up",
-    "find me",
-}
+RESEARCH_SIGNALS = {"research", "search for", "look up", "find sources", "fact-check"}
+
+
+def _has_signal(message: str, signals: set[str]) -> bool:
+    return any(re.search(r"(?<!\w)" + re.escape(signal) + r"(?!\w)", message) for signal in signals)
 
 
 def classify_message(
@@ -72,6 +77,10 @@ def classify_message(
     turn_count: int = 0,
     has_code_block: bool | None = None,
 ) -> str:
+    """Classify the requested work; size is separately bounded by compute policy.
+
+    A long prompt or conversation does not by itself require premium reasoning.
+    """
     msg_lower = message.lower().strip()
     if not msg_lower:
         return "trivial"
@@ -79,21 +88,10 @@ def classify_message(
     detected_code_block = "```" in message if has_code_block is None else has_code_block
     if detected_code_block:
         return "complex"
-    if turn_count > 10:
-        return "complex"
-    if len(message) > 500:
-        return "complex"
-    if len(message.split()) > 80:
-        return "complex"
-
     if msg_lower in TRIVIAL_SIMPLE_SIGNALS:
         return "trivial"
-    for signal in STANDARD_SIMPLE_SIGNALS:
-        if signal in msg_lower:
-            return "standard"
-    for signal in COMPLEXITY_SIGNALS:
-        if signal in msg_lower:
-            return "complex"
+    if _has_signal(msg_lower, COMPLEXITY_SIGNALS):
+        return "complex"
     return "standard"
 
 
@@ -122,6 +120,7 @@ def select_model_tier(
             model="",
             reason="classification:complex",
             advisor_eligible=True,
+            profile="reasoning",
         )
 
     return ModelDecision(
@@ -129,4 +128,5 @@ def select_model_tier(
         model="",
         reason=f"classification:{classification}",
         advisor_eligible=False,
+        profile="research" if _has_signal(message.lower(), RESEARCH_SIGNALS) else "routine",
     )

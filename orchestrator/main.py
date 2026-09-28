@@ -766,13 +766,19 @@ def _build_user_content_from_attachments(
 
 
 async def _account_chat_frames(
-    scope_pool: Any, scope_user_id: uuid.UUID, *, auto_route: bool = False, **kwargs: Any
+    scope_pool: Any,
+    scope_user_id: uuid.UUID,
+    *,
+    auto_route: bool = False,
+    profile: str = "routine",
+    **kwargs: Any,
 ) -> AsyncIterator[str]:
     async for frame in _account_frames(
         scope_pool,
         scope_user_id,
         lambda: stream_sse_chat(**kwargs),
         auto_route=auto_route,
+        profile=profile,
     ):
         yield frame
 
@@ -785,6 +791,7 @@ async def _account_frames(
     auto_route: bool = False,
     operation: str = "chat",
     extended: bool = False,
+    profile: str = "routine",
 ) -> AsyncIterator[str]:
     # Keep the ContextVar scope inside one producer task. The keepalive bridge
     # may resume its input generator in a different task for each frame.
@@ -800,6 +807,7 @@ async def _account_frames(
                 auto_route=auto_route,
                 operation=operation,
                 extended=extended,
+                profile=profile,
             ):
                 async for frame in source():
                     await frames.put((frame, None))
@@ -826,9 +834,36 @@ async def _account_frames(
             pass
 
 
-def _approved_chat_model(model: str | None = None) -> str:
+def _qualified_profile_available(profile: str) -> bool:
+    """Whether ``profile`` has a qualified route in this deployment right now.
+
+    ``choose_route`` is the cheap, local qualification check: it reads the
+    validated routing metadata and the inference policy and nothing else. It
+    reserves no account budget and calls no provider, so it is safe to run
+    before admission. The route it names is deliberately discarded — the
+    profile's cheapest candidate is not a pin, and dispatch still picks the
+    route this account, request and budget may actually use.
+    """
     try:
-        return choose_route(model).model
+        choose_route(profile=profile)
+    except ComputeUnavailable:
+        return False
+    return True
+
+
+def _approved_chat_model(model: str | None = None, *, profile: str = "routine") -> str:
+    try:
+        if model and model != "auto":
+            # An explicit selection is admitted against its own exact route, and
+            # is not a claim about what the automatic profile can serve.
+            return choose_route(model).model
+        # Admission qualifies the exact profile this request will dispatch
+        # under. An approved route that no group of that profile may use is not
+        # a servable answer, so it must not buy a 200 here. Account eligibility,
+        # per-request capabilities, output bounds and budget stay at dispatch.
+        if not _qualified_profile_available(profile):
+            raise ComputeUnavailable("route_unavailable", "Approved inference route unavailable")
+        return "auto"
     except ComputeUnavailable as exc:
         raise HTTPException(
             status_code=503,
@@ -1001,6 +1036,98 @@ def _build_council_assistant_content(council_events: list[dict[str, Any]]) -> st
         return "Council configuration requested."
 
     return "Council run completed."
+
+
+async def _persist_council_output(
+    *,
+    store: Any,
+    conversation_uuid: uuid.UUID | None,
+    user_id: uuid.UUID | None,
+    request_id: str,
+    council_events: list[dict[str, Any]],
+    failed: bool,
+    log_message: str,
+) -> None:
+    """Record collected council events, retaining an error state on abort."""
+    if not (store and conversation_uuid and user_id and council_events):
+        return
+    try:
+        await store.insert_message(
+            conversation_id=conversation_uuid,
+            user_id=user_id,
+            role="assistant",
+            content=_build_council_assistant_content(council_events),
+            model="council",
+            tool_results=[
+                {
+                    "name": "council_events",
+                    "result": {"events": council_events},
+                    "request_id": request_id,
+                }
+            ],
+            metadata={"request_id": request_id, "council_events": council_events},
+            status="error" if failed else "complete",
+        )
+    except Exception:
+        logger.warning(log_message, exc_info=True)
+
+
+async def _stream_council_events(
+    *,
+    db_pool: Any,
+    account_user_id: uuid.UUID,
+    source: Callable[[], AsyncIterator[str]],
+    store: Any,
+    conversation_uuid: uuid.UUID | None,
+    user_id: uuid.UUID | None,
+    conversation_id: str,
+    request_id: str,
+    log_message: str,
+) -> AsyncIterator[str]:
+    """Persist council progress on success, failure, or stream interruption."""
+    council_events: list[dict[str, Any]] = []
+    council_failed = False
+    completed = False
+    try:
+        async for frame in _account_frames(
+            db_pool,
+            account_user_id,
+            source,
+            operation="agent",
+            auto_route=True,
+            extended=True,
+            profile="council",
+        ):
+            parsed_event = _extract_council_event_for_persistence(frame)
+            if parsed_event is not None:
+                council_events.append(parsed_event)
+                council_failed |= parsed_event.get("type") == "council_error"
+            yield frame
+        completed = True
+    finally:
+        await asyncio.shield(
+            _persist_council_output(
+                store=store,
+                conversation_uuid=conversation_uuid,
+                user_id=user_id,
+                request_id=request_id,
+                council_events=council_events,
+                failed=council_failed or not completed,
+                log_message=log_message,
+            )
+        )
+
+    yield sse(
+        "done",
+        {
+            "type": "done",
+            "id": "evt_done",
+            "ts": now_rfc3339(),
+            "conversation_id": conversation_id,
+            "request_id": request_id,
+            "data": {"status": "error" if council_failed else "completed"},
+        },
+    )
 
 
 # ============== Health & Info Endpoints ==============
@@ -1252,8 +1379,13 @@ async def openai_chat_completions(
                 break
     if actual_model in {"default", "", "kimi", "auto"}:
         actual_model = ""
+    # Classify before admission so the automatic choice is qualified against the
+    # exact workload profile this request will dispatch under, not against any
+    # approved route at all.
+    workload = select_model_tier(last_message).profile
     actual_model = _approved_chat_model(
-        actual_model if actual_model not in {"default", "", "kimi", "auto"} else None
+        actual_model if actual_model not in {"default", "", "kimi", "auto"} else None,
+        profile=workload,
     )
 
     system_prompts = [
@@ -1302,6 +1434,7 @@ async def openai_chat_completions(
                     getattr(request.app.state.app_state, "db_pool", None),
                     auth.user_id,
                     auto_route=payload.model in {"default", "", "kimi", "auto"},
+                    profile=workload,
                     settings=settings,
                     provider_config=provider_config,
                     system_prompt=system_prompt,
@@ -1426,6 +1559,7 @@ async def openai_chat_completions(
                 getattr(request.app.state.app_state, "db_pool", None),
                 auth.user_id,
                 auto_route=payload.model in {"default", "", "kimi", "auto"},
+                profile=workload,
                 settings=settings,
                 provider_config=provider_config,
                 system_prompt=system_prompt,
@@ -1868,16 +2002,16 @@ async def chat(
         user_override=user_model_choice,
     )
 
-    if model_decision.tier == "explicit":
-        selected_model = model_decision.model
-    elif model_decision.tier == "fast":
-        selected_model = settings.auto_fast_model
-    elif model_decision.tier == "reasoning":
-        selected_model = settings.auto_reasoning_model
-    else:
-        selected_model = provider_config.model
+    # A council run streams under the council profile, not under the profile the
+    # command's wording would classify to, so admit it against the profile it
+    # will actually dispatch under.
+    admission_profile = (
+        "council" if is_council_config_response or is_council_command else model_decision.profile
+    )
+
     selected_model = _approved_chat_model(
-        selected_model if model_decision.tier == "explicit" else None
+        model_decision.model if model_decision.tier == "explicit" else None,
+        profile=admission_profile,
     )
 
     actual_model = selected_model
@@ -2062,7 +2196,6 @@ async def chat(
     async def generator():
         try:
             if is_council_config_response:
-                persisted_council_events: list[dict[str, Any]] = []
                 if conversation_uuid:
                     yield sse(
                         "conversation",
@@ -2076,68 +2209,26 @@ async def chat(
                         },
                     )
 
-                async for frame in _account_frames(
-                    app_state.db_pool,
-                    auth.user_id,
-                    lambda: stream_council_interview_response(
+                async for frame in _stream_council_events(
+                    db_pool=app_state.db_pool,
+                    account_user_id=auth.user_id,
+                    source=lambda: stream_council_interview_response(
                         user_message=user_message,
                         conversation_id=conversation_id,
                         request_id=request_id,
                         stored_config=council_config_response,
                     ),
-                    operation="agent",
-                    auto_route=True,
-                    extended=True,
+                    store=store,
+                    conversation_uuid=conversation_uuid,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    request_id=request_id,
+                    log_message="Failed to persist council interview response output",
                 ):
-                    parsed_event = _extract_council_event_for_persistence(frame)
-                    if parsed_event is not None:
-                        persisted_council_events.append(parsed_event)
                     yield frame
-
-                if store and conversation_uuid and user_id and persisted_council_events:
-                    try:
-                        await store.insert_message(
-                            conversation_id=conversation_uuid,
-                            user_id=user_id,
-                            role="assistant",
-                            content=_build_council_assistant_content(persisted_council_events),
-                            model="council",
-                            tool_results=[
-                                {
-                                    "name": "council_events",
-                                    "result": {
-                                        "events": persisted_council_events,
-                                    },
-                                    "request_id": request_id,
-                                }
-                            ],
-                            metadata={
-                                "request_id": request_id,
-                                "council_events": persisted_council_events,
-                            },
-                            status="complete",
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Failed to persist council interview response output",
-                            exc_info=True,
-                        )
-
-                yield sse(
-                    "done",
-                    {
-                        "type": "done",
-                        "id": "evt_done",
-                        "ts": now_rfc3339(),
-                        "conversation_id": conversation_id,
-                        "request_id": request_id,
-                        "data": {"status": "completed"},
-                    },
-                )
                 return
 
             if is_council_command:
-                persisted_council_events: list[dict[str, Any]] = []
                 if conversation_uuid:
                     yield sse(
                         "conversation",
@@ -2151,63 +2242,22 @@ async def chat(
                         },
                     )
 
-                async for frame in _account_frames(
-                    app_state.db_pool,
-                    auth.user_id,
-                    lambda: stream_council(
+                async for frame in _stream_council_events(
+                    db_pool=app_state.db_pool,
+                    account_user_id=auth.user_id,
+                    source=lambda: stream_council(
                         user_message=user_message,
                         conversation_id=conversation_id,
                         request_id=request_id,
                     ),
-                    operation="agent",
-                    auto_route=True,
-                    extended=True,
+                    store=store,
+                    conversation_uuid=conversation_uuid,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    request_id=request_id,
+                    log_message="Failed to persist council command output",
                 ):
-                    parsed_event = _extract_council_event_for_persistence(frame)
-                    if parsed_event is not None:
-                        persisted_council_events.append(parsed_event)
                     yield frame
-
-                if store and conversation_uuid and user_id and persisted_council_events:
-                    try:
-                        await store.insert_message(
-                            conversation_id=conversation_uuid,
-                            user_id=user_id,
-                            role="assistant",
-                            content=_build_council_assistant_content(persisted_council_events),
-                            model="council",
-                            tool_results=[
-                                {
-                                    "name": "council_events",
-                                    "result": {
-                                        "events": persisted_council_events,
-                                    },
-                                    "request_id": request_id,
-                                }
-                            ],
-                            metadata={
-                                "request_id": request_id,
-                                "council_events": persisted_council_events,
-                            },
-                            status="complete",
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Failed to persist council command output",
-                            exc_info=True,
-                        )
-
-                yield sse(
-                    "done",
-                    {
-                        "type": "done",
-                        "id": "evt_done",
-                        "ts": now_rfc3339(),
-                        "conversation_id": conversation_id,
-                        "request_id": request_id,
-                        "data": {"status": "completed"},
-                    },
-                )
                 return
 
             trusted_spawn_context = _build_trusted_spawn_context(auth.user_id, payload.metadata)
@@ -2215,6 +2265,7 @@ async def chat(
                 app_state.db_pool,
                 auth.user_id,
                 auto_route=model_decision.tier != "explicit",
+                profile=model_decision.profile,
                 settings=settings,
                 provider_config=provider_config,
                 system_prompt=assembled_system_prompt,

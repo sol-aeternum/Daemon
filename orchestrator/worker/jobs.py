@@ -33,6 +33,7 @@ from orchestrator.memory.extraction import (
 )
 from orchestrator.memory.store import MemoryStore
 from orchestrator.memory.titles import ConversationMessage, generate_conversation_title
+from orchestrator.model_routing import routing_context
 from orchestrator.skill_evaluator import (
     SkillEvaluator,
     SkillEvaluationRequest,
@@ -42,6 +43,13 @@ logger = logging.getLogger(__name__)
 
 
 WorkerContext = dict[str, object]
+
+# The skill consolidation nudge asks a model to judge whether autonomous
+# skills should merge, delete or go stale. It is an unattended judgement, so
+# it runs on the reasoning profile. The enclosing account scope still owns the
+# budget and entitlement authority.
+CONSOLIDATION_NUDGE_PROFILE = "reasoning"
+
 # One chunk can perform two 90-second provider calls (initial + retry).
 # Keeping the cap at one leaves headroom inside arq's 300-second job timeout.
 MAX_EXTRACTION_CHUNKS_PER_JOB = 1
@@ -535,7 +543,12 @@ async def _extract_memories_once(
         chunk_last_message_id = str(raw_message_id) if raw_message_id is not None else None
 
         async with account_compute(
-            ctx.get("db_pool"), owner, operation="agent", auto_route=True, background=True
+            ctx.get("db_pool"),
+            owner,
+            operation="agent",
+            auto_route=True,
+            background=True,
+            profile="background",
         ):
             chunk_success, chunk_new_memories, chunk_continuation = await process_extraction(
                 store=store_obj,
@@ -757,15 +770,16 @@ async def generate_title(
         except Exception:
             logger.warning("Failed to check title lock", exc_info=True)
 
-    settings_obj = ctx.get("settings")
-    settings = settings_obj if isinstance(settings_obj, Settings) else None
-    title_model = (settings.title_model if settings else None) or "auto"
-
     owner = await _conversation_owner(ctx, _as_uuid(conversation_id))
     async with account_compute(
-        ctx.get("db_pool"), owner, operation="agent", auto_route=True, background=True
+        ctx.get("db_pool"),
+        owner,
+        operation="agent",
+        auto_route=True,
+        background=True,
+        profile="background",
     ):
-        title = await generate_conversation_title(messages, model=title_model)
+        title = await generate_conversation_title(messages)
     if isinstance(store_obj, MemoryStore):
         try:
             _ = await store_obj.update_conversation(_as_uuid(conversation_id), title=title)
@@ -807,14 +821,16 @@ async def generate_conversation_title_job(
     if not messages:
         return {"status": "skipped", "reason": "no_messages"}
 
-    settings_obj = ctx.get("settings")
-    settings = settings_obj if isinstance(settings_obj, Settings) else None
-    title_model = (settings.title_model if settings else None) or "auto"
     owner = await _conversation_owner(ctx, conv_id)
     async with account_compute(
-        ctx.get("db_pool"), owner, operation="agent", auto_route=True, background=True
+        ctx.get("db_pool"),
+        owner,
+        operation="agent",
+        auto_route=True,
+        background=True,
+        profile="background",
     ):
-        title = await generate_conversation_title(messages, model=title_model)
+        title = await generate_conversation_title(messages)
 
     try:
         _ = await store_obj.update_conversation(conv_id, title=title)
@@ -909,7 +925,12 @@ async def generate_summary_job(
 
     owner = await _conversation_owner(ctx, conv_id)
     async with account_compute(
-        ctx.get("db_pool"), owner, operation="agent", auto_route=True, background=True
+        ctx.get("db_pool"),
+        owner,
+        operation="agent",
+        auto_route=True,
+        background=True,
+        profile="background",
     ):
         summary = await generate_summary(messages, previous_summary, settings)
     if not summary.strip():
@@ -1115,7 +1136,12 @@ async def run_dreaming_job(
                 continue
 
             async with account_compute(
-                ctx.get("db_pool"), uid, operation="agent", auto_route=True, background=True
+                ctx.get("db_pool"),
+                uid,
+                operation="agent",
+                auto_route=True,
+                background=True,
+                profile="reasoning",
             ):
                 dream_result = await run_dreaming(uid, store=store_obj)
             results["users_processed"] += 1
@@ -1261,7 +1287,12 @@ async def consolidate_memories(
                         continue
 
                     async with account_compute(
-                        ctx.get("db_pool"), uid, operation="agent", auto_route=True, background=True
+                        ctx.get("db_pool"),
+                        uid,
+                        operation="agent",
+                        auto_route=True,
+                        background=True,
+                        profile="reasoning",
                     ):
                         created = await consolidate_cluster(cluster, store, uid)
 
@@ -1363,7 +1394,12 @@ async def run_skill_evaluation_job(
         if owner != request.user_id:
             raise ComputeUnavailable("account_unavailable", "Conversation owner mismatch")
         async with account_compute(
-            db_pool, owner, operation="agent", auto_route=True, background=True
+            db_pool,
+            owner,
+            operation="agent",
+            auto_route=True,
+            background=True,
+            profile="reasoning",
         ):
             result = await evaluator.evaluate_completed_turn(request)
 
@@ -1671,7 +1707,12 @@ async def _process_user_consolidation_nudge(
     )
 
     async with account_compute(
-        db_pool, user_id, operation="agent", auto_route=True, background=True
+        db_pool,
+        user_id,
+        operation="agent",
+        auto_route=True,
+        background=True,
+        profile="reasoning",
     ):
         model_actions = await _call_consolidation_model(prompt)
 
@@ -1853,12 +1894,10 @@ async def _call_consolidation_model(prompt: str) -> list[dict[str, Any]]:
 
     settings = get_settings()
     provider_config = settings.get_provider_config("openrouter")
-    model = settings.auto_fast_model
-    if not model.startswith("openrouter/"):
-        model = f"openrouter/{model}"
 
+    # No explicit model: the compute guard selects an approved route for the
+    # consolidation reasoning profile.
     call_params: dict[str, Any] = {
-        "model": model,
         "messages": [
             {
                 "role": "system",
@@ -1879,7 +1918,8 @@ async def _call_consolidation_model(prompt: str) -> list[dict[str, Any]]:
         call_params["extra_headers"] = provider_config.extra_headers
 
     try:
-        response = await guarded_completion(**call_params)
+        with routing_context(CONSOLIDATION_NUDGE_PROFILE):
+            response = await guarded_completion(**call_params)
         content = _extract_response_content(response)
         if content:
             from orchestrator.consolidation_nudge_prompts import (

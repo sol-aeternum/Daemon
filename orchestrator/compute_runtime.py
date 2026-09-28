@@ -3,23 +3,45 @@
 Every LiteLLM call must pass through ``guarded_completion``. A stream retains its
 reservation until its iterator is closed, including cancellation and exceptions.
 Unpriced modalities cannot be estimated by this text-token ledger and are denied.
+
+Selection is capability-first and cheapest-acceptable, not cheapest: the account
+scope binds a workload profile from :mod:`orchestrator.model_routing`, that profile
+supplies the ordered groups of acceptable models and an output suitability floor
+for the job, and the cheapest candidate in the first group with any qualified
+candidate is chosen *for this request's own bound*. A model outside a profile's
+groups is not cheaper, it is not a candidate. Nothing here qualifies a route: the
+independent approval gate in ``config/inference_policy.json`` remains the sole
+permission to dispatch, and the account's resolved entitlements and budget remain
+the sole source of limits.
+
+For a caller that owns its own redundancy, ``guarded_completion`` also takes an
+exact route pin and a per-dispatch timeout. That seam dispatches **one** qualified
+route and reports what happened; it deliberately contains no failover loop, so a
+retry decision stays with the caller that also owns the second call's budget.
 """
 
 from __future__ import annotations
 
 import json
+import math
+import inspect
 import logging
 import uuid
 import asyncio
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, Final, cast
 
+import httpx
 import litellm
+from litellm.exceptions import APIConnectionError, Timeout
+from openai import APIError as OpenAIAPIError
 
+from orchestrator import model_routing
 from orchestrator.entitlements import EntitlementService
 from orchestrator.entitlements.plans import TOOL_ROUND_SAFETY_CEILING
 from orchestrator.entitlements.policy import RoutePolicy, load_inference_policy
@@ -35,13 +57,212 @@ from orchestrator.entitlements.errors import (
 from orchestrator.config import get_settings
 
 logger = logging.getLogger(__name__)
+STREAM_CLOSE_TIMEOUT_S = 2.0
+
+
+def _consume_close_result(task: asyncio.Task[None]) -> None:
+    """Retrieve errors from abandoned transport cleanup without blocking accounting."""
+    if not task.cancelled():
+        task.exception()
+
+
+#: Sanitized failure categories. A closed vocabulary, so a recorded dispatch
+#: failure is comparable across runs without carrying provider text.
+FAILURE_RATE_LIMITED: Final[str] = "rate_limited"
+FAILURE_UPSTREAM_UNAVAILABLE: Final[str] = "upstream_unavailable"
+FAILURE_CONNECTION_FAILED: Final[str] = "connection_failed"
+FAILURE_TIMEOUT: Final[str] = "timeout"
+FAILURE_DEADLINE_EXCEEDED: Final[str] = "deadline_exceeded"
+FAILURE_AUTHENTICATION_FAILED: Final[str] = "authentication_failed"
+FAILURE_PAYMENT_FAILED: Final[str] = "payment_failed"
+FAILURE_INVALID_REQUEST: Final[str] = "invalid_request"
+FAILURE_SETTLEMENT_FAILED: Final[str] = "settlement_failed"
+FAILURE_UNSPECIFIED: Final[str] = "unspecified"
+
+#: The only upstream statuses approved as a same-model retry trigger.
+RETRY_ELIGIBLE_STATUS: Final[frozenset[int]] = frozenset({429, 502, 503, 504})
+
+#: Transport-level timeouts and connection failures, checked before status codes
+#: because litellm's own classes carry synthetic default statuses that would
+#: otherwise read as ordinary HTTP failures.
+_TIMEOUT_ERRORS: Final[tuple[type[BaseException], ...]] = (
+    Timeout,
+    httpx.TimeoutException,
+    asyncio.TimeoutError,
+)
+_CONNECTION_ERRORS: Final[tuple[type[BaseException], ...]] = (
+    APIConnectionError,
+    httpx.TransportError,
+)
 
 
 class ComputeUnavailable(Exception):
-    def __init__(self, code: str, message: str):
+    """An account or compute denial, plus a sanitized retry classification.
+
+    ``category``, ``status_code``, ``retry_after_seconds`` and ``retryable`` are
+    the structured form of the generic message, so a caller that owns a failover
+    decision never has to parse prose. They are derived from the exception *type*
+    and the HTTP status code only — never from an exception message — and they
+    carry no provider body, endpoint, prompt or credential, which makes them safe
+    to record in an audit artifact.
+
+    ``retryable`` is ``False`` unless the failure was positively classified as an
+    upstream 429/502/503/504, a connection failure, or a timeout raised before the
+    operation deadline was spent and before any output was released. Denials,
+    cancellation, unsettled charges and unclassified exceptions therefore all stop
+    by default, and a settlement failure can never be presented as retryable.
+    """
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        category: str = FAILURE_UNSPECIFIED,
+        status_code: int | None = None,
+        retry_after_seconds: float | None = None,
+        retryable: bool = False,
+    ) -> None:
         self.code = code
         self.message = message
+        self.category = category
+        self.status_code = status_code
+        self.retry_after_seconds = retry_after_seconds
+        self.retryable = retryable
         super().__init__(message)
+
+
+class _CandidateRevoked(ComputeUnavailable):
+    """A selected route lost approval before reservation (candidate-specific)."""
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchFailure:
+    """One failed provider dispatch, reduced to a comparable, safe summary."""
+
+    category: str
+    status_code: int | None = None
+    retry_after_seconds: float | None = None
+    retryable: bool = False
+
+    def as_unavailable(self, code: str, message: str) -> ComputeUnavailable:
+        """The boundary exception callers see, carrying this classification."""
+        return ComputeUnavailable(
+            code,
+            message,
+            category=self.category,
+            status_code=self.status_code,
+            retry_after_seconds=self.retry_after_seconds,
+            retryable=self.retryable,
+        )
+
+
+def _http_status(exc: BaseException) -> int | None:
+    """The upstream HTTP status, when the exception structurally carries one.
+
+    Only the SDK's transport errors are asked, and only for an in-range integer:
+    an arbitrary exception with a lookalike attribute is not evidence of an
+    upstream response.
+    """
+    if not isinstance(exc, OpenAIAPIError):
+        return None
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, bool) or not isinstance(status, int):
+        return None
+    return status if 100 <= status <= 599 else None
+
+
+def _provider_retry_after(exc: BaseException) -> float | None:
+    """Validated Retry-After delay; the caller caps its cooldown at period end."""
+    getter = getattr(getattr(exc, "response", None), "headers", None)
+    get = getattr(getter, "get", None)
+    if not callable(get):
+        return None
+    try:
+        raw = get("retry-after")
+    except (TypeError, ValueError):
+        return None
+    try:
+        seconds = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        if not isinstance(raw, str):
+            return None
+        try:
+            retry_at = parsedate_to_datetime(raw)
+            if retry_at.tzinfo is None:
+                return None
+            seconds = max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+        except (TypeError, ValueError, OverflowError, IndexError):
+            return None
+    if not math.isfinite(seconds) or seconds < 0:
+        return None
+    return seconds
+
+
+def _classify_dispatch_failure(
+    exc: BaseException, *, deadline_bound: bool, output_released: bool
+) -> DispatchFailure:
+    """Reduce a provider failure to a sanitized category and retry decision.
+
+    Classification reads the exception type and the HTTP status code, and nothing
+    else: a message that merely *looks* like an upstream 503 is unclassified and
+    stops. ``deadline_bound`` says the operation's deadline was exhausted, and
+    ``output_released`` says a stream had already delivered output, either of
+    which removes the approved retry eligibility without changing the category.
+    """
+    status = _http_status(exc)
+    retryable = False
+    if isinstance(exc, _TIMEOUT_ERRORS):
+        category = FAILURE_DEADLINE_EXCEEDED if deadline_bound else FAILURE_TIMEOUT
+        retryable = not deadline_bound
+        status = None
+    elif isinstance(exc, _CONNECTION_ERRORS):
+        category = FAILURE_CONNECTION_FAILED
+        retryable = True
+        status = None
+    elif status == 429:
+        category = FAILURE_RATE_LIMITED
+        retryable = True
+    elif status in RETRY_ELIGIBLE_STATUS:
+        category = FAILURE_UPSTREAM_UNAVAILABLE
+        retryable = True
+    elif status == 408:
+        # An upstream timeout *response* is a timeout to read, but only a
+        # transport timeout or 429/502/503/504 is an approved retry trigger.
+        category = FAILURE_TIMEOUT
+    elif status in {401, 403}:
+        category = FAILURE_AUTHENTICATION_FAILED
+    elif status == 402:
+        category = FAILURE_PAYMENT_FAILED
+    elif status is not None and 400 <= status < 500:
+        category = FAILURE_INVALID_REQUEST
+    else:
+        category = FAILURE_UNSPECIFIED
+    # Once a token or tool event has been released the work is observable, so
+    # the same transport failure stops instead of becoming a second dispatch.
+    eligible = retryable and not output_released and not deadline_bound
+    return DispatchFailure(
+        category=category,
+        status_code=status,
+        retry_after_seconds=_provider_retry_after(exc) if eligible else None,
+        retryable=eligible,
+    )
+
+
+def _dispatch_budget_s(value: float | None, remaining: float) -> float:
+    """A caller-supplied per-dispatch timeout, validated then clipped.
+
+    Only a positive, finite number is accepted, and never more than the operation
+    has left, so this seam can shorten a dispatch but can never lengthen it.
+    """
+    if value is None:
+        return max(0.0, remaining)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ComputeUnavailable("capacity_unavailable", "Invalid dispatch timeout")
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ComputeUnavailable("capacity_unavailable", "Invalid dispatch timeout")
+    return min(seconds, max(0.0, remaining))
 
 
 # Stable, user-safe messages for account ceilings. The raw entitlement errors
@@ -95,6 +316,43 @@ class ComputeScope:
     selected_model: str | None = None
     outstanding: dict[Any, ReservationHold] = field(default_factory=dict)
     settled: dict[Any, int] = field(default_factory=dict)
+    expected_period: str | None = None
+    #: Outer account profile bounds automatic premium eligibility in nested contexts.
+    account_allow_premium: bool = True
+
+    async def close_stream(self, hold: ReservationHold) -> None:
+        """Close acquired transport even when its iterator was never advanced."""
+        if hold.response is None:
+            return
+        if hold.closing is None:
+
+            async def close() -> None:
+                closer = getattr(hold.response, "aclose", None)
+                if not callable(closer):
+                    closer = getattr(hold.response, "close", None)
+                if callable(closer):
+                    try:
+                        result = closer()
+                        if inspect.isawaitable(result):
+                            await result
+                    except Exception:
+                        logger.warning("Could not close an upstream inference stream")
+
+            async def bounded_close() -> None:
+                task = asyncio.create_task(close())
+                try:
+                    done, _ = await asyncio.wait({task}, timeout=STREAM_CLOSE_TIMEOUT_S)
+                    if done:
+                        await task
+                    else:
+                        logger.warning("Upstream inference stream cleanup timed out")
+                finally:
+                    if not task.done():
+                        task.cancel()
+                    task.add_done_callback(_consume_close_result)
+
+            hold.closing = asyncio.create_task(bounded_close())
+        await asyncio.shield(hold.closing)
 
     async def settle(
         self, reservation: Any, amount: int, *, usage: dict[str, int] | None = None
@@ -105,7 +363,9 @@ class ComputeScope:
             if self.settled.get(key) == amount:
                 return
             raise ComputeUnavailable(
-                "settlement_conflict", "Reservation already settled differently"
+                "settlement_conflict",
+                "Reservation already settled differently",
+                category=FAILURE_SETTLEMENT_FAILED,
             )
         if hold.settlement is None:
             # One task per reservation prevents racing a stream-finally against
@@ -119,9 +379,18 @@ class ComputeScope:
                 hold.settlement = asyncio.create_task(self.service.settle(reservation, amount))
         elif hold.actual != amount:
             raise ComputeUnavailable(
-                "settlement_conflict", "Reservation already settling differently"
+                "settlement_conflict",
+                "Reservation already settling differently",
+                category=FAILURE_SETTLEMENT_FAILED,
             )
-        await asyncio.shield(hold.settlement)
+        try:
+            await asyncio.shield(hold.settlement)
+        except Exception:
+            raise ComputeUnavailable(
+                "settlement_failed",
+                "Reservation settlement failed",
+                category=FAILURE_SETTLEMENT_FAILED,
+            ) from None
         self.settled[key] = amount
         self.outstanding.pop(key, None)
 
@@ -132,6 +401,8 @@ class ReservationHold:
     bound: int
     settlement: asyncio.Task[Any] | None = None
     actual: int | None = None
+    response: Any = None
+    closing: asyncio.Task[None] | None = None
 
 
 def _hold_key(reservation: Any) -> Any:
@@ -151,11 +422,17 @@ async def account_compute(
     auto_route: bool = False,
     extended: bool = False,
     background: bool = False,
+    profile: str = "routine",
+    expected_period: str | None = None,
 ) -> AsyncIterator[ComputeScope]:
     """Account scope for one operation. ``background`` marks worker jobs: charged
     to the budget, but never counted against rate or concurrency ceilings."""
     if pool is None or not isinstance(user_id, uuid.UUID):
         raise ComputeUnavailable("account_unavailable", "Account compute unavailable")
+    try:
+        account_profile = model_routing.load_model_routing().profile(profile)
+    except (PolicyError, model_routing.RoutingError) as exc:
+        raise ComputeUnavailable("profile_unavailable", "Workload profile unavailable") from exc
     scope = ComputeScope(
         user_id,
         EntitlementService(pool),
@@ -164,6 +441,8 @@ async def account_compute(
         extended,
         background,
     )
+    scope.expected_period = expected_period
+    scope.account_allow_premium = account_profile.allow_premium
     await scope.service.reconcile_expired_reservations(
         user_id,
         before=datetime.now(timezone.utc) - timedelta(seconds=2 * get_settings().request_timeout_s),
@@ -175,19 +454,27 @@ async def account_compute(
         )
     token = _scope.set(scope)
     try:
-        yield scope
+        with model_routing.routing_context(profile):
+            yield scope
     finally:
         try:
-            settlements = [
-                asyncio.create_task(
-                    scope.settle(
+
+            async def cleanup(hold: ReservationHold) -> None:
+                try:
+                    await scope.close_stream(hold)
+                finally:
+                    await scope.settle(
                         hold.reservation, hold.actual if hold.actual is not None else hold.bound
                     )
-                )
-                for hold in tuple(scope.outstanding.values())
+
+            settlements = [
+                asyncio.create_task(cleanup(hold)) for hold in tuple(scope.outstanding.values())
             ]
             if settlements:
-                await asyncio.gather(*settlements)
+                results = await asyncio.gather(*settlements, return_exceptions=True)
+                for result in results:
+                    if isinstance(result, BaseException):
+                        raise result
         finally:
             _scope.reset(token)
 
@@ -201,6 +488,9 @@ def current_scope() -> ComputeScope:
 
 def selected_model() -> str | None:
     """The actual approved model most recently sent in this account scope."""
+    routed = model_routing.active_routing()
+    if routed is not None:
+        return routed.selected_model
     scope = _scope.get()
     return scope.selected_model if scope else None
 
@@ -229,38 +519,102 @@ async def tool_round_limit() -> int:
     return TOOL_ROUND_SAFETY_CEILING if cap is None else max(1, cap)
 
 
-def choose_route(model: str | None = None) -> RoutePolicy:
+def _profile_shortlist(profile: str) -> dict[str, tuple[int, int]]:
+    """``model -> (group index, position)`` for one profile's acceptable models."""
+    return {
+        candidate.model: (candidate.group_index, candidate.position)
+        for candidate in model_routing.profile_candidates(profile) or ()
+    }
+
+
+def _model_excluded(model: str, state: model_routing.RoutingState) -> bool:
+    """Apply exclusions without leaking parser errors through admission."""
+    try:
+        developer = model_routing.developer_for_model(model)
+    except model_routing.RoutingError:
+        return True
+    return model in state.excluded_models or developer in state.excluded_developers
+
+
+def choose_route(model: str | None = None, *, profile: str = "routine") -> RoutePolicy:
+    """The route this deployment would dispatch for ``profile``.
+
+    With no ``model`` this is the profile's cheapest acceptable route, honouring the
+    profile's ordered groups and whether the profile may auto-consider premium
+    routes. An explicit ``model`` bypasses the profile shortlist only; it still has to
+    be an approved, priced, openrouter route.
+    """
+    state = model_routing.current_routing()
+    if model and _model_excluded(model, state):
+        raise ComputeUnavailable("route_unavailable", "Approved inference route unavailable")
     try:
         policy = load_inference_policy()
-        routes = [
-            route
-            for route in policy.routes.values()
-            if route.is_approved(policy.requirements)
-            and route.provider == "openrouter"
-            and route.model.startswith("openrouter/")
-            and route.price_ceiling is not None
-            and getattr(route, "route_class", None) in {"routine", "premium"}
-        ]
-        if model:
-            routes = [route for route in routes if route.model == model]
-        else:
+        shortlist = _profile_shortlist(profile)
+    except (PolicyError, model_routing.RoutingError) as exc:
+        raise ComputeUnavailable(
+            "route_unavailable", "Approved inference route unavailable"
+        ) from exc
+    routes = [
+        route
+        for route in policy.routes.values()
+        if route.is_approved(policy.requirements)
+        and route.provider == "openrouter"
+        and route.model.startswith("openrouter/")
+        and route.price_ceiling is not None
+        and getattr(route, "route_class", None) in {"routine", "premium"}
+    ]
+    if model:
+        routes = [route for route in routes if route.model == model]
+    else:
+        routes = [route for route in routes if route.model in shortlist]
+        if not model_routing.profile(profile).allow_premium:
             routes = [route for route in routes if getattr(route, "route_class", None) == "routine"]
-        if routes:
-            return min(
-                routes,
-                key=lambda route: (
-                    route.price_ceiling.microusd_per_1m_prompt
-                    + route.price_ceiling.microusd_per_1m_completion
-                    if route.price_ceiling
-                    else float("inf"),
-                    route.route_id,
-                ),
-            )
+    if routes:
+        return min(
+            routes,
+            key=lambda route: (
+                shortlist.get(route.model, (0, 0))[0] if not model else 0,
+                route.price_ceiling.microusd_per_1m_prompt
+                + route.price_ceiling.microusd_per_1m_completion
+                if route.price_ceiling
+                else float("inf"),
+                route.route_id,
+            ),
+        )
+    raise ComputeUnavailable("route_unavailable", "Approved inference route unavailable")
+
+
+def _pinned_route(route_id: str, model: str) -> RoutePolicy:
+    """The approved route ``route_id``, when it serves exactly ``model``.
+
+    An exact pin is resolved against the policy itself rather than against a
+    ranked candidate list, so an unknown, unapproved, expired or cross-model route
+    is refused before any budget is reserved and can never become a silent
+    substitution. This is not by itself a dispatch permission: the per-request
+    capability, token and budget checks still run in :func:`_priced_candidates`.
+    """
+    try:
+        inference = load_inference_policy()
     except PolicyError as exc:
         raise ComputeUnavailable(
             "route_unavailable", "Approved inference route unavailable"
         ) from exc
-    raise ComputeUnavailable("route_unavailable", "Approved inference route unavailable")
+    route = inference.routes.get(route_id)
+    if route is None or route.model != model or not route.is_approved(inference.requirements):
+        raise ComputeUnavailable("route_unavailable", "Approved inference route unavailable")
+    return route
+
+
+def _requested_output(params: dict[str, Any]) -> int | None:
+    """The caller's own output ask, validated as a positive integer or ``None``."""
+    configured_max = params.get("max_tokens")
+    if configured_max is None:
+        return None
+    if isinstance(configured_max, bool) or not isinstance(configured_max, int):
+        raise ComputeUnavailable("capacity_unavailable", "Invalid output token limit")
+    if configured_max <= 0:
+        raise ComputeUnavailable("capacity_unavailable", "Invalid output token limit")
+    return configured_max
 
 
 def _largest_approved_context() -> int:
@@ -289,8 +643,18 @@ def _priced_candidates(
     params: dict[str, Any],
     requested_model: str | None,
     extended: bool = False,
-) -> list[tuple[int, int, RoutePolicy, bool]]:
-    """Choose only funded approved routes, ranked by this request's worst case."""
+    *,
+    check_budget: bool = True,
+    account_allow_premium: bool = True,
+) -> list[tuple[int, int, RoutePolicy, bool, model_routing.RoutedModel | None]]:
+    """Qualified routes for this request, in the order they should be attempted.
+
+    Order is group-major then cheapest-within-group, so the first entry is the
+    cheapest acceptable candidate for the workload and a provider failure walks
+    outward through the profile's remaining groups. Every entry still satisfies the
+    active profile, the request's required capabilities, the account's limits and the
+    request's budget, so a fallback is never a silent downgrade.
+    """
     input_tokens = input_size.estimate
     try:
         inference = load_inference_policy()
@@ -298,7 +662,64 @@ def _priced_candidates(
         raise ComputeUnavailable(
             "route_unavailable", "Approved inference route unavailable"
         ) from exc
-    candidates: list[tuple[int, int, RoutePolicy, bool]] = []
+    state = model_routing.current_routing()
+    try:
+        workload = model_routing.load_model_routing().profile(state.profile)
+        shortlist: dict[str, model_routing.RoutedModel] = {
+            candidate.model: candidate
+            for candidate in model_routing.profile_candidates(
+                state.profile,
+                excluded_models=state.excluded_models,
+                excluded_developers=state.excluded_developers,
+            )
+            or ()
+        }
+    except (PolicyError, model_routing.RoutingError) as exc:
+        raise ComputeUnavailable(
+            "route_unavailable", "Approved inference route unavailable"
+        ) from exc
+
+    explicit = bool(requested_model)
+    if explicit:
+        # An explicit selection bypasses the shortlist, never the requirements.
+        wanted = str(requested_model)
+        placement = shortlist.get(wanted)
+        if placement is not None:
+            shortlist = {wanted: placement}
+        else:
+            shortlist = {}
+    requested_output = _requested_output(params)
+    if explicit and _model_excluded(str(requested_model), state):
+        return []
+    # Resolve one account-scoped target before looking at candidates. Premium
+    # trial overlays remain available to extended scopes, while ordinary auto
+    # routing cannot enlarge the request just because one route is premium.
+    account_limits = policy.limits_for(extended)
+    # ``None`` is uncapped (paid plans sell period capacity, not a smaller turn):
+    # the automatic target is then whatever each candidate route can return.
+    account_output: int | None = account_limits.max_output_tokens
+    if account_limits.max_context_tokens is not None:
+        context_left = account_limits.max_context_tokens - input_tokens
+        account_output = (
+            context_left if account_output is None else min(account_output, context_left)
+        )
+    requested_effort = params.get("reasoning_effort")
+    required = {"text"}
+    if params.get("tools"):
+        required.add("tools")
+    if (
+        isinstance(params.get("response_format"), dict)
+        and params["response_format"].get("type") == "json_schema"
+    ):
+        required.add("json_schema")
+
+    candidates: list[
+        tuple[int, int, int, str, int, RoutePolicy, bool, model_routing.RoutedModel | None]
+    ] = []
+    automatic_target = not explicit and requested_output is None
+    pending: dict[
+        int, list[tuple[RoutePolicy, bool, model_routing.RoutedModel | None, int, int]]
+    ] = {}
     for route in inference.routes.values():
         if (
             not route.is_approved(inference.requirements)
@@ -310,40 +731,58 @@ def _priced_candidates(
         route_class = getattr(route, "route_class", None)
         if route_class not in {"routine", "premium"}:
             continue
-        if requested_model and route.model != requested_model:
+        if explicit and route.model != requested_model:
+            continue
+        placement = shortlist.get(route.model)
+        if placement is None and not explicit:
             continue
         premium_route = route_class == "premium"
         premium = premium_route or extended
-        if premium_route and requested_model is None:
-            continue
         if premium_route and "premium_routing" not in policy.capabilities:
             continue
+        if premium_route and not explicit:
+            # Bounded automatic escalation: a profile only reaches a premium route
+            # when it says it may, and only inside its own ordered groups.
+            if not workload.allow_premium or not account_allow_premium:
+                continue
         limits = policy.limits_for(premium)
         if limits.max_context_tokens is not None and input_tokens > limits.max_context_tokens:
             continue
-        # A plan ceiling of None is uncapped: paid plans sell period capacity,
-        # so the call is bounded by the route's own limits and the budget hold.
-        output_tokens = min(
+        available_output = min(
             route.max_output_tokens,
             route.max_context_tokens - input_tokens,
         )
         if limits.max_output_tokens is not None:
-            output_tokens = min(output_tokens, limits.max_output_tokens)
-        configured_max = params.get("max_tokens")
-        if configured_max is not None:
-            if isinstance(configured_max, bool) or not isinstance(configured_max, int):
-                raise ComputeUnavailable("capacity_unavailable", "Invalid output token limit")
-            output_tokens = min(output_tokens, configured_max)
-        if output_tokens <= 0:
+            available_output = min(available_output, limits.max_output_tokens)
+        if available_output <= 0:
             continue
-        required = {"text"}
-        if params.get("tools"):
-            required.add("tools")
-        if (
-            isinstance(params.get("response_format"), dict)
-            and params["response_format"].get("type") == "json_schema"
+        if requested_effort is not None and not model_routing.supports_reasoning_effort(
+            route.model, str(requested_effort)
         ):
-            required.add("json_schema")
+            continue
+        if not model_routing.supports_sampling_parameters(
+            route.model, params, allow_unknown=explicit
+        ):
+            continue
+        group_index = placement.group_index if placement is not None else 0
+        preferred = 0 if route.model == state.preferred_model else 1
+        if automatic_target:
+            # Capability fit at the route's full capacity; the shared output
+            # target for the group is decided once every candidate is known.
+            if route.supports(
+                required_capabilities=frozenset(required),
+                input_tokens=input_tokens,
+                output_tokens=available_output,
+            ):
+                pending.setdefault(group_index, []).append(
+                    (route, premium, placement, available_output, preferred)
+                )
+            continue
+        # Explicit caller asks stay exact; an explicit model with no ask keeps
+        # its route/account's full available output.
+        output_tokens = requested_output if requested_output is not None else available_output
+        if output_tokens <= 0 or output_tokens > available_output:
+            continue
         if not route.supports(
             required_capabilities=frozenset(required),
             input_tokens=input_tokens,
@@ -351,11 +790,63 @@ def _priced_candidates(
         ):
             continue
         bound = route.estimate_microusd(input_size.bound, output_tokens)
-        if bound > policy.remaining_for(premium):
+        if check_budget and bound > policy.remaining_for(premium):
             continue
-        candidates.append((bound, output_tokens, route, premium))
-    candidates.sort(key=lambda candidate: (candidate[0], candidate[2].route_id))
-    return candidates
+        candidates.append(
+            (
+                group_index,
+                preferred,
+                bound,
+                route.route_id,
+                output_tokens,
+                route,
+                premium,
+                placement,
+            )
+        )
+    # Automatic candidates in one group compete for one common output target: the
+    # account target, capped by the largest eligible route capacity in that group.
+    # A smaller-cap route cannot win on price merely by offering a shorter answer,
+    # and a group whose routes all fall short of the account target still serves
+    # at its best feasible size instead of refusing or escalating to a later group.
+    for group_index, entries in pending.items():
+        remaining = entries
+        while remaining:
+            capacity = max(entry[3] for entry in remaining)
+            target = capacity if account_output is None else min(account_output, capacity)
+            if target <= 0 or target < workload.min_output_tokens:
+                break
+            meeting = [entry for entry in remaining if entry[3] >= target]
+            accepted = 0
+            for route, premium, placement, _available, preferred in meeting:
+                bound = route.estimate_microusd(input_size.bound, target)
+                if check_budget and bound > policy.remaining_for(premium):
+                    continue
+                candidates.append(
+                    (
+                        group_index,
+                        preferred,
+                        bound,
+                        route.route_id,
+                        target,
+                        route,
+                        premium,
+                        placement,
+                    )
+                )
+                accepted += 1
+            if accepted:
+                break
+            # Nothing at this size fits the budget: those routes are not eligible,
+            # so the group's feasible target falls to its next-largest capacity.
+            remaining = [entry for entry in remaining if entry[3] < target]
+    # Group order first, then a soft preference inside the group, then the cheapest
+    # route for *this* request, then a stable tie-break.
+    candidates.sort(key=lambda entry: (entry[0], entry[1], entry[2], entry[3]))
+    return [
+        (bound, output_tokens, route, premium, placement)
+        for _group, _preferred, bound, _route_id, output_tokens, route, premium, placement in candidates
+    ]
 
 
 def _input_bound(messages: Any, tools: Any) -> int:
@@ -449,7 +940,7 @@ _COMPLETION_FIELDS = frozenset(
     }
 )
 
-_REASONING_EFFORTS = frozenset({"low", "medium", "high"})
+_REASONING_EFFORTS = model_routing.KNOWN_REASONING_EFFORTS
 
 
 def _request_bound(params: dict[str, Any]) -> InputSize:
@@ -527,9 +1018,35 @@ def _chunk_usage(chunk: Any) -> Any:
 _ESTIMATED: dict[str, int] = {"estimated_cost": True}
 
 
-async def guarded_completion(**params: Any) -> Any:
+async def guarded_completion(
+    *,
+    _route_id: str | None = None,
+    _dispatch_timeout_s: float | None = None,
+    _exact_model: bool = False,
+    **params: Any,
+) -> Any:
+    """Dispatch one qualified completion inside the caller's account scope.
+
+    ``_route_id`` and ``_dispatch_timeout_s`` are an internal, keyword-only
+    reliability seam, named as parameters so they can never reach the transport as
+    request parameters: ``params`` is what is validated, bounded and sent. With
+    ``_route_id`` the call is pinned to exactly that approved route for exactly
+    the caller's own model — never another route, never another model — and any
+    provider failure is raised rather than walked outward. With
+    ``_dispatch_timeout_s`` this dispatch is additionally bounded, clipped to what
+    remains of the operation deadline so a shorter bound can never lengthen it.
+
+    ``_exact_model`` opts an internal caller with an automatic account scope into
+    an exact model selection without altering the account scope or its limits.
+    Without it, automatic scopes continue treating the supplied model as a hint.
+    Failover itself is not implemented here: a caller that owns two dispatches,
+    their order and their overall budget decides between two exact calls, using the
+    ``retryable`` classification a failed call raises.
+    """
     scope = current_scope()
-    deadline = asyncio.get_running_loop().time() + get_settings().request_timeout_s
+    started = asyncio.get_running_loop().time()
+    deadline = started + get_settings().request_timeout_s
+    dispatch_deadline = started + _dispatch_budget_s(_dispatch_timeout_s, deadline - started)
     policy = await scope.service.resolve(scope.user_id)
     if "chat" not in policy.capabilities:
         raise ComputeUnavailable("capability_unavailable", "Chat unavailable")
@@ -562,146 +1079,283 @@ async def guarded_completion(**params: Any) -> Any:
 
     input_size = _request_bound(params)
     requested = params.get("model")
-    model = requested if isinstance(requested, str) and not scope.auto_route else None
-    candidates = _priced_candidates(policy, input_size, params, model, scope.extended)
+    if type(_exact_model) is not bool or (
+        _exact_model and (not isinstance(requested, str) or requested in {"", "auto"})
+    ):
+        raise ComputeUnavailable("route_unavailable", "Approved inference route unavailable")
+    model = (
+        requested
+        if isinstance(requested, str)
+        and requested not in {"", "auto"}
+        and (_exact_model or not scope.auto_route)
+        else None
+    )
+    automatic = model is None
+    pinned = None
+    if _route_id is not None:
+        # An exact route still needs an exact model: without one the scope would
+        # choose a model the pinned route may not serve, which is a substitution.
+        if not isinstance(_route_id, str) or not _route_id.strip() or model is None:
+            raise ComputeUnavailable("route_unavailable", "Approved inference route unavailable")
+        pinned = _pinned_route(_route_id, model)
+    routing = model_routing.current_routing()
+    candidates = _priced_candidates(
+        policy,
+        input_size,
+        params,
+        model,
+        scope.extended,
+        account_allow_premium=scope.account_allow_premium,
+    )
+    if pinned is not None:
+        selected = next(
+            (entry for entry in candidates if entry[2].route_id == pinned.route_id), None
+        )
+        if selected is None:
+            # Approved, but unable to serve *this* request's capabilities, token
+            # limits or budget. The model-level diagnostics below would describe
+            # other routes, so the pin is refused on its own terms.
+            raise ComputeUnavailable("route_unavailable", "Approved inference route unavailable")
+        # Exactly one dispatch: an exact pin never falls back to another route or
+        # another model, so a failure is raised rather than walked outward.
+        candidates = [selected]
+        automatic = False
     if not candidates:
         if model:
             # Explicit choices are never silently downgraded.
-            route = choose_route(model)
+            route = choose_route(model, profile=routing.profile)
             if route.route_class == "premium" and "premium_routing" not in policy.capabilities:
                 raise ComputeUnavailable("capability_unavailable", "Premium routing unavailable")
-        elif (
-            policy.limits.max_context_tokens is not None
-            and input_size.estimate > policy.limits.max_context_tokens
-        ):
-            raise ComputeUnavailable("context_limit", "Context too large")
+            effort = params.get("reasoning_effort")
+            if effort is not None and not model_routing.supports_reasoning_effort(model, effort):
+                raise ComputeUnavailable(
+                    "capacity_unavailable",
+                    "Selected model does not support the requested reasoning effort",
+                )
+            if not model_routing.supports_sampling_parameters(model, params, allow_unknown=True):
+                raise ComputeUnavailable(
+                    "capacity_unavailable",
+                    "Selected model does not support the requested sampling parameters",
+                )
         else:
-            choose_route()
+            choose_route(profile=routing.profile)
+        if _priced_candidates(
+            policy,
+            input_size,
+            params,
+            model,
+            scope.extended,
+            check_budget=False,
+            account_allow_premium=scope.account_allow_premium,
+        ):
+            raise ComputeUnavailable(
+                "budget_exceeded", "No qualified route fits the account budget"
+            )
+        ceilings = [policy.limits.max_context_tokens]
+        if "premium_routing" in policy.capabilities:
+            ceilings.append(policy.limits_for(True).max_context_tokens)
+        if None in ceilings:
             # An uncapped plan's context ceiling is the largest approved route
             # window: input no route can hold is a context error, not a budget one.
-            if (
-                policy.limits.max_context_tokens is None
-                and input_size.estimate >= _largest_approved_context()
-            ):
+            if input_size.estimate >= _largest_approved_context():
                 raise ComputeUnavailable("context_limit", "Context too large")
-        raise ComputeUnavailable("budget_exceeded", "No qualified route fits the account budget")
+        elif input_size.estimate > max(c for c in ceilings if c is not None):
+            raise ComputeUnavailable("context_limit", "Context too large")
+        raise ComputeUnavailable(
+            "capacity_unavailable",
+            "No qualified route supports the workload and requested token limits",
+        )
 
-    async def dispatch(candidate: tuple[int, int, RoutePolicy, bool]) -> tuple[Any, Any]:
-        bound, output_tokens, route, premium = candidate
+    async def dispatch(
+        candidate: tuple[int, int, RoutePolicy, bool, model_routing.RoutedModel | None],
+    ) -> tuple[Any, Any]:
+        bound, output_tokens, route, premium, placement = candidate
         inference = load_inference_policy()
+        current_route = inference.routes.get(route.route_id)
+        if current_route != route or not route.is_approved(inference.requirements):
+            raise _CandidateRevoked("route_unavailable", "Approved inference route unavailable")
+        if asyncio.get_running_loop().time() >= dispatch_deadline:
+            raise ComputeUnavailable(
+                "capacity_unavailable",
+                "Dispatch deadline exceeded",
+                category=FAILURE_DEADLINE_EXCEEDED,
+            )
         # Build the central reviewed transport block BEFORE holding budget so
         # an expired review never reserves capacity for a call we cannot send.
         transport = route.transport_payload(inference.requirements)
         if params.get("api_base") not in (None, route.endpoint):
             raise ComputeUnavailable("route_unavailable", "Approved inference route unavailable")
+        try:
+            # Model-specific reasoning controls are applied AFTER selection, so the
+            # control matches the model that actually answered. A value the caller
+            # supplied is preserved and only validated, never rewritten.
+            resolved = model_routing.apply_model_parameter_presets(
+                params, route.model, routing.profile
+            )
+        except model_routing.RoutingError as exc:
+            raise ComputeUnavailable(
+                "capacity_unavailable", "Unsupported reasoning effort"
+            ) from exc
         call = {
-            **params,
+            **resolved,
             "model": route.model,
             "api_base": route.endpoint,
+            "api_key": get_settings().openrouter_api_key,
             "max_tokens": output_tokens,
+            # The transport never retries on its own: a hidden SDK retry would
+            # spend budget this layer did not reserve and re-send a pinned route.
             "num_retries": 0,
-            "timeout": max(0, deadline - asyncio.get_running_loop().time()),
             "extra_headers": get_settings().get_provider_config("openrouter").extra_headers,
             **transport,
         }
         if stream:
-            # Providers omit usage from streamed chunks unless asked; without it
-            # every stream would settle at its worst-case bound.
             call["stream_options"] = {**(stream_options or {}), "include_usage": True}
-        async with scope.extended_lock:
-            # Every call of an extended scope is charged to the extended budget;
-            # only the first one takes the extended-run slot.
-            first_extended = scope.extended and not scope.extended_started
-            reservation = await scope.service.reserve(
-                scope.user_id,
-                bound,
-                operation=scope.operation,
-                provider=route.provider,
-                model=route.model,
-                route_id=route.route_id,
-                premium=premium,
-                extended=scope.extended,
-                extended_run=first_extended,
-                background=scope.background,
-                scope_id=scope.scope_id,
-            )
-            if first_extended:
-                scope.extended_started = True
+        try:
+            async with scope.extended_lock:
+                first_extended = scope.extended and not scope.extended_started
+                reserve_options = (
+                    {"expected_period": scope.expected_period}
+                    if scope.expected_period is not None
+                    else {}
+                )
+                reservation = await scope.service.reserve(
+                    scope.user_id,
+                    bound,
+                    operation=scope.operation,
+                    provider=route.provider,
+                    model=route.model,
+                    route_id=route.route_id,
+                    premium=premium,
+                    extended=scope.extended,
+                    extended_run=first_extended,
+                    background=scope.background,
+                    scope_id=scope.scope_id,
+                    **reserve_options,
+                )
+                if first_extended:
+                    scope.extended_started = True
+        except EntitlementsError:
+            raise
+        except Exception:
+            raise ComputeUnavailable("account_unavailable", "Account compute unavailable") from None
         scope.outstanding[_hold_key(reservation)] = ReservationHold(reservation, bound)
         try:
+            # Reservation can consume time: the SDK and local wait share the
+            # remainder rather than using an earlier, longer SDK allowance.
+            remaining = dispatch_deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise ComputeUnavailable(
+                    "capacity_unavailable",
+                    "Dispatch deadline exceeded",
+                    category=FAILURE_DEADLINE_EXCEEDED,
+                )
+            call["timeout"] = remaining
             response = await asyncio.wait_for(
                 litellm.acompletion(**call),
-                timeout=max(0, deadline - asyncio.get_running_loop().time()),
+                timeout=max(0, dispatch_deadline - asyncio.get_running_loop().time()),
             )
         except BaseException:
+            # An unknown or cancelled outcome still cost what was reserved, and a
+            # failed settlement replaces this exception rather than hiding behind
+            # a retryable one, so incomplete accounting stays visible.
             await scope.settle(reservation, bound)
             raise
+        if params.get("stream"):
+            scope.outstanding[_hold_key(reservation)].response = response
+        # Attribution records what actually went out, on both the precise routing
+        # state and the coarser account scope, after any fallback has taken effect.
         scope.selected_model = route.model
+        routing.record_selection(
+            model=route.model,
+            route_id=route.route_id,
+            group=placement.group if placement is not None else None,
+            explicit=model is not None,
+        )
         return response, reservation
 
     async def first_response(start: int) -> tuple[int, Any, Any]:
         denial: ComputeUnavailable | None = None
+        # The candidate walk itself is unchanged: a failed candidate hands the
+        # request to the next approved candidate. Only the terminal raise is
+        # refined: when the list is exhausted by provider failures, the last
+        # one is classified and raised, so the surfaced error carries the same
+        # typed verdict as an exact (non-automatic) dispatch.
+        last_failure: DispatchFailure | None = None
+        revoked: _CandidateRevoked | None = None
         for index in range(start, len(candidates)):
             try:
                 response, reservation = await dispatch(candidates[index])
                 return index, response, reservation
             except BudgetExceeded as exc:
-                # Depends on this route's price: a cheaper candidate may fit.
-                denial = compute_error(exc) or ComputeUnavailable(
-                    "budget_exceeded", _LIMIT_MESSAGES["budget_exceeded"]
-                )
-                if not scope.auto_route:
-                    raise denial from None
+                denial = compute_error(exc)
+                if not automatic:
+                    raise denial or ComputeUnavailable(
+                        "budget_exceeded", _LIMIT_MESSAGES["budget_exceeded"]
+                    ) from None
             except EntitlementsError as exc:
-                # Rate, concurrency and account status bind every route alike.
-                raise (
-                    compute_error(exc)
-                    or ComputeUnavailable("capacity_unavailable", "Compute capacity unavailable")
+                raise compute_error(exc) or ComputeUnavailable(
+                    "capacity_unavailable", "Compute capacity unavailable"
                 ) from None
-            except ComputeUnavailable as exc:
-                if not scope.auto_route:
+            except _CandidateRevoked as exc:
+                if not automatic:
                     raise
-                denial = exc
-            except Exception:
-                if not scope.auto_route:
-                    raise ComputeUnavailable(
+                revoked = exc
+            except ComputeUnavailable:
+                # Route qualification and settlement are not provider failures.
+                raise
+            except Exception as failure:
+                last_failure = _classify_dispatch_failure(
+                    failure,
+                    deadline_bound=asyncio.get_running_loop().time() >= deadline,
+                    output_released=False,
+                )
+                if not automatic:
+                    raise last_failure.as_unavailable(
                         "capacity_unavailable", "Qualified provider unavailable"
                     ) from None
-        raise denial or ComputeUnavailable(
-            "capacity_unavailable", "No qualified route fits capacity"
-        )
+        if denial is not None:
+            # A budget denial keeps its precedence over a later provider failure.
+            raise denial
+        if last_failure is not None:
+            raise last_failure.as_unavailable(
+                "capacity_unavailable", "Qualified provider unavailable"
+            ) from None
+        if revoked is not None:
+            raise revoked
+        raise ComputeUnavailable("capacity_unavailable", "No qualified route fits capacity")
 
     index, response, reservation = await first_response(0)
     if not stream:
-        bound, _, route, _ = candidates[index]
+        bound, _, route, _, _ = candidates[index]
         usage = (
             response.get("usage")
             if isinstance(response, dict)
             else getattr(response, "usage", None)
         )
-        amount, metadata = _usage_settlement(usage, route, bound) or (bound, _ESTIMATED)
-        await scope.settle(reservation, amount, usage=metadata)
+        settlement = _usage_settlement(usage, route, bound)
+        await scope.settle(
+            reservation,
+            settlement[0] if settlement is not None else bound,
+            usage=settlement[1] if settlement is not None else _ESTIMATED,
+        )
         return response
 
     async def metered_stream() -> AsyncIterator[Any]:
         nonlocal index, response, reservation
         while True:
-            bound, _, route, _ = candidates[index]
+            bound, _, route, _, _ = candidates[index]
             settlement: tuple[int, dict[str, int]] | None = None
             completed = False
             emitted = False
             failed = False
-            chunks = aiter(cast(AsyncIterator[Any], response))
             try:
+                chunks = aiter(cast(AsyncIterator[Any], response))
                 while True:
-                    # The whole-call deadline covers stream consumption, but it
-                    # is enforced here rather than around the yield: a timeout
-                    # spanning the yield fires wherever the consumer happens to
-                    # be suspended and surfaces as a silent cancellation.
-                    if asyncio.get_running_loop().time() >= deadline:
+                    # Bound upstream reads, not consumer time suspended at yield.
+                    if asyncio.get_running_loop().time() >= dispatch_deadline:
                         raise TimeoutError
                     try:
-                        async with asyncio.timeout_at(deadline):
+                        async with asyncio.timeout_at(dispatch_deadline):
                             chunk = await anext(chunks)
                     except StopAsyncIteration:
                         break
@@ -711,17 +1365,25 @@ async def guarded_completion(**params: Any) -> Any:
                     emitted = True
                     yield chunk
                 completed = True
-            except Exception:
+            except Exception as failure:
                 failed = True
-                if emitted or not scope.auto_route or index + 1 >= len(candidates):
-                    raise ComputeUnavailable(
+                if emitted or not automatic or index + 1 >= len(candidates):
+                    raise _classify_dispatch_failure(
+                        failure,
+                        deadline_bound=asyncio.get_running_loop().time() >= deadline,
+                        output_released=emitted,
+                    ).as_unavailable(
                         "capacity_unavailable", "Qualified provider unavailable"
                     ) from None
             finally:
-                amount, metadata = (
-                    settlement if completed and settlement is not None else (bound, _ESTIMATED)
+                hold = scope.outstanding.get(_hold_key(reservation))
+                if hold is not None:
+                    await scope.close_stream(hold)
+                await scope.settle(
+                    reservation,
+                    settlement[0] if completed and settlement is not None else bound,
+                    usage=settlement[1] if completed and settlement is not None else _ESTIMATED,
                 )
-                await scope.settle(reservation, amount, usage=metadata)
             if not failed:
                 return
             index, response, reservation = await first_response(index + 1)

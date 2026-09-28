@@ -300,6 +300,7 @@ class EntitlementService:
         extended_run: bool | None = None,
         background: bool = False,
         scope_id: uuid.UUID | None = None,
+        expected_period: str | None = None,
     ) -> Reservation:
         """Hold ``amount_microusd`` for one in-flight operation.
 
@@ -329,6 +330,9 @@ class EntitlementService:
             raise UnknownOperation(operation)
         now = self.now()
         period = period_key(now)
+        # Use the captured month for both the guard and the later locked admission.
+        if expected_period is not None and period != expected_period:
+            raise LimitExceeded("reservation period changed")
 
         try:
             return await self._reserve(

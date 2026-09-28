@@ -10,6 +10,14 @@ from typing import Any
 from orchestrator.compute_runtime import guarded_completion
 
 from orchestrator.memory.store import MemoryStore
+from orchestrator.model_routing import routing_context
+
+SUMMARY_PROFILE = "background"
+
+# Legacy sampling default, kept only for an explicit ``summary_model`` pin. The
+# automatic background request sends no temperature/top_p, because the approved
+# automatic background candidate declares seed-only sampling support.
+SUMMARY_TEMPERATURE = 0.3
 
 
 SUMMARIZATION_PROMPT = """
@@ -34,12 +42,14 @@ async def generate_summary(
     previous_summary: str | None = None,
     settings: dict[str, Any] | None = None,
 ) -> str:
-    """Generate conversation summary using GPT-4o-mini.
+    """Generate a conversation summary on the background inference profile.
 
     Args:
         messages: List of message dicts with role/content
         previous_summary: Optional previous summary to incorporate
-        settings: Optional settings dict
+        settings: Optional settings dict. ``summary_model`` is an explicit
+            test/benchmark injection point; deployment leaves it unset so the
+            compute guard picks an approved background route.
 
     Returns:
         2-5 sentence summary ending with "Open: ..."
@@ -55,16 +65,23 @@ async def generate_summary(
     )
 
     settings = settings or {}
-    model = settings.get("summary_model", "auto")
-    temperature = settings.get("summary_temperature", 0.3)
+    model = settings.get("summary_model")
     max_tokens = settings.get("summary_max_tokens", 300)
 
-    response = await guarded_completion(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
+    call_params: dict[str, Any] = {
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+    }
+    if model is not None:
+        # An explicit pin is a caller-owned choice, so the historical sampling
+        # controls travel with it. The automatic background call sends none,
+        # because the approved automatic background candidate declares seed-only
+        # sampling support.
+        call_params["model"] = model
+        call_params["temperature"] = settings.get("summary_temperature", SUMMARY_TEMPERATURE)
+
+    with routing_context(SUMMARY_PROFILE, preferred_model=model):
+        response = await guarded_completion(**call_params)
 
     content: Any = None
 

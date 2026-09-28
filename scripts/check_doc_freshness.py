@@ -9,7 +9,8 @@ at runtime. Supports high-confidence structured-fact checks only:
   - dedup_thresholds (merge, supersede_generic, supersede_same_slot)
   - video_providers (source-derived from VALID_VIDEO_PROVIDERS)
   - route / env_var / docker / subagent facts
-  - workload model declarations (auto_fast_model, auto_reasoning_model)
+  - workload model declarations (auto_fast_model, auto_reasoning_model),
+    derived from the routing catalog ``config/model_routing.json``
   - commercial policy consistency, derived from ``config/commercial.json`` and
     ``config/inference_policy.json``:
       * commercial_plan        (documented plan set vs. declared plans)
@@ -149,23 +150,58 @@ def get_provider_facts(root: Path) -> dict[str, Any]:
     }
 
 
-# Workload model declarations that remain in orchestrator/config.py. Commercial
-# plan-to-model assignment is gone; these are deployment/workload slots that the
-# documentation still describes.
-_AUTO_FAST_MODEL_RE = re.compile(r'auto_fast_model\s*:\s*str\s*=\s*"([^"]+)"')
-_AUTO_REASONING_MODEL_RE = re.compile(r'auto_reasoning_model\s*:\s*str\s*=\s*"([^"]+)"')
+# Legacy documentation labels now derive from workload catalog declarations,
+# independently of commercial plans and endpoint qualification.
+_ROUTING_CONFIG_RELPATH = Path("config") / "model_routing.json"
+
+
+def _profile_head_model(profiles: object, profile_name: str) -> str:
+    """First accepted automatic candidate of ``profile_name``.
+
+    This is a declaration for legacy documentation labels, not a prediction of
+    runtime selection. Runtime compares qualified candidates by bounded cost
+    within each group; the first listed model need not be the cheapest.
+    """
+    if not isinstance(profiles, list):
+        return ""
+    for profile in profiles:
+        if not isinstance(profile, dict) or profile.get("profile") != profile_name:
+            continue
+        groups = profile.get("groups")
+        if isinstance(groups, list) and groups:
+            first = groups[0]
+            if isinstance(first, dict):
+                models = first.get("models")
+                if isinstance(models, list):
+                    candidate = models[0] if models else ""
+                    return candidate if isinstance(candidate, str) else ""
+    return ""
 
 
 def get_auto_routing_facts(root: Path) -> dict[str, str]:
-    config_path = root / "orchestrator" / "config.py"
-    if not config_path.exists():
+    """Workload model declarations, sourced from the routing catalog.
+
+    Orchestrator/config.py no longer declares per-workload model pins; with
+    ``daemon_model_routing`` the routing layer (config/model_routing.json,
+    loaded by orchestrator/model_routing.py) declares, per workload profile, the
+    ordered automatic candidates. The gate reads the JSON directly — it must not
+    import runtime validation — and mirrors the ranked selection: the routine
+    profile's head is ``auto_fast_model`` and the reasoning profile's head is
+    ``auto_reasoning_model``.
+    """
+    routing_path = root / _ROUTING_CONFIG_RELPATH
+    if not routing_path.exists():
         return {}
-    text = config_path.read_text(encoding="utf-8")
-    fast = _AUTO_FAST_MODEL_RE.search(text)
-    reasoning = _AUTO_REASONING_MODEL_RE.search(text)
+    try:
+        data = json.loads(routing_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    profiles = data.get("profiles")
     return {
-        "auto_fast_model": fast.group(1) if fast else "",
-        "auto_reasoning_model": reasoning.group(1) if reasoning else "",
+        "auto_fast_model": _profile_head_model(profiles, "routine"),
+        "auto_reasoning_model": _profile_head_model(profiles, "reasoning"),
     }
 
 
@@ -690,6 +726,11 @@ def _check_routes(doc_content: str, source_routes: dict[str, list[str]]) -> Chec
             continue
         processed_lines.add(line_key)
         if route.count("/") >= 2:
+            # Only table rows that declare an HTTP method are route rows; a
+            # multi-segment backticked token in prose or a plain table can be a
+            # legitimate filesystem path (e.g. the bind-mounted `/app/.env`).
+            if not _is_route_table_row(line_text, m.start() - line_start):
+                continue
             methods = _extract_methods_from_row(line_text)
             all_routes_in_row = _ROUTE_TABLE_RE.findall(line_text)
             for r in all_routes_in_row:

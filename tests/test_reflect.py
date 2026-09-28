@@ -1,8 +1,12 @@
-"""Unit tests for memory_reflect tool."""
+"""
+Unit tests for memory_reflect tool.
+"""
 
 from __future__ import annotations
 
+import contextlib
 import uuid
+from collections.abc import Callable
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,7 +14,21 @@ import pytest
 
 from orchestrator.memory.embedding import EmbeddingConfigurationError
 from orchestrator.memory.store import MemoryStore
-from orchestrator.tools.memory_reflect import MemoryReflectTool
+from orchestrator.tools.memory_reflect import REFLECT_PROFILE, MemoryReflectTool
+
+
+def _track_routing_profile(seen: list[str]) -> Callable[[str], contextlib.AbstractContextManager]:
+    """Replace ``routing_context`` with an instrumented, no-op profile context.
+
+    Reflect dispatches inside the routing profile instead of pinning an
+    orchestrator model, so the tests observe the profile rather than a pin.
+    """
+
+    def factory(profile: str) -> contextlib.AbstractContextManager:
+        seen.append(profile)
+        return contextlib.nullcontext()
+
+    return factory
 
 
 def _query_result() -> SimpleNamespace:
@@ -140,6 +158,7 @@ async def test_reflect_successful_synthesis():
         },
     ]
 
+    profiles: list[str] = []
     with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
         mock_retrieve.return_value = memories
 
@@ -148,20 +167,19 @@ async def test_reflect_successful_synthesis():
                 "Based on your memories, you have a passion for guitar playing and own quality equipment."
             )
 
-            with patch.object(
-                tool := MemoryReflectTool(store, user_id),
-                "_get_orchestrator_model",
-                return_value="openrouter/moonshotai/kimi-k2.5",
-            ):
-                with patch("orchestrator.tools.memory_reflect.get_settings") as mock_settings:
-                    mock_settings.return_value.background_reasoning_model = (
-                        "openrouter/moonshotai/kimi-k2.5"
-                    )
-                    mock_settings.return_value.get_provider_config.return_value.timeout_s = 60
+            with patch("orchestrator.tools.memory_reflect.get_settings") as mock_settings:
+                mock_settings.return_value.get_provider_config.return_value.timeout_s = 60
+                mock_settings.return_value.get_provider_config.return_value.requires_auth = False
 
+                with patch(
+                    "orchestrator.tools.memory_reflect.routing_context",
+                    _track_routing_profile(profiles),
+                ):
+                    tool = MemoryReflectTool(store, user_id)
                     result = await tool.execute(topic="my musical interests")
 
                     assert "Fender" in result or "guitar" in result.lower()
+                    assert profiles == [REFLECT_PROFILE]
 
 
 @pytest.mark.asyncio
@@ -236,26 +254,26 @@ async def test_reflect_llm_failure_returns_error():
         },
     ]
 
+    profiles: list[str] = []
     with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
         mock_retrieve.return_value = memories
 
         with patch("orchestrator.tools.memory_reflect.guarded_completion") as mock_llm:
             mock_llm.side_effect = Exception("LLM unavailable")
 
-            with patch.object(
-                tool := MemoryReflectTool(store, user_id),
-                "_get_orchestrator_model",
-                return_value="openrouter/moonshotai/kimi-k2.5",
-            ):
-                with patch("orchestrator.tools.memory_reflect.get_settings") as mock_settings:
-                    mock_settings.return_value.background_reasoning_model = (
-                        "openrouter/moonshotai/kimi-k2.5"
-                    )
-                    mock_settings.return_value.get_provider_config.return_value.timeout_s = 60
+            with patch("orchestrator.tools.memory_reflect.get_settings") as mock_settings:
+                mock_settings.return_value.get_provider_config.return_value.timeout_s = 60
+                mock_settings.return_value.get_provider_config.return_value.requires_auth = False
 
+                with patch(
+                    "orchestrator.tools.memory_reflect.routing_context",
+                    _track_routing_profile(profiles),
+                ):
+                    tool = MemoryReflectTool(store, user_id)
                     result = await tool.execute(topic="my hobbies")
 
                     assert "Reflection synthesis failed" in result
+                    assert profiles == [REFLECT_PROFILE]
 
 
 @pytest.mark.asyncio
@@ -378,32 +396,29 @@ async def test_reflect_passes_timeout_from_provider_config():
         },
     ]
 
+    profiles: list[str] = []
     with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
         mock_retrieve.return_value = memories
 
         with patch("orchestrator.tools.memory_reflect.guarded_completion") as mock_llm:
             mock_llm.return_value = MockLitellmResponse("Guitar hobby synthesis.")
 
-            with patch.object(
-                tool := MemoryReflectTool(store, user_id),
-                "_get_orchestrator_model",
-                return_value="openrouter/moonshotai/kimi-k2.5",
-            ):
-                with patch("orchestrator.tools.memory_reflect.get_settings") as mock_settings:
-                    mock_settings.return_value.background_reasoning_model = (
-                        "openrouter/moonshotai/kimi-k2.5"
-                    )
-                    mock_settings.return_value.get_provider_config.return_value.timeout_s = 30.0
-                    mock_settings.return_value.get_provider_config.return_value.base_url = ""
-                    mock_settings.return_value.get_provider_config.return_value.api_key = None
-                    mock_settings.return_value.get_provider_config.return_value.extra_headers = {}
-                    mock_settings.return_value.get_provider_config.return_value.requires_auth = (
-                        False
-                    )
-                    mock_settings.return_value.get_provider_config.return_value.name = "test"
+            with patch("orchestrator.tools.memory_reflect.get_settings") as mock_settings:
+                mock_settings.return_value.get_provider_config.return_value.timeout_s = 30.0
+                mock_settings.return_value.get_provider_config.return_value.base_url = ""
+                mock_settings.return_value.get_provider_config.return_value.api_key = None
+                mock_settings.return_value.get_provider_config.return_value.extra_headers = {}
+                mock_settings.return_value.get_provider_config.return_value.requires_auth = False
+                mock_settings.return_value.get_provider_config.return_value.name = "test"
 
+                with patch(
+                    "orchestrator.tools.memory_reflect.routing_context",
+                    _track_routing_profile(profiles),
+                ):
+                    tool = MemoryReflectTool(store, user_id)
                     result = await tool.execute(topic="my hobbies")  # noqa: F841
 
+                    assert profiles == [REFLECT_PROFILE]
                     mock_llm.assert_awaited_once()
                     assert mock_llm.await_args is not None
                     call_kwargs = mock_llm.await_args.kwargs
@@ -426,32 +441,29 @@ async def test_reflect_uses_zero_timeout_when_configured():
         },
     ]
 
+    profiles: list[str] = []
     with patch("orchestrator.tools.memory_reflect.retrieve_memories_for_text") as mock_retrieve:
         mock_retrieve.return_value = memories
 
         with patch("orchestrator.tools.memory_reflect.guarded_completion") as mock_llm:
             mock_llm.return_value = MockLitellmResponse("Synthesis.")
 
-            with patch.object(
-                tool := MemoryReflectTool(store, user_id),
-                "_get_orchestrator_model",
-                return_value="openrouter/moonshotai/kimi-k2.5",
-            ):
-                with patch("orchestrator.tools.memory_reflect.get_settings") as mock_settings:
-                    mock_settings.return_value.background_reasoning_model = (
-                        "openrouter/moonshotai/kimi-k2.5"
-                    )
-                    mock_settings.return_value.get_provider_config.return_value.timeout_s = 0.0
-                    mock_settings.return_value.get_provider_config.return_value.base_url = ""
-                    mock_settings.return_value.get_provider_config.return_value.api_key = None
-                    mock_settings.return_value.get_provider_config.return_value.extra_headers = {}
-                    mock_settings.return_value.get_provider_config.return_value.requires_auth = (
-                        False
-                    )
-                    mock_settings.return_value.get_provider_config.return_value.name = "test"
+            with patch("orchestrator.tools.memory_reflect.get_settings") as mock_settings:
+                mock_settings.return_value.get_provider_config.return_value.timeout_s = 0.0
+                mock_settings.return_value.get_provider_config.return_value.base_url = ""
+                mock_settings.return_value.get_provider_config.return_value.api_key = None
+                mock_settings.return_value.get_provider_config.return_value.extra_headers = {}
+                mock_settings.return_value.get_provider_config.return_value.requires_auth = False
+                mock_settings.return_value.get_provider_config.return_value.name = "test"
 
+                with patch(
+                    "orchestrator.tools.memory_reflect.routing_context",
+                    _track_routing_profile(profiles),
+                ):
+                    tool = MemoryReflectTool(store, user_id)
                     result = await tool.execute(topic="my hobbies")  # noqa: F841
 
+                    assert profiles == [REFLECT_PROFILE]
                     mock_llm.assert_awaited_once()
                     assert mock_llm.await_args is not None
                     call_kwargs = mock_llm.await_args.kwargs

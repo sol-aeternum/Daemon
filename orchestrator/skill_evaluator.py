@@ -14,6 +14,7 @@ from typing import Any, Protocol
 
 from orchestrator.config import get_settings
 from orchestrator.memory.embedding import EmbeddingConfigurationError, embed_query
+from orchestrator.model_routing import routing_context
 from orchestrator.skill_evaluator_prompts import (
     build_skill_creation_prompt,
     build_skill_refinement_prompt,
@@ -142,7 +143,19 @@ def build_skill_evaluation_debounce_key(
     return f"skill_eval:{conversation_id}:{assistant_message_id}"
 
 
+# Skill evaluation decides whether a turn implies a reusable skill. It is an
+# unattended judgement over a completed turn, so it runs on the reasoning
+# profile rather than the cheap background profile.
+EVALUATION_PROFILE = "reasoning"
+
+
 def _normalize_model_for_provider(model_id: str, provider_name: str) -> str:
+    """Normalize an explicitly injected model id for a provider.
+
+    Only test and benchmark callers pin a concrete model; deployment sends no
+    model at all and lets the compute guard choose from the profile.
+    """
+
     normalized = model_id.strip()
     if not normalized:
         return normalized
@@ -422,6 +435,7 @@ class SkillEvaluator:
         skill_manage_tool: SkillManageProtocol | None = None,
         completion_callable: CompletionCallable = guarded_completion,
         query_embedder: EmbeddingCallable = embed_query,
+        model: str | None = None,
     ) -> None:
         self._store: ConversationStoreProtocol = store
         self._projection_store: SkillProjectionProtocol | None = projection_store or (
@@ -432,6 +446,9 @@ class SkillEvaluator:
         )
         self._completion_callable: CompletionCallable = completion_callable
         self._query_embedder: EmbeddingCallable = query_embedder
+        # Test/benchmark injection point only. Production leaves this unset so
+        # evaluation always routes on the reasoning profile.
+        self.model: str | None = model
 
     async def evaluate_completed_turn(
         self,
@@ -884,13 +901,16 @@ class SkillEvaluator:
     ) -> dict[str, Any] | None:
         settings = get_settings()
         provider_config = settings.get_provider_config("openrouter")
-        model = _normalize_model_for_provider(
-            settings.auto_fast_model,
-            provider_config.name or "openrouter",
-        )
+        # Optional explicit injection for tests/benchmarks. Deployment sends no
+        # model so the guard selects an approved route for the profile.
+        model = self.model
+        if model is not None:
+            model = _normalize_model_for_provider(
+                model,
+                provider_config.name or "openrouter",
+            )
 
         call_params: dict[str, Any] = {
-            "model": model,
             "messages": [
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": prompt},
@@ -900,6 +920,8 @@ class SkillEvaluator:
             "timeout": provider_config.timeout_s,
             "response_format": {"type": "json_object"},
         }
+        if model is not None:
+            call_params["model"] = model
         if provider_config.base_url:
             call_params["api_base"] = provider_config.base_url
         if provider_config.api_key:
@@ -908,7 +930,8 @@ class SkillEvaluator:
             call_params["extra_headers"] = provider_config.extra_headers
 
         try:
-            response = await self._completion_callable(**call_params)
+            with routing_context(EVALUATION_PROFILE, preferred_model=model):
+                response = await self._completion_callable(**call_params)
         except Exception as exc:
             logger.warning("Skill evaluator prompt failed: %s", exc)
             return None

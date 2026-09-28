@@ -16,26 +16,33 @@ from typing import Any  # noqa: E402
 
 from orchestrator.config import get_settings  # noqa: E402
 from orchestrator.memory.store import MemoryStore  # noqa: E402
+from orchestrator.model_routing import routing_context  # noqa: E402
+
+# Structured fact extraction is a short unattended workload.
+EXTRACTION_PROFILE = "background"
 
 
-def _get_provider_call_params(model: str) -> dict[str, Any]:
+def _get_provider_call_params(model: str | None) -> dict[str, Any]:
     """Get provider configuration for guarded_completion call.
 
-    Returns call parameters including api_base, api_key, extra_headers.
+    Returns call parameters including api_base, api_key, extra_headers. The
+    ``model`` key is only present when a caller explicitly pins a model
+    (tests and benchmark harnesses); deployment leaves it absent so the
+    compute guard selects an approved route for the workload profile.
     """
     settings = get_settings()
     provider_config = settings.get_provider_config("openrouter")
 
-    # Normalize model for OpenRouter
-    if model.startswith("openrouter/"):
-        normalized_model = model
-    else:
-        normalized_model = f"openrouter/{model}"
-
     call_params: dict[str, Any] = {
-        "model": normalized_model,
         "timeout": provider_config.timeout_s,
     }
+
+    if model is not None:
+        # Normalize model for OpenRouter
+        if model.startswith("openrouter/"):
+            call_params["model"] = model
+        else:
+            call_params["model"] = f"openrouter/{model}"
 
     if provider_config.base_url:
         call_params["api_base"] = provider_config.base_url
@@ -48,6 +55,9 @@ def _get_provider_call_params(model: str) -> dict[str, Any]:
 
 
 MAX_EXTRACTION_INPUT_CHARS = 4000
+# Legacy sampling controls, kept only for an explicit model/benchmark pin. The
+# automatic background request sends no temperature/top_p, because the approved
+# automatic background candidate declares seed-only sampling support.
 EXTRACTION_TEMPERATURE = 0.0
 EXTRACTION_TOP_P = 1.0
 EXTRACTION_MAX_TOKENS = 2000
@@ -143,6 +153,9 @@ class ExtractionOutcome:
     rejected_count: int
     slot_coverage: int
     succeeded: bool = True
+    # The approved route actually selected for this call, or None when no
+    # inference happened (provider failure, empty response, no route).
+    model_used: str | None = None
 
 
 class BenchmarkProviderError(RuntimeError):
@@ -445,23 +458,29 @@ def validate_fact(fact: ExtractedFact) -> bool:
 
 async def extract_facts_from_text(
     text: str,
-    model: str = "auto",
+    model: str | None = None,
     *,
     summary: str | None = None,
     retry_hint: str | None = None,
     benchmark_mode: bool | None = None,
 ) -> ExtractionOutcome:
-    """Extract, calibrate, and validate memory facts from role-labeled text."""
+    """Extract, calibrate, and validate memory facts from role-labeled text.
+
+    ``model`` is an explicit injection point for tests and benchmark harnesses.
+    Deployment passes ``None`` so the background profile picks the route.
+    """
     is_benchmark = BENCHMARK_MODE if benchmark_mode is None else bool(benchmark_mode)
     try:
         bounded_text = text[-MAX_EXTRACTION_INPUT_CHARS:]
         if retry_hint:
             bounded_text = f"{bounded_text}\n\n[Retry hint]\n{retry_hint}"
 
-        # Get provider call parameters
-        call_params = _get_provider_call_params(
-            BENCHMARK_EXTRACTION_MODEL if is_benchmark else model
-        )
+        # Get provider call parameters. An explicit pin (test/benchmark) is the
+        # only caller that keeps the legacy sampling controls; the automatic
+        # background call sends none, so the seed-only automatic candidate
+        # remains an eligible route.
+        pinned_model = BENCHMARK_EXTRACTION_MODEL if is_benchmark else model
+        call_params = _get_provider_call_params(pinned_model)
         call_params.update(
             {
                 "messages": [
@@ -480,18 +499,26 @@ async def extract_facts_from_text(
                         ),
                     },
                 ],
-                "temperature": EXTRACTION_TEMPERATURE,
-                "top_p": EXTRACTION_TOP_P,
                 "max_tokens": EXTRACTION_MAX_TOKENS,
                 "response_format": {"type": "json_object"},
             }
         )
+        if pinned_model is not None:
+            # Benchmark/test pins remain exact even inside an automatic worker's
+            # account scope; this private control never reaches the provider.
+            call_params["_exact_model"] = True
+            call_params["temperature"] = EXTRACTION_TEMPERATURE
+            call_params["top_p"] = EXTRACTION_TOP_P
         if is_benchmark:
             call_params["temperature"] = 0.0
             call_params["seed"] = BENCHMARK_SEED
 
         try:
-            response = await guarded_completion(**call_params)
+            # The explicit pin bypasses the automatic shortlist, not account or
+            # endpoint checks. Attribution comes from dispatch in both modes.
+            with routing_context(EXTRACTION_PROFILE, preferred_model=pinned_model) as route:
+                response = await guarded_completion(**call_params)
+                model_used = route.selected_model
         except Exception as exc:
             if is_benchmark:
                 raise BenchmarkProviderError(
@@ -527,6 +554,7 @@ async def extract_facts_from_text(
                 rejected_count=0,
                 slot_coverage=0,
                 succeeded=False,
+                model_used=model_used,
             )
 
         data = json.loads(content)
@@ -540,6 +568,7 @@ async def extract_facts_from_text(
                 rejected_count=0,
                 slot_coverage=0,
                 succeeded=False,
+                model_used=model_used,
             )
 
         raw_facts: list[ExtractedFact] = []
@@ -592,6 +621,7 @@ async def extract_facts_from_text(
                 rejected_count=len(items),
                 slot_coverage=0,
                 succeeded=False,
+                model_used=model_used,
             )
 
         for item in items:
@@ -627,6 +657,7 @@ async def extract_facts_from_text(
             calibrated_count=len(calibrated_facts),
             rejected_count=rejected_count,
             slot_coverage=slot_coverage,
+            model_used=model_used,
         )
     except (BenchmarkProviderError, BenchmarkSamplingError):
         raise
@@ -678,7 +709,9 @@ async def process_extraction(
     if conversation:
         summary = conversation.get("summary")
 
-    model = "auto"
+    # Deployment pins no model: the background profile chooses the route and
+    # the outcome reports which one actually served the call.
+    model = None
     outcome = await extract_facts_from_text(text, model=model, summary=summary)
     retry_used = False
 
@@ -732,7 +765,7 @@ async def process_extraction(
                 "cursor_checkpoint": cursor_checkpoint,
                 "no_fact_checkpoint": True,
             },
-            model_used=model,
+            model_used=outcome.model_used,
             last_message_observed_at=last_message_observed_at,
         )
         return True, [], False
@@ -775,7 +808,7 @@ async def process_extraction(
             "last_message_id": last_message_id,
             "cursor_checkpoint": cursor_checkpoint,
         },
-        model_used=model,
+        model_used=outcome.model_used,
         last_message_observed_at=last_message_observed_at,
     )
 

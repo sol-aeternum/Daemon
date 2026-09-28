@@ -33,6 +33,14 @@ Every markdown file in the repository is classified under this hierarchy to dete
 | `docs/AUTH_ARCHITECTURE.md` | T1 | Engineering | gated | `orchestrator/auth*.py`, `orchestrator/routes/auth_setup.py`, `migrations/031_auth_device_model.sql`, `migrations/033_auth_runtime_state.sql` |
 | `docs/HOSTED_IDENTITY.md` | T1 | Engineering/Product | gated | `docs/AUTH_ARCHITECTURE.md`, hosted identity auth routes, hosted identity migrations |
 | `docs/SUBSCRIPTION_ARCHITECTURE.md` | T1 | Engineering/Product | gated | `config/commercial.json`, `config/inference_policy.json`, `orchestrator/entitlements/`, account compute migrations |
+| `docs/MODEL_ROUTING.md` | T1 | Engineering/Product | gated | `config/model_routing.json`, `orchestrator/model_routing.py`, `orchestrator/compute_runtime.py` |
+| `docs/ENV_SURFACE_MIGRATION.md` | T1 | Engineering | gated | `orchestrator/config.py`, `.env.example`, `docker-compose.yml`, `tests/test_env_surface_parity.py` |
+| `docs/MODEL_ROUTING_PILOT_PROPOSAL.md` | N/A | Engineering/Product | ungated-reference | Evidence-informed candidate placement, escalation and bounded endpoint integration proposal; not production activation |
+| `docs/MODEL_ROUTING_FOLLOWUP_PLAN.md` | N/A | Engineering/Product | ungated-reference | Proposed corrected-fixture and explicit-preset diagnostic/held-out screen; separate execution approval required |
+| `docs/MODEL_ROSTER_EVALUATION.md` | N/A | Engineering/Product | ungated-reference | Proposed evaluation protocol and dated review of the supplied September 2026 roster; not deployment authority |
+| `docs/MODEL_ROSTER_PILOT_RESULTS.md` | N/A | Engineering | raw-log | Dated partial live pilot evidence and qualification limits; not default-model or release approval |
+| `docs/MODEL_ENDPOINT_RELIABILITY_PROPOSAL.md` | N/A | Engineering | ungated-reference | Proposed same-model endpoint failover and separate reliability experiment; implementation/activation require approval |
+| `docs/MODEL_ENDPOINT_RELIABILITY_RESULTS.md` | N/A | Engineering | raw-log | Dated live same-model endpoint reliability results; not production activation or human quality adjudication |
 | `docs/SUBSCRIPTION_MIGRATION_REPORT.md` | N/A | Engineering | raw-log | Dated migration validation and tracked blocker evidence |
 | `docs/DAEMON_VISION.md` | N/A | Product | ungated-reference | Product direction and labelled proposals; implementation status lives in T0/T1 |
 | `docs/DAEMON.md` | N/A | Product owner | ungated-reference | Canonical product identity, promises and priorities; DEC11–DEC12 ratified, implementation and Proposed sequencing separate |
@@ -61,7 +69,7 @@ Every markdown file in the repository is classified under this hierarchy to dete
 Volatile facts are high-confidence data points that change as the project evolves. These are the primary targets for automated drift gating.
 
 ### Volatile Fact Classes
-- **Model Assignments**: Workload configuration in `config.py` and qualified routes in `config/inference_policy.json`; commercial policy in `config/commercial.json`.
+- **Model Assignments**: Workload configuration in `config/model_routing.json` and qualified routes in `config/inference_policy.json`; commercial policy in `config/commercial.json`.
 - **Embeddings**: Model names and dimensions for document/query slots.
 - **Thresholds**: Vector similarity dedup and consolidation values.
 - **Migration Counts**: Total count and latest filename in `migrations/`.

@@ -3,23 +3,27 @@ from __future__ import annotations
 from orchestrator.config import Settings
 
 
-def test_background_reasoning_model_default() -> None:
-    """Test BACKGROUND_REASONING_MODEL default value."""
+def test_background_reasoning_model_is_retired() -> None:
+    """Deployment defaults belong to the reviewed routing catalog."""
     settings = Settings()
-    assert settings.background_reasoning_model == "openrouter/deepseek/deepseek-chat"
+    assert not hasattr(settings, "background_reasoning_model")
+    assert settings.get_provider_config("openrouter").model == "auto"
 
 
-def test_background_reasoning_model_env_override() -> None:
-    """Test BACKGROUND_REASONING_MODEL can be overridden via env var."""
-    settings = Settings(background_reasoning_model="openrouter/anthropic/claude-3.5-sonnet")
-    assert settings.background_reasoning_model == "openrouter/anthropic/claude-3.5-sonnet"
+def test_legacy_model_override_cannot_restore_a_deployment_pin() -> None:
+    settings = Settings.model_validate(
+        {"background_reasoning_model": "openrouter/anthropic/claude-3.5-sonnet"}
+    )
+    assert not hasattr(settings, "background_reasoning_model")
+    assert settings.get_provider_config("openrouter").model == "auto"
 
 
-def test_background_reasoning_model_from_env(monkeypatch) -> None:
-    """Test BACKGROUND_REASONING_MODEL loaded from env var."""
+def test_routing_path_replaces_background_model_env(monkeypatch) -> None:
     monkeypatch.setenv("BACKGROUND_REASONING_MODEL", "openrouter/google/gemini-2.5-flash")
+    monkeypatch.setenv("DAEMON_MODEL_ROUTING", "/evaluation/routing.json")
     settings = Settings()
-    assert settings.background_reasoning_model == "openrouter/google/gemini-2.5-flash"
+    assert not hasattr(settings, "background_reasoning_model")
+    assert settings.daemon_model_routing == "/evaluation/routing.json"
 
 
 def test_dreaming_flags_defaults() -> None:
@@ -63,18 +67,26 @@ def test_retrieval_logging_debug_only_from_env(monkeypatch) -> None:
     assert settings.retrieval_logging_debug is True
 
 
-def test_background_reasoning_model_whitespace_env_preserved(monkeypatch) -> None:
-    """Test BACKGROUND_REASONING_MODEL preserves whitespace-only value as-is."""
+def test_retired_background_model_whitespace_is_ignored(monkeypatch) -> None:
     monkeypatch.setenv("BACKGROUND_REASONING_MODEL", "   ")
     settings = Settings()
-    assert settings.background_reasoning_model == "   "
+    assert not hasattr(settings, "background_reasoning_model")
 
 
-def test_background_reasoning_model_empty_string_preserved(monkeypatch) -> None:
-    """Test BACKGROUND_REASONING_MODEL preserves empty string as-is."""
+def test_retired_background_model_empty_string_is_ignored(monkeypatch) -> None:
     monkeypatch.setenv("BACKGROUND_REASONING_MODEL", "")
     settings = Settings()
-    assert settings.background_reasoning_model == ""
+    assert not hasattr(settings, "background_reasoning_model")
+
+
+def test_evaluation_environment_requires_exported_paths(monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("DAEMON_MODEL_ROUTING", "/evaluation/routing.json")
+    monkeypatch.setenv("UNRELATED_SECRET", "not-in-the-evaluation-allowlist")
+    exported = Settings.explicit_evaluation_environment()
+    assert "DATABASE_URL" not in exported
+    assert "UNRELATED_SECRET" not in exported
+    assert exported["DAEMON_MODEL_ROUTING"] == "/evaluation/routing.json"
 
 
 def test_hosted_identity_defaults() -> None:
