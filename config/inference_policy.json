@@ -60,6 +60,17 @@
       "notes": "Not approved. Deny-by-default: a tool service that is absent from this list, or present but unqualified, must not be callable, so an unconfigured service cannot become a bypass around the route rules."
     },
     {
+      "service_id": "tavily-web-search",
+      "service": "web_search",
+      "provider": "tavily",
+      "unit": "call",
+      "approved": false,
+      "availability": "unverified",
+      "ceiling_microusd_per_unit": null,
+      "operator_review": null,
+      "notes": "Adapter available; qualify account privacy, downstream handling, geography and basic-search pricing before explicit approval. Selection or credentials alone never enable dispatch."
+    },
+    {
       "service_id": "voyage-embeddings",
       "service": "embeddings",
       "provider": "voyage",

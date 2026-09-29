@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "notes": "Deployment-specific approval by the Daemon operator on 2026-09-29, expiring 2026-10-06T00:00:00Z. Select explicitly with DAEMON_INFERENCE_POLICY only for the reviewed OpenRouter account/workspace. The portable default remains deny-by-default. Evidence, account attestation, qualification limits, renewal and rollout: docs/INFERENCE_ROUTE_APPROVALS.md. No billable tool services are approved. Configuration approval is not a live-dispatch or workload-quality certification.",
+  "notes": "Deployment-specific inference approval by the Daemon operator on 2026-09-29, expiring 2026-10-06T00:00:00Z. Select explicitly with DAEMON_INFERENCE_POLICY only for the reviewed OpenRouter account/workspace. The portable default remains deny-by-default. Inference evidence and rollout: docs/INFERENCE_ROUTE_APPROVALS.md. Separate Brave search-only standard-retention exception has manual review with no hard cutoff; Tavily remains unapproved. Search evidence and revocation: docs/SEARCH_SERVICE_APPROVALS.md. Configuration approval is not a live-dispatch or workload-quality certification.",
   "requirements": {
     "require_approval": true,
     "require_unexpired_approval": true,
@@ -304,5 +304,39 @@
       "notes": "Exact xai/zdr/us listing overrides the ordinary provider's 30-day retention policy; no substitution to xai or xai/priority. Ceilings cover the >=200000-prompt-token pricing tier and US premium. Endpoint-advertised output limit, not maximal-length live-tested."
     }
   ],
-  "tool_services": []
+  "tool_services": [
+    {
+      "service_id": "brave-web-search",
+      "service": "web_search",
+      "provider": "brave",
+      "unit": "call",
+      "approved": true,
+      "availability": "verified",
+      "ceiling_microusd_per_unit": 5000,
+      "review_mode": "manual",
+      "operator_review": {
+        "reviewer": "deployment-operator",
+        "reviewed_at": "2026-09-29T00:00:00Z",
+        "review_expires_at": null,
+        "evidence": [
+          "Operator explicitly approved standard Brave Search temporarily on 2026-09-29, with no hard cutoff date; Enterprise upgrade or removal remains a manual follow-up.",
+          "https://api-dashboard.search.brave.com/documentation/resources/privacy-notice — standard API query logs retained up to 90 days, subject to legal obligations; this account has no Enterprise/ZDR.",
+          "https://brave.com/search/api/ — Search USD 5 per 1000 requests; pinned web-search endpoint and bounded single-call adapter.",
+          "docs/SEARCH_SERVICE_APPROVALS.md — explicit search-only retention exception, scope, verification limits, and revocation procedure."
+        ]
+      },
+      "notes": "Operator-approved standard-retention SEARCH exception, not ZDR and not an inference R-route approval. Manual review/revocation; no automatic expiration. Existing account/key; initial approval was based on documentation and operator attestation, with subsequent live verification recorded separately."
+    },
+    {
+      "service_id": "tavily-web-search",
+      "service": "web_search",
+      "provider": "tavily",
+      "unit": "call",
+      "approved": false,
+      "availability": "unverified",
+      "ceiling_microusd_per_unit": 8000,
+      "operator_review": null,
+      "notes": "Adapter only. Basic search, one credit at USD 0.008 PAYG; generated answers and auto-parameters disabled. Account privacy toggle, downstream scope, terms, geography and operator approval remain required before activation."
+    }
+  ]
 }

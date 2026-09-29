@@ -120,3 +120,124 @@ async def test_completion_with_tools_forces_synthesis_after_max_rounds(monkeypat
     )
     assert "Here are the key findings from research" in combined_content
     assert "Samsung leads on display and camera" in combined_content
+
+
+@pytest.mark.asyncio
+async def test_retry_after_old_spawn_does_not_dispatch_unregistered_tool(monkeypatch):
+    from orchestrator.tools.builtin import CalculateTool
+
+    registry = ToolRegistry()
+    registry.register(CalculateTool())
+
+    async def fake_completion(**kwargs):
+        async def stream():
+            yield {"choices": [{"delta": {"content": "Subagent dispatch is unavailable."}}]}
+
+        return stream()
+
+    monkeypatch.setattr("orchestrator.tools.completion.guarded_completion", fake_completion)
+    messages = [
+        {
+            "role": "tool",
+            "name": "spawn_agent",
+            "tool_call_id": "old",
+            "content": json.dumps(
+                {"agent_type": "research", "metadata": {"session_id": "old-session"}}
+            ),
+        },
+        {"role": "user", "content": "try again"},
+    ]
+    events = [
+        event
+        async for event in completion_with_tools(
+            settings=Settings(),
+            provider_config=ProviderConfig(
+                name="openrouter", model="openrouter/test-model", requires_auth=False
+            ),
+            messages=messages,
+            registry=registry,
+            actual_model="openrouter/test-model",
+        )
+    ]
+    assert not any(event.get("type") == "tool_executing" for event in events)
+    assert events[-1]["type"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_direct_search_round_reaches_synthesis_with_untrusted_sources(monkeypatch):
+    class SearchFixture(Tool):
+        name = "web_search"
+        description = "Search fixture"
+        parameters = {"type": "object", "properties": {"query": {"type": "string"}}}
+
+        async def execute(self, **kwargs: Any) -> str:
+            assert kwargs == {"query": "example facts"}
+            return json.dumps(
+                {
+                    "results": [
+                        {
+                            "title": "Example",
+                            "url": "https://example.com",
+                            "description": "Evidence",
+                        }
+                    ]
+                }
+            )
+
+    registry = ToolRegistry()
+    registry.register(SearchFixture())
+    calls = []
+
+    async def fake_completion(**kwargs):
+        calls.append(kwargs)
+
+        async def stream():
+            if len(calls) == 1:
+                yield {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "search-call",
+                                        "function": {
+                                            "name": "web_search",
+                                            "arguments": '{"query":"example facts"}',
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            else:
+                result = kwargs["messages"][-1]
+                assert result["role"] == "tool"
+                assert result["content"].startswith(
+                    '<tool_result tool="web_search" trust="untrusted">'
+                )
+                assert "https://example.com" in result["content"]
+                yield {
+                    "choices": [{"delta": {"content": "Evidence: [Example](https://example.com)."}}]
+                }
+
+        return stream()
+
+    monkeypatch.setattr("orchestrator.tools.completion.guarded_completion", fake_completion)
+    events = [
+        event
+        async for event in completion_with_tools(
+            settings=Settings(),
+            provider_config=ProviderConfig(
+                name="openrouter", model="openrouter/test-model", requires_auth=False
+            ),
+            messages=[{"role": "user", "content": "Find current example facts"}],
+            registry=registry,
+            actual_model="openrouter/test-model",
+        )
+    ]
+    assert len(calls) == 2
+    assert [e["name"] for e in events if e["type"] == "tool_executing"] == ["web_search"]
+    assert any("https://example.com" in e.get("content", "") for e in events)
+    assert events[-1]["type"] == "done"

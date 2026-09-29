@@ -658,12 +658,13 @@ class TransportPrivacy:
 
 @dataclass(frozen=True, slots=True)
 class OperatorReview:
-    """Named, dated, expiring human sign-off with recorded evidence.
+    """Named, dated human sign-off with recorded evidence and default expiry.
 
     Provider-side ZDR is necessary but not sufficient: prompt/completion
     logging lives in the account, and free models need a separate training
     opt-out. Both are recorded as evidence here so the assertion is auditable
-    and expires on its own if nobody renews it.
+    and expires on its own if nobody renews it. Only an explicit tool-service
+    manual review bypasses expiry; inference routes never do.
     """
 
     reviewer: str | None
@@ -870,6 +871,8 @@ class ToolServicePolicy:
     ceiling_microusd_per_unit: Microusd | None
     review: OperatorReview
     notes: str = ""
+    # Tool-only operator opt-in. Inference reviews always retain their expiry.
+    review_mode: str = "expiring"
 
     def rejection_reasons(
         self, requirements: PolicyRequirements, *, now: datetime | None = None
@@ -882,13 +885,26 @@ class ToolServicePolicy:
             reasons.append(f"availability_{self.availability}")
         if self.ceiling_microusd_per_unit is None:
             reasons.append("price_ceiling_missing")
-        reasons.extend(
-            self.review.rejection_reasons(
-                requirements,
-                now=moment,
-                require=requirements.require_operator_review,
+        if self.review_mode == "manual":
+            # Explicit non-expiring service approval still requires dated evidence.
+            # An expiry supplied alongside manual mode is a contradiction, not
+            # permission to ignore a revocation date.
+            if not self.review.reviewer or not self.review.evidence:
+                reasons.append("operator_review_missing_evidence")
+            if self.review.reviewed_at is None or self.review.reviewed_at > moment:
+                reasons.append("operator_review_date_invalid")
+            if self.review.review_expires_at is not None:
+                reasons.append("manual_review_has_expiry")
+        elif self.review_mode == "expiring":
+            reasons.extend(
+                self.review.rejection_reasons(
+                    requirements,
+                    now=moment,
+                    require=requirements.require_operator_review,
+                )
             )
-        )
+        else:
+            reasons.append("review_mode_invalid")
         return tuple(reasons)
 
     def is_approved(self, requirements: PolicyRequirements, *, now: datetime | None = None) -> bool:
@@ -1144,6 +1160,12 @@ def _parse_tool_service(raw: object, *, index: int) -> ToolServicePolicy:
     service_id = _require_str(
         service_map.get("service_id"), field=f"tool_services[{index}].service_id"
     )
+    review_mode = _require_str(
+        service_map.get("review_mode", "expiring"),
+        field=f"tool_services[{service_id}].review_mode",
+    )
+    if review_mode not in {"expiring", "manual"}:
+        raise PolicyError(f"tool_services[{service_id}].review_mode must be expiring or manual")
     return ToolServicePolicy(
         service_id=service_id,
         service=_require_str(
@@ -1172,6 +1194,7 @@ def _parse_tool_service(raw: object, *, index: int) -> ToolServicePolicy:
             service_map.get("operator_review"), field=f"tool_services.{service_id}.operator_review"
         ),
         notes=str(service_map.get("notes", "")),
+        review_mode=review_mode,
     )
 
 

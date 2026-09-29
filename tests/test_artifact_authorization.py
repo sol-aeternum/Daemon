@@ -140,10 +140,11 @@ def test_artifact_resolver_rejects_symlink_leaf(tmp_path: Path) -> None:
 def test_default_tool_registry_propagates_authenticated_owner() -> None:
     registry = create_default_registry(user_id=USER_A)
 
-    for tool_name in ("spawn_agent", "spawn_multiple", "generate_document"):
-        tool = registry.get(tool_name)
-        assert tool is not None
-        assert getattr(tool, "_user_id") == USER_A
+    tool = registry.get("generate_document")
+    assert tool is not None
+    assert getattr(tool, "_user_id") == USER_A
+    assert registry.get("spawn_agent") is None
+    assert registry.get("spawn_multiple") is None
 
 
 @pytest.mark.asyncio

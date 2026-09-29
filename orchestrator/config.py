@@ -182,10 +182,10 @@ class Settings(BaseSettings):
     openrouter_referer: str = "https://daemon.ai"
     openrouter_title: str = "Daemon AI Assistant"
 
-    # Legacy provider settings (for backward compatibility only)
-
-    # Brave Search API (Web search)
+    # Operator-selected web search; selection never implies service approval.
+    web_search_provider: Literal["brave", "tavily"] = "brave"
     brave_api_key: str | None = None
+    tavily_api_key: str | None = None
 
     # ElevenLabs API key (TTS, STT, sound effects)
     elevenlabs_api_key: str | None = None

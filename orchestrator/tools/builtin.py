@@ -244,37 +244,30 @@ def create_default_registry(
     db_pool: Any = None,
     trusted_spawn_context: dict[str, Any] | None = None,
     disable_memory_write: bool = False,
+    web_search_provider: str = "brave",
+    tavily_api_key: str | None = None,
 ):
     from orchestrator.tools.registry import ToolRegistry
     from orchestrator.tools.http_request import HttpRequestTool
     from orchestrator.tools.notification import NotificationSendTool
     from orchestrator.tools.reminder import ReminderSetTool, ReminderListTool
-    from orchestrator.tools.spawn import SpawnAgentTool, SpawnMultipleTool
+    from orchestrator.tools.web_search import WebSearchTool
 
     registry = ToolRegistry()
     registry.register(GetTimeTool())
     registry.register(CalculateTool())
-    # Brave's per-query spend is not priced in the account reservation ledger.
-    # Do not expose an unbounded paid tool to model-generated tool calls.
+    search = WebSearchTool(
+        api_key=tavily_api_key if web_search_provider == "tavily" else brave_api_key,
+        provider=web_search_provider,
+    )
+    if search.available():
+        registry.register(search)
     registry.register(WebFetchTool())
     registry.register(HttpRequestTool())
     registry.register(NotificationSendTool())
     registry.register(ReminderSetTool())
     registry.register(ReminderListTool())
-    registry.register(
-        SpawnAgentTool(
-            db_pool=db_pool,
-            user_id=user_id,
-            trusted_spawn_context=trusted_spawn_context,
-        )
-    )
-    registry.register(
-        SpawnMultipleTool(
-            db_pool=db_pool,
-            user_id=user_id,
-            trusted_spawn_context=trusted_spawn_context,
-        )
-    )
+    # Retained spawn implementations deny dispatch. Do not advertise them as tools.
 
     from orchestrator.tools.skill_manage import SkillManageTool
     from orchestrator.tools.document import GenerateDocumentTool
@@ -305,7 +298,7 @@ def create_council_readonly_registry(brave_api_key: str | None = None):
     registry = ToolRegistry()
     registry.register(GetTimeTool())
     registry.register(CalculateTool())
-    # Web search is metered and unavailable without a reserved cost.
+    # Council search remains disabled; metered search is exposed in main chat.
     registry.register(WebFetchTool())
     return registry
 
