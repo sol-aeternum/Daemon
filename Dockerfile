@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 # Copy uv binaries from the official image.
-COPY --from=ghcr.io/astral-sh/uv:0.9.26 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.12.19 /uv /uvx /bin/
 
 WORKDIR /app
 

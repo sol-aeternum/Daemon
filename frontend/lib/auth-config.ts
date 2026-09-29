@@ -121,9 +121,3 @@ export function subscribeAuthConfig(cb: Listener): () => void {
     _listeners.delete(cb);
   };
 }
-
-export function _resetAuthConfigForTests(): void {
-  _cached = null;
-  _inflight = null;
-  _listeners.clear();
-}
