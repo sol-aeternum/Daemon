@@ -217,7 +217,10 @@ async def test_direct_search_round_reaches_synthesis_with_untrusted_sources(monk
                 assert result["content"].startswith(
                     '<tool_result tool="web_search" trust="untrusted">'
                 )
-                assert "https://example.com" in result["content"]
+                from orchestrator.tools.completion import _unwrap_tool_result
+
+                payload = json.loads(_unwrap_tool_result(result["content"]))
+                assert payload["results"][0]["url"] == "https://example.com"
                 yield {
                     "choices": [{"delta": {"content": "Evidence: [Example](https://example.com)."}}]
                 }
@@ -239,5 +242,7 @@ async def test_direct_search_round_reaches_synthesis_with_untrusted_sources(monk
     ]
     assert len(calls) == 2
     assert [e["name"] for e in events if e["type"] == "tool_executing"] == ["web_search"]
-    assert any("https://example.com" in e.get("content", "") for e in events)
+    assert "".join(e.get("content", "") for e in events if e["type"] == "content_delta") == (
+        "Evidence: [Example](https://example.com)."
+    )
     assert events[-1]["type"] == "done"
