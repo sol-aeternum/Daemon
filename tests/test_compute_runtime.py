@@ -2274,6 +2274,12 @@ async def test_dispatch_timeout_before_output_is_retryable_and_charged_the_bound
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _qualified_policy(monkeypatch, route=_pooled_pool())
+    settings = SimpleNamespace(
+        request_timeout_s=60.0,
+        openrouter_api_key=None,
+        get_provider_config=lambda name: SimpleNamespace(extra_headers=None),
+    )
+    monkeypatch.setattr(runtime, "get_settings", lambda: settings)
     service = _chat_service()
 
     async def never_answers(**call: Any) -> Any:
@@ -2288,8 +2294,12 @@ async def test_dispatch_timeout_before_output_is_retryable_and_charged_the_bound
                 model=PINNED_MODEL,
                 messages=[{"role": "user", "content": "hi"}],
                 _route_id="pooled-cheap",
-                _dispatch_timeout_s=0.01,
+                # Reach the provider before the dispatch expires, independently
+                # of cold deployment-settings loading or a narrow 10 ms window.
+                _dispatch_timeout_s=0.1,
             )
+    provider.assert_awaited_once()
+    assert 0 < provider.await_args.kwargs["timeout"] <= 0.1
     assert denied.value.category == "timeout"
     assert denied.value.status_code is None
     assert denied.value.retryable is True
