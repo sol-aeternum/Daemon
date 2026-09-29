@@ -76,18 +76,6 @@
       "notes": "Provisional demanding tier placement in the reasoning and council profiles. It is no longer an automatic candidate for routine, background or research work: those profiles refuse the request rather than degrade to a demanding model. No generic medium effort."
     },
     {
-      "model": "openrouter/qwen/qwen3.8-max-0902",
-      "sampling_parameters": ["temperature", "top_p", "frequency_penalty", "presence_penalty", "seed", "stop"],
-      "developer": "qwen",
-      "suitability": ["council", "reasoning", "research"],
-      "reasoning_efforts": ["xhigh", "high", "medium", "low", "minimal"],
-      "parameter_presets": {
-        "default": {"reasoning_effort": "high"},
-        "council": {"reasoning_effort": "high", "include_reasoning": true}
-      },
-      "notes": "Provisional demanding tier placement. It is the only placed model whose ladder includes minimal, and the loader rejects minimal for every other model."
-    },
-    {
       "model": "openrouter/openai/gpt-6-sol",
       "sampling_parameters": ["seed"],
       "developer": "openai",
@@ -179,7 +167,6 @@
           "group": "demanding",
           "models": [
             "openrouter/z-ai/glm-5.3",
-            "openrouter/qwen/qwen3.8-max-0902",
             "openrouter/openai/gpt-6-sol",
             "openrouter/anthropic/claude-sonnet-5"
           ]
@@ -224,7 +211,6 @@
             "openrouter/google/gemini-3.8-flash",
             "openrouter/x-ai/grok-4.7",
             "openrouter/z-ai/glm-5.3",
-            "openrouter/qwen/qwen3.8-max-0902",
             "openrouter/openai/gpt-6-sol",
             "openrouter/anthropic/claude-sonnet-5"
           ]

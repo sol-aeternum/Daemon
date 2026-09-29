@@ -102,6 +102,20 @@ has a finalized-message cursor (`last_summarized_msg_count`), bounded summary
 batches and continuation recovery. This branch preserves that newer implementation
 instead of importing the older checkout's competing scheduling checkpoint.
 
+## Roster removal — 29 September 2026
+
+The operator removed `openrouter/qwen/qwen3.8-max-0902` from the model metadata
+and the reasoning/council candidate groups after qualification found only an
+Alibaba endpoint with prompt retention and no exact-route ZDR listing. The
+remaining candidate order and parameter presets are preserved. This removal
+does not activate any production route or authorize provider-retained routing.
+
+The separately opted-in `config/inference_policy.production.json` records eight
+operator-approved ZDR routes through 6 October 2026. See
+[deployment route approvals](INFERENCE_ROUTE_APPROVALS.md) for account scope,
+provider evidence, native limits, expiry, and rollout. The portable default
+policy remains deny-by-default; merging the deployment policy does not select it.
+
 ## Selection contract
 
 Native and compatibility chat derive the workload from the requested work.
