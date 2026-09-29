@@ -593,6 +593,7 @@ async def completion_with_tools(
             last_user_message = _extract_last_user_message(current_messages)
             if (
                 tools is not None
+                and registry.get("spawn_agent") is not None
                 and last_session_id
                 and last_user_message
                 and is_retry_request(last_user_message)

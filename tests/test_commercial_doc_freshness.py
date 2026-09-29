@@ -117,7 +117,11 @@ class TestCommercialFactExtraction:
 
     def test_inference_policy_facts_derive_requirements(self, policy: dict) -> None:
         assert policy["route_ids"] == {"legacy-openrouter-unverified": False}
-        assert policy["service_ids"] == {"brave-web-search": False, "voyage-embeddings": False}
+        assert policy["service_ids"] == {
+            "brave-web-search": False,
+            "tavily-web-search": False,
+            "voyage-embeddings": False,
+        }
         assert policy["default_route_id"] is None
         flags = dict(policy["required_flags"])
         assert flags["zdr"] is True

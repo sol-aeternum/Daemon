@@ -104,7 +104,9 @@ endpoint. Neither model has a route in this deployment policy.
 Routine/background/research retain Luna-first placement. Qualification does not
 promote other candidates into those profiles. The eight approved council
 candidates span five developers; this is coverage, not proof of a successful
-live council. No billable search, embedding, speech or media service is approved.
+live council. Search approval is now recorded separately in
+[SEARCH_SERVICE_APPROVALS.md](SEARCH_SERVICE_APPROVALS.md); no embedding, speech
+or media service is approved by this inference decision.
 
 ## Deployment, renewal and rollback
 

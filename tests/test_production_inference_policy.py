@@ -24,7 +24,8 @@ def test_deployment_policy_is_opt_in_and_expires_closed() -> None:
         r.is_approved(default.requirements, now=REVIEWED) for r in default.routes.values()
     )
     assert len(policy.routes) == 8
-    assert not policy.tool_services
+    assert policy.approved_tool_service_ids(now=REVIEWED) == {"brave-web-search"}
+    assert not default.approved_tool_service_ids(now=REVIEWED)
     assert policy.default_route_id is None
     for route in policy.routes.values():
         assert route.is_approved(policy.requirements, now=REVIEWED)

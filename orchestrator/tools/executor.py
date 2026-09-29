@@ -73,4 +73,11 @@ class ToolExecutor:
             result = await tool.execute(**args)
             return result
         except Exception as e:
+            # Budget and settlement failures must stop the operation, not become
+            # ordinary tool text that invites another paid attempt.
+            from orchestrator.compute_runtime import compute_error
+
+            refusal = compute_error(e)
+            if refusal is not None:
+                raise refusal from None
             return json.dumps({"error": f"Tool execution failed: {str(e)}"})

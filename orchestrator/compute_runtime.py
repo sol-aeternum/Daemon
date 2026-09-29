@@ -519,6 +519,227 @@ async def tool_round_limit() -> int:
     return TOOL_ROUND_SAFETY_CEILING if cap is None else max(1, cap)
 
 
+@dataclass(frozen=True, slots=True)
+class ToolServiceApproval:
+    """One operator-approved, fixed-price tool service.
+
+    ``ceiling_microusd`` is the policy's approved maximum per unit and sizes the
+    hold. ``fixed_microusd`` is the pinned price of the single unit a caller
+    dispatches, and is what a confirmed call settles. The ceiling is always at
+    least the fixed price. Unexpected provider-reported extra units must still
+    settle truthfully, including above the hold under the overage contract.
+    """
+
+    service_id: str
+    service: str
+    provider: str
+    unit: str
+    ceiling_microusd: int
+    fixed_microusd: int
+
+
+def approved_tool_service(
+    *,
+    service_id: str,
+    service: str,
+    provider: str,
+    unit: str,
+    fixed_microusd: int,
+) -> ToolServiceApproval:
+    """The approved fixed-price tool service ``service_id``, or a typed refusal.
+
+    Tool services are deny-by-default, so this checks identity as well as
+    approval: the policy entry must name exactly the service, provider and unit
+    the caller is about to dispatch, so a renamed or repurposed entry cannot
+    authorize a different call. The entry's operator ceiling must also cover the
+    caller's pinned price, because a hold below its own settlement would break
+    the ledger's rule that the quote holds. A refusal is an approval or
+    configuration fact, so it reserves nothing, dispatches nothing and charges
+    nothing.
+
+    This is not by itself a dispatch permission: budget, rate, concurrency and
+    account state are still decided by the reservation in
+    :func:`metered_tool_call`.
+    """
+    if (
+        not isinstance(service_id, str)
+        or not service_id.strip()
+        or isinstance(fixed_microusd, bool)
+        or not isinstance(fixed_microusd, int)
+        or fixed_microusd <= 0
+    ):
+        raise ComputeUnavailable("tool_service_unavailable", "Approved tool service unavailable")
+    try:
+        policy = load_inference_policy()
+    except PolicyError as exc:
+        raise ComputeUnavailable(
+            "tool_service_unavailable", "Approved tool service unavailable"
+        ) from exc
+    entry = policy.tool_service(service_id)
+    if (
+        entry is None
+        or entry.service != service
+        or entry.provider != provider
+        or entry.unit != unit
+        or entry.ceiling_microusd_per_unit is None
+        or entry.ceiling_microusd_per_unit < fixed_microusd
+        or not entry.is_approved(policy.requirements)
+    ):
+        raise ComputeUnavailable("tool_service_unavailable", "Approved tool service unavailable")
+    return ToolServiceApproval(
+        service_id=entry.service_id,
+        service=entry.service,
+        provider=entry.provider,
+        unit=entry.unit,
+        ceiling_microusd=int(entry.ceiling_microusd_per_unit),
+        fixed_microusd=fixed_microusd,
+    )
+
+
+@dataclass
+class ToolCallCharge:
+    """Settlement selector for one metered fixed-price tool call.
+
+    Conservative by default: a call that is not positively confirmed settles its
+    whole reservation, exactly like an inference dispatch with unknown usage.
+    """
+
+    confirmed: bool = False
+    units: int = 1
+
+    def confirm(self, *, units: int = 1) -> None:
+        """Settle at the pinned price: the priced unit was delivered as approved."""
+        if type(units) is not int or units < 1:
+            raise ValueError("Tool units must be a positive integer")
+        self.units = units
+        self.confirmed = True
+
+
+@asynccontextmanager
+async def metered_tool_call(
+    approval: ToolServiceApproval,
+    *,
+    scope: ComputeScope | None = None,
+    required_capability: str | None = None,
+) -> AsyncIterator[ToolCallCharge]:
+    """Reserve, then settle, exactly ONE fixed-price tool unit.
+
+    The hold is taken on the caller's existing account scope — never a nested
+    one — with that scope's own user, operation, ``extended``/``background``
+    flags, expected period and ``scope_id``, so a metered tool call shares the
+    turn's budget and its concurrency slot. The hold is registered on the scope
+    before any I/O, which makes a cancellation or a killed process settle
+    conservatively instead of orphaning the reservation.
+
+    ``required_capability`` denies before any reservation when the account's
+    resolved plan does not grant it.
+
+    Approval is re-checked immediately before the yield, because taking a hold
+    can span long enough for an operator review to lapse. Policy is cached;
+    file-based revocations require restart (or explicit cache invalidation).
+    A failed re-check returns the whole hold at zero cost and refuses the
+    call. Inside the block the caller performs its single external dispatch and
+    calls :meth:`ToolCallCharge.confirm` only once the provider has delivered
+    the priced unit. Anything else — timeout, cancellation, transport or HTTP
+    failure, unparseable or out-of-contract output — settles the reserved
+    ceiling, the same conservative unknown-usage contract inference uses, so it
+    can charge a call whose provider-side billing is unknown. Confirmation is a
+    statement about the priced unit, so it survives a later local failure in the
+    caller; a caller that cannot vouch for the outcome must not confirm.
+
+    A settlement failure is raised as :class:`ComputeUnavailable` and is never
+    retried or swallowed here: incomplete accounting must stop the operation.
+    """
+    active = scope if scope is not None else current_scope()
+    try:
+        if required_capability is not None:
+            resolved = await active.service.resolve(active.user_id)
+            if required_capability not in resolved.capabilities:
+                raise ComputeUnavailable("capability_unavailable", "Capability unavailable")
+        async with active.extended_lock:
+            first_extended = active.extended and not active.extended_started
+            reserve_options = (
+                {"expected_period": active.expected_period}
+                if active.expected_period is not None
+                else {}
+            )
+            reservation = await active.service.reserve(
+                active.user_id,
+                approval.ceiling_microusd,
+                operation=active.operation,
+                provider=approval.provider,
+                route_id=approval.service_id,
+                premium=False,
+                extended=active.extended,
+                extended_run=first_extended,
+                background=active.background,
+                scope_id=active.scope_id,
+                **reserve_options,
+            )
+            if first_extended:
+                active.extended_started = True
+    except ComputeUnavailable:
+        raise
+    except EntitlementsError as exc:
+        raise compute_error(exc) or ComputeUnavailable(
+            "account_unavailable", "Account compute unavailable"
+        ) from None
+    except Exception:
+        raise ComputeUnavailable("account_unavailable", "Account compute unavailable") from None
+
+    active.outstanding[_hold_key(reservation)] = ReservationHold(
+        reservation, approval.ceiling_microusd
+    )
+    charge = ToolCallCharge()
+    try:
+        approved_tool_service(
+            service_id=approval.service_id,
+            service=approval.service,
+            provider=approval.provider,
+            unit=approval.unit,
+            fixed_microusd=approval.fixed_microusd,
+        )
+    except BaseException:
+        # Dispatch has not begun. Use the scope's shielded, idempotent settlement
+        # rather than a separate release path: even failed/cancelled accounting
+        # must retain a known zero outcome, not invent a provider charge.
+        await active.settle(reservation, 0)
+        raise
+    try:
+        yield charge
+    finally:
+        await _settle_tool_hold(active, reservation, approval, charge=charge)
+
+
+async def _settle_tool_hold(
+    scope: ComputeScope,
+    reservation: Any,
+    approval: ToolServiceApproval,
+    *,
+    charge: ToolCallCharge,
+) -> None:
+    """Settle one tool unit at its pinned price, or at the hold when uncertain.
+
+    ``estimated_cost`` marks the conservative branch, so an audit can tell a
+    priced settlement from one that only knows the call was dispatched. Service
+    attribution needs no metadata here: the reservation already carries the
+    provider and the service id it was taken for.
+    """
+    if charge.confirmed:
+        actual = approval.fixed_microusd * charge.units
+        usage = {"tool_calls": 1}
+        if charge.units != 1:
+            usage["provider_units"] = charge.units
+        await scope.settle(reservation, actual, usage=usage)
+        if actual > approval.ceiling_microusd:
+            # EntitlementService records the overage and suspends the account.
+            raise ComputeUnavailable(
+                "tool_price_exceeded", "Tool service charge exceeded its reserved price"
+            )
+    else:
+        await scope.settle(reservation, approval.ceiling_microusd, usage={"estimated_cost": True})
+
+
 def _profile_shortlist(profile: str) -> dict[str, tuple[int, int]]:
     """``model -> (group index, position)`` for one profile's acceptable models."""
     return {

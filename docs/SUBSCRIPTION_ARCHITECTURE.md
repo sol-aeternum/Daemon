@@ -117,6 +117,13 @@ mode cannot bypass privacy or runtime limits.
 
 ## Accounting contract
 
+**Search-only deployment exception (29 September 2026):** the operator approved
+standard Brave Search with its disclosed query retention and manual review,
+without a hard cutoff, pending Enterprise upgrade or removal. This exception
+does not enable inference R routes or qualify other tools. See
+[search service approvals](SEARCH_SERVICE_APPROVALS.md) for scope, evidence,
+revocation and the separately unapproved Tavily adapter.
+
 Internal monetary amounts are integer USD millionths (microusd), independent of
 the display-price currency. Every plan has a recurring funded allowance; Free's
 routine fallback allowance remains available after its separate lifetime premium

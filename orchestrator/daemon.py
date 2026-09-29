@@ -506,6 +506,8 @@ async def stream_sse_chat(
                 model_to_call = actual_model or f"{provider}/{model}"
                 registry = create_chat_registry(
                     brave_api_key=settings.brave_api_key,
+                    web_search_provider=settings.web_search_provider,
+                    tavily_api_key=settings.tavily_api_key,
                     memory_store=memory_store,
                     user_id=user_id,
                     db_pool=db_pool,

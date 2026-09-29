@@ -109,7 +109,7 @@ AMBIENT_SUBCONFIG_CLASSES: tuple[type[BaseSettings], ...] = (
 
 # Inventory pins. A change here is a deliberate review trigger: the coverage
 # test reports the resolved name of the new field in the same run.
-EXPECTED_SETTINGS_FIELD_COUNT = 108
+EXPECTED_SETTINGS_FIELD_COUNT = 110
 EXPECTED_VIDEO_PRICING_FIELD_COUNT = 6
 
 # --------------------------------------------------------------------------
@@ -1467,7 +1467,7 @@ def frontend_unresolved_violations(
 
 
 def test_app_settings_inventory_is_pinned() -> None:
-    """The app configuration surface is 175 + 9 fields, resolved by metadata."""
+    """The app configuration surface is pinned and resolved by metadata."""
     assert len(Settings.model_fields) == EXPECTED_SETTINGS_FIELD_COUNT, (
         "Settings field count changed: document the new field in .env.example (or add a "
         "reasoned UNDOCUMENTED_APP_CONFIG entry) and update EXPECTED_SETTINGS_FIELD_COUNT"

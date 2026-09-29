@@ -64,7 +64,7 @@ lives in `config/inference_policy.json`. Video-credit balances remain separate.
 - **SSE Streaming**: Typed events (`token`, `thinking`, `routing`, `tool_call`, `tool_result`, `final`, `error`, `done`).
 - **Subagents**: Research remains subject to account capabilities and qualified service/model routes. Image/video/audio execution is retired pending qualified bounded adapters; retained implementation/UI does not establish availability.
 - **Tools**: `generate_document` (deterministic CSV/DOCX generation).
-- **Tools**: `web_search`, `http_request`, `calculate`, `get_time`, `notifications`, `reminders`, `memory_read`, `memory_write`.
+- **Tools**: `web_search` is directly available only with selected credentials and approved service policy; Brave and Tavily adapters reserve account budget per call without fallback. Deployment search exception: [SEARCH_SERVICE_APPROVALS.md](SEARCH_SERVICE_APPROVALS.md). Disabled spawn tools are omitted from the assistant registry. Other tools: `http_request`, `calculate`, `get_time`, `notifications`, `reminders`, `memory_read`, `memory_write`.
 
 ### Phase 2: Memory System ✅
 - **Storage**: PostgreSQL + pgvector; migration inventory is derived from `migrations/`. Account entitlements require the new commercial migration before deploying the replacement runtime.
