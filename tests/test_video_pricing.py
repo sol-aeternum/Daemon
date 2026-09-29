@@ -5,7 +5,9 @@ from __future__ import annotations
 from config.video_pricing import estimate_cost
 
 
-def test_xai_duration_cost_is_plan_independent() -> None:
+def test_xai_duration_cost_with_explicit_and_default_provider() -> None:
+    for seconds in (5, 10, 15):
+        assert estimate_cost(seconds) == seconds
     for seconds in (5, 10, 15, 20, 30, 7):
         assert estimate_cost(seconds, provider="xai") == seconds
 
