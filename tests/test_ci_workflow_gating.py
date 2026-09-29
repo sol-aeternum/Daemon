@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 
@@ -111,12 +115,59 @@ def test_local_ci_security_policy_matches_workflow() -> None:
         assert row in local_ci
 
 
-def test_local_ci_uses_basedpyright_project_environment() -> None:
-    local_ci = LOCAL_CI.read_text(encoding="utf-8")
+@pytest.mark.parametrize(
+    ("inherited_environment", "expected_environment"),
+    [(None, ".uv-venv"), ("", ".uv-venv"), ("custom venv", "custom venv")],
+    ids=["unset", "empty", "explicit-override"],
+)
+def test_local_ci_uses_basedpyright_project_environment(
+    tmp_path: Path,
+    inherited_environment: str | None,
+    expected_environment: str,
+) -> None:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    runner = scripts / "local_ci.sh"
+    shutil.copyfile(LOCAL_CI, runner)
 
-    environment_export = 'export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-.uv-venv}"'
-    assert environment_export in local_ci
-    assert local_ci.index(environment_export) < local_ci.index("uv run basedpyright --level error")
+    # Run the real CLI in isolation. Only uv is replaced with an observer;
+    # no package-manager command or actual quality gate can run via this PATH.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for command in ("bash", "dirname", "date"):
+        executable = shutil.which(command)
+        assert executable is not None, f"Required runner dependency missing: {command}"
+        (bin_dir / command).symlink_to(executable)
+    (bin_dir / "python").symlink_to(sys.executable)
+    uv = bin_dir / "uv"
+    uv.write_text(
+        '#!/bin/sh\nprintf "%s\\t%s\\n" "$*" "${UV_PROJECT_ENVIRONMENT-}" >> "$GATE_ENV_LOG"\n',
+        encoding="utf-8",
+    )
+    uv.chmod(0o755)
+
+    log = tmp_path / "gate-environments.log"
+    environment = {"PATH": str(bin_dir), "GATE_ENV_LOG": str(log)}
+    if inherited_environment is not None:
+        environment["UV_PROJECT_ENVIRONMENT"] = inherited_environment
+    result = subprocess.run(
+        [str(bin_dir / "bash"), str(runner), "backend"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    assert log.is_file(), "The runner did not launch any uv gate"
+    invocations = [line.split("\t", 1) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert any("basedpyright" in command.split() for command, _ in invocations), (
+        "The runner did not launch the Basedpyright gate"
+    )
+    observed = [value for _, value in invocations]
+    assert all(value == expected_environment for value in observed), observed
 
 
 def test_frontend_browser_regression_blocking_sequence_is_anchored() -> None:

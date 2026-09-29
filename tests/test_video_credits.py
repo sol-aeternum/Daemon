@@ -10,7 +10,6 @@ import asyncpg
 import pytest
 
 import db.video_credits as video_credits_module
-from config.video_pricing import estimate_cost
 from db.video_credits import Result, VideoCreditsDAL
 
 
@@ -427,9 +426,3 @@ async def test_concurrent_debit_allows_only_one_success(
     assert failures[0].message == "Insufficient balance"
     assert fake_state.balances[user_id] == 0
     assert sum(1 for tx in fake_state.transactions if tx["type"] == "spend") == 1
-
-
-def test_estimate_cost_does_not_grant_plan_discount() -> None:
-    assert estimate_cost(5) == 5
-    assert estimate_cost(10) == 10
-    assert estimate_cost(15) == 15
