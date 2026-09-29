@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
-# Reuse the same pinned uv as the root Dockerfile (ghcr.io/astral-sh/uv:0.9.26).
-COPY --from=ghcr.io/astral-sh/uv:0.9.26 /uv /uvx /bin/
+# Reuse the same pinned uv as the root Dockerfile.
+COPY --from=ghcr.io/astral-sh/uv:0.12.19 /uv /uvx /bin/
 
 ENV UV_NO_PROGRESS=1 \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
