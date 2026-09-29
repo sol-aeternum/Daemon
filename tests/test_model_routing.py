@@ -198,12 +198,11 @@ def test_approved_luna_first_placement_is_the_only_automatic_candidate() -> None
     # Luna is served at the effort the accepted screen actually measured.
     for name in ("routine", "background", "research"):
         assert model_routing.model_parameter_presets(LUNA, name) == {"reasoning_effort": "low"}
-    # Demanding and council placements are untouched: bounded escalation survives.
+    # Bounded escalation survives the operator-approved Qwen removal.
     assert config.profile("reasoning").group_names() == ("demanding", "escalation")
     assert config.profile("council").group_names() == ("diverse", "escalation")
     assert config.profile("reasoning").ranked_models() == (
         GLM,
-        "openrouter/qwen/qwen3.8-max-0902",
         SOL,
         SONNET,
         OPUS,
@@ -211,6 +210,9 @@ def test_approved_luna_first_placement_is_the_only_automatic_candidate() -> None
     )
     assert config.profile("council").groups[1].models == (OPUS, ASTRA)
     assert set(config.profile("council").groups[0].models) >= {DEEPSEEK, FLASH, LUNA, GLM, SOL}
+    removed = "openrouter/qwen/qwen3.8-max-0902"
+    assert removed not in config.models
+    assert all(removed not in profile.ranked_models() for profile in config.profiles.values())
     # An unplaced model is unreachable automatically but still dispatchable by an
     # exact manual selection, so removing a group never removes the model.
     assert model_routing.is_model_routable("routine", SOL) is False

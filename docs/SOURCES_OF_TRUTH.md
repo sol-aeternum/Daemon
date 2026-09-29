@@ -34,6 +34,7 @@ Every markdown file in the repository is classified under this hierarchy to dete
 | `docs/HOSTED_IDENTITY.md` | T1 | Engineering/Product | gated | `docs/AUTH_ARCHITECTURE.md`, hosted identity auth routes, hosted identity migrations |
 | `docs/SUBSCRIPTION_ARCHITECTURE.md` | T1 | Engineering/Product | gated | `config/commercial.json`, `config/inference_policy.json`, `orchestrator/entitlements/`, account compute migrations |
 | `docs/MODEL_ROUTING.md` | T1 | Engineering/Product | gated | `config/model_routing.json`, `orchestrator/model_routing.py`, `orchestrator/compute_runtime.py` |
+| `docs/INFERENCE_ROUTE_APPROVALS.md` | N/A | Deployment operator | raw-log | Dated account-scoped approval evidence and rollout instructions for `config/inference_policy.production.json`; not proof of live deployment |
 | `docs/ENV_SURFACE_MIGRATION.md` | T1 | Engineering | gated | `orchestrator/config.py`, `.env.example`, `docker-compose.yml`, `tests/test_env_surface_parity.py` |
 | `docs/MODEL_ROUTING_PILOT_PROPOSAL.md` | N/A | Engineering/Product | ungated-reference | Evidence-informed candidate placement, escalation and bounded endpoint integration proposal; not production activation |
 | `docs/MODEL_ROUTING_FOLLOWUP_PLAN.md` | N/A | Engineering/Product | ungated-reference | Proposed corrected-fixture and explicit-preset diagnostic/held-out screen; separate execution approval required |
