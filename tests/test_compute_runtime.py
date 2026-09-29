@@ -2299,7 +2299,9 @@ async def test_dispatch_timeout_before_output_is_retryable_and_charged_the_bound
                 _dispatch_timeout_s=0.1,
             )
     provider.assert_awaited_once()
-    assert 0 < provider.await_args.kwargs["timeout"] <= 0.1
+    call = provider.await_args
+    assert call is not None
+    assert 0 < call.kwargs["timeout"] <= 0.1
     assert denied.value.category == "timeout"
     assert denied.value.status_code is None
     assert denied.value.retryable is True
