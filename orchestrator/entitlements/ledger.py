@@ -110,6 +110,9 @@ class ReservationRequest:
     #: Another open reservation of the same operation (account scope) already
     #: holds this request's concurrency slot.
     joins_open_operation: bool = False
+    #: A durable foreground reservation already admitted this server-owned scope.
+    #: Unlike concurrency sharing, this survives settlement and rate-window rollover.
+    shares_rate_slot: bool = False
 
     @property
     def starts_run(self) -> bool:
@@ -236,6 +239,7 @@ def admit(
 
     if (
         not request.background
+        and not request.shares_rate_slot
         and effective_rate_requests(state, context.now) >= limits.requests_per_minute
     ):
         return Admission(
@@ -332,7 +336,7 @@ def apply_reservation(
     concurrency slot and a rate slot, but the period row must not take the
     money, because the trial counters on the account own it.
     """
-    if request.background:
+    if request.background or request.shares_rate_slot:
         window_started_at = state.window_started_at
         requests_in_window = state.requests_in_window
     elif _window_is_stale(state, now):

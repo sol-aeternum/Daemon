@@ -30,7 +30,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Feature | Web | Android PWA | Android native | iOS future | Backend dependency | Wedge required? |
 |---|---|---|---|---|---|---|
 | **Chat & Streaming** | — | — | — | — | — | — |
-| Chat Streaming + Reconnect | Cross-client stable | Cross-client stable | Not started | Not started | POST /chat SSE streaming service; prompt datetime uses saved user timezone, then configurable deployment default (UTC) | Yes |
+| Chat Streaming + Reconnect | Cross-client stable | Cross-client stable | Not started | Not started | POST /chat SSE streaming service; account rate admission counts a chat turn once across internal model/search calls; prompt datetime uses saved user timezone, then configurable deployment default (UTC) | Yes |
 | File Upload | Cross-client stable | Cross-client stable | Not started | Not started | Client-side file attachments and chat serialization | No |
 | Stop/Cancel Streaming | Cross-client stable | Cross-client stable | Not started | Not started | Web/PWA composer exposes Stop and `Esc`, preserving partial output with a `(stopped)` label | No |
 | Copy Message | Not started | Not started | Not started | Not started | Pure client-side clipboard action not implemented | No |
@@ -40,9 +40,9 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | Typed SSE Event Protocol | Cross-client stable | Cross-client stable | Not started | Not started | Chat and council streaming services | No |
 | OpenAI Chat Completions API | Backend stable | Backend stable | Not started | Not started | POST /v1/chat/completions compatibility endpoint; same user/deployment prompt timezone precedence as native chat | No |
 | **Conversations** | — | — | — | — | — | — |
-| Recent Conversations List (search, pin, rename, delete) | Cross-client stable | Cross-client stable | Not started | Not started | GET /conversations, POST /conversations, DELETE /conversations/{id}, PATCH /conversations/{id} | Yes |
+| Recent Conversations List (search, pin, rename, delete) | Cross-client stable | Cross-client stable | Not started | Not started | GET /conversations, POST /conversations, DELETE /conversations/{id}, PATCH /conversations/{id}; counts/activity derive from saved messages so stale cached counts do not hide chats after navigation; local gates and fresh review pass, deployed to local Compose 2026-09-30 (#361) | Yes |
 | Conversation Switching | Cross-client stable | Cross-client stable | Not started | Not started | GET /conversations/{id} | No |
-| Long Conversation Controls | Mobile eligible | Mobile eligible | Not started | Not started | Client-side collapse of messages over 1,200 characters outside the latest five, kept findable by browser search via `hidden="until-found"` (never collapsed where unsupported), persisted tool-log visibility, recoverable spawn history, and jump-to-latest during streaming; virtual scrolling at 50+ loaded messages is deferred to [#298](https://github.com/sol-aeternum/Daemon/issues/298) | No |
+| Long Conversation Controls | Mobile eligible | Mobile eligible | Not started | Not started | Client-side collapse of messages over 1,200 characters outside the latest five, kept findable by browser search via `hidden="until-found"` (never collapsed where unsupported), persisted tool-log visibility, recoverable spawn history, and jump-to-latest during streaming; compact tool disclosure groups all actions with source pills and source-matched inline citations (local gates, review and desktop/mobile browser smoke pass; deployed to local Compose 2026-09-30); legacy repeated-name trace correlation follow-up is [#366](https://github.com/sol-aeternum/Daemon/issues/366); virtual scrolling at 50+ loaded messages is deferred to [#298](https://github.com/sol-aeternum/Daemon/issues/298) | No |
 | **Memory (user-visible)** | — | — | — | — | — | — |
 | Memory Read (account-scoped retrieval) | Cross-client stable | Cross-client stable | Not started | Not started | GET /memories; lexical fallback while embeddings are unqualified | No |
 | Memory Write (explicit storage) | Backend stable | Backend stable | Not started | Not started | POST /memories | No |
@@ -61,6 +61,7 @@ Client Surface denotes user-invokable affordances only — direct interaction po
 | **Tools** | — | — | — | — | — | — |
 | Web Search (Brave / Tavily adapters) | Backend stable | Backend stable | Not started | Not started | Direct account-budgeted web_search; operator-selected provider, no fallback; deployment approves standard Brave retention exception, Tavily remains unapproved; see SEARCH_SERVICE_APPROVALS.md | No |
 | Web Fetch (multi-strategy URL fetcher) | Backend stable | Backend stable | Not started | Not started | URL fetch service; direct requests use a stable Daemon identity with an operator-configurable User-Agent | No |
+| Conversation-scoped web source reading | Web experimental | Web experimental | Not started | Not started | Bounded web_fetch read/find/list over encrypted immutable snapshots; owner-checked list/export/delete APIs under /conversations/{id}/web-snapshots; local blocking gates pass; deployed to local Compose runtime 2026-09-30; see CHUNKED_WEB_READING_DESIGN.md | Yes |
 | HTTP Request (generic) | Backend stable | Backend stable | Not started | Not started | HTTP request service | No |
 | Reminders (local JSON) | Backend stable | Backend stable | Not started | Not started | Reminder scheduling service | No |
 | Time & Math (get_time, calculate) | Backend stable | Backend stable | Not started | Not started | Utility tools service | No |

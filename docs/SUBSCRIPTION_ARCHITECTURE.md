@@ -151,9 +151,38 @@ framing, which byte-level tokenizers cannot exceed; a separate ~3-bytes-per-toke
 estimate only sizes the context window and output budget. After reconciling,
 an operator reinstates the account with `scripts/entitlements_reinstate.py`.
 
+Search explicitly opts into dispatch-aware tool metering. Its temporary hold
+settles at zero when a local refusal, timeout, or cancellation occurs before
+the adapter marks dispatch. The final shared provider admission follows account
+reservation and request preparation, immediately before handing the request to
+the HTTP client. After that mark, uncertain outcomes retain the conservative
+charge; confirmed delivery uses the pinned price. Other metered tools retain
+their conservative default. The search work deadline bounds admission and
+provider work, while shielded reservation recovery and settlement may finish
+later to avoid abandoning a hold. This is not a guarantee of exact network
+arrival spacing or a refund for unknown provider usage. See
+[search service approvals](SEARCH_SERVICE_APPROVALS.md) and the state machine in
+`orchestrator/compute_runtime.py`.
+
+If reservation transaction exit fails after the complete insert, an internal
+database-generated receipt preserves the candidate identity without asserting
+that it committed. Metered acquisition resolves it through a fresh read-committed
+transaction, taking the same account lock before checking the exact identity and
+acquisition context. A committed pre-dispatch hold settles at zero; a verified
+rollback has no hold. Unavailable or mismatched recovery remains a typed accounting
+failure with its known-zero receipt retained in the live scope. Recovery never
+replays provider work. This intent is in-process: killed-process reconciliation
+retains the existing conservative policy rather than a new durable refund promise.
+
 Concurrency counts operations, not provider calls: reservations made inside one
 account compute scope (a chat turn's tool loop, a council's parallel roles) share
-one slot while any of them is open. Worker jobs (titles, summaries, extraction,
+one slot while any of them is open. Rate admission likewise counts each
+server-owned foreground scope once, including model continuations and metered
+search calls after earlier reservations settle or release. That admission
+survives a rate-window rollover; a new scope counts as a new request. Unscoped
+foreground calls each count independently. Every internal call still reserves
+and settles its own cost and rechecks the other account limits.
+Worker jobs (titles, summaries, extraction,
 evaluation, consolidation) are charged to the account but take no rate or
 concurrency slot, so background work never refuses the user's next message.
 Every call of an extended run is charged to the extended-agent budget; only the

@@ -33,7 +33,9 @@ async def test_fetch_identity_survives_retries_redirects_and_repeat_fetches(
     assert strategy is not None
     start = "https://example.com/article"
     target = "https://other.example/article"
-    redirect = httpx.Response(302, headers={"location": target})
+    redirect = httpx.Response(
+        302, headers={"location": target}, request=httpx.Request("GET", start)
+    )
     success = httpx.Response(
         200,
         headers={"content-type": "text/plain"},
@@ -52,7 +54,7 @@ async def test_fetch_identity_survives_retries_redirects_and_repeat_fetches(
             ),
         ),
         patch(
-            "httpx.AsyncClient.get",
+            "httpx.AsyncClient.send",
             new=AsyncMock(
                 side_effect=[
                     httpx.ConnectError("first address unavailable"),
@@ -68,8 +70,8 @@ async def test_fetch_identity_survives_retries_redirects_and_repeat_fetches(
 
     expected = override or "Daemon (+https://github.com/sol-aeternum/Daemon)"
     assert get.await_count == 4
-    assert [call.kwargs["headers"]["User-Agent"] for call in get.await_args_list] == [expected] * 4
-    assert [call.kwargs["headers"]["Host"] for call in get.await_args_list] == [
+    assert [call.args[0].headers["User-Agent"] for call in get.await_args_list] == [expected] * 4
+    assert [call.args[0].headers["Host"] for call in get.await_args_list] == [
         "example.com",
         "example.com",
         "other.example",

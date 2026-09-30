@@ -16,10 +16,12 @@ import pytest_asyncio
 
 from orchestrator.entitlements.errors import (
     AccountSuspended,
+    BudgetExceeded,
     CapabilityDenied,
     ConcurrencyExceeded,
     ExtendedRunExceeded,
     LimitExceeded,
+    RateLimitExceeded,
     SettlementConflict,
     SubscriptionEventConflict,
 )
@@ -48,6 +50,30 @@ async def test_expected_period_guard_uses_captured_month_before_reservation(monk
     with pytest.raises(LimitExceeded, match="period changed"):
         await service.reserve(uuid.uuid4(), 1, operation="chat", expected_period="2026-09")
     reserve.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reservation_body_failure_after_insert_rolls_back_without_commit_receipt(
+    database, monkeypatch
+):
+    service = EntitlementService(database[0])
+    user = database[1]
+    await service.resolve(user)
+    monkeypatch.setattr(
+        service._store,
+        "hold_trial",
+        AsyncMock(side_effect=RuntimeError("synthetic trial body failure")),
+    )
+    with pytest.raises(RuntimeError, match="synthetic trial body failure"):
+        await service.reserve(user, 100, operation="chat", premium=True)
+    async with database[0].acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM entitlement_reservations") == 0
+        assert (
+            await conn.fetchval(
+                "SELECT trial_reserved_microusd FROM entitlement_accounts WHERE user_id=$1", user
+            )
+            == 0
+        )
 
 
 @pytest_asyncio.fixture
@@ -344,7 +370,7 @@ async def test_scope_shares_one_concurrency_slot_and_background_takes_none(datab
             user,
         )
     assert period["reserved_microusd"] == 7
-    assert period["requests_in_window"] == 2
+    assert period["requests_in_window"] == 1
     await service.settle(first, 1)
     await service.settle(second, 1)
     other = await service.reserve(user, 1, operation="chat", scope_id=uuid.uuid4())
@@ -426,6 +452,106 @@ async def test_extended_budget_binds_later_calls_of_a_run(database):
             scope_id=scope,
         )
     await service.release(first)
+
+
+@pytest.mark.asyncio
+async def test_chat_turn_rate_survives_settlement_release_and_exhausted_window(database):
+    pool, user = database
+    now = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    service = EntitlementService(pool, clock=lambda: now)
+    limit = (await service.resolve(user)).limits.requests_per_minute
+    first_scope = uuid.uuid4()
+    for turn in range(limit):
+        scope = first_scope if turn == 0 else uuid.uuid4()
+        for internal_call in range(3):
+            hold = await service.reserve(user, 1, operation="chat", scope_id=scope)
+            if internal_call == 1:
+                await service.release(hold)
+            else:
+                await service.settle(hold, 1)
+    # Even at the full window, an admitted turn can finish its answer.
+    continuation = await service.reserve(user, 1, operation="chat", scope_id=first_scope)
+    await service.settle(continuation, 1)
+    with pytest.raises(RateLimitExceeded):
+        await service.reserve(user, 1, operation="chat", scope_id=uuid.uuid4())
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM entitlement_usage_periods WHERE user_id=$1", user)
+        assert row["requests_in_window"] == limit
+        assert row["spent_microusd"] == 2 * limit + 1
+        assert row["reserved_microusd"] == 0
+
+
+@pytest.mark.asyncio
+async def test_parallel_internal_calls_share_one_rate_slot_but_keep_budget_checks(database):
+    pool, user = database
+    scope = uuid.uuid4()
+    # Independent service instances model separate workers sharing PostgreSQL.
+    services = [EntitlementService(pool) for _ in range(16)]
+    holds = await asyncio.gather(
+        *(service.reserve(user, 1, operation="chat", scope_id=scope) for service in services)
+    )
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM entitlement_usage_periods WHERE user_id=$1", user)
+        assert row["requests_in_window"] == 1
+        assert row["reserved_microusd"] == len(holds)
+    policy = await services[0].resolve(user)
+    with pytest.raises(BudgetExceeded):
+        await services[0].reserve(
+            user, policy.recurring_budget_microusd, operation="chat", scope_id=scope
+        )
+    with pytest.raises(ConcurrencyExceeded):
+        await services[0].reserve(user, 0, operation="chat", scope_id=uuid.uuid4())
+    await asyncio.gather(
+        *(service.settle(hold, 1) for service, hold in zip(services, holds, strict=True))
+    )
+
+
+@pytest.mark.asyncio
+async def test_rate_identity_ignores_background_and_does_not_share_unscoped_or_other_users(
+    database,
+):
+    pool, user = database
+    service = EntitlementService(pool)
+    scope = uuid.uuid4()
+    await service.release(
+        await service.reserve(user, 0, operation="agent", background=True, scope_id=scope)
+    )
+    await service.release(await service.reserve(user, 0, operation="chat", scope_id=scope))
+    for _ in range(2):
+        await service.release(await service.reserve(user, 0, operation="chat"))
+    other = uuid.uuid4()
+    async with pool.acquire() as conn:
+        await conn.execute("INSERT INTO users (id) VALUES ($1)", other)
+    await service.release(await service.reserve(other, 0, operation="chat", scope_id=scope))
+    async with pool.acquire() as conn:
+        assert (
+            await conn.fetchval(
+                "SELECT requests_in_window FROM entitlement_usage_periods WHERE user_id=$1", user
+            )
+            == 3
+        )
+        assert (
+            await conn.fetchval(
+                "SELECT requests_in_window FROM entitlement_usage_periods WHERE user_id=$1", other
+            )
+            == 1
+        )
+
+
+@pytest.mark.asyncio
+async def test_admitted_turn_does_not_take_a_second_rate_slot_after_window_rollover(database):
+    pool, user = database
+    clock = [datetime(2026, 9, 15, tzinfo=timezone.utc)]
+    service = EntitlementService(pool, clock=lambda: clock[0])
+    old_scope = uuid.uuid4()
+    await service.release(await service.reserve(user, 0, operation="chat", scope_id=old_scope))
+    clock[0] += timedelta(seconds=61)
+    await service.release(await service.reserve(user, 0, operation="chat", scope_id=uuid.uuid4()))
+    await service.release(await service.reserve(user, 0, operation="chat", scope_id=old_scope))
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM entitlement_usage_periods WHERE user_id=$1", user)
+        assert row["requests_in_window"] == 1
+        assert row["window_started_at"] == clock[0]
 
 
 @pytest.mark.asyncio

@@ -19,6 +19,12 @@ from orchestrator.config import ProviderConfig, Settings
 from orchestrator.guardrails import strip_reasoning_fields_from_message
 from orchestrator.tools.registry import ToolRegistry
 from orchestrator.tools.executor import ToolExecutor
+from orchestrator.tools.context_budget import (
+    OMITTED_RESULT,
+    SKIPPED_RESULT,
+    synthesis_messages,
+    tool_context_budget,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +106,24 @@ def _unwrap_tool_result(content: str) -> str:
     # see the original data, not the entity-escaped form. Whitespace/case
     # variants are normalized to the canonical tag on round-trip.
     return body.replace("&lt;/tool_result&gt;", closing)
+
+
+def _tool_result_message(tc: dict[str, Any], result: str, native: bool) -> dict[str, Any]:
+    name = tc["function"]["name"]
+    if native:
+        return {
+            "tool_call_id": tc["id"],
+            "role": "tool",
+            "name": name,
+            "content": _wrap_tool_result_untrusted(name, result),
+        }
+    return {
+        "role": "assistant",
+        "content": _wrap_tool_result_untrusted(
+            name,
+            f"Tool result available. Use it to answer the user.\ntool_name: {name}\ntool_result: {result}",
+        ),
+    }
 
 
 def _looks_like_tools_unsupported_error(err: Exception) -> bool:
@@ -348,10 +372,53 @@ async def completion_with_tools(
     dispatch = completion_dispatch or guarded_completion
     executor = ToolExecutor(registry)
     tools = registry.list_schemas() if len(registry) > 0 else None
-    current_messages = list(messages)
-
     native_tools_enabled = tools is not None
+    current_messages = list(messages)
+    fetch_tool = registry.get("web_fetch")
+    if fetch_tool is not None:
+        manifest_params = _prepare_call_params(
+            settings,
+            provider_config,
+            current_messages,
+            actual_model=actual_model,
+            tools=tools if native_tools_enabled else None,
+        )
+        manifest_budget = await tool_context_budget(manifest_params, current_messages)
+        if manifest_budget is not None:
+            manifest = await fetch_tool.execute(action="list", limit=20)
+            try:
+                manifest_data = json.loads(manifest)
+            except (ValueError, TypeError):
+                manifest_data = None
+            manifest_message = {
+                "role": "user",
+                "content": _wrap_tool_result_untrusted(
+                    "web_fetch", "Saved source references (not page contents):\n" + manifest
+                ),
+            }
+            # Keep the real user request last: retry/task classifiers inspect it.
+            user_index = next(
+                (
+                    index
+                    for index in range(len(current_messages) - 1, -1, -1)
+                    if current_messages[index].get("role") == "user"
+                ),
+                len(current_messages),
+            )
+            with_manifest = list(current_messages)
+            with_manifest.insert(user_index, manifest_message)
+            if (
+                isinstance(manifest_data, dict)
+                and manifest_data.get("sources")
+                and manifest_budget.fits(
+                    with_manifest, tools=tools if native_tools_enabled else None
+                )
+            ):
+                current_messages = with_manifest
+
     last_spawn_session_id: str | None = None
+    context_exhausted = False
+    last_context_budget = None
 
     for round_num in range(max_tool_rounds):
         call_params = _prepare_call_params(
@@ -362,6 +429,8 @@ async def completion_with_tools(
             tools if native_tools_enabled else None,
             stream=True,
         )
+        if last_context_budget is not None and last_context_budget.output_tokens > 0:
+            call_params["max_tokens"] = last_context_budget.output_tokens
 
         # Buffer for accumulating tool calls across stream chunks
         tool_calls_buffer: dict[int, dict[str, Any]] = {}
@@ -483,9 +552,29 @@ async def completion_with_tools(
                 }
             current_messages.append(assistant_msg)
 
-            for tc in tool_calls:
+            # Reserve response pairing/error overhead for every requested tool,
+            # plus a tools-disabled answer, before accepting external evidence.
+            placeholders = [
+                _tool_result_message(tc, SKIPPED_RESULT + " " * 256, native_tools_enabled)
+                for tc in tool_calls
+            ]
+            last_context_budget = await tool_context_budget(
+                call_params, [*current_messages, *placeholders]
+            )
+
+            for tool_index, tc in enumerate(tool_calls):
                 func_name = tc["function"]["name"]
                 func_args = tc["function"]["arguments"]
+                remaining_placeholders = placeholders[tool_index + 1 :]
+
+                def fits_result(candidate: str) -> bool:
+                    return last_context_budget is None or last_context_budget.fits(
+                        [
+                            *current_messages,
+                            _tool_result_message(tc, candidate, native_tools_enabled),
+                            *remaining_placeholders,
+                        ]
+                    )
 
                 if func_name in {"spawn_agent", "spawn_multiple"}:
                     try:
@@ -519,8 +608,33 @@ async def completion_with_tools(
                     "id": str(uuid.uuid4()),
                 }
 
-                # Execute tool (this is still blocking, which is fine as we need the result)
-                result = await executor.execute(func_name, func_args)
+                if not fits_result(SKIPPED_RESULT):
+                    context_exhausted = True
+                if context_exhausted:
+                    result = SKIPPED_RESULT
+                else:
+                    tool = registry.get(func_name)
+                    set_allowance = getattr(tool, "set_result_allowance", None)
+                    if callable(set_allowance):
+                        set_allowance(fits_result)
+                    try:
+                        result = await executor.execute(func_name, func_args)
+                    finally:
+                        if callable(set_allowance):
+                            set_allowance(None)
+                    if not fits_result(result):
+                        result = OMITTED_RESULT
+                        context_exhausted = True
+                    elif func_name == "web_fetch":
+                        try:
+                            parsed_budget_result = json.loads(result)
+                        except (ValueError, TypeError):
+                            parsed_budget_result = None
+                        if (
+                            isinstance(parsed_budget_result, dict)
+                            and parsed_budget_result.get("error") == "context_budget_exhausted"
+                        ):
+                            context_exhausted = True
                 if func_name in {"spawn_agent", "spawn_multiple"}:
                     try:
                         parsed_result = json.loads(result) if isinstance(result, str) else result
@@ -549,29 +663,14 @@ async def completion_with_tools(
                     "id": str(uuid.uuid4()),
                 }
 
-                if native_tools_enabled:
-                    current_messages.append(
-                        {
-                            "tool_call_id": tc["id"],
-                            "role": "tool",
-                            "name": func_name,
-                            "content": _wrap_tool_result_untrusted(func_name, result),
-                        }
-                    )
-                else:
-                    current_messages.append(
-                        {
-                            "role": "assistant",
-                            "content": _wrap_tool_result_untrusted(
-                                func_name,
-                                (
-                                    "Tool result available. Use it to answer the user.\n"
-                                    f"tool_name: {func_name}\n"
-                                    f"tool_result: {result}"
-                                ),
-                            ),
-                        }
-                    )
+                current_messages.append(_tool_result_message(tc, result, native_tools_enabled))
+            if context_exhausted or (
+                last_context_budget is not None
+                and not last_context_budget.fits(
+                    current_messages, tools=tools if native_tools_enabled else None
+                )
+            ):
+                break
             # Loop continues to next round
 
         else:
@@ -659,17 +758,7 @@ async def completion_with_tools(
             yield {"type": "done", "done": True, "id": str(uuid.uuid4())}
             return
 
-    synthesis_messages = list(current_messages)
-    synthesis_messages.append(
-        {
-            "role": "system",
-            "content": (
-                "Tool execution rounds are complete. Do not call any more tools. "
-                "Now provide the final user-facing answer using the tool results "
-                "already available in this conversation."
-            ),
-        }
-    )
+    final_messages = synthesis_messages(current_messages)
 
     synthesis_content_buffer: list[str] = []
 
@@ -677,11 +766,13 @@ async def completion_with_tools(
         synthesis_params = _prepare_call_params(
             settings,
             provider_config,
-            synthesis_messages,
+            final_messages,
             actual_model,
             tools=None,
             stream=True,
         )
+        if last_context_budget is not None and last_context_budget.output_tokens > 0:
+            synthesis_params["max_tokens"] = last_context_budget.output_tokens
 
         synthesis_stream = await guarded_completion(**synthesis_params)
         synthesis_iter = cast(AsyncIterator[Any], synthesis_stream)

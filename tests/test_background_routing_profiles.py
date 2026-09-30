@@ -530,7 +530,7 @@ def _title_store() -> Any:
         return_value={"user_id": TEST_OWNER, "title_locked": False, "summary": None}
     )
     store.get_messages = AsyncMock(return_value=[{"role": "user", "content": "hello"}])
-    store.update_conversation = AsyncMock(return_value={})
+    store.save_generated_conversation_title = AsyncMock(return_value=True)
     store.count_messages = AsyncMock(return_value=50)
     return store
 

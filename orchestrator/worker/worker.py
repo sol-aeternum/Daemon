@@ -31,6 +31,7 @@ from orchestrator.worker.jobs import (
     consolidate_memories,
     extract_memories,
     garbage_collect,
+    cleanup_web_snapshots,
     generate_conversation_title_job,
     generate_title,
     generate_summary_job,
@@ -163,6 +164,7 @@ if _worker_settings.consolidation_nudge_enabled:
 
 cron_jobs.extend(
     [
+        cron(cleanup_web_snapshots, hour=3, minute=45, keep_result=3600),
         cron(
             garbage_collect,
             hour=3,
@@ -192,6 +194,7 @@ worker = AuditedWorker(
         func(generate_conversation_title_job, max_tries=_worker_settings.retry_attempts),
         func(generate_summary_job, max_tries=_worker_settings.retry_attempts),
         func(garbage_collect, max_tries=_worker_settings.retry_attempts),
+        func(cleanup_web_snapshots, max_tries=_worker_settings.retry_attempts),
         func(cleanup_generated_files, max_tries=_worker_settings.retry_attempts),
         func(cleanup_generated_images, max_tries=_worker_settings.retry_attempts),
         func(consolidate_memories, max_tries=_worker_settings.retry_attempts),

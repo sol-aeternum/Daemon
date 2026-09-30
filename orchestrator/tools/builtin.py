@@ -246,6 +246,7 @@ def create_default_registry(
     disable_memory_write: bool = False,
     web_search_provider: str = "brave",
     tavily_api_key: str | None = None,
+    conversation_id: Any = None,
 ):
     from orchestrator.tools.registry import ToolRegistry
     from orchestrator.tools.http_request import HttpRequestTool
@@ -262,7 +263,20 @@ def create_default_registry(
     )
     if search.available():
         registry.register(search)
-    registry.register(WebFetchTool())
+    if db_pool is not None and user_id is not None and conversation_id is not None:
+        import uuid
+
+        from orchestrator.routes.web_snapshots import create_web_snapshot_store
+
+        registry.register(
+            WebFetchTool(
+                create_web_snapshot_store(db_pool),
+                uuid.UUID(str(user_id)),
+                uuid.UUID(str(conversation_id)),
+            )
+        )
+    else:
+        registry.register(WebFetchTool())
     registry.register(HttpRequestTool())
     registry.register(NotificationSendTool())
     registry.register(ReminderSetTool())

@@ -34,7 +34,8 @@ function ChatsView() {
   const sortedConversations = useMemo(() => {
     return [...conversations].sort(
       (a, b) =>
-        new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+        new Date(b.lastActivityAt || b.updatedAt).getTime() -
+        new Date(a.lastActivityAt || a.updatedAt).getTime(),
     );
   }, [conversations]);
 
@@ -295,7 +296,9 @@ function ChatsView() {
                   </p>
                   <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
                     Last message{' '}
-                    {new Date(conversation.updatedAt).toLocaleString()}
+                    {new Date(
+                      conversation.lastActivityAt || conversation.updatedAt,
+                    ).toLocaleString()}
                   </p>
                   <p className="mt-1 text-xs text-[var(--color-text-muted)]">
                     {conversation.messageCount ?? 0} messages

@@ -181,6 +181,69 @@ def test_no_qualified_route_refuses_dispatch(monkeypatch: pytest.MonkeyPatch) ->
         runtime.choose_route()
 
 
+@pytest.mark.asyncio
+async def test_tool_context_allowance_reserves_answer_and_counts_unicode_serialization(monkeypatch):
+    from orchestrator.tools.context_budget import tool_context_budget
+
+    route = _route(input_price=0)
+    _qualified_policy(monkeypatch, route=route)
+    limits = SimpleNamespace(max_context_tokens=2048, max_output_tokens=128)
+    policy = SimpleNamespace(
+        capabilities={"chat"},
+        limits=limits,
+        limits_for=lambda premium: limits,
+        remaining_for=lambda premium: 100000,
+    )
+    service = SimpleNamespace(resolve=AsyncMock(return_value=policy), reserve=AsyncMock())
+    token = runtime._scope.set(
+        runtime.ComputeScope(uuid.uuid4(), cast(EntitlementService, service), auto_route=True)
+    )
+    base = [{"role": "user", "content": "Read a source"}]
+    try:
+        budget = await tool_context_budget({"model": route.model, "messages": base}, base)
+        assert budget is not None
+        assert budget.output_tokens == 128
+        assert budget.fits([*base, {"role": "tool", "content": "x" * 2000}])
+        assert not budget.fits([*base, {"role": "tool", "content": "界" * 2000}])
+        assert not budget.fits([*base, {"role": "tool", "content": "\\" * 4000}])
+        service.reserve.assert_not_awaited()  # The allowance never admits paid work.
+    finally:
+        runtime._scope.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_tool_context_allowance_does_not_switch_to_a_larger_route_to_fit_evidence(
+    monkeypatch,
+):
+    from orchestrator.tools.context_budget import tool_context_budget
+
+    small = _route(model="openrouter/reviewed/small", input_price=1)
+    small.route_id = "small"
+    small.max_context_tokens = 1024
+    large = _route(model="openrouter/reviewed/large", input_price=10000)
+    large.route_id = "large"
+    _qualified_policy(monkeypatch, route=[small, large])
+    limits = SimpleNamespace(max_context_tokens=32000, max_output_tokens=128)
+    policy = SimpleNamespace(
+        capabilities={"chat"},
+        limits=limits,
+        limits_for=lambda premium: limits,
+        remaining_for=lambda premium: 100000,
+    )
+    service = SimpleNamespace(resolve=AsyncMock(return_value=policy))
+    token = runtime._scope.set(
+        runtime.ComputeScope(uuid.uuid4(), cast(EntitlementService, service), auto_route=True)
+    )
+    base = [{"role": "user", "content": "Read a source"}]
+    try:
+        budget = await tool_context_budget({"model": small.model, "messages": base}, base)
+        assert budget is not None and budget.route_id == "small"
+        assert budget.fits(base)
+        assert not budget.fits([*base, {"role": "tool", "content": "x" * 4000}])
+    finally:
+        runtime._scope.reset(token)
+
+
 def test_auto_routing_does_not_promote_a_premium_only_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1169,7 +1232,7 @@ async def test_background_title_job_uses_persisted_conversation_owner(
     class Store:
         get_conversation = AsyncMock(return_value={"user_id": owner, "title_locked": False})
         get_messages = AsyncMock(return_value=[{"role": "user", "content": "hello"}])
-        update_conversation = AsyncMock(return_value={})
+        save_generated_conversation_title = AsyncMock(return_value=True)
 
     @asynccontextmanager
     async def checked_scope(
@@ -1191,7 +1254,9 @@ async def test_background_title_job_uses_persisted_conversation_owner(
     result = await title_job({"store": Store(), "db_pool": pool}, conversation_id)
     assert result == {"status": "ok", "title": "Greeting"}
     generator.assert_awaited_once()
-    Store.update_conversation.assert_awaited_once_with(conversation_id, title="Greeting")
+    Store.save_generated_conversation_title.assert_awaited_once_with(
+        conversation_id, title="Greeting", expected_title=None
+    )
 
 
 @pytest.mark.asyncio
@@ -2829,3 +2894,278 @@ async def test_unaffordable_largest_route_lowers_the_group_target(
     )
     assert kwargs["model"] == modest.model
     assert kwargs["max_tokens"] == 64
+
+
+# Dispatch-aware metered tools opt into known-zero local outcomes. Legacy
+# metered tools deliberately retain conservative accounting without a mark.
+def _metered_approval(monkeypatch: pytest.MonkeyPatch) -> runtime.ToolServiceApproval:
+    approval = runtime.ToolServiceApproval(
+        service_id="test-search",
+        service="web_search",
+        provider="brave",
+        unit="call",
+        ceiling_microusd=7000,
+        fixed_microusd=5000,
+    )
+    monkeypatch.setattr(runtime, "approved_tool_service", lambda **kwargs: approval)
+    return approval
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("dispatch_aware", "phase", "expected"),
+    [
+        (False, "local", 7000),
+        (False, "confirmed", 5000),
+        (True, "local", 0),
+        (True, "dispatched", 7000),
+        (True, "confirmed", 5000),
+    ],
+)
+async def test_metered_tool_failure_accounting_depends_on_explicit_dispatch_tracking(
+    monkeypatch: pytest.MonkeyPatch, dispatch_aware: bool, phase: str, expected: int
+) -> None:
+    approval = _metered_approval(monkeypatch)
+    service = _chat_service()
+    async with _account_scope(service) as scope:
+        with pytest.raises(RuntimeError, match="local failure"):
+            async with runtime.metered_tool_call(approval, dispatch_aware=dispatch_aware) as charge:
+                if dispatch_aware and phase != "local":
+                    charge.mark_dispatched()
+                if phase == "confirmed":
+                    charge.confirm()
+                raise RuntimeError("local failure")
+        assert scope.outstanding == {}
+    service.settle.assert_awaited_once()
+    assert service.settle.await_args.args == ("pooled-hold", expected)
+
+
+@pytest.mark.asyncio
+async def test_metered_tool_dispatch_state_cannot_be_reset_or_confirmed_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _chat_service()
+    approval = _metered_approval(monkeypatch)
+    async with _account_scope(service) as scope:
+        async with runtime.metered_tool_call(approval, dispatch_aware=True) as charge:
+            hold = scope.outstanding["pooled-hold"]
+            assert hold.actual == 0
+            with pytest.raises(RuntimeError):
+                charge.confirm()
+            for name, value in [("known_not_dispatched", True), ("confirmed", True), ("units", 0)]:
+                with pytest.raises(AttributeError):
+                    setattr(charge, name, value)
+            charge.mark_dispatched()
+            assert hold.actual is None
+            assert not charge.known_not_dispatched
+            with pytest.raises(RuntimeError):
+                charge.mark_dispatched()
+            charge.confirm()
+            with pytest.raises(RuntimeError):
+                charge.mark_dispatched()
+            with pytest.raises(RuntimeError):
+                charge.confirm(units=2)
+    service.settle.assert_awaited_once_with("pooled-hold", 5000, usage={"tool_calls": 1})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("units", [0, -1, True, False, 1.5, "1", None])
+async def test_metered_tool_invalid_confirmation_cannot_restore_zero_after_dispatch(
+    monkeypatch: pytest.MonkeyPatch, units: Any
+) -> None:
+    approval = _metered_approval(monkeypatch)
+    service = _chat_service()
+    async with _account_scope(service):
+        with pytest.raises(ValueError):
+            async with runtime.metered_tool_call(approval, dispatch_aware=True) as charge:
+                charge.mark_dispatched()
+                charge.confirm(units=units)
+    service.settle.assert_awaited_once_with("pooled-hold", 7000, usage={"estimated_cost": True})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dispatched", [False, True])
+async def test_metered_tool_cancellation_before_and_after_dispatch(
+    monkeypatch: pytest.MonkeyPatch, dispatched: bool
+) -> None:
+    approval = _metered_approval(monkeypatch)
+    service = _chat_service()
+    entered = asyncio.Event()
+
+    async def call() -> None:
+        async with runtime.metered_tool_call(approval, dispatch_aware=True) as charge:
+            if dispatched:
+                charge.mark_dispatched()
+            entered.set()
+            await asyncio.Event().wait()
+
+    async with _account_scope(service) as scope:
+        task = asyncio.create_task(call())
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert scope.outstanding == {}
+    assert service.settle.await_args.args == ("pooled-hold", 7000 if dispatched else 0)
+
+
+@pytest.mark.asyncio
+async def test_metered_tool_cancel_during_committed_reservation_recovers_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    approval = _metered_approval(monkeypatch)
+    committed = asyncio.Event()
+    return_id = asyncio.Event()
+
+    async def reserve(*args: Any, **kwargs: Any) -> str:
+        committed.set()
+        await return_id.wait()
+        return "committed-hold"
+
+    service = _chat_service(reserve=AsyncMock(side_effect=reserve))
+
+    async def call() -> None:
+        async with runtime.metered_tool_call(approval, dispatch_aware=True):
+            pytest.fail("cancelled acquisition must not yield provider work")
+
+    async with _account_scope(service) as scope:
+        task = asyncio.create_task(call())
+        await asyncio.wait_for(committed.wait(), timeout=1)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()  # repeated cancellation must not cancel recovery either
+        await asyncio.sleep(0)
+        assert not task.done()
+        return_id.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=1)
+        assert scope.outstanding == {}
+        assert not scope.extended_lock.locked()
+    service.settle.assert_awaited_once_with("committed-hold", 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["resolve", "lock"])
+async def test_metered_tool_deadline_before_acquisition_reserves_nothing(
+    monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    approval = _metered_approval(monkeypatch)
+
+    async def resolve(*args: Any) -> Any:
+        await asyncio.Event().wait()
+
+    service = _chat_service()
+    if stage == "resolve":
+        service.resolve = AsyncMock(side_effect=resolve)
+    async with _account_scope(service) as scope:
+        if stage == "lock":
+            await scope.extended_lock.acquire()
+        try:
+            with pytest.raises(TimeoutError):
+                async with runtime.metered_tool_call(
+                    approval,
+                    required_capability="chat",
+                    dispatch_aware=True,
+                    work_deadline=asyncio.get_running_loop().time() + 0.03,
+                ):
+                    pytest.fail("expired work must not yield")
+        finally:
+            if stage == "lock":
+                scope.extended_lock.release()
+        assert scope.outstanding == {}
+    service.reserve.assert_not_awaited()
+    service.settle.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_metered_tool_late_reservation_settles_zero_outside_work_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    approval = _metered_approval(monkeypatch)
+
+    async def reserve(*args: Any, **kwargs: Any) -> str:
+        await asyncio.sleep(0.06)
+        return "late-hold"
+
+    service = _chat_service(reserve=AsyncMock(side_effect=reserve))
+    async with _account_scope(service) as scope:
+        with pytest.raises(TimeoutError):
+            async with runtime.metered_tool_call(
+                approval,
+                dispatch_aware=True,
+                work_deadline=asyncio.get_running_loop().time() + 0.02,
+            ):
+                pytest.fail("late reservation must not yield")
+        assert scope.outstanding == {}
+    service.settle.assert_awaited_once_with("late-hold", 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("acquisition_timeout", [False, True])
+async def test_metered_tool_failed_zero_settlement_retains_zero_and_stops(
+    monkeypatch: pytest.MonkeyPatch, acquisition_timeout: bool
+) -> None:
+    approval = _metered_approval(monkeypatch)
+
+    async def reserve(*args: Any, **kwargs: Any) -> str:
+        if acquisition_timeout:
+            await asyncio.sleep(0.04)
+        return "zero-hold"
+
+    service = _chat_service(
+        reserve=AsyncMock(side_effect=reserve),
+        settle=AsyncMock(side_effect=RuntimeError("ledger unavailable")),
+    )
+    async with _account_scope(service) as scope:
+        with pytest.raises(runtime.ComputeUnavailable) as caught:
+            async with runtime.metered_tool_call(
+                approval,
+                dispatch_aware=True,
+                work_deadline=asyncio.get_running_loop().time() + 0.02
+                if acquisition_timeout
+                else None,
+            ):
+                raise RuntimeError("local refusal")
+        assert caught.value.code == "settlement_failed"
+        assert not caught.value.retryable
+        assert scope.outstanding["zero-hold"].actual == 0
+    service.settle.assert_awaited_once_with("zero-hold", 0)
+
+
+@pytest.mark.asyncio
+async def test_legacy_metered_tool_database_timeout_keeps_sanitized_account_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    approval = _metered_approval(monkeypatch)
+    service = _chat_service(reserve=AsyncMock(side_effect=TimeoutError("private database detail")))
+    async with _account_scope(service) as scope:
+        with pytest.raises(runtime.ComputeUnavailable) as caught:
+            async with runtime.metered_tool_call(approval):
+                pytest.fail("failed reservation must not yield")
+        assert caught.value.code == "account_unavailable"
+        assert "private" not in caught.value.message
+        assert scope.outstanding == {}
+    service.settle.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_metered_tool_failed_late_reservation_has_no_hold_to_charge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    approval = _metered_approval(monkeypatch)
+
+    async def reserve(*args: Any, **kwargs: Any) -> Any:
+        await asyncio.sleep(0.04)
+        raise RuntimeError("reservation failed")
+
+    service = _chat_service(reserve=AsyncMock(side_effect=reserve))
+    async with _account_scope(service) as scope:
+        with pytest.raises(TimeoutError):
+            async with runtime.metered_tool_call(
+                approval,
+                dispatch_aware=True,
+                work_deadline=asyncio.get_running_loop().time() + 0.02,
+            ):
+                pytest.fail("late failed acquisition must not yield")
+        assert scope.outstanding == {}
+    service.settle.assert_not_awaited()

@@ -68,6 +68,7 @@ import {
   getDaemonDataEvents,
   getDaemonMessageText,
 } from '../lib/chatMessages';
+import { buildMessageCitationSources } from '../lib/messageSources';
 
 type ReasoningMessage = DaemonMessage & {
   reasoning_text?: string;
@@ -1350,6 +1351,10 @@ function ChatContent() {
                     );
                     const isPreviewVisibleForMessage =
                       isActivePreviewDocument && showPreviewPanel;
+                    const citationSources =
+                      message.role === 'assistant'
+                        ? buildMessageCitationSources(msgEvents)
+                        : [];
 
                     return (
                       <CollapsibleMessage
@@ -1452,7 +1457,10 @@ function ChatContent() {
                         !councilEventsInMessage ? (
                           <div className="w-full space-y-2">
                             <div className="w-full">
-                              <MarkdownMessage content={messageContent} />
+                              <MarkdownMessage
+                                content={messageContent}
+                                sources={citationSources}
+                              />
                             </div>
                             {stoppedMessageIds.has(message.id) && (
                               <div

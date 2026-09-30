@@ -7,6 +7,13 @@ the individual subclasses.
 
 from __future__ import annotations
 
+import uuid
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from orchestrator.entitlements.models import Reservation
+
 
 class EntitlementsError(Exception):
     """Base class for every entitlements failure."""
@@ -30,6 +37,46 @@ class AccountSuspended(AccountError):
 
 class UnknownAccount(AccountError):
     """The user has no entitlement account and none could be created."""
+
+
+@dataclass(frozen=True, slots=True)
+class ReservationReceipt:
+    """Internal receipt captured from INSERT RETURNING before commit exit.
+
+    The database, not a client, chooses the candidate identifier. This receipt
+    establishes identity and admission context, never evidence of a commit or
+    permission to dispatch. It is not accepted by any HTTP surface.
+    """
+
+    reservation: Reservation
+    user_id: uuid.UUID
+    scope_id: uuid.UUID | None
+    provider: str | None
+    model: str | None
+    route_id: str | None
+    extended_run: bool
+    background: bool
+
+    @property
+    def id(self) -> uuid.UUID:
+        return self.reservation.id
+
+
+class ReservationCommitUncertain(AccountError):
+    """Transaction/connection exit failed after a complete reservation body."""
+
+    def __init__(self, receipt: ReservationReceipt, *, interrupted: bool = False) -> None:
+        super().__init__("Account reservation commit outcome is uncertain")
+        self.receipt = receipt
+        self.interrupted = interrupted
+
+
+class ReservationRecoveryUnresolved(AccountError):
+    """Receipt lookup is unavailable or its committed row fails context binding."""
+
+    def __init__(self, receipt: ReservationReceipt) -> None:
+        super().__init__("Account reservation outcome could not be resolved")
+        self.receipt = receipt
 
 
 class AccessDenied(EntitlementsError):
@@ -246,6 +293,9 @@ __all__ = [
     "PolicyError",
     "RateLimitExceeded",
     "ReservationNotFound",
+    "ReservationCommitUncertain",
+    "ReservationReceipt",
+    "ReservationRecoveryUnresolved",
     "RouteNotApproved",
     "SettlementConflict",
     "StaleSubscriptionEvent",

@@ -3,15 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
+import zlib
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 import httpx
 
 from orchestrator.config import DEFAULT_FETCH_USER_AGENT, get_settings
-from orchestrator.services.fetch.models import FetchResult, FetchPolicy
+from orchestrator.services.fetch.bounds import max_response_bytes
+from orchestrator.services.fetch.models import (
+    FetchContentError,
+    FetchExtractionError,
+    FetchPageTooLargeError,
+    FetchPolicy,
+    FetchResult,
+)
 from orchestrator.services.fetch.pinned_http import (
     build_host_header,
     encode_idna_hostname,
@@ -90,6 +99,93 @@ def _canonicalize_hostname(hostname: str) -> str:
     if lowered.isascii():
         return lowered
     return lowered.encode("idna").decode("ascii").rstrip(".")
+
+
+# Wire-form headers that describe the *encoded* transfer, not the decoded
+# content. They are stripped when a bounded body is re-materialized so the
+# rebuilt response cannot attempt a second gzip/brotli decode (the body it
+# carries is already decoded bytes).
+_TRANSFER_ONLY_HEADERS = frozenset({"content-encoding", "content-length", "transfer-encoding"})
+
+
+def _materialize_response(response: httpx.Response, body: bytes) -> httpx.Response:
+    """Rebuild a fully-buffered response from a bounded decoded body.
+
+    ``body`` is the bounded decoded stream produced by ``_read_bounded_body``. The
+    transfer headers are stripped so downstream ``.text`` decoding sees
+    plain bytes exactly once — no double gzip decode — while the logical
+    content-type header is preserved for policy checks.
+    """
+    headers = [
+        (name, value)
+        for name, value in response.headers.multi_items()
+        if name.lower() not in _TRANSFER_ONLY_HEADERS
+    ]
+    return httpx.Response(
+        response.status_code,
+        headers=headers,
+        content=body,
+        request=response.request,
+    )
+
+
+async def _read_bounded_body(response: httpx.Response, *, deadline_at: float) -> bytes:
+    """Consume a streamed response body under decoded-size and deadline bounds.
+
+    Raw chunks are decoded with an output-limited gzip/deflate decompressor.
+    Identity responses pass through; unsupported encodings are rejected rather
+    than decoded without an allocation bound. Exceeding the configured
+    decoded response cap raises ``FetchPageTooLargeError`` before the
+    whole body is buffered; the shared per-fetch ``deadline_at`` bounds
+    every chunk wait so a slow-drip body cannot outlive the budget.
+
+    The response is closed on every exit path — success, oversize,
+    deadline, cancellation, or iterator failure — so an aborted download
+    never leaves a connection open.
+    """
+    max_bytes = max_response_bytes()
+    buffer = bytearray()
+    try:
+        # httpx's decoded iterator can allocate an entire decompression bomb
+        # before yielding. Bound decompressor output itself, not only our buffer.
+        encoding = response.headers.get("content-encoding", "identity").strip().lower()
+        buffered = response.is_stream_consumed
+        if buffered:
+            aiter = response.aiter_bytes()  # Already-decoded test/buffered response.
+            decoder = None
+        else:
+            if encoding not in {"", "identity", "gzip", "deflate"}:
+                raise FetchExtractionError()
+            decoder = (
+                zlib.decompressobj(31 if encoding == "gzip" else 15)
+                if encoding in {"gzip", "deflate"}
+                else None
+            )
+            aiter = response.aiter_raw()
+        while True:
+            remaining = deadline_at - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("bounded body deadline exhausted")
+            try:
+                chunk = await asyncio.wait_for(anext(aiter), timeout=remaining)
+            except StopAsyncIteration:
+                break
+            if not chunk:
+                continue
+            if decoder is not None:
+                chunk = decoder.decompress(chunk, max_bytes - len(buffer) + 1)
+            if len(buffer) + len(chunk) > max_bytes:
+                raise FetchPageTooLargeError()
+            buffer.extend(chunk)
+            if decoder is not None and (decoder.unconsumed_tail or decoder.unused_data):
+                # Never silently discard extra members or an unread suffix.
+                raise FetchPageTooLargeError()
+        if decoder is not None and not decoder.eof:
+            raise FetchExtractionError()
+        return bytes(buffer)
+    finally:
+        with contextlib.suppress(Exception):
+            await response.aclose()
 
 
 def _build_cookie_header(jar: httpx.Cookies, logical_url: str) -> str | None:
@@ -346,9 +442,16 @@ class DirectFetchStrategy:
                 cached=False,
                 fetch_time_ms=0.0,  # Will be populated by caller
                 content_length=len(content),
+                # Provenance: the validated request URL and the final
+                # logical redirect target (never the pinned transport IP).
+                source_url=url,
+                final_url=current_url,
+                content_type=content_type or None,
             )
 
         except SsrfViolation:
+            raise
+        except FetchContentError:
             raise
         except Exception as e:
             logger.warning(f"Direct fetch failed for {url}: {e}")
@@ -371,6 +474,17 @@ class DirectFetchStrategy:
         fails to produce a response. Network-level errors against an address
         are logged at debug and the next address is tried; non-network errors
         are propagated.
+
+        The request is sent with ``stream=True``. Redirect responses are
+        returned with their bodies never consumed (closed immediately, no
+        drain). Final responses are returned as fully-buffered responses
+        whose decoded body was read under the shared deadline and the
+        configured decoded-size cap — an oversized body raises
+        ``FetchPageTooLargeError`` with the connection closed, and the
+        rebuilt response carries the *decoded* bytes with wire-transfer
+        headers stripped so no second decompression can occur.
+        Oversize is a property of the resource, so it is not retried
+        against further addresses.
 
         A fresh ``httpx.AsyncClient`` is used per address so the pinned-IP
         connection pool is never reused across distinct addresses (which would
@@ -411,10 +525,11 @@ class DirectFetchStrategy:
             # Per-attempt httpx timeout bounds inactivity for individual
             # network operations (connect, read, write). The wall-clock
             # ``asyncio.wait_for`` below is what actually bounds the
-            # entire ``client.get()`` against the shared deadline — a
-            # slow-drip server could otherwise send a byte every few
-            # seconds and keep ``client.get()`` alive indefinitely
-            # without ever tripping the inactivity timeout.
+            # entire request against the shared deadline — a slow-drip
+            # server could otherwise send a byte every few seconds and
+            # keep the exchange alive indefinitely without ever tripping
+            # the inactivity timeout. The same shared deadline continues
+            # to bound every body chunk after the headers arrive.
             attempt_timeout = min(_PER_ADDRESS_TIMEOUT_SECONDS, remaining)
             try:
                 client_kwargs: dict[str, Any] = {
@@ -445,6 +560,7 @@ class DirectFetchStrategy:
                 request_headers: dict[str, str] = {
                     "User-Agent": user_agent,
                     "Host": host_header,
+                    "Accept-Encoding": "identity, gzip, deflate",
                 }
                 if cookies is not None:
                     cookie_header = _build_cookie_header(cookies, current_url)
@@ -457,12 +573,21 @@ class DirectFetchStrategy:
                         if value:
                             request_headers["Cookie"] = value
                 async with httpx.AsyncClient(**client_kwargs) as client:
+                    # The request is built explicitly and sent with
+                    # ``stream=True`` so the *response body* is never
+                    # downloaded eagerly: it is consumed by
+                    # ``_read_bounded_body`` under the decoded-size and
+                    # shared-deadline bounds while the connection is
+                    # still open. ``follow_redirects=False`` (client
+                    # kwarg) preserves the manual redirect loop.
+                    request = client.build_request(
+                        "GET",
+                        pin_url_to_address(current_url, address),
+                        headers=request_headers,
+                        extensions={"sni_hostname": sni_hostname},
+                    )
                     response = await asyncio.wait_for(
-                        client.get(
-                            pin_url_to_address(current_url, address),
-                            headers=request_headers,
-                            extensions={"sni_hostname": sni_hostname},
-                        ),
+                        client.send(request, stream=True),
                         timeout=remaining,
                     )
                     if cookies is not None:
@@ -470,7 +595,21 @@ class DirectFetchStrategy:
                         # the logical hostname before mirroring them
                         # into the shared jar.
                         _extract_cookies_for_logical_url(cookies, response, current_url)
-                return response
+                    if response.status_code in _REDIRECT_STATUSES:
+                        # Redirect bodies are never consumed: close the
+                        # connection immediately (no drain, no bounded
+                        # read) so a hostile redirect body cannot be
+                        # buffered. Headers remain readable afterwards.
+                        with contextlib.suppress(Exception):
+                            await response.aclose()
+                        return response
+                    # Final response: read the decoded body under the
+                    # shared deadline and the decoded-size cap. Oversize
+                    # raises ``FetchPageTooLargeError`` (bounded error
+                    # result path) with the connection already closed by
+                    # ``_read_bounded_body``'s finally clause.
+                    body = await _read_bounded_body(response, deadline_at=deadline_at)
+                    return _materialize_response(response, body)
             except (httpx.RequestError, asyncio.TimeoutError) as exc:
                 last_error = exc
                 logger.debug("Direct fetch address %s for %s failed: %s", address, current_url, exc)

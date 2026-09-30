@@ -62,6 +62,35 @@ class MemoryStore:
         self._pool = db_pool
         self._enc = encryption
 
+    def _encrypt_tool_trace(self, trace: list[Any]) -> str:
+        return json.dumps(
+            {
+                "format": "daemon.encrypted_tool_trace",
+                "version": 1,
+                "ciphertext": self._enc.encrypt(json.dumps(trace)),
+            }
+        )
+
+    def _decrypt_tool_trace(self, value: Any) -> list[Any]:
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (ValueError, TypeError):
+                return []  # Preserve normalization of malformed legacy JSON.
+        if isinstance(value, dict) and value.get("format") == "daemon.encrypted_tool_trace":
+            if value.get("version") != 1 or not isinstance(value.get("ciphertext"), str):
+                raise ValueError("Invalid encrypted tool trace envelope")
+            # Never treat a corrupt/unsupported encrypted trace as legacy plaintext.
+            value = json.loads(self._enc.decrypt(value["ciphertext"]))
+            if not isinstance(value, list):
+                raise ValueError("Invalid encrypted tool trace payload")
+        return value if isinstance(value, list) else []
+
+    def _decrypt_message_tool_traces(self, message: dict[str, Any]) -> None:
+        for field in ("tool_calls", "tool_results"):
+            if field in message:
+                message[field] = self._decrypt_tool_trace(message[field])
+
     def _decrypt_advisor_traces(self, value: Any) -> Any:
         if value is None:
             return None
@@ -156,6 +185,28 @@ class MemoryStore:
     # Conversation operations
     # ------------------------------------------------------------------
 
+    # Listing metadata is authoritative from saved messages: legacy rows may
+    # carry stale cached counters (message_count=0 with real messages) and
+    # there is no data backfill, so the list/get paths derive them from
+    # actual message rows at read time. ``messages`` has no ``updated_at``
+    # column, so the latest message time is ``MAX(created_at)``; a newer
+    # stored ``updated_at`` (rename/pin/summary bookkeeping) wins so manual
+    # edits still surface as recent activity. COUNT covers every saved
+    # role/status exactly like ``count_messages``, and ``m.user_id =
+    # c.user_id`` keeps foreign-owner rows out of the aggregate.
+    _CONVERSATION_LISTING_METADATA_JOIN = """
+            LEFT JOIN LATERAL (
+                SELECT COUNT(*) AS actual_message_count,
+                       GREATEST(MAX(m.created_at),
+                                COALESCE(c.last_activity_at, c.updated_at),
+                                c.updated_at)
+                           AS effective_last_activity_at
+                FROM messages m
+                WHERE m.conversation_id = c.id
+                  AND m.user_id = c.user_id
+            ) listing_meta ON true
+"""
+
     async def create_conversation(
         self,
         user_id: uuid.UUID,
@@ -176,10 +227,31 @@ class MemoryStore:
 
     async def get_conversation(self, conversation_id: uuid.UUID) -> dict[str, Any] | None:
         row = await self._pool.fetchrow(
-            "SELECT * FROM conversations WHERE id = $1",
+            f"""
+            SELECT c.*,
+                   listing_meta.actual_message_count,
+                   listing_meta.effective_last_activity_at
+            FROM conversations c
+            {MemoryStore._CONVERSATION_LISTING_METADATA_JOIN}
+            WHERE c.id = $1
+            """,
             conversation_id,
         )
-        return dict(row) if row else None
+        return self._conversation_listing_row(row) if row else None
+
+    @staticmethod
+    def _conversation_listing_row(row: Any) -> dict[str, Any]:
+        """Map one listing row to the conversation shape with derived metadata.
+
+        The derived columns are aliased uniquely (never duplicating a ``c.*``
+        key) and then explicitly overwrite the stored ``message_count`` /
+        ``last_activity_at`` cache fields, so callers keep the exact
+        historical response shape with authoritative values.
+        """
+        conversation = dict(row)
+        conversation["message_count"] = conversation.pop("actual_message_count")
+        conversation["last_activity_at"] = conversation.pop("effective_last_activity_at")
+        return conversation
 
     async def get_completed_council_session(
         self,
@@ -222,11 +294,16 @@ class MemoryStore:
         if search and search.strip():
             pattern = f"%{search.strip()}%"
             rows = await self._pool.fetch(
-                """
-                SELECT * FROM conversations
-                WHERE user_id = $1
-                  AND COALESCE(title, '') ILIKE $2
-                ORDER BY pinned DESC, updated_at DESC
+                f"""
+                SELECT c.*,
+                       listing_meta.actual_message_count,
+                       listing_meta.effective_last_activity_at
+                FROM conversations c
+                {MemoryStore._CONVERSATION_LISTING_METADATA_JOIN}
+                WHERE c.user_id = $1
+                  AND COALESCE(c.title, '') ILIKE $2
+                ORDER BY c.pinned DESC,
+                         listing_meta.effective_last_activity_at DESC
                 LIMIT $3 OFFSET $4
                 """,
                 user_id,
@@ -236,17 +313,22 @@ class MemoryStore:
             )
         else:
             rows = await self._pool.fetch(
-                """
-                SELECT * FROM conversations
-                WHERE user_id = $1
-                ORDER BY pinned DESC, updated_at DESC
+                f"""
+                SELECT c.*,
+                       listing_meta.actual_message_count,
+                       listing_meta.effective_last_activity_at
+                FROM conversations c
+                {MemoryStore._CONVERSATION_LISTING_METADATA_JOIN}
+                WHERE c.user_id = $1
+                ORDER BY c.pinned DESC,
+                         listing_meta.effective_last_activity_at DESC
                 LIMIT $2 OFFSET $3
                 """,
                 user_id,
                 limit,
                 offset,
             )
-        return [dict(r) for r in rows]
+        return [self._conversation_listing_row(r) for r in rows]
 
     async def update_conversation(
         self,
@@ -297,6 +379,31 @@ class MemoryStore:
             else None,
         )
         return dict(row) if row else None
+
+    async def save_generated_conversation_title(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        title: str,
+        expected_title: str | None,
+    ) -> bool:
+        """Save a generated title only if the read-time title is still editable."""
+        row = await self._pool.fetchrow(
+            """
+            UPDATE conversations
+            SET title = $2,
+                updated_at = NOW(),
+                last_activity_at = NOW()
+            WHERE id = $1
+              AND title IS NOT DISTINCT FROM $3
+              AND NOT COALESCE(title_locked, FALSE)
+            RETURNING id
+            """,
+            conversation_id,
+            title,
+            expected_title,
+        )
+        return row is not None
 
     async def delete_conversation(self, conversation_id: uuid.UUID) -> bool:
         result = await self._pool.execute(
@@ -377,8 +484,8 @@ class MemoryStore:
             model,
             tokens_in,
             tokens_out,
-            json.dumps(tool_calls or []),
-            json.dumps(tool_results or []),
+            self._encrypt_tool_trace(tool_calls or []),
+            self._encrypt_tool_trace(tool_results or []),
             status,
             json.dumps(metadata or {}),
             encrypted_reasoning_text,
@@ -392,6 +499,7 @@ class MemoryStore:
             result["reasoning_text"] = self._enc.decrypt(result["reasoning_text"])
         if result.get("advisor_traces") is not None:
             result["advisor_traces"] = self._decrypt_advisor_traces(result["advisor_traces"])
+        self._decrypt_message_tool_traces(result)
         return result
 
     async def get_messages(
@@ -441,6 +549,7 @@ class MemoryStore:
                 d["reasoning_text"] = self._enc.decrypt(d["reasoning_text"])
             if d.get("advisor_traces") is not None:
                 d["advisor_traces"] = self._decrypt_advisor_traces(d["advisor_traces"])
+            self._decrypt_message_tool_traces(d)
             results.append(_normalize_message(d))
         return results
 
@@ -501,6 +610,8 @@ class MemoryStore:
             status = message.get("status")
             if status in EXTRACTION_SKIPPED_TERMINAL_STATUSES:
                 message["content"] = ""
+                message["tool_calls"] = []
+                message["tool_results"] = []
                 message["_extraction_skip"] = True
                 results.append(_normalize_message(message))
                 continue
@@ -511,6 +622,7 @@ class MemoryStore:
                 message["reasoning_text"] = self._enc.decrypt(message["reasoning_text"])
             if message.get("advisor_traces") is not None:
                 message["advisor_traces"] = self._decrypt_advisor_traces(message["advisor_traces"])
+            self._decrypt_message_tool_traces(message)
             results.append(_normalize_message(message))
         return results
 
@@ -633,6 +745,7 @@ class MemoryStore:
                 message["reasoning_text"] = self._enc.decrypt(message["reasoning_text"])
             if message.get("advisor_traces") is not None:
                 message["advisor_traces"] = self._decrypt_advisor_traces(message["advisor_traces"])
+            self._decrypt_message_tool_traces(message)
             results.append(_normalize_message(message))
         return results
 
@@ -850,8 +963,10 @@ class MemoryStore:
     ) -> dict[str, Any] | None:
         encrypted_content = self._enc.encrypt(content) if content is not None else None
         metadata_json = json.dumps(metadata) if metadata is not None else None
-        tool_calls_json = json.dumps(tool_calls) if tool_calls is not None else None
-        tool_results_json = json.dumps(tool_results) if tool_results is not None else None
+        tool_calls_json = self._encrypt_tool_trace(tool_calls) if tool_calls is not None else None
+        tool_results_json = (
+            self._encrypt_tool_trace(tool_results) if tool_results is not None else None
+        )
         encrypted_reasoning_text = (
             self._enc.encrypt(reasoning_text) if reasoning_text is not None else None
         )
@@ -894,6 +1009,7 @@ class MemoryStore:
             result["reasoning_text"] = self._enc.decrypt(result["reasoning_text"])
         if result.get("advisor_traces") is not None:
             result["advisor_traces"] = self._decrypt_advisor_traces(result["advisor_traces"])
+        self._decrypt_message_tool_traces(result)
         return result
 
     async def get_recent_messages(
@@ -925,6 +1041,7 @@ class MemoryStore:
                 d["reasoning_text"] = self._enc.decrypt(d["reasoning_text"])
             if d.get("advisor_traces") is not None:
                 d["advisor_traces"] = self._decrypt_advisor_traces(d["advisor_traces"])
+            self._decrypt_message_tool_traces(d)
             results.append(_normalize_message(d))
         return results
 
