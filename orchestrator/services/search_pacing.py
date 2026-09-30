@@ -318,8 +318,10 @@ class _RateEvidence:
 def _scope_prefix(namespace: str, provider: str, credential: str) -> str:
     """An opaque, per-credential scope prefix: provider plus a credential digest.
 
-    The digest is a plain SHA-256 of the credential — high entropy, never
-    reversible, and no credential, query or URL fragment ever enters a key.
+    This is a deterministic namespace fingerprint of a provider-issued API key,
+    not a password verifier. An observer could test guessed credentials against
+    it; it does not add entropy or protect low-entropy passwords. No raw
+    credential, query or URL fragment enters the Redis key.
     """
     digest = hashlib.sha256(credential.encode("utf-8")).hexdigest()[:_DIGEST_HEX_CHARS]
     return f"{namespace}:{provider}:{digest}"

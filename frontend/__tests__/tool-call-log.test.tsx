@@ -1,9 +1,16 @@
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { ensureAuthHeader } from '../lib/auth';
 
 import { ToolCallLog } from '../components/ToolCallBlock';
 import type { ChatEvent } from '../lib/events';
+
+vi.mock('../lib/auth', () => ({
+  ensureAuthHeader: vi
+    .fn()
+    .mockRejectedValue(new Error('Auth refresh unavailable')),
+}));
 
 function assistantToolEvents(
   overrides: Partial<Record<number, ChatEvent | null>> = {},
@@ -207,7 +214,7 @@ describe('ToolCallLog grouped activity', () => {
     expect(screen.queryByText('get_time')).toBeNull();
   });
 
-  it('expands spawn artifacts with media behavior retained', () => {
+  it('retains image artifacts and handles a rejected auth refresh', async () => {
     const events: ChatEvent[] = [
       {
         type: 'tool_call',
@@ -228,6 +235,8 @@ describe('ToolCallLog grouped activity', () => {
     render(React.createElement(ToolCallLog, { events }));
     fireEvent.click(screen.getByRole('button', { name: /tool/i }));
     expect(screen.getByText('Image created')).toBeTruthy();
+    expect(await screen.findByText('Failed to load image')).toBeTruthy();
+    expect(ensureAuthHeader).toHaveBeenCalled();
   });
 
   it('reveals all spawn attempts inside expanded group', () => {

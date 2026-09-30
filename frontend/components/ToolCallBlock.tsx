@@ -130,11 +130,11 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
 
     async function loadBlob() {
       if (!imagePath) return;
-      const authHeader = await ensureAuthHeader();
-      const headers: HeadersInit = {};
-      if (authHeader) headers['Authorization'] = authHeader;
-
       try {
+        const authHeader = await ensureAuthHeader();
+        if (revoked) return;
+        const headers: HeadersInit = {};
+        if (authHeader) headers['Authorization'] = authHeader;
         const res = await fetch(imagePath as string, {
           headers,
           signal: controller.signal,
