@@ -198,22 +198,55 @@ does not establish that dropping mandatory continuation metadata is safe.
 Readable reasoning summaries appeared on later final-answer streams. No
 production metadata-preservation fix is included in this evaluation.
 
-## Decision and remaining acceptance
+## Initial recommendation and subsequent operator decision
 
-**Retain Sol 6 for now.** Sol 6.1 completed the bounded mechanical/protocol screens
+The initial recommendation was **retain Sol 6 pending human review**. Sol 6.1 completed the bounded mechanical/protocol screens
 but was slower and more expensive in this sample; no human-reviewed quality
-advantage or semantic non-regression has yet been established. Production routing,
-council roster and deployment qualification remain unchanged, with no upgrade PR
-or deployment performed. No additional paid testing is needed under this scope.
+advantage or semantic non-regression has yet been established. At the end of the
+evaluation, routing, roster and serving qualification were unchanged.
+
+The operator subsequently directed **“swap in sol 6.1 high, deploy locally and
+create pr.”** This explicitly authorizes the replacement and local rollout despite
+pending human verdicts. Default, reasoning and council now select high effort for
+Sol 6.1; the prior Sol reasoning preset was xhigh. Deployment uses the same Azure
+EU route, native limits, long-prompt prices and existing 6 October expiry, documented
+in [INFERENCE_ROUTE_APPROVALS.md](INFERENCE_ROUTE_APPROVALS.md#sol-61-replacement--30-september-2026).
+No further paid evaluation or fabricated human acceptance is implied.
+
+### Local rollout verification — 30 September 2026
+
+The three runtime configuration files were applied surgically to the local
+`/home/sol/daemon` checkout at source commit `ec979d0498367d051194129cb68c26aa5a2ea05b`.
+That commit contains the operator's separate accounting/search/UI work; this
+rollout is a configuration overlay, not deployment of the entire evaluation PR.
+Existing unrelated modifications were preserved, and the prior three files were
+backed up for rollback.
+
+Backend and worker were restarted at **05:31:25 / 05:31:26 UTC**. Read-only checks
+inside both containers confirmed `sol-azure-eu` resolves Sol 6.1, default/reasoning/
+council presets all use high, council strategist is Sol 6.1, `none` is unsupported,
+the old Sol ID is denied, and the exact provider pin, native limits and October6
+expiry remain intact. Both services' configuration hashes match the reviewed
+worktree. The actual backend `/v1/models` lists Sol 6.1 and omits Sol 6; `/health`
+reports PostgreSQL/Redis healthy, and the frontend responds HTTP 200. No additional
+paid smoke inference was dispatched. Evidence and rollback copies are private in
+`/home/sol/.local/state/daemon-evaluations/sol61-deploy-20260930/`.
+
+Final integration gates passed: **3808 backend tests**, 7 skipped and 14 existing
+warnings; **317 frontend tests** plus locked install, type, lint, format, audit and
+build; all backend blocking lint/type/security/audit gates; feature-matrix/doc
+freshness/pre-commit/secret scanning. The initial full run exposed an old follow-up
+test coupled to today's production catalog; its fixture now declares the historical
+candidates explicitly, preserving their identity and the preset-isolation guard.
+Fresh read-only deployment review found no remaining material configuration blocker.
 
 Human review is the remaining acceptance step. The generated packet contains all
 92 opaque-labeled answers with prompts, expected criteria, tool steps and pending
 verdict fields. Keep the model-label map separate until verdicts are recorded.
-In particular, each model/setting must independently satisfy the 15/16 regression
-floor, hard-violation and wrong-ID criteria before integration can be considered.
+The original semantic screen remains unadjudicated: 15/16 acceptable regression
+answers per model/setting, zero hard violations and zero wrong-ID fetches.
+The operator rollout decision does not turn those pending rows into passes.
 Cost per acceptable answer and semantic paired regressions remain uncomputed.
-Any later serving qualification must explicitly address its deployment limits,
-price tiers and expiry rather than copying this evaluation-only approval.
 
 ### Durable artifacts
 

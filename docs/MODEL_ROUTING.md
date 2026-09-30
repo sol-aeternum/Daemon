@@ -26,6 +26,19 @@ not certify account privacy settings or endpoint hosting location.
 
 Routing profiles: `routine`, `reasoning`, `research`, `background`, `council`.
 
+### Operator-selected Sol 6.1 high — 30 September 2026
+
+The operator selected `openrouter/openai/gpt-6.1-sol` to replace the prior Sol
+candidate and council strategist after the bounded comparison in
+[SOL_UPGRADE_EVALUATION.md](SOL_UPGRADE_EVALUATION.md). Default, reasoning and
+council presets use **high**, including replacement of the former reasoning
+`xhigh` preset. Sol 6.1 requires reasoning, so its declaration omits `none`.
+This is an explicit rollout decision; human semantic verdicts remain pending and
+no measured quality superiority is claimed. The same Azure EU deployment route
+retains its limits, price ceilings, privacy controls and 6 October expiry; see
+[INFERENCE_ROUTE_APPROVALS.md](INFERENCE_ROUTE_APPROVALS.md#sol-61-replacement--30-september-2026).
+Routine/background/research remain Luna-only for automatic selection.
+
 ### Approved Luna-first configuration — 28 September 2026
 
 The user approved a Luna-only automatic candidate group for `routine`,

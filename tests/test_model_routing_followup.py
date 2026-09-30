@@ -123,7 +123,15 @@ def test_request_effort_is_omitted_by_default_and_explicit_presets(
 def test_active_preset_is_rejected_and_isolated_catalog_has_empty_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    source = json.loads(follow.model_routing.DEFAULT_MODEL_ROUTING.read_text())
+    from test_compute_runtime import routing_document
+
+    # This historical experiment keeps its old exact candidates. Its isolation
+    # contract must not depend on which models today's deployment still lists.
+    source = routing_document([candidate.model for candidate in follow.CANDIDATES])
+    active_path = tmp_path / "active.json"
+    active_path.write_text(json.dumps(source))
+    monkeypatch.setenv("DAEMON_MODEL_ROUTING", str(active_path))
+    get_settings.cache_clear()
     models = {candidate.model for candidate in follow.CANDIDATES}
     assert all(follow.model_routing.model_parameter_presets(model, "routine") for model in models)
     routes = {

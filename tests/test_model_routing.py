@@ -25,7 +25,7 @@ GLM = "openrouter/z-ai/glm-5.3"
 DEEPSEEK = "openrouter/deepseek/deepseek-v4.1-flash"
 GOOGLE = "openrouter/google/gemini-3.8-flash"
 LUNA = "openrouter/openai/gpt-6-luna"
-SOL = "openrouter/openai/gpt-6-sol"
+SOL = "openrouter/openai/gpt-6.1-sol"
 SONNET = "openrouter/anthropic/claude-sonnet-5"
 OPUS = "openrouter/anthropic/claude-opus-5.5"
 ASTRA = "openrouter/openai/gpt-6-astra"
@@ -292,6 +292,27 @@ async def test_manual_pin_outside_the_luna_shortlist_stays_exact(
     # Luna was qualified, cheaper and the profile's only accepted candidate, and
     # still was not dispatched for a pinned request.
     provider.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", ["routine", "reasoning", "council"])
+async def test_operator_sol61_replacement_dispatches_high_in_every_used_profile(
+    monkeypatch: pytest.MonkeyPatch, profile: str
+) -> None:
+    sol = named_route(SOL, premium=True)
+    with dispatch_fixture(monkeypatch, [sol], auto_route=False) as (service, provider, _):
+        with model_routing.routing_context(profile):
+            await runtime.guarded_completion(
+                model=SOL, messages=[{"role": "user", "content": "synthetic routing check"}]
+            )
+        sent = last_kwargs(provider)
+        assert sent["model"] == SOL
+        assert sent["reasoning_effort"] == "high"
+        if profile == "council":
+            assert sent["include_reasoning"] is True
+        assert service.reserve.await_args.kwargs["model"] == SOL
+    assert not model_routing.supports_reasoning_effort(SOL, "none")
+    assert PRODUCTION_ROUTING.model("openrouter/openai/gpt-6-sol") is None
 
 
 @pytest.mark.asyncio

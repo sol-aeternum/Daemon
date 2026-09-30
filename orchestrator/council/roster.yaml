@@ -24,7 +24,7 @@ roles:
 
   strategist:
     description: "Plans long-term approaches, considers strategic implications"
-    model_id: "openrouter/openai/gpt-6-sol"
+    model_id: "openrouter/openai/gpt-6.1-sol"
     timeout_s: 90
     seat: 2
 
