@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "experiment": "sol-6-to-6-1-20260930",
+  "period": "2026-09",
+  "fixtures": {
+    "path": "tests/fixtures/model_routing_followup.json",
+    "sha256": "dac5ba663539fdafa2ed350b9c9253e98e5bb46fa1f6987efbc32ae30d0bd4fe"
+  },
+  "candidates": [
+    {"label": "sol6", "model": "openrouter/openai/gpt-6-sol", "route_id": "upgrade-sol6-azure-eu", "provider_pin": "azure/eu"},
+    {"label": "sol61", "model": "openrouter/openai/gpt-6.1-sol", "route_id": "upgrade-sol61-azure-eu", "provider_pin": "azure/eu"}
+  ],
+  "conditions": [
+    {"label": "high", "effort": "high", "case_ids": ["D01", "D02", "D03", "D04", "D05", "D06", "H01", "H02", "H03", "H04", "H05", "H06", "H07", "H08"], "repeats": 2},
+    {"label": "xhigh", "effort": "xhigh", "case_ids": ["H01", "H02", "H03", "H04", "H05", "H06", "H07", "H08"], "repeats": 2}
+  ],
+  "bounds": {
+    "max_context_tokens": 16000,
+    "max_output_tokens": 4096,
+    "max_calls_per_attempt": 3,
+    "attempt_deadline_seconds": 90,
+    "incremental_cap_microusd": 22000000,
+    "aggregate_cap_microusd": 25000000
+  },
+  "probes": [
+    {"candidate_label": "sol6", "effort": "high", "case_id": "D05", "max_calls": 2},
+    {"candidate_label": "sol61", "effort": "high", "case_id": "D05", "max_calls": 2},
+    {"candidate_label": "sol6", "effort": "xhigh", "case_id": "D05", "max_calls": 2},
+    {"candidate_label": "sol61", "effort": "xhigh", "case_id": "D05", "max_calls": 2}
+  ],
+  "screening": {
+    "regression_case_ids": ["H01", "H02", "H03", "H04", "H05", "H06", "H07", "H08"],
+    "minimum_acceptable_answers": 15,
+    "hard_violations_allowed": 0,
+    "wrong_identifier_fetches_allowed": 0,
+    "latency_screens_seconds": {"utility": 10, "orchestration": 30, "synthesis": 60}
+  }
+}
