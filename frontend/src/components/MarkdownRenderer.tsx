@@ -4,11 +4,44 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { InlineArtifact } from '../../components/chat/InlineArtifact';
+import { canonicalUrlKey } from '../../lib/toolActivity';
+import type { ToolSource } from '../../lib/toolActivity';
 
 interface MarkdownRendererProps {
   content: string;
   compact?: boolean;
   className?: string;
+  /**
+   * Sources returned by tool calls in this message's event stream. Markdown
+   * links that land on one of these URLs render as inline citation pills;
+   * every other link stays a plain link. Nothing is invented — only links
+   * the answer already contains that match returned sources are restyled,
+   * so sentence attribution is never fabricated.
+   */
+  sources?: ToolSource[];
+}
+
+function CitationPill({
+  href,
+  domain,
+  children,
+}: {
+  href: string;
+  domain: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="mx-0.5 inline-flex max-w-full items-center rounded-full border border-[var(--color-border-primary)] bg-[var(--color-bg-tertiary)] px-2 py-1 text-xs text-[var(--color-text-muted)] align-baseline transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-secondary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)]"
+      title={href}
+    >
+      <span className="max-w-48 truncate">{domain}</span>
+      {children ? <span className="sr-only"> — {children}</span> : null}
+    </a>
+  );
 }
 
 const getClassNameValue = (value: unknown): string => {
@@ -58,7 +91,25 @@ export default function MarkdownRenderer({
   content,
   compact = false,
   className = '',
+  sources,
 }: MarkdownRendererProps) {
+  // Host lowercase; path/query compared verbatim (case-sensitive), hash
+  // ignored on both sides per canonicalUrlKey.
+  const sourceByUrl = (() => {
+    const map = new Map<string, ToolSource>();
+    for (const source of sources || []) {
+      const key = canonicalUrlKey(source.url);
+      if (key && !map.has(key)) map.set(key, source);
+    }
+    return map;
+  })();
+
+  const findSource = (href: string | undefined): ToolSource | null => {
+    if (!href) return null;
+    const key = canonicalUrlKey(href);
+    return key ? (sourceByUrl.get(key) ?? null) : null;
+  };
+
   // Base prose classes - compact uses prose-sm, full uses standard prose
   const proseClasses = compact
     ? 'prose prose-sm max-w-none'
@@ -84,9 +135,27 @@ export default function MarkdownRenderer({
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}
         components={{
-          a: ({ node, ...props }) => (
-            <a {...props} target="_blank" rel="noopener noreferrer" />
-          ),
+          a: ({ node, href, children, ...props }) => {
+            void node;
+            const matched = findSource(href);
+            if (matched) {
+              return (
+                <CitationPill href={href!} domain={matched.domain}>
+                  {children}
+                </CitationPill>
+              );
+            }
+            return (
+              <a
+                {...props}
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {children}
+              </a>
+            );
+          },
           code: ({ node, className, children, ...props }) => {
             const match = /language-(\w+)/.exec(className || '');
             const isInline = !match && !className;

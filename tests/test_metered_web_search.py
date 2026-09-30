@@ -10,6 +10,7 @@ import asyncio
 import copy
 import inspect
 import json
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -31,6 +32,12 @@ from orchestrator.entitlements.errors import (
     UnknownOperation,
 )
 from orchestrator.entitlements.policy import InferencePolicy, parse_inference_policy
+from orchestrator.services.search_pacing import (
+    PacingRefused,
+    PacingUnavailable,
+    RedisLike,
+    SearchPacer,
+)
 from orchestrator.tools import web_search
 from orchestrator.tools.web_search import WebSearchTool
 
@@ -320,6 +327,61 @@ def _tool(transport: _Recorded, *, provider: str = "brave", api_key: Any = _UNSE
         provider=provider,
         _transport=httpx.MockTransport(transport),
     )
+
+
+# --------------------------------------------------------------------------- #
+# pacing fixture: a deterministic in-process pacer, no external Redis
+# --------------------------------------------------------------------------- #
+class _FakePacer:
+    """Duck-typed :class:`SearchPacer`: records, never touches Redis.
+
+    ``mode`` selects the scripted outcome of every ``admit``:
+
+    * ``allow`` — grant after ``min(wait_s, wait_budget_s)`` seconds;
+    * ``slow``  — wait the same bounded time, then refuse (the wait exhausted
+      the caller's budget);
+    * ``busy``  — refuse immediately, no wait;
+    * ``unavailable`` — the pacing backend is down: fail closed.
+    """
+
+    def __init__(self, *, mode: str = "allow", wait_s: float = 0.0) -> None:
+        self.mode = mode
+        self.wait_s = wait_s
+        self.admits: list[tuple[str, str]] = []
+        self.observations: list[tuple[str, str, int]] = []
+
+    async def admit(self, provider: str, credential: str, *, wait_budget_s: float) -> None:
+        if self.mode == "unavailable":
+            raise PacingUnavailable
+        waited = min(self.wait_s, max(0.0, wait_budget_s))
+        if waited > 0:
+            await asyncio.sleep(waited)
+        if self.mode in ("busy", "slow"):
+            raise PacingRefused
+        self.admits.append((provider, credential))
+
+    async def observe(
+        self,
+        provider: str,
+        credential: str,
+        *,
+        status: int,
+        headers: Any,
+        wait_budget_s: float = 1.0,
+    ) -> None:
+        self.observations.append((provider, credential, status))
+
+
+@pytest.fixture(autouse=True)
+def pacer(monkeypatch: pytest.MonkeyPatch) -> _FakePacer:
+    """Replace the shared Redis pacer with the deterministic fake everywhere."""
+    fake = _FakePacer()
+
+    async def shared() -> _FakePacer:
+        return fake
+
+    monkeypatch.setattr(web_search, "shared_search_pacer", shared)
+    return fake
 
 
 async def _search(
@@ -1196,7 +1258,7 @@ async def test_connection_failure_is_sanitized_and_never_retried(
     [
         (400, web_search._REJECTED),
         (401, web_search._CREDENTIAL_REJECTED),
-        (402, web_search._LIMITED),
+        (402, web_search._PAYMENT_REQUIRED),
         (403, web_search._CREDENTIAL_REJECTED),
         (404, web_search._REJECTED),
         (408, web_search._REJECTED),
@@ -1364,8 +1426,8 @@ async def test_approval_is_checked_before_reserving_and_again_before_dispatch(
 
     await _search(ledger, transport)
 
-    # One load for the tool's own gate, one for the pre-dispatch re-check.
-    assert loads() == 2
+    # Initial gate, post-reservation re-check, and final send-time authority.
+    assert loads() == 3
 
 
 @pytest.mark.asyncio
@@ -1519,6 +1581,172 @@ async def test_a_second_call_shares_the_scope_and_its_concurrency_slot(
 
 
 # --------------------------------------------------------------------------- #
+# shared pacing admission: after reservation, immediately before dispatch
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_a_successful_call_admits_once_and_observes_the_response(
+    monkeypatch: pytest.MonkeyPatch, pacer: _FakePacer
+) -> None:
+    _approved_policy(monkeypatch)
+    ledger = _Ledger()
+    transport = _payload_transport(BRAVE_PAYLOAD)
+
+    result: dict[str, Any] = json.loads(await _search(ledger, transport))
+
+    assert result["total_found"] == 2
+    assert pacer.admits == [("brave", BRAVE_KEY)]
+    assert pacer.observations == [("brave", BRAVE_KEY, 200)]
+    assert ledger.amounts == [web_search.BRAVE_FIXED_MICROUSD]
+
+
+@pytest.mark.asyncio
+async def test_pacing_refusal_sends_nothing_and_settles_zero(
+    monkeypatch: pytest.MonkeyPatch, pacer: _FakePacer
+) -> None:
+    _approved_policy(monkeypatch)
+    pacer.mode = "busy"
+    ledger = _Ledger()
+    transport = _payload_transport(BRAVE_PAYLOAD)
+
+    result: dict[str, Any] = json.loads(await _search(ledger, transport))
+
+    assert result == {"error": web_search._PACING_BUSY}
+    assert pacer.admits == []
+    assert transport.count == 0
+    assert len(ledger.reserves) == 1
+    assert ledger.amounts == [0]
+    assert ledger.released == []
+
+
+@pytest.mark.asyncio
+async def test_pacing_outage_fails_closed_before_dispatch_and_settles_zero(
+    monkeypatch: pytest.MonkeyPatch, pacer: _FakePacer
+) -> None:
+    _approved_policy(monkeypatch)
+    pacer.mode = "unavailable"
+    ledger = _Ledger()
+    transport = _payload_transport(BRAVE_PAYLOAD)
+
+    result: dict[str, Any] = json.loads(await _search(ledger, transport))
+
+    assert result == {"error": web_search._PACING_UNAVAILABLE}
+    assert transport.count == 0
+    assert len(ledger.reserves) == 1
+    assert ledger.amounts == [0]
+    assert ledger.released == []
+
+
+@pytest.mark.asyncio
+async def test_a_queued_call_times_out_to_a_sanitized_zero_cost_refusal(
+    monkeypatch: pytest.MonkeyPatch, pacer: _FakePacer
+) -> None:
+    """The bounded wait expires: no dispatch, no charge, inside the deadline."""
+    _approved_policy(monkeypatch)
+    monkeypatch.setattr(web_search, "SEARCH_DEADLINE_S", 0.4)
+    monkeypatch.setattr(web_search, "NETWORK_RESERVE_S", 0.1)
+    pacer.mode = "slow"
+    pacer.wait_s = 10.0  # far beyond the operation budget
+    ledger = _Ledger()
+    transport = _payload_transport(BRAVE_PAYLOAD)
+    tool = _tool(transport)
+
+    started = time.monotonic()
+    async with _scope(ledger):
+        result: dict[str, Any] = json.loads(await tool.execute(query=QUERY))
+    elapsed = time.monotonic() - started
+
+    assert result == {"error": web_search._PACING_BUSY}
+    assert elapsed < web_search.SEARCH_DEADLINE_S + 0.2
+    assert transport.count == 0
+    assert len(ledger.reserves) == 1
+    assert ledger.amounts == [0]
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_a_pacing_wait_sends_nothing_and_settles_zero(
+    monkeypatch: pytest.MonkeyPatch, pacer: _FakePacer
+) -> None:
+    _approved_policy(monkeypatch)
+    pacer.wait_s = 30.0  # the grant never arrives; the wait is cancelled
+    ledger = _Ledger()
+    transport = _payload_transport(BRAVE_PAYLOAD)
+    tool = _tool(transport)
+
+    async with _scope(ledger):
+        task = asyncio.create_task(tool.execute(query=QUERY))
+        await asyncio.wait_for(asyncio.sleep(0.05), timeout=5)
+        task.cancel()
+        outcome = (await asyncio.gather(task, return_exceptions=True))[0]
+
+    assert isinstance(outcome, asyncio.CancelledError)
+    assert pacer.admits == []
+    assert transport.count == 0
+    assert len(ledger.reserves) == 1
+    assert ledger.amounts == [0]
+
+
+@pytest.mark.asyncio
+async def test_a_paced_call_keeps_the_deadline_inclusive_of_the_wait(
+    monkeypatch: pytest.MonkeyPatch, pacer: _FakePacer
+) -> None:
+    """A granted slot after a short wait still leaves bounded network time."""
+    _approved_policy(monkeypatch)
+    pacer.wait_s = 0.05
+    ledger = _Ledger()
+    transport = _payload_transport(BRAVE_PAYLOAD)
+
+    result: dict[str, Any] = json.loads(await _search(ledger, transport))
+
+    assert result["total_found"] == 2
+    assert transport.count == 1
+    assert ledger.amounts == [web_search.BRAVE_FIXED_MICROUSD]
+
+
+@pytest.mark.asyncio
+async def test_the_provider_is_never_retried_after_a_paced_refusal(
+    monkeypatch: pytest.MonkeyPatch, pacer: _FakePacer
+) -> None:
+    """Two fresh calls are two decisions — never an automatic replay inside one."""
+    _approved_policy(monkeypatch)
+    pacer.mode = "busy"
+    ledger = _Ledger()
+    transport = _payload_transport(BRAVE_PAYLOAD)
+    tool = _tool(transport)
+
+    async with _scope(ledger):
+        first = json.loads(await tool.execute(query=QUERY))
+        pacer.mode = "allow"
+        second = json.loads(await tool.execute(query=QUERY))
+
+    assert first == {"error": web_search._PACING_BUSY}
+    assert second["total_found"] == 2
+    # Each call is exactly one dispatch decision: the first never reached the
+    # provider, the second dispatched once.
+    assert transport.count == 1
+
+
+@pytest.mark.asyncio
+async def test_refusal_logs_render_provider_status_and_category(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _approved_policy(monkeypatch)
+    ledger = _Ledger()
+    transport = _Recorded(lambda request: httpx.Response(429, content=b"rate limited"))
+
+    with caplog.at_level("WARNING"):
+        result: dict[str, Any] = json.loads(await _search(ledger, transport))
+
+    assert result == {"error": web_search._LIMITED}
+    # The closed-vocabulary fields are in the rendered message, so they survive
+    # any formatter; nothing dynamic beyond the status code appears.
+    assert "provider=brave" in caplog.text
+    assert "status=429" in caplog.text
+    assert "category=http_429" in caplog.text
+    assert QUERY not in caplog.text
+    assert BRAVE_KEY not in caplog.text
+
+
+# --------------------------------------------------------------------------- #
 # availability predicate
 # --------------------------------------------------------------------------- #
 def test_available_requires_a_credential_and_an_approved_service(
@@ -1596,3 +1824,304 @@ async def test_registration_never_authorizes_a_later_revoked_dispatch(
     assert transport.count == 0
     assert ledger.reserves == []
     assert ledger.settled == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["factory", "eval", "none", "malformed"])
+async def test_real_pacer_local_failures_settle_zero_and_send_nothing(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    _approved_policy(monkeypatch)
+    monkeypatch.setattr(web_search, "SEARCH_DEADLINE_S", 0.1)
+    monkeypatch.setattr(web_search, "NETWORK_RESERVE_S", 0.02)
+
+    class Client:
+        async def eval(self, *_args: Any) -> Any:
+            if failure == "eval":
+                await asyncio.Event().wait()
+            return None if failure == "none" else [0, 0]
+
+    async def factory() -> RedisLike:
+        if failure == "factory":
+            await asyncio.Event().wait()
+        return cast(RedisLike, Client())
+
+    ledger = _Ledger()
+    transport = _payload_transport(BRAVE_PAYLOAD)
+    tool = WebSearchTool(
+        api_key=BRAVE_KEY,
+        _transport=httpx.MockTransport(transport),
+        pacer=SearchPacer(client_factory=factory),
+    )
+    started = time.monotonic()
+    async with _scope(ledger):
+        result = json.loads(await tool.execute(query=QUERY))
+    assert time.monotonic() - started < 0.3
+    assert result["error"] in {web_search._PACING_BUSY, web_search._PACING_UNAVAILABLE}
+    assert transport.count == 0
+    assert len(ledger.reserves) == 1
+    assert ledger.amounts == [0]
+    assert ledger.open == ledger.released == []
+
+
+@pytest.mark.asyncio
+async def test_lazy_pacer_resolution_is_inside_the_wall_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _approved_policy(monkeypatch)
+    monkeypatch.setattr(web_search, "SEARCH_DEADLINE_S", 0.1)
+    monkeypatch.setattr(web_search, "NETWORK_RESERVE_S", 0.02)
+
+    async def shared() -> Any:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(web_search, "shared_search_pacer", shared)
+    ledger = _Ledger()
+    transport = _payload_transport(BRAVE_PAYLOAD)
+    started = time.monotonic()
+    assert json.loads(await _search(ledger, transport)) == {"error": web_search._PACING_BUSY}
+    assert time.monotonic() - started < 0.3
+    assert len(ledger.reserves) == 1
+    assert ledger.amounts == [0]
+    assert transport.count == 0
+
+
+@pytest.mark.asyncio
+async def test_hanging_observation_does_not_replay_http_and_is_wall_bounded(
+    monkeypatch: pytest.MonkeyPatch, pacer: _FakePacer
+) -> None:
+    _approved_policy(monkeypatch)
+    monkeypatch.setattr(web_search, "SEARCH_DEADLINE_S", 0.1)
+    monkeypatch.setattr(web_search, "NETWORK_RESERVE_S", 0.02)
+    cancelled = asyncio.Event()
+
+    async def observe(*args: Any, **kwargs: Any) -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(pacer, "observe", observe)
+    ledger = _Ledger()
+    transport = _payload_transport(BRAVE_PAYLOAD)
+    started = time.monotonic()
+    result = json.loads(await _search(ledger, transport))
+    assert time.monotonic() - started < 0.3
+    assert result == {"error": web_search._TIMEOUT}
+    assert cancelled.is_set()
+    assert transport.count == 1
+    assert ledger.amounts == [BRAVE_CEILING]
+
+
+@pytest.mark.asyncio
+async def test_late_reservation_never_sends_or_invents_provider_usage(
+    monkeypatch: pytest.MonkeyPatch, pacer: _FakePacer
+) -> None:
+    _approved_policy(monkeypatch)
+    monkeypatch.setattr(web_search, "SEARCH_DEADLINE_S", 0.05)
+    monkeypatch.setattr(web_search, "NETWORK_RESERVE_S", 0.01)
+
+    class SlowLedger(_Ledger):
+        async def reserve(self, user_id: Any, amount: int, **kwargs: Any) -> Any:
+            await asyncio.sleep(0.15)
+            return await super().reserve(user_id, amount, **kwargs)
+
+    ledger = SlowLedger()
+    transport = _payload_transport(BRAVE_PAYLOAD)
+    assert json.loads(await _search(ledger, transport)) == {"error": web_search._TIMEOUT}
+    assert transport.count == 0
+    assert pacer.admits == []
+    assert len(ledger.reserves) == 1
+    assert ledger.amounts == [0]
+    assert ledger.usages == [None]
+    assert ledger.open == []
+
+
+@pytest.mark.asyncio
+async def test_failed_zero_settlement_after_final_pacing_refusal_stops_the_turn(
+    monkeypatch: pytest.MonkeyPatch, pacer: _FakePacer
+) -> None:
+    _approved_policy(monkeypatch)
+    pacer.mode = "busy"
+    ledger = _Ledger(settle_error=RuntimeError("ledger unavailable"))
+    transport = _payload_transport(BRAVE_PAYLOAD)
+    async with _scope(ledger) as scope:
+        with pytest.raises(runtime.ComputeUnavailable) as caught:
+            await _tool(transport).execute(query=QUERY)
+        assert caught.value.code == "settlement_failed"
+        assert not caught.value.retryable
+        assert next(iter(scope.outstanding.values())).actual == 0
+    assert transport.count == 0
+    assert ledger.settled == []
+
+
+@pytest.mark.asyncio
+async def test_authority_revoked_during_final_pacing_wait_settles_zero(
+    monkeypatch: pytest.MonkeyPatch, pacer: _FakePacer
+) -> None:
+    approved = parse_inference_policy(_approved_document())
+    revoked = parse_inference_policy(_approved_document(approved=False))
+    _install(monkeypatch, approved, approved, revoked)
+    transport = _payload_transport(BRAVE_PAYLOAD)
+    ledger = _Ledger()
+    with pytest.raises(runtime.ComputeUnavailable) as caught:
+        await _search(ledger, transport)
+    assert caught.value.code == "tool_service_unavailable"
+    assert pacer.admits == [("brave", BRAVE_KEY)]
+    assert transport.count == 0
+    assert ledger.amounts == [0]
+
+
+@pytest.mark.asyncio
+async def test_local_transport_setup_failure_before_mark_settles_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _approved_policy(monkeypatch)
+
+    def broken_client(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("local setup failed")
+
+    monkeypatch.setattr(web_search.httpx, "AsyncClient", broken_client)
+    ledger = _Ledger()
+    transport = _payload_transport(BRAVE_PAYLOAD)
+    assert json.loads(await _search(ledger, transport)) == {"error": web_search._FAILED}
+    assert transport.count == 0
+    assert ledger.amounts == [0]
+
+
+@pytest.mark.asyncio
+async def test_delayed_account_reservation_does_not_bunch_final_http_sends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Discriminate real Redis grants from earlier account-reservation timing."""
+    from redis.asyncio import Redis
+
+    _approved_policy(monkeypatch)
+    client = Redis.from_url(
+        "redis://localhost:6379/0",
+        decode_responses=True,
+        socket_connect_timeout=1.0,
+        socket_timeout=1.0,
+    )
+    try:
+        await asyncio.wait_for(client.ping(), timeout=1)
+    except Exception:
+        await client.aclose()
+        pytest.skip("local Redis (localhost:6379) is not reachable")
+    namespace = f"daemon:search-pacing:send-test:{uuid.uuid4().hex}"
+    blocked = asyncio.Event()
+    release = asyncio.Event()
+    sends: list[float] = []
+    grants: list[float] = []
+
+    class RecordingPacer(SearchPacer):
+        async def admit(self, provider: str, credential: str, *, wait_budget_s: float) -> None:
+            await super().admit(provider, credential, wait_budget_s=wait_budget_s)
+            grants.append(time.monotonic())
+
+    class DelayedLedger(_Ledger):
+        async def reserve(self, user_id: Any, amount: int, **kwargs: Any) -> Any:
+            blocked.set()
+            await release.wait()
+            return await super().reserve(user_id, amount, **kwargs)
+
+    async def factory() -> RedisLike:
+        return cast(RedisLike, client)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sends.append(time.monotonic())
+        release.set()
+        return _json_response(BRAVE_PAYLOAD)
+
+    pacer = RecordingPacer(
+        client_factory=factory, namespace=namespace, fallback_min_interval_s=0.15
+    )
+    transport = _Recorded(handler)
+    tool = WebSearchTool(api_key=BRAVE_KEY, pacer=pacer, _transport=httpx.MockTransport(transport))
+    ledgers = [DelayedLedger(), _Ledger()]
+
+    async def call(ledger: _Ledger) -> Any:
+        async with _scope(ledger):
+            return json.loads(await tool.execute(query=QUERY))
+
+    first: asyncio.Task[Any] | None = None
+    try:
+        first = asyncio.create_task(call(ledgers[0]))
+        await asyncio.wait_for(blocked.wait(), timeout=1)
+        # Reservation began, but no provider-capacity slot was consumed yet.
+        assert grants == []
+        results = await asyncio.wait_for(asyncio.gather(first, call(ledgers[1])), timeout=2)
+        assert all("results" in result for result in results)
+        assert transport.count == len(grants) == 2
+        assert grants[1] - grants[0] >= 0.14
+        assert sends[1] - sends[0] >= 0.14
+        assert all(0 <= send - grant < 0.05 for send, grant in zip(sends, grants))
+        assert all(ledger.amounts == [web_search.BRAVE_FIXED_MICROUSD] for ledger in ledgers)
+
+        # The final-send gate also preserves a learned concurrent burst; it
+        # consumes exactly one slot per HTTP handoff, not one before and after
+        # reservation. Use a fresh scope key to isolate the burst allowance.
+        burst_pacer = SearchPacer(client_factory=factory, namespace=namespace + ":burst")
+        await burst_pacer.observe(
+            "brave", BRAVE_KEY, status=200, headers={"X-RateLimit-Policy": "3;w=1"}
+        )
+        burst_sends: list[float] = []
+
+        def burst_handler(request: httpx.Request) -> httpx.Response:
+            burst_sends.append(time.monotonic())
+            return _json_response(BRAVE_PAYLOAD)
+
+        burst_tool = WebSearchTool(
+            api_key=BRAVE_KEY, pacer=burst_pacer, _transport=httpx.MockTransport(burst_handler)
+        )
+        burst_ledgers = [_Ledger() for _ in range(4)]
+
+        async def burst_call(ledger: _Ledger) -> Any:
+            async with _scope(ledger):
+                return json.loads(await burst_tool.execute(query=QUERY))
+
+        started = time.monotonic()
+        await asyncio.gather(*(burst_call(ledger) for ledger in burst_ledgers[:3]))
+        assert time.monotonic() - started < 0.25
+        assert len(burst_sends) == 3
+        assert max(burst_sends) - min(burst_sends) < 0.2
+        monkeypatch.setattr(web_search, "SEARCH_DEADLINE_S", 0.1)
+        monkeypatch.setattr(web_search, "NETWORK_RESERVE_S", 0.02)
+        assert await burst_call(burst_ledgers[3]) == {"error": web_search._PACING_BUSY}
+        assert len(burst_sends) == 3
+        assert burst_ledgers[3].amounts == [0]
+    finally:
+        release.set()
+        if first is not None and not first.done():
+            first.cancel()
+            await asyncio.gather(first, return_exceptions=True)
+        keys = await client.keys(namespace + ":*")
+        if keys:
+            await client.delete(*keys)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_required_settlement_can_finish_after_the_work_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _approved_policy(monkeypatch)
+    monkeypatch.setattr(web_search, "SEARCH_DEADLINE_S", 0.05)
+    monkeypatch.setattr(web_search, "NETWORK_RESERVE_S", 0.01)
+
+    class SlowSettlementLedger(_Ledger):
+        async def settle(
+            self, reservation: Any, amount: int, *, usage: dict[str, Any] | None = None
+        ) -> Any:
+            await asyncio.sleep(0.08)
+            return await super().settle(reservation, amount, usage=usage)
+
+    ledger = SlowSettlementLedger()
+    transport = _payload_transport(BRAVE_PAYLOAD)
+    started = time.monotonic()
+    result = json.loads(await _search(ledger, transport))
+    assert time.monotonic() - started >= 0.08
+    assert result["total_found"] == 2
+    assert transport.count == 1
+    assert ledger.amounts == [web_search.BRAVE_FIXED_MICROUSD]
+    assert ledger.open == []

@@ -39,6 +39,127 @@ class DummySpawnTool(Tool):
 
 
 @pytest.mark.asyncio
+async def test_source_manifest_is_fenced_without_replacing_last_user_request(monkeypatch):
+    from types import SimpleNamespace
+    from orchestrator.tools import completion
+
+    class SourceListTool(Tool):
+        name = "web_fetch"
+        description = "Sources"
+        parameters = {"type": "object", "properties": {}}
+
+        async def execute(self, **kwargs):
+            assert kwargs == {"action": "list", "limit": 20}
+            return '{"sources":[{"title":"untrusted source title"}]}'
+
+    registry = ToolRegistry()
+    registry.register(SourceListTool())
+
+    async def budget(*args):
+        return SimpleNamespace(fits=lambda *args, **kwargs: True)
+
+    monkeypatch.setattr(completion, "tool_context_budget", budget)
+    calls = []
+
+    async def fake_completion(**kwargs):
+        calls.append(kwargs)
+
+        async def stream():
+            yield {"choices": [{"delta": {"content": "Answer"}}]}
+
+        return stream()
+
+    monkeypatch.setattr(completion, "guarded_completion", fake_completion)
+    original = [{"role": "user", "content": "My actual question"}]
+    _ = [
+        event
+        async for event in completion_with_tools(
+            Settings(),
+            ProviderConfig(name="openrouter", model="openrouter/test", requires_auth=False),
+            original,
+            registry,
+        )
+    ]
+    assert calls[0]["messages"][-1] == original[-1]
+    assert 'trust="untrusted"' in calls[0]["messages"][-2]["content"]
+    assert len(original) == 1
+
+
+@pytest.mark.asyncio
+async def test_oversized_tool_result_stops_batch_and_synthesizes_with_paired_results(monkeypatch):
+    from types import SimpleNamespace
+    from orchestrator.tools import completion
+
+    executed = []
+
+    class LargeTool(Tool):
+        name = "large_source"
+        description = "Return a page"
+        parameters = {"type": "object", "properties": {}}
+
+        async def execute(self, **kwargs):
+            executed.append(True)
+            return "x" * 100000
+
+    registry = ToolRegistry()
+    registry.register(LargeTool())
+
+    async def budget(*args):
+        return SimpleNamespace(
+            output_tokens=128, fits=lambda messages, **kwargs: len(json.dumps(messages)) < 4000
+        )
+
+    monkeypatch.setattr(completion, "tool_context_budget", budget)
+    calls = []
+
+    async def fake_completion(**kwargs):
+        calls.append(kwargs)
+
+        async def stream():
+            if len(calls) == 1:
+                yield {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": i,
+                                        "id": f"call_{i}",
+                                        "function": {"name": "large_source", "arguments": "{}"},
+                                    }
+                                    for i in range(2)
+                                ]
+                            }
+                        }
+                    ]
+                }
+            else:
+                yield {"choices": [{"delta": {"content": "Evidence is incomplete."}}]}
+
+        return stream()
+
+    monkeypatch.setattr(completion, "guarded_completion", fake_completion)
+    events = [
+        event
+        async for event in completion_with_tools(
+            Settings(),
+            ProviderConfig(name="openrouter", model="openrouter/test", requires_auth=False),
+            [{"role": "user", "content": "Read two pages"}],
+            registry,
+        )
+    ]
+    assert len(executed) == 1
+    assert len(calls) == 2 and "tools" not in calls[-1]
+    assert calls[-1]["max_tokens"] == 128
+    results = [message for message in calls[-1]["messages"] if message["role"] == "tool"]
+    assert [message["tool_call_id"] for message in results] == ["call_0", "call_1"]
+    assert "tool ran" in results[0]["content"]
+    assert "not executed" in results[1]["content"]
+    assert "x" * 10000 not in json.dumps(calls[-1])
+    assert any(event.get("content") == "Evidence is incomplete." for event in events)
+
+
+@pytest.mark.asyncio
 async def test_completion_with_tools_forces_synthesis_after_max_rounds(monkeypatch):
     provider_config = ProviderConfig(
         name="openrouter",

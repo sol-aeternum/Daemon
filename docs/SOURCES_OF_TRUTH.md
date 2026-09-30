@@ -36,6 +36,7 @@ Every markdown file in the repository is classified under this hierarchy to dete
 | `docs/MODEL_ROUTING.md` | T1 | Engineering/Product | gated | `config/model_routing.json`, `orchestrator/model_routing.py`, `orchestrator/compute_runtime.py` |
 | `docs/INFERENCE_ROUTE_APPROVALS.md` | N/A | Deployment operator | raw-log | Dated account-scoped approval evidence and rollout instructions for `config/inference_policy.production.json`; not proof of live deployment |
 | `docs/SEARCH_SERVICE_APPROVALS.md` | N/A | Deployment operator | raw-log | Search-only Brave retention exception, manual review, Tavily qualification boundary and bounded search operation; not proof of live deployment |
+| `docs/CHUNKED_WEB_READING_DESIGN.md` | N/A | Engineering/Product | ungated-reference | Approved bounded conversation-scoped page-reading contract; implementation/release status requires code and gate evidence |
 | `docs/ENV_SURFACE_MIGRATION.md` | T1 | Engineering | gated | `orchestrator/config.py`, `.env.example`, `docker-compose.yml`, `tests/test_env_surface_parity.py` |
 | `docs/MODEL_ROUTING_PILOT_PROPOSAL.md` | N/A | Engineering/Product | ungated-reference | Evidence-informed candidate placement, escalation and bounded endpoint integration proposal; not production activation |
 | `docs/MODEL_ROUTING_FOLLOWUP_PLAN.md` | N/A | Engineering/Product | ungated-reference | Proposed corrected-fixture and explicit-preset diagnostic/held-out screen; separate execution approval required |

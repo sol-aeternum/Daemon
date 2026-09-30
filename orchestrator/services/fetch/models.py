@@ -2,17 +2,87 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar, Final
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from orchestrator.config import get_settings
 
+logger = logging.getLogger(__name__)
+
+# Stable identifier of the fetch-side textual representation produced for
+# `article` extraction (trafilatura markdown, links/tables retained) and
+# for bounded text/metadata passthrough. Cache keys bind this version so
+# a future extraction change cannot serve stale representations to
+# snapshot offsets. Bump when extraction semantics change.
+EXTRACTION_VERSION_V1: Final[str] = "web-reader-v1"
+
+# Bounded error messages. These are the entire ``str()`` of the error so
+# tool-facing error results can never leak raw exception detail, URLs, or
+# response bodies. Consumers may match on the stable ``code`` attribute.
+_ERROR_MESSAGES: Final[dict[str, str]] = {
+    "page_too_large": ("page_too_large: content exceeds the configured maximum response size"),
+    "extraction_failed": ("extraction_failed: requested extraction unavailable for this source"),
+}
+
+
+class FetchContentError(Exception):
+    """A bounded, categorized fetch failure surfaced to tool consumers.
+
+    Raised instead of a partial/placeholder success. ``str(exc)`` is a
+    single fixed, secret-free message for the tool error path; ``code``
+    is a stable machine-readable category (``page_too_large`` or
+    ``extraction_failed``). Programs should branch on ``code``, not on
+    exception text.
+    """
+
+    code: ClassVar[str]
+
+    def __init__(self) -> None:
+        self.message = _ERROR_MESSAGES.get(self.code, "fetch_error")
+        super().__init__(self.message)
+
+
+class FetchPageTooLargeError(FetchContentError):
+    """The fetched content exceeds a configured size bound.
+
+    Applies both to the streamed decoded HTTP response bound and to the
+    extracted UTF-8 content bound. Never carries the oversized content.
+    """
+
+    code: ClassVar[str] = "page_too_large"
+
+
+class FetchExtractionError(FetchContentError):
+    """The requested representation could not be produced honestly.
+
+    Covers readable-article extraction failure and requested modes that
+    this source cannot legitimately support (for example transcript on a
+    non-transcript HTML page). Raw HTML is never injected as a fallback.
+    """
+
+    code: ClassVar[str] = "extraction_failed"
+
+
+def error_code(exc: BaseException) -> str | None:
+    """Stable error category for tool-result mapping (None for other errors)."""
+    return getattr(exc, "code", None)
+
 
 @dataclass
 class FetchResult:
-    """Result of a fetch operation."""
+    """Result of a fetch operation.
+
+    ``url`` remains the cache-identity form the service normalizes to
+    (historical consumer contract). Provenance is carried by the optional
+    fields: ``source_url`` is the original validated request URL and
+    ``final_url`` the final *logical* redirect target — never a pinned
+    IP transport form. ``content_type`` carries the response MIME type;
+    ``extraction_version`` identifies the textual representation so
+    snapshot offsets always refer to one immutable version.
+    """
 
     url: str
     content: str
@@ -21,6 +91,10 @@ class FetchResult:
     cached: bool
     fetch_time_ms: float
     content_length: int
+    source_url: str | None = None
+    final_url: str | None = None
+    content_type: str | None = None
+    extraction_version: str = EXTRACTION_VERSION_V1
 
 
 class FetchPolicy(BaseModel):

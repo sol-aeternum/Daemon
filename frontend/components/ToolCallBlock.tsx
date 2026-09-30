@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useId } from 'react';
 import Image from 'next/image';
 import { ChatEvent, isToolCallEvent, isToolResultEvent } from '../lib/events';
 import { ensureAuthHeader } from '../lib/auth';
@@ -8,6 +8,7 @@ import {
   X,
   Loader2,
   ChevronRight,
+  ChevronDown,
   Check,
   Volume2,
   Play,
@@ -16,6 +17,15 @@ import {
 } from 'lucide-react';
 import { VideoPlayer } from './VideoPlayer';
 import { useAuthenticatedImageUrl } from '../hooks/useAuthenticatedImageUrl';
+import { buildMessageCitationSources } from '../lib/messageSources';
+import {
+  buildToolActivitySummary,
+  pairToolExecutions,
+  parseToolResultPayload,
+  extractToolFailure,
+  DEFAULT_PILL_PREVIEW_COUNT,
+  type ToolSource,
+} from '../lib/toolActivity';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -100,6 +110,7 @@ interface ToolCallBlockProps {
 export function ToolCallBlock({ execution }: ToolCallBlockProps) {
   const { call: rawCall, result: rawResult } = execution;
   const [isExpanded, setIsExpanded] = useState(false);
+  const inspectorId = useId();
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
   const [imageBlobUrl, setImageBlobUrl] = useState<string | null>(null);
   const [imageBlobLoadError, setImageBlobLoadError] = useState(false);
@@ -184,7 +195,11 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
 
   // 1. Loading State (Call exists, Result missing)
   if (!result) {
-    if (call.name === 'spawn_agent') {
+    if (
+      call.name === 'spawn_agent' &&
+      spawnMode &&
+      ['image', 'video', 'audio'].includes(spawnMode)
+    ) {
       return (
         <div className="flex items-center gap-2 text-[var(--color-text-muted)] text-sm py-2 px-1 animate-pulse">
           <Loader2 className="w-4 h-4 animate-spin" />
@@ -198,18 +213,11 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
         </div>
       );
     }
-    // Generic tool loading
-    return (
-      <div className="flex items-center gap-2 text-[var(--color-text-muted)] text-sm py-2 px-1 animate-pulse">
-        <Loader2 className="w-4 h-4 animate-spin" />
-        <span>Running {call.name}...</span>
-      </div>
-    );
   }
 
   // 2. Result State
-  let isError = false;
-  let errorMessage: string | null = null;
+  let errorMessage = extractToolFailure(parseToolResultPayload(result?.result));
+  let isError = Boolean(errorMessage);
   let audioPath: string | null = null;
   let videoPath: string | null = null;
   let videoDuration: number | null = null;
@@ -217,7 +225,7 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
   let prompt: string | null = null;
 
   try {
-    const raw = result.result;
+    const raw = result?.result;
     const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
     if (parsed?.error || parsed?.success === false) {
       isError = true;
@@ -485,8 +493,6 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
   }
 
   // Standard Tool Result UI
-
-  // Standard Tool Result UI
   return (
     <div
       className={`border rounded-lg my-2 overflow-hidden ${
@@ -496,61 +502,83 @@ export function ToolCallBlock({ execution }: ToolCallBlockProps) {
       }`}
     >
       <button
+        type="button"
+        aria-expanded={isExpanded}
+        aria-controls={inspectorId}
         onClick={() => setIsExpanded(!isExpanded)}
-        className={`w-full px-4 py-2 flex items-center justify-between text-left transition-colors ${
+        className={`w-full min-h-touch px-4 py-2 flex items-center gap-2 justify-between text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)] ${
           isError
             ? 'hover:bg-[var(--color-status-warning-bg)]/60'
             : 'hover:bg-[var(--color-bg-hover)]'
         }`}
       >
-        <div className="flex items-center gap-2">
-          <span
-            className={`w-2 h-2 rounded-full ${isError ? 'bg-[var(--color-status-warning)]' : 'bg-[var(--color-status-success)]'}`}
-          ></span>
-          <div className="flex flex-col">
+        <div className="flex min-w-0 items-center gap-2">
+          {!result ? (
+            <Loader2
+              aria-hidden
+              className="w-4 h-4 shrink-0 animate-spin motion-reduce:animate-none"
+            />
+          ) : (
             <span
-              className={`text-sm font-medium ${isError ? 'text-[var(--color-status-warning)]' : 'text-[var(--color-text-secondary)]'}`}
+              aria-hidden
+              className={`w-2 h-2 rounded-full ${isError ? 'bg-[var(--color-status-warning)]' : 'bg-[var(--color-status-success)]'}`}
+            ></span>
+          )}
+          <div className="flex min-w-0 flex-col">
+            <span
+              className={`text-sm font-medium break-all ${isError ? 'text-[var(--color-status-warning)]' : 'text-[var(--color-text-secondary)]'}`}
             >
-              {call.name}
+              {result ? call.name : `Running ${call.name}...`}
             </span>
           </div>
         </div>
         <ChevronRight
-          className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-90' : ''} ${
+          aria-hidden
+          className={`w-4 h-4 shrink-0 transition-transform motion-reduce:transition-none ${isExpanded ? 'rotate-90' : ''} ${
             isError
               ? 'text-[var(--color-status-warning)]'
               : 'text-[var(--color-text-muted)]'
           }`}
         />
       </button>
-      {isExpanded && (
-        <div className="px-4 pb-3 space-y-2">
-          {isError && (
-            <div className="text-xs text-[var(--color-status-warning)] bg-[var(--color-status-warning-bg)]/45 border border-[var(--color-status-warning)]/35 rounded p-2">
-              {errorMessage ??
-                'Tool call failed. Continuing with best available information.'}
+      <div
+        id={inspectorId}
+        hidden={!isExpanded}
+        className="min-w-0 px-4 pb-3 space-y-2"
+      >
+        {isExpanded && (
+          <>
+            {isError && (
+              <div className="text-xs text-[var(--color-status-warning)] bg-[var(--color-status-warning-bg)]/45 border border-[var(--color-status-warning)]/35 rounded p-2">
+                {errorMessage ??
+                  'Tool call failed. Continuing with best available information.'}
+              </div>
+            )}
+            <div className="text-xs text-[var(--color-text-muted)] font-medium">
+              Input:
             </div>
-          )}
-          <div className="text-xs text-[var(--color-text-muted)] font-medium">
-            Input:
-          </div>
-          <pre className="text-xs text-[var(--color-text-secondary)] bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)] rounded p-2 overflow-x-auto">
-            {JSON.stringify(call.arguments, null, 2)}
-          </pre>
-          <div className="text-xs text-[var(--color-text-muted)] font-medium">
-            Output:
-          </div>
-          <pre
-            className={`text-xs rounded p-2 overflow-x-auto overflow-y-auto max-h-80 whitespace-pre-wrap break-words ${
-              isError
-                ? 'text-[var(--color-text-secondary)] bg-[var(--color-bg-secondary)] border border-[var(--color-status-warning)]/35'
-                : 'text-[var(--color-text-secondary)] bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)]'
-            }`}
-          >
-            {sanitizeProtectedArtifactPaths(resultText)}
-          </pre>
-        </div>
-      )}
+            <pre className="text-xs text-[var(--color-text-secondary)] bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)] rounded p-2 overflow-x-auto">
+              {sanitizeProtectedArtifactPaths(
+                JSON.stringify(call.arguments, null, 2),
+              )}
+            </pre>
+            <div className="text-xs text-[var(--color-text-muted)] font-medium">
+              Output:
+            </div>
+            <pre
+              className={`text-xs rounded p-2 overflow-x-auto overflow-y-auto max-h-80 whitespace-pre-wrap break-words ${
+                isError
+                  ? 'text-[var(--color-text-secondary)] bg-[var(--color-bg-secondary)] border border-[var(--color-status-warning)]/35'
+                  : 'text-[var(--color-text-secondary)] bg-[var(--color-bg-secondary)] border border-[var(--color-border-primary)]'
+              }`}
+            >
+              {result
+                ? sanitizeProtectedArtifactPaths(resultText)
+                : 'Awaiting result…'}
+            </pre>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -559,90 +587,122 @@ interface ToolCallLogProps {
   events: ChatEvent[];
 }
 
+/**
+ * Grouped per-response tool activity. All executions (including spawn
+ * artifacts while expanded) collapse into one summary row by default.
+ * Expanding reveals every action in call order, with media behavior intact.
+ */
 export function ToolCallLog({ events }: ToolCallLogProps) {
-  const [showEarlier, setShowEarlier] = useState(false);
-  const executions: ToolExecution[] = [];
-  const isAdvisorScoped = (event: ChatEvent) =>
-    'advisor_id' in event &&
-    typeof event.advisor_id === 'string' &&
-    event.advisor_id.length > 0;
-
-  events.forEach((event) => {
-    if (isAdvisorScoped(event)) {
-      return;
-    }
-
-    if (isToolCallEvent(event)) {
-      executions.push({ call: event });
-    } else if (isToolResultEvent(event)) {
-      const resultEvent = event as ChatEvent & {
-        type: 'tool_result';
-        name: string;
-        result: unknown;
-      };
-      let foundIndex = -1;
-      for (let i = executions.length - 1; i >= 0; i--) {
-        const execCall = executions[i].call;
-        if (!isToolCallEvent(execCall)) continue;
-        const matches = resultEvent.tool_call_id
-          ? execCall.tool_call_id === resultEvent.tool_call_id
-          : execCall.name === resultEvent.name;
-        if (matches && !executions[i].result) {
-          foundIndex = i;
-          break;
-        }
-      }
-
-      if (foundIndex !== -1) {
-        executions[foundIndex].result = event;
-      }
-    }
-  });
-
-  const spawnExecutions = executions.filter(
-    (execution) =>
-      isToolCallEvent(execution.call) && execution.call.name === 'spawn_agent',
-  );
-  const earlierSpawns = new Set(spawnExecutions.slice(0, -3));
+  const [isGroupExpanded, setIsGroupExpanded] = useState(false);
+  const groupPanelId = useId();
+  const executions = pairToolExecutions(events);
 
   if (executions.length === 0) return null;
 
-  return (
-    <div>
-      {earlierSpawns.size > 0 && (
-        <button
-          type="button"
-          aria-expanded={showEarlier}
-          onClick={() => setShowEarlier((previous) => !previous)}
-          className="min-h-touch text-sm text-[var(--color-accent-primary)] mb-2"
-        >
-          {showEarlier ? 'Hide earlier' : 'Show earlier'} ({earlierSpawns.size})
-        </button>
-      )}
-      <ol className="space-y-3">
-        {executions.map((execution, idx) => {
-          if (!showEarlier && earlierSpawns.has(execution)) return null;
-          const toolName = isToolCallEvent(execution.call)
-            ? execution.call.name
-            : 'tool';
+  const summary = buildToolActivitySummary(executions);
+  const sources = buildMessageCitationSources(events);
+  const labels = [...summary.segments];
+  if (summary.runningCount) labels.push(`Working… (${summary.runningCount})`);
+  if (summary.errorCount)
+    labels.push(
+      `${summary.errorCount} issue${summary.errorCount === 1 ? '' : 's'}`,
+    );
 
-          return (
-            <li key={`${toolName}-${idx}`} className="relative pl-8">
-              {idx < executions.length - 1 && (
-                <span className="absolute left-tool-step-center top-7 -bottom-3.5 w-px bg-[var(--color-border-primary)]" />
-              )}
-              <span className="absolute left-0 top-1.5 flex h-tool-step w-tool-step items-center justify-center rounded-full border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-xs font-semibold text-[var(--color-text-muted)]">
-                {idx + 1}
-              </span>
-              <div className="mb-1 text-xs uppercase tracking-tool-step text-[var(--color-text-muted)]">
-                Step {idx + 1}
-                {executions.length > 1 ? ` of ${executions.length}` : ''}
-              </div>
-              <ToolCallBlock execution={execution} />
-            </li>
-          );
-        })}
-      </ol>
+  return (
+    <div className="min-w-0 max-w-full">
+      <button
+        type="button"
+        aria-expanded={isGroupExpanded}
+        aria-controls={groupPanelId}
+        aria-label={`Tool activity: ${labels.join(' · ') || 'Tools used'}. ${isGroupExpanded ? 'Hide' : 'Show'} activity`}
+        onClick={() => setIsGroupExpanded((previous) => !previous)}
+        className="flex min-h-touch max-w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-sm text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-secondary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)]"
+      >
+        {summary.runningCount > 0 ? (
+          <Loader2
+            aria-hidden
+            className="w-4 h-4 shrink-0 animate-spin motion-reduce:animate-none"
+          />
+        ) : (
+          <span
+            aria-hidden
+            className={`shrink-0 w-2 h-2 rounded-full ${summary.errorCount ? 'bg-[var(--color-status-warning)]' : 'bg-[var(--color-status-success)]'}`}
+          />
+        )}
+        <span className="min-w-0 break-words">
+          {labels.join(' · ') || 'Tools used'}
+        </span>
+        <ChevronDown
+          aria-hidden
+          className={`w-4 h-4 shrink-0 ${isGroupExpanded ? 'rotate-180' : ''}`}
+        />
+      </button>
+      <ToolSourcePills sources={sources} />
+      <div id={groupPanelId} hidden={!isGroupExpanded}>
+        {isGroupExpanded && (
+          <ol className="min-w-0 space-y-2">
+            {executions.map((execution, idx) => (
+              <li key={executionId(execution, idx)} className="min-w-0">
+                <ToolCallBlock execution={execution} />
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function executionId(execution: ToolExecution, idx: number): string {
+  const callId = isToolCallEvent(execution.call)
+    ? execution.call.tool_call_id
+    : undefined;
+  // A result arriving must not remount the inspector or reset user expansion.
+  return `${callId ?? 'noid'}-${idx}`;
+}
+
+function ToolSourcePills({ sources }: { sources: ToolSource[] }) {
+  const [showAll, setShowAll] = useState(false);
+  const panelId = useId();
+  if (!sources.length) return null;
+  const link = (source: ToolSource) => (
+    <a
+      key={source.url}
+      href={source.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label={
+        source.title ? `${source.title} (${source.domain})` : source.url
+      }
+      title={source.title || source.url}
+      className="inline-flex min-h-8 max-w-full items-center rounded-full border border-[var(--color-border-primary)] bg-[var(--color-bg-tertiary)] px-2 text-xs text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)]"
+    >
+      <span className="max-w-56 truncate">{source.domain}</span>
+    </a>
+  );
+  const rest = sources.slice(DEFAULT_PILL_PREVIEW_COUNT);
+  return (
+    <div
+      aria-label="Sources"
+      className="my-1 flex min-w-0 flex-wrap items-center gap-1.5"
+    >
+      {sources.slice(0, DEFAULT_PILL_PREVIEW_COUNT).map(link)}
+      {rest.length > 0 && (
+        <>
+          <button
+            type="button"
+            aria-expanded={showAll}
+            aria-controls={panelId}
+            onClick={() => setShowAll((previous) => !previous)}
+            className="min-h-8 rounded-full px-2 text-xs text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)]"
+          >
+            {showAll ? 'Fewer sources' : `+${rest.length} more sources`}
+          </button>
+          <div id={panelId} hidden={!showAll} className="w-full">
+            <div className="flex flex-wrap gap-1.5">{rest.map(link)}</div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

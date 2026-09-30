@@ -59,6 +59,31 @@ def _mock_direct_resolution(
     )
 
 
+def _send_response(
+    status: int,
+    text: str,
+    *,
+    content_type: str = "text/plain",
+    pinned_url: str = "https://93.184.216.34/",
+    headers: dict[str, str] | None = None,
+    request: httpx.Request | None = None,
+) -> httpx.Response:
+    """Build a real streaming-capable response for patched ``AsyncClient.send``.
+
+    The direct strategy consumes final bodies through
+    ``response.aiter_bytes()`` and re-materializes them, so stub responses
+    must be real ``httpx.Response`` objects (MagicMocks have no usable
+    byte stream).
+    """
+    merged = {"content-type": content_type, **(headers or {})}
+    return httpx.Response(
+        status,
+        text=text,
+        headers=merged,
+        request=request or httpx.Request("GET", pinned_url),
+    )
+
+
 @pytest.fixture
 def fetch_policy():
     # Create a policy with very permissive settings for testing
@@ -192,15 +217,15 @@ class TestDirectStrategy:
     async def test_fetch_success(self, fetch_policy):
         strategy = DirectFetchStrategy(fetch_policy)
 
-        # Mock httpx response
-        mock_response = MagicMock()
-        mock_response.text = "<html><body><p>This is a sufficiently long content for testing purposes to pass validation</p></body></html>"
-        mock_response.headers = {"content-type": "text/html"}
-        mock_response.raise_for_status = MagicMock()
+        response = _send_response(
+            200,
+            "<html><body><p>This is a sufficiently long content for testing purposes to pass validation</p></body></html>",
+            content_type="text/html",
+        )
 
         with (
             _mock_direct_resolution("https://example.com"),
-            patch("httpx.AsyncClient.get", return_value=mock_response),
+            patch("httpx.AsyncClient.send", new_callable=AsyncMock, return_value=response),
         ):
             result = await strategy.fetch("https://example.com")
 
@@ -209,6 +234,9 @@ class TestDirectStrategy:
         assert result.url == "https://example.com"
         assert "sufficiently long content" in result.content
         assert result.strategy_used == "direct"
+        assert result.source_url == "https://example.com"
+        assert result.final_url == "https://example.com"
+        assert result.content_type == "text/html"
 
     @pytest.mark.asyncio
     async def test_fetch_failure(self, fetch_policy):
@@ -216,7 +244,11 @@ class TestDirectStrategy:
 
         with (
             _mock_direct_resolution("https://example.com"),
-            patch("httpx.AsyncClient.get", side_effect=Exception("Network error")),
+            patch(
+                "httpx.AsyncClient.send",
+                new_callable=AsyncMock,
+                side_effect=Exception("Network error"),
+            ),
         ):
             result = await strategy.fetch("https://example.com")
 
@@ -225,19 +257,22 @@ class TestDirectStrategy:
     @pytest.mark.asyncio
     async def test_redirect_to_link_local_is_blocked(self, fetch_policy):
         strategy = DirectFetchStrategy(fetch_policy)
-        redirect = MagicMock()
-        redirect.status_code = 302
-        redirect.headers = {"location": "http://169.254.169.254/latest/meta-data/"}
-        redirect.text = "This body must not be treated as successful redirected content"
+        redirect = _send_response(
+            302,
+            "This body must not be treated as successful redirected content",
+            headers={"location": "http://169.254.169.254/latest/meta-data/"},
+        )
         with (
             patch(
-                "httpx.AsyncClient.get", new_callable=AsyncMock, return_value=redirect
-            ) as mock_get,
+                "httpx.AsyncClient.send",
+                new_callable=AsyncMock,
+                return_value=redirect,
+            ) as mock_send,
             pytest.raises(SsrfViolation, match="blocked IP"),
         ):
             await strategy.fetch("https://8.8.8.8/start")
 
-        mock_get.assert_awaited_once()
+        mock_send.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_nonstandard_port_is_blocked(self, fetch_policy):
@@ -250,14 +285,15 @@ class TestDirectStrategy:
     async def test_redirect_to_policy_blocked_domain_stops_fetch(self, fetch_policy):
         blocked_policy = fetch_policy.model_copy(update={"blocked_domains": ["example.com"]})
         strategy = DirectFetchStrategy(blocked_policy)
-        redirect = MagicMock()
-        redirect.status_code = 302
-        redirect.headers = {"location": "https://example.com/private"}
-        success = MagicMock()
-        success.status_code = 200
-        success.headers = {"content-type": "text/plain"}
-        success.text = "This content must not be returned from a blocked redirect target"
-        success.raise_for_status = MagicMock()
+        redirect = _send_response(
+            302,
+            "",
+            headers={"location": "https://example.com/private"},
+        )
+        success = _send_response(
+            200,
+            "This content must not be returned from a blocked redirect target",
+        )
 
         with (
             _mock_direct_resolution(
@@ -266,29 +302,28 @@ class TestDirectStrategy:
                 addresses=("8.8.8.8",),
             ),
             patch(
-                "httpx.AsyncClient.get",
+                "httpx.AsyncClient.send",
                 new_callable=AsyncMock,
                 side_effect=[redirect, success],
-            ) as mock_get,
+            ) as mock_send,
             pytest.raises(SsrfViolation, match="blocked by fetch policy"),
         ):
             await strategy.fetch("https://8.8.8.8/start")
 
-        mock_get.assert_awaited_once()
+        mock_send.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_fetch_does_not_patch_process_dns(self, fetch_policy):
         strategy = DirectFetchStrategy(fetch_policy)
         original_getaddrinfo = socket.getaddrinfo
-        response = MagicMock()
-        response.status_code = 200
-        response.headers = {"content-type": "text/plain"}
-        response.text = "This is sufficiently long direct content for testing purposes"
-        response.raise_for_status = MagicMock()
 
-        async def assert_dns_is_unpatched(*_args, **_kwargs):
+        async def assert_dns_is_unpatched(request, *args, **kwargs):
             assert socket.getaddrinfo is original_getaddrinfo
-            return response
+            return _send_response(
+                200,
+                "This is sufficiently long direct content for testing purposes",
+                request=request,
+            )
 
         with (
             _mock_direct_resolution(
@@ -296,7 +331,11 @@ class TestDirectStrategy:
                 host="8.8.8.8",
                 addresses=("8.8.8.8",),
             ),
-            patch("httpx.AsyncClient.get", side_effect=assert_dns_is_unpatched),
+            patch(
+                "httpx.AsyncClient.send",
+                new_callable=AsyncMock,
+                side_effect=assert_dns_is_unpatched,
+            ),
         ):
             result = await strategy.fetch("https://8.8.8.8/article")
 
@@ -305,26 +344,29 @@ class TestDirectStrategy:
     @pytest.mark.asyncio
     async def test_fetch_pins_connection_to_validated_ip(self, fetch_policy):
         strategy = DirectFetchStrategy(fetch_policy)
-        response = MagicMock()
-        response.status_code = 200
-        response.headers = {"content-type": "text/plain"}
-        response.text = "This is sufficiently long direct content for testing purposes"
-        response.raise_for_status = MagicMock()
+
+        async def fake_send(request, *args, **kwargs):
+            return _send_response(
+                200,
+                "This is sufficiently long direct content for testing purposes",
+                request=request,
+            )
 
         with (
             _mock_direct_resolution("https://example.com/article?q=1"),
             patch(
-                "httpx.AsyncClient.get", new_callable=AsyncMock, return_value=response
-            ) as mock_get,
+                "httpx.AsyncClient.send", new_callable=AsyncMock, side_effect=fake_send
+            ) as mock_send,
         ):
             result = await strategy.fetch("https://example.com/article?q=1")
 
         assert result is not None
-        request_call = mock_get.await_args
-        assert request_call is not None
-        assert request_call.args[0] == "https://93.184.216.34/article?q=1"
-        assert request_call.kwargs["headers"]["Host"] == "example.com"
-        assert request_call.kwargs["extensions"]["sni_hostname"] == "example.com"
+        send_call = mock_send.await_args
+        assert send_call is not None
+        sent_request = send_call.args[0]
+        assert str(sent_request.url) == "https://93.184.216.34/article?q=1"
+        assert sent_request.headers["Host"] == "example.com"
+        assert sent_request.extensions["sni_hostname"] == "example.com"
 
     @pytest.mark.asyncio
     async def test_redirect_to_policy_blocked_domain_with_trailing_dot_is_blocked(
@@ -333,14 +375,15 @@ class TestDirectStrategy:
         """DNS-equivalent trailing-dot hostnames must not bypass blocked_domains."""
         blocked_policy = fetch_policy.model_copy(update={"blocked_domains": ["example.com"]})
         strategy = DirectFetchStrategy(blocked_policy)
-        redirect = MagicMock()
-        redirect.status_code = 302
-        redirect.headers = {"location": "https://example.com./private"}
-        success = MagicMock()
-        success.status_code = 200
-        success.headers = {"content-type": "text/plain"}
-        success.text = "This content must not be returned from a trailing-dot bypass"
-        success.raise_for_status = MagicMock()
+        redirect = _send_response(
+            302,
+            "",
+            headers={"location": "https://example.com./private"},
+        )
+        success = _send_response(
+            200,
+            "This content must not be returned from a trailing-dot bypass",
+        )
 
         with (
             _mock_direct_resolution(
@@ -349,25 +392,27 @@ class TestDirectStrategy:
                 addresses=("8.8.8.8",),
             ),
             patch(
-                "httpx.AsyncClient.get",
+                "httpx.AsyncClient.send",
                 new_callable=AsyncMock,
                 side_effect=[redirect, success],
-            ) as mock_get,
+            ) as mock_send,
             pytest.raises(SsrfViolation, match="blocked by fetch policy"),
         ):
             await strategy.fetch("https://8.8.8.8/start")
 
-        mock_get.assert_awaited_once()
+        mock_send.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_idn_hostname_is_idna_encoded(self, fetch_policy):
         """Unicode hostnames must be encoded to IDNA before the Host header is set."""
         strategy = DirectFetchStrategy(fetch_policy)
-        response = MagicMock()
-        response.status_code = 200
-        response.headers = {"content-type": "text/plain"}
-        response.text = "This is sufficiently long content for IDN fetch validation"
-        response.raise_for_status = MagicMock()
+
+        async def fake_send(request, *args, **kwargs):
+            return _send_response(
+                200,
+                "This is sufficiently long content for IDN fetch validation",
+                request=request,
+            )
 
         with (
             _mock_direct_resolution(
@@ -375,26 +420,26 @@ class TestDirectStrategy:
                 host="xn--bcher-kva.example",
             ),
             patch(
-                "httpx.AsyncClient.get", new_callable=AsyncMock, return_value=response
-            ) as mock_get,
+                "httpx.AsyncClient.send", new_callable=AsyncMock, side_effect=fake_send
+            ) as mock_send,
         ):
             result = await strategy.fetch("https://bücher.example:443/article")
 
         assert result is not None
-        request_call = mock_get.await_args
-        assert request_call is not None
-        assert request_call.kwargs["headers"]["Host"] == "xn--bcher-kva.example:443"
-        assert request_call.kwargs["extensions"]["sni_hostname"] == "xn--bcher-kva.example"
+        send_call = mock_send.await_args
+        assert send_call is not None
+        sent_request = send_call.args[0]
+        assert sent_request.headers["Host"] == "xn--bcher-kva.example:443"
+        assert sent_request.extensions["sni_hostname"] == "xn--bcher-kva.example"
 
     @pytest.mark.asyncio
     async def test_address_fallback_tries_next_address_when_first_unreachable(self, fetch_policy):
         """When ``addresses[0]`` raises a network error, the next address must be tried."""
         strategy = DirectFetchStrategy(fetch_policy)
-        response = MagicMock()
-        response.status_code = 200
-        response.headers = {"content-type": "text/plain"}
-        response.text = "This is sufficiently long content reached via fallback address"
-        response.raise_for_status = MagicMock()
+        success = _send_response(
+            200,
+            "This is sufficiently long content reached via fallback address",
+        )
 
         with (
             _mock_direct_resolution(
@@ -402,19 +447,19 @@ class TestDirectStrategy:
                 addresses=("2606:4700:4700::1111", "93.184.216.34"),
             ),
             patch(
-                "httpx.AsyncClient.get",
+                "httpx.AsyncClient.send",
                 new_callable=AsyncMock,
-                side_effect=[httpx.ConnectError("IPv6 unreachable"), response],
-            ) as mock_get,
+                side_effect=[httpx.ConnectError("IPv6 unreachable"), success],
+            ) as mock_send,
         ):
             result = await strategy.fetch("https://example.com/article")
 
         assert result is not None
-        assert mock_get.await_count == 2
-        first_call = mock_get.await_args_list[0]
-        second_call = mock_get.await_args_list[1]
-        assert first_call.args[0] == "https://[2606:4700:4700::1111]/article"
-        assert second_call.args[0] == "https://93.184.216.34/article"
+        assert mock_send.await_count == 2
+        first_request = mock_send.await_args_list[0].args[0]
+        second_request = mock_send.await_args_list[1].args[0]
+        assert str(first_request.url) == "https://[2606:4700:4700::1111]/article"
+        assert str(second_request.url) == "https://93.184.216.34/article"
 
     @pytest.mark.asyncio
     async def test_address_fallback_returns_none_when_all_addresses_fail(self, fetch_policy):
@@ -427,7 +472,7 @@ class TestDirectStrategy:
                 addresses=("2606:4700:4700::1111", "2001:4860:4860::8888"),
             ),
             patch(
-                "httpx.AsyncClient.get",
+                "httpx.AsyncClient.send",
                 new_callable=AsyncMock,
                 side_effect=[
                     httpx.ConnectError("first address unreachable"),
@@ -1418,7 +1463,7 @@ class TestFetchService:
         assert result is not None
         assert result.cached is True
         assert "sufficiently long cached content" in result.content
-        fetch_service.cache.get.assert_called_once_with("https://example.com")
+        fetch_service.cache.get.assert_called_once_with("https://example.com", extract="article")
 
     @pytest.mark.asyncio
     async def test_cache_miss_and_store(self, fetch_service):
@@ -1449,7 +1494,7 @@ class TestFetchService:
         assert result is not None
         assert result.cached is False
         assert "sufficiently long fetched content" in result.content
-        fetch_service.cache.get.assert_called_once_with("https://example.com")
+        fetch_service.cache.get.assert_called_once_with("https://example.com", extract="article")
         fetch_service.cache.set.assert_called_once()
 
     @pytest.mark.asyncio
@@ -1838,7 +1883,6 @@ class TestFetchService:
         DNS-validation call, so subsequent hops see a strictly smaller
         (or equal) timeout than the first hop.
         """
-        from unittest.mock import MagicMock
 
         from orchestrator.services.fetch.strategies import direct as _direct_module
         from orchestrator.tools.ssrf_guard import ValidatedUrl
@@ -1866,11 +1910,11 @@ class TestFetchService:
                 )
 
             def _redirect_response():
-                response = MagicMock()
-                response.status_code = 302
-                response.headers = {"location": "/hop_next"}
-                response.raise_for_status = MagicMock()
-                return response
+                return _send_response(
+                    302,
+                    "",
+                    headers={"location": "/hop_next"},
+                )
 
             with (
                 patch(
@@ -1879,7 +1923,7 @@ class TestFetchService:
                     side_effect=fast_validate,
                 ) as mock_validate,
                 patch(
-                    "httpx.AsyncClient.get",
+                    "httpx.AsyncClient.send",
                     new_callable=AsyncMock,
                     return_value=_redirect_response(),
                 ),
@@ -1933,7 +1977,6 @@ class TestFetchService:
         """
         import asyncio as _asyncio
         import time as _time
-        from unittest.mock import MagicMock
 
         from orchestrator.services.fetch.strategies import direct as _direct_module
 
@@ -1943,7 +1986,7 @@ class TestFetchService:
             _direct_module._PER_FETCH_DEADLINE_SECONDS = 0.3
             _direct_module._PER_ADDRESS_TIMEOUT_SECONDS = 2.0  # very generous
 
-            async def slow_drip_get(*args, **kwargs):
+            async def slow_drip_send(*args, **kwargs):
                 # Simulate a server that sends a byte every 100ms but
                 # never completes. The inactivity timeout (2s) is large
                 # enough that it never trips; the wall-clock deadline
@@ -1952,18 +1995,17 @@ class TestFetchService:
                 while _time.monotonic() - start < 5.0:
                     await _asyncio.sleep(0.1)
                 # Should never reach here — ``asyncio.wait_for`` cancels us.
-                response = MagicMock()
-                response.status_code = 200
-                response.headers = {"content-type": "text/plain"}
-                response.text = "should not be returned"
-                return response
+                return _send_response(
+                    200,
+                    "should not be returned",
+                )
 
             with (
                 _mock_direct_resolution("https://example.com/article"),
                 patch(
-                    "httpx.AsyncClient.get",
+                    "httpx.AsyncClient.send",
                     new_callable=AsyncMock,
-                    side_effect=slow_drip_get,
+                    side_effect=slow_drip_send,
                 ),
             ):
                 started = _time.monotonic()
@@ -2146,10 +2188,10 @@ class TestFetchService:
                 addresses=addresses,
             ),
             patch(
-                "httpx.AsyncClient.get",
+                "httpx.AsyncClient.send",
                 new_callable=AsyncMock,
                 side_effect=slow_connect,
-            ) as mock_get,
+            ) as mock_send,
         ):
             result = await strategy.fetch("https://example.com/article")
         elapsed = _time.monotonic() - started
@@ -2166,7 +2208,7 @@ class TestFetchService:
         # Bound on attempts: at most the address cap, or fewer if the
         # budget runs out before reaching it. Either way, well below the
         # naive ``len(addresses)`` that the bug allowed.
-        assert mock_get.await_count <= _MAX_ADDRESS_ATTEMPTS
+        assert mock_send.await_count <= _MAX_ADDRESS_ATTEMPTS
         # Wallclock must be less than ``_PER_FETCH_DEADLINE_SECONDS + slack``
         # rather than ``len(addresses) * timeout``.
         assert elapsed < _PER_FETCH_DEADLINE_SECONDS + 1.0
@@ -2190,17 +2232,17 @@ class TestFetchService:
                 addresses=("93.184.216.34", "93.184.216.35"),
             ),
             patch(
-                "httpx.AsyncClient.get",
+                "httpx.AsyncClient.send",
                 new_callable=AsyncMock,
                 side_effect=slow_connect,
-            ) as mock_get,
+            ) as mock_send,
         ):
             result = await strategy.fetch("https://example.com/article")
         elapsed = _time.monotonic() - started
 
         assert result is None
         # The first attempt consumes the budget; the second short-circuits.
-        assert mock_get.await_count <= 2
+        assert mock_send.await_count <= 2
         # Wallclock bounded by per-attempt cap, not by ``2 × timeout``.
         from orchestrator.services.fetch.strategies.direct import (
             _PER_ADDRESS_TIMEOUT_SECONDS,
@@ -2230,7 +2272,6 @@ class TestFetchService:
         """
         import asyncio as _asyncio
         import time as _time
-        from unittest.mock import MagicMock
 
         from orchestrator.services.fetch.strategies import direct as _direct_module
 
@@ -2245,24 +2286,24 @@ class TestFetchService:
 
             call_log: list[tuple[str, str]] = []
 
-            async def slow_redirect_then_fail(*args, **kwargs):
+            async def slow_redirect_then_fail(request, *args, **kwargs):
                 # The first call sleeps past the deadline so the shared
-                # budget is exhausted; we then return a synthetic 302
-                # response that triggers the redirect loop's next
-                # iteration. The second iteration's address attempt
-                # should short-circuit because the shared budget is
-                # already past.
+                # budget is exhausted; under the streaming implementation
+                # ``asyncio.wait_for`` cancels it before the synthetic
+                # redirect is produced, so subsequent calls short-circuit
+                # on the exhausted shared budget.
                 n = len(call_log) + 1
                 call_log.append(("hop", str(n)))
                 if n == 1:
                     await _asyncio.sleep(0.5)  # exceeds 0.3s deadline
                     # Synthetic 302 response — gets the redirect loop
                     # to a second iteration.
-                    response = MagicMock()
-                    response.status_code = 302
-                    response.headers = {"location": "/hop2"}
-                    response.raise_for_status = MagicMock()
-                    return response
+                    return _send_response(
+                        302,
+                        "",
+                        pinned_url=str(request.url),
+                        headers={"location": "/hop2"},
+                    )
                 # Subsequent calls: short sleep (the budget should
                 # already be exhausted).
                 await _asyncio.sleep(0.05)
@@ -2272,7 +2313,7 @@ class TestFetchService:
             with (
                 _mock_direct_resolution("https://example.com/article"),
                 patch(
-                    "httpx.AsyncClient.get",
+                    "httpx.AsyncClient.send",
                     new_callable=AsyncMock,
                     side_effect=slow_redirect_then_fail,
                 ),

@@ -513,6 +513,7 @@ async def stream_sse_chat(
                     db_pool=db_pool,
                     trusted_spawn_context=trusted_spawn_context,
                     disable_memory_write=disable_memory_write,
+                    conversation_id=conversation_uuid,
                 )
                 pending_tool_calls: list[str] = []
                 # Free plans cap tool rounds per turn; paid plans get the

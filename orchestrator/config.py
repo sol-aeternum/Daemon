@@ -6,7 +6,7 @@ from functools import lru_cache
 import os
 from typing import ClassVar, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -227,6 +227,82 @@ class Settings(BaseSettings):
     # "not found", "access denied"). Empty means "no signature-based
     # rejection".
     fetch_error_signatures: str = ""
+
+    # ===== WEB SNAPSHOT STORAGE (conversation-scoped web reading) =====
+    # Deployment-wide operational bounds for retained web reading snapshots
+    # (`web_snapshots`). They are storage/admission limits, not plan
+    # upgrades: provider qualification and account compute budgets stay in
+    # `orchestrator/entitlements/` and are never derived from these values.
+    #
+    # Retention runs from retrieval time and is immutable; reading a snapshot
+    # never extends it.
+    web_snapshot_retention_days: int = Field(default=30, ge=1)
+    # Decoded HTTP response ceiling, enforced while streaming (Content-Length
+    # alone is insufficient, including for compressed responses). Consumed by
+    # the fetch layer, declared here so both Python services share one knob.
+    web_snapshot_max_response_bytes: int = Field(default=2 * 1024 * 1024, ge=1)
+    # Extracted page text ceiling in UTF-8 bytes. Oversize pages are rejected
+    # rather than stored as a falsely complete snapshot.
+    web_snapshot_max_content_bytes: int = Field(default=1 * 1024 * 1024, ge=1)
+    # Per-conversation ceilings. Encrypted payload bytes and row count; the
+    # first one reached binds and admission fails closed without evicting a
+    # still-retained source.
+    web_snapshot_max_conversation_bytes: int = Field(default=16 * 1024 * 1024, ge=1)
+    web_snapshot_max_conversation_count: int = Field(default=64, ge=1)
+    # Per-account ceilings across all conversations.
+    web_snapshot_max_account_bytes: int = Field(default=128 * 1024 * 1024, ge=1)
+    web_snapshot_max_account_count: int = Field(default=512, ge=1)
+    # Additional per-turn admission bound, separate from the tool-loop limits.
+    web_snapshot_max_new_per_turn: int = Field(default=8, ge=1)
+    # Returned section size in Unicode code points. The default can still be
+    # shrunk by the caller to fit the active context allowance; the maximum is
+    # a hard ceiling on a single returned section.
+    web_snapshot_default_chunk_chars: int = Field(default=6000, ge=1)
+    web_snapshot_max_chunk_chars: int = Field(default=12000, ge=1)
+
+    @model_validator(mode="after")
+    def _validate_web_snapshot_bounds(self) -> Settings:
+        """Fail closed on incoherent web snapshot bounds.
+
+        Each field is already positive via its ``ge=1`` constraint; this
+        validator only rejects combinations that would make a limit dead
+        configuration or silently unenforceable:
+
+        - a default chunk above the maximum chunk could never be honored;
+        - an extracted-text ceiling above the decoded-response ceiling, or a
+          conversation ceiling above the account ceiling, can never bind;
+        - a conversation count ceiling above the account count ceiling can
+          never bind.
+        """
+        if self.web_snapshot_default_chunk_chars > self.web_snapshot_max_chunk_chars:
+            raise ValueError(
+                "web_snapshot_default_chunk_chars "
+                f"({self.web_snapshot_default_chunk_chars}) must not exceed "
+                f"web_snapshot_max_chunk_chars ({self.web_snapshot_max_chunk_chars})"
+            )
+        if self.web_snapshot_max_content_bytes > self.web_snapshot_max_response_bytes:
+            raise ValueError(
+                "web_snapshot_max_content_bytes "
+                f"({self.web_snapshot_max_content_bytes}) must not exceed "
+                "web_snapshot_max_response_bytes "
+                f"({self.web_snapshot_max_response_bytes}); extracted text cannot "
+                "exceed the decoded response it came from"
+            )
+        if self.web_snapshot_max_conversation_bytes > self.web_snapshot_max_account_bytes:
+            raise ValueError(
+                "web_snapshot_max_conversation_bytes "
+                f"({self.web_snapshot_max_conversation_bytes}) must not exceed "
+                "web_snapshot_max_account_bytes "
+                f"({self.web_snapshot_max_account_bytes})"
+            )
+        if self.web_snapshot_max_conversation_count > self.web_snapshot_max_account_count:
+            raise ValueError(
+                "web_snapshot_max_conversation_count "
+                f"({self.web_snapshot_max_conversation_count}) must not exceed "
+                "web_snapshot_max_account_count "
+                f"({self.web_snapshot_max_account_count})"
+            )
+        return self
 
     # xAI API (for Imagine image/video generation)
     xai_api_key: str = ""

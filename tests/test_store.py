@@ -839,3 +839,67 @@ async def test_get_recent_messages_returns_normalized_messages(
     assert isinstance(result["tool_results"], list)
     assert isinstance(result["metadata"], dict)
     assert result["metadata"]["key"] == "value"
+
+
+@pytest.mark.asyncio
+async def test_list_conversations_returns_derived_metadata(
+    memory_store: MemoryStore, mock_db_pool: AsyncMock
+) -> None:
+    """Derived listing metadata replaces the stored cache in the response."""
+    stale_updated_at = datetime(2025, 1, 1, tzinfo=None)
+    derived_activity_at = datetime(2026, 9, 30, tzinfo=None)
+    mock_db_pool.fetch.return_value = [
+        MockRecord(
+            id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            title="legacy stale chat",
+            message_count=0,
+            updated_at=stale_updated_at,
+            last_activity_at=stale_updated_at,
+            actual_message_count=3,
+            effective_last_activity_at=derived_activity_at,
+        )
+    ]
+
+    results = await memory_store.list_conversations(uuid.uuid4())
+
+    assert [c["message_count"] for c in results] == [3]
+    assert [c["last_activity_at"] for c in results] == [derived_activity_at]
+    assert results[0]["updated_at"] == stale_updated_at
+    assert "actual_message_count" not in results[0]
+    assert "effective_last_activity_at" not in results[0]
+
+
+@pytest.mark.asyncio
+async def test_get_conversation_returns_derived_metadata(
+    memory_store: MemoryStore, mock_db_pool: AsyncMock
+) -> None:
+    stale_time = datetime(2025, 6, 1, tzinfo=None)
+    derived_time = datetime(2026, 9, 30, tzinfo=None)
+    mock_db_pool.fetchrow.return_value = MockRecord(
+        id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        title="legacy stale chat",
+        message_count=0,
+        updated_at=stale_time,
+        last_activity_at=stale_time,
+        actual_message_count=2,
+        effective_last_activity_at=derived_time,
+    )
+
+    conversation = await memory_store.get_conversation(uuid.uuid4())
+
+    assert conversation is not None
+    assert conversation["message_count"] == 2
+    assert conversation["last_activity_at"] == derived_time
+    assert conversation["updated_at"] == stale_time
+    assert "actual_message_count" not in conversation
+
+
+@pytest.mark.asyncio
+async def test_get_conversation_returns_none_when_missing(
+    memory_store: MemoryStore, mock_db_pool: AsyncMock
+) -> None:
+    mock_db_pool.fetchrow.return_value = None
+
+    assert await memory_store.get_conversation(uuid.uuid4()) is None

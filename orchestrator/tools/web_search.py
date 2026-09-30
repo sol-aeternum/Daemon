@@ -12,13 +12,24 @@ dispatch and not like a free local helper:
   ceiling on the caller's existing account compute scope before any byte leaves
   the process, so budget, rate and concurrency ceilings apply to search exactly
   as they do to inference. A confirmed call settles its pinned provider price;
-  a timeout, cancellation, transport or HTTP failure, or an out-of-contract
+  an after-dispatch timeout, cancellation, transport or HTTP failure, or an out-of-contract
   body settles the whole hold, which is the ledger's existing conservative
   unknown-usage contract.
-* **Bounded.** One call returns at most :data:`MAX_RESULTS` results inside a
-  :data:`SEARCH_DEADLINE_S` wall deadline, with a bounded query, a bounded
-  response body and bounded output fields. Redirects and transport retries are
-  disabled, so a call is one request to one pinned endpoint.
+* **Paced immediately before send.** One provider credential is shared by every
+  backend process, and the provider enforces its window limits across all of
+  them, so admission is coordinated through the shared Redis pacer
+  (:mod:`orchestrator.services.search_pacing`) after account reservation and
+  immediately before dispatch is marked and handed to the HTTP client. A local
+  refusal or cancellation before that mark settles the temporary hold at zero.
+  If Redis is unavailable the call fails closed rather than bursting through
+  unpaced. Pacing is admission control only — never an automatic retry and
+  never a provider fallback.
+* **Bounded provider work.** Admission pacing and the provider round trip share
+  a :data:`SEARCH_DEADLINE_S` deadline, with at most :data:`MAX_RESULTS` results,
+  a bounded query, response body and output fields. Account acquisition consumes
+  the same work budget, but shielded reservation recovery and settlement may
+  finish afterward; see ``docs/SEARCH_SERVICE_APPROVALS.md``. Redirects and
+  transport retries are disabled, so a call is one request to one fixed HTTPS endpoint.
 * **Sanitized.** Refusals and failures return a fixed message. Provider error
   text is never read, logged or returned, and neither the query, the credential
   nor the request URL is ever interpolated into a message or a log record:
@@ -34,6 +45,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Final
@@ -45,12 +57,21 @@ from typing_extensions import override
 from orchestrator.compute_runtime import (
     ComputeUnavailable,
     ToolServiceApproval,
+    ToolCallCharge,
     approved_tool_service,
     metered_tool_call,
 )
+from orchestrator.services import search_pacing
+from orchestrator.services.search_pacing import PacingRefused, PacingUnavailable
 from orchestrator.tools.registry import Tool
 
 logger = logging.getLogger(__name__)
+
+
+async def shared_search_pacer() -> search_pacing.SearchPacerLike:
+    """The process-wide shared pacer (monkeypatch target for tests)."""
+    return await search_pacing.shared_pacer()
+
 
 #: Inference-policy tool service identity shared by every search adapter. The
 #: policy entry must name exactly these, so a repurposed entry cannot authorize
@@ -66,8 +87,16 @@ SEARCH_CAPABILITY: Final[str] = "web_research"
 MAX_RESULTS: Final[int] = 10
 DEFAULT_RESULTS: Final[int] = 5
 
-#: One wall-clock deadline for the whole provider round trip, reads included.
+#: One wall-clock deadline for the whole operation — shared admission pacing
+#: and the provider round trip included. Admission may wait at most the
+#: deadline minus :data:`NETWORK_RESERVE_S`; the network leg gets whatever
+#: remains. Shielded acquisition recovery and account settlement may finish
+#: afterward; this is a work deadline, not a strict whole-operation return bound.
 SEARCH_DEADLINE_S: Final[float] = 30.0
+
+#: Wall-clock floor reserved for the network leg after a paced admission, so a
+#: queued call that wins a slot late still has bounded time on the wire.
+NETWORK_RESERVE_S: Final[float] = 5.0
 
 #: Tool-level query bounds, applied before the provider's own wire limit. The
 #: encoded bound is independent and tighter than 2000 four-byte characters, so a
@@ -118,23 +147,31 @@ _TIMEOUT: Final[str] = "Search provider timed out"
 _UNREACHABLE: Final[str] = "Search provider could not be reached"
 _REJECTED: Final[str] = "Search provider rejected the request"
 _CREDENTIAL_REJECTED: Final[str] = "Search provider rejected the configured credential"
+_PAYMENT_REQUIRED: Final[str] = "Search provider requires payment before further searches"
 _LIMITED: Final[str] = "Search provider refused under a rate or billing limit"
 _HTTP_ERROR: Final[str] = "Search provider returned an error"
 _INVALID_RESPONSE: Final[str] = "Search provider returned an invalid response"
 _TOO_LARGE: Final[str] = "Search response was too large"
 _FAILED: Final[str] = "Search request failed"
+#: Shared pacing refusals. Both are fixed text: the model may try again later,
+#: but nothing here retries automatically and nothing was sent. Temporary
+#: account reservations settle at zero for these local pre-dispatch failures.
+_PACING_BUSY: Final[str] = "Search is busy with other requests; try again shortly"
+_PACING_UNAVAILABLE: Final[str] = "Search is temporarily unavailable"
 
 
 class _SearchFailure(Exception):
     """A sanitized search failure whose message is safe to show a model.
 
-    ``category`` is a closed-vocabulary label for logs only. Neither field ever
+    ``category`` is a closed-vocabulary label for logs only. ``status`` is the
+    provider HTTP status when the failure is one, else None. Neither field ever
     carries query text, a credential, a URL or provider response text.
     """
 
-    def __init__(self, message: str, *, category: str) -> None:
+    def __init__(self, message: str, *, category: str, status: int | None = None) -> None:
         self.message = message
         self.category = category
+        self.status = status
         super().__init__(message)
 
 
@@ -393,11 +430,20 @@ def _normalized_results(
 
 
 def _status_failure(status: int) -> tuple[str, str]:
-    """A fixed message and log label for one upstream status code."""
+    """A fixed message and log label for one upstream status code.
+
+    402 is standard "Payment Required" billing semantics and gets its own
+    message. 429 is the provider's documented rate-limit response; 432/433 are
+    its rate-or-quota family whose semantics its public documentation does not
+    define, so they stay in the honest rate-or-billing family rather than
+    inventing distinctions.
+    """
     category = f"http_{status}"
     if status in (401, 403):
         return _CREDENTIAL_REJECTED, category
-    if status in (402, 429, 432, 433):
+    if status == 402:
+        return _PAYMENT_REQUIRED, category
+    if status in (429, 432, 433):
         return _LIMITED, category
     if 400 <= status < 500:
         return _REJECTED, category
@@ -482,6 +528,7 @@ class WebSearchTool(Tool):
         *,
         provider: str = "brave",
         _transport: httpx.AsyncBaseTransport | None = None,
+        pacer: search_pacing.SearchPacerLike | None = None,
     ) -> None:
         # The credential and the operator's provider selection are read from
         # Settings by the registry factory and passed in here — do not call
@@ -490,6 +537,9 @@ class WebSearchTool(Tool):
         self.provider = provider
         #: Test seam. Production always builds the pinned no-retry transport.
         self._transport = _transport
+        #: Test/dependency seam. Production resolves the process-wide shared
+        #: pacer lazily (see :func:`shared_search_pacer`).
+        self._pacer = pacer
 
     # ------------------------------------------------------------ availability
     def _adapter(self) -> _SearchAdapter | None:
@@ -555,6 +605,7 @@ class WebSearchTool(Tool):
 
         query = ""
         results: list[dict[str, str]] = []
+        deadline = time.monotonic() + SEARCH_DEADLINE_S
         try:
             # Argument validation first: a refusal here costs nothing, reserves
             # nothing and touches no network.
@@ -563,8 +614,20 @@ class WebSearchTool(Tool):
             service = self._service()
             if service is None:
                 return _refusal(_SERVICE_UNAVAILABLE)
-            async with metered_tool_call(service, required_capability=SEARCH_CAPABILITY) as charge:
-                payload = await self._dispatch(adapter, credential, query, count)
+            async with metered_tool_call(
+                service,
+                required_capability=SEARCH_CAPABILITY,
+                dispatch_aware=True,
+                work_deadline=deadline,
+            ) as charge:
+                payload = await self._dispatch(
+                    adapter,
+                    credential,
+                    query,
+                    count,
+                    deadline=deadline,
+                    charge=charge,
+                )
                 results = _normalized_results(adapter, payload, count)
                 units = _reported_units(adapter, payload)
                 if units is not None and units > 1:
@@ -572,21 +635,40 @@ class WebSearchTool(Tool):
                     # The ledger suspends an account if this exceeds its hold.
                     charge.confirm(units=units)
                     logger.warning(
-                        "Search provider reported unexpected units",
-                        extra={"search_provider": adapter.provider},
+                        "Search provider reported unexpected units: provider=%s",
+                        adapter.provider,
                     )
                     raise ComputeUnavailable(
                         "tool_price_exceeded", "Search provider reported unexpected billable units"
                     )
                 else:
                     charge.confirm()
+        except PacingUnavailable:
+            logger.warning(
+                "Search pacing unavailable: provider=%s category=pacing_unavailable",
+                adapter.provider,
+            )
+            return _refusal(_PACING_UNAVAILABLE)
+        except PacingRefused:
+            logger.warning(
+                "Search pacing refused: provider=%s category=pacing_busy", adapter.provider
+            )
+            return _refusal(_PACING_BUSY)
+        except TimeoutError:
+            return _refusal(_TIMEOUT)
         except ComputeUnavailable:
             # Budget, capability, scope, approval and settlement refusals stop
             # the operation instead of becoming model-visible retry bait.
             raise
         except _SearchFailure as failure:
+            # Closed-vocabulary fields are rendered into the message itself, so
+            # they survive any formatter; the extra fields remain for
+            # structured consumers. No query, credential, URL or body here.
             logger.warning(
-                "Search call failed",
+                "Search call failed: provider=%s status=%s category=%s",
+                adapter.provider,
+                "-" if failure.status is None else failure.status,
+                failure.category,
                 extra={
                     "search_provider": adapter.provider,
                     "search_failure": failure.category,
@@ -596,21 +678,33 @@ class WebSearchTool(Tool):
         return json.dumps({"query": query, "results": results, "total_found": len(results)})
 
     async def _dispatch(
-        self, adapter: _SearchAdapter, credential: str, query: str, count: int
+        self,
+        adapter: _SearchAdapter,
+        credential: str,
+        query: str,
+        count: int,
+        *,
+        deadline: float,
+        charge: ToolCallCharge,
     ) -> dict[str, Any]:
         """One bounded provider round trip, classified into sanitized failures.
 
-        Never retried: a second attempt would be a second paid call this layer
-        did not reserve. Cancellation propagates, so a cancelled search is
-        settled conservatively by the reservation holder rather than reported as
-        a provider timeout.
+        The wall deadline covers admission pacing plus this round trip, so the
+        network leg gets the remaining time, clamped to
+        :data:`SEARCH_DEADLINE_S`. Never retried: a second attempt would be a
+        second paid call this layer did not reserve. Cancellation propagates,
+        so cancellation before the dispatch mark settles zero, and cancellation
+        after the mark settles conservatively instead of becoming a timeout.
         """
+        remaining = deadline - time.monotonic()
         try:
             return await asyncio.wait_for(
-                self._round_trip(adapter, credential, query, count),
-                timeout=SEARCH_DEADLINE_S,
+                self._round_trip(
+                    adapter, credential, query, count, deadline=deadline, charge=charge
+                ),
+                timeout=max(0.0, remaining),
             )
-        except _SearchFailure:
+        except (_SearchFailure, PacingRefused, PacingUnavailable, ComputeUnavailable):
             raise
         except (TimeoutError, httpx.TimeoutException):
             raise _SearchFailure(_TIMEOUT, category="timeout") from None
@@ -623,8 +717,48 @@ class WebSearchTool(Tool):
             # message embeds the request URL, and the URL carries the query.
             raise _SearchFailure(_FAILED, category="unspecified") from None
 
+    async def _observe_quietly(
+        self,
+        adapter: _SearchAdapter,
+        credential: str,
+        status: int,
+        headers: Mapping[str, str],
+        *,
+        deadline: float,
+    ) -> None:
+        """Feed the shared pacer what this response reported. Never raises.
+
+        Only response headers are read — never a provider error body, which may
+        echo the query. A pacing backend failure here must not disturb a
+        response that was already delivered or already refused.
+        """
+        try:
+            budget = min(1.0, max(0.0, deadline - time.monotonic()))
+            async with asyncio.timeout(budget):
+                pacer = self._pacer if self._pacer is not None else await shared_search_pacer()
+                await pacer.observe(
+                    adapter.provider,
+                    credential,
+                    status=status,
+                    headers=headers,
+                    wait_budget_s=max(0.0, min(budget, deadline - time.monotonic())),
+                )
+        except Exception as exc:
+            logger.warning(
+                "Search pacing observation failed: provider=%s error_type=%s",
+                adapter.provider,
+                type(exc).__name__,
+            )
+
     async def _round_trip(
-        self, adapter: _SearchAdapter, credential: str, query: str, count: int
+        self,
+        adapter: _SearchAdapter,
+        credential: str,
+        query: str,
+        count: int,
+        *,
+        deadline: float,
+        charge: ToolCallCharge,
     ) -> dict[str, Any]:
         wire = adapter.build(adapter.endpoint, credential, query, count)
         async with httpx.AsyncClient(
@@ -641,13 +775,45 @@ class WebSearchTool(Tool):
                 params=wire.params,
                 json=wire.json_body,
             )
+            pacing_budget = (
+                deadline - time.monotonic() - min(NETWORK_RESERVE_S, SEARCH_DEADLINE_S / 2)
+            )
+            if pacing_budget <= 0:
+                raise PacingRefused
+            pacing_end = time.monotonic() + pacing_budget
+            try:
+                async with asyncio.timeout(pacing_budget):
+                    pacer = self._pacer if self._pacer is not None else await shared_search_pacer()
+                    await pacer.admit(
+                        adapter.provider,
+                        credential,
+                        wait_budget_s=max(0.0, pacing_end - time.monotonic()),
+                    )
+            except TimeoutError:
+                raise PacingRefused from None
+            # No blocking work between the atomic grant, dispatch mark and send.
+            # Recheck authority after a potentially long local wait.
+            approved_tool_service(
+                service_id=adapter.service_id,
+                service=SEARCH_SERVICE,
+                provider=adapter.provider,
+                unit=SEARCH_UNIT,
+                fixed_microusd=adapter.fixed_microusd,
+            )
+            if time.monotonic() >= deadline:
+                raise _SearchFailure(_TIMEOUT, category="timeout")
+            charge.mark_dispatched()
             response = await client.send(request, stream=True)
             try:
+                # Headers only, and before the status branch: a refusal still
+                # teaches the shared pacer its cooldown. The body is never read
+                # on a non-200 — provider error text may echo the query.
+                await self._observe_quietly(
+                    adapter, credential, response.status_code, response.headers, deadline=deadline
+                )
                 if response.status_code != 200:
-                    # A non-200 body is never read: it is provider text that may
-                    # echo the query, and the status alone is enough to refuse.
                     message, category = _status_failure(response.status_code)
-                    raise _SearchFailure(message, category=category)
+                    raise _SearchFailure(message, category=category, status=response.status_code)
                 body = await _bounded_body(response)
             finally:
                 await response.aclose()

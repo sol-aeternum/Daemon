@@ -28,6 +28,7 @@ import inspect
 import logging
 import uuid
 import asyncio
+import time
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from collections.abc import AsyncIterator
@@ -53,6 +54,9 @@ from orchestrator.entitlements.errors import (
     EntitlementsError,
     LimitExceeded,
     PolicyError,
+    ReservationCommitUncertain,
+    ReservationReceipt,
+    ReservationRecoveryUnresolved,
 )
 from orchestrator.config import get_settings
 
@@ -309,7 +313,8 @@ class ComputeScope:
     auto_route: bool = False
     extended: bool = False
     background: bool = False
-    #: Groups this scope's reservations into one concurrency slot.
+    #: Server-owned operation identity: one rate admission across all internal
+    #: calls, plus one concurrency slot while any reservation remains open.
     scope_id: uuid.UUID = field(default_factory=uuid.uuid4)
     extended_started: bool = False
     extended_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -596,23 +601,59 @@ def approved_tool_service(
     )
 
 
-@dataclass
 class ToolCallCharge:
     """Settlement selector for one metered fixed-price tool call.
 
-    Conservative by default: a call that is not positively confirmed settles its
-    whole reservation, exactly like an inference dispatch with unknown usage.
+    Legacy callers remain conservative unless they explicitly opt into dispatch
+    tracking. Opted-in callers must mark immediately before the first send;
+    only the initial state establishes a known zero provider outcome.
     """
 
-    confirmed: bool = False
-    units: int = 1
+    __slots__ = ("_dispatch_aware", "_hold", "_state", "_units")
+
+    def __init__(
+        self, *, dispatch_aware: bool = False, hold: ReservationHold | None = None
+    ) -> None:
+        self._dispatch_aware = dispatch_aware
+        self._hold = hold
+        self._state = "pre_dispatch"
+        self._units = 1
+
+    @property
+    def confirmed(self) -> bool:
+        return self._state == "confirmed"
+
+    @property
+    def units(self) -> int:
+        return self._units
+
+    @property
+    def known_not_dispatched(self) -> bool:
+        return self._dispatch_aware and self._state == "pre_dispatch"
+
+    def mark_dispatched(self) -> None:
+        """Irreversibly leave known-zero state immediately before network I/O."""
+        if self._state != "pre_dispatch":
+            raise RuntimeError("Tool dispatch was already marked or confirmed")
+        if self._hold is not None:
+            if self._hold.settlement is not None:
+                raise ComputeUnavailable(
+                    "settlement_conflict",
+                    "Tool reservation is already settling",
+                    category=FAILURE_SETTLEMENT_FAILED,
+                )
+            # Scope cleanup must not see a stale known-zero outcome after send.
+            self._hold.actual = None
+        self._state = "dispatched"
 
     def confirm(self, *, units: int = 1) -> None:
         """Settle at the pinned price: the priced unit was delivered as approved."""
         if type(units) is not int or units < 1:
             raise ValueError("Tool units must be a positive integer")
-        self.units = units
-        self.confirmed = True
+        if self._dispatch_aware and self._state != "dispatched":
+            raise RuntimeError("Tool confirmation requires one marked dispatch")
+        self._units = units
+        self._state = "confirmed"
 
 
 @asynccontextmanager
@@ -621,6 +662,8 @@ async def metered_tool_call(
     *,
     scope: ComputeScope | None = None,
     required_capability: str | None = None,
+    dispatch_aware: bool = False,
+    work_deadline: float | None = None,
 ) -> AsyncIterator[ToolCallCharge]:
     """Reserve, then settle, exactly ONE fixed-price tool unit.
 
@@ -640,8 +683,9 @@ async def metered_tool_call(
     A failed re-check returns the whole hold at zero cost and refuses the
     call. Inside the block the caller performs its single external dispatch and
     calls :meth:`ToolCallCharge.confirm` only once the provider has delivered
-    the priced unit. Anything else — timeout, cancellation, transport or HTTP
-    failure, unparseable or out-of-contract output — settles the reserved
+    the priced unit. By default, or after a marked dispatch, anything else —
+    timeout, cancellation, transport or HTTP failure, unparseable or
+    out-of-contract output — settles the reserved
     ceiling, the same conservative unknown-usage contract inference uses, so it
     can charge a call whose provider-side billing is unknown. Confirmation is a
     statement about the priced unit, so it survives a later local failure in the
@@ -649,20 +693,31 @@ async def metered_tool_call(
 
     A settlement failure is raised as :class:`ComputeUnavailable` and is never
     retried or swallowed here: incomplete accounting must stop the operation.
+
+    ``dispatch_aware`` is an explicit opt-in: before ``mark_dispatched`` a local
+    failure/cancellation settles zero; after the mark unknown outcomes remain
+    conservative. Legacy callers need no mark and keep their existing contract.
+    ``work_deadline`` bounds capability resolution, lock acquisition and the
+    acquisition wait. A started reservation is shielded through registration;
+    if interrupted, recovery waits for its result and settles an acquired hold
+    at zero before propagating the interruption. That accounting cleanup may
+    finish outside the work deadline and never dispatches provider work.
     """
     active = scope if scope is not None else current_scope()
-    try:
-        if required_capability is not None:
-            resolved = await active.service.resolve(active.user_id)
-            if required_capability not in resolved.capabilities:
-                raise ComputeUnavailable("capability_unavailable", "Capability unavailable")
-        async with active.extended_lock:
-            first_extended = active.extended and not active.extended_started
-            reserve_options = (
-                {"expected_period": active.expected_period}
-                if active.expected_period is not None
-                else {}
-            )
+    if type(dispatch_aware) is not bool:
+        raise ValueError("Tool dispatch tracking must be explicitly boolean")
+    if work_deadline is not None and (not dispatch_aware or not math.isfinite(work_deadline)):
+        raise ValueError("Tool work deadline requires dispatch-aware tracking")
+
+    async def acquire_and_register(first_extended: bool) -> Any:
+        if work_deadline is not None and time.monotonic() >= work_deadline:
+            raise TimeoutError
+        reserve_options = (
+            {"expected_period": active.expected_period}
+            if active.expected_period is not None
+            else {}
+        )
+        try:
             reservation = await active.service.reserve(
                 active.user_id,
                 approval.ceiling_microusd,
@@ -676,8 +731,138 @@ async def metered_tool_call(
                 scope_id=active.scope_id,
                 **reserve_options,
             )
-            if first_extended:
-                active.extended_started = True
+        except ReservationCommitUncertain as exc:
+            receipt: ReservationReceipt = exc.receipt
+            # Receipt identity survives even when its committed outcome cannot
+            # currently be established. Scope cleanup revalidates this receipt
+            # through the service instead of blindly settling a candidate ID.
+            active.outstanding[receipt.id] = ReservationHold(
+                receipt,
+                approval.ceiling_microusd,
+                actual=0,
+            )
+
+            async def recover_commit() -> None:
+                if (
+                    receipt.user_id != active.user_id
+                    or receipt.scope_id != active.scope_id
+                    or receipt.reservation.operation != active.operation
+                    or receipt.reservation.reserved_microusd != approval.ceiling_microusd
+                    or receipt.provider != approval.provider
+                    or receipt.model is not None
+                    or receipt.route_id != approval.service_id
+                    or receipt.reservation.premium
+                    or receipt.reservation.extended != active.extended
+                    or receipt.extended_run != first_extended
+                    or receipt.background != active.background
+                ):
+
+                    async def reject_binding() -> None:
+                        raise ReservationRecoveryUnresolved(receipt)
+
+                    # A receipt from a different acquisition is never authority
+                    # to settle that row. Retain a failed known-zero accounting
+                    # task so normal scope cleanup cannot bypass this binding.
+                    rejected = asyncio.create_task(reject_binding())
+                    active.outstanding[receipt.id].settlement = rejected
+                    await asyncio.shield(rejected)
+                recovered = await active.service.recover_reservation(receipt)
+                if recovered is None:
+                    active.outstanding.pop(receipt.id)
+                else:
+                    active.outstanding[receipt.id].reservation = recovered
+                    if first_extended:
+                        active.extended_started = True
+                    await active.settle(recovered, 0)
+
+            recovery = asyncio.create_task(recover_commit())
+            interrupted = exc.interrupted
+            try:
+                # Legacy acquisition also needs cancellation-safe receipt
+                # recovery: a second cancellation must not orphan an outcome
+                # after the first cancellation exposed an ambiguous commit.
+                while True:
+                    try:
+                        await asyncio.shield(recovery)
+                        break
+                    except asyncio.CancelledError:
+                        interrupted = True
+                        if recovery.done():
+                            recovery.result()
+                            break
+            except ReservationRecoveryUnresolved:
+                raise ComputeUnavailable(
+                    "reservation_outcome_unresolved",
+                    "Account reservation outcome is unresolved",
+                    category=FAILURE_SETTLEMENT_FAILED,
+                ) from None
+            if interrupted:
+                raise asyncio.CancelledError
+            # Recovery establishes accounting, never permission to replay the
+            # reservation or continue to provider dispatch after an ambiguous
+            # commit. Both legacy and dispatch-aware metered acquisition stop.
+            raise ComputeUnavailable(
+                "account_unavailable", "Account reservation could not be confirmed"
+            ) from None
+        # No await between a returned reservation and its scope registration.
+        active.outstanding[_hold_key(reservation)] = ReservationHold(
+            reservation,
+            approval.ceiling_microusd,
+            actual=0 if dispatch_aware else None,
+        )
+        if first_extended:
+            active.extended_started = True
+        return reservation
+
+    work_timeout = asyncio.timeout(
+        None if work_deadline is None else max(0.0, work_deadline - time.monotonic())
+    )
+    try:
+        async with work_timeout:
+            if required_capability is not None:
+                resolved = await active.service.resolve(active.user_id)
+                if required_capability not in resolved.capabilities:
+                    raise ComputeUnavailable("capability_unavailable", "Capability unavailable")
+            async with active.extended_lock:
+                first_extended = active.extended and not active.extended_started
+                if dispatch_aware:
+                    acquisition = asyncio.create_task(acquire_and_register(first_extended))
+                    try:
+                        reservation = await asyncio.shield(acquisition)
+                    except BaseException:
+
+                        async def recover_acquisition() -> None:
+                            try:
+                                acquired = await acquisition
+                            except ComputeUnavailable as exc:
+                                if exc.category == FAILURE_SETTLEMENT_FAILED:
+                                    raise
+                                return
+                            except Exception:
+                                # A failed reservation never began provider I/O.
+                                return
+                            await active.settle(acquired, 0)
+
+                        cleanup = asyncio.create_task(recover_acquisition())
+                        # Retain the lock through recovery, including repeated
+                        # cancellation, so extended-run accounting cannot race.
+                        while True:
+                            try:
+                                await asyncio.shield(cleanup)
+                                break
+                            except asyncio.CancelledError:
+                                if cleanup.done():
+                                    cleanup.result()
+                                    break
+                        raise
+                else:
+                    reservation = await acquire_and_register(first_extended)
+    except TimeoutError:
+        if work_timeout.expired() or (
+            work_deadline is not None and time.monotonic() >= work_deadline
+        ):
+            raise
+        raise ComputeUnavailable("account_unavailable", "Account compute unavailable") from None
     except ComputeUnavailable:
         raise
     except EntitlementsError as exc:
@@ -687,10 +872,10 @@ async def metered_tool_call(
     except Exception:
         raise ComputeUnavailable("account_unavailable", "Account compute unavailable") from None
 
-    active.outstanding[_hold_key(reservation)] = ReservationHold(
-        reservation, approval.ceiling_microusd
+    charge = ToolCallCharge(
+        dispatch_aware=dispatch_aware,
+        hold=active.outstanding[_hold_key(reservation)] if dispatch_aware else None,
     )
-    charge = ToolCallCharge()
     try:
         approved_tool_service(
             service_id=approval.service_id,
@@ -699,6 +884,8 @@ async def metered_tool_call(
             unit=approval.unit,
             fixed_microusd=approval.fixed_microusd,
         )
+        if work_deadline is not None and time.monotonic() >= work_deadline:
+            raise TimeoutError
     except BaseException:
         # Dispatch has not begun. Use the scope's shielded, idempotent settlement
         # rather than a separate release path: even failed/cancelled accounting
@@ -725,7 +912,9 @@ async def _settle_tool_hold(
     attribution needs no metadata here: the reservation already carries the
     provider and the service id it was taken for.
     """
-    if charge.confirmed:
+    if charge.known_not_dispatched:
+        await scope.settle(reservation, 0)
+    elif charge.confirmed:
         actual = approval.fixed_microusd * charge.units
         usage = {"tool_calls": 1}
         if charge.units != 1:

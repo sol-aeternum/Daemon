@@ -27,11 +27,20 @@ configuration cannot bypass privacy or account compute policy.
 
 ```
 messages.content          → encrypted
+messages.tool_calls       → versioned encrypted JSON envelope (new writes)
+messages.tool_results     → versioned encrypted JSON envelope (new writes)
+web_snapshots metadata/text → separately encrypted, conversation-scoped
 memories.content          → encrypted
 extraction_log.input_snippet → encrypted
 ```
 
 If `DAEMON_ENCRYPTION_KEY` is missing or invalid when memory storage is initialized, startup fails closed instead of writing plaintext. Encryption init, encrypt, and decrypt failures increment the `encryption_operations_failed_total` status metric and raise to the caller.
+
+Tool-trace reads accept legacy plaintext JSON and decrypt new envelopes before
+returning the existing history API shape. This change does not backfill legacy
+traces. Web snapshots are temporary source evidence, not extracted memories;
+their approved retention, quota, deletion and export contract is documented in
+`docs/CHUNKED_WEB_READING_DESIGN.md`.
 
 ### Tables
 
@@ -51,6 +60,17 @@ last_retrieved_memory_ids JSONB  -- tracking for trust signals
 created_at TIMESTAMPTZ DEFAULT NOW()
 updated_at TIMESTAMPTZ DEFAULT NOW()
 ```
+
+Conversation list/detail reads derive `message_count` from saved messages belonging
+to the conversation owner. Effective activity takes the latest message timestamp
+and stored conversation activity/update timestamps; list sorting applies this
+before pagination. Stored counters are not backfilled by these reads.
+
+An unlocked, untitled pre-created draft queues automatic title generation after
+its first message is saved. Existing nonempty conversations are not automatically
+backfilled. Both title workers save through an atomic comparison against the
+title read before generation and require the conversation to remain unlocked,
+so a rename or lock during generation prevents the generated title from saving.
 
 #### `messages`
 ```sql

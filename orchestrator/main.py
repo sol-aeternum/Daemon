@@ -119,6 +119,7 @@ from orchestrator.routes import (
 )
 from orchestrator.routes.auth_config import router as auth_config_router
 from orchestrator.routes.auth_setup import router as auth_setup_router
+from orchestrator.routes.web_snapshots import router as web_snapshots_router
 from orchestrator.models_cache import fetch_openrouter_models
 from orchestrator.model_router import select_model_tier
 from orchestrator.skills_store import build_skill_index
@@ -2039,6 +2040,11 @@ async def chat(
     user_id = auth.user_id if store else None
     conversation_uuid = None
     conversation_exists = False
+    # Pre-created UI drafts (frontend creates the conversation before the first
+    # message) arrive as existing conversations, so title scheduling is decided
+    # from the draft's own state instead of from whether this request created
+    # it (issue #362).
+    existing_draft_needs_title = False
 
     # Create or get conversation if persistence is available
     if store and user_id:
@@ -2057,6 +2063,25 @@ async def chat(
 
                 conversation_uuid = conv_uuid
                 conversation_exists = True
+
+                # Generate a title when an unlocked, still-empty draft first
+                # receives content. Later turns must not requeue paid title
+                # jobs (no retrospective backfill), and locked (manually set)
+                # titles are preserved.
+                if (
+                    app_state.redis is not None
+                    and not existing.get("title_locked")
+                    and existing.get("title") in (None, "", "New conversation")
+                ):
+                    try:
+                        prior_message_count = await store.count_messages(conv_uuid)
+                    except Exception as draft_probe_error:
+                        logger.warning(
+                            "Skipping title scheduling, could not read draft state: %s",
+                            draft_probe_error,
+                        )
+                    else:
+                        existing_draft_needs_title = prior_message_count == 0
             else:
                 title = user_message[:50] + "..." if len(user_message) > 50 else user_message
                 conv = await store.create_conversation(
@@ -2076,7 +2101,9 @@ async def chat(
                     status="complete",
                 )
 
-                if not conversation_exists and app_state.redis:
+                if app_state.redis is not None and (
+                    not conversation_exists or existing_draft_needs_title
+                ):
                     try:
                         await app_state.redis.enqueue_job(
                             "generate_title",
@@ -2375,6 +2402,7 @@ async def chat(
 
 
 app.include_router(conversations.router)
+app.include_router(web_snapshots_router)
 app.include_router(entitlements.router)
 app.include_router(images.router)
 app.include_router(memories.router)

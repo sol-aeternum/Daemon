@@ -762,15 +762,20 @@ async def generate_title(
     messages = [{"role": "user", "content": user_message_text}]
 
     store_obj = ctx.get("store")
-    if isinstance(store_obj, MemoryStore):
-        try:
-            existing = await store_obj.get_conversation(_as_uuid(conversation_id))
-            if existing and bool(existing.get("title_locked")):
-                return None
-        except Exception:
-            logger.warning("Failed to check title lock", exc_info=True)
+    if not isinstance(store_obj, MemoryStore):
+        return None
 
-    owner = await _conversation_owner(ctx, _as_uuid(conversation_id))
+    conv_id = _as_uuid(conversation_id)
+    try:
+        existing = await store_obj.get_conversation(conv_id)
+    except Exception:
+        logger.warning("Failed to check title lock", exc_info=True)
+        return None
+    if not existing or bool(existing.get("title_locked")):
+        return None
+    expected_title = existing.get("title")
+
+    owner = await _conversation_owner(ctx, conv_id)
     async with account_compute(
         ctx.get("db_pool"),
         owner,
@@ -780,11 +785,15 @@ async def generate_title(
         profile="background",
     ):
         title = await generate_conversation_title(messages)
-    if isinstance(store_obj, MemoryStore):
-        try:
-            _ = await store_obj.update_conversation(_as_uuid(conversation_id), title=title)
-        except Exception:
-            logger.warning("Failed to persist conversation title", exc_info=True)
+    try:
+        saved = await store_obj.save_generated_conversation_title(
+            conv_id, title=title, expected_title=expected_title
+        )
+    except Exception:
+        logger.warning("Failed to persist conversation title", exc_info=True)
+        return None
+    if not saved:
+        return None
 
     return title
 
@@ -798,11 +807,16 @@ async def generate_conversation_title_job(
         return {"status": "skipped", "reason": "store_unavailable"}
 
     conv_id = _as_uuid(conversation_id)
-    conversation = await store_obj.get_conversation(conv_id)
+    try:
+        conversation = await store_obj.get_conversation(conv_id)
+    except Exception:
+        logger.warning("Failed to check title lock", exc_info=True)
+        return {"status": "error", "reason": "read_failed"}
     if not conversation:
         return {"status": "not_found"}
     if bool(conversation.get("title_locked")):
         return {"status": "skipped", "reason": "title_locked"}
+    expected_title = conversation.get("title")
 
     messages_raw = await store_obj.get_messages(conv_id, limit=50)
     messages: list[ConversationMessage] = []
@@ -833,10 +847,14 @@ async def generate_conversation_title_job(
         title = await generate_conversation_title(messages)
 
     try:
-        _ = await store_obj.update_conversation(conv_id, title=title)
+        saved = await store_obj.save_generated_conversation_title(
+            conv_id, title=title, expected_title=expected_title
+        )
     except Exception:
         logger.warning("Failed to persist conversation title", exc_info=True)
         return {"status": "error", "reason": "persist_failed"}
+    if not saved:
+        return {"status": "skipped", "reason": "title_changed_or_locked"}
 
     return {"status": "ok", "title": title}
 
@@ -988,6 +1006,23 @@ async def garbage_collect(ctx: WorkerContext) -> dict[str, int]:
         return {"scanned": 0, "deleted": 0}
 
     return await store_obj.run_garbage_collect()
+
+
+async def cleanup_web_snapshots(ctx: WorkerContext) -> dict[str, int]:
+    from orchestrator.routes.web_snapshots import create_web_snapshot_store
+
+    pool = ctx.get("db_pool")
+    if pool is None:
+        return {"deleted": 0}
+    store = create_web_snapshot_store(pool)
+    deleted = 0
+    # Bounded daily work; expiry is independently enforced on every read.
+    for _ in range(100):
+        count = await store.purge_expired(limit=1000)
+        deleted += count
+        if count < 1000:
+            break
+    return {"deleted": deleted}
 
 
 def _iter_generated_artifact_files(base_dir: Path) -> Iterator[Path]:

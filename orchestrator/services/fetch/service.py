@@ -6,8 +6,13 @@ from collections.abc import Sequence
 from typing import Protocol
 from urllib.parse import urlparse
 
-from orchestrator.services.fetch.cache import FetchCache, normalize_url
+from orchestrator.services.fetch.bounds import max_content_bytes
+from orchestrator.services.fetch.cache import FetchCache
 from orchestrator.services.fetch.models import (
+    EXTRACTION_VERSION_V1,
+    FetchContentError,
+    FetchExtractionError,
+    FetchPageTooLargeError,
     FetchPolicy,
     FetchResult,
     load_policy_from_env,
@@ -25,6 +30,25 @@ logger = logging.getLogger(__name__)
 
 _FETCH_SCHEMES = frozenset({"http", "https"})
 _FETCH_PORTS = frozenset({80, 443})
+
+# Coherent extraction-mode vocabulary. ``text`` and ``markdown`` are
+# aliases of ``article``; ``transcript`` is produced only by an actual
+# transcript strategy; ``metadata`` is a bounded identity summary. The
+# tool layer normalizes the same way, but the service enforces it too so
+# direct callers cannot smuggle a raw-HTML mode through.
+_EXTRACT_ALIASES: dict[str, str] = {"text": "article", "markdown": "article"}
+_EXTRACT_MODES: frozenset[str] = frozenset({"article", "transcript", "metadata"})
+_DEFAULT_EXTRACT_MODE = "article"
+
+# Cap on the title carried in the bounded metadata representation.
+_MAX_METADATA_TITLE_CHARS = 300
+
+
+def normalize_extract_mode(extract: object) -> str:
+    """Map any caller value onto the supported bounded extraction modes."""
+    lowered = str(extract or _DEFAULT_EXTRACT_MODE).strip().lower()
+    normalized = _EXTRACT_ALIASES.get(lowered, lowered)
+    return normalized if normalized in _EXTRACT_MODES else _DEFAULT_EXTRACT_MODE
 
 
 def _canonicalize_hostname(hostname: str) -> str:
@@ -74,11 +98,34 @@ class FetchService:
         url: str,
         extract: str = "article",
         force_refresh: bool = False,
+        use_cache: bool = True,
     ) -> FetchResult | None:
+        """Fetch ``url`` and return its bounded extraction.
+
+        ``extract`` selects the representation: ``article`` (aliases
+        ``text``/``markdown``) produces readable markdown for HTML and
+        retains plain text otherwise; ``metadata`` produces a bounded
+        title/URL/content-type summary; ``transcript`` is served only by
+        an actual transcript strategy.
+
+        ``use_cache=False`` bypasses BOTH cache reads and cache writes —
+        used by snapshot creation so no plaintext shadow of the page is
+        written and no unknown-staleness entry is served. ``force_refresh``
+        keeps its ordinary semantics (skip the read, still write) for
+        normal cached calls.
+
+        Bounded failures raise :class:`FetchPageTooLargeError` (response
+        or extracted content exceeds its configured size bound) or
+        :class:`FetchExtractionError` (readable extraction failed, or the
+        requested mode cannot be served honestly by this source). Raw
+        HTML is never injected as a fallback success.
+        """
         fetch_url = url.strip()
         if not fetch_url:
             logger.info("FetchService skipping fetch: empty URL")
             return None
+
+        mode = normalize_extract_mode(extract)
 
         # Static (non-DNS) policy checks run before cache access so that a valid
         # cached result is still served when DNS is temporarily unavailable.
@@ -92,45 +139,53 @@ class FetchService:
             logger.info("FetchService blocked unsupported URL %s", fetch_url)
             return None
 
-        normalized_url = normalize_url(fetch_url)
         logger.info(
-            "FetchService starting fetch for %s (extract=%s, force_refresh=%s)",
-            normalized_url,
-            extract,
+            "FetchService starting fetch for %s (extract=%s, force_refresh=%s, use_cache=%s)",
+            fetch_url,
+            mode,
             force_refresh,
+            use_cache,
         )
 
-        if self._is_blocked_domain(normalized_url):
+        if self._is_blocked_domain(fetch_url):
             logger.info(
                 "FetchService skipping fetch for %s: blocked domain policy matched",
-                normalized_url,
+                fetch_url,
             )
             return None
 
         cached_result: FetchResult | None = None
-        if force_refresh:
+        if not use_cache:
+            # Full cache bypass: no reads and no writes. Snapshot creation
+            # uses this so no plaintext page copy is stored and no entry of
+            # unknown retrieval age can be served.
             logger.info(
-                "FetchService skipping cache for %s: force_refresh enabled",
-                normalized_url,
+                "FetchService cache fully bypassed for %s (use_cache=False)",
+                fetch_url,
+            )
+        elif force_refresh:
+            logger.info(
+                "FetchService skipping cache read for %s: force_refresh enabled",
+                fetch_url,
             )
         else:
-            cached_result = await self.cache.get(normalized_url)
+            cached_result = await self.cache.get(fetch_url, extract=mode)
 
         if cached_result is not None:
-            if self.policy.content_is_valid(cached_result.content):
+            if self._cached_content_is_valid(cached_result, mode):
                 logger.info(
                     "FetchService cache hit for %s via %s",
-                    normalized_url,
+                    fetch_url,
                     cached_result.strategy_used,
                 )
                 return cached_result
 
             logger.info(
                 "FetchService skipping cached result for %s: cached content failed validation",
-                normalized_url,
+                fetch_url,
             )
-        elif not force_refresh:
-            logger.info("FetchService cache miss for %s", normalized_url)
+        elif use_cache and not force_refresh:
+            logger.info("FetchService cache miss for %s", fetch_url)
 
         # If the URL targets YouTube, short-circuit to the YouTube strategy.
         # Otherwise run the default direct -> Jina -> Archive.org chain. Live
@@ -139,10 +194,10 @@ class FetchService:
         # strategies (which contact r.jina.ai / archive.org, not the target)
         # from succeeding.
         strategies: Sequence[tuple[str, FetchStrategy | None]]
-        if self._is_youtube_url(normalized_url):
+        if self._is_youtube_url(fetch_url):
             logger.info(
                 "FetchService detected YouTube URL for %s: skipping direct/jina/crawl4ai/archive chain",
-                normalized_url,
+                fetch_url,
             )
             strategies = (("youtube", self.youtube_strategy),)
         else:
@@ -151,35 +206,42 @@ class FetchService:
         try:
             result = await self._run_strategy_chain(
                 fetch_url=fetch_url,
-                normalized_url=normalized_url,
+                fetch_url_identity=fetch_url,
+                mode=mode,
                 strategies=strategies,
             )
         except SsrfViolation as exc:
             logger.info(
                 "FetchService stopped fallback chain for %s: unsafe redirect: %s",
-                normalized_url,
+                fetch_url,
                 exc,
             )
             return None
         if result is None:
             logger.info(
                 "FetchService exhausted strategies for %s without success",
-                normalized_url,
+                fetch_url,
             )
             return None
 
-        cached = await self.cache.set(normalized_url, result)
-        if cached:
-            logger.info(
-                "FetchService cached result for %s via %s",
-                normalized_url,
-                result.strategy_used,
-            )
+        if use_cache:
+            cached = await self.cache.set(fetch_url, result, extract=mode)
+            if cached:
+                logger.info(
+                    "FetchService cached result for %s via %s",
+                    fetch_url,
+                    result.strategy_used,
+                )
+            else:
+                logger.info(
+                    "FetchService skipped cache write for %s via %s",
+                    fetch_url,
+                    result.strategy_used,
+                )
         else:
             logger.info(
-                "FetchService skipped cache write for %s via %s",
-                normalized_url,
-                result.strategy_used,
+                "FetchService skipped cache write for %s (use_cache=False)",
+                fetch_url,
             )
 
         return result
@@ -247,13 +309,15 @@ class FetchService:
     async def _run_strategy_chain(
         self,
         fetch_url: str,
-        normalized_url: str,
+        fetch_url_identity: str,
+        mode: str,
         strategies: Sequence[tuple[str, FetchStrategy | None]],
     ) -> FetchResult | None:
         for strategy_name, strategy in strategies:
             result = await self._attempt_strategy(
                 fetch_url=fetch_url,
-                normalized_url=normalized_url,
+                fetch_url_identity=fetch_url_identity,
+                mode=mode,
                 strategy_name=strategy_name,
                 strategy=strategy,
             )
@@ -265,7 +329,8 @@ class FetchService:
     async def _attempt_strategy(
         self,
         fetch_url: str,
-        normalized_url: str,
+        fetch_url_identity: str,
+        mode: str,
         strategy_name: str,
         strategy: FetchStrategy | None,
     ) -> FetchResult | None:
@@ -273,33 +338,38 @@ class FetchService:
             logger.info(
                 "FetchService skipping %s for %s: strategy not ready",
                 strategy_name,
-                normalized_url,
+                fetch_url,
             )
             return None
 
         logger.info(
             "FetchService attempting %s for %s",
             strategy_name,
-            normalized_url,
+            fetch_url,
         )
         started_at = time.perf_counter()
 
         try:
             result = await strategy.fetch(fetch_url)
-        except SsrfViolation:
+        except (SsrfViolation, FetchContentError):
+            # SsrfViolation terminates the chain per the SSRF contract.
+            # Bounded extraction/size errors are user-visible rejections
+            # and must never be swallowed into an ordinary failure (and
+            # never fall back to raw HTML), so they propagate to the
+            # caller's existing error-result path.
             raise
         except Exception:
             elapsed_ms = (time.perf_counter() - started_at) * 1000
             logger.info(
                 "FetchService %s failed for %s in %.2fms: exception raised",
                 strategy_name,
-                normalized_url,
+                fetch_url,
                 elapsed_ms,
             )
             logger.warning(
                 "Unexpected exception from %s strategy for %s",
                 strategy_name,
-                normalized_url,
+                fetch_url,
                 exc_info=True,
             )
             return None
@@ -309,7 +379,7 @@ class FetchService:
             logger.info(
                 "FetchService %s failed for %s in %.2fms: no result",
                 strategy_name,
-                normalized_url,
+                fetch_url,
                 elapsed_ms,
             )
             return None
@@ -318,25 +388,146 @@ class FetchService:
             logger.info(
                 "FetchService %s failed for %s in %.2fms: content validation failed",
                 strategy_name,
-                normalized_url,
+                fetch_url,
                 elapsed_ms,
             )
             return None
 
-        result.url = normalized_url
+        # Provenance defaults: strategies that track redirects (direct)
+        # provide their own values; every other strategy is attributed to
+        # the validated request URL it was invoked with.
+        if not result.source_url:
+            result.source_url = fetch_url
+        if not result.final_url:
+            result.final_url = fetch_url
+
+        result.url = fetch_url_identity
         result.strategy_used = strategy_name
         result.cached = False
         result.fetch_time_ms = elapsed_ms
-        result.content_length = len(result.content)
 
+        # Mode-aware bounded extraction happens after transport, before
+        # any caching, so only the extracted representation is ever stored
+        # or served (and cache hits pass the same bound).
+        extracted = self._apply_extraction(result, mode)
+        if extracted is None:
+            logger.info(
+                "FetchService %s failed for %s in %.2fms: extracted content validation failed",
+                strategy_name,
+                fetch_url,
+                elapsed_ms,
+            )
+            return None
+
+        extracted.fetch_time_ms = elapsed_ms
         logger.info(
             "FetchService %s succeeded for %s in %.2fms (%s chars)",
             strategy_name,
-            normalized_url,
+            fetch_url,
             elapsed_ms,
-            result.content_length,
+            extracted.content_length,
         )
+        return extracted
+
+    # ------------------------------------------------------------------
+    # Extraction
+    # ------------------------------------------------------------------
+
+    def _apply_extraction(self, result: FetchResult, mode: str) -> FetchResult | None:
+        """Produce the bounded representation for ``mode`` from a raw result.
+
+        Returns ``None`` when the extracted output fails content policy,
+        and raises bounded ``FetchContentError`` subclasses when the
+        representation cannot be produced honestly (extraction failure,
+        unsupported mode, size bound exceeded).
+        """
+        if mode == "transcript":
+            if result.strategy_used != "youtube":
+                # No silent raw HTML or page text pretending to be a
+                # transcript: only the actual transcript strategy serves
+                # this mode.
+                raise FetchExtractionError()
+            return self._finalize_extraction(result, mode)
+
+        if mode == "metadata":
+            return self._apply_metadata_extraction(result)
+
+        # article / text / markdown aliases
+        if self._is_html_source(result):
+            from orchestrator.services.fetch.extract import html_to_markdown
+
+            markdown = html_to_markdown(result.content)
+            if markdown is None:
+                # Extraction failure is a bounded error, never a raw-HTML
+                # fallback presented as a successful article read.
+                raise FetchExtractionError()
+            result.content = markdown
+        # Plain text (and other non-HTML payloads) retains its text.
+        return self._finalize_extraction(result, mode)
+
+    def _apply_metadata_extraction(self, result: FetchResult) -> FetchResult | None:
+        from orchestrator.services.fetch.extract import (
+            extract_bounded_metadata,
+            extract_html_title,
+        )
+
+        title = result.title or ""
+        if not title and self._is_html_source(result):
+            title = extract_html_title(result.content) or ""
+        result.content = extract_bounded_metadata(
+            title=title[:_MAX_METADATA_TITLE_CHARS],
+            url=result.source_url or result.url,
+            content_type=result.content_type,
+        )
+        result.title = title[:_MAX_METADATA_TITLE_CHARS]
+        return self._finalize_extraction(result, "metadata")
+
+    def _finalize_extraction(self, result: FetchResult, mode: str) -> FetchResult | None:
+        """Apply the extracted-size bound, policy validation, and bookkeeping."""
+        content = result.content
+        if len(content.encode("utf-8")) > max_content_bytes():
+            raise FetchPageTooLargeError()
+
+        if mode == "metadata":
+            valid = bool(content)
+        else:
+            valid = self.policy.content_is_valid(content)
+        if not valid:
+            return None
+
+        result.content_length = len(content)
+        result.extraction_version = EXTRACTION_VERSION_V1
         return result
+
+    def _is_html_source(self, result: FetchResult) -> bool:
+        """Whether a strategy result is raw HTML needing readable extraction.
+
+        Only the direct transport returns raw HTML; vendor/transcript
+        strategies already provide processed or transcript content, so
+        their output is never re-extracted (that would corrupt, e.g.,
+        archived markdown).
+        """
+        if result.strategy_used != "direct":
+            return False
+        content_type = (result.content_type or "").lower()
+        if content_type:
+            return "html" in content_type
+        # Missing content type: sniff only the head of the bounded body.
+        head = result.content[:2048].lstrip().lower()
+        return head.startswith("<!doctype html") or head.startswith("<html")
+
+    # ------------------------------------------------------------------
+    # Cache validation
+    # ------------------------------------------------------------------
+
+    def _cached_content_is_valid(self, cached: FetchResult, mode: str) -> bool:
+        """Cache hits must pass the same bounds as freshly extracted content."""
+        if len(cached.content.encode("utf-8")) > max_content_bytes():
+            logger.info("FetchService cached content exceeds the extraction size bound")
+            return False
+        if mode == "metadata":
+            return bool(cached.content)
+        return self.policy.content_is_valid(cached.content)
 
     def _is_blocked_domain(self, url: str) -> bool:
         hostname = urlparse(url).hostname or ""

@@ -30,9 +30,11 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from collections.abc import Callable, Mapping
+import asyncio
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, overload
 
 import asyncpg
 
@@ -49,6 +51,9 @@ from orchestrator.entitlements.errors import (
     LimitExceeded,
     RateLimitExceeded,
     ReservationNotFound,
+    ReservationCommitUncertain,
+    ReservationReceipt,
+    ReservationRecoveryUnresolved,
     SettlementConflict,
     SubscriptionEventConflict,
     TrialExhausted,
@@ -311,7 +316,9 @@ class EntitlementService:
         extended-run slot and requires extended agents, so every call of one
         extended run is charged while only its first counts as a run.
 
-        ``scope_id`` groups the calls of one operation: while any of them is
+        ``scope_id`` is server-owned and takes one rate slot for the operation,
+        including continuations after settlement or rate-window rollover.
+        It also groups concurrency: while any of the operation's calls is
         open, the others share its concurrency slot. ``background`` work is
         charged to the budget but takes no rate or concurrency slot.
 
@@ -360,6 +367,25 @@ class EntitlementService:
             )
             raise
 
+    @asynccontextmanager
+    async def _reservation_connection(
+        self, receipts: list[ReservationReceipt]
+    ) -> AsyncIterator[Connection]:
+        """Preserve the final INSERT receipt across transaction/release failures.
+
+        The body appends only after all admission writes completed. Body errors
+        and denials roll back normally and have no ambiguous-commit receipt.
+        """
+        try:
+            async with self._pool.acquire() as conn:
+                yield conn
+        except BaseException as exc:
+            if receipts:
+                raise ReservationCommitUncertain(
+                    receipts[0], interrupted=isinstance(exc, asyncio.CancelledError)
+                ) from None
+            raise
+
     async def _reserve(
         self,
         uid: uuid.UUID,
@@ -377,7 +403,8 @@ class EntitlementService:
         now: datetime,
         period: str,
     ) -> Reservation:
-        async with self._pool.acquire() as conn:
+        receipts: list[ReservationReceipt] = []
+        async with self._reservation_connection(receipts) as conn:
             async with conn.transaction():
                 await self._ensure_account(conn, uid)
                 record = await self._store.lock_account(conn, uid)
@@ -403,6 +430,9 @@ class EntitlementService:
                     extended_run=extended_run,
                     background=background,
                     joins_open_operation=await self._store.operation_is_open(
+                        conn, user_id=uid, scope_id=scope_id
+                    ),
+                    shares_rate_slot=await self._store.operation_has_rate_slot(
                         conn, user_id=uid, scope_id=scope_id
                     ),
                 )
@@ -470,8 +500,69 @@ class EntitlementService:
                     await self._store.hold_trial(
                         conn, user_id=uid, amount=amount, extended=extended_run, now=now
                     )
-                return _reservation_from_row(row)
+                candidate = _reservation_from_row(row)
+                receipts.append(
+                    ReservationReceipt(
+                        reservation=candidate,
+                        user_id=uid,
+                        scope_id=scope_id,
+                        provider=provider,
+                        model=model,
+                        route_id=route_id,
+                        extended_run=extended_run,
+                        background=background,
+                    )
+                )
+                return candidate
 
+    async def recover_reservation(self, receipt: ReservationReceipt) -> Reservation | None:
+        """Resolve one server receipt after the original account-lock barrier.
+
+        A fresh connection ensures no failed transaction snapshot is reused.
+        The uniqueness barrier also handles accounts created by the uncertain
+        transaction. Only then may an absent reservation prove rollback.
+        This never creates or retries a reservation and never permits dispatch.
+        """
+        try:
+            candidate = receipt.reservation
+            if candidate.user_id != receipt.user_id:
+                raise ReservationRecoveryUnresolved(receipt)
+            async with self._pool.acquire() as conn:
+                async with conn.transaction(isolation="read_committed"):
+                    await self._ensure_account(conn, receipt.user_id)
+                    account = await self._store.lock_account(conn, receipt.user_id)
+                    if account is None:
+                        raise ReservationRecoveryUnresolved(receipt)
+                    row = await self._store.get_reservation(conn, receipt.id, for_update=True)
+                    if row is None:
+                        return None
+                    expected = {
+                        "id": candidate.id,
+                        "user_id": receipt.user_id,
+                        "period_key": candidate.period_key,
+                        "plan": candidate.plan.value,
+                        "operation": candidate.operation,
+                        "charge_kind": candidate.charge_kind.value,
+                        "premium": candidate.premium,
+                        "extended": candidate.extended,
+                        "reserved_microusd": candidate.reserved_microusd,
+                        "created_at": candidate.created_at,
+                        "scope_id": receipt.scope_id,
+                        "provider": receipt.provider,
+                        "model": receipt.model,
+                        "route_id": receipt.route_id,
+                        "extended_run": receipt.extended_run,
+                        "background": receipt.background,
+                    }
+                    if any(row[key] != value for key, value in expected.items()):
+                        raise ReservationRecoveryUnresolved(receipt)
+                    return _reservation_from_row(row)
+        except ReservationRecoveryUnresolved:
+            raise
+        except Exception:
+            raise ReservationRecoveryUnresolved(receipt) from None
+
+    @overload
     async def settle(
         self,
         reservation: Reservation | uuid.UUID | str,
@@ -481,7 +572,39 @@ class EntitlementService:
         provider: str | None = None,
         model: str | None = None,
         route_id: str | None = None,
-    ) -> Settlement:
+    ) -> Settlement: ...
+
+    @overload
+    async def settle(
+        self,
+        reservation: ReservationReceipt,
+        actual_microusd: int,
+        *,
+        usage: Mapping[str, Any] | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        route_id: str | None = None,
+    ) -> Settlement | None: ...
+
+    async def settle(
+        self,
+        reservation: Reservation | uuid.UUID | str | ReservationReceipt,
+        actual_microusd: int,
+        *,
+        usage: Mapping[str, Any] | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        route_id: str | None = None,
+    ) -> Settlement | None:
+        if isinstance(reservation, ReservationReceipt):
+            # Receipts retained on a scope represent a positively known local
+            # no-dispatch intent, not guessed provider consumption.
+            if _require_amount(actual_microusd, field="actual_microusd") != 0:
+                raise ReservationRecoveryUnresolved(reservation)
+            recovered = await self.recover_reservation(reservation)
+            if recovered is None:
+                return None
+            reservation = recovered
         return await self._finish(
             reservation,
             actual_microusd,
@@ -660,9 +783,10 @@ class EntitlementService:
             )
         recovered = 0
         for row in rows:
+            reservation_id: uuid.UUID = row["id"]
             try:
                 result = await self.settle(
-                    row["id"],
+                    reservation_id,
                     int(row["reserved_microusd"]),
                     usage={"estimated_cost": True, "recovered_after_timeout": True},
                 )

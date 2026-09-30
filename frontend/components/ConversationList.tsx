@@ -117,7 +117,7 @@ export function ConversationList({
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
     unpinnedConversations.forEach((conv) => {
-      const convDate = new Date(conv.updatedAt);
+      const convDate = new Date(conv.lastActivityAt || conv.updatedAt);
       const convDay = new Date(
         convDate.getFullYear(),
         convDate.getMonth(),
@@ -248,7 +248,9 @@ export function ConversationList({
                 </p>
               </div>
               <p className="text-xs text-[var(--color-text-muted)] mt-1 truncate">
-                {new Date(conv.updatedAt).toLocaleDateString()}
+                {new Date(
+                  conv.lastActivityAt || conv.updatedAt,
+                ).toLocaleDateString()}
               </p>
             </>
           )}

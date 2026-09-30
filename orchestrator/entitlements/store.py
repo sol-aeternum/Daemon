@@ -82,6 +82,8 @@ _PERIOD_STATE_SQL: Final[str] = """
 # $14 marks background work: charged, but it takes no rate or concurrency slot.
 # $15 is the account scope: a scope with an open reservation already holds its
 # concurrency slot, so its later calls (tool loops, council roles) share it.
+# Any durable foreground reservation also admits that scope's one rate slot,
+# including after settlement/release or rate-window rollover.
 _HOLD_SQL: Final[str] = """
     UPDATE entitlement_usage_periods AS p
     SET reserved_microusd = p.reserved_microusd
@@ -91,20 +93,26 @@ _HOLD_SQL: Final[str] = """
         extended_agents_reserved = p.extended_agents_reserved
             + CASE WHEN $11::boolean AND $13::boolean THEN 1 ELSE 0 END,
         requests_in_window = CASE
-            WHEN $14::boolean THEN p.requests_in_window
+            WHEN $14::boolean OR rate_scope.admitted THEN p.requests_in_window
             WHEN p.window_started_at IS NULL
                  OR $5 - p.window_started_at >= $12::interval
             THEN 1
             ELSE p.requests_in_window + 1
         END,
         window_started_at = CASE
-            WHEN $14::boolean THEN p.window_started_at
+            WHEN $14::boolean OR rate_scope.admitted THEN p.window_started_at
             WHEN p.window_started_at IS NULL
                  OR $5 - p.window_started_at >= $12::interval
             THEN $5
             ELSE p.window_started_at
         END,
         updated_at = $5
+    FROM (
+        SELECT EXISTS (
+            SELECT 1 FROM entitlement_reservations r
+            WHERE r.user_id = $1 AND r.scope_id = $15::uuid AND NOT r.background
+        ) AS admitted
+    ) AS rate_scope
     WHERE p.user_id = $1
       AND p.period_key = $2
       AND (
@@ -121,6 +129,7 @@ _HOLD_SQL: Final[str] = """
       )
       AND (
             $14::boolean
+            OR rate_scope.admitted
             OR p.window_started_at IS NULL
             OR $5 - p.window_started_at >= $12::interval
             OR p.requests_in_window < $8
@@ -431,6 +440,25 @@ class EntitlementStore:
                     SELECT 1 FROM entitlement_reservations r
                     WHERE r.user_id = $1 AND r.status = 'open'
                       AND NOT r.background AND r.scope_id = $2
+                )
+                """,
+                user_id,
+                scope_id,
+            )
+        )
+
+    async def operation_has_rate_slot(
+        self, conn: Connection, *, user_id: uuid.UUID, scope_id: uuid.UUID | None
+    ) -> bool:
+        """Called under the account row lock; settled/released scopes still count."""
+        if scope_id is None:
+            return False
+        return bool(
+            await conn.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM entitlement_reservations r
+                    WHERE r.user_id = $1 AND r.scope_id = $2 AND NOT r.background
                 )
                 """,
                 user_id,
