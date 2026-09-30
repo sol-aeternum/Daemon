@@ -130,7 +130,7 @@
     {
       "route_id": "sol-azure-eu",
       "provider": "openrouter",
-      "model": "openrouter/openai/gpt-6-sol",
+      "model": "openrouter/openai/gpt-6.1-sol",
       "endpoint": "https://openrouter.ai/api/v1",
       "route_class": "premium",
       "model_capabilities": ["text", "tools", "json_schema"],
@@ -150,17 +150,19 @@
       },
       "operator_review": {
         "reviewer": "Daemon deployment operator",
-        "reviewed_at": "2026-09-29T00:00:00Z",
+        "reviewed_at": "2026-09-30T00:00:00Z",
         "review_expires_at": "2026-10-06T00:00:00Z",
         "evidence": [
           "docs/INFERENCE_ROUTE_APPROVALS.md#operator-approval-and-account-attestation",
-          "https://openrouter.ai/api/v1/models/openai/gpt-6-sol/endpoints",
+          "docs/INFERENCE_ROUTE_APPROVALS.md#sol-61-replacement--30-september-2026",
+          "docs/SOL_UPGRADE_EVALUATION.md",
+          "https://openrouter.ai/api/v1/models/openai/gpt-6.1-sol/endpoints",
           "https://openrouter.ai/api/v1/endpoints/zdr",
           "https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/openai/data-privacy"
         ]
       },
       "price_ceiling": {"microusd_per_1m_prompt": 4400000, "microusd_per_1m_completion": 16500000},
-      "notes": "Exact Azure EU ZDR listing; ceilings cover the >=272000-prompt-token pricing tier. Provider attestation, not independent inspection of Azure resource logging."
+      "notes": "Sol 6.1 replacement authorized 30 September 2026 at high effort; stable route ID, existing native limits, long-prompt price ceilings and 6 October expiry retained. Exact Azure EU ZDR listing and bounded live comparison verified; human semantic review remains pending. Provider attestation, not independent inspection of Azure resource logging."
     },
     {
       "route_id": "sonnet-vertex-europe",

@@ -91,11 +91,12 @@ import os
 import sys
 import time
 import uuid
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Final
 
 import asyncpg
@@ -196,6 +197,73 @@ CANDIDATES: Final[tuple[Candidate, ...]] = (
 )
 CANDIDATE_BY_LABEL: Final[Mapping[str, Candidate]] = {c.label: c for c in CANDIDATES}
 CANDIDATE_LABELS: Final[tuple[str, ...]] = tuple(candidate.label for candidate in CANDIDATES)
+
+
+# ---------------------------------------------------------------------------
+# Experiment profile: the injection seam for a separately identified re-run
+# ---------------------------------------------------------------------------
+
+#: Operator-facing text of the results import. Extracted verbatim so a reused
+#: executor can supply its own without changing this experiment's artifact.
+RESULTS_NOTES: Final[str] = (
+    "Human adjudication required. Every verdict is pending and no reviewer is "
+    "recorded. Provider invoice cost is null where the provider did not report "
+    "it, and the account ledger charge is null where the movement could not be "
+    "attributed; unknown costs are never scored as zero. Raw provider payloads "
+    "stay in the private state file."
+)
+
+#: CLI phase name to the fixture stage it executes, and the label used in the
+#: phase-gating refusal. Both are this experiment's own approved values.
+PHASE_STAGES: Final[Mapping[str, str]] = MappingProxyType(
+    {"diagnostic": "diagnostic", "heldout": "heldout"}
+)
+PHASE_LABELS: Final[Mapping[str, str]] = MappingProxyType(
+    {"diagnostic": "diagnostic stage", "heldout": "held-out stage"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ExperimentProfile:
+    """Which separately identified experiment a reused executor is running.
+
+    Every default is this file's own approved follow-up value, so the existing
+    CLI, state identity, results artifact and guards are byte-for-byte unchanged
+    when no profile is supplied. A new experiment may substitute its own identity
+    and ceilings; it may not widen a guard. The executor still checks every cap,
+    digest, exclusivity, no-replay and period rule it checked before, against
+    these numbers, and a profile is only ever constructed in code - never read
+    from the environment, a file or an argument.
+    """
+
+    #: Artifact and state identity. A different profile can neither adopt nor
+    #: continue another experiment's records.
+    experiment: str = EXPERIMENT
+    state_version: str = STATE_VERSION
+    results_artifact_version: str = RESULTS_ARTIFACT_VERSION
+    generated_by: str = "scripts/model_routing_followup.py"
+    results_notes: str = RESULTS_NOTES
+    lock_holder_label: str = "follow-up runner"
+
+    #: Ceilings. The incremental cap is enforced on every dispatch admission and
+    #: again on restart; the dispatch bound is enforced before every call.
+    incremental_cap_microusd: int = INCREMENTAL_CAP_MICROUSD
+    total_attempts: int = TOTAL_ATTEMPTS
+    dispatch_bound: int = DISPATCH_BOUND
+
+    #: Extra source files whose bytes belong in the frozen implementation
+    #: identity, so a re-run's own executor is hashed too.
+    implementation_paths: tuple[Path, ...] = ()
+
+    #: Phase naming and the phase that is gated on a fully recorded earlier one.
+    phase_stages: Mapping[str, str] = field(default_factory=lambda: PHASE_STAGES)
+    phase_labels: Mapping[str, str] = field(default_factory=lambda: PHASE_LABELS)
+    gated_phase: str = "heldout"
+    gate_stage: str = "diagnostic"
+
+
+#: This experiment's own profile. Every call site defaults to it.
+DEFAULT_PROFILE: Final[ExperimentProfile] = ExperimentProfile()
 
 
 # ---------------------------------------------------------------------------
@@ -468,9 +536,11 @@ def _parse_expected(value: object, where: str, case_id: str) -> JsonObject:
         len(set(assertion_ids)) == len(assertion_ids),
         f"{where}.assertions: duplicate assertion ids",
     )
-    for field in ("hard_violation_rules", "acceptable_minor_misses"):
-        for index, item in enumerate(_as_sequence(obj[field], f"{where}.{field}")):
-            _as_str(item, f"{where}.{field}[{index}]")
+    for expected_field in ("hard_violation_rules", "acceptable_minor_misses"):
+        for index, item in enumerate(
+            _as_sequence(obj[expected_field], f"{where}.{expected_field}")
+        ):
+            _as_str(item, f"{where}.{expected_field}[{index}]")
     _as_str(obj["rubric"], f"{where}.rubric")
     return obj
 
@@ -703,8 +773,16 @@ def schedule_fingerprint(schedule: Sequence[Attempt]) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
-def implementation_fingerprint() -> str:
-    """Freeze code and effective parameter configuration before observations."""
+def implementation_fingerprint(*, extra_paths: Sequence[Path] = ()) -> str:
+    """Freeze code and effective parameter configuration before observations.
+
+    ``extra_paths`` lets a separately identified experiment that reuses this
+    executor freeze its own source bytes into the same identity. The default is
+    empty, so no *extra* files enter this experiment's digest. The digest value
+    itself is not frozen across edits: this executor's own source bytes are
+    hashed, so any change here - including the seam that added this parameter -
+    changes the recorded fingerprint, which is the identity working as intended.
+    """
     routing_path = Path(
         Settings.explicit_evaluation_environment().get(
             model_routing.MODEL_ROUTING_ENV, str(model_routing.DEFAULT_MODEL_ROUTING)
@@ -718,6 +796,7 @@ def implementation_fingerprint() -> str:
         Path(reliability.__file__),
         routing_path,
     ]
+    paths.extend(extra_paths)
     paths.extend(sorted((REPO_ROOT / "orchestrator" / "entitlements").glob("*.py")))
     return hashlib.sha256(
         json.dumps(
@@ -833,13 +912,17 @@ def ensure_funded_window(service: EntitlementService, period: str, margin_s: flo
 # ---------------------------------------------------------------------------
 
 
-def account_lock_path(state_path: Path, account: uuid.UUID) -> Path:
-    """One account-wide lock for this runner, independent of the state file name.
+def account_lock_path(
+    state_path: Path, account: uuid.UUID, *, experiment: str = EXPERIMENT
+) -> Path:
+    """One account-wide lock for one experiment, independent of the state file name.
 
     A second state path, a second phase and a second candidate batch therefore
-    cannot run against the same account concurrently.
+    cannot run against the same account concurrently. A separately identified
+    experiment passes its own ``experiment`` so it locks under its own name, and
+    can additionally take this experiment's lock when the two share an account.
     """
-    return state_path.with_name(f".{EXPERIMENT.replace('/', '-')}.{account}.lock")
+    return state_path.with_name(f".{experiment.replace('/', '-')}.{account}.lock")
 
 
 def write_state(path: Path, state: JsonObject) -> None:
@@ -849,27 +932,33 @@ def write_state(path: Path, state: JsonObject) -> None:
 
 @contextmanager
 def locked_state(
-    state_path: Path, account: uuid.UUID, identity: JsonObject
+    state_path: Path,
+    account: uuid.UUID,
+    identity: JsonObject,
+    *,
+    profile: ExperimentProfile = DEFAULT_PROFILE,
 ) -> Iterator[JsonObject]:
     """Take the private account lock and return this run's durable state.
 
-    The state version and the whole identity must match exactly, so a run can
-    neither adopt nor continue another experiment's records. A torn checkpoint is
-    never entered: an incomplete write is evidence of a crash, not a state to
-    continue from.
+    The profile's state version and the whole identity must match exactly, so a
+    run can neither adopt nor continue another experiment's records. A torn
+    checkpoint is never entered: an incomplete write is evidence of a crash, not a
+    state to continue from.
     """
     require(
         state_path.parent.is_dir() and not state_path.is_symlink(), "state directory/file invalid"
     )
     require(state_path.parent.stat().st_mode & 0o077 == 0, "state directory must be private (0700)")
-    lock_path = account_lock_path(state_path, account)
+    lock_path = account_lock_path(state_path, account, experiment=profile.experiment)
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
         os.fchmod(fd, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise FollowupError("another follow-up runner holds the account lock") from exc
+            raise FollowupError(
+                f"another {profile.lock_holder_label} holds the account lock"
+            ) from exc
         require(
             not state_path.with_name(state_path.name + ".tmp").exists(),
             "incomplete state checkpoint",
@@ -878,12 +967,12 @@ def locked_state(
             require(state_path.is_file() and not state_path.is_symlink(), "state path invalid")
             state = json.loads(state_path.read_text(encoding="utf-8"))
             require(isinstance(state, dict), "state must be an object")
-            require(state.get("version") == STATE_VERSION, "state version changed")
+            require(state.get("version") == profile.state_version, "state version changed")
             require(state.get("identity") == identity, "run identity drift")
             require(isinstance(state.get("attempts"), dict), "state attempts invalid")
         else:
             state = {
-                "version": STATE_VERSION,
+                "version": profile.state_version,
                 "identity": identity,
                 "attempts": {},
                 "account_ledger_baseline": None,
@@ -974,6 +1063,8 @@ def freeze_baseline(
     state_path: Path,
     exposure: reliability.LedgerExposure,
     period: str,
+    *,
+    profile: ExperimentProfile = DEFAULT_PROFILE,
 ) -> None:
     """Freeze the experiment baseline once, with zero open holds.
 
@@ -998,7 +1089,7 @@ def freeze_baseline(
             "ledger baseline period drift",
         )
         require_accounting(
-            accounted_microusd(state) <= INCREMENTAL_CAP_MICROUSD,
+            accounted_microusd(state) <= profile.incremental_cap_microusd,
             "durable experiment accounting already exceeds the incremental ceiling",
         )
     write_state(state_path, state)
@@ -1224,21 +1315,29 @@ class RunContext:
     commercial_path: Path
     inference_path: Path
     account_ceiling_microusd: int
+    #: Which experiment's ceilings and identity this context enforces. Defaults to
+    #: this file's own approved follow-up profile, so existing callers are unchanged.
+    profile: ExperimentProfile = DEFAULT_PROFILE
 
 
 def recorded_calls(state: Mapping[str, Any]) -> int:
     return len(call_rows(state))
 
 
-def dispatch_headroom(state: Mapping[str, Any], schedule: Sequence[Attempt]) -> int:
+def dispatch_headroom(
+    state: Mapping[str, Any],
+    schedule: Sequence[Attempt],
+    *,
+    profile: ExperimentProfile = DEFAULT_PROFILE,
+) -> int:
     """Remaining hard dispatch allowance; admission also fits this attempt's tail.
 
     Each immutable scheduled attempt has its own three-call limit. Reserving
     hypothetical calls for every future attempt here double-counted the current
     attempt during pre-admission. The fixed schedule already bounds that total.
     """
-    require(len(schedule) <= TOTAL_ATTEMPTS, "schedule exceeds attempt envelope")
-    return DISPATCH_BOUND - recorded_calls(state)
+    require(len(schedule) <= profile.total_attempts, "schedule exceeds attempt envelope")
+    return profile.dispatch_bound - recorded_calls(state)
 
 
 def verify_candidate(
@@ -1269,17 +1368,19 @@ async def admit_call(ctx: RunContext, reachable: int, calls_left: int) -> int:
     ``reachable`` is the conservative maximum this attempt could still charge:
     this call's own bound plus the ceiling bound for each call that could follow.
     Admission therefore rejects whichever cap would be exceeded, instead of
-    discovering the refusal after the spend.
+    discovering the refusal after the spend. Both ceilings come from the context's
+    own experiment profile, so a reused executor can never charge a stricter
+    experiment against a looser one's allowance.
     """
     require(
-        dispatch_headroom(ctx.state, ctx.schedule) >= calls_left,
+        dispatch_headroom(ctx.state, ctx.schedule, profile=ctx.profile) >= calls_left,
         "dispatch envelope exhausted",
     )
     exposure = await reliability.read_ledger_exposure(ctx.pool, ctx.account, ctx.period)
     require_exclusive(ctx.state, exposure)
     charged = accounted_microusd(ctx.state)
     require_accounting(
-        charged + reachable <= INCREMENTAL_CAP_MICROUSD,
+        charged + reachable <= ctx.profile.incremental_cap_microusd,
         "incremental sub-cap would be exceeded",
     )
     require_accounting(
@@ -1296,7 +1397,8 @@ def _self_check(ctx: RunContext) -> None:
         "policy changed during run",
     )
     require(
-        implementation_fingerprint() == ctx.identity["implementation_sha256"],
+        implementation_fingerprint(extra_paths=ctx.profile.implementation_paths)
+        == ctx.identity["implementation_sha256"],
         "implementation or parameter configuration changed during run",
     )
 
@@ -1650,17 +1752,29 @@ def _call_evidence(call: Mapping[str, Any]) -> JsonObject:
     }
 
 
+#: Optional per-attempt enrichment for a re-run's results import. It may only add
+#: keys: a collision with an accounting or evidence key is refused, so an
+#: extension can never rewrite a recorded status, cost or verdict.
+AttemptExtension = Callable[[Attempt, CaseFixture, JsonObject], JsonObject]
+
+
 def pending_results(
     state: Mapping[str, Any],
     cases: Mapping[str, CaseFixture],
     schedule: Sequence[Attempt],
     exposure: reliability.LedgerExposure | None = None,
+    *,
+    profile: ExperimentProfile = DEFAULT_PROFILE,
+    attempt_extension: AttemptExtension | None = None,
+    document_extension: Mapping[str, Any] | None = None,
 ) -> JsonObject:
     """Build the human-adjudication import. No verdict is ever assigned here.
 
     Every attempt is ``pending`` with a ``null`` reviewer, and every cost that the
     provider or the ledger did not report stays ``null`` rather than becoming
-    zero, so an unknown invoice cost can never be ranked as free.
+    zero, so an unknown invoice cost can never be ranked as free. The optional
+    extensions let a separately identified experiment add its own review metadata;
+    neither may replace a key this builder already records.
     """
     attempts: list[JsonObject] = []
     for attempt in schedule:
@@ -1674,44 +1788,51 @@ def pending_results(
         costs = [call.get("provider_cost_usd") for call in calls]
         known_costs = [cost for cost in costs if isinstance(cost, (int, float))]
         case = cases[attempt.case_id]
-        attempts.append(
-            {
-                "attempt_id": attempt.attempt_id,
-                "case_id": attempt.case_id,
-                "stage": attempt.stage,
-                "latency_class": attempt.latency_class,
-                "candidate_label": attempt.candidate_label,
-                "condition": attempt.condition,
-                "requested_reasoning_effort": attempt.effort,
-                "repeat": attempt.repeat,
-                "status": entry.get("status"),
-                "calls_used": len(calls),
-                "tool_calls_used": entry.get("tool_call_count"),
-                "max_tool_calls": case.max_tool_calls,
-                "latency_seconds": entry.get("latency_seconds"),
-                "schema_valid": entry.get("schema_valid"),
-                "cost_usd": sum(known_costs) if calls and len(known_costs) == len(calls) else None,
-                "account_charge_microusd": (
-                    sum(known_charges) if calls and len(known_charges) == len(calls) else None
-                ),
-                "calls_with_unknown_charge": sum(
-                    1 for charge in charges if not isinstance(charge, int)
-                ),
-                "task_failures": entry.get("task_failures", []),
-                "disallowed_tool_proposals": entry.get("disallowed_tool_proposals", []),
-                "stop": entry.get("stop"),
-                "final_response": entry.get("final_response"),
-                "tool_steps": entry.get("tool_steps", []),
-                "semantic_verdict": "pending",
-                "reviewer": None,
-                "calls": [_call_evidence(call) for call in calls],
-            }
-        )
+        row: JsonObject = {
+            "attempt_id": attempt.attempt_id,
+            "case_id": attempt.case_id,
+            "stage": attempt.stage,
+            "latency_class": attempt.latency_class,
+            "candidate_label": attempt.candidate_label,
+            "condition": attempt.condition,
+            "requested_reasoning_effort": attempt.effort,
+            "repeat": attempt.repeat,
+            "status": entry.get("status"),
+            "calls_used": len(calls),
+            "tool_calls_used": entry.get("tool_call_count"),
+            "max_tool_calls": case.max_tool_calls,
+            "latency_seconds": entry.get("latency_seconds"),
+            "schema_valid": entry.get("schema_valid"),
+            "cost_usd": sum(known_costs) if calls and len(known_costs) == len(calls) else None,
+            "account_charge_microusd": (
+                sum(known_charges) if calls and len(known_charges) == len(calls) else None
+            ),
+            "calls_with_unknown_charge": sum(
+                1 for charge in charges if not isinstance(charge, int)
+            ),
+            "task_failures": entry.get("task_failures", []),
+            "disallowed_tool_proposals": entry.get("disallowed_tool_proposals", []),
+            "stop": entry.get("stop"),
+            "final_response": entry.get("final_response"),
+            "tool_steps": entry.get("tool_steps", []),
+            "semantic_verdict": "pending",
+            "reviewer": None,
+            "calls": [_call_evidence(call) for call in calls],
+        }
+        if attempt_extension is not None:
+            extra = attempt_extension(attempt, case, dict(entry))
+            collide = sorted(set(extra) & set(row))
+            require(
+                not collide,
+                f"attempt extension collides with reserved key(s) {', '.join(collide)}",
+            )
+            row.update(extra)
+        attempts.append(row)
     baseline = state.get("account_ledger_baseline")
     document: JsonObject = {
-        "artifact_version": RESULTS_ARTIFACT_VERSION,
-        "experiment": EXPERIMENT,
-        "generated_by": "scripts/model_routing_followup.py",
+        "artifact_version": profile.results_artifact_version,
+        "experiment": profile.experiment,
+        "generated_by": profile.generated_by,
         "identity": state.get("identity"),
         "fixtures_sha256": (state.get("identity") or {}).get("fixtures_sha256"),
         "stages": state.get("stages", {}),
@@ -1727,24 +1848,25 @@ def pending_results(
             },
         },
         "caps": {
-            "incremental_cap_microusd": INCREMENTAL_CAP_MICROUSD,
+            "incremental_cap_microusd": profile.incremental_cap_microusd,
             "aggregate_cap_microusd": live.CAP_MICROUSD,
         },
         "counts": {
             "scheduled_attempts": len(schedule),
             "recorded_attempts": len(attempts),
-            "dispatch_bound": DISPATCH_BOUND,
+            "dispatch_bound": profile.dispatch_bound,
             "recorded_dispatches": recorded_calls(state),
         },
-        "notes": (
-            "Human adjudication required. Every verdict is pending and no reviewer is "
-            "recorded. Provider invoice cost is null where the provider did not report "
-            "it, and the account ledger charge is null where the movement could not be "
-            "attributed; unknown costs are never scored as zero. Raw provider payloads "
-            "stay in the private state file."
-        ),
+        "notes": profile.results_notes,
         "attempts": attempts,
     }
+    if document_extension is not None:
+        collide = sorted(set(document_extension) & set(document))
+        require(
+            not collide,
+            f"document extension collides with reserved key(s) {', '.join(collide)}",
+        )
+        document.update(document_extension)
     return document
 
 
@@ -1777,8 +1899,15 @@ def record_stage(state: JsonObject, phase: str, identity: JsonObject) -> None:
     stages[phase] = recorded
 
 
-def phase_admission(state: Mapping[str, Any], schedule: Sequence[Attempt], phase: str) -> None:
-    """The held-out stage opens only after all 72 diagnostic attempts are recorded."""
+def phase_admission(
+    state: Mapping[str, Any],
+    schedule: Sequence[Attempt],
+    phase: str,
+    *,
+    profile: ExperimentProfile = DEFAULT_PROFILE,
+) -> None:
+    """The gated phase opens only after every gate-stage attempt is recorded."""
+    require(phase in profile.phase_stages, f"unknown phase {phase!r}")
     planned = {attempt.attempt_id for attempt in schedule}
     for attempt_id, entry in state.get("attempts", {}).items():
         require(attempt_id in planned, "unplanned recorded attempt")
@@ -1788,18 +1917,18 @@ def phase_admission(state: Mapping[str, Any], schedule: Sequence[Attempt], phase
             and not entry.get("stop"),
             "recorded stop or interrupted attempt requires investigation; no automatic resume",
         )
-    if phase != "heldout":
+    if phase != profile.gated_phase:
         return
-    diagnostic = schedule_for_stage(schedule, "diagnostic")
+    gate = tuple(attempt for attempt in schedule if attempt.stage == profile.gate_stage)
     missing = [
         attempt.attempt_id
-        for attempt in diagnostic
+        for attempt in gate
         if attempt.attempt_id not in state.get("attempts", {})
     ]
     require(
         not missing,
-        f"held-out stage requires all {DIAGNOSTIC_ATTEMPTS} recorded diagnostic attempts; "
-        f"{len(missing)} unrecorded",
+        f"{profile.phase_labels[phase]} requires all {len(gate)} recorded "
+        f"{profile.gate_stage} attempts; {len(missing)} unrecorded",
     )
 
 

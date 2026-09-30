@@ -76,17 +76,17 @@
       "notes": "Provisional demanding tier placement in the reasoning and council profiles. It is no longer an automatic candidate for routine, background or research work: those profiles refuse the request rather than degrade to a demanding model. No generic medium effort."
     },
     {
-      "model": "openrouter/openai/gpt-6-sol",
+      "model": "openrouter/openai/gpt-6.1-sol",
       "sampling_parameters": ["seed"],
       "developer": "openai",
       "suitability": ["council", "reasoning", "research", "routine"],
-      "reasoning_efforts": ["max", "xhigh", "high", "medium", "low", "none"],
+      "reasoning_efforts": ["max", "xhigh", "high", "medium", "low"],
       "parameter_presets": {
         "default": {"reasoning_effort": "high"},
-        "reasoning": {"reasoning_effort": "xhigh"},
+        "reasoning": {"reasoning_effort": "high"},
         "council": {"reasoning_effort": "high", "include_reasoning": true}
       },
-      "notes": "Provisional demanding candidate; the reasoning profile requests xhigh. Placement and effort require workload evaluation."
+      "notes": "Operator-selected Sol 6.1 replacement at high effort on 30 September 2026, including reasoning and council. The bounded comparison completed, but human semantic verdicts remain pending; this rollout is not a claim of measured quality superiority. See docs/SOL_UPGRADE_EVALUATION.md."
     },
     {
       "model": "openrouter/anthropic/claude-sonnet-5",
@@ -167,7 +167,7 @@
           "group": "demanding",
           "models": [
             "openrouter/z-ai/glm-5.3",
-            "openrouter/openai/gpt-6-sol",
+            "openrouter/openai/gpt-6.1-sol",
             "openrouter/anthropic/claude-sonnet-5"
           ]
         },
@@ -211,7 +211,7 @@
             "openrouter/google/gemini-3.8-flash",
             "openrouter/x-ai/grok-4.7",
             "openrouter/z-ai/glm-5.3",
-            "openrouter/openai/gpt-6-sol",
+            "openrouter/openai/gpt-6.1-sol",
             "openrouter/anthropic/claude-sonnet-5"
           ]
         },

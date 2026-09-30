@@ -23,7 +23,7 @@ from orchestrator.council.models import (
 
 PREFIXED_ROSTER = {
     "analyst": "openrouter/anthropic/claude-sonnet-5",
-    "strategist": "openrouter/openai/gpt-6-sol",
+    "strategist": "openrouter/openai/gpt-6.1-sol",
     "skeptic": "openrouter/google/gemini-3.8-flash",
     "contrarian": "openrouter/x-ai/grok-4.7",
     "auditor": "openrouter/z-ai/glm-5.3",
@@ -39,7 +39,7 @@ class TestNamespacedRosters:
         config = CouncilConfig(
             roster={
                 "analyst": "openrouter/anthropic/claude-sonnet-5",
-                "strategist": "openrouter/openai/gpt-6-sol",
+                "strategist": "openrouter/openai/gpt-6.1-sol",
                 "skeptic": "openrouter/google/gemini-3.8-flash",
             }
         )
@@ -49,7 +49,7 @@ class TestNamespacedRosters:
         config = CouncilConfig(
             roster={
                 "analyst": "anthropic/claude-sonnet-5",
-                "strategist": "openai/gpt-6-sol",
+                "strategist": "openai/gpt-6.1-sol",
                 "skeptic": "google/gemini-3.8-flash",
             }
         )
@@ -79,7 +79,7 @@ class TestDeveloperFloor:
             CouncilConfig(
                 roster={
                     "analyst": "openrouter/anthropic/claude-sonnet-5",
-                    "strategist": "openrouter/openai/gpt-6-sol",
+                    "strategist": "openrouter/openai/gpt-6.1-sol",
                     "skeptic": "openrouter/openai/gpt-6-luna",
                 }
             )
@@ -88,7 +88,7 @@ class TestDeveloperFloor:
         with pytest.raises(ValueError, match="at least 3 different model developers"):
             CouncilConfig(
                 roster={
-                    "analyst": "openrouter/openai/gpt-6-sol",
+                    "analyst": "openrouter/openai/gpt-6.1-sol",
                     "strategist": "openrouter/openai/gpt-6-luna",
                 }
             )
@@ -102,7 +102,7 @@ class TestDeveloperFloor:
             roster={
                 "analyst": "openrouter/anthropic/claude-sonnet-5",
                 "strategist": "openrouter/anthropic/claude-opus-4.6",
-                "skeptic": "openrouter/openai/gpt-6-sol",
+                "skeptic": "openrouter/openai/gpt-6.1-sol",
                 "contrarian": "openrouter/google/gemini-3.8-flash",
             }
         )
@@ -137,7 +137,7 @@ class TestIdFormsShareOneReader:
         config = CouncilConfig(
             roster={
                 "analyst": model_id,
-                "strategist": "openai/gpt-6-sol",
+                "strategist": "openai/gpt-6.1-sol",
                 "skeptic": "openrouter/google/gemini-3.8-flash",
             }
         )
@@ -182,7 +182,7 @@ class TestMalformedModelIds:
     def test_malformed_model_id_is_rejected(self, model_id: str):
         roster = {
             "analyst": model_id,
-            "strategist": "openrouter/openai/gpt-6-sol",
+            "strategist": "openrouter/openai/gpt-6.1-sol",
             "skeptic": "openrouter/google/gemini-3.8-flash",
         }
         with pytest.raises(ValueError):
@@ -193,7 +193,7 @@ class TestMalformedModelIds:
             CouncilConfig(
                 roster={
                     "analyst": "claude-sonnet-5",
-                    "strategist": "openrouter/openai/gpt-6-sol",
+                    "strategist": "openrouter/openai/gpt-6.1-sol",
                     "skeptic": "openrouter/google/gemini-3.8-flash",
                 }
             )
@@ -203,7 +203,7 @@ class TestMalformedModelIds:
             CouncilConfig(
                 roster={
                     "analyst": "  ",
-                    "strategist": "openrouter/openai/gpt-6-sol",
+                    "strategist": "openrouter/openai/gpt-6.1-sol",
                     "skeptic": "openrouter/google/gemini-3.8-flash",
                 }
             )
@@ -225,7 +225,7 @@ class TestMalformedModelIds:
         assert read_developer("") is None
         assert read_developer("   ") is None
         assert read_developer("openrouter/") is None
-        assert roster_developers({"analyst": "", "strategist": "openai/gpt-6-sol"}) == {
+        assert roster_developers({"analyst": "", "strategist": "openai/gpt-6.1-sol"}) == {
             "strategist": "openai"
         }
 
@@ -237,7 +237,7 @@ class TestDuplicateSeats:
                 roster={
                     "analyst": "openrouter/anthropic/claude-sonnet-5",
                     "strategist": "openrouter/anthropic/claude-sonnet-5",
-                    "skeptic": "openrouter/openai/gpt-6-sol",
+                    "skeptic": "openrouter/openai/gpt-6.1-sol",
                     "contrarian": "openrouter/google/gemini-3.8-flash",
                 }
             )
@@ -248,7 +248,7 @@ class TestDuplicateSeats:
                 roster={
                     "analyst": "openrouter/anthropic/claude-sonnet-5",
                     "strategist": "  openrouter/anthropic/claude-sonnet-5  ",
-                    "skeptic": "openrouter/openai/gpt-6-sol",
+                    "skeptic": "openrouter/openai/gpt-6.1-sol",
                     "contrarian": "openrouter/google/gemini-3.8-flash",
                 }
             )

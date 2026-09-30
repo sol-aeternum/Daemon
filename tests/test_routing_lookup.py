@@ -29,7 +29,7 @@ from orchestrator.entitlements.errors import PolicyError
 from test_compute_runtime import routing_document
 
 LUNA = "openrouter/openai/gpt-6-luna"
-SOL = "openrouter/openai/gpt-6-sol"
+SOL = "openrouter/openai/gpt-6.1-sol"
 GLM = "openrouter/z-ai/glm-5.3"
 SONNET = "openrouter/anthropic/claude-sonnet-5"
 OPUS = "openrouter/anthropic/claude-opus-5.5"
@@ -307,7 +307,7 @@ class TestModelIdentity:
             model_routing.developer_for_model("")
 
     def test_the_two_readers_agree_wherever_both_can_read(self):
-        for model_id in (GLM, "z-ai/glm-5.3", "openrouter/openai/gpt-6-sol", "openai/gpt-6-luna"):
+        for model_id in (GLM, "z-ai/glm-5.3", "openrouter/openai/gpt-6.1-sol", "openai/gpt-6-luna"):
             assert (
                 model_routing.developer_for_model(model_id)
                 == model_routing.read_model_identity(model_id).developer
@@ -338,7 +338,7 @@ class TestCatalogueAndRosterShareTheReader:
         config = CouncilConfig(
             roster={
                 "analyst": "anthropic/claude-sonnet-5",
-                "strategist": "openai/gpt-6-sol",
+                "strategist": "openai/gpt-6.1-sol",
                 "skeptic": "google/gemini-3.8-flash",
             }
         )

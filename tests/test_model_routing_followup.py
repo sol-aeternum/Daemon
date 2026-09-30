@@ -9,6 +9,7 @@ import uuid
 from collections import Counter
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -122,7 +123,15 @@ def test_request_effort_is_omitted_by_default_and_explicit_presets(
 def test_active_preset_is_rejected_and_isolated_catalog_has_empty_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    source = json.loads(follow.model_routing.DEFAULT_MODEL_ROUTING.read_text())
+    from test_compute_runtime import routing_document
+
+    # This historical experiment keeps its old exact candidates. Its isolation
+    # contract must not depend on which models today's deployment still lists.
+    source = routing_document([candidate.model for candidate in follow.CANDIDATES])
+    active_path = tmp_path / "active.json"
+    active_path.write_text(json.dumps(source))
+    monkeypatch.setenv("DAEMON_MODEL_ROUTING", str(active_path))
+    get_settings.cache_clear()
     models = {candidate.model for candidate in follow.CANDIDATES}
     assert all(follow.model_routing.model_parameter_presets(model, "routine") for model in models)
     routes = {
@@ -216,6 +225,7 @@ async def test_admission_checks_both_caps_before_dispatch(
             account=uuid.uuid4(),
             period="2026-09",
             account_ceiling_microusd=25_000_000,
+            profile=follow.DEFAULT_PROFILE,
         ),
     )
     current = {"exposure": 0}
@@ -692,3 +702,246 @@ async def test_run_restart_refuses_recorded_interruption_without_replaying(
         await follow.run(args("second-results.json"))
     assert len(seen) == 2
     assert json.loads(state.read_text()) == checkpoint
+
+
+# ---------------------------------------------------------------------------
+# Experiment-profile seam: inert by default, authoritative when injected
+# ---------------------------------------------------------------------------
+
+#: The frozen results-row key set. A re-run may add keys through its extension;
+#: it may never rename, drop or rewrite one of these.
+RESULTS_ROW_KEYS = (
+    "account_charge_microusd",
+    "attempt_id",
+    "calls",
+    "calls_used",
+    "calls_with_unknown_charge",
+    "candidate_label",
+    "case_id",
+    "condition",
+    "cost_usd",
+    "disallowed_tool_proposals",
+    "final_response",
+    "latency_class",
+    "latency_seconds",
+    "max_tool_calls",
+    "repeat",
+    "requested_reasoning_effort",
+    "reviewer",
+    "schema_valid",
+    "semantic_verdict",
+    "stage",
+    "status",
+    "stop",
+    "task_failures",
+    "tool_calls_used",
+    "tool_steps",
+)
+
+
+def test_default_profile_preserves_this_experiments_identity_and_caps(tmp_path: Path) -> None:
+    """No profile argument means exactly the approved follow-up experiment."""
+    profile = follow.DEFAULT_PROFILE
+    assert profile.experiment == follow.EXPERIMENT == "model-routing-followup/1"
+    assert profile.state_version == follow.STATE_VERSION == "model-routing-followup-state/1"
+    assert (
+        profile.results_artifact_version
+        == follow.RESULTS_ARTIFACT_VERSION
+        == "model-routing-followup-results/1"
+    )
+    assert profile.generated_by == "scripts/model_routing_followup.py"
+    assert profile.incremental_cap_microusd == follow.INCREMENTAL_CAP_MICROUSD == 20_000_000
+    assert profile.total_attempts == follow.TOTAL_ATTEMPTS == 120
+    assert profile.dispatch_bound == follow.DISPATCH_BOUND == 360
+    assert profile.implementation_paths == ()
+    assert dict(profile.phase_stages) == {"diagnostic": "diagnostic", "heldout": "heldout"}
+    assert dict(profile.phase_labels)["heldout"] == "held-out stage"
+    assert (profile.gated_phase, profile.gate_stage) == ("heldout", "diagnostic")
+    # Execution bounds are shared constants, not profile fields: a re-run cannot
+    # lengthen the deadline or widen the token envelope through the seam.
+    assert (
+        follow.MAX_OUTPUT_TOKENS,
+        follow.MAX_CONTEXT_TOKENS,
+        follow.MAX_CALLS_PER_ATTEMPT,
+        follow.ATTEMPT_DEADLINE_S,
+    ) == (4096, 16_000, 3, 90.0)
+    account = uuid.uuid4()
+    state_path = tmp_path / "state.json"
+    assert follow.account_lock_path(state_path, account) == state_path.with_name(
+        f".model-routing-followup-1.{account}.lock"
+    )
+    assert follow.implementation_fingerprint() == follow.implementation_fingerprint(extra_paths=())
+
+
+def test_locked_state_never_adopts_another_experiments_records(tmp_path: Path) -> None:
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    account = uuid.uuid4()
+    identity: dict[str, Any] = {"fixtures_sha256": "aa", "schedule_sha256": "bb"}
+    path = private / "followup-state.json"
+    with follow.locked_state(path, account, identity) as state:
+        assert state["version"] == follow.STATE_VERSION
+    injected = replace(
+        follow.DEFAULT_PROFILE,
+        experiment="model-sonnet-upgrade/1",
+        state_version="model-sonnet-upgrade-state/1",
+        lock_holder_label="Sonnet upgrade runner",
+    )
+    before = path.read_bytes()
+    with pytest.raises(follow.PolicyViolation, match="state version changed"):
+        with follow.locked_state(path, account, identity, profile=injected):
+            pass
+    assert path.read_bytes() == before
+    other = private / "upgrade-state.json"
+    with follow.locked_state(other, account, identity, profile=injected) as state:
+        assert state["version"] == injected.state_version
+    assert sorted(item.name for item in private.iterdir() if item.name.startswith(".")) == [
+        f".model-routing-followup-1.{account}.lock",
+        f".model-sonnet-upgrade-1.{account}.lock",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_admission_charges_each_dispatch_to_its_own_profile_caps(
+    corpus: follow.FixtureSet, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The injected ceiling is enforced per dispatch, not only at preflight."""
+    schedule = follow.build_schedule(corpus)
+    ledger = {"exposure": 0}
+
+    async def exposure(*_args: Any) -> Any:
+        return follow.reliability.LedgerExposure(ledger["exposure"], 0, 0)
+
+    monkeypatch.setattr(follow.reliability, "read_ledger_exposure", exposure)
+
+    def context(profile: follow.ExperimentProfile, recorded_calls: int) -> follow.RunContext:
+        calls = [{"account_charge_microusd": 0} for _ in range(recorded_calls)]
+        state: dict[str, Any] = {
+            "attempts": {"a": {"calls": calls}},
+            "account_ledger_baseline": {"exposure_microusd": 0},
+        }
+        ledger["exposure"] = 0
+        return cast(
+            follow.RunContext,
+            SimpleNamespace(
+                state=state,
+                schedule=schedule,
+                pool=object(),
+                account=uuid.uuid4(),
+                period="2026-09",
+                account_ceiling_microusd=25_000_000,
+                profile=profile,
+            ),
+        )
+
+    default_ctx = context(follow.DEFAULT_PROFILE, 0)
+    assert await follow.admit_call(default_ctx, 20_000_000, 3) == 0
+    with pytest.raises(follow.AccountingViolation, match="incremental"):
+        await follow.admit_call(default_ctx, 20_000_001, 3)
+
+    stricter = replace(
+        follow.DEFAULT_PROFILE,
+        experiment="model-sonnet-upgrade/1",
+        incremental_cap_microusd=14_000_000,
+        total_attempts=56,
+        dispatch_bound=168,
+    )
+    strict_ctx = context(stricter, 0)
+    # This experiment's 120-attempt schedule does not fit the injected envelope.
+    with pytest.raises(follow.PolicyViolation, match="attempt envelope"):
+        await follow.admit_call(strict_ctx, 1, 3)
+    strict_ctx.schedule = schedule[:56]
+    assert await follow.admit_call(strict_ctx, 14_000_000, 3) == 0
+    with pytest.raises(follow.AccountingViolation, match="incremental"):
+        await follow.admit_call(strict_ctx, 14_000_001, 3)
+    # The follow-up's looser USD 20 allowance is unreachable under the tighter cap.
+    with pytest.raises(follow.AccountingViolation, match="incremental"):
+        await follow.admit_call(strict_ctx, 19_999_999, 3)
+    exhausted = context(stricter, 168)
+    exhausted.schedule = schedule[:56]
+    with pytest.raises(follow.PolicyViolation, match="dispatch envelope"):
+        await follow.admit_call(exhausted, 1, 3)
+
+
+def test_phase_gate_and_results_discriminators_follow_the_profile(
+    corpus: follow.FixtureSet,
+) -> None:
+    schedule = follow.build_schedule(corpus)
+    diagnostic = follow.schedule_for_stage(schedule, "diagnostic")
+    state: dict[str, Any] = {
+        "attempts": {attempt.attempt_id: {"status": "completed"} for attempt in diagnostic[:-1]},
+        "account_ledger_baseline": {"exposure_microusd": 0},
+        "identity": {"fixtures_sha256": "aa"},
+        "stages": {},
+    }
+    with pytest.raises(
+        follow.PolicyViolation,
+        match="held-out stage requires all 72 recorded diagnostic attempts; 1 unrecorded",
+    ):
+        follow.phase_admission(state, schedule, "heldout")
+    with pytest.raises(follow.PolicyViolation, match="unknown phase"):
+        follow.phase_admission(state, schedule, "regression")
+    injected = replace(
+        follow.DEFAULT_PROFILE,
+        experiment="model-sonnet-upgrade/1",
+        results_artifact_version="model-sonnet-upgrade-results/1",
+        generated_by="scripts/model_sonnet_upgrade.py",
+        incremental_cap_microusd=14_000_000,
+        dispatch_bound=168,
+        phase_stages={"diagnostic": "diagnostic", "regression": "heldout"},
+        phase_labels={"diagnostic": "diagnostic phase", "regression": "regression phase"},
+        gated_phase="regression",
+    )
+    with pytest.raises(
+        follow.PolicyViolation,
+        match="regression phase requires all 72 recorded diagnostic attempts; 1 unrecorded",
+    ):
+        follow.phase_admission(state, schedule, "regression", profile=injected)
+    state["attempts"][diagnostic[-1].attempt_id] = {"status": "completed"}
+    follow.phase_admission(state, schedule, "regression", profile=injected)
+
+    document = follow.pending_results(state, corpus.by_id(), schedule)
+    assert document["artifact_version"] == follow.RESULTS_ARTIFACT_VERSION
+    assert document["generated_by"] == "scripts/model_routing_followup.py"
+    assert document["caps"] == {
+        "incremental_cap_microusd": 20_000_000,
+        "aggregate_cap_microusd": 25_000_000,
+    }
+    assert document["counts"]["dispatch_bound"] == 360
+    assert document["notes"].startswith("Human adjudication required.")
+    row = document["attempts"][0]
+    assert sorted(row) == list(RESULTS_ROW_KEYS)
+    assert row["semantic_verdict"] == "pending" and row["reviewer"] is None
+
+    rerun = follow.pending_results(
+        state,
+        corpus.by_id(),
+        schedule,
+        profile=injected,
+        attempt_extension=lambda attempt, case, entry: {"evidence_class": case.stage},
+        document_extension={"provider_pin": "google-vertex/europe"},
+    )
+    assert rerun["artifact_version"] == "model-sonnet-upgrade-results/1"
+    assert rerun["generated_by"] == "scripts/model_sonnet_upgrade.py"
+    assert rerun["caps"]["incremental_cap_microusd"] == 14_000_000
+    assert rerun["counts"]["dispatch_bound"] == 168
+    assert rerun["provider_pin"] == "google-vertex/europe"
+    assert rerun["attempts"][0]["evidence_class"] == "diagnostic"
+    assert set(RESULTS_ROW_KEYS) < set(rerun["attempts"][0])
+    # Extensions may only add: a reserved accounting or verdict key is refused.
+    with pytest.raises(follow.PolicyViolation, match="reserved key"):
+        follow.pending_results(
+            state,
+            corpus.by_id(),
+            schedule,
+            profile=injected,
+            attempt_extension=lambda *_args: {"semantic_verdict": "acceptable"},
+        )
+    with pytest.raises(follow.PolicyViolation, match="reserved key"):
+        follow.pending_results(
+            state,
+            corpus.by_id(),
+            schedule,
+            profile=injected,
+            document_extension={"caps": {"incremental_cap_microusd": 1}},
+        )

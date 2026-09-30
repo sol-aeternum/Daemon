@@ -339,7 +339,13 @@ async def completion_with_tools(
     registry: ToolRegistry,
     actual_model: str | None = None,
     max_tool_rounds: int = 5,
+    *,
+    completion_dispatch: Callable[..., Awaitable[Any]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
+    # The evaluation adapter observes this exact loop and keeps its dispatches
+    # inside the ordinary qualification/accounting runtime. Normal callers use
+    # the same guarded completion as before; no provider request is reimplemented.
+    dispatch = completion_dispatch or guarded_completion
     executor = ToolExecutor(registry)
     tools = registry.list_schemas() if len(registry) > 0 else None
     current_messages = list(messages)
@@ -362,7 +368,7 @@ async def completion_with_tools(
         content_buffer: list[str] = []
 
         try:
-            response_stream = await guarded_completion(**call_params)
+            response_stream = await dispatch(**call_params)
             stream_iter = cast(AsyncIterator[Any], response_stream)
 
             async with _closing_stream(stream_iter):

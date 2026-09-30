@@ -27,7 +27,7 @@ from orchestrator.council.models import (
 
 ROSTER = {
     "analyst": "openrouter/anthropic/claude-sonnet-5",
-    "strategist": "openrouter/openai/gpt-6-sol",
+    "strategist": "openrouter/openai/gpt-6.1-sol",
     "skeptic": "openrouter/google/gemini-3.8-flash",
     "contrarian": "openrouter/x-ai/grok-4.7",
     "auditor": "openrouter/z-ai/glm-5.3",
@@ -130,7 +130,7 @@ def same_model(_requested: str) -> str:
 
 def collapse_onto_deepseek(requested: str) -> str:
     """Three seats fall back onto one developer that no seat was planned for."""
-    if requested.endswith(("claude-sonnet-5", "gpt-6-sol", "grok-4.7")):
+    if requested.endswith(("claude-sonnet-5", "gpt-6.1-sol", "grok-4.7")):
         return "openrouter/deepseek/deepseek-v4.1-flash"
     return requested
 
@@ -181,7 +181,7 @@ class TestModelAttribution:
         # would hand several seats the same model here.
         served = {
             "openrouter/anthropic/claude-sonnet-5": "openrouter/anthropic/claude-opus-4.6",
-            "openrouter/openai/gpt-6-sol": "openrouter/openai/gpt-6-luna",
+            "openrouter/openai/gpt-6.1-sol": "openrouter/openai/gpt-6-luna",
             "openrouter/google/gemini-3.8-flash": "openrouter/deepseek/deepseek-v4.1-flash",
             "openrouter/x-ai/grok-4.7": "openrouter/x-ai/grok-4.7",
         }
@@ -231,7 +231,7 @@ class TestFallbackDiversityPlanning:
         roster = {
             "analyst": "openrouter/anthropic/claude-sonnet-5",
             "strategist": "openrouter/anthropic/claude-opus-4.6",
-            "skeptic": "openrouter/openai/gpt-6-sol",
+            "skeptic": "openrouter/openai/gpt-6.1-sol",
             "contrarian": "openrouter/google/gemini-3.8-flash",
         }
         probe, _calls = patch_completion(monkeypatch, same_model)
@@ -298,7 +298,7 @@ class TestRoundDiversityGate:
         roster = {
             "analyst": "openrouter/anthropic/claude-sonnet-5",
             "strategist": "openrouter/anthropic/claude-opus-4.6",
-            "skeptic": "openrouter/openai/gpt-6-sol",
+            "skeptic": "openrouter/openai/gpt-6.1-sol",
         }
         with pytest.raises(CouncilDiversityError, match="planned"):
             await engine.run_round_1("prompt", roster)
@@ -308,7 +308,7 @@ class TestRoundDiversityGate:
     async def test_a_seat_whose_model_cannot_be_read_is_not_a_developer(self):
         results: list[engine.SeatResult] = [
             ("analyst", "text", None, None, {}, "openrouter/anthropic/claude-sonnet-5"),
-            ("strategist", "text", None, None, {}, "openrouter/openai/gpt-6-sol"),
+            ("strategist", "text", None, None, {}, "openrouter/openai/gpt-6.1-sol"),
             ("skeptic", "text", None, None, {}, ""),
         ]
         with pytest.raises(CouncilDiversityError, match="2 model developers"):

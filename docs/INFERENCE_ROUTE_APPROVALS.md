@@ -37,7 +37,7 @@ the short-prompt base price. Each route supports text, tools and JSON schema.
 | `openai/gpt-6-luna` | `azure/eu` | routine | 1,050,000 / 128,000 | 0.22 / 0.825 |
 | `deepseek/deepseek-v4.1-flash` | `coreweave/fp8` | routine | 1,048,576 / 393,216 | 0.20 / 0.65 |
 | `z-ai/glm-5.3-flash` | `inceptron/fp8` | routine | 1,048,576 / 131,072 | 0.15 / 0.45 |
-| `openai/gpt-6-sol` | `azure/eu` | premium | 1,050,000 / 128,000 | 4.4 / 16.5 |
+| `openai/gpt-6.1-sol` | `azure/eu` | premium | 1,050,000 / 128,000 | 4.4 / 16.5 |
 | `anthropic/claude-sonnet-5` | `google-vertex/europe` | premium | 1,000,000 / 128,000 | 2.2 / 11 |
 | `anthropic/claude-opus-5.5` | `google-vertex/europe` | premium | 1,000,000 / 128,000 | 4.4 / 22 |
 | `openai/gpt-6-astra` | `azure/us` | premium | 1,050,000 / 128,000 | 22 / 82.5 |
@@ -68,6 +68,35 @@ Inceptron commits API payload processing to EU/EEA in its
 and no training in its [terms](https://www.inceptron.io/termsofservice).
 Grok's ordinary provider policy reports 30-day retention: approval is restricted
 to the separately ZDR-listed `xai/zdr/us` variant, never generic `xai`.
+
+## Sol 6.1 replacement — 30 September 2026
+
+After receiving the [bounded comparison](SOL_UPGRADE_EVALUATION.md), the operator
+explicitly directed: **“swap in sol 6.1 high, deploy locally and create pr.”** This
+supersedes the recommendation to retain Sol 6 pending human adjudication. It is
+an operator rollout decision, not retrospective semantic acceptance: all 92 human
+verdicts remain pending, and the new model was slower/more expensive in the sample.
+
+The existing `sol-azure-eu` route now serves `openai/gpt-6.1-sol`. The provider pin,
+ZDR/no-training/account controls, native context/output limits, premium class,
+USD 4.40/16.50 long-prompt price ceilings and **6 October 00:00 UTC expiry** are
+retained. Only this route's operator-review date advances to 30 September; the
+other seven approvals are not renewed. Default, reasoning and council presets
+all request **high**; `none` is removed from the supported effort declaration.
+Luna-first automatic routing and council developer-diversity requirements remain.
+
+Exact Azure EU endpoint/ZDR metadata was checked on 30 September, and the bounded
+comparison completed 46 attempts per model, including two production streaming
+tool probes per model. Read-only generation receipts corroborate Azure and
+`openai/gpt-6.1-sol-20260929` for the streamed calls. This is not native-limit or
+general workload-quality certification. Account attestation above continues to
+apply to the same local deployment account; no privacy exception is introduced.
+
+The operator separately confirmed restarting the current local backend/worker
+after disclosure that their shared checkout contains newer uncommitted accounting
+and search changes. The Sol rollout applies only its three runtime configuration
+files to that checkout, preserving the unrelated work. No additional paid smoke
+test is included; verify effective policy, presets, roster and service health.
 
 ## CoreWeave location decision
 
@@ -136,4 +165,6 @@ Selecting this policy qualifies eligible background/title/memory/helper calls as
 well as interactive chat. Native paid-route limits can reserve large output
 holds; existing account budgets, entitlements and settlement remain enforced.
 No funds, plan limits, premium eligibility or unqualified tool services are
-changed. No live restart or paid inference was performed to prepare this PR.
+changed. The original 29 September approval did not restart services or dispatch
+paid inference. The separately authorized Sol 6.1 replacement rollout and its
+verification are recorded in [SOL_UPGRADE_EVALUATION.md](SOL_UPGRADE_EVALUATION.md).
