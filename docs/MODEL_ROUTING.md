@@ -147,6 +147,16 @@ on its own does not select reasoning; the instruction around it decides (approve
 security boundary, and the model always receives the full message. Signals are
 English-only. The frozen characterization is `tests/fixtures/routing_classification.json`.
 
+Both chat endpoints make the same decision from the same input: the text the user
+wrote in the latest turn. The default text the server substitutes for an upload
+with no message is model-facing only and is never classified, so such an upload
+runs on the routine profile on both endpoints. An explicit model selection is exact
+and runs under the `routine` scope on both endpoints, so it receives that model's
+`default` preset whatever the message says (approved 1 October 2026). The
+OpenAI-compatible `/v1/chat/completions` endpoint is a last-message adapter: it
+uses only the latest user message and does not apply conversation history,
+`max_tokens`, sampling parameters or `n` from the request.
+
 Automatic selection intersects the workload's acceptable model groups with
 independently qualified endpoints, required tools/structured-output capabilities,
 context/output fit and account funding. It compares bounded request cost within

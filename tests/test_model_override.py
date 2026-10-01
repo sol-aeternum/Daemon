@@ -15,6 +15,7 @@ from orchestrator.config import get_settings
 from orchestrator.db import AppState, get_app_state
 from orchestrator.main import app
 from orchestrator import main as main_module
+from orchestrator import model_routing
 from tests.qualified_compute import install_qualified_compute
 
 # The stand-in deployment must qualify the profiles these tests dispatch under,
@@ -166,6 +167,99 @@ async def test_endpoint_carries_profile_to_account_dispatch(
     response = await client.post(endpoint, json=payload)
     assert response.status_code == 200
     assert observed == [(profile, True, "auto")]
+
+
+def _payload(endpoint: str, message: str, model: str) -> dict[str, object]:
+    if endpoint == "/chat":
+        return {"message": message, "model": model}
+    return {"model": model, "messages": [{"role": "user", "content": message}], "stream": True}
+
+
+async def _observed_dispatch(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    endpoint: str,
+    payload: dict[str, object],
+) -> list[tuple[str, bool]]:
+    monkeypatch.setenv("MOCK_LLM", "true")
+    get_settings.cache_clear()
+    actual_frames = main_module._account_chat_frames
+    observed: list[tuple[str, bool]] = []
+
+    async def capture(*args, **kwargs):
+        observed.append((kwargs["profile"], kwargs["auto_route"]))
+        async for frame in actual_frames(*args, **kwargs):
+            yield frame
+
+    monkeypatch.setattr(main_module, "_account_chat_frames", capture)
+    response = await client.post(endpoint, json=payload)
+    assert response.status_code == 200
+    return observed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["/chat", "/v1/chat/completions"])
+@pytest.mark.parametrize(
+    "message",
+    ["hello", "search for recent weather reports", "research and compare these vendors"],
+)
+async def test_explicit_model_runs_under_routine_scope_on_both_endpoints(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, endpoint: str, message: str
+) -> None:
+    """An explicit model is exact and its preset does not depend on wording (D2)."""
+    observed = await _observed_dispatch(
+        client, monkeypatch, endpoint, _payload(endpoint, message, "openrouter/test/explicit-model")
+    )
+    assert observed == [("routine", False)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("endpoint", "payload"),
+    [
+        (
+            "/chat",
+            {
+                "message": "",
+                "model": "auto",
+                "attachments": [
+                    {"kind": "text", "name": "notes.txt", "text_content": "compare the totals"}
+                ],
+            },
+        ),
+        ("/v1/chat/completions", _payload("/v1/chat/completions", "", "auto")),
+    ],
+)
+async def test_upload_without_text_is_not_classified_from_default_text(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    endpoint: str,
+    payload: dict[str, object],
+) -> None:
+    """The server's default upload text is model-facing only, never a workload signal."""
+    observed = await _observed_dispatch(client, monkeypatch, endpoint, payload)
+    assert observed == [("routine", True)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["/chat", "/v1/chat/completions"])
+async def test_upload_with_analytic_instruction_routes_the_same_on_both_endpoints(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, endpoint: str
+) -> None:
+    payload = _payload(endpoint, "analyze this contract", "auto")
+    if endpoint == "/chat":
+        payload["attachments"] = [
+            {"kind": "text", "name": "contract.txt", "text_content": "Terms."}
+        ]
+    observed = await _observed_dispatch(client, monkeypatch, endpoint, payload)
+    assert observed == [("reasoning", True)]
+
+
+def test_explicit_routine_scope_uses_the_models_default_preset() -> None:
+    """D2's effect: wording no longer selects a profile preset for an explicit pick."""
+    opus = "openrouter/anthropic/claude-opus-5.5"
+    assert model_routing.model_parameter_presets(opus, "routine") == {"reasoning_effort": "high"}
+    assert model_routing.model_parameter_presets(opus, "research") == {"reasoning_effort": "xhigh"}
 
 
 @pytest.mark.asyncio

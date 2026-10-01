@@ -1350,9 +1350,9 @@ async def openai_chat_completions(
     if not user_messages:
         raise HTTPException(status_code=400, detail="No user message found")
 
-    last_message = _extract_text_content(user_messages[-1].content)
-    if not last_message:
-        last_message = "Please help with the attached input."
+    # Classify what the user wrote; the default below is model-facing text only.
+    requested_text = _extract_text_content(user_messages[-1].content)
+    last_message = requested_text or "Please help with the attached input."
     conversation_id = new_conversation_id()
     # Reuse the HTTP correlation id that the request-id middleware already
     # assigned to ``request.scope`` so the OpenAI streaming error log, the
@@ -1382,8 +1382,13 @@ async def openai_chat_completions(
         actual_model = ""
     # Classify before admission so the automatic choice is qualified against the
     # exact workload profile this request will dispatch under, not against any
-    # approved route at all.
-    workload = select_model_tier(last_message).profile
+    # approved route at all. This is the same decision native /chat makes: an
+    # explicit model is exact and runs under the routine scope, whatever the
+    # wording, so it receives that model's default preset on both endpoints.
+    auto_requested = payload.model in {"default", "", "kimi", "auto"}
+    workload = select_model_tier(
+        requested_text, user_override=None if auto_requested else payload.model
+    ).profile
     actual_model = _approved_chat_model(
         actual_model if actual_model not in {"default", "", "kimi", "auto"} else None,
         profile=workload,
@@ -1434,7 +1439,7 @@ async def openai_chat_completions(
                 async for frame in _account_chat_frames(
                     getattr(request.app.state.app_state, "db_pool", None),
                     auth.user_id,
-                    auto_route=payload.model in {"default", "", "kimi", "auto"},
+                    auto_route=auto_requested,
                     profile=workload,
                     settings=settings,
                     provider_config=provider_config,
@@ -1559,7 +1564,7 @@ async def openai_chat_completions(
             async for frame in _account_chat_frames(
                 getattr(request.app.state.app_state, "db_pool", None),
                 auth.user_id,
-                auto_route=payload.model in {"default", "", "kimi", "auto"},
+                auto_route=auto_requested,
                 profile=workload,
                 settings=settings,
                 provider_config=provider_config,
@@ -1958,7 +1963,9 @@ async def chat(
             last_user_msg = msg
             last_user_message = _extract_text_content(msg.get("content"))
             break
-    user_message = (last_user_message or payload.message).strip()
+    # Classify what the user wrote; the upload default is model-facing text only.
+    requested_text = (last_user_message or payload.message).strip()
+    user_message = requested_text
     if not user_message and attachments:
         user_message = "Please analyze the attached files."
 
@@ -1996,7 +2003,7 @@ async def chat(
     turn_count = len(incoming_messages) if incoming_messages else 0
 
     model_decision = select_model_tier(
-        message=user_message,
+        message=requested_text,
         turn_count=turn_count,
         user_override=user_model_choice,
     )
