@@ -24,7 +24,11 @@ Approved by the product owner on 1 October 2026:
 4. **Chart adoption**: adopt `docs/CHAT_ROUTING.md` and its rendered chart, and make
    the chart update when models change from now on (A-PR5).
 
-**Not approved by this plan:** merging any PR, deployment, renewing or changing
+Later on 1 October 2026 the product owner authorized merging each A-core PR once
+its security review is clean and CI passes; A-core is complete when all five are
+merged.
+
+**Not approved by this plan:** deployment, renewing or changing
 route approvals, optional work O1 to O7, and any Package B evaluation, budget or
 implementation. Each needs a separate explicit authorization.
 
@@ -38,13 +42,15 @@ implementation. Each needs a separate explicit authorization.
    Never work from a checkout with unrelated uncommitted changes.
 4. Implement exactly one PR's scope. Run the gates in [Merge gate](#merge-gate).
 5. Open the PR with `scripts/pr_create.sh -- <gh pr create args>`. Update the
-   execution status row in the same PR. **Do not merge.**
+   execution status row in the same PR. Merge only once its security review is clean
+   and required checks pass (merge authority granted 1 October 2026).
 6. Ask before any design choice this plan leaves open. The known open choices are
    marked **Ask first**.
 
 ## Verified baseline at `48bb7c10`
 
-Verified by read-only inspection on 1 October 2026.
+Verified by read-only inspection on 1 October 2026. Re-verified against `main`
+`72ffacf2` (#382) when A-PR1 started: no routing file changed.
 
 | Area | Behaviour | Evidence |
 | --- | --- | --- |
@@ -122,8 +128,10 @@ A-PR5 goes last because it documents the merged behaviour.
   2. *Word forms* (verified defect): explicit variants for single-word signals only.
   3. *Provenance* (heuristic repair): remove properly closed fences (```` ``` ````
      and `~~~`) and `>` blockquote lines, then classify the remaining text. If
-     nothing remains, classify the whole original message, so instructions written
-     entirely inside quotes still work. An unclosed fence strips nothing. The model
+     nothing remains, classify the quoted text, so instructions written entirely
+     inside quotes still work; fenced data never counts, even when nothing else
+     remains (refinement approved 1 October 2026, so "fence only → routine" holds
+     for code containing keywords). An unclosed fence strips nothing. The model
      always receives the full message.
   4. *D4* (approved): remove the fence-presence rule; update the two pinned tests.
 - **Invariants:** signals stay English-only (documented limitation); existing
@@ -338,8 +346,8 @@ Merged, Blocked (with reason).
 
 | PR | State | Branch / PR | Notes |
 | --- | --- | --- | --- |
-| A-PR1 classifier repairs | Not started | — | |
-| A-PR2 endpoint parity | Not started | — | After A-PR1 |
-| A-PR3 truthful capability denial | Not started | — | |
-| A-PR4 routing telemetry | Not started | — | |
-| A-PR5 docs and generated chart | Not started | — | Last; ask first about the image |
+| A-PR1 classifier repairs | Merged | #384 (`4f9f0518`) | Security review clean; quadratic fence scan found and fixed before merge |
+| A-PR2 endpoint parity | PR open | `fix/routing-endpoint-parity` | Security review clean |
+| A-PR3 truthful capability denial | PR open | #385 | Security review clean |
+| A-PR4 routing telemetry | In progress | `feat/routing-telemetry` | Runtime events done; decision record after A-PR2 merges |
+| A-PR5 docs and generated chart | In progress | `docs/routing-chart-generated` | Image: generated SVG (option a), chosen under the 1 October authority to proceed on judgement; reversible |
