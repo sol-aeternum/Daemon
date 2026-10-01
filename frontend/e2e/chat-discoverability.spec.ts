@@ -86,9 +86,7 @@ test('Deliberate submits the Council command and opens its interview without con
     });
   });
   await page.goto('/?id=conversation-1');
-  const composer = page.getByPlaceholder(
-    'Message Daemon — try /council, /image, /code',
-  );
+  const composer = page.locator('textarea');
   await composer.fill('Keep this draft');
   await page.getByRole('button', { name: /Deliberate/ }).click();
   await expect(
@@ -109,6 +107,9 @@ test('header settings shortcut preserves the conversation across sections and ba
 }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto('/?id=conversation-1');
+  await expect(
+    page.getByRole('heading', { name: 'Planning', exact: true }),
+  ).toBeVisible();
   await page.getByRole('button', { name: 'Open settings' }).click();
   await expect(page).toHaveURL(/\/settings\/profile\?from=conversation-1$/);
   await page

@@ -175,22 +175,22 @@ for (const width of [375, 1440]) {
       .filter({ visible: true });
     const latest = page.locator('[data-message-id="message-100"]');
     await expect(
-      latest.getByRole('button', { name: 'web_search' }),
+      latest.getByRole('button', { name: /^Tool activity:/ }),
     ).toBeVisible();
     await toggle.click();
     await expect(toggle).toHaveAttribute('aria-pressed', 'true');
     await expect(
-      latest.getByRole('button', { name: 'web_search' }),
+      latest.getByRole('button', { name: /^Tool activity:/ }),
     ).toHaveCount(0);
     await expect(latest).toContainText('Full content 100.');
     await page.reload();
     await expect(toggle).toHaveAttribute('aria-pressed', 'true');
     await expect(
-      latest.getByRole('button', { name: 'web_search' }),
+      latest.getByRole('button', { name: /^Tool activity:/ }),
     ).toHaveCount(0);
     await toggle.click();
     await expect(
-      latest.getByRole('button', { name: 'web_search' }),
+      latest.getByRole('button', { name: /^Tool activity:/ }),
     ).toBeVisible();
     expect(
       await page.evaluate(

@@ -130,6 +130,14 @@ export default function VoiceTab() {
 
   return (
     <form onSubmit={handleSubmit} className="animate-fade-in">
+      <p
+        role="note"
+        className="mb-6 rounded-xl border border-border-primary bg-bg-secondary p-4 text-sm text-text-secondary"
+      >
+        Voice input and speech generation are unavailable in the current
+        runtime. Saved preferences are retained; changing these settings does
+        not enable them.
+      </p>
       {/* Header */}
       <div className="flex items-center gap-3 mb-6 pb-6 border-b border-[var(--color-border-primary)]">
         <div className="w-10 h-10 rounded-full bg-[var(--color-accent-subtle)] flex items-center justify-center">

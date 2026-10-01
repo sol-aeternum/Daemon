@@ -59,6 +59,8 @@ export function ModelSelector({ selected, onSelect }: ModelSelectorProps) {
         setOpen(false);
         setShowMore(false);
         event.stopPropagation();
+        event.preventDefault();
+        ref.current?.querySelector('button')?.focus();
       }
     };
     document.addEventListener('mousedown', handler);
@@ -104,6 +106,8 @@ export function ModelSelector({ selected, onSelect }: ModelSelectorProps) {
     <div ref={ref} className="relative">
       <button
         type="button"
+        aria-expanded={open}
+        aria-label={`Model: ${selectedName}`}
         onClick={() => setOpen((v) => !v)}
         className="flex min-h-touch items-center gap-1.5 rounded-md border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2 text-sm transition-colors hover:bg-[var(--color-bg-tertiary)]"
       >

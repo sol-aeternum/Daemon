@@ -9,7 +9,20 @@ import { DefaultChatTransport } from 'ai';
 import { useState, useRef, useEffect, Suspense, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Group, Panel, Separator } from 'react-resizable-panels';
-import { FilePreview } from '../src/components/FilePreview';
+import {
+  ConversationDetails,
+  useWideDetails,
+  type DetailsTab,
+} from '../components/ConversationDetails';
+import {
+  getConversationOutputs,
+  type ConversationOutput,
+  type DetailTurn,
+} from '../lib/conversationDetails';
+import { CopyResponseButton } from '../components/CopyResponseButton';
+import { useChatDraft } from '../hooks/useChatDraft';
+import { useAuthGeneration } from '../hooks/useAuthGeneration';
+import { openChatDraft, resetChatDraft } from '../lib/chatDrafts';
 import { useStt } from '../hooks/useStt';
 import { ErrorProvider, useError } from '../components/ErrorProvider';
 import { ErrorBoundary } from '../components/ErrorBoundary';
@@ -41,11 +54,8 @@ import { AgentStatusList } from '../components/AgentStatusList';
 import { OfflineIndicator } from '../components/OfflineIndicator';
 import { RetryButton } from '../components/RetryButton';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
-import { MicButton } from '../components/MicButton';
-import { TextToSpeechButton } from '../components/TextToSpeechButton';
-import { StreamingTtsMessage } from '../components/StreamingTtsMessage';
 import { useLocalStorage } from '../hooks/useLocalStorage';
-import { refreshIfNeeded, getAuthHeader } from '../lib/auth';
+import { refreshIfNeeded, getAuthHeader, getAuthGeneration } from '../lib/auth';
 import { ThinkingIndicator } from '../components/ThinkingIndicator';
 import MarkdownMessage from '../components/MarkdownMessage';
 import { FileDownloadCard } from '../components/FileDownloadCard';
@@ -59,7 +69,7 @@ import {
   isCouncilOutputEvent,
   isCouncilDoneEvent,
 } from '../lib/events';
-import { X, Eye, EyeOff } from 'lucide-react';
+import { Eye, PanelRight } from 'lucide-react';
 import { CouncilInterviewCard } from '../components/council/CouncilInterviewCard';
 import { CouncilProgress } from '../components/council/CouncilProgress';
 import { CouncilOutputViewer } from '../components/council/CouncilOutputViewer';
@@ -105,13 +115,6 @@ type OutboundAttachment = {
   kind: OutboundAttachmentKind;
   data_url?: string;
   text_content?: string;
-};
-
-type DocumentDownloadInfo = {
-  fileUrl: string;
-  filename: string;
-  fileType?: string;
-  fileSize?: number;
 };
 
 const MAX_ATTACHMENT_TEXT_LENGTH = 8000;
@@ -211,55 +214,6 @@ const getPersistedToolEvents = (message: DaemonMessage): ChatEvent[] => {
   return events;
 };
 
-const parseToolResultRecord = (
-  value: unknown,
-): Record<string, unknown> | undefined => {
-  if (typeof value === 'string') {
-    try {
-      const parsed = JSON.parse(value);
-      return toRecord(parsed);
-    } catch {
-      return undefined;
-    }
-  }
-  return toRecord(value);
-};
-
-const getDocumentDownloadFromEvents = (
-  events: ChatEvent[],
-): DocumentDownloadInfo | undefined => {
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    const event = events[i];
-    if (event.type !== 'tool_result') continue;
-
-    const parsed = parseToolResultRecord(event.result);
-    if (!parsed) continue;
-
-    const data = toRecord(parsed.data);
-    const fileUrl = getOptionalString(data?.file_url ?? parsed.file_url);
-    if (!fileUrl || !fileUrl.startsWith('/generated-files/')) continue;
-
-    const filename =
-      getOptionalString(data?.filename ?? parsed.filename) ||
-      fileUrl.split('/').pop() ||
-      'download';
-    const fileType = getOptionalString(data?.format ?? parsed.format);
-
-    const fromDataSize = data?.file_size;
-    const fromRootSize = parsed.file_size;
-    const fileSize =
-      typeof fromDataSize === 'number'
-        ? fromDataSize
-        : typeof fromRootSize === 'number'
-          ? fromRootSize
-          : undefined;
-
-    return { fileUrl, filename, fileType, fileSize };
-  }
-
-  return undefined;
-};
-
 const getModelName = (modelId: string | undefined): string | undefined => {
   if (!modelId) return undefined;
   const parts = modelId.split('/');
@@ -304,12 +258,7 @@ const fileToDataUrl = (file: File): Promise<string> => {
 const isRoutingEvent = (
   event: ChatEvent,
 ): event is Extract<ChatEvent, { type: 'routing' }> => event.type === 'routing';
-import {
-  TtsSettings,
-  SttSettings,
-  DEFAULT_TTS_SETTINGS,
-  DEFAULT_STT_SETTINGS,
-} from '../lib/constants';
+import { SttSettings, DEFAULT_STT_SETTINGS } from '../lib/constants';
 
 const hasCouncilEvents = (events: ChatEvent[]): boolean => {
   return events.some(isCouncilEvent);
@@ -339,15 +288,24 @@ const shouldShowCouncilProgress = (events: ChatEvent[]): boolean => {
 };
 
 function ChatContent() {
-  const [input, setInput] = useState('');
+  const { currentId: draftConversationId } = useConversationHistoryContext();
+  const draft = useChatDraft(draftConversationId ?? null);
+  const { input, setInput, pendingAttachments, setPendingAttachments } = draft;
+  const draftRef = useRef(draft);
+  const chatMountedRef = useRef(false);
+  useEffect(() => {
+    chatMountedRef.current = true;
+    return () => {
+      chatMountedRef.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
+  const authGeneration = useAuthGeneration();
   const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(event.target.value);
   };
-
-  const { value: ttsSettings } = useLocalStorage<TtsSettings>(
-    'tts_settings',
-    DEFAULT_TTS_SETTINGS,
-  );
 
   const { value: sttSettings, setValue: setSttSettings } =
     useLocalStorage<SttSettings>('stt_settings', DEFAULT_STT_SETTINGS);
@@ -372,9 +330,14 @@ function ChatContent() {
     'connected' | 'disconnected' | 'reconnecting'
   >('connected');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [openedPreviewFileUrl, setOpenedPreviewFileUrl] = useState<
-    string | null
-  >(null);
+  const [details, setDetails] = useState<{
+    conversationId: string | null;
+    generation: number;
+    tab: DetailsTab;
+    fileUrl?: string;
+  } | null>(null);
+  const detailsOpener = useRef<HTMLElement | null>(null);
+  const wideDetails = useWideDetails();
   const { value: hideToolCalls, setValue: setHideToolCalls } = useLocalStorage(
     'daemon:hideToolCalls',
     false,
@@ -399,9 +362,6 @@ function ChatContent() {
   } = useConversationHistoryContext();
 
   const [activeModel, setActiveModel] = useState<string>('auto');
-  const [pendingAttachments, setPendingAttachments] = useState<
-    PendingAttachment[]
-  >([]);
   // State to store events for past messages
   const [archivedEvents, setArchivedEvents] = useState<
     Record<
@@ -425,7 +385,7 @@ function ChatContent() {
   useEffect(() => {
     queueMicrotask(() => {
       setThoughtFallbackByMessageId({});
-      setOpenedPreviewFileUrl(null);
+      setDetails(null);
     });
   }, [currentId]);
 
@@ -439,7 +399,7 @@ function ChatContent() {
   const currentRequestIdRef = useRef<string | null>(null);
   const latestConversationIdRef = useRef<string | null>(currentId);
   const renderedConversationIdRef = useRef<string | null>(currentId);
-  const autoOpenedPreviewFileUrlsRef = useRef<Set<string>>(new Set());
+  const [messageScope, setMessageScope] = useState(currentId);
   const titleRefreshTimeoutsRef = useRef<number[]>([]);
   const scheduledTitleRefreshConversationIdsRef = useRef<Set<string>>(
     new Set(),
@@ -503,7 +463,13 @@ function ChatContent() {
       new DefaultChatTransport<DaemonMessage>({
         api: '/api/chat',
         fetch: async (requestInput, init) => {
+          const generation = getAuthGeneration();
           await refreshIfNeeded();
+          if (getAuthGeneration() !== generation || init?.signal?.aborted) {
+            throw new Error(
+              'Authentication changed before sending. Please review your draft.',
+            );
+          }
           const body: Record<string, unknown> =
             typeof init?.body === 'string' ? JSON.parse(init.body) : {};
           body.model = activeModel;
@@ -580,6 +546,7 @@ function ChatContent() {
       if (renderedConversationIdRef.current !== null) {
         renderedConversationIdRef.current = null;
         setMessages([]);
+        queueMicrotask(() => setMessageScope(null));
       }
       return;
     }
@@ -595,6 +562,7 @@ function ChatContent() {
     ) {
       renderedConversationIdRef.current = currentId;
       setMessages(currentConversation.messages);
+      queueMicrotask(() => setMessageScope(currentId));
     }
   }, [
     currentConversation?.id,
@@ -604,21 +572,6 @@ function ChatContent() {
     messages.length,
     setMessages,
   ]);
-
-  // Refs mirroring composer state so async `submitChat` can compare the
-  // submitted snapshot against the *current* (post-edit) values. The
-  // closure-scoped `input` / `pendingAttachments` variables are stale by the
-  // time `sendMessage()` resolves (React rerenders do not update the captured
-  // locals), so without these refs the comparison always matches and
-  // composer edits made during streaming are silently cleared.
-  const inputRef = useRef(input);
-  const pendingAttachmentsRef = useRef(pendingAttachments);
-  useEffect(() => {
-    inputRef.current = input;
-  }, [input]);
-  useEffect(() => {
-    pendingAttachmentsRef.current = pendingAttachments;
-  }, [pendingAttachments]);
 
   const attachmentItems = useMemo(
     () =>
@@ -739,11 +692,20 @@ function ChatContent() {
   const submitChat = async (command?: string) => {
     if (isLoading && messages.length > 0) return;
 
+    const generation = getAuthGeneration();
+    const binding = draft.setInput;
+    const receipt = draft.captureSubmission(input, pendingAttachments);
     const trimmedInput = (command ?? input).trim();
     const attachments =
       !command && pendingAttachments.length > 0
         ? await serializeAttachments(pendingAttachments)
         : [];
+    if (
+      !chatMountedRef.current ||
+      generation !== getAuthGeneration() ||
+      draftRef.current.setInput !== binding
+    )
+      return;
     const content =
       trimmedInput ||
       (attachments.length > 0
@@ -751,22 +713,6 @@ function ChatContent() {
         : '');
 
     if (!content) return;
-
-    // Snapshot the values we are about to submit so we can preserve any
-    // newer edits the user typed or picked while the request was in flight.
-    // Without this snapshot, clicking Stop (which resolves `sendMessage()`)
-    // would
-    // unconditionally `setInput("")` and `setPendingAttachments([])`, erasing
-    // drafts the user composed while waiting for the partial response.
-    //
-    // Important: the closure-scoped `input` and `pendingAttachments`
-    // variables do not reflect rerenders, so the comparison after
-    // `sendMessage()` resolves must read from refs (`inputRef` /
-    // `pendingAttachmentsRef`)
-    // that are kept in sync by an effect. Comparing the closure values
-    // directly would always match the snapshot and silently drop edits.
-    const submittedInput = command ?? input;
-    const submittedAttachments = command ? [] : pendingAttachments;
 
     try {
       await sendMessage(
@@ -780,17 +726,9 @@ function ChatContent() {
         },
       );
 
-      // Only clear fields the user has not edited since the submit fired.
-      // `===` on a string compares values; `===` on the attachment array
-      // compares the array reference, which changes whenever the user adds
-      // or removes an attachment. Read the *current* values from refs so
-      // edits made during streaming are not silently cleared.
-      if (inputRef.current === submittedInput) {
-        setInput('');
-      }
-      if (pendingAttachmentsRef.current === submittedAttachments) {
-        setPendingAttachments([]);
-      }
+      // The current scope validates account/conversation/epoch and only clears
+      // fields still equal to the submitted snapshot, including after ID promotion.
+      if (!command) draftRef.current.clearSubmission(receipt);
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Failed to send message';
@@ -878,7 +816,12 @@ function ChatContent() {
     isScrolledUp,
     onScroll,
     jumpToLatest,
-  } = useChatScroll({ conversationId: currentId, messages, isLoading });
+  } = useChatScroll({
+    conversationId: currentId,
+    messages,
+    isLoading,
+    authGeneration,
+  });
 
   const handleSelectConversation = async (id: string) => {
     // Preserve per-message stopped markers across conversation switches —
@@ -890,9 +833,11 @@ function ChatContent() {
 
   const handleNewChat = async () => {
     clearAssignedConversationId();
-    await createConversation();
-    setInput('');
-    setPendingAttachments([]);
+    resetChatDraft(openChatDraft(null, getAuthGeneration()));
+    const generation = getAuthGeneration();
+    const created = await createConversation();
+    if (generation !== getAuthGeneration()) return;
+    if (created) resetChatDraft(openChatDraft(created, generation));
     setArchivedEvents({});
     thinkingDurationRef.current = 0;
     eventsRef.current = [];
@@ -1017,6 +962,13 @@ function ChatContent() {
     const shouldSyncConversationState = !hasCouncilEvent || hasCouncilDoneEvent;
 
     if (!currentId && !urlUpdatedRef.current) {
+      if (!draftRef.current.transferToConversation(conversationId)) {
+        // Never overwrite another conversation's draft. The unassigned draft
+        // remains available at Home, rather than being silently discarded.
+        showError(
+          'This conversation already has a draft. Your other unfinished draft is preserved on Home.',
+        );
+      }
       urlUpdatedRef.current = true;
       router.replace(`/?id=${conversationId}`);
     }
@@ -1045,6 +997,7 @@ function ChatContent() {
     currentId,
     refreshConversations,
     router,
+    showError,
   ]);
 
   const agents = useAgentStatus(events);
@@ -1055,80 +1008,103 @@ function ChatContent() {
       ? getDaemonDataEvents([latestMessage])
       : [];
 
-  // Track the latest document download for preview panel
-  const latestDocumentPreview = (() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const message = messages[i];
-      const liveEvents = getEventsForMessage(
-        message.id,
-        i === messages.length - 1,
-      );
-      const persistedToolEvents =
-        persistedToolEventsByMessageId.get(message.id) || [];
-      const msgEvents =
-        liveEvents.length > 0 ? liveEvents : persistedToolEvents;
-      const doc = getDocumentDownloadFromEvents(msgEvents);
-      if (doc) {
-        return {
-          doc,
-          source:
-            liveEvents.length > 0 ? ('live' as const) : ('persisted' as const),
-        };
+  const currentMessagesMatch = messageScope === currentId;
+  const detailTurns: DetailTurn[] = (
+    currentMessagesMatch ? messages : []
+  ).flatMap((message, index) => {
+    if (message.role !== 'assistant') return [];
+    const live = getEventsForMessage(message.id, index === messages.length - 1);
+    return [
+      {
+        id: message.id,
+        events: live.length
+          ? live
+          : persistedToolEventsByMessageId.get(message.id) || [],
+        running: isLoading && index === messages.length - 1,
+        stopped: stoppedMessageIds.has(message.id),
+      },
+    ];
+  });
+  const activeDetails =
+    details?.conversationId === (currentId ?? null) &&
+    details?.generation === authGeneration
+      ? details
+      : null;
+  const selectedOutput = detailTurns
+    .flatMap((turn) => getConversationOutputs(turn.events))
+    .find((output) => output.fileUrl === activeDetails?.fileUrl);
+  const openDetails = (tab: DetailsTab, output?: ConversationOutput) => {
+    detailsOpener.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setDetails({
+      conversationId: currentId ?? null,
+      generation: authGeneration,
+      tab,
+      fileUrl: output?.fileUrl,
+    });
+  };
+  const closeDetails = () => {
+    setDetails(null);
+    requestAnimationFrame(() => {
+      if (detailsOpener.current?.isConnected)
+        detailsOpener.current.focus({ preventScroll: true });
+    });
+  };
+  const detailsView = activeDetails && (
+    <ConversationDetails
+      conversationId={currentId}
+      turns={detailTurns}
+      tab={activeDetails.tab}
+      selected={selectedOutput}
+      onTab={(tab) =>
+        setDetails({
+          conversationId: currentId ?? null,
+          generation: authGeneration,
+          tab,
+        })
       }
-    }
-    return undefined;
-  })();
-
-  const documentDownload = latestDocumentPreview?.doc;
-
-  useEffect(() => {
-    let cancelled = false;
-
-    if (!documentDownload) {
-      queueMicrotask(() => {
-        if (!cancelled) {
-          setOpenedPreviewFileUrl(null);
-        }
-      });
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    if (latestDocumentPreview?.source === 'live') {
-      const fileUrl = documentDownload.fileUrl;
-      if (!autoOpenedPreviewFileUrlsRef.current.has(fileUrl)) {
-        autoOpenedPreviewFileUrlsRef.current.add(fileUrl);
-        queueMicrotask(() => {
-          if (!cancelled) {
-            setOpenedPreviewFileUrl(fileUrl);
-          }
-        });
+      onSelect={(output) =>
+        setDetails({
+          conversationId: currentId ?? null,
+          generation: authGeneration,
+          tab: 'Outputs',
+          fileUrl: output?.fileUrl,
+        })
       }
-    }
-
-    return () => {
-      cancelled = true;
-    };
-  }, [documentDownload, latestDocumentPreview]);
-
-  const showPreviewPanel =
-    documentDownload !== undefined &&
-    openedPreviewFileUrl === documentDownload.fileUrl;
+      onClose={closeDetails}
+      modal={!wideDetails}
+    />
+  );
+  const detailsButton = (
+    <button
+      type="button"
+      aria-label="Open conversation details"
+      aria-expanded={Boolean(activeDetails)}
+      onClick={() => openDetails('Sources')}
+      className="min-h-touch min-w-touch inline-flex items-center justify-center gap-2 rounded-lg px-2 text-sm hover:bg-[var(--color-bg-hover)]"
+    >
+      <PanelRight size={18} />
+      <span className="hidden lg:inline">Details</span>
+    </button>
+  );
 
   const toolLogToggle = (
     <button
       type="button"
+      aria-label="Hide tool calls"
       aria-pressed={hideToolCalls}
       onClick={() => setHideToolCalls((previous) => !previous)}
       className="min-h-touch px-2 text-xs font-medium rounded-lg text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] aria-pressed:bg-[var(--color-accent-subtle)] aria-pressed:text-[var(--color-accent-primary)]"
     >
-      Hide tool calls
+      <span className="hidden lg:inline">Hide tool calls</span>
+      <span className="lg:hidden">Tools</span>
     </button>
   );
 
   return (
-    <div className="flex h-screen bg-[var(--color-bg-tertiary)] overflow-hidden">
+    <div className="flex h-dvh bg-[var(--color-bg-primary)] overflow-hidden">
       {!isOnline && <OfflineIndicator />}
       {isSidebarOpen && (
         <div
@@ -1169,7 +1145,7 @@ function ChatContent() {
       <Group orientation="horizontal" className="flex-1 overflow-hidden">
         {/* Left Panel - Chat Content */}
         <Panel
-          defaultSize={showPreviewPanel ? 60 : 100}
+          defaultSize={activeDetails && wideDetails ? 65 : 100}
           minSize={40}
           className="flex min-h-0 flex-col"
         >
@@ -1184,6 +1160,7 @@ function ChatContent() {
               onOpenSidebar={() => setIsSidebarOpen(true)}
             >
               <div className="flex items-center gap-2">
+                {detailsButton}
                 {toolLogToggle}
                 <ConnectionStatus
                   status={connectionStatus}
@@ -1202,6 +1179,7 @@ function ChatContent() {
                   isLoading={isLoading}
                 />
                 {toolLogToggle}
+                {detailsButton}
                 <ConnectionStatus
                   status={connectionStatus}
                   onReconnect={reload}
@@ -1273,6 +1251,7 @@ function ChatContent() {
               ) : messages.length === 0 ? (
                 <div className="h-full px-4 py-6">
                   <WelcomeScreen
+                    input={input}
                     setInput={setInput}
                     onDeliberate={() => void submitChat('/council')}
                   />
@@ -1287,16 +1266,13 @@ function ChatContent() {
                       persistedToolEventsByMessageId.get(message.id) || [];
                     const msgEvents =
                       liveEvents.length > 0 ? liveEvents : persistedToolEvents;
-                    const documentDownloadForMessage =
-                      getDocumentDownloadFromEvents(msgEvents);
+                    const documentsForMessage = currentMessagesMatch
+                      ? getConversationOutputs(msgEvents)
+                      : [];
                     const liveThoughtContent = getThinkingContent(liveEvents);
                     const messageContent = getDaemonMessageText(message);
                     const formattedMessageContent =
                       formatMessageContent(messageContent);
-                    const showTts =
-                      message.role === 'assistant' &&
-                      formattedMessageContent.trim().length > 0 &&
-                      !hasCouncilEvents(msgEvents);
 
                     const councilEventsInMessage = hasCouncilEvents(msgEvents);
                     const councilInterviewEvent =
@@ -1343,14 +1319,6 @@ function ChatContent() {
                     const modelName = getModelName(
                       persistedModel || routingModel,
                     );
-                    const isActivePreviewDocument = Boolean(
-                      documentDownloadForMessage &&
-                      documentDownload &&
-                      documentDownloadForMessage.fileUrl ===
-                        documentDownload.fileUrl,
-                    );
-                    const isPreviewVisibleForMessage =
-                      isActivePreviewDocument && showPreviewPanel;
                     const citationSources =
                       message.role === 'assistant'
                         ? buildMessageCitationSources(msgEvents)
@@ -1461,6 +1429,9 @@ function ChatContent() {
                                 content={messageContent}
                                 sources={citationSources}
                               />
+                              {messageContent.trim() && (
+                                <CopyResponseButton content={messageContent} />
+                              )}
                             </div>
                             {stoppedMessageIds.has(message.id) && (
                               <div
@@ -1470,77 +1441,46 @@ function ChatContent() {
                                 (stopped)
                               </div>
                             )}
-                            {documentDownloadForMessage && (
-                              <div className="mt-4 w-full">
-                                <FileDownloadCard
-                                  filename={documentDownloadForMessage.filename}
-                                  fileUrl={documentDownloadForMessage.fileUrl}
-                                  fileSize={documentDownloadForMessage.fileSize}
-                                  fileType={documentDownloadForMessage.fileType}
-                                  trailingAction={
-                                    isActivePreviewDocument ? (
+                            {documentsForMessage.map(
+                              (documentDownloadForMessage) => (
+                                <div
+                                  key={documentDownloadForMessage.fileUrl}
+                                  className="mt-4 w-full"
+                                >
+                                  <FileDownloadCard
+                                    filename={
+                                      documentDownloadForMessage.filename
+                                    }
+                                    fileUrl={documentDownloadForMessage.fileUrl}
+                                    fileSize={
+                                      documentDownloadForMessage.fileSize
+                                    }
+                                    fileType={
+                                      documentDownloadForMessage.fileType
+                                    }
+                                    trailingAction={
                                       <button
                                         type="button"
-                                        onClick={() => {
-                                          setOpenedPreviewFileUrl((previous) =>
-                                            previous ===
-                                            documentDownloadForMessage.fileUrl
-                                              ? null
-                                              : documentDownloadForMessage.fileUrl,
-                                          );
-                                        }}
-                                        className="inline-flex items-center justify-center w-10 h-10 bg-[var(--color-bg-secondary)] hover:bg-[var(--color-bg-primary)] border border-[var(--color-border-primary)] hover:border-[var(--color-border-secondary)] text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] rounded-lg transition-all focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)]"
-                                        title={
-                                          isPreviewVisibleForMessage
-                                            ? 'Hide preview pane'
-                                            : 'Show preview pane'
+                                        onClick={() =>
+                                          openDetails(
+                                            'Outputs',
+                                            documentDownloadForMessage,
+                                          )
                                         }
-                                        aria-label={
-                                          isPreviewVisibleForMessage
-                                            ? 'Hide preview pane'
-                                            : 'Show preview pane'
-                                        }
-                                        aria-expanded={
-                                          isPreviewVisibleForMessage
-                                        }
+                                        className="inline-flex min-h-touch items-center justify-center gap-2 px-3 bg-[var(--color-bg-secondary)] hover:bg-[var(--color-bg-primary)] border border-[var(--color-border-primary)] text-[var(--color-text-secondary)] rounded-lg"
+                                        aria-label={`Preview ${documentDownloadForMessage.filename}`}
                                       >
-                                        {isPreviewVisibleForMessage ? (
-                                          <EyeOff className="w-5 h-5" />
-                                        ) : (
-                                          <Eye className="w-5 h-5" />
-                                        )}
+                                        <Eye className="w-4 h-4" />
+                                        Preview
                                       </button>
-                                    ) : undefined
-                                  }
-                                />
-                              </div>
-                            )}
-                            {showTts && (
-                              <div className="flex justify-start">
-                                {isLast && isLoading ? (
-                                  <StreamingTtsMessage
-                                    messageId={message.id}
-                                    text={formattedMessageContent}
-                                    isStreaming={isLast && isLoading}
-                                    enabled={Boolean(ttsSettings?.enabled)}
-                                    autoStart={Boolean(
-                                      ttsSettings?.enabled &&
-                                      ttsSettings?.autoPlay,
-                                    )}
-                                    voice={ttsSettings?.voice}
-                                    model={ttsSettings?.model}
-                                    speed={ttsSettings?.speed}
+                                    }
                                   />
-                                ) : (
-                                  <TextToSpeechButton
-                                    text={formattedMessageContent}
-                                  />
-                                )}
-                              </div>
+                                </div>
+                              ),
                             )}
                           </div>
                         ) : message.role === 'user' ? (
-                          <div className="max-w-message-mobile md:max-w-user-message rounded-2xl border border-[var(--color-accent-active)]/50 bg-[var(--color-accent-primary)] px-4 py-3 text-[var(--color-text-on-accent)] shadow-sm">
+                          <div className="max-w-message-mobile md:max-w-user-message rounded-2xl border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-4 py-3 text-[var(--color-text-primary)]">
                             <div className="whitespace-pre-wrap leading-relaxed font-medium">
                               {formattedMessageContent}
                             </div>
@@ -1554,7 +1494,7 @@ function ChatContent() {
               )}
             </main>
 
-            <footer className="relative bg-[var(--color-bg-secondary)] border-t border-[var(--color-border-primary)] p-4 pb-safe-panel">
+            <footer className="relative shrink-0 bg-[var(--color-bg-primary)] pb-safe-panel">
               {isScrolledUp && isLoading && (
                 <button
                   type="button"
@@ -1601,50 +1541,24 @@ function ChatContent() {
           </div>
         </Panel>
 
-        {/* Resize Handle - only shown when preview is visible */}
-        {showPreviewPanel && (
-          <Separator className="hidden md:flex w-1 bg-[var(--color-border-primary)] hover:bg-[var(--color-accent-primary)] transition-colors cursor-col-resize items-center justify-center">
+        {activeDetails && wideDetails && (
+          <Separator className="flex w-1 bg-[var(--color-border-primary)] hover:bg-[var(--color-accent-primary)] cursor-col-resize items-center justify-center">
             <div className="w-0.5 h-8 bg-[var(--color-border-secondary)] rounded-full" />
           </Separator>
         )}
 
-        {/* Right Panel - File Preview */}
-        {showPreviewPanel && (
+        {activeDetails && wideDetails && (
           <Panel
-            defaultSize={40}
-            minSize={30}
-            className="hidden md:flex flex-col bg-[var(--color-bg-secondary)] border-l border-[var(--color-border-primary)]"
-            style={{ minWidth: 420 }}
+            defaultSize={35}
+            minSize={25}
+            className="flex flex-col bg-[var(--color-bg-primary)] border-l border-[var(--color-border-primary)]"
+            style={{ minWidth: 320 }}
           >
-            <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border-primary)]">
-              <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">
-                Document Preview
-              </h2>
-              <button
-                type="button"
-                onClick={() => {
-                  setOpenedPreviewFileUrl(null);
-                }}
-                className="inline-flex items-center justify-center rounded-md p-1.5 text-[var(--color-text-muted)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)] transition-colors"
-                aria-label="Close preview pane"
-                title="Close preview pane"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-4">
-              {documentDownload && (
-                <FilePreview
-                  fileUrl={documentDownload!.fileUrl}
-                  filename={documentDownload!.filename}
-                  format={documentDownload!.fileType || ''}
-                  fileSize={documentDownload!.fileSize}
-                />
-              )}
-            </div>
+            {detailsView}
           </Panel>
         )}
       </Group>
+      {activeDetails && !wideDetails && detailsView}
 
       <AgentStatusList agents={agents} />
     </div>

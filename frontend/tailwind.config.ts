@@ -137,6 +137,7 @@ const config: Config = {
         'message-mobile': 'var(--width-message-mobile-max)',
         'user-message': 'var(--width-user-message-max)',
         'assistant-message': 'var(--width-assistant-message-max)',
+        composer: 'var(--width-composer-max)',
       },
       inset: {
         'tool-step-center': 'var(--offset-tool-step-center)',

@@ -1072,7 +1072,10 @@ class MemoryStore:
         effective_embedding_model = (
             (embedding_model or _default_embedding_model()) if embedding_str is not None else None
         )
-        metadata_json = json.dumps(metadata) if metadata is not None else None
+        # ``memories.metadata`` is ``JSONB NOT NULL DEFAULT '{}'`` (migration
+        # 040), so an omitted/None ``metadata`` must still land as a real
+        # empty JSON object rather than a NULL that would violate the column.
+        metadata_json = json.dumps(metadata if metadata is not None else {})
 
         # When ``conn`` is supplied, every SQL call in this method runs
         # on that connection inside the caller's transaction. This is
@@ -1554,7 +1557,10 @@ class MemoryStore:
         effective_embedding_model = (
             (embedding_model or _default_embedding_model()) if embedding_str is not None else None
         )
-        metadata_json = json.dumps(metadata) if metadata is not None else None
+        # ``memories.metadata`` is ``JSONB NOT NULL DEFAULT '{}'`` (migration
+        # 040), so an omitted/None ``metadata`` must still land as a real
+        # empty JSON object rather than a NULL that would violate the column.
+        metadata_json = json.dumps(metadata if metadata is not None else {})
 
         async with self._pool.acquire() as conn:
             async with conn.transaction():

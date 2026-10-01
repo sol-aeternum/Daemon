@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { Loader2, AlertCircle, FileWarning } from 'lucide-react';
 import {
   CsvPreview,
@@ -9,7 +9,12 @@ import {
   DocxPreview,
 } from '@/src/components/previews';
 import MarkdownRenderer from '@/src/components/MarkdownRenderer';
-import { ensureAuthHeader } from '@/lib/auth';
+import {
+  ensureAuthHeader,
+  getAuthGeneration,
+  subscribeAuthGeneration,
+} from '@/lib/auth';
+import { useAuthGeneration } from '@/hooks/useAuthGeneration';
 import { getProtectedMediaUrl } from '@/hooks/useAuthenticatedImageUrl';
 
 interface FilePreviewProps {
@@ -21,6 +26,37 @@ interface FilePreviewProps {
 
 const MAX_PREVIEW_SIZE = 5 * 1024 * 1024; // 5MB
 const PREVIEW_FETCH_TIMEOUT_MS = 20000;
+
+async function readPreviewBlob(
+  response: Response,
+  signal: AbortSignal,
+): Promise<Blob> {
+  if (!response.body) return response.blob();
+  const reader = response.body.getReader();
+  const chunks: ArrayBuffer[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      signal.throwIfAborted();
+      const { value, done } = await reader.read();
+      signal.throwIfAborted();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_PREVIEW_SIZE) {
+        await reader.cancel();
+        throw new Error(
+          'File exceeds the 5MB preview limit. Download to view.',
+        );
+      }
+      chunks.push(Uint8Array.from(value).buffer);
+    }
+    return new Blob(chunks, {
+      type: response.headers.get('content-type') || '',
+    });
+  } finally {
+    reader.releaseLock();
+  }
+}
 
 type PreviewContent =
   | {
@@ -37,140 +73,126 @@ type PreviewContent =
     }
   | null;
 
-export function FilePreview({
+export function FilePreview(props: FilePreviewProps) {
+  const generation = useAuthGeneration();
+  // A new selection must never render the preceding file, even for one frame.
+  return (
+    <SelectedFilePreview
+      key={`${generation}:${props.fileUrl}:${props.format}:${props.fileSize}`}
+      {...props}
+    />
+  );
+}
+
+function SelectedFilePreview({
   fileUrl,
   filename,
   format,
   fileSize,
 }: FilePreviewProps) {
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [content, setContent] = useState<PreviewContent>(null);
-  const [hasLoaded, setHasLoaded] = useState(false);
 
   const normalizedFormat = format.toLowerCase().trim();
 
+  const isTooLarge = fileSize !== undefined && fileSize > MAX_PREVIEW_SIZE;
+  const isSupportedFormat = ['csv', 'md', 'html', 'pdf', 'docx'].includes(
+    normalizedFormat,
+  );
   useEffect(() => {
-    setContent(null);
-    setHasLoaded(false);
-    setError(null);
-  }, [fileUrl, normalizedFormat]);
-
-  // Check if file is too large to preview
-  const isTooLarge = useMemo(() => {
-    if (fileSize === undefined) return false;
-    return fileSize > MAX_PREVIEW_SIZE;
-  }, [fileSize]);
-
-  // Check if format is supported for preview
-  const isSupportedFormat = useMemo(() => {
-    return ['csv', 'md', 'html', 'pdf', 'docx'].includes(normalizedFormat);
-  }, [normalizedFormat]);
-
-  const fetchContent = useCallback(async () => {
-    if (hasLoaded || !isSupportedFormat || isTooLarge) return;
-
-    const fetchWithTimeout = async (
-      url: string,
-      headers?: Record<string, string>,
-    ): Promise<Response> => {
-      const controller = new AbortController();
-      const timeoutId = window.setTimeout(
-        () => controller.abort(),
-        PREVIEW_FETCH_TIMEOUT_MS,
-      );
-      try {
-        const opts: RequestInit = { signal: controller.signal };
-        if (headers) opts.headers = headers;
-        return await fetch(url, opts);
-      } finally {
-        window.clearTimeout(timeoutId);
-      }
-    };
-
-    setIsLoading(true);
-    setError(null);
-
-    const getFetchParams = async (
-      fileUrl: string,
-    ): Promise<{ url: string; headers?: Record<string, string> }> => {
-      const protectedUrl = getProtectedMediaUrl(fileUrl);
-      if (protectedUrl) {
-        const authHeader = await ensureAuthHeader();
-        const headers: Record<string, string> = {};
-        if (authHeader) headers['Authorization'] = authHeader;
-        return { url: protectedUrl, headers };
-      }
-      return { url: fileUrl };
-    };
-
-    try {
-      if (normalizedFormat === 'pdf') {
-        const { url: fetchUrl, headers: fetchHeaders } =
-          await getFetchParams(fileUrl);
-        if (fetchHeaders) {
-          const response = await fetchWithTimeout(fetchUrl, fetchHeaders);
-          if (!response.ok) {
-            throw new Error(
-              `Failed to fetch file: ${response.status} ${response.statusText}`,
-            );
-          }
-          const blob = await response.blob();
-          const blobUrl = URL.createObjectURL(blob);
-          setContent({ type: 'url', content: blobUrl });
-        } else {
-          setContent({ type: 'url', content: fetchUrl });
-        }
-        setHasLoaded(true);
+    if (isTooLarge || !isSupportedFormat) return;
+    let disposed = false;
+    let objectUrl: string | null = null;
+    const controller = new AbortController();
+    const generation = getAuthGeneration();
+    const unsubscribe = subscribeAuthGeneration(() => controller.abort());
+    const timeout = window.setTimeout(() => {
+      controller.abort();
+      if (!disposed) {
+        setError('Preview request timed out. Try downloading the file.');
         setIsLoading(false);
-        return;
       }
-
-      if (normalizedFormat === 'docx') {
-        const { url: fetchUrl, headers: fetchHeaders } =
-          await getFetchParams(fileUrl);
-        const response = await fetchWithTimeout(fetchUrl, fetchHeaders);
+    }, PREVIEW_FETCH_TIMEOUT_MS);
+    const active = () =>
+      !disposed &&
+      !controller.signal.aborted &&
+      generation === getAuthGeneration();
+    async function load() {
+      try {
+        const protectedUrl = getProtectedMediaUrl(fileUrl);
+        const headers: Record<string, string> = {};
+        if (protectedUrl) {
+          const auth = await ensureAuthHeader();
+          if (!active()) return;
+          if (!auth) throw new Error('Sign in again to preview this file.');
+          headers.Authorization = auth;
+        }
+        // Public PDF rendering retains its existing iframe path. Protected PDFs
+        // are fetched with auth and rendered through a temporary object URL.
+        if (normalizedFormat === 'pdf' && !protectedUrl) {
+          if (active()) setContent({ type: 'url', content: fileUrl });
+          return;
+        }
+        const response = await fetch(protectedUrl ?? fileUrl, {
+          headers,
+          signal: controller.signal,
+        });
+        if (!active()) return;
         if (!response.ok) {
           throw new Error(
-            `Failed to fetch file: ${response.status} ${response.statusText}`,
+            response.status === 404
+              ? 'This file is unavailable (missing or expired). Your conversation is still here.'
+              : response.status === 401 || response.status === 403
+                ? 'You do not have access to this file. Sign in again or check the selected conversation.'
+                : `Preview failed (${response.status}). Try again later.`,
           );
         }
-        const buffer = await response.arrayBuffer();
-        setContent({ type: 'arrayBuffer', content: buffer });
-        setHasLoaded(true);
-        setIsLoading(false);
-        return;
+        if (Number(response.headers.get('content-length')) > MAX_PREVIEW_SIZE) {
+          controller.abort();
+          throw new Error(
+            'File exceeds the 5MB preview limit. Download to view.',
+          );
+        }
+        const blob = await readPreviewBlob(response, controller.signal);
+        if (!active()) return;
+        if (blob.size > MAX_PREVIEW_SIZE)
+          throw new Error(
+            'File exceeds the 5MB preview limit. Download to view.',
+          );
+        if (normalizedFormat === 'pdf') {
+          objectUrl = URL.createObjectURL(blob);
+          setContent({ type: 'url', content: objectUrl });
+        } else if (normalizedFormat === 'docx') {
+          const buffer = await blob.arrayBuffer();
+          if (active()) setContent({ type: 'arrayBuffer', content: buffer });
+        } else {
+          const text = await blob.text();
+          if (active()) setContent({ type: 'text', content: text });
+        }
+      } catch (err) {
+        if (
+          !disposed &&
+          !(err instanceof DOMException && err.name === 'AbortError')
+        ) {
+          setError(
+            err instanceof Error ? err.message : 'Failed to load preview.',
+          );
+        }
+      } finally {
+        window.clearTimeout(timeout);
+        if (!disposed) setIsLoading(false);
       }
-
-      const { url: fetchUrl, headers: fetchHeaders } =
-        await getFetchParams(fileUrl);
-      const response = await fetchWithTimeout(fetchUrl, fetchHeaders);
-      if (!response.ok) {
-        throw new Error(
-          `Failed to fetch file: ${response.status} ${response.statusText}`,
-        );
-      }
-      const text = await response.text();
-      setContent({ type: 'text', content: text });
-      setHasLoaded(true);
-    } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        setError('Preview request timed out. You can still download the file.');
-      } else {
-        setError(
-          err instanceof Error ? err.message : 'Failed to load file content',
-        );
-      }
-    } finally {
-      setIsLoading(false);
     }
-  }, [fileUrl, normalizedFormat, isSupportedFormat, isTooLarge, hasLoaded]);
-
-  useEffect(() => {
-    if (!hasLoaded && !isTooLarge) {
-      fetchContent();
-    }
-  }, [hasLoaded, isTooLarge, fetchContent]);
+    void load();
+    return () => {
+      disposed = true;
+      controller.abort();
+      unsubscribe();
+      window.clearTimeout(timeout);
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [fileUrl, normalizedFormat, isSupportedFormat, isTooLarge]);
 
   // Render the appropriate preview component
   const renderPreview = () => {
@@ -235,13 +257,18 @@ export function FilePreview({
     if (!error) return null;
 
     return (
-      <div className="flex items-start gap-3 p-4 bg-red-500/10 border border-red-500/30 rounded-xl">
+      <div
+        role="alert"
+        className="flex items-start gap-3 p-4 bg-[var(--color-bg-tertiary)] border border-[var(--color-status-error)] rounded-xl"
+      >
         <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
         <div className="flex-1">
-          <p className="text-sm font-medium text-red-500">
+          <p className="text-sm font-medium text-[var(--color-text-primary)]">
             Failed to load preview
           </p>
-          <p className="text-xs text-red-400/80 mt-1">{error}</p>
+          <p className="text-sm text-[var(--color-text-secondary)] mt-1">
+            {error}
+          </p>
         </div>
       </div>
     );
@@ -280,7 +307,7 @@ export function FilePreview({
 
   return (
     <div className="space-y-3">
-      {isLoading && renderLoading()}
+      {isLoading && isSupportedFormat && !isTooLarge && renderLoading()}
       {error && renderError()}
       {!isLoading &&
         !error &&

@@ -141,7 +141,7 @@ export function MemoryDetail({
       </div>
 
       {/* Memory Header */}
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex items-center gap-3">
           <div
             className={`w-10 h-10 rounded-lg ${statusConfig.bgColor} flex items-center justify-center`}

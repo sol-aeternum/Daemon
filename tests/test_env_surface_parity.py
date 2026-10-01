@@ -281,6 +281,30 @@ NON_FIELD_CONSUMERS: dict[str, NonFieldConsumer] = {
 # Frontend env names that are read by source but are intentionally *not*
 # documented in ``.env.example``, with the source that still reads them.
 FRONTEND_SOURCE_EXCEPTIONS: dict[str, NonFieldConsumer] = {
+    "DEBUG": NonFieldConsumer(
+        kind="frontend-source",
+        sources=("frontend/scripts/authenticated-browser.mjs:986",),
+        reason=(
+            "owner-approved diagnostic refusal guard: requires debug logging disabled; "
+            "not an application configuration input or a Chromium environment entry"
+        ),
+    ),
+    "PWDEBUG": NonFieldConsumer(
+        kind="frontend-source",
+        sources=("frontend/scripts/authenticated-browser.mjs:986",),
+        reason=(
+            "owner-approved diagnostic refusal guard: rejects Playwright debugging; "
+            "not an application configuration input or a Chromium environment entry"
+        ),
+    ),
+    "NODE_OPTIONS": NonFieldConsumer(
+        kind="frontend-source",
+        sources=("frontend/scripts/authenticated-browser.mjs:986",),
+        reason=(
+            "owner-approved diagnostic refusal guard: rejects Node injection options; "
+            "not an application configuration input or a Chromium environment entry"
+        ),
+    ),
     "NEXT_PUBLIC_API_BASE_URL": NonFieldConsumer(
         kind="frontend-source",
         sources=("frontend/components/SettingsPanel.tsx:38",),
@@ -302,10 +326,15 @@ FRONTEND_FRAMEWORK_ENV: dict[str, str] = {
 }
 
 # ``path:line`` -> reason for env accesses the scanner cannot resolve to a
-# literal name. Empty today: every tracked access resolves. A new dynamic site
-# fails the gate instead of being skipped, and adding one here is an explicit
-# decision.
-FRONTEND_UNRESOLVED_SITE_ALLOWLIST: dict[str, str] = {}
+# literal name. Only the owner-approved diagnostic filter call is exempted;
+# new or moved dynamic sites still fail. Its exact expression is pinned below.
+FRONTEND_UNRESOLVED_SITE_ALLOWLIST: dict[str, str] = {
+    "frontend/scripts/authenticated-browser.mjs:799": (
+        "owner-approved dedicated-browser diagnostic passes the mapping only through "
+        "browserEnvironment's explicit display/session/locale allowlist; credential and "
+        "debug/injection variables are not forwarded; negative browser safety tests retained"
+    ),
+}
 
 # --------------------------------------------------------------------------
 # Compose policy
@@ -1404,16 +1433,16 @@ def service_parity_violations(surface: Surface) -> list[str]:
 
 def frontend_coverage_violations(surface: Surface) -> list[str]:
     violations: list[str] = []
-    allowed = {name: "framework/toolchain variable" for name in FRONTEND_FRAMEWORK_ENV}
-    allowed.update(
-        {
-            name: f"reviewed source exception ({consumer.reason})"
-            for name, consumer in FRONTEND_SOURCE_EXCEPTIONS.items()
-        }
-    )
     for name, sites in sorted(surface.frontend.names.items()):
-        if name in surface.example.names or name in allowed:
+        if name in surface.example.names or name in FRONTEND_FRAMEWORK_ENV:
             continue
+        consumer = FRONTEND_SOURCE_EXCEPTIONS.get(name)
+        # A named exception covers only its reviewed source sites, not every
+        # future frontend consumer of the same variable.
+        if consumer is not None:
+            sites = tuple(site for site in sites if site not in consumer.sources)
+            if not sites:
+                continue
         shown = ", ".join(sites[:3])
         more = "; ..." if len(sites) > 3 else ""
         violations.append(
@@ -1895,6 +1924,33 @@ def test_frontend_unresolved_allowlist_is_keyed_by_path_and_line() -> None:
     assert any("no longer matches" in violation for violation in stale)
 
 
+@pytest.mark.parametrize("name", ["DEBUG", "PWDEBUG", "NODE_OPTIONS"])
+def test_diagnostic_named_exceptions_do_not_cover_other_sites(name: str) -> None:
+    surface = real_surface()
+    names = dict(surface.frontend.names)
+    names[name] = (*names.get(name, ()), "frontend/app/unreviewed.ts:1")
+    probe = replace(surface, frontend=replace(surface.frontend, names=names))
+    assert any(
+        name in item and "unreviewed.ts:1" in item for item in frontend_coverage_violations(probe)
+    )
+
+
+def test_diagnostic_mapping_exception_is_exact_and_cannot_cover_new_accesses() -> None:
+    surface = real_surface()
+    key = "frontend/scripts/authenticated-browser.mjs:799"
+    lines = (REPO_ROOT / "frontend/scripts/authenticated-browser.mjs").read_text().splitlines()
+    assert lines[798].strip() == "env: browserEnvironment(process.env),"
+    assert lines[985].strip() == (
+        "!process.env.DEBUG && !process.env.PWDEBUG && !process.env.NODE_OPTIONS,"
+    )
+    assert set(FRONTEND_UNRESOLVED_SITE_ALLOWLIST) == {key}
+    new = "frontend/scripts/authenticated-browser.mjs:800: whole-mapping use process.env"
+    probe = replace(
+        surface, frontend=replace(surface.frontend, unresolved=(*surface.frontend.unresolved, new))
+    )
+    assert any(":800:" in item for item in frontend_unresolved_violations(probe))
+
+
 def test_frontend_filesystem_fallback_walks_only_frontend_sources(tmp_path: Path) -> None:
     (tmp_path / "frontend" / "lib").mkdir(parents=True)
     (tmp_path / "frontend" / "node_modules" / "pkg").mkdir(parents=True)
@@ -1924,7 +1980,12 @@ def test_frontend_scan_covers_all_tracked_js_ts_sources() -> None:
         for part in path.split("/")
     )
     assert set(FRONTEND_FRAMEWORK_ENV) == {"NODE_ENV", "CI", "TURBOPACK"}
-    assert set(FRONTEND_SOURCE_EXCEPTIONS) == {"NEXT_PUBLIC_API_BASE_URL"}
+    assert set(FRONTEND_SOURCE_EXCEPTIONS) == {
+        "NEXT_PUBLIC_API_BASE_URL",
+        "DEBUG",
+        "PWDEBUG",
+        "NODE_OPTIONS",
+    }
     assert set(inventory.names) == {
         "NEXT_PUBLIC_API_URL",
         "DAEMON_INTERNAL_API_URL",
@@ -1937,6 +1998,9 @@ def test_frontend_scan_covers_all_tracked_js_ts_sources() -> None:
         "NODE_ENV",
         "CI",
         "TURBOPACK",
+        "DEBUG",
+        "PWDEBUG",
+        "NODE_OPTIONS",
     }
 
 

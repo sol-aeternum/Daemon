@@ -37,9 +37,7 @@ describe('ChatInputBar generation controls', () => {
       screen.queryByRole('button', { name: 'Stop generating' }),
     ).toBeNull();
     expect(
-      screen.getByPlaceholderText(
-        'Message Daemon — try /council, /image, /code',
-      ),
+      screen.getByPlaceholderText('Ask a question or describe what you need…'),
     ).not.toBeNull();
 
     rerender(<ChatInputBar {...baseProps} onStop={onStop} isLoading />);

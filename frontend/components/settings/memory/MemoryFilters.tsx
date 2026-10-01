@@ -75,7 +75,7 @@ export default function MemoryFilters({ onFilterChange }: MemoryFiltersProps) {
 
   const getChipClasses = (isSelected: boolean) => {
     const baseClasses =
-      'px-3 py-1 text-xs font-medium rounded-full cursor-pointer transition-colors whitespace-nowrap';
+      'min-h-touch min-w-touch px-3 py-2 text-xs font-medium rounded-full cursor-pointer transition-colors whitespace-nowrap';
     if (isSelected) {
       return `${baseClasses} bg-accent-primary text-[var(--color-text-on-accent)]`;
     }
@@ -90,6 +90,7 @@ export default function MemoryFilters({ onFilterChange }: MemoryFiltersProps) {
         <input
           type="text"
           placeholder="Search memories..."
+          aria-label="Search memories"
           value={searchQuery}
           onChange={handleSearchChange}
           className="w-full pl-10 pr-4 py-2 bg-bg-secondary border border-border-primary rounded-lg text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/50 focus:border-accent-primary"
@@ -109,6 +110,7 @@ export default function MemoryFilters({ onFilterChange }: MemoryFiltersProps) {
                 key={category}
                 type="button"
                 onClick={() => handleCategoryClick(category)}
+                aria-pressed={selectedCategory === category}
                 className={getChipClasses(selectedCategory === category)}
               >
                 {category}
@@ -128,6 +130,7 @@ export default function MemoryFilters({ onFilterChange }: MemoryFiltersProps) {
                 key={source}
                 type="button"
                 onClick={() => handleSourceClick(source)}
+                aria-pressed={selectedSource === source}
                 className={getChipClasses(selectedSource === source)}
               >
                 {source}
@@ -147,6 +150,7 @@ export default function MemoryFilters({ onFilterChange }: MemoryFiltersProps) {
                 key={status}
                 type="button"
                 onClick={() => handleStatusClick(status)}
+                aria-pressed={selectedStatus === status}
                 className={getChipClasses(selectedStatus === status)}
               >
                 {status}

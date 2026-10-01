@@ -137,7 +137,7 @@ for (const theme of ['dark', 'light']) {
         };
       });
       expect(styles.background).toBe(
-        theme === 'dark' ? 'rgb(22, 24, 29)' : 'rgb(249, 250, 251)',
+        theme === 'dark' ? 'rgb(22, 25, 31)' : 'rgb(249, 250, 252)',
       );
       expect(styles.touch).toBe('44px');
       expect(styles.legacy).toBe('');

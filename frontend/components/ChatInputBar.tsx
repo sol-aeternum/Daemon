@@ -1,9 +1,8 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Paperclip, Send, X } from 'lucide-react';
+import { Mic, Paperclip, Send, X } from 'lucide-react';
 import { ModelSelector } from './ModelSelector';
-import { MicButton } from './MicButton';
 import { StopButton } from './StopButton';
 
 const MAX_TEXTAREA_HEIGHT = 200;
@@ -11,6 +10,8 @@ const MAX_TEXTAREA_HEIGHT = 200;
 interface ChatInputBarProps {
   selectedModel: string;
   onSelectModel: (modelId: string) => void;
+  /* Microphone props are retained in the prop API for compatibility;
+     voice input is currently presented as unavailable. */
   isRecording: boolean;
   isConnecting: boolean;
   startRecording: () => Promise<void>;
@@ -30,15 +31,12 @@ interface ChatInputBarProps {
   onRemoveAttachment?: (id: string) => void;
 }
 
+const VOICE_UNAVAILABLE_TEXT =
+  'Voice input is unavailable in the current runtime. Use the text composer.';
+
 export function ChatInputBar({
   selectedModel,
   onSelectModel,
-  isRecording,
-  isConnecting,
-  startRecording,
-  stopRecording,
-  micDisabled,
-  micError,
   input,
   onInputChange,
   onSubmit,
@@ -53,6 +51,8 @@ export function ChatInputBar({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [notice, setNotice] = useState('');
+  const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -64,10 +64,37 @@ export function ChatInputBar({
     }
   }, [input]);
 
+  useEffect(() => {
+    return () => {
+      if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+    };
+  }, []);
+
+  const announceNotice = (text: string) => {
+    if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+    setNotice(text);
+    noticeTimerRef.current = setTimeout(() => {
+      setNotice('');
+      noticeTimerRef.current = null;
+    }, 5000);
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    // IME-safe Enter: composing keystrokes (isComposing, or the legacy
+    // keyCode 229 "process" event) insert text instead of submitting.
+    const native = e.nativeEvent as KeyboardEvent;
+    const isComposing =
+      native.isComposing === true ||
+      (native as KeyboardEvent & { keyCode?: number }).keyCode === 229;
+    if (e.key === 'Enter' && !e.shiftKey && !isComposing) {
       e.preventDefault();
-      if ((!input.trim() && attachments.length === 0) || isLoading) return;
+      if (isLoading) {
+        announceNotice(
+          'The response is still streaming. Stop it or wait — your draft is kept.',
+        );
+        return;
+      }
+      if (!isLoading && !input.trim() && attachments.length === 0) return;
       onSubmit(e);
     }
   };
@@ -127,7 +154,7 @@ export function ChatInputBar({
   };
 
   return (
-    <div className="w-full max-w-3xl mx-auto p-4">
+    <div className="w-full max-w-composer mx-auto p-4">
       {/* Unified input container */}
       <div
         onDragOver={handleDragOver}
@@ -137,7 +164,7 @@ export function ChatInputBar({
         className={`relative bg-[var(--color-bg-secondary)] border rounded-2xl shadow-md hover:shadow-lg focus-within:shadow-lg transition-all duration-200 ${
           isDragOver
             ? 'border-[var(--color-accent-primary)] ring-2 ring-[var(--color-accent-primary)]/25'
-            : 'border-[var(--color-border-primary)] focus-within:border-[var(--color-border-secondary)]'
+            : 'border-[var(--color-border-primary)] focus-within:border-[var(--color-border-accent)]'
         }`}
       >
         {isDragOver && (
@@ -157,7 +184,7 @@ export function ChatInputBar({
             {onToggleLocal && (
               <div className="flex min-h-touch items-center gap-1.5 rounded-md border border-[var(--color-border-muted)] bg-[var(--color-bg-tertiary)] px-2 py-1">
                 <span
-                  className={`hidden text-xs font-medium transition-colors sm:inline ${!isLocal ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'}`}
+                  className={`text-xs font-medium transition-colors ${!isLocal ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'}`}
                 >
                   Cloud
                 </span>
@@ -190,7 +217,7 @@ export function ChatInputBar({
             type="button"
             onClick={handleAttachmentClick}
             aria-label="Attach file"
-            className="min-h-touch min-w-touch rounded-md p-1.5 text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+            className="min-h-touch min-w-touch rounded-md p-1.5 text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] focus-visible:text-[var(--color-text-primary)]"
             title="Attach file"
           >
             <Paperclip className="w-4 h-4" />
@@ -230,21 +257,26 @@ export function ChatInputBar({
             value={input}
             onChange={onInputChange}
             onKeyDown={handleKeyDown}
-            placeholder="Message Daemon — try /council, /image, /code"
+            placeholder="Ask a question or describe what you need…"
+            aria-label="Message Daemon"
             rows={1}
-            className="flex-1 bg-transparent text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] resize-none focus:outline-none py-2 max-h-composer overflow-y-auto scrollbar-thin scrollbar-thumb-[var(--color-border-secondary)] scrollbar-track-transparent"
+            className="flex-1 bg-transparent text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] resize-none focus:outline-none focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--color-border-focus)] py-2 max-h-composer overflow-y-auto scrollbar-thin scrollbar-thumb-[var(--color-border-secondary)] scrollbar-track-transparent"
             style={{ minHeight: '24px' }}
           />
 
           <div className="flex items-center gap-2 pb-1">
-            <MicButton
-              isRecording={isRecording}
-              isConnecting={isConnecting}
-              start={startRecording}
-              stop={stopRecording}
-              disabled={micDisabled || isLoading}
-              error={micError}
-            />
+            {/* Voice execution is retired: mount a disabled, explained
+                control instead of an enableable microphone launch. */}
+            <button
+              type="button"
+              disabled
+              aria-disabled="true"
+              aria-label={VOICE_UNAVAILABLE_TEXT}
+              title={VOICE_UNAVAILABLE_TEXT}
+              className="min-h-touch min-w-touch rounded-full p-2 text-[var(--color-text-muted)] bg-transparent cursor-not-allowed"
+            >
+              <Mic className="h-4 w-4" aria-hidden="true" />
+            </button>
 
             {isLoading ? (
               <StopButton onStop={onStop} />
@@ -253,10 +285,10 @@ export function ChatInputBar({
                 type="submit"
                 aria-label="Send message"
                 disabled={!input.trim() && attachments.length === 0}
-                className={`min-h-touch min-w-touch rounded-xl p-2 transition-all duration-200 ${
+                className={`min-h-touch min-w-touch rounded-xl p-2 transition-all duration-200 disabled:cursor-not-allowed ${
                   input.trim() || attachments.length > 0
                     ? 'bg-[var(--color-accent-primary)] text-[var(--color-text-on-accent)] hover:bg-[var(--color-accent-hover)] shadow-sm'
-                    : 'bg-transparent text-[var(--color-text-muted)] cursor-not-allowed'
+                    : 'bg-transparent text-[var(--color-text-muted)]'
                 }`}
               >
                 <Send className="w-4 h-4" />
@@ -273,6 +305,17 @@ export function ChatInputBar({
           onChange={handleFilesSelected}
         />
       </div>
+
+      {/* Streaming notice: a visible, announced blocked-send explanation */}
+      {notice && (
+        <p
+          role="status"
+          aria-live="polite"
+          className="text-center mt-1 text-sm text-[var(--color-text-secondary)]"
+        >
+          {notice}
+        </p>
+      )}
 
       {/* Disclaimer */}
       <div className="text-center mt-2 text-xs text-[var(--color-text-muted)]">

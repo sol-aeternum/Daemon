@@ -12,7 +12,7 @@ export function MobileHeader({
   children,
 }: MobileHeaderProps) {
   return (
-    <header className="md:hidden bg-[var(--color-bg-secondary)] border-b border-[var(--color-border-primary)] px-4 py-3 flex items-center gap-3 sticky top-0 z-20 pt-safe-header">
+    <header className="md:hidden shrink-0 bg-[var(--color-bg-primary)] border-b border-[var(--color-border-primary)] px-3 py-2 flex items-center gap-2 sticky top-0 z-20 pt-safe-header">
       <button
         onClick={onOpenSidebar}
         className="p-2 -ml-2 text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] rounded-lg touch-manipulation min-h-touch min-w-touch flex items-center justify-center"

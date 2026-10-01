@@ -22,7 +22,6 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
-  maximumScale: 1,
   viewportFit: 'cover',
 };
 
@@ -42,7 +41,7 @@ export default async function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <head>{nonce ? <meta name="csp-nonce" content={nonce} /> : null}</head>
       <body className="antialiased">
-        <ThemeProvider>
+        <ThemeProvider nonce={nonce}>
           <AuthProvider>{children}</AuthProvider>
         </ThemeProvider>
       </body>

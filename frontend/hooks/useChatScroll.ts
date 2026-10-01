@@ -2,20 +2,34 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+// UI-only positions, never transcript text. One sign-in lifetime at a time.
+let positionScope: number | undefined;
+const positions = new Map<string, { top: number; follow: boolean }>();
+
 export function useChatScroll({
   conversationId,
   messages,
   isLoading,
+  authGeneration,
 }: {
   conversationId: string | null;
   messages: readonly unknown[];
   isLoading: boolean;
+  authGeneration?: number;
 }) {
+  useEffect(() => {
+    if (positionScope !== authGeneration) {
+      positions.clear();
+      positionScope = authGeneration;
+    }
+  }, [authGeneration]);
+  const positionKey = conversationId ?? '__new__';
   const scrollContainerRef = useRef<HTMLElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const autoScrollEnabledRef = useRef(true);
   const previousConversationRef = useRef(conversationId);
   const previousScrollTopRef = useRef(0);
+  const restoredKey = useRef<string | null>(null);
   const [scrollState, setScrollState] = useState({
     conversationId,
     isScrolledUp: false,
@@ -30,7 +44,9 @@ export function useChatScroll({
     // while a streaming response is still changing the content height.
     container.scrollTo({ top: container.scrollHeight, behavior: 'auto' });
     previousScrollTopRef.current = container.scrollTop;
-  }, []);
+    if (authGeneration !== undefined && positionScope === authGeneration)
+      positions.set(positionKey, { top: container.scrollTop, follow: true });
+  }, [authGeneration, positionKey]);
 
   const jumpToLatest = useCallback(() => {
     autoScrollEnabledRef.current = true;
@@ -50,6 +66,11 @@ export function useChatScroll({
       autoScrollEnabledRef.current = false;
     }
     previousScrollTopRef.current = container.scrollTop;
+    if (authGeneration !== undefined && positionScope === authGeneration)
+      positions.set(positionKey, {
+        top: container.scrollTop,
+        follow: autoScrollEnabledRef.current,
+      });
     const isScrolledUp = !nearBottom && !autoScrollEnabledRef.current;
     setScrollState((previous) =>
       previous.conversationId === conversationId &&
@@ -57,15 +78,45 @@ export function useChatScroll({
         ? previous
         : { conversationId, isScrolledUp },
     );
-  }, [conversationId]);
+  }, [conversationId, authGeneration, positionKey]);
 
   useEffect(() => {
     if (previousConversationRef.current !== conversationId) {
       previousConversationRef.current = conversationId;
       autoScrollEnabledRef.current = true;
     }
+    // Wait for persisted messages before restoring; an empty loading container
+    // would clamp scrollTop to zero and destroy the saved reading position.
+    if (
+      authGeneration !== undefined &&
+      restoredKey.current !== positionKey &&
+      messages.length > 0
+    ) {
+      restoredKey.current = positionKey;
+      const saved = positions.get(positionKey);
+      const container = scrollContainerRef.current;
+      if (saved && container && !saved.follow) {
+        autoScrollEnabledRef.current = false;
+        container.scrollTop = saved.top;
+        previousScrollTopRef.current = saved.top;
+        return;
+      }
+    }
+    if (
+      authGeneration !== undefined &&
+      messages.length === 0 &&
+      positions.has(positionKey)
+    )
+      return;
     if (autoScrollEnabledRef.current) scrollToBottom();
-  }, [conversationId, messages, isLoading, scrollToBottom]);
+  }, [
+    conversationId,
+    messages,
+    isLoading,
+    scrollToBottom,
+    authGeneration,
+    positionKey,
+  ]);
 
   const hasMessages = messages.length > 0;
   useEffect(() => {
