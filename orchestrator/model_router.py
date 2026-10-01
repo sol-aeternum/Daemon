@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
+from orchestrator import routing_log
+
 
 @dataclass
 class ModelDecision:
@@ -104,6 +106,11 @@ TRIVIAL_SIMPLE_SIGNALS = {
 }
 
 RESEARCH_SIGNALS = {"research", "search for", "look up", "find sources", "fact-check"}
+
+#: Names the exact signal vocabulary in routing telemetry; changes with any list edit.
+CLASSIFIER_VERSION = routing_log.vocabulary_version(
+    COMPLEXITY_SIGNALS, COMPLEXITY_SIGNAL_FORMS, TRIVIAL_SIMPLE_SIGNALS, RESEARCH_SIGNALS
+)
 
 
 def _has_signal(message: str, signals: set[str]) -> bool:
@@ -212,3 +219,15 @@ def select_model_tier(
             else "routine"
         ),
     )
+
+
+def matched_signals(message: str) -> tuple[list[str], list[str]]:
+    """Complexity and research signals found in the user's own instruction text.
+
+    Telemetry only: the values come from the fixed signal vocabulary, never from
+    free text, and the routing decision itself does not read them.
+    """
+    text = _instruction_text(message).lower()
+    complexity = sorted(signal for signal in _COMPLEXITY_MATCH if _has_signal(text, {signal}))
+    research = sorted(signal for signal in RESEARCH_SIGNALS if _has_signal(text, {signal}))
+    return complexity, research

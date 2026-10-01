@@ -38,6 +38,7 @@ from typing import Any, overload
 
 import asyncpg
 
+from orchestrator import routing_log
 from orchestrator.entitlements.errors import (
     AccountSuspended,
     BudgetExceeded,
@@ -775,7 +776,7 @@ class EntitlementService:
             raise ValueError("recovery cutoff must be an aware past timestamp")
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT id, reserved_microusd FROM entitlement_reservations
+                """SELECT id, reserved_microusd, scope_id FROM entitlement_reservations
                    WHERE user_id = $1 AND status = 'open' AND created_at < $2
                    ORDER BY created_at""",
                 uid,
@@ -795,6 +796,19 @@ class EntitlementService:
                 # our read, or account deletion removed it. Never charge twice.
                 continue
             recovered += int(result.applied)
+            if result.applied:
+                scope_id = row["scope_id"]
+                routing_log.emit(
+                    "settlement",
+                    scope_id=str(scope_id) if scope_id is not None else None,
+                    reservation_id=str(reservation_id),
+                    path="expiry_recovery",
+                    status=result.status.value,
+                    actual=result.actual_microusd,
+                    hold_bound=int(row["reserved_microusd"]),
+                    estimated=True,
+                    overage=result.overage_microusd,
+                )
         return recovered
 
     # ----------------------------------------------------------------- events

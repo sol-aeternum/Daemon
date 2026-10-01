@@ -42,7 +42,7 @@ import litellm
 from litellm.exceptions import APIConnectionError, Timeout
 from openai import APIError as OpenAIAPIError
 
-from orchestrator import model_routing
+from orchestrator import model_routing, routing_log
 from orchestrator.entitlements import EntitlementService
 from orchestrator.entitlements.plans import TOOL_ROUND_SAFETY_CEILING
 from orchestrator.entitlements.policy import RoutePolicy, load_inference_policy
@@ -62,6 +62,18 @@ from orchestrator.config import get_settings
 
 logger = logging.getLogger(__name__)
 STREAM_CLOSE_TIMEOUT_S = 2.0
+
+
+def _label(value: Any) -> str | None:
+    """A loggable identifier or enumeration value, or ``None`` for anything else."""
+    value = getattr(value, "value", value)
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    return value if isinstance(value, str) else None
+
+
+def _count(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _consume_close_result(task: asyncio.Task[None]) -> None:
@@ -324,6 +336,13 @@ class ComputeScope:
     expected_period: str | None = None
     #: Outer account profile bounds automatic premium eligibility in nested contexts.
     account_allow_premium: bool = True
+    #: Routing telemetry only (see :mod:`orchestrator.routing_log`); never read by policy.
+    request_id: str | None = None
+    profile: str | None = None
+    completion_seq: int = 0
+    attempts: int = 0
+    started_at: float = field(default_factory=time.monotonic)
+    first_output_at: float | None = None
 
     async def close_stream(self, hold: ReservationHold) -> None:
         """Close acquired transport even when its iterator was never advanced."""
@@ -360,7 +379,12 @@ class ComputeScope:
         await asyncio.shield(hold.closing)
 
     async def settle(
-        self, reservation: Any, amount: int, *, usage: dict[str, int] | None = None
+        self,
+        reservation: Any,
+        amount: int,
+        *,
+        usage: dict[str, int] | None = None,
+        path: str = "unspecified",
     ) -> None:
         key = _hold_key(reservation)
         hold = self.outstanding.get(key)
@@ -398,6 +422,20 @@ class ComputeScope:
             ) from None
         self.settled[key] = amount
         self.outstanding.pop(key, None)
+        result = hold.settlement.result() if hold.settlement.done() else None
+        routing_log.emit(
+            "settlement",
+            scope_id=str(self.scope_id),
+            reservation_id=_label(key),
+            path=path,
+            status=_label(getattr(result, "status", None)),
+            actual=amount,
+            hold_bound=hold.bound,
+            estimated=not usage or bool(usage.get("estimated_cost")),
+            input_tokens=_count((usage or {}).get("input_tokens")),
+            output_tokens=_count((usage or {}).get("output_tokens")),
+            overage=_count(getattr(result, "overage_microusd", None)),
+        )
 
 
 @dataclass
@@ -429,6 +467,7 @@ async def account_compute(
     background: bool = False,
     profile: str = "routine",
     expected_period: str | None = None,
+    request_id: str | None = None,
 ) -> AsyncIterator[ComputeScope]:
     """Account scope for one operation. ``background`` marks worker jobs: charged
     to the budget, but never counted against rate or concurrency ceilings."""
@@ -448,6 +487,8 @@ async def account_compute(
     )
     scope.expected_period = expected_period
     scope.account_allow_premium = account_profile.allow_premium
+    scope.request_id = request_id
+    scope.profile = profile
     await scope.service.reconcile_expired_reservations(
         user_id,
         before=datetime.now(timezone.utc) - timedelta(seconds=2 * get_settings().request_timeout_s),
@@ -458,9 +499,24 @@ async def account_compute(
             "Extended agent allowance unavailable; normal chat is still available",
         )
     token = _scope.set(scope)
+    routing_log.emit(
+        "scope_open",
+        request_id=request_id,
+        scope_id=str(scope.scope_id),
+        operation=operation,
+        profile=profile,
+        auto_route=auto_route,
+        account_allow_premium=scope.account_allow_premium,
+        background=background,
+        extended=extended,
+    )
+    exit_status = "normal"
     try:
         with model_routing.routing_context(profile):
             yield scope
+    except BaseException as exc:
+        exit_status = _exit_label(exc)
+        raise
     finally:
         try:
 
@@ -469,7 +525,9 @@ async def account_compute(
                     await scope.close_stream(hold)
                 finally:
                     await scope.settle(
-                        hold.reservation, hold.actual if hold.actual is not None else hold.bound
+                        hold.reservation,
+                        hold.actual if hold.actual is not None else hold.bound,
+                        path="scope_cleanup",
                     )
 
             settlements = [
@@ -482,6 +540,39 @@ async def account_compute(
                         raise result
         finally:
             _scope.reset(token)
+            _emit_scope_close(scope, exit_status)
+
+
+def _exit_label(exc: BaseException) -> str:
+    if isinstance(exc, asyncio.CancelledError):
+        return "cancelled"
+    if isinstance(exc, GeneratorExit):
+        return "closed"
+    if isinstance(exc, ComputeUnavailable):
+        return f"error:{exc.code}"
+    if isinstance(exc, EntitlementsError):
+        return "error:entitlements"
+    return "error"
+
+
+def _emit_scope_close(scope: ComputeScope, exit_status: str) -> None:
+    now = time.monotonic()
+    routing_log.emit(
+        "scope_close",
+        request_id=scope.request_id,
+        scope_id=str(scope.scope_id),
+        operation=scope.operation,
+        exit=exit_status,
+        completions=scope.completion_seq,
+        attempts=scope.attempts,
+        settled_total=sum(scope.settled.values()),
+        first_output_ms=(
+            round((scope.first_output_at - scope.started_at) * 1000)
+            if scope.first_output_at is not None
+            else None
+        ),
+        duration_ms=round((now - scope.started_at) * 1000),
+    )
 
 
 def current_scope() -> ComputeScope:
@@ -773,7 +864,7 @@ async def metered_tool_call(
                     active.outstanding[receipt.id].reservation = recovered
                     if first_extended:
                         active.extended_started = True
-                    await active.settle(recovered, 0)
+                    await active.settle(recovered, 0, path="tool_not_dispatched")
 
             recovery = asyncio.create_task(recover_commit())
             interrupted = exc.interrupted
@@ -841,7 +932,7 @@ async def metered_tool_call(
                             except Exception:
                                 # A failed reservation never began provider I/O.
                                 return
-                            await active.settle(acquired, 0)
+                            await active.settle(acquired, 0, path="tool_not_dispatched")
 
                         cleanup = asyncio.create_task(recover_acquisition())
                         # Retain the lock through recovery, including repeated
@@ -890,7 +981,7 @@ async def metered_tool_call(
         # Dispatch has not begun. Use the scope's shielded, idempotent settlement
         # rather than a separate release path: even failed/cancelled accounting
         # must retain a known zero outcome, not invent a provider charge.
-        await active.settle(reservation, 0)
+        await active.settle(reservation, 0, path="tool_not_dispatched")
         raise
     try:
         yield charge
@@ -913,20 +1004,25 @@ async def _settle_tool_hold(
     provider and the service id it was taken for.
     """
     if charge.known_not_dispatched:
-        await scope.settle(reservation, 0)
+        await scope.settle(reservation, 0, path="tool_not_dispatched")
     elif charge.confirmed:
         actual = approval.fixed_microusd * charge.units
         usage = {"tool_calls": 1}
         if charge.units != 1:
             usage["provider_units"] = charge.units
-        await scope.settle(reservation, actual, usage=usage)
+        await scope.settle(reservation, actual, usage=usage, path="tool_call")
         if actual > approval.ceiling_microusd:
             # EntitlementService records the overage and suspends the account.
             raise ComputeUnavailable(
                 "tool_price_exceeded", "Tool service charge exceeded its reserved price"
             )
     else:
-        await scope.settle(reservation, approval.ceiling_microusd, usage={"estimated_cost": True})
+        await scope.settle(
+            reservation,
+            approval.ceiling_microusd,
+            usage={"estimated_cost": True},
+            path="tool_call",
+        )
 
 
 def _profile_shortlist(profile: str) -> dict[str, tuple[int, int]]:
@@ -1057,6 +1153,7 @@ def _priced_candidates(
     check_budget: bool = True,
     account_allow_premium: bool = True,
     assume_premium_capability: bool = False,
+    exclusions: dict[str, int] | None = None,
 ) -> list[tuple[int, int, RoutePolicy, bool, model_routing.RoutedModel | None]]:
     """Qualified routes for this request, in the order they should be attempted.
 
@@ -1065,7 +1162,15 @@ def _priced_candidates(
     outward through the profile's remaining groups. Every entry still satisfies the
     active profile, the request's required capabilities, the account's limits and the
     request's budget, so a fallback is never a silent downgrade.
+
+    ``exclusions``, when given, counts why routes the request could have used were
+    left out (telemetry only; it never changes the result).
     """
+
+    def excluded(reason: str) -> None:
+        if exclusions is not None:
+            exclusions[reason] = exclusions.get(reason, 0) + 1
+
     input_tokens = input_size.estimate
     try:
         inference = load_inference_policy()
@@ -1154,14 +1259,17 @@ def _priced_candidates(
             and "premium_routing" not in policy.capabilities
             and not assume_premium_capability
         ):
+            excluded("capability")
             continue
         if premium_route and not explicit:
             # Bounded automatic escalation: a profile only reaches a premium route
             # when it says it may, and only inside its own ordered groups.
             if not workload.allow_premium or not account_allow_premium:
+                excluded("premium_not_allowed")
                 continue
         limits = policy.limits_for(premium)
         if limits.max_context_tokens is not None and input_tokens > limits.max_context_tokens:
+            excluded("context")
             continue
         available_output = min(
             route.max_output_tokens,
@@ -1170,14 +1278,17 @@ def _priced_candidates(
         if limits.max_output_tokens is not None:
             available_output = min(available_output, limits.max_output_tokens)
         if available_output <= 0:
+            excluded("context")
             continue
         if requested_effort is not None and not model_routing.supports_reasoning_effort(
             route.model, str(requested_effort)
         ):
+            excluded("effort")
             continue
         if not model_routing.supports_sampling_parameters(
             route.model, params, allow_unknown=explicit
         ):
+            excluded("sampling")
             continue
         group_index = placement.group_index if placement is not None else 0
         preferred = 0 if route.model == state.preferred_model else 1
@@ -1192,20 +1303,25 @@ def _priced_candidates(
                 pending.setdefault(group_index, []).append(
                     (route, premium, placement, available_output, preferred)
                 )
+            else:
+                excluded("route_capabilities")
             continue
         # Explicit caller asks stay exact; an explicit model with no ask keeps
         # its route/account's full available output.
         output_tokens = requested_output if requested_output is not None else available_output
         if output_tokens <= 0 or output_tokens > available_output:
+            excluded("output")
             continue
         if not route.supports(
             required_capabilities=frozenset(required),
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         ):
+            excluded("route_capabilities")
             continue
         bound = route.estimate_microusd(input_size.bound, output_tokens)
         if check_budget and bound > policy.remaining_for(premium):
+            excluded("budget")
             continue
         candidates.append(
             (
@@ -1230,12 +1346,15 @@ def _priced_candidates(
             capacity = max(entry[3] for entry in remaining)
             target = capacity if account_output is None else min(account_output, capacity)
             if target <= 0 or target < workload.min_output_tokens:
+                for _ in remaining:
+                    excluded("output_floor")
                 break
             meeting = [entry for entry in remaining if entry[3] >= target]
             accepted = 0
             for route, premium, placement, _available, preferred in meeting:
                 bound = route.estimate_microusd(input_size.bound, target)
                 if check_budget and bound > policy.remaining_for(premium):
+                    excluded("budget")
                     continue
                 candidates.append(
                     (
@@ -1514,6 +1633,7 @@ async def guarded_completion(
             raise ComputeUnavailable("route_unavailable", "Approved inference route unavailable")
         pinned = _pinned_route(_route_id, model)
     routing = model_routing.current_routing()
+    exclusions: dict[str, int] = {}
     candidates = _priced_candidates(
         policy,
         input_size,
@@ -1521,7 +1641,10 @@ async def guarded_completion(
         model,
         scope.extended,
         account_allow_premium=scope.account_allow_premium,
+        exclusions=exclusions,
     )
+    scope.completion_seq += 1
+    completion_seq = scope.completion_seq
     if pinned is not None:
         selected = next(
             (entry for entry in candidates if entry[2].route_id == pinned.route_id), None
@@ -1535,6 +1658,33 @@ async def guarded_completion(
         # another model, so a failure is raised rather than walked outward.
         candidates = [selected]
         automatic = False
+    routing_log.emit(
+        "candidates",
+        scope_id=str(scope.scope_id),
+        completion_seq=completion_seq,
+        profile=routing.profile,
+        plan=_label(getattr(policy, "plan", None)),
+        explicit=model is not None,
+        pinned=pinned is not None,
+        stream=stream,
+        route_ids=[entry[2].route_id for entry in candidates],
+        candidate_count=len(candidates),
+        exclusions=exclusions,
+    )
+    attempt_reservations: dict[int, str | None] = {}
+
+    def outcome(index: int, result: str, next_action: str, **fields: object) -> None:
+        routing_log.emit(
+            "attempt_outcome",
+            scope_id=str(scope.scope_id),
+            completion_seq=completion_seq,
+            attempt_index=index,
+            reservation_id=attempt_reservations.get(index),
+            outcome=result,
+            next_action=next_action,
+            **fields,
+        )
+
     if not candidates:
         if model:
             # Explicit choices are never silently downgraded.
@@ -1599,6 +1749,7 @@ async def guarded_completion(
 
     async def dispatch(
         candidate: tuple[int, int, RoutePolicy, bool, model_routing.RoutedModel | None],
+        attempt_index: int,
     ) -> tuple[Any, Any]:
         bound, output_tokens, route, premium, placement = candidate
         inference = load_inference_policy()
@@ -1670,6 +1821,33 @@ async def guarded_completion(
         except Exception:
             raise ComputeUnavailable("account_unavailable", "Account compute unavailable") from None
         scope.outstanding[_hold_key(reservation)] = ReservationHold(reservation, bound)
+        reservation_id = _label(_hold_key(reservation))
+        attempt_reservations[attempt_index] = reservation_id
+        scope.attempts += 1
+        routing_log.emit(
+            "attempt",
+            scope_id=str(scope.scope_id),
+            completion_seq=completion_seq,
+            attempt_index=attempt_index,
+            route_id=route.route_id,
+            model=route.model,
+            group=placement.group if placement is not None else None,
+            premium=premium,
+            explicit=model is not None,
+            pinned=pinned is not None,
+            requested_effort=_label(params.get("reasoning_effort")),
+            preset_effort=_label(
+                model_routing.model_parameter_presets(route.model, routing.profile).get(
+                    "reasoning_effort"
+                )
+            ),
+            sent_effort=_label(resolved.get("reasoning_effort")),
+            include_reasoning=resolved.get("include_reasoning") is True,
+            max_tokens=output_tokens,
+            hold_bound=bound,
+            reservation_id=reservation_id,
+            stream=stream,
+        )
         try:
             # Reservation can consume time: the SDK and local wait share the
             # remainder rather than using an earlier, longer SDK allowance.
@@ -1689,7 +1867,7 @@ async def guarded_completion(
             # An unknown or cancelled outcome still cost what was reserved, and a
             # failed settlement replaces this exception rather than hiding behind
             # a retryable one, so incomplete accounting stays visible.
-            await scope.settle(reservation, bound)
+            await scope.settle(reservation, bound, path="dispatch_failure")
             raise
         if params.get("stream"):
             scope.outstanding[_hold_key(reservation)].response = response
@@ -1714,30 +1892,49 @@ async def guarded_completion(
         last_failure: DispatchFailure | None = None
         revoked: _CandidateRevoked | None = None
         for index in range(start, len(candidates)):
+            walk_on = "fallback" if automatic and index + 1 < len(candidates) else "raise"
             try:
-                response, reservation = await dispatch(candidates[index])
+                response, reservation = await dispatch(candidates[index], index)
                 return index, response, reservation
             except BudgetExceeded as exc:
                 denial = compute_error(exc)
+                outcome(
+                    index,
+                    "denied",
+                    walk_on if automatic else "raise",
+                    failure_category="budget_exceeded",
+                )
                 if not automatic:
                     raise denial or ComputeUnavailable(
                         "budget_exceeded", _LIMIT_MESSAGES["budget_exceeded"]
                     ) from None
             except EntitlementsError as exc:
+                outcome(index, "denied", "raise", failure_category="entitlements")
                 raise compute_error(exc) or ComputeUnavailable(
                     "capacity_unavailable", "Compute capacity unavailable"
                 ) from None
             except _CandidateRevoked as exc:
+                outcome(index, "revoked", walk_on if automatic else "raise")
                 if not automatic:
                     raise
                 revoked = exc
-            except ComputeUnavailable:
+            except ComputeUnavailable as exc:
                 # Route qualification and settlement are not provider failures.
+                outcome(index, "refused", "raise", failure_category=exc.category)
                 raise
             except Exception as failure:
                 last_failure = _classify_dispatch_failure(
                     failure,
                     deadline_bound=asyncio.get_running_loop().time() >= deadline,
+                    output_released=False,
+                )
+                outcome(
+                    index,
+                    "failed",
+                    walk_on if automatic else "raise",
+                    failure_category=last_failure.category,
+                    status_code=last_failure.status_code,
+                    retryable=last_failure.retryable,
                     output_released=False,
                 )
                 if not automatic:
@@ -1764,10 +1961,14 @@ async def guarded_completion(
             else getattr(response, "usage", None)
         )
         settlement = _usage_settlement(usage, route, bound)
+        if scope.first_output_at is None:
+            scope.first_output_at = time.monotonic()
+        outcome(index, "completed", "none", output_released=True)
         await scope.settle(
             reservation,
             settlement[0] if settlement is not None else bound,
             usage=settlement[1] if settlement is not None else _ESTIMATED,
+            path="completed",
         )
         return response
 
@@ -1793,17 +1994,31 @@ async def guarded_completion(
                     parsed = _usage_settlement(_chunk_usage(chunk), route, bound)
                     if parsed is not None:
                         settlement = parsed
+                    if not emitted and scope.first_output_at is None:
+                        scope.first_output_at = time.monotonic()
                     emitted = True
                     yield chunk
                 completed = True
+                outcome(index, "completed", "none", output_released=emitted)
             except Exception as failure:
                 failed = True
-                if emitted or not automatic or index + 1 >= len(candidates):
-                    raise _classify_dispatch_failure(
-                        failure,
-                        deadline_bound=asyncio.get_running_loop().time() >= deadline,
-                        output_released=emitted,
-                    ).as_unavailable(
+                classified = _classify_dispatch_failure(
+                    failure,
+                    deadline_bound=asyncio.get_running_loop().time() >= deadline,
+                    output_released=emitted,
+                )
+                terminal = emitted or not automatic or index + 1 >= len(candidates)
+                outcome(
+                    index,
+                    "failed",
+                    "raise" if terminal else "fallback",
+                    failure_category=classified.category,
+                    status_code=classified.status_code,
+                    retryable=classified.retryable,
+                    output_released=emitted,
+                )
+                if terminal:
+                    raise classified.as_unavailable(
                         "capacity_unavailable", "Qualified provider unavailable"
                     ) from None
             finally:
@@ -1814,6 +2029,7 @@ async def guarded_completion(
                     reservation,
                     settlement[0] if completed and settlement is not None else bound,
                     usage=settlement[1] if completed and settlement is not None else _ESTIMATED,
+                    path="stream_end",
                 )
             if not failed:
                 return
