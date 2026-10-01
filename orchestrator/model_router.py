@@ -54,6 +54,44 @@ COMPLEXITY_SIGNALS = {
     "design pattern",
 }
 
+#: Inflected forms of single-word complexity signals that still express a request or
+#: topic (plural, third person, gerund), plus the unhyphenated "tradeoff" spelling.
+#: Past tense is deliberately excluded: "compared" or "derived" mostly appear in
+#: narrative, not in a request for analysis.
+COMPLEXITY_SIGNAL_FORMS = {
+    "trade-offs",
+    "tradeoff",
+    "tradeoffs",
+    "compares",
+    "comparing",
+    "analyzes",
+    "analyzing",
+    "analyses",
+    "analysing",
+    "critiques",
+    "critiquing",
+    "evaluates",
+    "evaluating",
+    "strategies",
+    "implication",
+    "debugs",
+    "refactors",
+    "implements",
+    "implementing",
+    "implementations",
+    "proves",
+    "proving",
+    "derives",
+    "deriving",
+    "optimizes",
+    "optimizing",
+    "optimises",
+    "optimising",
+    "architectures",
+}
+
+_COMPLEXITY_MATCH = COMPLEXITY_SIGNALS | COMPLEXITY_SIGNAL_FORMS
+
 TRIVIAL_SIMPLE_SIGNALS = {
     "hi",
     "hello",
@@ -90,7 +128,7 @@ def classify_message(
         return "complex"
     if msg_lower in TRIVIAL_SIMPLE_SIGNALS:
         return "trivial"
-    if _has_signal(msg_lower, COMPLEXITY_SIGNALS):
+    if _has_signal(msg_lower, _COMPLEXITY_MATCH):
         return "complex"
     return "standard"
 

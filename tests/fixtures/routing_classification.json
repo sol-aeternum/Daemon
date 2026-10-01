@@ -42,15 +42,14 @@
     {
       "id": "plural_trade_offs",
       "message": "list the trade-offs of using SQLite",
-      "classification": "standard",
-      "profile": "routine",
-      "note": "Known defect: the plural does not match the listed signal."
+      "classification": "complex",
+      "profile": "reasoning"
     },
-    {"id": "unhyphenated_tradeoffs", "message": "what are the tradeoffs here", "classification": "standard", "profile": "routine"},
-    {"id": "gerund_implementing", "message": "help me with implementing a cache", "classification": "standard", "profile": "routine"},
-    {"id": "third_person_compares", "message": "which plan compares better on price", "classification": "standard", "profile": "routine"},
-    {"id": "plural_strategies", "message": "what strategies work for paying off debt", "classification": "standard", "profile": "routine"},
-    {"id": "past_tense_narrative", "message": "I compared both options yesterday and picked one", "classification": "standard", "profile": "routine"},
+    {"id": "unhyphenated_tradeoffs", "message": "what are the tradeoffs here", "classification": "complex", "profile": "reasoning"},
+    {"id": "gerund_implementing", "message": "help me with implementing a cache", "classification": "complex", "profile": "reasoning"},
+    {"id": "third_person_compares", "message": "which plan compares better on price", "classification": "complex", "profile": "reasoning"},
+    {"id": "plural_strategies", "message": "what strategies work for paying off debt", "classification": "complex", "profile": "reasoning"},
+    {"id": "past_tense_narrative", "message": "I compared both options yesterday and picked one", "classification": "standard", "profile": "routine", "note": "Past tense is deliberately not a signal form; it mostly appears in narrative."},
     {
       "id": "non_english_analysis",
       "message": "compara estas dos opciones y dime cuál es mejor",
