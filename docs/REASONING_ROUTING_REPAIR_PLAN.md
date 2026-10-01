@@ -348,7 +348,7 @@ Merged, Blocked (with reason).
 | PR | State | Branch / PR | Notes |
 | --- | --- | --- | --- |
 | A-PR1 classifier repairs | Merged | #384 (`4f9f0518`) | Security review clean; quadratic fence scan found and fixed before merge |
-| A-PR2 endpoint parity | PR open | `fix/routing-endpoint-parity` | Security review clean |
-| A-PR3 truthful capability denial | PR open | #385 | Security review clean |
-| A-PR4 routing telemetry | In progress | `feat/routing-telemetry` | Runtime events done; decision record after A-PR2 merges |
+| A-PR2 endpoint parity | Merged | #386 (`193c47fc`) | Security review clean |
+| A-PR3 truthful capability denial | Merged | #385 (`51f7684e`) | Security review clean |
+| A-PR4 routing telemetry | PR open | `feat/routing-telemetry` | Pre-flight confirmed uvicorn defaults drop application INFO logs |
 | A-PR5 docs and generated chart | In progress | `docs/routing-chart-generated` | Image: generated SVG (option a), chosen under the 1 October authority to proceed on judgement; reversible |
