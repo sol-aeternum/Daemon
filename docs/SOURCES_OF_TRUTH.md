@@ -40,6 +40,9 @@ Every markdown file in the repository is classified under this hierarchy to dete
 | `docs/ENV_SURFACE_MIGRATION.md` | T1 | Engineering | gated | `orchestrator/config.py`, `.env.example`, `docker-compose.yml`, `tests/test_env_surface_parity.py` |
 | `docs/MODEL_ROUTING_PILOT_PROPOSAL.md` | N/A | Engineering/Product | ungated-reference | Evidence-informed candidate placement, escalation and bounded endpoint integration proposal; not production activation |
 | `docs/MODEL_ROUTING_FOLLOWUP_PLAN.md` | N/A | Engineering/Product | ungated-reference | Proposed corrected-fixture and explicit-preset diagnostic/held-out screen; separate execution approval required |
+| `docs/CHAT_ROUTING.md` | N/A | Engineering | ungated-reference | Diagram of current ordinary-chat routing; `orchestrator/model_router.py`, `config/model_routing.json`, `orchestrator/compute_runtime.py`. To be generated from config and test-gated by the repair plan's A-PR5 |
+| `docs/REASONING_ROUTING_REPAIR_PLAN.md` | N/A | Engineering/Product | ungated-reference | Authorized A-core execution plan, recorded decisions and status; merging, deployment and optional work need separate approval |
+| `docs/REASONING_ROUTING_EXPANSION_PLAN.md` | N/A | Engineering/Product | ungated-reference | Conditional evidence-led roadmap; blocked until A-core is merged and each stage is authorized |
 | `docs/MODEL_UPGRADE_WORKFLOW.md` | N/A | Engineering/Operator | ungated-reference | Approved narrow reusable upgrade workflow; per-experiment qualification, scope and paid execution still require approval |
 | `docs/SOL_UPGRADE_EVALUATION.md` | N/A | Engineering | raw-log | Dated Sol 6/6.1 comparison authorization, qualification evidence, verification and integration decision |
 | `docs/MODEL_ROSTER_EVALUATION.md` | N/A | Engineering/Product | ungated-reference | Proposed evaluation protocol and dated review of the supplied September 2026 roster; not deployment authority |
