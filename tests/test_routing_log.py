@@ -18,6 +18,7 @@ from orchestrator import compute_runtime as runtime
 from orchestrator import model_routing, routing_log
 from orchestrator.entitlements import EntitlementService
 from orchestrator.entitlements.models import ReservationStatus
+from test_model_override import client  # noqa: F401  (pytest fixture)
 from test_model_routing import (
     DEEPSEEK,
     FLASH,
@@ -295,3 +296,65 @@ async def test_expiry_recovery_settlement_is_recorded(collected: _Collector) -> 
     assert record["reservation_id"] == str(reservation_id)
     assert record["scope_id"] == str(scope_id)
     assert record["actual"] == 500
+
+
+# --------------------------------------------------------------------------- ingress
+
+
+async def _post(client_: Any, endpoint: str, message: str, model: str) -> Any:
+    payload: dict[str, Any] = (
+        {"message": message, "model": model}
+        if endpoint == "/chat"
+        else {"model": model, "messages": [{"role": "user", "content": message}], "stream": True}
+    )
+    return await client_.post(endpoint, json=payload)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("endpoint", "label"), [("/chat", "chat"), ("/v1/chat/completions", "openai")]
+)
+async def test_ingress_decision_records_signals_without_content(
+    client: Any,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+    collected: _Collector,
+    endpoint: str,
+    label: str,
+) -> None:
+    monkeypatch.setenv("MOCK_LLM", "true")
+    from orchestrator.config import get_settings
+
+    get_settings.cache_clear()
+    message = f"> {SECRET_TEXT} look up\n\nplease compare the trade-offs"
+    response = await _post(client, endpoint, message, "auto")
+    assert response.status_code == 200
+    decision = next(r for r in collected.records() if r["event"] == "decision")
+    assert decision["endpoint"] == label
+    assert decision["auto"] is True
+    assert decision["profile"] == "reasoning"
+    assert decision["complexity_signals"] == ["compare", "trade-offs"]
+    assert decision["research_signals"] == []
+    assert decision["admission"] == "admitted"
+    assert isinstance(decision["request_id"], str) and decision["request_id"]
+    assert len(decision["classifier_version"]) == 12
+    assert SECRET_TEXT not in "\n".join(collected.lines)
+
+
+@pytest.mark.asyncio
+async def test_ingress_decision_records_explicit_selection_and_refusal(
+    client: Any,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+    collected: _Collector,
+) -> None:
+    monkeypatch.setenv("MOCK_LLM", "true")
+    from orchestrator.config import get_settings
+
+    get_settings.cache_clear()
+    response = await _post(client, "/chat", "compare these", "openrouter/test/not-approved")
+    assert response.status_code == 503
+    decision = next(r for r in collected.records() if r["event"] == "decision")
+    assert decision["auto"] is False
+    assert decision["explicit_model"] == "openrouter/test/not-approved"
+    assert decision["profile"] == "routine"
+    assert decision["complexity_signals"] == []
+    assert decision["admission"] == "route_unavailable"

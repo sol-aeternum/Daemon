@@ -121,7 +121,13 @@ from orchestrator.routes.auth_config import router as auth_config_router
 from orchestrator.routes.auth_setup import router as auth_setup_router
 from orchestrator.routes.web_snapshots import router as web_snapshots_router
 from orchestrator.models_cache import fetch_openrouter_models
-from orchestrator.model_router import select_model_tier
+from orchestrator.model_router import (
+    CLASSIFIER_VERSION,
+    ModelDecision,
+    matched_signals,
+    select_model_tier,
+)
+from orchestrator import routing_log
 from orchestrator.skills_store import build_skill_index
 from orchestrator.skills_projection import SkillProjectionStore
 from orchestrator.skills_sync import SkillSyncService
@@ -876,6 +882,52 @@ def _approved_chat_model(model: str | None = None, *, profile: str = "routine") 
         ) from exc
 
 
+def _admit_and_log_decision(
+    model: str | None,
+    *,
+    profile: str,
+    decision: ModelDecision,
+    requested_text: str,
+    endpoint: str,
+    request_id: str,
+    attachment_count: int = 0,
+) -> str:
+    """Admit exactly as :func:`_approved_chat_model` and record the routing decision.
+
+    The record goes to the server log only (see :mod:`orchestrator.routing_log`); it
+    never changes admission and carries no message content.
+    """
+    explicit = decision.tier == "explicit"
+    complexity, research = ([], []) if explicit else matched_signals(requested_text)
+
+    def record(admission: str) -> None:
+        routing_log.emit(
+            "decision",
+            request_id=request_id,
+            endpoint=endpoint,
+            auto=not explicit,
+            explicit_model=decision.model if explicit else None,
+            profile=profile,
+            tier=decision.tier,
+            classifier_version=CLASSIFIER_VERSION,
+            complexity_signals=complexity,
+            research_signals=research,
+            empty_text=not requested_text.strip(),
+            attachment_count=attachment_count,
+            admission=admission,
+        )
+
+    try:
+        admitted = _approved_chat_model(model, profile=profile)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        code = detail.get("code")
+        record(code if isinstance(code, str) else "denied")
+        raise
+    record("admitted")
+    return admitted
+
+
 def _extract_council_config_response(message: str) -> dict[str, Any] | None:
     raw = message.strip()
     lowered = raw.lower()
@@ -1390,12 +1442,17 @@ async def openai_chat_completions(
     # explicit model is exact and runs under the routine scope, whatever the
     # wording, so it receives that model's default preset on both endpoints.
     auto_requested = payload.model in {"default", "", "kimi", "auto"}
-    workload = select_model_tier(
+    workload_decision = select_model_tier(
         requested_text, user_override=None if auto_requested else payload.model
-    ).profile
-    actual_model = _approved_chat_model(
+    )
+    workload = workload_decision.profile
+    actual_model = _admit_and_log_decision(
         actual_model if actual_model not in {"default", "", "kimi", "auto"} else None,
         profile=workload,
+        decision=workload_decision,
+        requested_text=requested_text,
+        endpoint="openai",
+        request_id=request_id,
     )
 
     system_prompts = [
@@ -2019,9 +2076,14 @@ async def chat(
         "council" if is_council_config_response or is_council_command else model_decision.profile
     )
 
-    selected_model = _approved_chat_model(
+    selected_model = _admit_and_log_decision(
         model_decision.model if model_decision.tier == "explicit" else None,
         profile=admission_profile,
+        decision=model_decision,
+        requested_text=requested_text,
+        endpoint="chat",
+        request_id=request_id,
+        attachment_count=len(attachments),
     )
 
     actual_model = selected_model

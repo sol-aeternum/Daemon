@@ -215,6 +215,30 @@ reservation before surfacing a ledger failure.
 Transport close is bounded to two seconds; a stalled close is cancelled without
 waiting for cancellation acknowledgement, so it cannot block ledger settlement.
 
+## Routing telemetry
+
+Routing decisions are recorded only in the server log, never in a client contract:
+the SSE `routing` event and its `reason` string are unchanged. The
+`daemon.routing` logger (`orchestrator/routing_log.py`) writes one line per event,
+`routing_event <json>`, with fields from a fixed allowlist. It owns its INFO
+handler because the application has no logging configuration and uvicorn's
+defaults drop INFO from application loggers.
+
+| Event | Known when | Purpose |
+| --- | --- | --- |
+| `decision` | Ingress, before the account scope | Endpoint, auto or explicit, profile, classifier version, matched signal ids, admission result |
+| `scope_open` / `scope_close` | Account scope entry and exit | Operation, profile, premium ceiling; exit (`normal`, `cancelled`, `closed`, `error:<code>`), counts, settled total, first-output and total duration |
+| `candidates` | Before dispatch, per completion | Ordered route ids and exclusion counts by reason |
+| `attempt` | At dispatch | Route, model, group, requested, preset and **sent** reasoning effort, `max_tokens`, hold bound, reservation id |
+| `attempt_outcome` | After a response or failure | Outcome, failure category, retryability, whether output was released, next action |
+| `settlement` | Only after settlement | Actual amount, hold bound, estimated or metered, tokens, overage, path (completed, stream end, dispatch failure, scope cleanup, tool call, expiry recovery) |
+
+Records join to the ledger by `scope_id` (the reservation row's scope) and
+`reservation_id`; `request_id` joins them to the HTTP request. They never contain
+message or tool content, reasoning text, credentials, endpoints, headers, email or
+raw user ids. Signal ids are words from the fixed classifier vocabulary. An
+invalid record is dropped and emitting never raises into dispatch or settlement.
+
 ## Council and helper workloads
 
 Council preferences describe model developers, not the `openrouter` transport.
