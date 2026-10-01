@@ -179,7 +179,7 @@
           ]
         }
       ],
-      "notes": "Hard interactive work. The demanding group is the normal choice; the escalation group is reached only when no demanding candidate is eligible, so the automatic climb is bounded by two steps and remains subject to the account's premium_routing capability and premium budget."
+      "notes": "Hard interactive work. The demanding group is the normal choice; the escalation group is reached only when no demanding candidate is eligible, so the automatic climb is bounded by two steps and remains subject to the account's premium_routing capability and premium budget. Within a group the lowest bounded cost for the request is tried first; list order is not priority."
     },
     {
       "profile": "research",

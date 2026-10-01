@@ -16,7 +16,7 @@ These definitions distinguish product concepts from current implementations; the
 | **task** | An accepted request with durable, tracked status (DEC05) | A chat stream, or an arq job |
 | **attempt / run** | One execution attempt of a task | A new task |
 | **artifact** | A durable, owned output with identity and lineage | The current interactive HTML render or gallery item, or a file under `data/generated_*` that expires after 24h |
-| **role** | A routing slot (fast, orchestration, reasoning, coding, research, extraction, media) mapped to a model in config | A commercial plan |
+| **role** | A routing slot (fast, orchestration, reasoning, coding, research, extraction, media) mapped to a model in config. The code implements roles as workload profiles in `config/model_routing.json`: `routine` (the fast role), `research`, `reasoning`, `background` and `council`; the other listed roles are not yet configured profiles | A commercial plan |
 | **plan** | A commercial plan: Free, Pro or Power | Memory tier, or a Sisyphus PLAN.md |
 | **tier** | Memory L0/L1/L2 | A commercial plan, or a workload role. `orchestrator/model_router.py` still names fast/reasoning selection a `tier` (`select_model_tier`); in prose call that a role |
 | **route** | A qualified provider + model + endpoint in `config/inference_policy.json`, plus a DEC12 retention class (not yet a config field) | A model catalogue entry |
