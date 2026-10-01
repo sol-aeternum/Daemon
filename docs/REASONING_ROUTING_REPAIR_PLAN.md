@@ -221,12 +221,12 @@ A-PR5 goes last because it documents the merged behaviour.
 | Event | Known when | Fields |
 | --- | --- | --- |
 | `decision` | at entry, before the scope opens | endpoint, auto/explicit, explicit model ID, profile, classifier version, rule IDs, signal IDs (fixed vocabulary), attachment flag, admission result |
-| `scope_open` | scope entry | `request_id`, `scope_id`, operation, profile, `account_allow_premium`, plan ID |
-| `candidates` | before dispatch | `completion_seq`, ordered route IDs, exclusion counts by reason (capability, budget, context, effort, sampling, excluded) |
+| `scope_open` | scope entry | `request_id`, `scope_id`, operation, profile, `account_allow_premium` |
+| `candidates` | before dispatch | `completion_seq`, plan, ordered route IDs, exclusion counts by reason (capability, budget, context, effort, sampling, excluded) |
 | `attempt` | at dispatch | `attempt_index`, route, model, group, premium, explicit/pinned, caller-requested effort, preset effort, **effort sent**, `include_reasoning`, `max_tokens`, hold bound, `reservation_id` |
 | `attempt_outcome` | after response or failure | first chunk seen, failure category, status, retryable, `output_released`, next action |
 | `settlement` | **only after settlement** | `reservation_id`, actual amount, estimated flag, usage tokens (reasoning tokens if reported), overage, settled/released, path (normal, stream finally, scope cleanup, expiry recovery) |
-| `turn_end` | scope exit | terminal status (completed, cancelled or error code), completion and attempt counts, total settled, time to first token, duration |
+| `scope_close` | scope exit | exit (normal, cancelled, closed or error code), completion and attempt counts, total settled, time to first output, duration. Named for the account scope because background operations use scopes too |
 
 - **Never logged:** message or tool content, reasoning text, credentials,
   `api_base`, headers, email, raw `user_id`.
@@ -235,8 +235,8 @@ A-PR5 goes last because it documents the merged behaviour.
   reduce it to rule IDs.
 - **Regression cases:** allowlist test rejects unknown fields and never emits
   synthetic secret or content strings; 503 before output then success → two
-  attempts, two settlements, one `turn_end`; mid-stream cancellation → scope-cleanup
-  settlement and cancelled `turn_end`; expiry-recovered settlement logs its
+  attempts, two settlements, one `scope_close`; mid-stream cancellation → scope-cleanup
+  settlement and cancelled `scope_close`; expiry-recovered settlement logs its
   `reservation_id`; handler emits INFO.
 - **Acceptance:** one turn's records join its ledger rows by `scope_id` and
   `reservation_id`; dispatch behaviour unchanged.
