@@ -9,26 +9,27 @@
     {
       "id": "fenced_log_summarize",
       "message": "summarize this\n```\nERROR: root cause unknown, enable debug logging\n```",
-      "classification": "complex",
-      "profile": "reasoning",
-      "note": "Known defect: the fence and keywords inside pasted data select reasoning."
+      "classification": "standard",
+      "profile": "routine",
+      "note": "Keywords inside pasted data do not select reasoning; a fence alone is not a signal (D4)."
     },
     {"id": "debug_with_fence", "message": "debug this\n```\ndef f():\n    return 1 / 0\n```", "classification": "complex", "profile": "reasoning"},
     {
       "id": "language_question_fence",
       "message": "what language is this?\n```\nfn main() {}\n```",
-      "classification": "complex",
-      "profile": "reasoning",
-      "note": "Fence presence alone selects reasoning."
+      "classification": "standard",
+      "profile": "routine",
+      "note": "D4 consequence: coding questions without an analytic signal run on the routine profile."
     },
-    {"id": "fence_only", "message": "```\nprint('hi')\n```", "classification": "complex", "profile": "reasoning"},
+    {"id": "fence_only", "message": "```\nprint('hi')\n```", "classification": "standard", "profile": "routine"},
     {
       "id": "fence_only_keyword_in_code",
       "message": "```\n# TODO: refactor this later\nx = 1\n```",
-      "classification": "complex",
-      "profile": "reasoning"
+      "classification": "standard",
+      "profile": "routine",
+      "note": "Words inside a closed fence are data, even when no other text remains."
     },
-    {"id": "inline_triple_backtick", "message": "explain this: ```def foo(): pass```", "classification": "complex", "profile": "reasoning"},
+    {"id": "inline_triple_backtick", "message": "explain this: ```def foo(): pass```", "classification": "standard", "profile": "routine"},
     {
       "id": "quoted_email_reply",
       "message": "> Can you compare the two vendor quotes before Friday?\n\nreply politely that I'll get to it next week",

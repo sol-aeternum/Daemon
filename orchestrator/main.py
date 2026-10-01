@@ -1993,13 +1993,11 @@ async def chat(
             msg_model = msg_model.strip()
             if msg_model and msg_model != "auto":
                 user_model_choice = msg_model
-    has_code = "```" in user_message
     turn_count = len(incoming_messages) if incoming_messages else 0
 
     model_decision = select_model_tier(
         message=user_message,
         turn_count=turn_count,
-        has_code_block=has_code,
         user_override=user_model_choice,
     )
 

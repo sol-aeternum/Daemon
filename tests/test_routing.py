@@ -71,9 +71,11 @@ class TestClassifyMessage:
         assert classify_message("Analyse the evidence") == "complex"
         assert classify_message("The filename is autocritique.txt") == "standard"
 
-    def test_code_block_complex(self) -> None:
-        """Messages with code blocks are classified as complex regardless of content."""
-        assert classify_message("explain this: ```def foo(): pass```") == "complex"
+    def test_code_block_alone_does_not_select_reasoning(self) -> None:
+        """A code block is pasted data; the instruction around it decides (D4)."""
+        assert classify_message("explain this: ```def foo(): pass```") == "standard"
+        assert classify_message("what language is this?\n```\nfn main() {}\n```") == "standard"
+        assert classify_message("debug this\n```\ndef f(): pass\n```") == "complex"
 
     def test_long_message_is_not_a_quality_requirement(self) -> None:
         """Length is accounted for by context/output bounds, not model quality."""
@@ -166,11 +168,12 @@ class TestSelectModelTier:
         assert decision.model == model
         assert decision.tier == "explicit"
 
-    def test_code_block_reasoning_advisor_eligible(self) -> None:
-        """Code blocks route to reasoning with advisor eligible."""
-        decision = select_model_tier("explain this: ```def foo(): pass```")
+    def test_code_block_routes_by_instruction(self) -> None:
+        """A code block with an analytic instruction routes to reasoning; alone it does not."""
+        decision = select_model_tier("refactor this:\n```\ndef foo(): pass\n```")
         assert decision.tier == "reasoning"
         assert decision.advisor_eligible is True
+        assert select_model_tier("```\ndef foo(): pass\n```").profile == "routine"
 
     def test_user_override_explicit_tier(self) -> None:
         """User override bypasses classification and sets explicit tier."""

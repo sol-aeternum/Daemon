@@ -159,21 +159,18 @@ def _instruction_text(message: str) -> str:
 def classify_message(
     message: str,
     turn_count: int = 0,
-    has_code_block: bool | None = None,
 ) -> str:
     """Classify the requested work; size is separately bounded by compute policy.
 
     A long prompt or conversation does not by itself require premium reasoning.
     Signals are read from the user's own instruction text (see
-    :func:`_instruction_text`), not from pasted or quoted material.
+    :func:`_instruction_text`), not from pasted or quoted material. A code block on
+    its own is pasted data, not a reasoning requirement.
     """
     msg_lower = message.lower().strip()
     if not msg_lower:
         return "trivial"
 
-    detected_code_block = "```" in message if has_code_block is None else has_code_block
-    if detected_code_block:
-        return "complex"
     if msg_lower in TRIVIAL_SIMPLE_SIGNALS:
         return "trivial"
     if _has_signal(_instruction_text(message).lower(), _COMPLEXITY_MATCH):
@@ -184,7 +181,6 @@ def classify_message(
 def select_model_tier(
     message: str,
     turn_count: int = 0,
-    has_code_block: bool | None = None,
     user_override: str | None = None,
 ) -> ModelDecision:
     if user_override and user_override != "auto":
@@ -195,11 +191,7 @@ def select_model_tier(
             advisor_eligible=False,
         )
 
-    classification = classify_message(
-        message,
-        turn_count=turn_count,
-        has_code_block=has_code_block,
-    )
+    classification = classify_message(message, turn_count=turn_count)
     if classification == "complex":
         return ModelDecision(
             tier="reasoning",
