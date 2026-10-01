@@ -358,3 +358,20 @@ async def test_ingress_decision_records_explicit_selection_and_refusal(
     assert decision["profile"] == "routine"
     assert decision["complexity_signals"] == []
     assert decision["admission"] == "route_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_ingress_decision_never_logs_free_text_from_the_model_field(
+    client: Any,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+    collected: _Collector,
+) -> None:
+    monkeypatch.setenv("MOCK_LLM", "true")
+    from orchestrator.config import get_settings
+
+    get_settings.cache_clear()
+    response = await _post(client, "/chat", "hello", f"my secret is {SECRET_TEXT}")
+    assert response.status_code == 503
+    decision = next(r for r in collected.records() if r["event"] == "decision")
+    assert decision["explicit_model"] == "unrecognized"
+    assert SECRET_TEXT not in "\n".join(collected.lines)

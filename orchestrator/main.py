@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 
 import sys
 
@@ -882,6 +883,9 @@ def _approved_chat_model(model: str | None = None, *, profile: str = "routine") 
         ) from exc
 
 
+_LOGGABLE_MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@+/-]{0,119}")
+
+
 def _admit_and_log_decision(
     model: str | None,
     *,
@@ -906,7 +910,13 @@ def _admit_and_log_decision(
             request_id=request_id,
             endpoint=endpoint,
             auto=not explicit,
-            explicit_model=decision.model if explicit else None,
+            # A caller-supplied model string is logged only when it looks like a model
+            # id, so arbitrary text sent in the model field never reaches the log.
+            explicit_model=(
+                decision.model
+                if explicit and _LOGGABLE_MODEL_ID.fullmatch(decision.model)
+                else ("unrecognized" if explicit else None)
+            ),
             profile=profile,
             tier=decision.tier,
             classifier_version=CLASSIFIER_VERSION,
