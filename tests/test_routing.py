@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from orchestrator.model_router import (
     _instruction_text,  # pyright: ignore[reportPrivateUsage]
     classify_message,
@@ -133,6 +135,17 @@ class TestInstructionText:
 
     def test_fence_only_message_has_no_instruction(self) -> None:
         assert _instruction_text("```\n# refactor later\n```") == ""
+
+    def test_text_after_an_unclosed_fence_stays_text_including_later_fences(self) -> None:
+        message = "intro\n````\nreview code\n```\ninner\n```"
+        assert _instruction_text(message) == message
+
+    def test_many_unclosed_fences_are_scanned_in_linear_time(self) -> None:
+        """Classification runs in the request handler; it must not scan quadratically."""
+        message = "\n".join(["````info"] * 200_000) + "\ncompare A and B"
+        started = time.perf_counter()
+        assert _instruction_text(message).endswith("compare A and B")
+        assert time.perf_counter() - started < 2.0
 
 
 class TestSelectModelTier:

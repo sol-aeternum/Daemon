@@ -131,27 +131,27 @@ def _instruction_text(message: str) -> str:
     remains, so an instruction written entirely inside a quote still selects its work.
     The model always receives the full message; only routing reads this view.
     """
-    lines = message.splitlines()
     unfenced: list[str] = []
-    index = 0
-    while index < len(lines):
-        opening = _FENCE_OPEN.match(lines[index])
+    # One linear pass: an open fence buffers its lines until it closes. A fence that
+    # never closes returns its opening line and everything after it as plain text.
+    fence: list[str] | None = None
+    marker = ""
+    for line in message.splitlines():
+        if fence is not None:
+            if _closes_fence(line, marker):
+                fence = None
+            else:
+                fence.append(line)
+            continue
+        opening = _FENCE_OPEN.match(line)
         # A backtick "fence" whose info string holds a backtick is an inline code span.
         if opening and not (opening.group(1)[0] == "`" and "`" in opening.group(2)):
             marker = opening.group(1)
-            close = next(
-                (
-                    candidate
-                    for candidate in range(index + 1, len(lines))
-                    if _closes_fence(lines[candidate], marker)
-                ),
-                None,
-            )
-            if close is not None:
-                index = close + 1
-                continue
-        unfenced.append(lines[index])
-        index += 1
+            fence = [line]
+            continue
+        unfenced.append(line)
+    if fence is not None:
+        unfenced.extend(fence)
     own = "\n".join(line for line in unfenced if not line.lstrip().startswith(">")).strip()
     return own or "\n".join(unfenced).strip()
 
