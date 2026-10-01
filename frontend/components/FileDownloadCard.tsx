@@ -1,6 +1,13 @@
-import type { ReactNode } from 'react';
+'use client';
+
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { FileText, Table, File, Download } from 'lucide-react';
-import { ensureAuthHeader } from '@/lib/auth';
+import {
+  ensureAuthHeader,
+  getAuthGeneration,
+  subscribeAuthGeneration,
+} from '@/lib/auth';
+import { getProtectedMediaUrl } from '@/hooks/useAuthenticatedImageUrl';
 
 interface FileDownloadCardProps {
   filename: string;
@@ -48,7 +55,11 @@ function getFileTypeLabel(fileType?: string, filename?: string): string {
   return ext ? ext.toUpperCase() : 'FILE';
 }
 
-export function FileDownloadCard({
+export function FileDownloadCard(props: FileDownloadCardProps) {
+  return <SelectedFileDownloadCard key={props.fileUrl} {...props} />;
+}
+
+function SelectedFileDownloadCard({
   filename,
   fileUrl,
   fileSize,
@@ -56,18 +67,51 @@ export function FileDownloadCard({
   trailingAction,
   className,
 }: FileDownloadCardProps) {
+  const [error, setError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const requestRef = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      requestRef.current?.abort();
+    },
+    [fileUrl],
+  );
   const handleDownload = async () => {
+    if (requestRef.current && !requestRef.current.signal.aborted) return;
+    const controller = new AbortController();
+    const generation = getAuthGeneration();
+    const unsubscribe = subscribeAuthGeneration(() => controller.abort());
+    requestRef.current = controller;
+    setDownloading(true);
+    setError(null);
     let objectUrl: string | null = null;
     let cleanupAnchor: HTMLAnchorElement | null = null;
     try {
-      const authHeader = await ensureAuthHeader();
+      const protectedUrl = getProtectedMediaUrl(fileUrl);
+      const authHeader = protectedUrl ? await ensureAuthHeader() : null;
+      if (controller.signal.aborted || generation !== getAuthGeneration())
+        return;
+      if (protectedUrl && !authHeader)
+        throw new Error('Sign in again to download this file.');
       const headers = new Headers();
       if (authHeader) {
         headers.set('Authorization', authHeader);
       }
-      const response = await fetch(fileUrl, { headers });
-      if (!response.ok) throw new Error(`Download failed: ${response.status}`);
+      const response = await fetch(protectedUrl ?? fileUrl, {
+        headers,
+        signal: controller.signal,
+      });
+      if (!response.ok)
+        throw new Error(
+          response.status === 404
+            ? 'File unavailable (missing or expired). Your conversation is still here.'
+            : response.status === 401 || response.status === 403
+              ? 'You do not have access to download this file.'
+              : `Download failed (${response.status}). Please try again.`,
+        );
       const blob = await response.blob();
+      if (controller.signal.aborted || generation !== getAuthGeneration())
+        return;
       objectUrl = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = objectUrl;
@@ -77,23 +121,35 @@ export function FileDownloadCard({
       document.body.appendChild(link);
       cleanupAnchor = link;
       link.click();
+    } catch (err) {
+      if (!controller.signal.aborted)
+        setError(
+          err instanceof Error
+            ? err.message
+            : 'Download failed. Please try again.',
+        );
     } finally {
+      unsubscribe();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
       if (cleanupAnchor && cleanupAnchor.parentNode) {
         cleanupAnchor.parentNode.removeChild(cleanupAnchor);
+      }
+      if (requestRef.current === controller) {
+        requestRef.current = null;
+        setDownloading(false);
       }
     }
   };
 
   return (
     <div
-      className={`flex items-center gap-4 p-4 bg-[var(--color-bg-tertiary)] rounded-xl border border-[var(--color-border-primary)] w-full transition-all hover:shadow-md hover:border-[var(--color-border-secondary)] ${className ?? ''}`}
+      className={`flex flex-wrap items-center gap-3 p-4 bg-[var(--color-bg-tertiary)] rounded-xl border border-[var(--color-border-primary)] w-full min-w-0 ${className ?? ''}`}
     >
       <div className="flex-shrink-0 w-12 h-12 flex items-center justify-center bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-border-primary)]">
         {getFileIcon(fileType, filename)}
       </div>
 
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0 basis-40">
         <div className="flex items-center gap-2 mb-1">
           <span className="text-xs font-medium text-[var(--color-text-muted)] uppercase tracking-wider">
             {getFileTypeLabel(fileType, filename)}
@@ -108,7 +164,7 @@ export function FileDownloadCard({
           )}
         </div>
         <p
-          className="text-sm font-medium text-[var(--color-text-secondary)] truncate"
+          className="text-sm font-medium text-[var(--color-text-secondary)] break-all"
           title={filename}
         >
           {filename}
@@ -118,16 +174,25 @@ export function FileDownloadCard({
       <button
         type="button"
         onClick={handleDownload}
-        className="flex-shrink-0 flex items-center gap-2 px-3 py-2 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-[var(--color-text-on-accent)] text-sm font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)]"
+        disabled={downloading}
+        className="min-h-touch flex-shrink-0 flex items-center gap-2 px-3 py-2 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-[var(--color-text-on-accent)] text-sm font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)] focus:ring-offset-2 focus:ring-offset-[var(--color-bg-tertiary)] disabled:opacity-60"
         title={`Download ${filename}`}
       >
         <Download className="w-4 h-4" />
-        <span className="hidden sm:inline">Download</span>
+        <span>{downloading ? 'Downloading…' : 'Download'}</span>
       </button>
 
       {trailingAction ? (
         <div className="flex-shrink-0">{trailingAction}</div>
       ) : null}
+      {error && (
+        <p
+          role="alert"
+          className="w-full text-sm text-[var(--color-text-primary)]"
+        >
+          {error}
+        </p>
+      )}
     </div>
   );
 }

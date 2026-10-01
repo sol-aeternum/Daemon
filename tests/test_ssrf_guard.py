@@ -660,7 +660,64 @@ class TestHttpRequestToolEgressAllowlist:
         assert "allowlist" in parsed["error"]
 
 
+def _offline_example_resolver(host, service=None, *args, **kwargs):
+    """Deterministic offline stand-in for `socket.getaddrinfo`, scoped hard.
+
+    It resolves only `example.com` (str or IDNA bytes) on port 443 for stream
+    lookups, to a fixed public IPv4. Any other hostname, port or socket type
+    raises `AssertionError` immediately — never a delegation to the real
+    resolver — so a fixture-shadowed test cannot accidentally make a real DNS
+    query in a network-less sandbox.
+    """
+    lookup = host.decode("ascii") if isinstance(host, (bytes, bytearray)) else host
+    sock_type = kwargs.get("type", args[1] if len(args) > 1 else 0)
+    if (
+        lookup != "example.com"
+        or service != 443
+        or sock_type
+        not in (
+            0,
+            socket.SOCK_STREAM,
+        )
+    ):
+        raise AssertionError(
+            "unexpected DNS lookup outside the offline fixture contract: "
+            f"host={host!r} service={service!r} type={kwargs.get('type', args[1] if len(args) > 1 else 0)!r}"
+        )
+    return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("8.8.8.8", 443))]
+
+
+@pytest.fixture
+def example_dns_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Offline DNS for the HTTP happy-path classes only.
+
+    The mocked resolver replaces `socket.getaddrinfo` for the duration of each
+    test, so the production `validate_url_and_resolve` and `socket_guard` logic
+    run for real against a deterministic public answer. `monkeypatch` restores
+    the real resolver afterwards, leaving negative DNS tests in other classes
+    untouched.
+    """
+    monkeypatch.setattr(socket, "getaddrinfo", _offline_example_resolver)
+
+
+class TestOfflineExampleResolverFixture:
+    def test_fixture_denies_unexpected_lookups_and_restores_resolver(self) -> None:
+        original = socket.getaddrinfo
+        with patch("socket.getaddrinfo", _offline_example_resolver):
+            result = _offline_example_resolver("example.com", 443, type=socket.SOCK_STREAM)
+            assert result[0][4] == ("8.8.8.8", 443)
+            with pytest.raises(AssertionError, match="unexpected DNS lookup"):
+                _offline_example_resolver("attacker.example", 443, type=socket.SOCK_STREAM)
+            with pytest.raises(AssertionError, match="unexpected DNS lookup"):
+                _offline_example_resolver("example.com", 80, type=socket.SOCK_STREAM)
+            with pytest.raises(AssertionError, match="unexpected DNS lookup"):
+                _offline_example_resolver("example.com", 443, type=socket.SOCK_DGRAM)
+        assert socket.getaddrinfo is original
+
+
 class TestHttpRequestToolHappyPath:
+    pytestmark = pytest.mark.usefixtures("example_dns_resolver")
+
     @pytest.mark.asyncio
     async def test_valid_request_makes_https_call(self) -> None:
         captured = {}
@@ -744,6 +801,8 @@ class TestHttpRequestToolHappyPath:
 
 
 class TestHttpRequestToolClientHardening:
+    pytestmark = pytest.mark.usefixtures("example_dns_resolver")
+
     @pytest.mark.asyncio
     async def test_client_disables_env_proxies_and_redirects(self) -> None:
         # HTTPS_PROXY/ALL_PROXY would move destination resolution to the
@@ -770,6 +829,8 @@ class TestHttpRequestToolClientHardening:
 
 
 class TestHttpRequestToolNetworkErrors:
+    pytestmark = pytest.mark.usefixtures("example_dns_resolver")
+
     @pytest.mark.asyncio
     async def test_connect_failure_returns_error(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:

@@ -1,30 +1,30 @@
 from __future__ import annotations
 
 import asyncio
-import os
+import secrets
 import uuid
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import urlencode, urlparse
 
 import asyncpg
+from cryptography.fernet import Fernet
 import pytest
-import pytest_asyncio
 
 from orchestrator.config import get_settings
 from orchestrator.eval.chunk_harness import cleanup_benchmark_state, ingest_question_chunks
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
+from tests.benchmark_longmemeval.isolated_database import (
+    TEST_DSN_ENV_VAR,
+    isolated_database_fixture,
+)
 from tests.longmemeval.evaluate import evaluate_single
 from tests.longmemeval.ingest import ingest_session
 
 REPORT_PATH = Path(__file__).with_name("TEARDOWN_AUDIT.md")
-MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
 AUDIT_SCHEMA_PREFIX = "teardown_audit_"
-TEST_DSN_ENV_VAR = "ENTITLEMENTS_TEST_DATABASE_URL"
 COUNT_QUERIES = {
     "users": "SELECT COUNT(*) FROM users WHERE id = $1",
     "conversations": "SELECT COUNT(*) FROM conversations WHERE user_id = $1",
@@ -55,227 +55,15 @@ def _test_vector(value: float = 0.25) -> list[float]:
     return [value] * get_settings().embedding_dimensions
 
 
-def _test_dsn() -> str:
-    """Return the isolated disposable test DSN, or skip.
-
-    This deliberately never falls back to the application ``DATABASE_URL``: the
-    audit replays every migration and writes benchmark rows, so it must only ever
-    touch a database the operator has explicitly designated as disposable.
-    """
-    dsn = os.environ.get(TEST_DSN_ENV_VAR, "").strip()
-    if not dsn:
-        pytest.skip(f"requires isolated {TEST_DSN_ENV_VAR}")
-
-    parsed = urlparse(dsn)
-    if parsed.hostname != "postgres" or not parsed.username or parsed.password is None:
-        return dsn
-
-    return (
-        f"postgresql://{parsed.username}:{parsed.password}"
-        f"@127.0.0.1:{parsed.port or 5432}/{parsed.path.lstrip('/')}"
-    )
-
-
-def _scoped_dsn(dsn: str, schema: str) -> str:
-    """Pin ``search_path`` on the DSN itself, not just on the audit pool.
-
-    The test monkeypatches ``DATABASE_URL`` so the benchmark harness sees a
-    reachable DSN. If that DSN did not carry the audit schema, any helper that
-    opened its own pool from ``get_settings().database_url`` would silently bind
-    to ``public`` in the test database. Embedding the same ``search_path`` makes
-    the monkeypatched value behaviourally identical to the pool.
-    """
-    options = urlencode({"options": f"-csearch_path={schema},public"})
-    separator = "&" if "?" in dsn else "?"
-    return f"{dsn}{separator}{options}"
-
-
-async def _connect(dsn: str) -> asyncpg.Connection:
-    try:
-        return await asyncpg.connect(dsn=dsn, timeout=5)
-    except (OSError, asyncpg.PostgresError) as exc:
-        pytest.skip(f"Benchmark teardown audit could not reach test database: {exc}")
-
-
-async def _apply_migrations(conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy) -> None:
-    """Apply the shipped migrations into the audit's own schema.
-
-    ``scripts/migrate.py`` bookkeeping (``_migrations``) is intentionally skipped:
-    with ``public`` still on ``search_path`` an ``IF NOT EXISTS`` create would bind
-    to the shared table and the bookkeeping INSERT would write outside the audit
-    schema. The audit schema is disposable, so it simply replays every migration.
-    """
-    migration_files = sorted(MIGRATIONS_DIR.glob("*.sql"))
-    assert migration_files, f"no migration files found under {MIGRATIONS_DIR}"
-    for path in migration_files:
-        async with conn.transaction():
-            await conn.execute(path.read_text())
-
-
-async def _public_relations(
-    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
-) -> frozenset[tuple[str, str]]:
-    """Fingerprint every relation in the shared ``public`` schema of the test DB.
-
-    Replaying migrations must not create, drop, or rename anything in ``public``
-    (notably ``CREATE EXTENSION`` in ``001``, which is expected to be a no-op
-    because the extensions are already installed). Comparing this before and after
-    the replay is what proves schema isolation rather than assuming it.
-    """
-    rows = await conn.fetch(
-        """
-        SELECT c.relkind, c.relname
-        FROM pg_class c
-        JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = 'public'
-        """
-    )
-    return frozenset((row["relkind"], row["relname"]) for row in rows)
-
-
-async def _assert_audit_tables_isolated(
-    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy, schema: str
-) -> None:
-    """Fail loudly if any audited table would resolve outside the audit schema.
-
-    ``public`` stays on ``search_path`` so pgvector/pgcrypto types resolve, which
-    means an unqualified table name could silently bind to the shared schema. Every
-    audited table must therefore exist inside the audit schema and shadow it.
-    """
-    rows = await conn.fetch(
-        """
-        SELECT c.relname AS name, n.nspname AS schema_name
-        FROM pg_class c
-        JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE c.relkind = 'r'
-          AND c.oid IN (SELECT to_regclass(name) FROM unnest($1::text[]) AS name)
-        """,
-        list(TABLES),
-    )
-    located = {row["name"]: row["schema_name"] for row in rows}
-
-    missing = [table for table in TABLES if table not in located]
-    assert not missing, f"audit tables absent after migration replay: {missing}"
-
-    outside = sorted(name for name, name_schema in located.items() if name_schema != schema)
-    assert not outside, f"audit tables resolved outside schema {schema}: {outside}"
-
-
-async def _assert_memory_metadata_contract(
-    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
-) -> None:
-    """Assert ``migrations/040_memory_metadata.sql`` really landed.
-
-    The column is required by ``MemoryStore.supersede_memory()``,
-    ``MemoryStore.update_memory_metadata()`` and the chunk harness. Asserting the
-    catalog contract *and* a real omitted-column write catches a migration that is
-    present but wrong (nullable, wrong type, or a NULL default), which a mere
-    "column exists" check would miss.
-    """
-    column = await conn.fetchrow(
-        """
-        SELECT data_type, is_nullable, column_default
-        FROM information_schema.columns
-        WHERE table_schema = current_schema()
-          AND table_name = 'memories'
-          AND column_name = 'metadata'
-        """
-    )
-    assert column is not None, "migrations/040_memory_metadata.sql did not add memories.metadata"
-    assert column["data_type"] == "jsonb", column["data_type"]
-    assert column["is_nullable"] == "NO", column["is_nullable"]
-
-    default = cast(str, column["column_default"])
-    assert "jsonb" in default, f"memories.metadata default is not jsonb: {default!r}"
-    assert "{}" in default, f"memories.metadata default is not the empty object: {default!r}"
-
-    user_id = uuid.uuid4()
-    async with conn.transaction():
-        await conn.execute(
-            """
-            INSERT INTO users (id, email, name, username, preferences, created_at, updated_at)
-            VALUES ($1, $2, $3, $3, '{}'::jsonb, NOW(), NOW())
-            """,
-            user_id,
-            f"metadata-contract+{user_id.hex}@daemon.test",
-            "metadata_contract",
-        )
-        try:
-            # An omitted column must land as a real empty JSON object, decided
-            # server-side so the check does not depend on asyncpg JSON codecs.
-            probe = await conn.fetchrow(
-                """
-                INSERT INTO memories (user_id, content, category, source_type)
-                VALUES ($1, $2, 'fact', 'import')
-                RETURNING
-                    metadata IS NULL AS is_null,
-                    jsonb_typeof(metadata) AS kind,
-                    metadata = '{}'::jsonb AS is_empty_object
-                """,
-                user_id,
-                "migration 040 default probe",
-            )
-            assert probe is not None, "metadata default probe returned no row"
-            assert probe["is_null"] is False, "memories.metadata default produced NULL"
-            assert probe["kind"] == "object", probe["kind"]
-            assert probe["is_empty_object"] is True, "omitted metadata was not the empty object"
-
-            # NOT NULL must be enforced, not merely declared. The probe runs in a
-            # savepoint so the deliberate violation does not poison the cleanup.
-            with pytest.raises(asyncpg.NotNullViolationError):
-                async with conn.transaction():
-                    await conn.execute(
-                        """
-                        INSERT INTO memories (user_id, content, category, source_type, metadata)
-                        VALUES ($1, $2, 'fact', 'import', NULL)
-                        """,
-                        user_id,
-                        "migration 040 null probe",
-                    )
-        finally:
-            await conn.execute("DELETE FROM users WHERE id = $1", user_id)
-
-
-@pytest_asyncio.fixture
-async def isolated_audit_pool() -> AsyncIterator[tuple[asyncpg.Pool, str]]:
-    """Disposable, migration-complete schema for the teardown audit.
-
-    Requires an explicitly configured isolated test DSN (``ENTITLEMENTS_TEST_DATABASE_URL``,
-    the same variable the other PostgreSQL-backed tests use). The audit used to connect
-    straight to the application ``DATABASE_URL`` and measure whatever that schema
-    happened to contain, so it both failed and mutated shared state whenever the local
-    database lagged the migrations. It now provisions a throwaway schema on the isolated
-    test server, replays the real migrations into it, and drops it on teardown.
-    """
-    dsn = _test_dsn()
-    schema = f"{AUDIT_SCHEMA_PREFIX}{uuid.uuid4().hex}"
-    admin = await _connect(dsn)
-    pool: asyncpg.Pool | None = None
-    try:
-        await admin.execute(f'CREATE SCHEMA "{schema}"')
-        pool = await asyncpg.create_pool(
-            dsn,
-            min_size=1,
-            max_size=4,
-            server_settings={"search_path": f"{schema}, public"},
-        )
-        async with pool.acquire() as conn:
-            public_before = await _public_relations(conn)
-            await _apply_migrations(conn)
-            public_after = await _public_relations(conn)
-            added = sorted(public_after - public_before)
-            removed = sorted(public_before - public_after)
-            assert not added, f"migration replay created relations in public: {added}"
-            assert not removed, f"migration replay dropped relations in public: {removed}"
-
-            await _assert_audit_tables_isolated(conn, schema)
-            await _assert_memory_metadata_contract(conn)
-        yield pool, _scoped_dsn(dsn, schema)
-    finally:
-        if pool is not None:
-            await pool.close()
-        await admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-        await admin.close()
+# Shared disposable, migration-complete audit schema fixture. Provisions via
+# ``tests.benchmark_longmemeval.isolated_database`` so the teardown audit and
+# the retrieval-smoke lane share one skip/fail/lifecycle contract: explicit
+# ``ENTITLEMENTS_TEST_DATABASE_URL`` only, hard fail on an unreachable DSN,
+# migration replay with public-relation, table-isolation and migration-040
+# metadata probes, then pool close before the owned schema is dropped. The
+# factory fixture awaits the inner generator's teardown explicitly at
+# fixture finalization (never via GC).
+isolated_audit_pool = isolated_database_fixture(AUDIT_SCHEMA_PREFIX, audited_tables=list(TABLES))
 
 
 async def _insert_user(
@@ -450,11 +238,12 @@ async def test_teardown_audit_writes_report(
     pool, scoped_dsn = isolated_audit_pool
 
     monkeypatch.setenv("DATABASE_URL", scoped_dsn)
+    monkeypatch.setenv("DAEMON_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    monkeypatch.setenv("DAEMON_AUTH_PEPPER", secrets.token_urlsafe(32))
     get_settings.cache_clear()
     settings = get_settings()
 
-    if not settings.daemon_encryption_key:
-        pytest.skip("DAEMON_ENCRYPTION_KEY not configured for teardown audit")
+    assert settings.daemon_encryption_key
 
     # The monkeypatched DSN must be behaviourally identical to the audit pool, so
     # any helper that opens its own pool from settings cannot reach shared state.

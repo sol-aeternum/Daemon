@@ -336,7 +336,7 @@ export function ConversationList({
 
   return (
     <div
-      className={`w-full md:w-sidebar bg-[var(--color-bg-tertiary)] border-r border-[var(--color-border-primary)] flex flex-col h-full ${className}`}
+      className={`w-full md:w-sidebar bg-[var(--color-bg-sidebar)] border-r border-[var(--color-border-primary)] flex flex-col h-full ${className}`}
     >
       <div
         className="p-4 border-b pt-safe-panel space-y-2"

@@ -16,6 +16,10 @@ import {
   isSameOriginApiRequest,
   shouldUseGeneralRuntimeCache,
 } from '../lib/pwaCaching';
+import {
+  clearLegacySnapshotEntries,
+  isWebSnapshotRequest,
+} from '../lib/webSnapshotPaths';
 
 declare global {
   interface WorkerGlobalScope extends SerwistGlobalConfig {
@@ -26,6 +30,12 @@ declare global {
 declare const self: ServiceWorkerGlobalScope;
 
 const runtimeCaching: RuntimeCaching[] = [
+  {
+    // HTTP no-store does not constrain Cache API writes. Both direct-backend
+    // and relative snapshot GETs must bypass all runtime-cache strategies.
+    matcher: ({ url }) => isWebSnapshotRequest(url, self.location.origin),
+    handler: new NetworkOnly(),
+  },
   {
     // Never cache authenticated responses from same-origin API routes.
     matcher: ({ url, sameOrigin }) => isSameOriginApiRequest(url, sameOrigin),
@@ -69,7 +79,7 @@ const runtimeCaching: RuntimeCaching[] = [
   },
   {
     matcher: ({ url, sameOrigin }) =>
-      shouldUseGeneralRuntimeCache(url, sameOrigin),
+      shouldUseGeneralRuntimeCache(url, sameOrigin, self.location.origin),
     handler: new NetworkFirst({
       cacheName: 'others',
       plugins: [
@@ -91,9 +101,10 @@ const legacyApiCacheNames = [
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    Promise.all(
-      legacyApiCacheNames.map((cacheName) => caches.delete(cacheName)),
-    ),
+    Promise.all([
+      ...legacyApiCacheNames.map((cacheName) => caches.delete(cacheName)),
+      clearLegacySnapshotEntries(caches, self.location.origin),
+    ]),
   );
 });
 

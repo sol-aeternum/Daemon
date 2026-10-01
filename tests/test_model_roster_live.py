@@ -26,6 +26,26 @@ def fixtures():
     return pilot.load_fixtures(pilot.DEFAULT_FIXTURES_PATH)
 
 
+@pytest.fixture
+def frozen_in_period_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Freeze the live clock just inside the simulated period (mid 2026-09).
+
+    Only the tests that exercise the *accepting* path of
+    ``ensure_period_window`` use this: the guard genuinely requires the real
+    host clock to sit safely before the next funded month, which fails on any
+    machine running the suite after the period has rolled over. The negative
+    near-boundary and rollover tests retain their independent clock setup.
+    """
+
+    class FrozenClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            frozen = cls(2026, 9, 15, 12, 0, 0, tzinfo=timezone.utc)
+            return frozen if tz is None else frozen.astimezone(tz)
+
+    monkeypatch.setattr(live, "datetime", FrozenClock)
+
+
 def test_state_identity_restart_lock_and_pending_cost(tmp_path: Path, fixtures):
     path = tmp_path / "state.json"
     identity = {
@@ -321,7 +341,7 @@ def test_refuses_calls_near_original_boundary(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_loop_counts_every_dispatch_and_does_not_replay_interrupted(
-    tmp_path, monkeypatch, fixtures
+    tmp_path, monkeypatch, fixtures, frozen_in_period_clock
 ):
     case = fixtures.by_id()["O03"]
     route = SimpleNamespace(
@@ -449,7 +469,9 @@ async def test_period_rollover_refuses_dispatch(tmp_path, monkeypatch, fixtures)
 
 
 @pytest.mark.asyncio
-async def test_served_model_drift_fails_and_keeps_raw_evidence(tmp_path, monkeypatch, fixtures):
+async def test_served_model_drift_fails_and_keeps_raw_evidence(
+    tmp_path, monkeypatch, fixtures, frozen_in_period_clock
+):
     case = fixtures.by_id()["O01"]
     route = SimpleNamespace(
         model="openrouter/vendor/approved",

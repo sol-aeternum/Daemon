@@ -18,6 +18,12 @@ are mapped in `frontend/tailwind.config.ts`. This implements issue #34.
   preview heights, and the Studio and skill-editor grid columns.
 - Safe-area utilities retain the device inset while respecting spacing tokens.
 
+The owner-approved Midnight P1 refresh evolves the existing blue/slate roles in
+both themes; Dark/Light/System remain the appearance choices. Its interaction
+scope and implementation evidence are recorded in
+`docs/research/midnight/DESIGN.md` and `IMPLEMENTATION.md`. The standalone study's
+screenshots are not application release evidence.
+
 `npm run lint` rejects literal Tailwind values, black/white utilities, and the
 retired `daemon-*` color namespace in app and component source, including
 conditional templates and shared class maps. Explicit `var(--token)` values

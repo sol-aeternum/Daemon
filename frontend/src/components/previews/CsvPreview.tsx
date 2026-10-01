@@ -80,7 +80,7 @@ export function CsvPreview({ content, maxRows = 100 }: CsvPreviewProps) {
     if (total > maxRows) {
       return `Showing ${displayed} of ${total} rows`;
     }
-    return `${total} rows`;
+    return `${total} ${total === 1 ? 'row' : 'rows'}`;
   }, [data, maxRows]);
 
   if (isLoading) {

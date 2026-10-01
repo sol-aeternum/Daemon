@@ -1,56 +1,39 @@
 from __future__ import annotations
 
 import asyncio
-import socket
+import secrets
 import uuid
 from typing import cast
-from urllib.parse import urlparse
 
 import asyncpg
 import pytest
+from cryptography.fernet import Fernet
 
 from orchestrator.config import get_settings
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
+from tests.benchmark_longmemeval.isolated_database import isolated_database_fixture
 from tests.longmemeval.evaluate import retrieve_user_memories
 
 VECTOR_DIMENSION = 1024
 QUERY_TEXT = "Which codename was saved for the benchmark retrieval logging smoke test?"
 MEMORY_TEXT = "The benchmark retrieval logging smoke test codename is Orion."
 
+# Fresh, per-run disposable crypto fixtures. The smoke test never reads the
+# application's storage/application keys: the isolated database fixture only
+# provisions an explicitly configured disposable DSN
+# (``ENTITLEMENTS_TEST_DATABASE_URL``), and the runtime Fernet key / hash
+# pepper are generated in-process and injected through the process settings
+# for every runtime call below.
+RLS_SCHEMA_PREFIX = "retrieval_smoke_"
+RLS_AUDITED_TABLES = ["users", "memories", "retrieval_log", "conversations"]
+
 
 def _test_vector(value: float = 0.25) -> list[float]:
     return [value] * VECTOR_DIMENSION
 
 
-async def _create_test_pool() -> asyncpg.Pool:
-    settings = get_settings()
-    if not settings.database_url:
-        pytest.skip("DATABASE_URL not configured for retrieval-log smoke test")
-
-    try:
-        return await asyncpg.create_pool(
-            dsn=settings.database_url,
-            min_size=1,
-            max_size=2,
-        )
-    except OSError as exc:
-        parsed = urlparse(settings.database_url)
-        if parsed.hostname == "postgres" and isinstance(exc, socket.gaierror):
-            try:
-                return await asyncpg.create_pool(
-                    user=parsed.username,
-                    password=parsed.password,
-                    database=parsed.path.lstrip("/"),
-                    host="127.0.0.1",
-                    port=parsed.port or 5432,
-                    min_size=1,
-                    max_size=2,
-                )
-            except OSError as fallback_exc:
-                pytest.skip(f"database unavailable for retrieval-log smoke test: {fallback_exc!s}")
-
-        pytest.skip(f"database unavailable for retrieval-log smoke test: {exc!s}")
+isolated_rls_pool = isolated_database_fixture(RLS_SCHEMA_PREFIX, audited_tables=RLS_AUDITED_TABLES)
 
 
 async def _wait_for_retrieval_log_count(
@@ -86,12 +69,22 @@ async def _wait_for_retrieval_log_count(
 
 
 @pytest.mark.asyncio
-async def test_benchmark_retrieval_path_persists_one_retrieval_log_row() -> None:
-    settings = get_settings()
-    if not settings.daemon_encryption_key:
-        pytest.skip("DAEMON_ENCRYPTION_KEY not configured for retrieval-log smoke test")
+async def test_benchmark_retrieval_path_persists_one_retrieval_log_row(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_rls_pool: tuple[asyncpg.Pool, str],
+) -> None:
+    pool, _scoped_dsn = isolated_rls_pool
 
-    pool = await _create_test_pool()
+    # Fresh process settings for runtime calls only: a new Fernet key and a
+    # new hash pepper generated per run, injected via the environment so the
+    # cached settings are rebuilt from the test's fixtures.
+    monkeypatch.setenv("DAEMON_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    monkeypatch.setenv("DAEMON_AUTH_PEPPER", secrets.token_urlsafe(32))
+    get_settings.cache_clear()
+    settings = get_settings()
+    assert settings.daemon_encryption_key
+    assert settings.daemon_auth_pepper
+
     store = MemoryStore(pool, ContentEncryption(settings.daemon_encryption_key))
     user_id = uuid.uuid4()
     user_email = f"retrieval-log-smoke+{user_id.hex}@daemon.test"
@@ -120,7 +113,9 @@ async def test_benchmark_retrieval_path_persists_one_retrieval_log_row() -> None
             category="fact",
             source_type="import",
             embedding=_test_vector(),
-            embedding_model="benchmark-smoke-vector",
+            # The supplied query vector uses the configured storage space;
+            # unrelated synthetic model labels are correctly excluded by retrieval.
+            embedding_model=settings.embedding_document_model,
             source_conversation_id=conversation_id,
         )
 
@@ -186,4 +181,6 @@ async def test_benchmark_retrieval_path_persists_one_retrieval_log_row() -> None
         assert row["selected_memory_ids"] == [memory["id"]]
     finally:
         _ = await pool.execute("DELETE FROM users WHERE id = $1", user_id)
-        await pool.close()
+        # Pool teardown (graceful close, then drop of the owned schema) is owned
+        # by the shared isolated-database fixture; the per-user delete above
+        # keeps the disposable schema's benchmark rows scoped to this test.

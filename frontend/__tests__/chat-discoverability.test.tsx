@@ -33,8 +33,8 @@ describe('chat discoverability', () => {
     fireEvent.click(screen.getByRole('button', { name: /Deliberate/ }));
     expect(onDeliberate).toHaveBeenCalledTimes(1);
     expect(setInput).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Research' }));
-    expect(setInput).toHaveBeenCalledWith('I need to research...');
+    fireEvent.click(screen.getByRole('button', { name: /^Find/ }));
+    expect(setInput).toHaveBeenCalledWith('Search the web for…');
     expect(onDeliberate).toHaveBeenCalledTimes(1);
   });
 

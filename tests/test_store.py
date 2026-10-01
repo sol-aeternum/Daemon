@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
@@ -903,3 +904,246 @@ async def test_get_conversation_returns_none_when_missing(
     mock_db_pool.fetchrow.return_value = None
 
     assert await memory_store.get_conversation(uuid.uuid4()) is None
+
+
+# ---------------------------------------------------------------------------
+# metadata JSONB NOT NULL DEFAULT '{}' regressions (migration 040 contract)
+#
+# ``MemoryStore.insert_memory`` and ``MemoryStore.supersede_memory`` must
+# serialize an omitted or ``None`` ``metadata`` as a real empty JSON object
+# (``'{}'``) instead of SQL NULL, because the column is NOT NULL. Provided
+# metadata — including nested objects — must pass through ``json.dumps``.
+# Verifying the exact ``metadata_json`` argument keeps these tests strict:
+# any regression back to ``json.dumps(metadata)`` re-raises
+# ``NotNullViolationError`` on real PostgreSQL.
+# ---------------------------------------------------------------------------
+
+
+class MetadataCapturePool:
+    """Minimal pool double that records the ``metadata_json`` insert argument."""
+
+    def __init__(self, *, row: MockRecord | None | BaseException) -> None:
+        self.row_result = row
+        self.metadata_json: str | None = None
+        self.calls = 0
+
+    async def fetchrow(self, sql: str, *args) -> MockRecord | None:
+        if "INSERT INTO memories" in sql:
+            self.calls += 1
+            self.metadata_json = args[12]
+            if isinstance(self.row_result, BaseException):
+                raise self.row_result
+            return self.row_result
+        return None
+
+
+def _pass_through_encryption() -> MagicMock:
+    enc = MagicMock(spec=ContentEncryption)
+    enc.encrypt = MagicMock(side_effect=lambda value: value)
+    enc.decrypt = MagicMock(side_effect=lambda value: value)
+    return enc
+
+
+@pytest.mark.asyncio
+async def test_insert_memory_omitted_metadata_becomes_empty_object(monkeypatch) -> None:
+    _patch_memory_hash_settings(monkeypatch)
+    returned = MockRecord(id=uuid.uuid4(), content="fresh note", metadata="{}")
+    pool = MetadataCapturePool(row=returned)
+    store = MemoryStore(cast(asyncpg.Pool, pool), _pass_through_encryption())
+
+    result = await store.insert_memory(
+        user_id=uuid.uuid4(),
+        content="fresh note",
+        category="fact",
+        source_type="import",
+    )
+
+    assert pool.metadata_json == "{}"
+    assert result["metadata"] == "{}"
+
+
+@pytest.mark.asyncio
+async def test_insert_memory_none_metadata_becomes_empty_object(monkeypatch) -> None:
+    _patch_memory_hash_settings(monkeypatch)
+    pool = MetadataCapturePool(row=MockRecord(id=uuid.uuid4(), content="fresh note"))
+    store = MemoryStore(cast(asyncpg.Pool, pool), _pass_through_encryption())
+
+    await store.insert_memory(
+        user_id=uuid.uuid4(),
+        content="fresh note",
+        category="fact",
+        source_type="import",
+        metadata=None,
+    )
+
+    assert pool.metadata_json == "{}"
+
+
+@pytest.mark.asyncio
+async def test_insert_memory_empty_metadata_dict_serializes_to_empty_object(
+    monkeypatch,
+) -> None:
+    _patch_memory_hash_settings(monkeypatch)
+    pool = MetadataCapturePool(row=MockRecord(id=uuid.uuid4(), content="fresh note"))
+    store = MemoryStore(cast(asyncpg.Pool, pool), _pass_through_encryption())
+
+    await store.insert_memory(
+        user_id=uuid.uuid4(),
+        content="fresh note",
+        category="fact",
+        source_type="import",
+        metadata={},
+    )
+
+    assert pool.metadata_json == "{}"
+
+
+@pytest.mark.asyncio
+async def test_insert_memory_nested_metadata_object_is_preserved(monkeypatch) -> None:
+    _patch_memory_hash_settings(monkeypatch)
+    pool = MetadataCapturePool(row=MockRecord(id=uuid.uuid4(), content="fresh note"))
+    store = MemoryStore(cast(asyncpg.Pool, pool), _pass_through_encryption())
+
+    nested = {"key": "value", "nested": {"list": [1, 2, 3], "bool": True}}
+
+    await store.insert_memory(
+        user_id=uuid.uuid4(),
+        content="fresh note",
+        category="fact",
+        source_type="import",
+        metadata=nested,
+    )
+
+    assert pool.metadata_json == json.dumps(nested)
+
+
+@pytest.mark.asyncio
+async def test_insert_memory_uses_caller_conn_on_conn_path(monkeypatch) -> None:
+    """On the atomic-cap path every call must go through the provided conn."""
+    _patch_memory_hash_settings(monkeypatch)
+    pool = MetadataCapturePool(row=MockRecord(id=uuid.uuid4(), content="fresh note"))
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(return_value=MockRecord(id=uuid.uuid4(), content="fresh note"))
+    store = MemoryStore(cast(asyncpg.Pool, pool), _pass_through_encryption())
+
+    await store.insert_memory(
+        user_id=uuid.uuid4(),
+        content="fresh note",
+        category="fact",
+        source_type="import",
+        conn=cast(Any, conn),
+    )
+
+    assert pool.calls == 0
+    assert conn.fetchrow.await_count == 1
+    # AsyncMock records SQL at args[0]; metadata is PostgreSQL parameter $13.
+    assert conn.fetchrow.await_args.args[13] == "{}"
+
+
+def _supersede_conn(*, insert_result: MockRecord | None | BaseException) -> MagicMock:
+    """Build a mock conn modelling the supersede transaction surface."""
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock()
+    conn.execute = AsyncMock(return_value="UPDATE 1")
+
+    def make_transaction() -> MagicMock:
+        tx = MagicMock()
+        tx.__aenter__ = AsyncMock(return_value=None)
+        tx.__aexit__ = AsyncMock(return_value=False)
+        return tx
+
+    conn.transaction = MagicMock(side_effect=make_transaction)
+    if isinstance(insert_result, BaseException):
+        conn.fetchrow.side_effect = insert_result
+    else:
+        conn.fetchrow.return_value = insert_result
+    return conn
+
+
+def _supersede_pool_with_conn(conn: MagicMock) -> MagicMock:
+    pool = MagicMock()
+    acquire_cm = MagicMock()
+    acquire_cm.__aenter__ = AsyncMock(return_value=conn)
+    acquire_cm.__aexit__ = AsyncMock(return_value=False)
+    pool.acquire = MagicMock(return_value=acquire_cm)
+    return pool
+
+
+def _supersede_new_row(*, metadata_json: str | None) -> MockRecord:
+    return MockRecord(
+        id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        content="encrypted-new-content",
+        content_hash=compute_memory_content_hash("superseded content"),
+        metadata=metadata_json,
+    )
+
+
+@pytest.mark.asyncio
+async def test_supersede_memory_omitted_metadata_becomes_empty_object(monkeypatch) -> None:
+    _patch_memory_hash_settings(monkeypatch)
+    row = _supersede_new_row(metadata_json="{}")
+    pool = _supersede_pool_with_conn(_supersede_conn(insert_result=row))
+    store = MemoryStore(cast(asyncpg.Pool, pool), _pass_through_encryption())
+
+    await store.supersede_memory(uuid.uuid4(), "new content", "fact", "import", uuid.uuid4())
+
+    conn = pool.acquire.return_value.__aenter__.return_value
+    metadata_json = conn.fetchrow.await_args.args[12]
+    assert metadata_json == "{}"
+
+
+@pytest.mark.asyncio
+async def test_supersede_memory_none_metadata_becomes_empty_object(monkeypatch) -> None:
+    _patch_memory_hash_settings(monkeypatch)
+    row = _supersede_new_row(metadata_json="{}")
+    pool = _supersede_pool_with_conn(_supersede_conn(insert_result=row))
+    store = MemoryStore(cast(asyncpg.Pool, pool), _pass_through_encryption())
+
+    await store.supersede_memory(
+        uuid.uuid4(),
+        "new content",
+        "fact",
+        "import",
+        uuid.uuid4(),
+        metadata=None,
+    )
+
+    conn = pool.acquire.return_value.__aenter__.return_value
+    assert conn.fetchrow.await_args.args[12] == "{}"
+
+
+@pytest.mark.asyncio
+async def test_supersede_memory_nested_metadata_object_is_preserved(monkeypatch) -> None:
+    _patch_memory_hash_settings(monkeypatch)
+    row = _supersede_new_row(metadata_json="{}")
+    pool = _supersede_pool_with_conn(_supersede_conn(insert_result=row))
+    store = MemoryStore(cast(asyncpg.Pool, pool), _pass_through_encryption())
+
+    nested = {"evidence": {"detected_by": "dedup", "score": 0.9}}
+
+    await store.supersede_memory(
+        uuid.uuid4(),
+        "new content",
+        "fact",
+        "import",
+        uuid.uuid4(),
+        metadata=nested,
+    )
+
+    conn = pool.acquire.return_value.__aenter__.return_value
+    assert conn.fetchrow.await_args.args[12] == json.dumps(nested)
+
+
+@pytest.mark.asyncio
+async def test_supersede_memory_failure_runs_no_implicit_update(monkeypatch) -> None:
+    """A failing insert must abort the transaction without updating old row."""
+    _patch_memory_hash_settings(monkeypatch)
+    pool = _supersede_pool_with_conn(_supersede_conn(insert_result=RuntimeError("insert exploded")))
+    store = MemoryStore(cast(asyncpg.Pool, pool), _pass_through_encryption())
+
+    with pytest.raises(RuntimeError, match="insert exploded"):
+        await store.supersede_memory(uuid.uuid4(), "new content", "fact", "import", uuid.uuid4())
+
+    conn = pool.acquire.return_value.__aenter__.return_value
+    assert conn.execute.await_count == 0

@@ -9,84 +9,84 @@
    Dark theme as default, light theme via [data-theme="light"]
    ============================================================================= */
 
+/* Midnight palette (dark default). Review names Midnight/Daylight come from
+   docs/research/midnight/DESIGN.md section 2; production themes stay
+   Dark/Light/System. Values map the study's blue/slate roles onto the
+   existing semantic tokens. */
 :root {
   /* ==========================================================================
      COLOR TOKENS - Background
      ========================================================================== */
-  --color-bg-primary: hsl(220, 13%, 10%); /* Main app background - dark slate */
-  --color-bg-secondary: hsl(220, 15%, 14%); /* Cards, elevated surfaces */
-  --color-bg-tertiary: hsl(
-    220,
-    13%,
-    18%
-  ); /* Input backgrounds, subtle surfaces */
-  --color-bg-inverse: hsl(220, 20%, 95%); /* Inverted backgrounds */
-  --color-bg-sidebar: hsl(220, 15%, 12%); /* Sidebar background */
-  --color-bg-input: hsl(220, 13%, 16%); /* Form input backgrounds */
-  --color-bg-hover: hsl(220, 15%, 20%); /* Hover state backgrounds */
-  --color-bg-active: hsl(220, 15%, 22%); /* Active/pressed state */
-  --color-bg-overlay: hsla(220, 13%, 5%, 0.8); /* Modal overlays */
-  --color-bg-tooltip: hsl(220, 15%, 20%); /* Tooltip backgrounds */
+  --color-bg-primary: #16191f; /* Main app background - Midnight canvas */
+  --color-bg-secondary: #1e242d; /* Cards, elevated surfaces */
+  --color-bg-tertiary: #262e39; /* Raised surfaces, input backgrounds */
+  --color-bg-inverse: #f0f3f8; /* Inverted (light-on-dark) backgrounds */
+  --color-bg-sidebar: #11151b; /* Sidebar/navigation background */
+  --color-bg-input: #262e39; /* Form input backgrounds */
+  --color-bg-hover: #2b3542; /* Hover state backgrounds */
+  --color-bg-active: #33404f; /* Active/pressed state */
+  --color-bg-overlay: #060b14b3; /* Modal overlays */
+  --color-bg-tooltip: #2b3542; /* Tooltip backgrounds */
 
   /* ==========================================================================
      COLOR TOKENS - Text
      ========================================================================== */
-  --color-text-primary: hsl(220, 20%, 96%); /* Headings, primary text */
-  --color-text-secondary: hsl(220, 15%, 75%); /* Body text */
-  --color-text-muted: hsl(220, 10%, 55%); /* Placeholder, disabled, hints */
-  --color-text-inverse: hsl(220, 13%, 10%); /* Text on light backgrounds */
+  --color-text-primary: #eef2f7; /* Headings, primary text */
+  --color-text-secondary: #bdc8d7; /* Body text */
+  --color-text-muted: #9caabc; /* Placeholder, disabled, hints */
+  --color-text-inverse: #1c2839; /* Text on light backgrounds */
   /* Fixed foregrounds belong to filled controls/media, not inverse surfaces. */
   --color-text-on-accent: hsl(0, 0%, 100%);
   --color-text-on-status: hsl(0, 0%, 100%);
-  --color-text-on-warning: hsl(220, 13%, 10%);
+  --color-text-on-warning: #16191f;
   --color-text-on-tooltip: hsl(0, 0%, 100%);
   --color-bg-document: hsl(0, 0%, 100%); /* Preserve document paper. */
   --color-bg-qr: hsl(0, 0%, 100%); /* QR codes require a light quiet zone. */
   --color-media-bg: 0 0% 0%; /* Channels allow Tailwind opacity modifiers. */
   --color-media-fg: 0 0% 100%;
-  --color-text-accent: hsl(215, 60%, 65%); /* Accent-colored text */
-  --color-text-link: hsl(215, 70%, 60%); /* Interactive links */
-  --color-text-link-hover: hsl(215, 70%, 70%); /* Link hover state */
+  --color-text-accent: #a5c8ff; /* Accent-colored text */
+  --color-text-link: #a5c8ff; /* Interactive links */
+  --color-text-link-hover: #cfe0f7; /* Link hover state */
 
   /* ==========================================================================
      COLOR TOKENS - Border
      ========================================================================== */
-  --color-border-primary: hsl(220, 15%, 22%); /* Default borders */
-  --color-border-secondary: hsl(220, 15%, 28%); /* Subtle dividers */
-  --color-border-muted: hsl(220, 15%, 18%); /* Very subtle separators */
-  --color-border-focus: hsl(215, 60%, 55%); /* Focus ring borders */
-  --color-border-accent: hsl(215, 50%, 45%); /* Accent-colored borders */
+  --color-border-primary: #354050; /* Default borders */
+  --color-border-secondary: #45536a; /* Subtle dividers */
+  --color-border-muted: #2c3542; /* Very subtle separators */
+  --color-border-focus: #a5c8ff; /* Focus ring borders */
+  --color-border-accent: #2c68b6; /* Accent-colored borders */
 
   /* ==========================================================================
-     COLOR TOKENS - Accent (Muted Blue)
+     COLOR TOKENS - Accent (Midnight blue)
      ========================================================================== */
-  --color-accent-primary: hsl(215, 60%, 55%); /* Primary accent */
-  --color-accent-hover: hsl(215, 65%, 60%); /* Accent hover state */
-  --color-accent-active: hsl(215, 70%, 50%); /* Accent pressed state */
-  --color-accent-muted: hsl(215, 40%, 35%); /* Subtle accent backgrounds */
-  --color-accent-subtle: hsl(215, 40%, 20%); /* Very subtle accent tint */
+  --color-accent-primary: #2c68b6; /* Primary accent fill */
+  --color-accent-hover: #316fc3; /* Accent hover state */
+  --color-accent-active: #275ba4; /* Accent pressed state */
+  --color-accent-muted: #2f4a6e; /* Subtle accent backgrounds */
+  --color-accent-subtle: #223651; /* Selection/tinted surfaces */
 
   /* ==========================================================================
      COLOR TOKENS - Status
      ========================================================================== */
   --color-status-success: hsl(145, 65%, 45%); /* Success states */
-  --color-status-success-bg: hsl(145, 40%, 15%); /* Success background */
-  --color-status-warning: hsl(38, 85%, 55%); /* Warning states */
-  --color-status-warning-bg: hsl(38, 60%, 15%); /* Warning background */
+  --color-status-success-bg: #20362d; /* Success background */
+  --color-status-warning: #f3c97b; /* Warning states */
+  --color-status-warning-bg: #382e20; /* Warning background */
   --color-status-error: hsl(0, 75%, 55%); /* Error states */
-  --color-status-error-bg: hsl(0, 50%, 15%); /* Error background */
-  --color-status-stop: hsl(0 65% 55%); /* Stop generation control */
-  --color-status-info: hsl(215, 70%, 55%); /* Info states */
-  --color-status-info-bg: hsl(215, 50%, 15%); /* Info background */
+  --color-status-error-bg: #3a242b; /* Error background */
+  --color-status-stop: #c23b3b; /* Stop generation control, white foreground */
+  --color-status-info: #7fb3f2; /* Info states */
+  --color-status-info-bg: #1e2c42; /* Info background */
 
   /* ==========================================================================
      RADIUS TOKENS
      ========================================================================== */
   --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-  --radius-xl: 12px;
-  --radius-2xl: 16px;
+  --radius-md: 8px; /* Small controls */
+  --radius-lg: 10px;
+  --radius-xl: 12px; /* Outer radii 12px */
+  --radius-2xl: 16px; /* Outer radii 16px */
   --radius-full: 9999px;
 
   /* ==========================================================================
@@ -102,8 +102,8 @@
   --shadow-xl:
     0 20px 25px -5px hsla(220, 13%, 5%, 0.5),
     0 8px 10px -6px hsla(220, 13%, 5%, 0.3);
-  --shadow-glow: 0 0 20px hsla(215, 60%, 55%, 0.3);
-  --shadow-stop: 0 0 12px hsla(0, 65%, 55%, 0.4);
+  --shadow-glow: 0 0 20px hsla(213, 61%, 44%, 0.3);
+  --shadow-stop: 0 0 12px hsla(0, 66%, 55%, 0.4);
   --shadow-inner: inset 0 2px 4px 0 hsla(220, 13%, 5%, 0.3);
 
   /* ==========================================================================
@@ -124,7 +124,7 @@
 
   /* Component geometry: shared names preserve the existing layout. */
   --touch-min: 44px;
-  --size-sidebar: 260px;
+  --size-sidebar: 232px; /* Study rail width */
   --size-tool-step: 22px;
   --offset-tool-step-center: 11px;
   --offset-memory-trail: 15px;
@@ -143,6 +143,7 @@
   --width-message-mobile-max: 85%;
   --width-user-message-max: 75%;
   --width-assistant-message-max: 80%;
+  --width-composer-max: 740px; /* Study geometry: composer/answer measure */
   --height-media-preview-max: 70vh;
   --height-agent-panel-max: 80vh;
   --height-lightbox-max: 90vh;
@@ -207,50 +208,51 @@
    ============================================================================= */
 
 [data-theme='light'] {
-  /* Background colors - Light */
-  --color-bg-primary: hsl(220, 20%, 98%); /* Main app background - off-white */
-  --color-bg-secondary: hsl(0, 0%, 100%); /* Cards, elevated surfaces */
-  --color-bg-tertiary: hsl(220, 14%, 96%); /* Input backgrounds */
-  --color-bg-inverse: hsl(220, 13%, 18%); /* Inverted backgrounds */
-  --color-bg-sidebar: hsl(220, 20%, 97%); /* Sidebar background */
-  --color-bg-input: hsl(0, 0%, 100%); /* Form input backgrounds */
-  --color-bg-hover: hsl(220, 14%, 94%); /* Hover state backgrounds */
-  --color-bg-active: hsl(220, 14%, 92%); /* Active/pressed state */
-  --color-bg-overlay: hsla(220, 13%, 15%, 0.6); /* Modal overlays */
-  --color-bg-tooltip: hsl(220, 13%, 20%); /* Tooltip backgrounds */
+  --color-text-primary: #1c2839; /* Headings, primary text */
+  --color-text-secondary: #40516a; /* Body text */
+  --color-text-muted: #53657d; /* Placeholder, disabled, hints */
+  --color-text-inverse: #f9fafc; /* Text on dark backgrounds */
+  --color-text-on-warning: #f9fafc;
+  --color-text-accent: #235ea4; /* Accent-colored text */
+  --color-text-link: #235ea4; /* Interactive links */
+  --color-text-link-hover: #1a4d85; /* Link hover state */
 
-  /* Text colors - Light */
-  --color-text-primary: hsl(220, 20%, 12%); /* Headings, primary text */
-  --color-text-secondary: hsl(220, 10%, 35%); /* Body text */
-  --color-text-muted: hsl(220, 10%, 55%); /* Placeholder, disabled, hints */
-  --color-text-inverse: hsl(220, 20%, 98%); /* Text on dark backgrounds */
-  --color-text-accent: hsl(215, 70%, 45%); /* Accent-colored text */
-  --color-text-link: hsl(215, 75%, 45%); /* Interactive links */
-  --color-text-link-hover: hsl(215, 75%, 35%); /* Link hover state */
+  /* Background colors - Light (Daylight review palette) */
+  --color-bg-primary: #f9fafc; /* Main app background - off-white */
+  --color-bg-secondary: #ffffff; /* Cards, elevated surfaces */
+  --color-bg-tertiary: #f0f3f8; /* Input backgrounds */
+  --color-bg-inverse: #1c2839; /* Inverted backgrounds */
+  --color-bg-sidebar: #edf1f6; /* Sidebar background */
+  --color-bg-input: #ffffff; /* Form input backgrounds */
+  --color-bg-hover: #e8edf4; /* Hover state backgrounds */
+  --color-bg-active: #e0e8f2; /* Active/pressed state */
+  --color-bg-overlay: #060b1480; /* Modal overlays */
+  --color-bg-tooltip: #1c2839; /* Tooltip backgrounds */
 
   /* Border colors - Light */
-  --color-border-primary: hsl(220, 13%, 88%); /* Default borders */
-  --color-border-secondary: hsl(220, 13%, 82%); /* Subtle dividers */
-  --color-border-muted: hsl(220, 13%, 94%); /* Very subtle separators */
-  --color-border-focus: hsl(215, 70%, 50%); /* Focus ring borders */
-  --color-border-accent: hsl(215, 60%, 55%); /* Accent-colored borders */
+  --color-border-primary: #d2dbe7; /* Default borders */
+  --color-border-secondary: #bcc8d6; /* Subtle dividers */
+  --color-border-muted: #e2e9f2; /* Very subtle separators */
+  --color-border-focus: #2867b6; /* Focus ring borders */
+  --color-border-accent: #2867b6; /* Accent-colored borders */
 
   /* Accent colors - Light (same hue, adjusted for light bg) */
-  --color-accent-primary: hsl(215, 75%, 45%);
-  --color-accent-hover: hsl(215, 80%, 40%);
-  --color-accent-active: hsl(215, 85%, 35%);
-  --color-accent-muted: hsl(215, 60%, 90%);
-  --color-accent-subtle: hsl(215, 50%, 95%);
+  --color-accent-primary: #2867b6;
+  --color-accent-hover: #1f5da6;
+  --color-accent-active: #184882;
+  --color-accent-muted: #d7e6fa;
+  --color-accent-subtle: #e5effc;
 
   /* Status colors - Light */
-  --color-status-success: hsl(145, 70%, 35%);
-  --color-status-success-bg: hsl(145, 50%, 95%);
-  --color-status-warning: hsl(38, 90%, 45%);
-  --color-status-warning-bg: hsl(38, 70%, 95%);
-  --color-status-error: hsl(0, 80%, 50%);
-  --color-status-error-bg: hsl(0, 60%, 95%);
-  --color-status-info: hsl(215, 80%, 45%);
-  --color-status-info-bg: hsl(215, 60%, 95%);
+  --color-status-success: #246749;
+  --color-status-success-bg: #e4f1ea;
+  --color-status-warning: #755016;
+  --color-status-warning-bg: #fff4df;
+  --color-status-error: #a52c43;
+  --color-status-error-bg: #fff0f1;
+  --color-status-stop: #c23b3b;
+  --color-status-info: #235ea4;
+  --color-status-info-bg: #e5effc;
 
   /* Shadows - Light (softer, less opacity) */
   --shadow-sm: 0 1px 2px 0 hsla(220, 13%, 20%, 0.08);
@@ -403,7 +405,7 @@ html {
   color-scheme: dark;
 }
 
-[data-theme='light'] html {
+html[data-theme='light'] {
   color-scheme: light;
 }
 

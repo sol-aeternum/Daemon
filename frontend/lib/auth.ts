@@ -27,19 +27,50 @@ interface BackendAuthDevice {
 
 let _accessToken: string | null = null;
 let _expiresAt: number = 0;
+// Nonsecret, tab-local sign-in lifetime. Token rotation is not a new sign-in.
+let _authGeneration = 0;
+// Local login/logout changes cancel queued refreshes. A remote refreshed notice
+// discards drafts but still permits the established cookie-refresh follow-up.
+let _authMutation = 0;
+const _generationListeners = new Set<() => void>();
+let _generationAuthListenerInstalled = false;
+
+export function getAuthGeneration(): number {
+  return _authGeneration;
+}
+
+export function subscribeAuthGeneration(listener: () => void): () => void {
+  _generationListeners.add(listener);
+  if (!_generationAuthListenerInstalled) {
+    _generationAuthListenerInstalled = true;
+    // Observe remote invalidation even when only a draft consumer is mounted.
+    listenForAuthEvents(() => {});
+  }
+  return () => _generationListeners.delete(listener);
+}
+
+function _notifyAuthGeneration(): void {
+  for (const listener of _generationListeners) listener();
+}
 
 export function getAccessToken(): string | null {
   return _accessToken;
 }
 
 export function setAccessToken(token: string, expiresAtMs: number): void {
+  _authGeneration += 1;
+  _authMutation += 1;
   _accessToken = token;
   _expiresAt = expiresAtMs;
+  _notifyAuthGeneration();
 }
 
 export function clearLocalAuthState(): void {
+  _authGeneration += 1;
+  _authMutation += 1;
   _accessToken = null;
   _expiresAt = 0;
+  _notifyAuthGeneration();
 }
 
 export function clearAuthState(): void {
@@ -250,6 +281,9 @@ async function _releaseLocalStorageLock(lock: LockState): Promise<void> {
   }
 }
 
+// Each delivered event invalidates once, regardless of how many observers exist.
+const _handledAuthEvents = new WeakSet<object>();
+
 export function listenForAuthEvents(
   callback: (event: AuthEventType, tabId: string) => void,
 ): () => void {
@@ -267,8 +301,16 @@ export function listenForAuthEvents(
     const type = event.type as AuthEventType;
     const tabId = event.tabId;
 
-    if (type === 'cleared') {
-      clearLocalAuthState();
+    if (!_handledAuthEvents.has(e)) {
+      _handledAuthEvents.add(e);
+      if (type === 'cleared') {
+        clearLocalAuthState();
+      } else if (type === 'refreshed') {
+        // A secret-free broadcast cannot prove which account owns the cookie.
+        // Discard drafts conservatively, without clearing the local token.
+        _authGeneration += 1;
+        _notifyAuthGeneration();
+      }
     }
 
     callback(type, tabId);
@@ -294,11 +336,16 @@ export async function refreshAccessToken(): Promise<RefreshResult> {
   if (hasValidAccessToken()) {
     return { success: true };
   }
+  const authMutation = _authMutation;
 
   if (typeof navigator !== 'undefined' && navigator.locks) {
     try {
       let result: RefreshResult | null = null;
       await navigator.locks.request('daemon-refresh', async () => {
+        if (authMutation !== _authMutation) {
+          result = _supersededRefreshResult();
+          return;
+        }
         if (hasValidAccessToken()) {
           result = { success: true };
           return;
@@ -307,7 +354,7 @@ export async function refreshAccessToken(): Promise<RefreshResult> {
           result = await _refreshPromise;
           return;
         }
-        _refreshPromise = doRefresh();
+        _refreshPromise = doRefresh(_authGeneration);
         try {
           result = await _refreshPromise;
         } finally {
@@ -315,8 +362,11 @@ export async function refreshAccessToken(): Promise<RefreshResult> {
         }
       });
       if (result) return result;
+      if (authMutation !== _authMutation) return _supersededRefreshResult();
       return { success: hasValidAccessToken() };
-    } catch {}
+    } catch {
+      if (authMutation !== _authMutation) return _supersededRefreshResult();
+    }
   }
 
   if (_refreshPromise) {
@@ -324,12 +374,14 @@ export async function refreshAccessToken(): Promise<RefreshResult> {
   }
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (authMutation !== _authMutation) return _supersededRefreshResult();
     if (_refreshPromise) {
       return _refreshPromise;
     }
     const acquired = await _tryAcquireLocalStorageLock();
     if (!acquired) {
       const waited = await _waitForRefreshCompletion();
+      if (authMutation !== _authMutation) return _supersededRefreshResult();
       if (waited) return waited;
       if (_refreshPromise) return _refreshPromise;
       if (hasValidAccessToken()) return { success: true };
@@ -337,10 +389,11 @@ export async function refreshAccessToken(): Promise<RefreshResult> {
     }
 
     try {
+      if (authMutation !== _authMutation) return _supersededRefreshResult();
       if (hasValidAccessToken()) {
         return { success: true };
       }
-      _refreshPromise = doRefresh();
+      _refreshPromise = doRefresh(_authGeneration);
       return await _refreshPromise;
     } finally {
       _refreshPromise = null;
@@ -351,15 +404,32 @@ export async function refreshAccessToken(): Promise<RefreshResult> {
   return { success: false, error: 'Refresh coordination timed out' };
 }
 
-async function doRefresh(): Promise<RefreshResult> {
+function _supersededRefreshResult(): RefreshResult {
+  const valid = hasValidAccessToken();
+  return {
+    success: valid,
+    ...(!valid ? { error: 'Authentication changed' } : {}),
+  };
+}
+
+async function doRefresh(generation: number): Promise<RefreshResult> {
+  if (generation !== _authGeneration) return _supersededRefreshResult();
   if (hasValidAccessToken()) {
     return { success: true };
   }
 
-  const response = await _fetchAuthProxy('/refresh', {
-    method: 'POST',
-    credentials: 'include',
-  });
+  let response: Response;
+  try {
+    response = await _fetchAuthProxy('/refresh', {
+      method: 'POST',
+      credentials: 'include',
+    });
+  } catch (error) {
+    if (generation !== _authGeneration) return _supersededRefreshResult();
+    throw error;
+  }
+
+  if (generation !== _authGeneration) return _supersededRefreshResult();
 
   if (response.ok) {
     try {
@@ -367,10 +437,13 @@ async function doRefresh(): Promise<RefreshResult> {
       const accessToken = data.access_token as string;
       const expiresIn = (data.expires_in as number) || 1800;
       const expiresAtMs = Date.now() + expiresIn * 1000;
-      setAccessToken(accessToken, expiresAtMs);
+      if (!_installRefreshedToken(accessToken, expiresAtMs, generation)) {
+        return _supersededRefreshResult();
+      }
       _broadcastAuthEvent('refreshed');
       return { success: true };
     } catch {
+      if (generation !== _authGeneration) return _supersededRefreshResult();
       return { success: false, error: 'Invalid refresh response' };
     }
   }
@@ -381,6 +454,17 @@ async function doRefresh(): Promise<RefreshResult> {
   }
 
   return { success: false, error: `Refresh failed: ${response.status}` };
+}
+
+function _installRefreshedToken(
+  token: string,
+  expiresAtMs: number,
+  generation: number,
+): boolean {
+  if (generation !== _authGeneration) return false;
+  _accessToken = token;
+  _expiresAt = expiresAtMs;
+  return true;
 }
 
 export async function refreshIfNeeded(): Promise<string | null> {

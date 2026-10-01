@@ -52,6 +52,7 @@ Every markdown file in the repository is classified under this hierarchy to dete
 | `docs/GLOSSARY.md` | N/A | Product/Engineering | ungated-reference | Shared terminology for product concepts and their distinction from current runtime names |
 | `docs/DAEMON_VISION_DECISIONS.md` | N/A | Product owner | ungated-reference | Explicit interview decisions; does not approve schemas or API contracts |
 | `docs/DAEMON_RECONCILIATION.md` | N/A | Engineering | raw-log | Dated Stage 0 working-tree assessment and verification limits |
+| `docs/MIDNIGHT_UI.md` | N/A | Engineering | raw-log | Owner-approved experimental UI/remediation scope and dated source/runtime acceptance limits; not deployment or model-routing authority |
 | `docs/DURABLE_REQUEST_DESIGN.md` | N/A | Engineering/Product | ungated-reference | Proposed continuity architecture; approval required before implementation |
 | `docs/VISION_INTEGRATION_REPORT.md` | N/A | Engineering | raw-log | Integration changes, current gate evidence and blockers |
 | `docs/AUTH_SETUP.md` | T1 | Engineering | gated | `orchestrator/routes/auth_setup.py`, `orchestrator/auth_cookies.py`, `orchestrator/auth_csrf.py` |
