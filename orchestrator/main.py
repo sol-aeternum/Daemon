@@ -774,12 +774,14 @@ async def _account_chat_frames(
     profile: str = "routine",
     **kwargs: Any,
 ) -> AsyncIterator[str]:
+    request_id = kwargs.get("request_id")
     async for frame in _account_frames(
         scope_pool,
         scope_user_id,
         lambda: stream_sse_chat(**kwargs),
         auto_route=auto_route,
         profile=profile,
+        request_id=request_id if isinstance(request_id, str) else None,
     ):
         yield frame
 
@@ -793,6 +795,7 @@ async def _account_frames(
     operation: str = "chat",
     extended: bool = False,
     profile: str = "routine",
+    request_id: str | None = None,
 ) -> AsyncIterator[str]:
     # Keep the ContextVar scope inside one producer task. The keepalive bridge
     # may resume its input generator in a different task for each frame.
@@ -809,6 +812,7 @@ async def _account_frames(
                 operation=operation,
                 extended=extended,
                 profile=profile,
+                request_id=request_id,
             ):
                 async for frame in source():
                     await frames.put((frame, None))
