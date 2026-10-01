@@ -54,6 +54,44 @@ COMPLEXITY_SIGNALS = {
     "design pattern",
 }
 
+#: Inflected forms of single-word complexity signals that still express a request or
+#: topic (plural, third person, gerund), plus the unhyphenated "tradeoff" spelling.
+#: Past tense is deliberately excluded: "compared" or "derived" mostly appear in
+#: narrative, not in a request for analysis.
+COMPLEXITY_SIGNAL_FORMS = {
+    "trade-offs",
+    "tradeoff",
+    "tradeoffs",
+    "compares",
+    "comparing",
+    "analyzes",
+    "analyzing",
+    "analyses",
+    "analysing",
+    "critiques",
+    "critiquing",
+    "evaluates",
+    "evaluating",
+    "strategies",
+    "implication",
+    "debugs",
+    "refactors",
+    "implements",
+    "implementing",
+    "implementations",
+    "proves",
+    "proving",
+    "derives",
+    "deriving",
+    "optimizes",
+    "optimizing",
+    "optimises",
+    "optimising",
+    "architectures",
+}
+
+_COMPLEXITY_MATCH = COMPLEXITY_SIGNALS | COMPLEXITY_SIGNAL_FORMS
+
 TRIVIAL_SIMPLE_SIGNALS = {
     "hi",
     "hello",
@@ -72,25 +110,70 @@ def _has_signal(message: str, signals: set[str]) -> bool:
     return any(re.search(r"(?<!\w)" + re.escape(signal) + r"(?!\w)", message) for signal in signals)
 
 
+_FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def _closes_fence(line: str, marker: str) -> bool:
+    stripped = line.strip()
+    return (
+        len(line) - len(line.lstrip(" ")) <= 3
+        and len(stripped) >= len(marker)
+        and set(stripped) == {marker[0]}
+    )
+
+
+def _instruction_text(message: str) -> str:
+    """The text whose wording selects a workload: the user's own instruction.
+
+    A routing heuristic, not proof of authorship or a security boundary. Closed fenced
+    blocks are pasted data and never count; an unclosed fence is kept as ordinary
+    text. ``>`` blockquote lines are quoted material and count only when nothing else
+    remains, so an instruction written entirely inside a quote still selects its work.
+    The model always receives the full message; only routing reads this view.
+    """
+    unfenced: list[str] = []
+    # One linear pass: an open fence buffers its lines until it closes. A fence that
+    # never closes returns its opening line and everything after it as plain text.
+    fence: list[str] | None = None
+    marker = ""
+    for line in message.splitlines():
+        if fence is not None:
+            if _closes_fence(line, marker):
+                fence = None
+            else:
+                fence.append(line)
+            continue
+        opening = _FENCE_OPEN.match(line)
+        # A backtick "fence" whose info string holds a backtick is an inline code span.
+        if opening and not (opening.group(1)[0] == "`" and "`" in opening.group(2)):
+            marker = opening.group(1)
+            fence = [line]
+            continue
+        unfenced.append(line)
+    if fence is not None:
+        unfenced.extend(fence)
+    own = "\n".join(line for line in unfenced if not line.lstrip().startswith(">")).strip()
+    return own or "\n".join(unfenced).strip()
+
+
 def classify_message(
     message: str,
     turn_count: int = 0,
-    has_code_block: bool | None = None,
 ) -> str:
     """Classify the requested work; size is separately bounded by compute policy.
 
     A long prompt or conversation does not by itself require premium reasoning.
+    Signals are read from the user's own instruction text (see
+    :func:`_instruction_text`), not from pasted or quoted material. A code block on
+    its own is pasted data, not a reasoning requirement.
     """
     msg_lower = message.lower().strip()
     if not msg_lower:
         return "trivial"
 
-    detected_code_block = "```" in message if has_code_block is None else has_code_block
-    if detected_code_block:
-        return "complex"
     if msg_lower in TRIVIAL_SIMPLE_SIGNALS:
         return "trivial"
-    if _has_signal(msg_lower, COMPLEXITY_SIGNALS):
+    if _has_signal(_instruction_text(message).lower(), _COMPLEXITY_MATCH):
         return "complex"
     return "standard"
 
@@ -98,7 +181,6 @@ def classify_message(
 def select_model_tier(
     message: str,
     turn_count: int = 0,
-    has_code_block: bool | None = None,
     user_override: str | None = None,
 ) -> ModelDecision:
     if user_override and user_override != "auto":
@@ -109,11 +191,7 @@ def select_model_tier(
             advisor_eligible=False,
         )
 
-    classification = classify_message(
-        message,
-        turn_count=turn_count,
-        has_code_block=has_code_block,
-    )
+    classification = classify_message(message, turn_count=turn_count)
     if classification == "complex":
         return ModelDecision(
             tier="reasoning",
@@ -128,5 +206,9 @@ def select_model_tier(
         model="",
         reason=f"classification:{classification}",
         advisor_eligible=False,
-        profile="research" if _has_signal(message.lower(), RESEARCH_SIGNALS) else "routine",
+        profile=(
+            "research"
+            if _has_signal(_instruction_text(message).lower(), RESEARCH_SIGNALS)
+            else "routine"
+        ),
     )

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import time
+
 from orchestrator.model_router import (
+    _instruction_text,  # pyright: ignore[reportPrivateUsage]
     classify_message,
     select_model_tier,
 )
@@ -70,9 +73,11 @@ class TestClassifyMessage:
         assert classify_message("Analyse the evidence") == "complex"
         assert classify_message("The filename is autocritique.txt") == "standard"
 
-    def test_code_block_complex(self) -> None:
-        """Messages with code blocks are classified as complex regardless of content."""
-        assert classify_message("explain this: ```def foo(): pass```") == "complex"
+    def test_code_block_alone_does_not_select_reasoning(self) -> None:
+        """A code block is pasted data; the instruction around it decides (D4)."""
+        assert classify_message("explain this: ```def foo(): pass```") == "standard"
+        assert classify_message("what language is this?\n```\nfn main() {}\n```") == "standard"
+        assert classify_message("debug this\n```\ndef f(): pass\n```") == "complex"
 
     def test_long_message_is_not_a_quality_requirement(self) -> None:
         """Length is accounted for by context/output bounds, not model quality."""
@@ -99,6 +104,48 @@ class TestClassifyMessage:
         """Empty message is trivially trivial."""
         assert classify_message("") == "trivial"
         assert classify_message("   ") == "trivial"
+
+
+class TestInstructionText:
+    """The routing view of a message: the user's own text, not pasted or quoted data."""
+
+    def test_closed_backtick_and_tilde_fences_are_removed(self) -> None:
+        assert _instruction_text("fix this\n```py\ncompare()\n```") == "fix this"
+        assert _instruction_text("fix this\n~~~\ncompare()\n~~~") == "fix this"
+
+    def test_closing_fence_may_be_longer_but_not_a_different_marker(self) -> None:
+        assert _instruction_text("a\n```\nx\n`````\nb") == "a\nb"
+        assert _instruction_text("a\n```\nx\n~~~\nb") == "a\n```\nx\n~~~\nb"
+
+    def test_unclosed_fence_is_kept_as_text(self) -> None:
+        assert _instruction_text("```\ncompare A and B") == "```\ncompare A and B"
+
+    def test_inline_triple_backtick_span_is_not_a_fence(self) -> None:
+        assert _instruction_text("```foo``` compare\nnext") == "```foo``` compare\nnext"
+
+    def test_fence_indented_four_spaces_is_not_a_fence(self) -> None:
+        message = "    ```\n    compare\n    ```"
+        assert _instruction_text(message) == message.strip()
+
+    def test_blockquotes_are_removed_when_own_text_remains(self) -> None:
+        assert _instruction_text("> compare these\n>> nested\nreply briefly") == "reply briefly"
+
+    def test_quote_only_message_keeps_the_quoted_instruction(self) -> None:
+        assert _instruction_text("> compare A and B") == "> compare A and B"
+
+    def test_fence_only_message_has_no_instruction(self) -> None:
+        assert _instruction_text("```\n# refactor later\n```") == ""
+
+    def test_text_after_an_unclosed_fence_stays_text_including_later_fences(self) -> None:
+        message = "intro\n````\nreview code\n```\ninner\n```"
+        assert _instruction_text(message) == message
+
+    def test_many_unclosed_fences_are_scanned_in_linear_time(self) -> None:
+        """Classification runs in the request handler; it must not scan quadratically."""
+        message = "\n".join(["````info"] * 200_000) + "\ncompare A and B"
+        started = time.perf_counter()
+        assert _instruction_text(message).endswith("compare A and B")
+        assert time.perf_counter() - started < 2.0
 
 
 class TestSelectModelTier:
@@ -134,11 +181,12 @@ class TestSelectModelTier:
         assert decision.model == model
         assert decision.tier == "explicit"
 
-    def test_code_block_reasoning_advisor_eligible(self) -> None:
-        """Code blocks route to reasoning with advisor eligible."""
-        decision = select_model_tier("explain this: ```def foo(): pass```")
+    def test_code_block_routes_by_instruction(self) -> None:
+        """A code block with an analytic instruction routes to reasoning; alone it does not."""
+        decision = select_model_tier("refactor this:\n```\ndef foo(): pass\n```")
         assert decision.tier == "reasoning"
         assert decision.advisor_eligible is True
+        assert select_model_tier("```\ndef foo(): pass\n```").profile == "routine"
 
     def test_user_override_explicit_tier(self) -> None:
         """User override bypasses classification and sets explicit tier."""

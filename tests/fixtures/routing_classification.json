@@ -1,0 +1,91 @@
+{
+  "notes": "Characterization of orchestrator.model_router classification. Each row records the classification and workload profile the classifier returns today. Rows marked as known defects or limitations document current behaviour, not intended behaviour; a change to any row must be deliberate and reviewed. See docs/REASONING_ROUTING_REPAIR_PLAN.md (A-PR1).",
+  "cases": [
+    {"id": "greeting", "message": "hi", "classification": "trivial", "profile": "routine"},
+    {"id": "weather", "message": "what's the weather", "classification": "standard", "profile": "routine"},
+    {"id": "summary_request", "message": "Summarise this report for me.", "classification": "standard", "profile": "routine"},
+    {"id": "research_request", "message": "search for recent weather reports", "classification": "standard", "profile": "research"},
+    {"id": "refactor_request", "message": "help me refactor this auth module", "classification": "complex", "profile": "reasoning"},
+    {
+      "id": "fenced_log_summarize",
+      "message": "summarize this\n```\nERROR: root cause unknown, enable debug logging\n```",
+      "classification": "standard",
+      "profile": "routine",
+      "note": "Keywords inside pasted data do not select reasoning; a fence alone is not a signal (D4)."
+    },
+    {"id": "debug_with_fence", "message": "debug this\n```\ndef f():\n    return 1 / 0\n```", "classification": "complex", "profile": "reasoning"},
+    {
+      "id": "language_question_fence",
+      "message": "what language is this?\n```\nfn main() {}\n```",
+      "classification": "standard",
+      "profile": "routine",
+      "note": "D4 consequence: coding questions without an analytic signal run on the routine profile."
+    },
+    {"id": "fence_only", "message": "```\nprint('hi')\n```", "classification": "standard", "profile": "routine"},
+    {
+      "id": "fence_only_keyword_in_code",
+      "message": "```\n# TODO: refactor this later\nx = 1\n```",
+      "classification": "standard",
+      "profile": "routine",
+      "note": "Words inside a closed fence are data, even when no other text remains."
+    },
+    {"id": "inline_triple_backtick", "message": "explain this: ```def foo(): pass```", "classification": "standard", "profile": "routine"},
+    {
+      "id": "quoted_email_reply",
+      "message": "> Can you compare the two vendor quotes before Friday?\n\nreply politely that I'll get to it next week",
+      "classification": "standard",
+      "profile": "routine",
+      "note": "Quoted material does not select a workload; the user's own text does."
+    },
+    {
+      "id": "quoted_research_phrase",
+      "message": "> Could you look up the venue address?\n\nsay thanks, I already have it",
+      "classification": "standard",
+      "profile": "routine",
+      "note": "A research phrase inside quoted material does not select research."
+    },
+    {"id": "entirely_quoted_instruction", "message": "> compare A and B", "classification": "complex", "profile": "reasoning"},
+    {
+      "id": "quoted_instruction_with_thanks",
+      "message": "> compare A and B\n\nthanks",
+      "classification": "standard",
+      "profile": "routine",
+      "note": "Known limitation: quoted text counts only when nothing else remains."
+    },
+    {"id": "unclosed_fence_then_compare", "message": "```\nsome text\ncompare A and B", "classification": "complex", "profile": "reasoning"},
+    {
+      "id": "plural_trade_offs",
+      "message": "list the trade-offs of using SQLite",
+      "classification": "complex",
+      "profile": "reasoning"
+    },
+    {"id": "unhyphenated_tradeoffs", "message": "what are the tradeoffs here", "classification": "complex", "profile": "reasoning"},
+    {"id": "gerund_implementing", "message": "help me with implementing a cache", "classification": "complex", "profile": "reasoning"},
+    {"id": "third_person_compares", "message": "which plan compares better on price", "classification": "complex", "profile": "reasoning"},
+    {"id": "plural_strategies", "message": "what strategies work for paying off debt", "classification": "complex", "profile": "reasoning"},
+    {"id": "past_tense_narrative", "message": "I compared both options yesterday and picked one", "classification": "standard", "profile": "routine", "note": "Past tense is deliberately not a signal form; it mostly appears in narrative."},
+    {
+      "id": "non_english_analysis",
+      "message": "compara estas dos opciones y dime cuál es mejor",
+      "classification": "standard",
+      "profile": "routine",
+      "note": "Known limitation: signals are English-only."
+    },
+    {"id": "boundary_compound_word", "message": "the username is comparisondebugger", "classification": "standard", "profile": "routine"},
+    {"id": "boundary_filename", "message": "The filename is autocritique.txt", "classification": "standard", "profile": "routine"},
+    {
+      "id": "overbroad_vs",
+      "message": "Lakers vs Celtics score tonight?",
+      "classification": "complex",
+      "profile": "reasoning",
+      "note": "Known over-broad signal; pruning is optional work O5, not A-core."
+    },
+    {
+      "id": "overbroad_should_i",
+      "message": "should I bring an umbrella?",
+      "classification": "complex",
+      "profile": "reasoning",
+      "note": "Known over-broad signal; pruning is optional work O5, not A-core."
+    }
+  ]
+}

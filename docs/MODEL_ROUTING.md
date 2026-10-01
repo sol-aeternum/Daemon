@@ -133,8 +133,19 @@ policy remains deny-by-default; merging the deployment policy does not select it
 
 Native and compatibility chat derive the workload from the requested work.
 Complexity signals take priority over ordinary search/reminder phrases and match
-word boundaries. Conversation length and character count alone do not establish
-a reasoning requirement; context fit is enforced against the actual request.
+word boundaries, including listed plural, third-person and gerund forms of
+single-word signals (past tense is excluded). Conversation length and character
+count alone do not establish a reasoning requirement; context fit is enforced
+against the actual request.
+
+Signals are read from the user's own instruction text in the current message.
+Closed fenced blocks are pasted data and never count; an unclosed fence stays
+ordinary text. Blockquote lines count only when nothing else remains, so an
+instruction written entirely inside a quote still selects its work. A code block
+on its own does not select reasoning; the instruction around it decides (approved
+1 October 2026). This is a routing heuristic, not proof of authorship or a
+security boundary, and the model always receives the full message. Signals are
+English-only. The frozen characterization is `tests/fixtures/routing_classification.json`.
 
 Automatic selection intersects the workload's acceptable model groups with
 independently qualified endpoints, required tools/structured-output capabilities,
