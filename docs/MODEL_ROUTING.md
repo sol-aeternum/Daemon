@@ -160,7 +160,10 @@ uses only the latest user message and does not apply conversation history,
 Automatic selection intersects the workload's acceptable model groups with
 independently qualified endpoints, required tools/structured-output capabilities,
 context/output fit and account funding. It compares bounded request cost within
-the acceptable preference group. A small model output ceiling must not make an
+the acceptable preference group, so the cheapest eligible route for the request is
+tried first and the order models are listed in within a group is not priority. The
+configuration-generated [chat routing chart](CHAT_ROUTING.md) shows the current
+candidates, efforts and deployment routes. A small model output ceiling must not make an
 otherwise inadequate response appear cheaper.
 
 For an automatic request without an explicit output limit, each preference group

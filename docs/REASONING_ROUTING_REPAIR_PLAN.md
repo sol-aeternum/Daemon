@@ -1,6 +1,6 @@
 # Reasoning routing repair plan (Package A)
 
-Date: 1 October 2026. Status: **A-core implementation authorized; not started.**
+Date: 1 October 2026. Status: **A-core complete when the last row below merges** (see [execution status](#execution-status)).
 Companion: [conditional expansion plan (Package B)](REASONING_ROUTING_EXPANSION_PLAN.md).
 Current behaviour diagram: [CHAT_ROUTING.md](CHAT_ROUTING.md).
 
@@ -350,5 +350,5 @@ Merged, Blocked (with reason).
 | A-PR1 classifier repairs | Merged | #384 (`4f9f0518`) | Security review clean; quadratic fence scan found and fixed before merge |
 | A-PR2 endpoint parity | Merged | #386 (`193c47fc`) | Security review clean |
 | A-PR3 truthful capability denial | Merged | #385 (`51f7684e`) | Security review clean |
-| A-PR4 routing telemetry | PR open | `feat/routing-telemetry` | Pre-flight confirmed uvicorn defaults drop application INFO logs |
-| A-PR5 docs and generated chart | In progress | `docs/routing-chart-generated` | Image: generated SVG (option a), chosen under the 1 October authority to proceed on judgement; reversible |
+| A-PR4 routing telemetry | Merged | #388 | Pre-flight confirmed uvicorn defaults drop application INFO logs; model-field free text never logged |
+| A-PR5 docs and generated chart | Merged with the PR that adds this row | `docs/routing-chart-generated` | Image: generated SVG (option a), chosen under the 1 October authority to proceed on judgement; reversible. #331 verified as resolved by #340 (evidence comment; closure left to the owner) |

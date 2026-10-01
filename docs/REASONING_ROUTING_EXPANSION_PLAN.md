@@ -1,6 +1,6 @@
 # Reasoning routing expansion plan (Package B)
 
-Date: 1 October 2026. Status: **blocked. Not authorized.**
+Date: 1 October 2026. Status: **blocked pending explicit authorization** (A-core gate met once the repair plan's last PR merges).
 Prerequisite: [repair plan (Package A)](REASONING_ROUTING_REPAIR_PLAN.md).
 
 This is a conditional, evidence-led roadmap. It decides no demand bands, no new
@@ -192,7 +192,7 @@ Before any authorized Package B stage:
 
 | Stage | State | Notes |
 | --- | --- | --- |
-| B1 | Blocked | Waiting for A-core merge and authorization |
+| B1 | Blocked | A-core merged with the PR that adds this note; waiting for explicit authorization, then rebase and revalidation |
 | B2 | Blocked | |
 | B3 | Blocked | |
 | B4 | Blocked | |

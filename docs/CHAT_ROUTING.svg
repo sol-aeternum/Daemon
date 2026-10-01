@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1460 2047" width="1460" height="2047" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-label="Daemon chat routing">
+<defs><marker id="a-grey" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#64748b"/></marker><marker id="a-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#dc2626"/></marker><marker id="a-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/></marker><marker id="a-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#0284c7"/></marker></defs>
+<rect width="1460" height="2047" fill="#f8fafc"/>
+<text x="727" y="52" text-anchor="middle" font-size="36" font-weight="700" fill="#0f172a" letter-spacing="1">DAEMON · CHAT ROUTING</text>
+<text x="727" y="82" text-anchor="middle" font-size="13" fill="#475569">Chat only, no Council or background helpers · generated from configuration</text>
+<polyline points="727,147 727,186" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a-grey)"/>
+<polyline points="727,250 727,289" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a-grey)"/>
+<polyline points="417,210 461,210 461,310 540,310" fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="7 6" marker-end="url(#a-grey)"/>
+<text x="267" y="256" text-anchor="middle" font-size="13" fill="#475569">/local is parsed only; still cloud</text>
+<polyline points="540,310 273,310 273,398" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a-grey)"/>
+<text x="381" y="298" text-anchor="middle" font-size="13" fill="#475569">Yes — exact selection</text>
+<polyline points="727,332 727,360 879,360 879,404" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a-grey)"/>
+<text x="830" y="354" text-anchor="middle" font-size="13" fill="#475569">Auto</text>
+<polyline points="679,426 655,426 655,493 333,493 333,525" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a-grey)"/>
+<text x="472" y="485" text-anchor="middle" font-size="13" fill="#475569">Otherwise</text>
+<polyline points="879,447 879,493 757,493 757,525" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a-grey)"/>
+<text x="889" y="487" text-anchor="start" font-size="13" fill="#475569">Research signal</text>
+<polyline points="1079,426 1182,426 1182,525" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a-grey)"/>
+<text x="1240" y="481" text-anchor="middle" font-size="13" fill="#475569">Complexity signal</text>
+<polyline points="333,568 333,614 545,614 545,640" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a-grey)"/>
+<polyline points="757,568 757,614 545,614 545,640" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a-grey)"/>
+<polyline points="545,725 545,827 727,827 727,865" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a-grey)"/>
+<polyline points="1182,568 1182,614 1130,614 1130,640" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a-grey)"/>
+<polyline points="1130,788 1130,827 727,827 727,865" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a-grey)"/>
+<polyline points="97,430 61,430 61,928 395,928" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a-grey)"/>
+<polyline points="727,992 727,1038" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a-grey)"/>
+<polyline points="540,1060 392,1060" fill="none" stroke="#dc2626" stroke-width="2" marker-end="url(#a-red)"/>
+<text x="452" y="1048" text-anchor="middle" font-size="13" fill="#dc2626">No</text>
+<polyline points="727,1081 727,1129" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a-grey)"/>
+<text x="770" y="1103" text-anchor="middle" font-size="13" fill="#475569">Yes</text>
+<polyline points="727,1193 727,1244" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a-grey)"/>
+<polyline points="727,1308 727,1341" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a-grey)"/>
+<polyline points="727,1405 727,1444" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a-grey)"/>
+<polyline points="540,1466 436,1466 436,1060 392,1060" fill="none" stroke="#dc2626" stroke-width="2" marker-end="url(#a-red)"/>
+<text x="294" y="1352" text-anchor="middle" font-size="13" fill="#dc2626">Explicit failure, no candidate,</text>
+<text x="294" y="1370" text-anchor="middle" font-size="13" fill="#dc2626">or failure after any chunk</text>
+<polyline points="727,1505 443,1505 443,1561 423,1561" fill="none" stroke="#7c3aed" stroke-width="2" marker-end="url(#a-violet)"/>
+<text x="264" y="1490" text-anchor="middle" font-size="13" fill="#7c3aed">Automatic provider failure before any chunk</text>
+<text x="264" y="1508" text-anchor="middle" font-size="13" fill="#7c3aed">+ another eligible candidate</text>
+<polyline points="61,1561 30,1561 30,1276 485,1276" fill="none" stroke="#7c3aed" stroke-width="2" marker-end="url(#a-violet)"/>
+<text x="264" y="1228" text-anchor="middle" font-size="13" fill="#7c3aed">Next eligible candidate</text>
+<text x="264" y="1246" text-anchor="middle" font-size="13" fill="#7c3aed">Separate reservation</text>
+<polyline points="727,1487 727,1565" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a-grey)"/>
+<text x="794" y="1539" text-anchor="middle" font-size="13" fill="#475569">Success</text>
+<polyline points="727,1608 727,1662" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a-grey)"/>
+<polyline points="914,1684 1152,1684 1152,1735" fill="none" stroke="#0284c7" stroke-width="2" marker-end="url(#a-blue)"/>
+<text x="1024" y="1672" text-anchor="middle" font-size="13" fill="#0284c7">Yes — tool call</text>
+<polyline points="1342,1767 1406,1767 1406,928 1059,928" fill="none" stroke="#0284c7" stroke-width="2" marker-end="url(#a-blue)"/>
+<text x="1267" y="1276" text-anchor="middle" font-size="13" fill="#0284c7">Next model call</text>
+<text x="1267" y="1294" text-anchor="middle" font-size="13" fill="#0284c7">after tool result</text>
+<text x="1267" y="1312" text-anchor="middle" font-size="13" fill="#0284c7">within round limit</text>
+<polyline points="727,1705 727,1813" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a-grey)"/>
+<text x="788" y="1757" text-anchor="middle" font-size="13" fill="#475569">No — final answer</text>
+<rect x="546" y="104" width="362" height="43" rx="9" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+<text x="727" y="131" text-anchor="middle" font-size="15" fill="#0f172a">User chat request</text>
+<rect x="540" y="186" width="374" height="64" rx="9" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+<text x="727" y="213" text-anchor="middle" font-size="15" fill="#0f172a">Native /chat or</text>
+<text x="727" y="234" text-anchor="middle" font-size="15" fill="#0f172a">/v1/chat/completions</text>
+<rect x="117" y="189" width="300" height="43" rx="9" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+<text x="267" y="216" text-anchor="middle" font-size="15" fill="#0f172a">Native /local flag</text>
+<rect x="540" y="289" width="374" height="43" rx="9" fill="#fffbeb" stroke="#d97706" stroke-width="2"/>
+<text x="727" y="316" text-anchor="middle" font-size="15" fill="#0f172a">Explicit model selected?</text>
+<rect x="73" y="398" width="400" height="64" rx="9" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+<text x="273" y="425" text-anchor="middle" font-size="15" fill="#0f172a">Exact requested model</text>
+<text x="273" y="446" text-anchor="middle" font-size="15" fill="#0f172a">Routine scope, model&#x27;s default effort</text>
+<rect x="679" y="404" width="400" height="43" rx="9" fill="#fffbeb" stroke="#d97706" stroke-width="2"/>
+<text x="879" y="431" text-anchor="middle" font-size="15" fill="#0f172a">Classify the user&#x27;s own text</text>
+<rect x="176" y="525" width="314" height="43" rx="9" fill="#eef2ff" stroke="#6366f1" stroke-width="2"/>
+<text x="333" y="552" text-anchor="middle" font-size="15" fill="#0f172a">Routine profile</text>
+<rect x="600" y="525" width="314" height="43" rx="9" fill="#eef2ff" stroke="#6366f1" stroke-width="2"/>
+<text x="757" y="552" text-anchor="middle" font-size="15" fill="#0f172a">Research profile</text>
+<rect x="1025" y="525" width="314" height="43" rx="9" fill="#eef2ff" stroke="#6366f1" stroke-width="2"/>
+<text x="1182" y="552" text-anchor="middle" font-size="15" fill="#0f172a">Reasoning profile</text>
+<rect x="335" y="640" width="420" height="85" rx="9" fill="#eef2ff" stroke="#6366f1" stroke-width="2"/>
+<text x="545" y="667" text-anchor="middle" font-size="15" fill="#0f172a">Routine and research candidates</text>
+<text x="545" y="688" text-anchor="middle" font-size="15" fill="#0f172a">openai/gpt-6-luna · low</text>
+<text x="545" y="709" text-anchor="middle" font-size="15" fill="#0f172a">Only automatic candidate</text>
+<rect x="850" y="640" width="560" height="148" rx="9" fill="#eef2ff" stroke="#6366f1" stroke-width="2"/>
+<text x="1130" y="667" text-anchor="middle" font-size="15" fill="#0f172a">Reasoning candidate groups</text>
+<text x="1130" y="688" text-anchor="middle" font-size="15" fill="#0f172a">1. z-ai/glm-5.3 · high (no deployment route)</text>
+<text x="1130" y="709" text-anchor="middle" font-size="15" fill="#0f172a">1. openai/gpt-6.1-sol · high</text>
+<text x="1130" y="730" text-anchor="middle" font-size="15" fill="#0f172a">1. anthropic/claude-sonnet-5 · high</text>
+<text x="1130" y="751" text-anchor="middle" font-size="15" fill="#0f172a">2. anthropic/claude-opus-5.5 · high</text>
+<text x="1130" y="772" text-anchor="middle" font-size="15" fill="#0f172a">2. openai/gpt-6-astra · high</text>
+<rect x="395" y="865" width="664" height="127" rx="9" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+<text x="727" y="892" text-anchor="middle" font-size="15" fill="#0f172a">Filter eligible routes</text>
+<text x="727" y="913" text-anchor="middle" font-size="15" fill="#0f172a">Approval and ZDR policy</text>
+<text x="727" y="934" text-anchor="middle" font-size="15" fill="#0f172a">Required capabilities and supported parameters</text>
+<text x="727" y="955" text-anchor="middle" font-size="15" fill="#0f172a">Context/output fit and account entitlements</text>
+<text x="727" y="976" text-anchor="middle" font-size="15" fill="#0f172a">Bounded request cost and available budget</text>
+<rect x="540" y="1038" width="374" height="43" rx="9" fill="#fffbeb" stroke="#d97706" stroke-width="2"/>
+<text x="727" y="1065" text-anchor="middle" font-size="15" fill="#0f172a">Eligible route exists?</text>
+<rect x="32" y="1032" width="360" height="64" rx="9" fill="#fff1f2" stroke="#e11d48" stroke-width="2"/>
+<text x="212" y="1059" text-anchor="middle" font-size="15" fill="#0f172a">Return unavailable / denied result</text>
+<text x="212" y="1080" text-anchor="middle" font-size="15" fill="#0f172a">No premium capability: capability_unavailable</text>
+<rect x="485" y="1129" width="484" height="64" rx="9" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+<text x="727" y="1156" text-anchor="middle" font-size="15" fill="#0f172a">Select first eligible preference group</text>
+<text x="727" y="1177" text-anchor="middle" font-size="15" fill="#0f172a">Honor soft preference, then lowest bounded cost</text>
+<rect x="485" y="1244" width="484" height="64" rx="9" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+<text x="727" y="1271" text-anchor="middle" font-size="15" fill="#0f172a">Apply reviewed model preset</text>
+<text x="727" y="1292" text-anchor="middle" font-size="15" fill="#0f172a">Reserve account capacity</text>
+<rect x="522" y="1341" width="410" height="64" rx="9" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+<text x="727" y="1368" text-anchor="middle" font-size="15" fill="#0f172a">Dispatch pinned endpoint</text>
+<text x="727" y="1389" text-anchor="middle" font-size="15" fill="#0f172a">OpenRouter through LiteLLM</text>
+<rect x="540" y="1444" width="374" height="43" rx="9" fill="#fffbeb" stroke="#d97706" stroke-width="2"/>
+<text x="727" y="1471" text-anchor="middle" font-size="15" fill="#0f172a">Attempt outcome</text>
+<rect x="61" y="1529" width="362" height="64" rx="9" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+<text x="242" y="1556" text-anchor="middle" font-size="15" fill="#0f172a">Settle failed attempt</text>
+<text x="242" y="1577" text-anchor="middle" font-size="15" fill="#0f172a">Try next eligible candidate</text>
+<rect x="546" y="1565" width="362" height="43" rx="9" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+<text x="727" y="1592" text-anchor="middle" font-size="15" fill="#0f172a">Settle usage</text>
+<rect x="540" y="1662" width="374" height="43" rx="9" fill="#fffbeb" stroke="#d97706" stroke-width="2"/>
+<text x="727" y="1689" text-anchor="middle" font-size="15" fill="#0f172a">Tool call requested?</text>
+<rect x="962" y="1735" width="380" height="64" rx="9" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+<text x="1152" y="1762" text-anchor="middle" font-size="15" fill="#0f172a">Execute registered tool within limits</text>
+<text x="1152" y="1783" text-anchor="middle" font-size="15" fill="#0f172a">Search/fetch, documents, memory, utilities</text>
+<rect x="522" y="1813" width="410" height="64" rx="9" fill="#ecfdf5" stroke="#059669" stroke-width="2"/>
+<text x="727" y="1840" text-anchor="middle" font-size="15" fill="#0f172a">Return final chat response</text>
+<text x="727" y="1861" text-anchor="middle" font-size="15" fill="#0f172a">SSE or compatibility JSON</text>
+<text x="727" y="1937" text-anchor="middle" font-size="13" fill="#475569">Candidates are not approvals. Without a deployment route: z-ai/glm-5.3.</text>
+<text x="727" y="1967" text-anchor="middle" font-size="13" fill="#475569">Deployment policy must be selected explicitly; earliest route review expiry 2026-10-06.</text>
+<text x="727" y="1997" text-anchor="middle" font-size="13" fill="#475569">Generated by scripts/render_chat_routing.py · Not verification of live deployment or model quality.</text>
+</svg>
