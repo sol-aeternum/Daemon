@@ -32,12 +32,25 @@
     {
       "id": "quoted_email_reply",
       "message": "> Can you compare the two vendor quotes before Friday?\n\nreply politely that I'll get to it next week",
-      "classification": "complex",
-      "profile": "reasoning",
-      "note": "Known defect: a keyword inside quoted material selects reasoning."
+      "classification": "standard",
+      "profile": "routine",
+      "note": "Quoted material does not select a workload; the user's own text does."
+    },
+    {
+      "id": "quoted_research_phrase",
+      "message": "> Could you look up the venue address?\n\nsay thanks, I already have it",
+      "classification": "standard",
+      "profile": "routine",
+      "note": "A research phrase inside quoted material does not select research."
     },
     {"id": "entirely_quoted_instruction", "message": "> compare A and B", "classification": "complex", "profile": "reasoning"},
-    {"id": "quoted_instruction_with_thanks", "message": "> compare A and B\n\nthanks", "classification": "complex", "profile": "reasoning"},
+    {
+      "id": "quoted_instruction_with_thanks",
+      "message": "> compare A and B\n\nthanks",
+      "classification": "standard",
+      "profile": "routine",
+      "note": "Known limitation: quoted text counts only when nothing else remains."
+    },
     {"id": "unclosed_fence_then_compare", "message": "```\nsome text\ncompare A and B", "classification": "complex", "profile": "reasoning"},
     {
       "id": "plural_trade_offs",

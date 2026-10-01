@@ -110,6 +110,52 @@ def _has_signal(message: str, signals: set[str]) -> bool:
     return any(re.search(r"(?<!\w)" + re.escape(signal) + r"(?!\w)", message) for signal in signals)
 
 
+_FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def _closes_fence(line: str, marker: str) -> bool:
+    stripped = line.strip()
+    return (
+        len(line) - len(line.lstrip(" ")) <= 3
+        and len(stripped) >= len(marker)
+        and set(stripped) == {marker[0]}
+    )
+
+
+def _instruction_text(message: str) -> str:
+    """The text whose wording selects a workload: the user's own instruction.
+
+    A routing heuristic, not proof of authorship or a security boundary. Closed fenced
+    blocks are pasted data and never count; an unclosed fence is kept as ordinary
+    text. ``>`` blockquote lines are quoted material and count only when nothing else
+    remains, so an instruction written entirely inside a quote still selects its work.
+    The model always receives the full message; only routing reads this view.
+    """
+    lines = message.splitlines()
+    unfenced: list[str] = []
+    index = 0
+    while index < len(lines):
+        opening = _FENCE_OPEN.match(lines[index])
+        # A backtick "fence" whose info string holds a backtick is an inline code span.
+        if opening and not (opening.group(1)[0] == "`" and "`" in opening.group(2)):
+            marker = opening.group(1)
+            close = next(
+                (
+                    candidate
+                    for candidate in range(index + 1, len(lines))
+                    if _closes_fence(lines[candidate], marker)
+                ),
+                None,
+            )
+            if close is not None:
+                index = close + 1
+                continue
+        unfenced.append(lines[index])
+        index += 1
+    own = "\n".join(line for line in unfenced if not line.lstrip().startswith(">")).strip()
+    return own or "\n".join(unfenced).strip()
+
+
 def classify_message(
     message: str,
     turn_count: int = 0,
@@ -118,6 +164,8 @@ def classify_message(
     """Classify the requested work; size is separately bounded by compute policy.
 
     A long prompt or conversation does not by itself require premium reasoning.
+    Signals are read from the user's own instruction text (see
+    :func:`_instruction_text`), not from pasted or quoted material.
     """
     msg_lower = message.lower().strip()
     if not msg_lower:
@@ -128,7 +176,7 @@ def classify_message(
         return "complex"
     if msg_lower in TRIVIAL_SIMPLE_SIGNALS:
         return "trivial"
-    if _has_signal(msg_lower, _COMPLEXITY_MATCH):
+    if _has_signal(_instruction_text(message).lower(), _COMPLEXITY_MATCH):
         return "complex"
     return "standard"
 
@@ -166,5 +214,9 @@ def select_model_tier(
         model="",
         reason=f"classification:{classification}",
         advisor_eligible=False,
-        profile="research" if _has_signal(message.lower(), RESEARCH_SIGNALS) else "routine",
+        profile=(
+            "research"
+            if _has_signal(_instruction_text(message).lower(), RESEARCH_SIGNALS)
+            else "routine"
+        ),
     )

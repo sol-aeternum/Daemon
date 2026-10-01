@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from orchestrator.model_router import (
+    _instruction_text,  # pyright: ignore[reportPrivateUsage]
     classify_message,
     select_model_tier,
 )
@@ -99,6 +100,37 @@ class TestClassifyMessage:
         """Empty message is trivially trivial."""
         assert classify_message("") == "trivial"
         assert classify_message("   ") == "trivial"
+
+
+class TestInstructionText:
+    """The routing view of a message: the user's own text, not pasted or quoted data."""
+
+    def test_closed_backtick_and_tilde_fences_are_removed(self) -> None:
+        assert _instruction_text("fix this\n```py\ncompare()\n```") == "fix this"
+        assert _instruction_text("fix this\n~~~\ncompare()\n~~~") == "fix this"
+
+    def test_closing_fence_may_be_longer_but_not_a_different_marker(self) -> None:
+        assert _instruction_text("a\n```\nx\n`````\nb") == "a\nb"
+        assert _instruction_text("a\n```\nx\n~~~\nb") == "a\n```\nx\n~~~\nb"
+
+    def test_unclosed_fence_is_kept_as_text(self) -> None:
+        assert _instruction_text("```\ncompare A and B") == "```\ncompare A and B"
+
+    def test_inline_triple_backtick_span_is_not_a_fence(self) -> None:
+        assert _instruction_text("```foo``` compare\nnext") == "```foo``` compare\nnext"
+
+    def test_fence_indented_four_spaces_is_not_a_fence(self) -> None:
+        message = "    ```\n    compare\n    ```"
+        assert _instruction_text(message) == message.strip()
+
+    def test_blockquotes_are_removed_when_own_text_remains(self) -> None:
+        assert _instruction_text("> compare these\n>> nested\nreply briefly") == "reply briefly"
+
+    def test_quote_only_message_keeps_the_quoted_instruction(self) -> None:
+        assert _instruction_text("> compare A and B") == "> compare A and B"
+
+    def test_fence_only_message_has_no_instruction(self) -> None:
+        assert _instruction_text("```\n# refactor later\n```") == ""
 
 
 class TestSelectModelTier:
