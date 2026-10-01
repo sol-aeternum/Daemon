@@ -331,6 +331,7 @@ class ComputeScope:
     extended_started: bool = False
     extended_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     selected_model: str | None = None
+    selected_effort: str | None = None
     outstanding: dict[Any, ReservationHold] = field(default_factory=dict)
     settled: dict[Any, int] = field(default_factory=dict)
     expected_period: str | None = None
@@ -589,6 +590,15 @@ def selected_model() -> str | None:
         return routed.selected_model
     scope = _scope.get()
     return scope.selected_model if scope else None
+
+
+def selected_effort() -> str | None:
+    """The reasoning effort sent with :func:`selected_model`, if any."""
+    routed = model_routing.active_routing()
+    if routed is not None:
+        return routed.selected_effort
+    scope = _scope.get()
+    return scope.selected_effort if scope else None
 
 
 #: Tool rounds for a turn outside any account scope. Such a turn cannot
@@ -1873,12 +1883,15 @@ async def guarded_completion(
             scope.outstanding[_hold_key(reservation)].response = response
         # Attribution records what actually went out, on both the precise routing
         # state and the coarser account scope, after any fallback has taken effect.
+        sent_effort = _label(resolved.get("reasoning_effort"))
         scope.selected_model = route.model
+        scope.selected_effort = sent_effort
         routing.record_selection(
             model=route.model,
             route_id=route.route_id,
             group=placement.group if placement is not None else None,
             explicit=model is not None,
+            effort=sent_effort,
         )
         return response, reservation
 

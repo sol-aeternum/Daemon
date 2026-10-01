@@ -496,3 +496,79 @@ async def test_api_key_authentication(client, monkeypatch):
     # Request with correct key should succeed
     response = await client.get("/providers", headers={"Authorization": "Bearer test-secret-key"})
     assert response.status_code == 200
+
+
+def _routing_payloads(body: str) -> list[dict]:
+    payloads: list[dict] = []
+    for block in body.split("\n\n"):
+        lines = block.strip().splitlines()
+        if not lines or lines[0] != "event: routing":
+            continue
+        data = "".join(line[len("data: ") :] for line in lines[1:] if line.startswith("data: "))
+        payloads.append(json.loads(data)["data"])
+    return payloads
+
+
+@pytest.mark.asyncio
+async def test_routing_event_carries_profile_reason_codes_and_sent_effort(client, monkeypatch):
+    """O6: additive, user-visible routing reasons; existing fields keep their meaning."""
+    monkeypatch.setenv("MOCK_LLM", "false")
+    monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
+    get_settings.cache_clear()
+
+    async def fake_completion_with_tools(*_args, **kwargs):
+        assert kwargs["reasoning_fallback"] is True
+        yield {"type": "content_delta", "content": "Hi"}
+        yield {"type": "done"}
+
+    monkeypatch.setattr(daemon_module, "create_default_registry", lambda **_kwargs: object())
+    monkeypatch.setattr(daemon_module, "completion_with_tools", fake_completion_with_tools)
+    monkeypatch.setattr(
+        daemon_module, "active_compute_model", lambda: "openrouter/openai/gpt-6-luna"
+    )
+    monkeypatch.setattr(daemon_module, "active_compute_effort", lambda: "low")
+
+    response = await client.post("/chat", json={"message": "hello"})
+    assert response.status_code == 200
+    routing = _routing_payloads(response.text)[-1]
+    assert routing["model"] == "openrouter/openai/gpt-6-luna"
+    assert routing["tier"] == "fast"
+    assert routing["reason"] == "classification:trivial"
+    assert routing["profile"] == "routine"
+    assert routing["reason_codes"] == ["default"]
+    assert routing["effort"] == "low"
+    assert "fallback" not in routing
+
+
+@pytest.mark.asyncio
+async def test_routing_fallback_is_disclosed_on_the_routing_event(client, monkeypatch):
+    """O1: an inferred-reasoning turn served on routine says so."""
+    monkeypatch.setenv("MOCK_LLM", "false")
+    monkeypatch.setenv("DEFAULT_PROVIDER", "openrouter")
+    get_settings.cache_clear()
+
+    async def fake_completion_with_tools(*_args, **_kwargs):
+        yield {
+            "type": "routing_fallback",
+            "from_profile": "reasoning",
+            "to_profile": "routine",
+            "cause": "capability_unavailable",
+        }
+        yield {"type": "content_delta", "content": "Answer"}
+        yield {"type": "done"}
+
+    monkeypatch.setattr(daemon_module, "create_default_registry", lambda **_kwargs: object())
+    monkeypatch.setattr(daemon_module, "completion_with_tools", fake_completion_with_tools)
+
+    response = await client.post("/chat", json={"message": "compare these two options"})
+    assert response.status_code == 200
+    routing = _routing_payloads(response.text)[-1]
+    assert routing["tier"] == "reasoning"
+    assert routing["profile"] == "routine"
+    assert routing["fallback"] == {
+        "from_profile": "reasoning",
+        "to_profile": "routine",
+        "cause": "capability_unavailable",
+    }
+    assert routing["reason_codes"] == ["complexity_signal", "fallback_capability_unavailable"]
+    assert "event: final" in response.text

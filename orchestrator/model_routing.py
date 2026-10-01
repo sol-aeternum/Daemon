@@ -695,15 +695,24 @@ class RoutingState:
     selected_route_id: str | None = None
     selected_group: str | None = None
     explicit: bool = False
+    #: The reasoning effort actually sent with the selected model, if any.
+    selected_effort: str | None = None
     resolution: ModelRouting | None = field(default=None, repr=False, compare=False)
 
     def record_selection(
-        self, *, model: str, route_id: str, group: str | None, explicit: bool
+        self,
+        *,
+        model: str,
+        route_id: str,
+        group: str | None,
+        explicit: bool,
+        effort: str | None = None,
     ) -> None:
         self.selected_model = model
         self.selected_route_id = route_id
         self.selected_group = group
         self.explicit = explicit
+        self.selected_effort = effort
 
 
 _routing: ContextVar[RoutingState | None] = ContextVar("model_routing_state", default=None)
