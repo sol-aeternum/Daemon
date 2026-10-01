@@ -1056,6 +1056,7 @@ def _priced_candidates(
     *,
     check_budget: bool = True,
     account_allow_premium: bool = True,
+    assume_premium_capability: bool = False,
 ) -> list[tuple[int, int, RoutePolicy, bool, model_routing.RoutedModel | None]]:
     """Qualified routes for this request, in the order they should be attempted.
 
@@ -1148,7 +1149,11 @@ def _priced_candidates(
             continue
         premium_route = route_class == "premium"
         premium = premium_route or extended
-        if premium_route and "premium_routing" not in policy.capabilities:
+        if (
+            premium_route
+            and "premium_routing" not in policy.capabilities
+            and not assume_premium_capability
+        ):
             continue
         if premium_route and not explicit:
             # Bounded automatic escalation: a profile only reaches a premium route
@@ -1549,6 +1554,22 @@ async def guarded_completion(
                 )
         else:
             choose_route(profile=routing.profile)
+            # Diagnosis only, never admission: if the profile's own routes would be
+            # eligible with premium routing, the missing capability is what blocks
+            # this request. That is durable, so it is refused truthfully (as an
+            # explicit premium pick is) rather than as a retryable capacity error,
+            # and it takes precedence over budget and context.
+            if "premium_routing" not in policy.capabilities and _priced_candidates(
+                policy,
+                input_size,
+                params,
+                model,
+                scope.extended,
+                check_budget=False,
+                account_allow_premium=scope.account_allow_premium,
+                assume_premium_capability=True,
+            ):
+                raise ComputeUnavailable("capability_unavailable", "Premium routing unavailable")
         if _priced_candidates(
             policy,
             input_size,

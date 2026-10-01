@@ -359,24 +359,30 @@ async def test_premium_auto_escalation_requires_capability_and_budget_without_ch
 ) -> None:
     flash = named_route(FLASH, price=0)
     premium = named_route(OPUS, price=1_000, premium=True)
-    for capabilities, budget, admitted in [
-        ({"chat", "premium_routing"}, 100_000, True),
-        ({"chat"}, 100_000, False),
-        ({"chat", "premium_routing"}, 0, False),
+    for capabilities, budget, denial in [
+        ({"chat", "premium_routing"}, 100_000, None),
+        # The missing capability is the binding blocker: refused truthfully, never
+        # as a retryable capacity error and never by a cheaper downgrade.
+        ({"chat"}, 100_000, "capability_unavailable"),
+        # Capability precedes budget when both would block.
+        ({"chat"}, 0, "capability_unavailable"),
+        ({"chat", "premium_routing"}, 0, "budget_exceeded"),
     ]:
         with dispatch_fixture(
             monkeypatch, [flash, premium], capabilities=capabilities, budget=budget
         ) as (service, provider, _):
             with model_routing.routing_context("reasoning"):
-                if admitted:
+                if denial is None:
                     await runtime.guarded_completion(messages=[{"role": "user", "content": "hard"}])
                     assert last_kwargs(provider)["model"] == OPUS
                     assert service.reserve.await_args.kwargs["premium"] is True
                 else:
-                    with pytest.raises(runtime.ComputeUnavailable):
+                    with pytest.raises(runtime.ComputeUnavailable) as denied:
                         await runtime.guarded_completion(
                             messages=[{"role": "user", "content": "hard"}]
                         )
+                    assert denied.value.code == denial
+                    assert denied.value.code not in runtime.RETRYABLE_COMPUTE_CODES
                     service.reserve.assert_not_awaited()
                     provider.assert_not_awaited()
 

@@ -163,6 +163,13 @@ routes. Premium eligibility does not itself authorize spending: every attempt
 must reserve capacity. Explicit model selections stay exact and still pass
 capability, privacy and accounting checks.
 
+When an automatic request has no eligible route only because the account lacks
+`premium_routing` (for example a reasoning-classified request on a Free account
+after its trial), it is refused with `capability_unavailable`, the same code as an
+explicit premium pick, and is not marked retryable. It is never answered by a
+cheaper model. When several blockers apply, capability is reported before budget,
+and budget before context.
+
 Nested automatic helpers inherit the enclosing account scope's premium ceiling:
 entering a reasoning profile inside a routine/background account scope cannot
 enable premium routes. Explicit authorized model pins still require account
