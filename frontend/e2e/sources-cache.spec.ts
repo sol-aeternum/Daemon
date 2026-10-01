@@ -129,7 +129,7 @@ test('new worker activation removes only matching old snapshot cache entries', a
       (key) =>
         key.includes('/web-snapshots') &&
         !key.includes('/assets/') &&
-        !key.startsWith('https://foreign.test'),
+        new URL(key).origin !== 'https://foreign.test',
     ),
   ).toEqual([]);
   expect(state.keys).toContain('https://foreign.test' + path);

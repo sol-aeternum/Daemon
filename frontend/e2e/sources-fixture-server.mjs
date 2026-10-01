@@ -3,6 +3,7 @@
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
+import { fixtureURL, frontendURL } from './sources-fixture-url.mjs';
 
 const app = 'http://127.0.0.1:3102';
 const conversation = '11111111-1111-4111-8111-111111111111';
@@ -259,23 +260,31 @@ const next = spawn(
   { stdio: 'inherit' },
 );
 const api = http.createServer((request, response) => {
-  if (
-    !fixture(request, response, new URL(request.url, 'http://127.0.0.1:3103'))
-  )
+  let url;
+  try {
+    url = fixtureURL(request.url, 'http://127.0.0.1:3103');
+  } catch {
+    json(response, { detail: 'Invalid fixture request target' }, 400);
+    return;
+  }
+  if (!fixture(request, response, url))
     json(response, { detail: 'Fixture not found' }, 404);
 });
 const proxy = http.createServer(async (request, response) => {
-  const url = new URL(request.url, app);
+  let url;
+  try {
+    url = fixtureURL(request.url, app);
+  } catch {
+    json(response, { detail: 'Invalid fixture request target' }, 400);
+    return;
+  }
   if (fixture(request, response, url)) return;
   try {
-    const upstream = await fetch(
-      `http://127.0.0.1:3101${url.pathname}${url.search}`,
-      {
-        method: request.method,
-        headers: { ...request.headers, host: '127.0.0.1:3101' },
-        redirect: 'manual',
-      },
-    );
+    const upstream = await fetch(frontendURL(url), {
+      method: request.method,
+      headers: { ...request.headers, host: '127.0.0.1:3101' },
+      redirect: 'manual',
+    });
     const headers = Object.fromEntries(upstream.headers);
     for (const key of [
       'content-encoding',
