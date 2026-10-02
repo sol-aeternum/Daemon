@@ -117,52 +117,126 @@ def test_invalid_manifests_are_refused(tmp_path: Path, changes: dict[str, Any]) 
         runner.load_manifest(_manifest_variant(tmp_path, **changes))
 
 
-def _document(plan: tuple[Any, ...], charges: dict[str, int | None]) -> dict[str, Any]:
+def _row(charge: int | None, *, usage: bool = True, status: str = "completed") -> dict[str, Any]:
+    return {
+        "status": status,
+        "calls": [
+            {
+                "number": 1,
+                "status": "completed",
+                "usage": {"prompt_tokens": 100, "completion_tokens": 50} if usage else {},
+                "reasoning_tokens": 20,
+                "account_charge_microusd": charge,
+                "reservation_bound_microusd": 5_000,
+                "provider_cost_usd": None,
+            }
+        ],
+        "final_response": "An answer." if status == "completed" else None,
+        "tool_steps": [],
+        "tool_call_count": 0,
+        "task_failures": [],
+        "stop": {"category": "transport"} if status == "stopped" else None,
+        "latency_seconds": 1.5,
+    }
+
+
+def _document(
+    plan: tuple[Any, ...],
+    charges: dict[str, int | None] | None = None,
+    *,
+    include: Any = None,
+    overrides: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """A results document for the calibration schedule, with recorded rows chosen by
+    ``include`` (all by default) and individual rows replaced by ``overrides``."""
     manifest, fixtures, schedule, profile = plan
     attempts: dict[str, Any] = {}
     for attempt in schedule:
-        charge = charges.get(attempt.configuration, 1_000)
-        attempts[attempt.attempt_id] = {
-            "status": "completed",
-            "calls": [
-                {
-                    "number": 1,
-                    "status": "completed",
-                    "usage": {"prompt_tokens": 100, "completion_tokens": 50},
-                    "reasoning_tokens": 20,
-                    "account_charge_microusd": charge,
-                    "reservation_bound_microusd": 5_000,
-                    "provider_cost_usd": None,
-                }
-            ],
-            "final_response": "An answer.",
-            "tool_steps": [],
-            "tool_call_count": 0,
-            "task_failures": [],
-            "latency_seconds": 1.5,
-        }
+        if include is not None and not include(attempt):
+            continue
+        attempts[attempt.attempt_id] = _row((charges or {}).get(attempt.configuration, 1_000))
+    attempts.update(overrides or {})
     state = {"identity": {"fixtures_sha256": fixtures.sha256}, "attempts": attempts}
     return runner.results_document(state, fixtures, schedule, profile, manifest)
 
 
-def test_summary_projects_pilot_spend_from_measured_charges(plan) -> None:
-    document = _document(plan, {})
-    summary = runner.summarize(document, plan[1])
+def _summary(plan: tuple[Any, ...], document: dict[str, Any]) -> dict[str, Any]:
+    return runner.summarize(document, plan[1], plan[2])
+
+
+def test_fully_covered_calibration_projects_pilot_spend(plan) -> None:
+    summary = _summary(plan, _document(plan))
     row = summary["configurations"]["luna-low"]
-    assert row["attempts"] == 20
+    assert (row["planned_attempts"], row["recorded_attempts"], row["missing_attempts"]) == (
+        20,
+        20,
+        0,
+    )
     assert row["account_charge_microusd_mean_per_attempt"] == 1_000
     assert row["reasoning_tokens"]["mean"] == 20
+    assert row["f_unknown_usage"] == 0.0 and row["f_full_hold"] == 0.0
     projection = summary["pilot_projection"]
+    assert projection["complete"] is True and projection["incomplete_reasons"] == []
     assert projection["cases"] == 40 and projection["repeats"] == 3
     assert projection["at_mean_microusd"] == 1_000 * 40 * 3 * 5
 
 
+def _assert_withheld(summary: dict[str, Any]) -> None:
+    projection = summary["pilot_projection"]
+    assert projection["complete"] is False
+    assert projection["incomplete_reasons"]
+    assert projection["at_mean_microusd"] is None and projection["at_max_microusd"] is None
+
+
+def test_empty_interrupted_report_never_projects_zero(plan) -> None:
+    summary = _summary(plan, _document(plan, include=lambda attempt: False))
+    _assert_withheld(summary)
+    assert set(summary["configurations"]) == set(CONFIGURATIONS)
+    assert all(row["missing_attempts"] == 20 for row in summary["configurations"].values())
+    assert summary["account_charge_microusd_total"] is None
+
+
+def test_one_recorded_configuration_does_not_complete_the_projection(plan) -> None:
+    summary = _summary(plan, _document(plan, include=lambda a: a.configuration == "luna-low"))
+    _assert_withheld(summary)
+    assert summary["configurations"]["luna-low"]["pilot_projection_microusd"] is not None
+    assert summary["configurations"]["sol-6.1-high"]["recorded_attempts"] == 0
+
+
+def test_missing_dev_cases_withhold_the_projection(plan) -> None:
+    summary = _summary(plan, _document(plan, include=lambda a: a.case_id != "SYN-2"))
+    _assert_withheld(summary)
+    row = summary["configurations"]["sonnet-5-high"]
+    assert row["missing_attempt_ids"] == ["SYN-2-sonnet-5-high-r1"]
+    assert row["pilot_projection_microusd"] is None
+
+
+def test_stopped_attempt_withholds_the_projection(plan) -> None:
+    stopped = {"EVD-1-luna-low-r1": _row(1_000, status="stopped")}
+    summary = _summary(plan, _document(plan, overrides=stopped))
+    _assert_withheld(summary)
+    assert summary["configurations"]["luna-low"]["stopped_attempts"] == 1
+
+
 def test_unknown_charge_withholds_the_projection(plan) -> None:
-    summary = runner.summarize(_document(plan, {"sol-6.1-high": None}), plan[1])
-    assert summary["configurations"]["sol-6.1-high"]["f_unknown"] == 1.0
-    assert summary["configurations"]["sol-6.1-high"]["pilot_projection_microusd"] is None
-    assert summary["pilot_projection"]["complete"] is False
-    assert summary["pilot_projection"]["at_mean_microusd"] is None
+    summary = _summary(plan, _document(plan, {"sol-6.1-high": None}))
+    _assert_withheld(summary)
+    row = summary["configurations"]["sol-6.1-high"]
+    assert row["f_unknown_charge"] == 1.0 and row["attempts_with_unknown_charge"] == 20
+    assert row["f_unknown_usage"] == 0.0
+    assert row["pilot_projection_microusd"] is None
+
+
+def test_failed_attempt_settled_at_full_hold_is_measured_separately(plan) -> None:
+    failed = {"COD-2-luna-high-r1": _row(5_000, usage=False, status="failed")}
+    summary = _summary(plan, _document(plan, overrides=failed))
+    row = summary["configurations"]["luna-high"]
+    # Unknown provider usage settled at the full hold: the charge is known, so the
+    # projection can include it, but the unknown-usage risk is reported on its own.
+    assert row["calls_without_provider_usage"] == 1 and row["f_unknown_usage"] == 0.05
+    assert row["calls_settled_at_full_hold"] == 1 and row["f_unknown_charge"] == 0.0
+    assert row["account_charge_microusd_max_per_attempt"] == 5_000
+    assert summary["pilot_projection"]["complete"] is True
 
 
 def test_review_packet_is_blinded_and_mapped_separately(plan) -> None:

@@ -640,27 +640,74 @@ def _token_stats(values: Sequence[int]) -> JsonObject:
     }
 
 
-def summarize(document: Mapping[str, Any], fixtures: follow.FixtureSet) -> JsonObject:
+TERMINAL_STATUSES: Final[frozenset[str]] = frozenset({"completed", "failed"})
+
+
+def _call_accounting(call: Mapping[str, Any]) -> tuple[bool, bool, bool]:
+    """(provider usage reported, settled at the full hold, ledger charge unknown).
+
+    These are separate risks. A call whose provider omitted usage settles at its full
+    reservation hold, so its ledger charge is known but conservative: that frequency is
+    the protocol's ``f_unknown``. A missing ledger charge is a different gap (the
+    executor keeps the full bound in its own accounting for such a call).
+    """
+    usage_reported = (
+        _usage_tokens(call, "prompt_tokens") is not None
+        and _usage_tokens(call, "completion_tokens") is not None
+    )
+    charge = _int_or_none(call.get("account_charge_microusd"))
+    bound = _int_or_none(call.get("reservation_bound_microusd"))
+    full_hold = charge is not None and bound is not None and bound > 0 and charge >= bound
+    return usage_reported, full_hold, charge is None
+
+
+def _fraction(count: int, total: int) -> float | None:
+    return round(count / total, 4) if total else None
+
+
+def summarize(
+    document: Mapping[str, Any],
+    fixtures: follow.FixtureSet,
+    schedule: Sequence[EvalAttempt],
+) -> JsonObject:
     """Measured tokens, calls, cost and latency per configuration, and a pilot projection.
 
-    Purely observational. Failed and unanswered attempts stay in every denominator;
-    an attempt whose charge is unknown is counted, never priced at zero, and the
-    projection is withheld for a configuration that has any.
+    Purely observational, and checked against the frozen schedule: every planned
+    configuration is reported, including ones with no recorded attempt, with its
+    planned, recorded, terminal, stopped and missing counts. Failed and unanswered
+    attempts stay in every denominator; an unknown charge is never priced at zero.
+    The pilot projection is withheld unless every planned attempt is recorded and
+    terminal and every recorded charge is known; ``incomplete_reasons`` says why.
     """
-    rows = [row for row in document.get("attempts", []) if isinstance(row, dict)]
+    rows = {
+        str(row.get("attempt_id")): row
+        for row in document.get("attempts", [])
+        if isinstance(row, dict)
+    }
     pilot_cases = sum(1 for case in fixtures.cases if case.stage in PILOT_SPLITS)
-    by_configuration: dict[str, list[JsonObject]] = {}
-    for row in rows:
-        by_configuration.setdefault(str(row.get("configuration")), []).append(row)
+    pilot_attempts = pilot_cases * PILOT_REPEATS
+    planned: dict[str, list[EvalAttempt]] = {}
+    for attempt in schedule:
+        planned.setdefault(attempt.configuration, []).append(attempt)
+    unplanned = sorted(set(rows) - {attempt.attempt_id for attempt in schedule})
     configurations: dict[str, JsonObject] = {}
     projected_mean_total = 0
     projected_max_total = 0
-    projection_complete = True
-    for label, items in sorted(by_configuration.items()):
+    incomplete: list[str] = []
+    if unplanned:
+        incomplete.append(f"{len(unplanned)} recorded attempt(s) not in the schedule")
+    for label, attempts in planned.items():
+        items = [rows[a.attempt_id] for a in attempts if a.attempt_id in rows]
+        missing = sorted(a.attempt_id for a in attempts if a.attempt_id not in rows)
         calls = [call for row in items for call in row.get("calls", []) if isinstance(call, dict)]
+        accounting = [_call_accounting(call) for call in calls]
         charges = [_int_or_none(row.get("account_charge_microusd")) for row in items]
         known = [charge for charge in charges if charge is not None]
         unknown = len(charges) - len(known)
+        terminal = sum(1 for row in items if row.get("status") in TERMINAL_STATUSES)
+        stopped = sum(
+            1 for row in items if row.get("stop") or row.get("status") not in TERMINAL_STATUSES
+        )
         latencies = [
             float(row["latency_seconds"])
             for row in items
@@ -669,16 +716,26 @@ def summarize(document: Mapping[str, Any], fixtures: follow.FixtureSet) -> JsonO
         statuses: dict[str, int] = {}
         for row in items:
             statuses[str(row.get("status"))] = statuses.get(str(row.get("status")), 0) + 1
-        mean_charge = round(statistics.fmean(known)) if known and not unknown else None
-        max_charge = max(known) if known and not unknown else None
-        pilot_attempts = pilot_cases * PILOT_REPEATS
-        if mean_charge is None or max_charge is None:
-            projection_complete = False
-        else:
+        covered = not missing and terminal == len(attempts) and not unknown and bool(items)
+        if missing:
+            incomplete.append(f"{label}: {len(missing)} planned attempt(s) not recorded")
+        if stopped:
+            incomplete.append(f"{label}: {stopped} attempt(s) stopped or interrupted")
+        if unknown:
+            incomplete.append(f"{label}: {unknown} attempt(s) with an unknown ledger charge")
+        mean_charge = round(statistics.fmean(known)) if covered else None
+        max_charge = max(known) if covered else None
+        if mean_charge is not None and max_charge is not None:
             projected_mean_total += mean_charge * pilot_attempts
             projected_max_total += max_charge * pilot_attempts
         configurations[label] = {
-            "attempts": len(items),
+            "planned_attempts": len(attempts),
+            "recorded_attempts": len(items),
+            "terminal_attempts": terminal,
+            "stopped_attempts": stopped,
+            "missing_attempts": len(missing),
+            "missing_attempt_ids": missing,
+            "attempts_without_dispatch": sum(1 for row in items if not row.get("calls")),
             "statuses": dict(sorted(statuses.items())),
             "calls": len(calls),
             "calls_per_attempt_mean": round(len(calls) / len(items), 3) if items else None,
@@ -700,36 +757,49 @@ def summarize(document: Mapping[str, Any], fixtures: follow.FixtureSet) -> JsonO
                 for failure in row.get("task_failures", [])
                 if isinstance(failure, dict) and failure.get("kind") == "truncated_response"
             ),
-            "account_charge_microusd_total": sum(known) if not unknown else None,
+            "calls_without_provider_usage": sum(1 for usage, _, _ in accounting if not usage),
+            "calls_settled_at_full_hold": sum(1 for _, full, _ in accounting if full),
+            "calls_with_unknown_charge": sum(1 for _, _, gap in accounting if gap),
+            "f_unknown_usage": _fraction(
+                sum(1 for usage, _, _ in accounting if not usage), len(calls)
+            ),
+            "f_full_hold": _fraction(sum(1 for _, full, _ in accounting if full), len(calls)),
+            "f_unknown_charge": _fraction(sum(1 for _, _, gap in accounting if gap), len(calls)),
+            "account_charge_microusd_total": sum(known) if items and not unknown else None,
             "account_charge_microusd_mean_per_attempt": mean_charge,
             "account_charge_microusd_max_per_attempt": max_charge,
             "attempts_with_unknown_charge": unknown,
-            "f_unknown": round(unknown / len(items), 4) if items else None,
             "latency_seconds_median": statistics.median(latencies) if latencies else None,
             "latency_seconds_p95": _percentile(latencies, 0.95),
             "pilot_projection_microusd": None
             if mean_charge is None or max_charge is None
             else {"at_mean": mean_charge * pilot_attempts, "at_max": max_charge * pilot_attempts},
         }
-    known_rows = [_int_or_none(row.get("account_charge_microusd")) for row in rows]
+    complete = not incomplete and bool(planned)
+    known_rows = [_int_or_none(row.get("account_charge_microusd")) for row in rows.values()]
     return {
         "summary_version": SUMMARY_VERSION,
         "experiment": document.get("experiment"),
         "manifest_sha256": document.get("manifest_sha256"),
+        "planned_attempts": len(schedule),
         "recorded_attempts": len(rows),
+        "unplanned_attempt_ids": unplanned,
         "account_charge_microusd_total": sum(v for v in known_rows if v is not None)
-        if all(v is not None for v in known_rows)
+        if known_rows and all(v is not None for v in known_rows)
         else None,
         "configurations": configurations,
         "pilot_projection": {
             "cases": pilot_cases,
             "repeats": PILOT_REPEATS,
-            "complete": projection_complete,
-            "at_mean_microusd": projected_mean_total if projection_complete else None,
-            "at_max_microusd": projected_max_total if projection_complete else None,
+            "complete": complete,
+            "incomplete_reasons": incomplete,
+            "at_mean_microusd": projected_mean_total if complete else None,
+            "at_max_microusd": projected_max_total if complete else None,
             "method": (
                 "Per configuration, the calibration's mean (and maximum) settled charge per "
-                "attempt times the pilot's attempts. Calibration covers dev cases only; val "
+                "attempt times the pilot's attempts, only when every planned calibration "
+                "attempt is recorded, terminal and has a known charge. Full-hold settlements "
+                "are included at their charged amount. Calibration covers dev cases only; val "
                 "cases are unseen, so the at_max figure is the planning reference."
             ),
         },
@@ -826,9 +896,14 @@ def _write_new_text(path: Path, text: str) -> None:
         os.fsync(stream.fileno())
 
 
-def render_report(document: JsonObject, fixtures: follow.FixtureSet, directory: Path) -> None:
+def render_report(
+    document: JsonObject,
+    fixtures: follow.FixtureSet,
+    schedule: Sequence[EvalAttempt],
+    directory: Path,
+) -> None:
     """Write the summary and review artifacts to new private files; never overwrite."""
-    follow.write_results(directory / "summary.json", summarize(document, fixtures))
+    follow.write_results(directory / "summary.json", summarize(document, fixtures, schedule))
     packet, verdicts, mapping = review_packet(document, fixtures)
     follow.write_results(directory / "review-map.json", mapping)
     follow.write_results(directory / "human-verdicts.json", {"verdicts": verdicts})
@@ -877,7 +952,10 @@ async def run(args: argparse.Namespace) -> int:
             "unplanned recorded attempt",
         )
         render_report(
-            results_document(state, fixtures, schedule, profile, manifest), fixtures, directory
+            results_document(state, fixtures, schedule, profile, manifest),
+            fixtures,
+            schedule,
+            directory,
         )
         return 0
     _require(args.account is not None, "--account is required")
@@ -970,6 +1048,7 @@ async def run(args: argparse.Namespace) -> int:
                 render_report(
                     results_document(state, fixtures, schedule, profile, manifest, final),
                     fixtures,
+                    schedule,
                     directory,
                 )
     finally:

@@ -172,11 +172,19 @@ through an isolated catalog with empty presets.
   policies and refuses a whole-run planning bound above the manifest cap. The
   calibration's planning bound is USD 3.56 (no system prompt is sent, unlike the
   planner's allowance).
-- A completed run writes `results.json`, `summary.json` (tokens, calls, charges,
-  latency and `f_unknown` per configuration, plus the pilot projection),
-  `human-review.md` and `human-verdicts.json` (blinded: random labels, no model,
-  effort, cost or latency) and a separate `review-map.json`. `--report`
-  re-renders them offline.
+- A completed run writes `results.json`, `summary.json`, `human-review.md` and
+  `human-verdicts.json` (blinded: random labels, no model, effort, cost or latency)
+  and a separate `review-map.json`. `--report` re-renders them offline, including
+  for a partial run.
+- `summary.json` reports, per planned configuration, planned, recorded, terminal,
+  stopped and missing attempts, tokens, calls, charges and latency. It keeps three
+  accounting rates apart:
+  - `f_unknown_usage`, calls without provider usage; this is the formula's
+    `f_unknown`, and such calls settle at the full hold;
+  - `f_full_hold`, calls charged their whole hold;
+  - `f_unknown_charge`, calls with no recorded ledger charge.
+- The pilot projection is withheld, with reasons, unless every planned calibration
+  attempt is recorded and terminal and every charge is known.
 - Limits: single non-streaming calls with no system prompt or memory, so this
   measures the models on the cases, not the production chat path; first-token time
   is not recorded. Answers can still reveal their model by style.
