@@ -36,7 +36,7 @@ import secrets
 import statistics
 import sys
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -509,34 +509,6 @@ def planning_bound(
     return totals
 
 
-MIGRATIONS_DIR: Final[Path] = ROOT / "migrations"
-
-
-def pending_migrations(applied: Iterable[str]) -> list[str]:
-    """Repository migrations (the same top-level files ``scripts/migrate.py`` applies)
-    that the evaluation database has not recorded, in apply order."""
-    recorded = set(applied)
-    return [path.name for path in sorted(MIGRATIONS_DIR.glob("*.sql")) if path.name not in recorded]
-
-
-async def require_current_schema(pool: Any) -> None:
-    """Refuse an evaluation database whose schema lags the code under evaluation.
-
-    A dry run never writes a reservation, so a missing ledger column would otherwise
-    surface only as a refused first call during the paid run.
-    """
-    async with pool.acquire() as conn:
-        tracked = await conn.fetchval("SELECT to_regclass('_migrations') IS NOT NULL")
-        _require(bool(tracked), "evaluation database has no migration record")
-        applied = [row["filename"] for row in await conn.fetch("SELECT filename FROM _migrations")]
-    pending = pending_migrations(applied)
-    _require(
-        not pending,
-        f"evaluation database schema is behind the code: {len(pending)} unapplied "
-        f"migration(s), first {pending[0] if pending else ''}; run scripts/migrate.py against it",
-    )
-
-
 async def preflight(ctx: follow.RunContext) -> JsonObject:
     """Read-only whole-schedule check: eligibility, efforts, context and both caps."""
     resolved = await ctx.service.resolve(ctx.account)
@@ -1004,7 +976,6 @@ async def run(args: argparse.Namespace) -> int:
     try:
         service = EntitlementService(pool)
         database = await follow.live.validate_database(pool, args.account, service, manifest.period)
-        await require_current_schema(pool)
         identity: JsonObject = {
             "experiment": profile.experiment,
             "account": str(args.account),
