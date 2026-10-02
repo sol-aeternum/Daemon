@@ -39,6 +39,17 @@ retains its limits, price ceilings, privacy controls and 6 October expiry; see
 [INFERENCE_ROUTE_APPROVALS.md](INFERENCE_ROUTE_APPROVALS.md#sol-61-replacement--30-september-2026).
 Routine/background/research remain Luna-only for automatic selection.
 
+### Luna medium default — 3 October 2026
+
+The operator approved Luna's default effort moving from `low` to `medium` for
+`routine`, `background` and `research` after the B3 evaluation
+([protocol](REASONING_EVAL_PROTOCOL.md#b3-result-3-october-2026)). Medium passed the
+pre-registered rule on the test split: it was 0 points below always-Sol 6.1 on hard
+and deceptively hard cases, at 22.8% of always-Sol's cost per success. The test
+split could not separate medium from low; the gain over low rests on development and
+validation tool and planning cases. The group is renamed `luna`. Rollback is
+reverting the preset in `config/model_routing.json`.
+
 ### Approved Luna-first configuration — 28 September 2026
 
 The user approved a Luna-only automatic candidate group for `routine`,

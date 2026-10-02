@@ -1,7 +1,7 @@
 {
   "version": 1,
   "provisional": true,
-  "notes": "PROVISIONAL workload routing metadata. This file decides only WHICH MODEL FITS A WORKLOAD and, within a workload, which centrally validated reasoning controls to send. It grants no permission: every model named here must still clear the independent qualification gate in config/inference_policy.json (dated approval, operator review, verified availability, pinned https endpoint, pinned ZDR transport block, account-side logging disabled, free-model training opt-out, pinned price ceilings, declared model_capabilities and token limits) and must still fit the account's resolved entitlements, budget and context bounds before it can be dispatched. model_routing.json contains no prices, no approvals and no capability grants; commercial.json remains the only source of account capabilities and limits. The routine, background and research profiles are the one measured exception, and only inside a narrow envelope: the 28 September 2026 follow-up screen recorded 16/16 human-acceptable held-out answers for openrouter/openai/gpt-6-luna at low effort with no premium semantic advantage, which supports that single automatic candidate and nothing beyond the bounded routine, tool and source-synthesis tasks it was actually shown. Every other placement below, including the reasoning and council pool orderings, the per-profile minimum output budgets and the per-model reasoning presets, remains an UNMEASURED PLACEMENT PENDING REAL EVALUATION: an engineering hypothesis about which model is good enough for which task, not quality evidence. A generic capability flag (text/tools/json_schema) is a protocol fact and never implies answer quality, so a cheap model is only ever chosen because it sits in the first ACCEPTABLE group for that workload, never because it is cheap. Nothing here is fetched at runtime: the model catalogue is not consulted, a model name is never evidence of qualification, and an unlisted model is not routable by profile. Escalation groups exist so a demanding workload has a bounded, ordered, budget-aware path to a stronger model; the bound is the group list, so there is no unbounded premium climb. The routine, background and research profiles deliberately carry no fallback group at all: one accepted automatic candidate each means an unavailable or ineligible Luna is a truthful unavailable/capacity result rather than a silent substitution, and admitting another automatic alternative requires its own evaluation and approval.",
+  "notes": "PROVISIONAL workload routing metadata. This file decides only WHICH MODEL FITS A WORKLOAD and, within a workload, which centrally validated reasoning controls to send. It grants no permission: every model named here must still clear the independent qualification gate in config/inference_policy.json (dated approval, operator review, verified availability, pinned https endpoint, pinned ZDR transport block, account-side logging disabled, free-model training opt-out, pinned price ceilings, declared model_capabilities and token limits) and must still fit the account's resolved entitlements, budget and context bounds before it can be dispatched. model_routing.json contains no prices, no approvals and no capability grants; commercial.json remains the only source of account capabilities and limits. The routine, background and research profiles are the one measured exception, and only inside a narrow envelope: the 28 September 2026 follow-up screen recorded 16/16 human-acceptable held-out answers for openrouter/openai/gpt-6-luna at low effort with no premium semantic advantage, and the 3 October 2026 B3 evaluation found medium effort non-inferior to always-premium on its test split, which together support that single automatic candidate at medium effort and nothing beyond the bounded routine, tool and source-synthesis tasks it was actually shown. Every other placement below, including the reasoning and council pool orderings, the per-profile minimum output budgets and the per-model reasoning presets, remains an UNMEASURED PLACEMENT PENDING REAL EVALUATION: an engineering hypothesis about which model is good enough for which task, not quality evidence. A generic capability flag (text/tools/json_schema) is a protocol fact and never implies answer quality, so a cheap model is only ever chosen because it sits in the first ACCEPTABLE group for that workload, never because it is cheap. Nothing here is fetched at runtime: the model catalogue is not consulted, a model name is never evidence of qualification, and an unlisted model is not routable by profile. Escalation groups exist so a demanding workload has a bounded, ordered, budget-aware path to a stronger model; the bound is the group list, so there is no unbounded premium climb. The routine, background and research profiles deliberately carry no fallback group at all: one accepted automatic candidate each means an unavailable or ineligible Luna is a truthful unavailable/capacity result rather than a silent substitution, and admitting another automatic alternative requires its own evaluation and approval.",
   "models": [
     {
       "model": "openrouter/deepseek/deepseek-v4.1-flash",
@@ -34,10 +34,10 @@
       "suitability": ["background", "council", "research", "routine"],
       "reasoning_efforts": ["max", "xhigh", "high", "medium", "low", "none"],
       "parameter_presets": {
-        "default": {"reasoning_effort": "low"},
+        "default": {"reasoning_effort": "medium"},
         "council": {"reasoning_effort": "medium", "include_reasoning": true}
       },
-      "notes": "Provisional economical candidate and the single accepted automatic candidate for the routine, background and research profiles, at its low default effort. That placement rests on 16/16 human-acceptable held-out answers inside one narrow bounded screen; it is not evidence for memory helpers, general reasoning, coding or demanding work. Its supported effort ladder includes medium; effort support is not a quality ranking, and the council preset and the reasoning/council placements are unchanged."
+      "notes": "Provisional economical candidate and the single accepted automatic candidate for the routine, background and research profiles, at its medium default effort. Medium was approved on 3 October 2026 after the B3 evaluation (docs/REASONING_EVAL_PROTOCOL.md): it passed the pre-registered rule on the test split, which could not separate it from low; its gain over low rests on development and validation tool and planning cases. The earlier low placement rested on 16/16 human-acceptable held-out answers inside one narrow bounded screen. Neither is evidence for memory helpers, general reasoning, coding or demanding work, and the council preset and the reasoning/council placements are unchanged."
     },
     {
       "model": "openrouter/google/gemini-3.8-flash",
@@ -134,13 +134,13 @@
       "diversity": {"distinct_developers": false},
       "groups": [
         {
-          "group": "luna-low",
+          "group": "luna",
           "models": [
             "openrouter/openai/gpt-6-luna"
           ]
         }
       ],
-      "notes": "Interactive chat and tool work. One accepted automatic candidate: Luna at its low default effort, in the profile's only group. There is no automatic fallback group, so a request Luna cannot serve is refused with a truthful unavailable/capacity result instead of being answered by a model that was never evaluated for this workload. Premium is never auto-considered here: routine and background stay routine unless the account explicitly selects a premium model. An exact manual selection is still honoured and still has to clear qualification, capability, entitlement and budget checks."
+      "notes": "Interactive chat and tool work. One accepted automatic candidate: Luna at its medium default effort, in the profile's only group. There is no automatic fallback group, so a request Luna cannot serve is refused with a truthful unavailable/capacity result instead of being answered by a model that was never evaluated for this workload. Premium is never auto-considered here: routine and background stay routine unless the account explicitly selects a premium model. An exact manual selection is still honoured and still has to clear qualification, capability, entitlement and budget checks."
     },
     {
       "profile": "background",
@@ -149,13 +149,13 @@
       "diversity": {"distinct_developers": false},
       "groups": [
         {
-          "group": "luna-low",
+          "group": "luna",
           "models": [
             "openrouter/openai/gpt-6-luna"
           ]
         }
       ],
-      "notes": "Titles, extraction and basic summaries use this routine-funded pool, which now carries the same single accepted automatic candidate as routine: Luna at low effort, with no automatic fallback group. A background job Luna cannot serve is refused rather than silently rerouted. Substantial background reasoning and consolidation use the separate reasoning profile under the same account limits."
+      "notes": "Titles, extraction and basic summaries use this routine-funded pool, which now carries the same single accepted automatic candidate as routine: Luna at medium effort, with no automatic fallback group. A background job Luna cannot serve is refused rather than silently rerouted. Substantial background reasoning and consolidation use the separate reasoning profile under the same account limits."
     },
     {
       "profile": "reasoning",
@@ -188,13 +188,13 @@
       "diversity": {"distinct_developers": false},
       "groups": [
         {
-          "group": "luna-low",
+          "group": "luna",
           "models": [
             "openrouter/openai/gpt-6-luna"
           ]
         }
       ],
-      "notes": "Ordinary source synthesis remains accessible on routine capacity; complex analysis is classified as reasoning. The single accepted automatic candidate is Luna at low effort, at this profile's larger comparable output floor. The demanding and escalation groups are removed, so there is no automatic premium candidate and no automatic fallback: an unavailable or ineligible Luna yields a truthful unavailable/capacity result. allow_premium stays true, but with no premium model in the group it now admits no automatic premium candidate; a manually selected premium route still requires account eligibility and funding."
+      "notes": "Ordinary source synthesis remains accessible on routine capacity; complex analysis is classified as reasoning. The single accepted automatic candidate is Luna at medium effort, at this profile's larger comparable output floor. The demanding and escalation groups are removed, so there is no automatic premium candidate and no automatic fallback: an unavailable or ineligible Luna yields a truthful unavailable/capacity result. allow_premium stays true, but with no premium model in the group it now admits no automatic premium candidate; a manually selected premium route still requires account eligibility and funding."
     },
     {
       "profile": "council",
