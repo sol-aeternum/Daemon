@@ -312,6 +312,32 @@ verdict existed):
 - B4 needs separate approval of the preset change: Luna medium as the routine,
   background and research default.
 
+## Sonnet 5.5 evaluation (approved 3 October 2026)
+
+The operator approved an evaluation-only route and one additional configuration
+over the pilot cases. Only the new model runs: manifest `b2_sonnet55_20261003.json`
+(40 dev+val cases × Sonnet 5.5 high × 3 repeats, 120 attempts, planning bound
+USD 7.60, cap USD 8). It pairs with `b2-pilot-20261002` by case and repeat.
+
+- **Route:** `eval-sonnet55-vertex-europe` serves `openrouter/anthropic/claude-sonnet-5.5`
+  (`claude-sonnet-5.5-20260928`).
+  - It is pinned to `google-vertex/europe` with fallbacks disabled, the same
+    transport and privacy block as the approved Sonnet 5 route.
+  - Price ceiling is USD 2.2 / 11 per million prompt / completion tokens, equal to
+    the listed price.
+  - Approval expires 2026-10-06. The route lives only in the private evaluation
+    policy and is not a serving route.
+- **Evidence** was fetched 2026-10-02T11:38Z from public OpenRouter metadata, with
+  SHA-256 provenance kept privately:
+  - the endpoint listing;
+  - the ZDR listing, which includes `google-vertex/europe` for this model;
+  - Google's provider policy (no training, no prompt retention).
+- **Known risk:** the 29 September screen kept Sonnet 5 after Sonnet 5.5
+  content-filtered a benign case on this endpoint (#344).
+- **Verdicts:** the same three-reviewer blind panel as the pilot. The comparison with
+  Sonnet 5 is paired by case but a day apart, so provider-side drift is not
+  controlled.
+
 ## Stop conditions
 
 - Rubric ambiguity found in review: revise the corpus (new version) before any calls.
