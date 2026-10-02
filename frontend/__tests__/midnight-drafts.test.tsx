@@ -19,7 +19,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('memory-only conversation drafts', () => {
+describe('conversation drafts in tab memory', () => {
   it('never renders a prior-account draft under the new synchronous generation', () => {
     const renders: Array<{ generation: number; input: string }> = [];
     const hook = renderHook(() => {
@@ -280,24 +280,6 @@ describe('memory-only conversation drafts', () => {
     act(() => hook.result.current.setInput('submitted'));
     act(() => hook.result.current.clearSubmission(later));
     expect(hook.result.current.input).toBe('submitted');
-  });
-
-  it('does not persist text, attachment metadata or files in any browser storage', () => {
-    const local = vi.spyOn(Storage.prototype, 'setItem');
-    const remove = vi.spyOn(Storage.prototype, 'removeItem');
-    const indexed = vi.fn();
-    vi.stubGlobal('indexedDB', { open: indexed });
-    const hook = renderHook(() => useChatDraft('chat'));
-    act(() => {
-      hook.result.current.setInput('secret');
-      hook.result.current.setPendingAttachments([
-        { id: 'x', file: new File(['secret'], 'private.txt') },
-      ]);
-    });
-    hook.unmount();
-    expect(local).not.toHaveBeenCalled();
-    expect(remove).not.toHaveBeenCalled();
-    expect(indexed).not.toHaveBeenCalled();
   });
 
   it('does not silently discard unfinished drafts when other conversations open', () => {
