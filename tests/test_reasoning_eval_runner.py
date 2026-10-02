@@ -248,3 +248,56 @@ def test_review_packet_is_blinded_and_mapped_separately(plan) -> None:
     assert set(mapping) == {item["label"] for item in verdicts}
     assert {item["verdict"] for item in verdicts} == {"pending"}
     assert all(item["reviewer"] is None for item in verdicts)
+
+
+def test_r2_manifest_differs_from_the_stopped_run_only_in_identity() -> None:
+    first = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    second = json.loads(MANIFEST.with_name("b2_calibration_20261002_r2.json").read_text("utf-8"))
+    assert second["experiment"] == "b2-calibration-20261002-r2"
+    for key in ("period", "corpus", "splits", "repeats", "candidates", "configurations", "bounds"):
+        assert second[key] == first[key]
+
+
+def test_every_repository_migration_must_be_applied() -> None:
+    names = sorted(path.name for path in runner.MIGRATIONS_DIR.glob("*.sql"))
+    assert names and runner.pending_migrations(names) == []
+    assert runner.pending_migrations(names[:-1]) == [names[-1]]
+    assert not any(name.startswith("rollback") for name in names)
+
+
+class _Conn:
+    def __init__(self, tracked: bool, applied: list[str]) -> None:
+        self.tracked, self.applied = tracked, applied
+
+    async def fetchval(self, _query: str) -> bool:
+        return self.tracked
+
+    async def fetch(self, _query: str) -> list[dict[str, str]]:
+        return [{"filename": name} for name in self.applied]
+
+
+class _Pool:
+    def __init__(self, conn: _Conn) -> None:
+        self.conn = conn
+
+    def acquire(self) -> Any:
+        conn = self.conn
+
+        class _Context:
+            async def __aenter__(self) -> _Conn:
+                return conn
+
+            async def __aexit__(self, *_: object) -> None:
+                return None
+
+        return _Context()
+
+
+@pytest.mark.asyncio
+async def test_schema_behind_the_code_is_refused_before_any_dispatch() -> None:
+    names = sorted(path.name for path in runner.MIGRATIONS_DIR.glob("*.sql"))
+    await runner.require_current_schema(_Pool(_Conn(True, names)))
+    with pytest.raises(runner.EvalError, match="behind the code: 1 unapplied"):
+        await runner.require_current_schema(_Pool(_Conn(True, names[:-1])))
+    with pytest.raises(runner.EvalError, match="no migration record"):
+        await runner.require_current_schema(_Pool(_Conn(False, [])))

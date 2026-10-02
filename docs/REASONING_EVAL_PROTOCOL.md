@@ -185,6 +185,14 @@ through an isolated catalog with empty presets.
   - `f_unknown_charge`, calls with no recorded ledger charge.
 - The pilot projection is withheld, with reasons, unless every planned calibration
   attempt is recorded and terminal and every charge is known.
+- Every run also refuses an evaluation database that has not applied every
+  repository migration. The first calibration run (`b2-calibration-20261002`,
+  2 October 2026) stopped at its first call because the isolated database lacked
+  migrations 036 and 040–042: the reservation insert failed and the runtime
+  refused the call as `account_unavailable`. No provider call was dispatched and
+  the ledger did not move. The database was migrated, and the calibration re-runs
+  as `b2-calibration-20261002-r2` under the same approved cap. The stopped run is
+  never resumed or replayed.
 - Limits: single non-streaming calls with no system prompt or memory, so this
   measures the models on the cases, not the production chat path; first-token time
   is not recorded. Answers can still reveal their model by style.
