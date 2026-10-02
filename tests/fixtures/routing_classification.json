@@ -76,16 +76,42 @@
     {
       "id": "overbroad_vs",
       "message": "Lakers vs Celtics score tonight?",
-      "classification": "complex",
-      "profile": "reasoning",
-      "note": "Known over-broad signal; pruning is optional work O5, not A-core."
+      "classification": "standard",
+      "profile": "routine",
+      "note": "\"vs\" removed as a signal (O5)."
     },
     {
       "id": "overbroad_should_i",
       "message": "should I bring an umbrella?",
+      "classification": "standard",
+      "profile": "routine",
+      "note": "\"should i\" removed as a signal (O5)."
+    },
+    {
+      "id": "overbroad_plan_for",
+      "message": "what's the plan for today?",
+      "classification": "standard",
+      "profile": "routine",
+      "note": "\"plan for\" removed as a signal (O5)."
+    },
+    {
+      "id": "decision_without_should_i",
+      "message": "should I migrate to Postgres?",
+      "classification": "standard",
+      "profile": "routine",
+      "note": "Accepted O5 cost: a bare should-I question now runs on the routine profile."
+    },
+    {
+      "id": "decision_still_detected",
+      "message": "which is better for this app, Postgres or MySQL?",
       "classification": "complex",
-      "profile": "reasoning",
-      "note": "Known over-broad signal; pruning is optional work O5, not A-core."
+      "profile": "reasoning"
+    },
+    {
+      "id": "explicit_decision_help",
+      "message": "help me decide between these two job offers",
+      "classification": "complex",
+      "profile": "reasoning"
     }
   ]
 }

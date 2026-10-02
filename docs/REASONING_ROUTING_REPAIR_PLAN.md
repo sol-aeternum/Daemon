@@ -28,9 +28,9 @@ Later on 1 October 2026 the product owner authorized merging each A-core PR once
 its security review is clean and CI passes; A-core is complete when all five are
 merged.
 
-**Not approved by this plan:** deployment, renewing or changing
-route approvals, optional work O1 to O7, and any Package B evaluation, budget or
-implementation. Each needs a separate explicit authorization.
+**Not approved by this plan:** renewing or changing route approvals and any Package B
+evaluation budget. Deployment and optional work were authorized on 2 October 2026;
+Package B commencement was authorized the same day, subject to its own gates.
 
 ## Quick start for an executing agent
 
@@ -98,9 +98,11 @@ new role or new premium authority.
 the main checkout, the web-fetch pilot, the Midnight UI (PR #382), and
 `orchestrator/memory/store.py` edits.
 
-## Optional work (not authorized)
+## Optional work (authorized 2 October 2026)
 
-Each item needs its own approval. None blocks A-core completion or Package B.
+The product owner authorized O1 to O7 on 2 October 2026. Each lands as its own PR under
+the same merge rule (clean security review and green required checks). None blocks
+A-core completion or Package B.
 
 | ID | Work | Notes |
 | --- | --- | --- |
@@ -108,7 +110,7 @@ Each item needs its own approval. None blocks A-core completion or Package B.
 | O2 (D3a) | Output target fitted to remaining budget, `max_tokens` equal to the hold, not below the profile floor | Addresses #342 hold-based refusal; keeps spending enforceable |
 | O3 (D3c′) | Provisional full-hold settlement reconciled down to the provider receipt | Addresses #342 unknown-usage charge; new outbound read needs approval |
 | O4 (D7) | Make the compatibility endpoint parameter-faithful | Not a confirmed defect; Open WebUI is being removed |
-| O5 | Prune over-broad signals (`vs`, `should i`, `plan for`) | Urgent only if O1 is declined |
+| O5 | Prune over-broad signals (`vs`, `should i`, `plan for`) | Implemented 2 October 2026; a bare "should I …?" now runs on routine |
 | O6 | Externally visible routing reason codes | Needs SSE compatibility tests |
 | O7 | Ledger columns for profile and effort | Needs a migration |
 

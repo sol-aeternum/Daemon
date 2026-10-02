@@ -15,13 +15,15 @@ class ModelDecision:
     profile: str = "routine"
 
 
+#: Analytic signals. "vs", "should i" and "plan for" were removed on 2 October 2026
+#: (optional work O5): they selected premium reasoning for ordinary requests such as
+#: sports scores, weather or the day's plan. Decisions are still detected through
+#: "which is better", "compare", "pros and cons", "trade-off" and "help me decide".
 COMPLEXITY_SIGNALS = {
     "compare",
     "versus",
-    "vs",
     "trade-off",
     "pros and cons",
-    "should i",
     "which is better",
     "analyze",
     "analyse",
@@ -30,7 +32,6 @@ COMPLEXITY_SIGNALS = {
     "summarize everything",
     "help me decide",
     "strategy",
-    "plan for",
     "what do you think about",
     "implications",
     "deep dive",
