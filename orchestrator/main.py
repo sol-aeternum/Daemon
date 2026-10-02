@@ -2,6 +2,7 @@ from __future__ import annotations
 
 
 import asyncio
+from dataclasses import dataclass
 import json
 import logging
 import re
@@ -914,6 +915,62 @@ def _routing_reason_codes(decision: ModelDecision, profile: str) -> list[str]:
     return ["default"]
 
 
+@dataclass(frozen=True)
+class _CompatControls:
+    """What the OpenAI-compatible request asks for beyond its last message (O4)."""
+
+    history: list[dict[str, Any]] | None
+    max_output_tokens: int | None
+    call_overrides: dict[str, Any] | None
+
+
+_COMPAT_SAMPLING_FIELDS = ("temperature", "top_p", "presence_penalty", "frequency_penalty", "stop")
+
+
+def _compat_request_controls(payload: OpenAIChatRequest, last_message: str) -> _CompatControls:
+    """Honour the compatibility request's conversation, output cap and controls.
+
+    - ``n`` other than 1 and a non-positive ``max_tokens`` are refused, not ignored.
+    - Prior user/assistant turns up to the latest user message become history; other
+      roles (system prompts are handled separately, tool results need tool calls
+      this endpoint does not run) are not replayed.
+    - ``max_tokens`` caps the answer.
+    - Sampling controls and ``stop`` are forwarded only when explicitly set *and* an
+      explicit model is requested: automatic routing chooses models that may not
+      accept them, and the request model's defaults are not caller intent.
+    """
+    if payload.n is not None and payload.n != 1:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "unsupported_parameter", "message": "Only n=1 is supported"},
+        )
+    if payload.max_tokens is not None and payload.max_tokens < 1:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_parameter", "message": "max_tokens must be positive"},
+        )
+    last_user = max(
+        index for index, message in enumerate(payload.messages) if message.role == "user"
+    )
+    turns = [
+        {"role": message.role, "content": _extract_text_content(message.content)}
+        for message in payload.messages[:last_user]
+        if message.role in {"user", "assistant"} and _extract_text_content(message.content)
+    ]
+    history = [*turns, {"role": "user", "content": last_message}] if turns else None
+    overrides: dict[str, Any] = {}
+    if payload.model not in {"default", "", "kimi", "auto"}:
+        for name in _COMPAT_SAMPLING_FIELDS:
+            value = getattr(payload, name)
+            if name in payload.model_fields_set and value is not None:
+                overrides[name] = value
+    return _CompatControls(
+        history=history,
+        max_output_tokens=payload.max_tokens,
+        call_overrides=overrides or None,
+    )
+
+
 def _admit_and_log_decision(
     model: str | None,
     *,
@@ -1447,6 +1504,7 @@ async def openai_chat_completions(
     # Classify what the user wrote; the default below is model-facing text only.
     requested_text = _extract_text_content(user_messages[-1].content)
     last_message = requested_text or "Please help with the attached input."
+    compat_controls = _compat_request_controls(payload, last_message)
     conversation_id = new_conversation_id()
     # Reuse the HTTP correlation id that the request-id middleware already
     # assigned to ``request.scope`` so the OpenAI streaming error log, the
@@ -1544,6 +1602,9 @@ async def openai_chat_completions(
                     provider_config=provider_config,
                     system_prompt=system_prompt,
                     user_message=last_message,
+                    history_messages=compat_controls.history,
+                    max_output_tokens=compat_controls.max_output_tokens,
+                    call_overrides=compat_controls.call_overrides,
                     conversation_id=conversation_id,
                     request_id=request_id,
                     ping_interval_s=settings.sse_keepalive_interval_s,
@@ -1669,6 +1730,9 @@ async def openai_chat_completions(
                 provider_config=provider_config,
                 system_prompt=system_prompt,
                 user_message=last_message,
+                history_messages=compat_controls.history,
+                max_output_tokens=compat_controls.max_output_tokens,
+                call_overrides=compat_controls.call_overrides,
                 conversation_id=conversation_id,
                 request_id=request_id,
                 ping_interval_s=settings.sse_keepalive_interval_s,
