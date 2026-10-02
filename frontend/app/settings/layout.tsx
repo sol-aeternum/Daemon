@@ -22,6 +22,7 @@ function SettingsSidebar() {
     switchConversation,
     searchQuery,
     setSearchQuery,
+    conversationSearch,
   } = useConversationHistory();
 
   const handleSidebarNavigate = (section: SidebarSection) => {
@@ -44,6 +45,7 @@ function SettingsSidebar() {
       onDelete={deleteConversation}
       searchQuery={searchQuery}
       setSearchQuery={setSearchQuery}
+      search={conversationSearch}
       isLoading={!isLoaded}
       onNavigate={handleSidebarNavigate}
       onGoHome={() => handleSidebarNavigate('home')}
