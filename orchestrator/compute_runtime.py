@@ -332,6 +332,7 @@ class ComputeScope:
     extended_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     selected_model: str | None = None
     selected_effort: str | None = None
+    selected_budget_fitted: bool = False
     outstanding: dict[Any, ReservationHold] = field(default_factory=dict)
     settled: dict[Any, int] = field(default_factory=dict)
     expected_period: str | None = None
@@ -590,6 +591,15 @@ def selected_model() -> str | None:
         return routed.selected_model
     scope = _scope.get()
     return scope.selected_model if scope else None
+
+
+def selected_budget_fitted() -> bool:
+    """Whether :func:`selected_model`'s output was fitted to the remaining budget."""
+    routed = model_routing.active_routing()
+    if routed is not None:
+        return routed.selected_budget_fitted
+    scope = _scope.get()
+    return scope.selected_budget_fitted if scope else False
 
 
 def selected_effort() -> str | None:
@@ -1153,6 +1163,27 @@ def _largest_approved_context() -> int:
     )
 
 
+def _budget_fitted_output(
+    route: RoutePolicy, input_bound: int, remaining: int, ceiling: int
+) -> int:
+    """Largest output whose conservative hold fits ``remaining``, capped at ``ceiling``.
+
+    The hold is ``ceil((input * prompt_price + output * completion_price) / 1e6)``, so it
+    fits exactly when ``output <= (remaining * 1e6 - input * prompt_price) /
+    completion_price``. The request then sends this output as ``max_tokens``, so the
+    hold still bounds what the provider can bill and spending stays enforceable.
+    """
+    price = route.price_ceiling
+    if price is None or ceiling <= 0:
+        return 0
+    spare = remaining * 1_000_000 - input_bound * price.microusd_per_1m_prompt
+    if spare < 0:
+        return 0
+    if price.microusd_per_1m_completion <= 0:
+        return ceiling
+    return min(ceiling, spare // price.microusd_per_1m_completion)
+
+
 def _priced_candidates(
     policy: Any,
     input_size: InputSize,
@@ -1164,6 +1195,8 @@ def _priced_candidates(
     account_allow_premium: bool = True,
     assume_premium_capability: bool = False,
     exclusions: dict[str, int] | None = None,
+    fit_to_budget: bool = False,
+    fitted: set[str] | None = None,
 ) -> list[tuple[int, int, RoutePolicy, bool, model_routing.RoutedModel | None]]:
     """Qualified routes for this request, in the order they should be attempted.
 
@@ -1174,7 +1207,12 @@ def _priced_candidates(
     request's budget, so a fallback is never a silent downgrade.
 
     ``exclusions``, when given, counts why routes the request could have used were
-    left out (telemetry only; it never changes the result).
+    left out at full size (telemetry only; it never changes the result).
+
+    ``fit_to_budget`` (optional work O2): when no route of a group fits the remaining
+    budget at full size and the caller set no output limit, offer the group's routes
+    at the largest output the budget covers, never below the profile's output floor.
+    ``fitted`` collects the route ids offered that way.
     """
 
     def excluded(reason: str) -> None:
@@ -1332,7 +1370,19 @@ def _priced_candidates(
         bound = route.estimate_microusd(input_size.bound, output_tokens)
         if check_budget and bound > policy.remaining_for(premium):
             excluded("budget")
-            continue
+            fitted_output = (
+                _budget_fitted_output(
+                    route, input_size.bound, policy.remaining_for(premium), output_tokens
+                )
+                if fit_to_budget and requested_output is None
+                else 0
+            )
+            if fitted_output <= 0 or fitted_output < workload.min_output_tokens:
+                continue
+            output_tokens = fitted_output
+            bound = route.estimate_microusd(input_size.bound, output_tokens)
+            if fitted is not None:
+                fitted.add(route.route_id)
         candidates.append(
             (
                 group_index,
@@ -1352,6 +1402,7 @@ def _priced_candidates(
     # at its best feasible size instead of refusing or escalating to a later group.
     for group_index, entries in pending.items():
         remaining = entries
+        group_accepted = False
         while remaining:
             capacity = max(entry[3] for entry in remaining)
             target = capacity if account_output is None else min(account_output, capacity)
@@ -1380,10 +1431,36 @@ def _priced_candidates(
                 )
                 accepted += 1
             if accepted:
+                group_accepted = True
                 break
             # Nothing at this size fits the budget: those routes are not eligible,
             # so the group's feasible target falls to its next-largest capacity.
             remaining = [entry for entry in remaining if entry[3] < target]
+        if group_accepted or not (fit_to_budget and check_budget):
+            continue
+        # No route of this group fits the budget at any capacity size: offer each at
+        # the largest output its hold can cover, if that still meets the floor.
+        for route, premium, placement, available, preferred in entries:
+            ceiling = available if account_output is None else min(account_output, available)
+            fit = _budget_fitted_output(
+                route, input_size.bound, policy.remaining_for(premium), ceiling
+            )
+            if fit <= 0 or fit < workload.min_output_tokens:
+                continue
+            candidates.append(
+                (
+                    group_index,
+                    preferred,
+                    route.estimate_microusd(input_size.bound, fit),
+                    route.route_id,
+                    fit,
+                    route,
+                    premium,
+                    placement,
+                )
+            )
+            if fitted is not None:
+                fitted.add(route.route_id)
     # Group order first, then a soft preference inside the group, then the cheapest
     # route for *this* request, then a stable tie-break.
     candidates.sort(key=lambda entry: (entry[0], entry[1], entry[2], entry[3]))
@@ -1644,6 +1721,7 @@ async def guarded_completion(
         pinned = _pinned_route(_route_id, model)
     routing = model_routing.current_routing()
     exclusions: dict[str, int] = {}
+    fitted_routes: set[str] = set()
     candidates = _priced_candidates(
         policy,
         input_size,
@@ -1652,6 +1730,8 @@ async def guarded_completion(
         scope.extended,
         account_allow_premium=scope.account_allow_premium,
         exclusions=exclusions,
+        fit_to_budget=True,
+        fitted=fitted_routes,
     )
     scope.completion_seq += 1
     completion_seq = scope.completion_seq
@@ -1855,6 +1935,7 @@ async def guarded_completion(
             include_reasoning=resolved.get("include_reasoning") is True,
             max_tokens=output_tokens,
             hold_bound=bound,
+            budget_fitted=route.route_id in fitted_routes,
             reservation_id=reservation_id,
             stream=stream,
         )
@@ -1884,14 +1965,17 @@ async def guarded_completion(
         # Attribution records what actually went out, on both the precise routing
         # state and the coarser account scope, after any fallback has taken effect.
         sent_effort = _label(resolved.get("reasoning_effort"))
+        budget_fitted = route.route_id in fitted_routes
         scope.selected_model = route.model
         scope.selected_effort = sent_effort
+        scope.selected_budget_fitted = budget_fitted
         routing.record_selection(
             model=route.model,
             route_id=route.route_id,
             group=placement.group if placement is not None else None,
             explicit=model is not None,
             effort=sent_effort,
+            budget_fitted=budget_fitted,
         )
         return response, reservation
 
