@@ -25,7 +25,9 @@ Evaluation results never activate a model or deploy a service automatically.
    completed or interrupted state.
 3. **Preflight.** Independently test/review the runner and use `--dry-run` against
    the marked isolated database/account. Check all scheduled settings, whole-run
-   planning bounds, the authoritative ledger and the funded-month boundary.
+   planning bounds, the authoritative ledger and the funded-month boundary. Every
+   runner refuses an isolated database that has not applied every repository
+   migration; run `scripts/migrate.py` against it after new migrations land.
 4. **Compare.** Run diagnostic, regression, then production-streaming phases
    against the same immutable manifest, policies, corpus and implementation.
    The shared executor retains durable pre-dispatch intent, per-call reservations,
