@@ -91,6 +91,36 @@ denied for old clients; clients relying on direct ElevenLabs WebSockets must use
 Daemon's existing `/tts` contract instead. STT/vendor sound-effects code and
 optional legacy key remain retired and are not needed for ordinary operation.
 
+### Buffered client ownership
+
+One shared playback controller owns synthesis, authenticated audio download and
+the media element under a request generation, stable message ID and committed
+conversation/authentication scope. Selecting another message invalidates the old
+owner before aborting, pausing or revoking its object URL. Every async continuation,
+media event and play rejection checks ownership and scope; obsolete callbacks
+cannot replace or stop the newer selection. Stop remains available throughout
+synthesis, download, playback startup and playback. Authentication invalidation
+also cancels imperatively, before React commits the new scope. A retired sign-in's
+rendered message cannot start a request during that transition.
+
+Owner unmount, content change, loss of completion eligibility and conversation
+changes cancel the captured request. Cleanup is request-qualified so a different
+control cannot release its successor. The scoped provider is never keyed/remounted
+on navigation: streaming and draft state in its chat descendants stays intact.
+Only completed assistant content is eligible for this buffered MVP. The client
+counts raw Unicode code points against the API's 3,000-character limit and displays
+a disabled control with an explanation above it; it neither truncates nor issues
+sequential client chunks. POST validation, download/authentication, decoder and
+playback failures are visible, accessible and request-scoped, with retry.
+
+`tts_settings` remains the local preference key. A dedicated subscribed store
+validates partial/legacy/corrupt values against defaults and updates mounted
+consumers after same-tab setters, cross-tab storage changes and storage clears.
+Normalization never writes on read. Each request captures the latest validated
+voice, finite speed and format once; changing preferences does not alter an
+in-flight request. Browser playback rate stays at one: speed is applied on the
+server only. This changes neither backend admission nor the public API contract.
+
 ## Resource protection, cancellation, storage and accounting
 
 The API enforces a 32 KiB body limit, 3000-character text maximum, nonempty text,
@@ -141,9 +171,13 @@ equivalents. Ship structured log collection if persistent telemetry is needed.
 `tests/test_speech.py`, `tests/test_speech_runtime.py` and the existing artifact/
 format regressions cover the provider contract, replacement provider, API,
 identity, invalid input, failures/deadlines, cancellation-safe slot, readiness,
-cache bounds and ownership. Frontend button tests cover Daemon-only requests,
-single speed application and abort/stale-audio behavior. These tests require no
-paid service or model download.
+cache bounds and ownership. Frontend tests mount the real shared playback
+provider with deferred fetch responses, independently controlled Audio elements
+and object URLs. They exercise competing messages, every active phase, stale
+callbacks, navigation/auth invalidation, owner cleanup, visible failures/retry,
+raw Unicode limits and validated reactive preferences. These are controlled
+client integration tests, not real listening acceptance; they require no paid
+service or model download.
 
 Real offline smoke and repeatable HTTP benchmark (actual image/model/encoders):
 

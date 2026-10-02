@@ -1444,7 +1444,15 @@ function ChatContent() {
                                   <CopyResponseButton
                                     content={messageContent}
                                   />
-                                  <TextToSpeechButton text={messageContent} />
+                                  <TextToSpeechButton
+                                    text={messageContent}
+                                    messageId={message.id}
+                                    conversationId={currentId ?? null}
+                                    available={
+                                      currentMessagesMatch &&
+                                      (!isLast || !isLoading)
+                                    }
+                                  />
                                 </>
                               )}
                             </div>
@@ -1590,13 +1598,36 @@ function ChatContentWrapper() {
   );
 }
 
+/**
+ * Non-remounting playback scope.
+ *
+ * Conversation and auth generation are passed down as props instead of a key so
+ * ChatContent (streaming state, drafts) stays mounted while a committed scope
+ * change synchronously cancels read-aloud work inside the provider.
+ */
+function AudioPlaybackScopedProvider({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  const { currentId } = useConversationHistoryContext();
+  const authGeneration = useAuthGeneration();
+  const scope = useMemo(
+    () => ({ conversationId: currentId ?? null, authGeneration }),
+    [authGeneration, currentId],
+  );
+  return (
+    <AudioPlaybackProvider scope={scope}>{children}</AudioPlaybackProvider>
+  );
+}
+
 export default function ChatPage() {
   return (
     <Suspense fallback={<ChatSkeleton />}>
       <ConversationHistoryProvider>
-        <AudioPlaybackProvider>
+        <AudioPlaybackScopedProvider>
           <ChatContentWrapper />
-        </AudioPlaybackProvider>
+        </AudioPlaybackScopedProvider>
       </ConversationHistoryProvider>
     </Suspense>
   );

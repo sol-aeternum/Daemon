@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useLocalStorage } from '@/hooks/useLocalStorage';
+import { useTtsSettings } from '@/hooks/useTtsSettings';
 import { useClientMounted } from '@/hooks/useClientMounted';
 import {
   SkeletonLine,
@@ -10,7 +11,6 @@ import {
 } from '@/components/ui/Skeleton';
 import {
   DEFAULT_STT_SETTINGS,
-  DEFAULT_TTS_SETTINGS,
   type SttSettings,
   type TtsSettings,
 } from '@/lib/constants';
@@ -60,8 +60,9 @@ type SaveStatus = 'idle' | 'loading' | 'success' | 'error';
 
 export default function VoiceTab() {
   const mounted = useClientMounted();
-  const { value: ttsSettings, setValue: setTtsSettings } =
-    useLocalStorage<TtsSettings>('tts_settings', DEFAULT_TTS_SETTINGS);
+  // Read-aloud preferences are subscribed so already-mounted play buttons and
+  // this form share one validated, reactive source.
+  const { value: ttsSettings, setValue: setTtsSettings } = useTtsSettings();
   const { value: sttSettings, setValue: setSttSettings } =
     useLocalStorage<SttSettings>('stt_settings', DEFAULT_STT_SETTINGS);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');

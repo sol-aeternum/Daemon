@@ -1,93 +1,140 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import { Volume2, VolumeX } from 'lucide-react';
-import { ensureAuthHeader } from '@/lib/auth';
-import { useLocalStorage } from '../hooks/useLocalStorage';
-import { TtsSettings, DEFAULT_TTS_SETTINGS } from '../lib/constants';
-import { useAudioPlayback } from './AudioPlaybackProvider';
+import { useTtsSettings } from '../hooks/useTtsSettings';
+import { getTtsSettingsSnapshot } from '../lib/ttsSettings';
+import {
+  countTtsTextCodePoints,
+  MAX_TTS_TEXT_CODE_POINTS,
+  TTS_TEXT_TOO_LONG_MESSAGE,
+  TTS_STREAMING_MESSAGE,
+  useAudioPlayback,
+  type TtsOwner,
+} from './AudioPlaybackProvider';
 
-export function TextToSpeechButton({ text }: { text: string }) {
-  const { value: settings } = useLocalStorage<TtsSettings>(
-    'tts_settings',
-    DEFAULT_TTS_SETTINGS,
+export interface TextToSpeechButtonProps {
+  /** Rendered content. Frozen at click time; never used as identity. */
+  text: string;
+  /** Stable server-side message identity. */
+  messageId: string;
+  /** Committed conversation the message belongs to. */
+  conversationId: string | null;
+  /** False while the message is still streaming or the view is transitioning. */
+  available?: boolean;
+}
+
+export function TextToSpeechButton({
+  text,
+  messageId,
+  conversationId,
+  available = true,
+}: TextToSpeechButtonProps) {
+  const { value: settings } = useTtsSettings();
+  const {
+    phase,
+    ownerMessageId,
+    ownerConversationId,
+    errorMessage,
+    startSpeech,
+    stopSpeech,
+  } = useAudioPlayback();
+  const ownerRef = useRef<TtsOwner | null>(null);
+  const hidden = settings.enabled === false || text.trim().length === 0;
+
+  // This button owns its request: unmount, content growth or being hidden
+  // cancels it. A `requestId`-qualified stop cannot cancel a newer owner.
+  useLayoutEffect(
+    () => () => {
+      if (ownerRef.current) stopSpeech(ownerRef.current);
+      ownerRef.current = null;
+    },
+    [available, conversationId, hidden, messageId, stopSpeech, text],
   );
-  const { play, stop, isPlaying } = useAudioPlayback();
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const controller = useRef<AbortController | null>(null);
-  useEffect(() => () => controller.current?.abort(), []);
 
-  const handleClick = async () => {
-    if (loading || isPlaying(text)) {
-      controller.current?.abort();
-      controller.current = null;
-      setLoading(false);
-      stop();
+  const owns =
+    ownerMessageId === messageId && ownerConversationId === conversationId;
+  const active = owns && phase !== 'idle' && phase !== 'error';
+  const failed = owns && phase === 'error';
+  const overLimit = countTtsTextCodePoints(text) > MAX_TTS_TEXT_CODE_POINTS;
+
+  const handleClick = () => {
+    if (active) {
+      if (ownerRef.current) stopSpeech(ownerRef.current);
+      ownerRef.current = null;
       return;
     }
-    const abort = new AbortController();
-    controller.current = abort;
-    setLoading(true);
-    setError(null);
-    stop();
-    try {
-      const auth = await ensureAuthHeader();
-      if (abort.signal.aborted) return;
-      const response = await fetch('/api/tts', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(auth ? { Authorization: auth } : {}),
-        },
-        signal: abort.signal,
-        body: JSON.stringify({
-          text,
-          voice: settings.voice,
-          speed: settings.speed,
-          format: settings.format,
-          cache: true,
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok)
-        throw new Error(data?.detail?.code || 'Speech unavailable');
-      if (typeof data.audio_path !== 'string') throw new Error('Audio missing');
-      if (!abort.signal.aborted) {
-        const apiUrl =
-          process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-        // Rate is applied by the speech provider exactly once, not on playback.
-        play(text, `${apiUrl}${data.audio_path}`, 1);
-      }
-    } catch (err) {
-      if (!abort.signal.aborted) {
-        setError(err instanceof Error ? err.message : 'Speech unavailable');
-      }
-    } finally {
-      if (controller.current === abort) {
-        controller.current = null;
-        setLoading(false);
-      }
-    }
+    if (!available || overLimit || hidden) return;
+    // Fresh validated preference snapshot, frozen for this request.
+    const preferences = getTtsSettingsSnapshot();
+    const requestId = startSpeech({
+      messageId,
+      conversationId,
+      text,
+      voice: preferences.voice,
+      speed: preferences.speed,
+      format: preferences.format,
+    });
+    ownerRef.current = { messageId, conversationId, requestId };
   };
 
-  if (settings.enabled === false || !text.trim()) return null;
-  const active = loading || isPlaying(text);
-  const label = active ? 'Stop TTS' : 'Play TTS';
+  if (hidden) return null;
+
+  const buttonClass =
+    'ml-2 inline-flex min-h-touch items-center gap-1 rounded px-2 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] disabled:cursor-not-allowed disabled:opacity-60';
+
+  if (overLimit) {
+    return (
+      <span className="ml-2 inline-flex items-center gap-1">
+        <button
+          type="button"
+          disabled
+          aria-label="Play TTS unavailable"
+          title={TTS_TEXT_TOO_LONG_MESSAGE}
+          className={buttonClass}
+        >
+          <Volume2 className="h-3.5 w-3.5" />
+        </button>
+        <span role="status" className="text-xs text-[var(--color-text-muted)]">
+          {TTS_TEXT_TOO_LONG_MESSAGE}
+        </span>
+      </span>
+    );
+  }
+
+  const label = active ? 'Stop TTS' : failed ? 'Retry speech' : 'Play TTS';
+  const busy = active && phase !== 'playing';
+  const title = !available
+    ? TTS_STREAMING_MESSAGE
+    : failed && errorMessage
+      ? `TTS: ${errorMessage}`
+      : label;
+
   return (
-    <button
-      type="button"
-      onClick={handleClick}
-      aria-label={label}
-      title={error ? `TTS: ${error}` : label}
-      className="ml-2 inline-flex min-h-touch items-center gap-1 rounded px-2 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"
-    >
-      {active ? (
-        <VolumeX className="h-3.5 w-3.5" />
-      ) : (
-        <Volume2 className="h-3.5 w-3.5" />
-      )}
-      {loading ? 'Loading…' : error ? 'Retry speech' : null}
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={!available}
+        aria-label={available ? label : 'Play TTS unavailable'}
+        title={title}
+        className={buttonClass}
+      >
+        {active ? (
+          <VolumeX className="h-3.5 w-3.5" />
+        ) : (
+          <Volume2 className="h-3.5 w-3.5" />
+        )}
+        {busy ? 'Loading…' : failed ? 'Retry speech' : null}
+      </button>
+      {failed && errorMessage ? (
+        <span
+          role="alert"
+          className="ml-1 text-xs text-[var(--color-status-error)]"
+        >
+          {errorMessage}
+        </span>
+      ) : null}
+    </>
   );
 }
