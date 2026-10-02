@@ -132,6 +132,17 @@ measures T_in, T_out, T_reason, calls per attempt and f_unknown, so the pilot ca
 be set from measured numbers. Admission also needs cap headroom of at least
 concurrency × the largest per-call hold.
 
+Worst-case reservation bounds from `scripts/reasoning_eval_plan.py` (dry run, no
+provider calls; every call at the full 4,096-token output limit and the maximum calls
+per attempt; 2 October 2026 price ceilings):
+
+| Run | Luna low/medium/high (each) | Sonnet 5 high | Sol 6.1 high | Total |
+| --- | --- | --- | --- | --- |
+| Calibration (20 dev cases × 1) | $0.13 | $1.60 | $2.66 | **$4.65** |
+| Pilot (40 dev+val cases × 3) | $0.80 | $9.61 | $15.97 | **$27.98** |
+
+Actual spend is expected to be well below these bounds; the calibration run measures it.
+
 **Decision needed before B2:** a USD cap for the calibration run (and, after it, for
 the pilot). Nothing in B2 runs until a cap is approved and route approvals are valid
 at run time.
